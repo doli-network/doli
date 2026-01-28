@@ -1,20 +1,28 @@
-//! # Temporal Proof of Presence (TPoP) - Core Implementation
+//! # Temporal Proof of Presence (TPoP) - Telemetry Module
 //!
-//! This module implements the core TPoP consensus mechanism for DOLI.
+//! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
+//!
+//! Producer selection is determined by `consensus::select_producer_for_slot()` using
+//! consecutive tickets based on bond count. Presence score does NOT affect:
+//! - Block validity
+//! - Producer selection
+//! - Fallback eligibility
+//!
+//! This module provides metrics and tracking for network health monitoring.
 //!
 //! ## Overview
 //!
-//! TPoP replaces lottery-based leader selection with presence-based selection.
-//! Each producer maintains a personal chain of VDFs that proves continuous
-//! temporal presence. Selection priority is determined by accumulated
-//! presence score, not random chance.
+//! The presence tracking system monitors producer activity for telemetry:
+//! - Personal VDF chains prove temporal presence (informational)
+//! - Presence score tracks commitment (metrics only)
+//! - Records used for network health dashboards
 //!
-//! ## Key Innovations
+//! ## What This Module Does NOT Do
 //!
-//! 1. **Personal VDF Chains**: Each producer computes their own sequential VDFs
-//! 2. **Presence Score**: Objective measure of temporal commitment
-//! 3. **Proportional Rewards**: Rewards distributed by demonstrated presence
-//! 4. **Hierarchical Fallback**: Never empty slots, graceful degradation
+//! - Does NOT affect which producer is selected for a slot
+//! - Does NOT validate blocks based on presence
+//! - Does NOT gate block production on presence threshold
+//! - Does NOT influence reward distribution (bond-weighted)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
