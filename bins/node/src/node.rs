@@ -2144,8 +2144,8 @@ impl Node {
                 &header.producer,
             );
 
-            // Get calibrated iterations
-            let iterations = self.vdf_calibrator.read().await.iterations();
+            // Get network-specific fixed iterations (must match validation)
+            let iterations = self.config.network.heartbeat_vdf_iterations();
             info!(
                 "Computing hash-chain VDF with {} iterations (network={:?})...",
                 iterations, self.config.network

@@ -1,0 +1,424 @@
+# RUNNING_A_NODE.md - Node Setup Guide
+
+This guide covers installing, configuring, and operating a DOLI full node.
+
+---
+
+## 1. Prerequisites
+
+### 1.1. Hardware Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| CPU | 2 cores | 4+ cores |
+| RAM | 4 GB | 8+ GB |
+| Storage | 50 GB SSD | 200+ GB NVMe |
+| Network | 10 Mbps | 100+ Mbps |
+
+### 1.2. Software Requirements
+
+- Linux (Ubuntu 22.04+, Debian 12+, Fedora 38+) or macOS 13+
+- Nix package manager (recommended) or Rust 1.75+
+
+---
+
+## 2. Installation
+
+### 2.1. Using Nix (Recommended)
+
+```bash
+# Clone repository
+git clone https://github.com/doli-network/doli.git
+cd doli
+
+# Enter Nix development environment
+nix develop
+
+# Build release binaries
+cargo build --release
+
+# Binaries located at:
+# ./target/release/doli-node
+# ./target/release/doli
+```
+
+### 2.2. Manual Build
+
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Install system dependencies (Ubuntu/Debian)
+sudo apt install build-essential pkg-config libssl-dev libgmp-dev librocksdb-dev
+
+# Clone and build
+git clone https://github.com/doli-network/doli.git
+cd doli
+cargo build --release
+```
+
+---
+
+## 3. Network Selection
+
+| Network | Purpose | Slot Time | Data Directory |
+|---------|---------|-----------|----------------|
+| Mainnet | Production | 10s | `~/.doli/mainnet/` |
+| Testnet | Testing | 10s | `~/.doli/testnet/` |
+| Devnet | Development | 5s | `~/.doli/devnet/` |
+
+---
+
+## 4. Running a Node
+
+### 4.1. Initialize Data Directory
+
+```bash
+# Mainnet (default)
+./target/release/doli-node init
+
+# Testnet
+./target/release/doli-node --network testnet init
+
+# Devnet
+./target/release/doli-node --network devnet init
+```
+
+### 4.2. Start the Node
+
+```bash
+# Mainnet
+./target/release/doli-node run
+
+# Testnet
+./target/release/doli-node --network testnet run
+
+# Devnet
+./target/release/doli-node --network devnet run
+```
+
+### 4.3. Common Options
+
+```bash
+./target/release/doli-node run \
+    --data-dir /path/to/data \    # Custom data directory
+    --p2p-port 30303 \            # P2P listen port
+    --rpc-port 8545 \             # RPC API port
+    --metrics-port 9090 \         # Prometheus metrics port
+    --bootstrap /ip4/x.x.x.x/tcp/30303  # Bootstrap node
+    --log-level info              # trace|debug|info|warn|error
+```
+
+---
+
+## 5. Configuration File
+
+Create `config.toml` in the data directory:
+
+```toml
+# Network settings
+network = "mainnet"
+data_dir = "/var/lib/doli"
+listen_addr = "0.0.0.0:30303"
+max_peers = 50
+
+# Bootstrap nodes (mainnet defaults used if empty)
+bootstrap_nodes = [
+    "/ip4/boot1.doli.network/tcp/30303",
+    "/ip4/boot2.doli.network/tcp/30303"
+]
+
+# RPC settings
+[rpc]
+enabled = true
+listen_addr = "127.0.0.1:8545"
+
+# Metrics (Prometheus)
+[metrics]
+enabled = true
+listen_addr = "127.0.0.1:9090"
+
+# Logging
+[logging]
+level = "info"
+format = "json"  # or "pretty"
+```
+
+---
+
+## 6. Systemd Service
+
+### 6.1. Create Service File
+
+```bash
+sudo nano /etc/systemd/system/doli-node.service
+```
+
+```ini
+[Unit]
+Description=DOLI Node
+After=network.target
+
+[Service]
+Type=simple
+User=doli
+Group=doli
+ExecStart=/usr/local/bin/doli-node --config /etc/doli/config.toml run
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/doli
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 6.2. Enable and Start
+
+```bash
+# Create doli user
+sudo useradd -r -s /bin/false doli
+sudo mkdir -p /var/lib/doli /etc/doli
+sudo chown doli:doli /var/lib/doli
+
+# Copy binary and config
+sudo cp target/release/doli-node /usr/local/bin/
+sudo cp config.toml /etc/doli/
+
+# Enable and start service
+sudo systemctl daemon-reload
+sudo systemctl enable doli-node
+sudo systemctl start doli-node
+
+# Check status
+sudo systemctl status doli-node
+sudo journalctl -u doli-node -f
+```
+
+---
+
+## 7. Monitoring
+
+### 7.1. RPC Health Check
+
+```bash
+# Check chain info
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}'
+
+# Check network info
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'
+```
+
+### 7.2. Prometheus Metrics
+
+Key metrics available at `http://127.0.0.1:9090/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `doli_chain_height` | Current block height |
+| `doli_peers_connected` | Number of connected peers |
+| `doli_blocks_received_total` | Total blocks received |
+| `doli_transactions_received_total` | Total transactions received |
+| `doli_mempool_size` | Current mempool size |
+| `doli_sync_progress` | Sync progress (0-1) |
+
+### 7.3. Grafana Dashboard
+
+Import the DOLI dashboard from `docs/grafana-dashboard.json` (if available) or create panels for:
+
+- Chain height over time
+- Peer count
+- Block/transaction rates
+- Mempool size
+- Sync status
+
+---
+
+## 8. Syncing
+
+### 8.1. Initial Sync
+
+First sync may take several hours depending on chain length:
+
+```
+Sync progress:
+  1. Connect to peers
+  2. Download headers (fast)
+  3. Download block bodies (slower)
+  4. Validate and apply blocks
+```
+
+### 8.2. Check Sync Status
+
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'
+
+# Response includes:
+# "syncing": true/false
+# "syncProgress": 0.0-100.0
+```
+
+---
+
+## 9. Firewall Configuration
+
+### 9.1. Required Ports
+
+| Port | Protocol | Direction | Purpose |
+|------|----------|-----------|---------|
+| 30303 | TCP | Inbound | P2P (mainnet) |
+| 40303 | TCP | Inbound | P2P (testnet) |
+| 50303 | TCP | Inbound | P2P (devnet) |
+
+### 9.2. UFW Example
+
+```bash
+# Allow P2P port
+sudo ufw allow 30303/tcp
+
+# RPC (only if external access needed - NOT recommended)
+# sudo ufw allow 8545/tcp
+```
+
+### 9.3. iptables Example
+
+```bash
+# Allow P2P port
+sudo iptables -A INPUT -p tcp --dport 30303 -j ACCEPT
+```
+
+---
+
+## 10. Backup and Recovery
+
+### 10.1. What to Backup
+
+| Path | Content | Priority |
+|------|---------|----------|
+| `~/.doli/{network}/node.key` | Node identity | High |
+| `~/.doli/{network}/db/` | Blockchain data | Low (can resync) |
+
+### 10.2. Backup Procedure
+
+```bash
+# Stop node
+sudo systemctl stop doli-node
+
+# Backup node key
+cp ~/.doli/mainnet/node.key ~/backup/
+
+# Optional: backup database
+tar -czf ~/backup/doli-db-$(date +%Y%m%d).tar.gz ~/.doli/mainnet/db/
+
+# Start node
+sudo systemctl start doli-node
+```
+
+### 10.3. Recovery
+
+```bash
+# Restore node key
+cp ~/backup/node.key ~/.doli/mainnet/
+
+# Start node (will resync if db not restored)
+sudo systemctl start doli-node
+```
+
+---
+
+## 11. Upgrading
+
+### 11.1. Auto-Update (Default)
+
+The node automatically downloads and applies updates after the 7-day veto period. To receive notifications only:
+
+```bash
+./target/release/doli-node run --update-notify-only
+```
+
+### 11.2. Manual Update
+
+```bash
+# Stop node
+sudo systemctl stop doli-node
+
+# Pull latest code
+cd doli
+git pull
+
+# Rebuild
+cargo build --release
+
+# Update binary
+sudo cp target/release/doli-node /usr/local/bin/
+
+# Start node
+sudo systemctl start doli-node
+```
+
+### 11.3. Disable Auto-Update
+
+```bash
+./target/release/doli-node run --no-auto-update
+```
+
+---
+
+## 12. Command Reference
+
+```bash
+# Node commands
+doli-node init                    # Initialize data directory
+doli-node run                     # Start the node
+doli-node status                  # Show node status
+doli-node import <file>           # Import blocks from file
+doli-node export <file>           # Export blocks to file
+
+# Global flags
+--network <mainnet|testnet|devnet>
+--config <path>
+--data-dir <path>
+--log-level <trace|debug|info|warn|error>
+
+# Run flags
+--producer                        # Enable block production
+--producer-key <path>             # Producer key file
+--p2p-port <port>                 # P2P listen port
+--rpc-port <port>                 # RPC listen port
+--metrics-port <port>             # Metrics port
+--bootstrap <multiaddr>           # Bootstrap node
+--no-dht                          # Disable DHT discovery
+--no-auto-update                  # Disable auto-updates
+--update-notify-only              # Notify only, don't apply updates
+```
+
+---
+
+## 13. Network Defaults
+
+| Parameter | Mainnet | Testnet | Devnet |
+|-----------|---------|---------|--------|
+| Network ID | 1 | 2 | 99 |
+| P2P Port | 30303 | 40303 | 50303 |
+| RPC Port | 8545 | 18545 | 28545 |
+| Slot Duration | 10s | 10s | 1s |
+| Block Reward | 1 DOLI | 1 DOLI | 1 DOLI |
+| VDF Iterations | 10M (~700ms) | 10M (~700ms) | 1M (~70ms) |
+| Address Prefix | `doli` | `tdoli` | `ddoli` |
+
+---
+
+*Last updated: January 2026*
