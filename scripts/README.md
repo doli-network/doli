@@ -137,6 +137,46 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_devnet_3node_rewards.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_devnet_3node_rewards.sh` |
+| **Purpose** | Test 3-node devnet with staggered joins and detailed rewards analysis |
+| **What it tests** | Exact reward distribution (8 decimal precision), epoch boundaries, round-robin convergence |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Run time** | ~5 minutes |
+| **Output** | `/tmp/doli-devnet-3node/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_devnet_3node_rewards.sh
+```
+
+**Test scenario:**
+- Node 1: starts immediately (seed/genesis)
+- Node 2: joins at +60s
+- Node 3: joins at +120s
+- Monitors for 5 minutes total (15 epochs)
+
+**Devnet parameters:**
+- 1-second slots
+- 20 slots per epoch (20s epochs)
+- 1.00000000 DOLI block reward
+- 1M VDF iterations (~70ms)
+
+**Expected results:**
+- Early epochs: Node 1 dominates (was only producer)
+- After Node 2 joins: 50/50 distribution
+- After Node 3 joins: ~33/33/33 equal distribution (round-robin)
+
+**Report output:**
+- `reports/rewards_report.txt` - Summary report
+- `reports/detailed_rewards_report.md` - Detailed markdown report with epoch-by-epoch analysis
+- Raw logs for each node in `logs/`
+
+---
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |
@@ -146,6 +186,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | `test_staggered_validator_rewards.sh` | 10 | ~10 min | Staggered rewards |
 | `test_validator_rewards_simple.sh` | 3 | ~5 min | Simple rewards |
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
+| `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
 
 ---
 

@@ -29,7 +29,7 @@ use crate::consensus::{
     MAX_DRIFT, MAX_FUTURE_SLOTS, MAX_PAST_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
 };
 use crate::network::Network;
-use crate::tpop::heartbeat::{verify_hash_chain_vdf, HEARTBEAT_VDF_ITERATIONS};
+use crate::tpop::heartbeat::verify_hash_chain_vdf;
 use crate::transaction::{
     AddBondData, ClaimBondData, ClaimData, ClaimWithdrawalData, ExitData, Input, Output,
     OutputType, RegistrationData, SlashData, Transaction, TxType, WithdrawalRequestData,
@@ -1490,7 +1490,8 @@ fn validate_vdf(header: &BlockHeader, network: Network) -> Result<(), Validation
         .map_err(|_| ValidationError::InvalidVdfProof)?;
 
     // Verify by re-computing the hash-chain VDF
-    if !verify_hash_chain_vdf(&input, &expected_output, HEARTBEAT_VDF_ITERATIONS) {
+    // Use network-specific iterations (devnet uses fewer for faster blocks)
+    if !verify_hash_chain_vdf(&input, &expected_output, network.heartbeat_vdf_iterations()) {
         return Err(ValidationError::InvalidVdfProof);
     }
 
