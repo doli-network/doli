@@ -53,7 +53,7 @@
 //! |-----------|-------|---------|
 //! | Discriminant bits | 2048 | Security (infeasible to factor) |
 //! | Challenge bits | 128 | Proof soundness |
-//! | T_BLOCK | 1M | ~1-2 seconds anti-grinding VDF |
+//! | T_BLOCK | 10M | ~7 seconds anti-grinding VDF |
 //! | T_REGISTER_BASE | 600M | ~10 minutes for registration (anti-Sybil) |
 //!
 //! ## Time-Based Consensus
@@ -115,7 +115,7 @@ pub use class_group::{ClassGroupElement, ClassGroupError};
 
 use crypto::Hash;
 
-/// Default VDF parameter for block anti-grinding (~1-2 seconds on reference hardware).
+/// VDF parameter for block production (~7 seconds on reference hardware).
 ///
 /// # Time-Based Consensus Model
 ///
@@ -123,18 +123,21 @@ use crypto::Hash;
 /// time (NTP), not VDF duration. This eliminates hardware advantage:
 /// faster VDF computation does NOT mean faster block production.
 ///
-/// The block VDF serves only as an anti-grinding mechanism to prevent
+/// The block VDF serves as an anti-grinding mechanism to prevent
 /// producers from:
 /// 1. Trying many block variations to find favorable randomness
 /// 2. Instantly producing blocks when their slot arrives
 ///
+/// With 10-second slots, the VDF takes ~7 seconds, leaving ~3 seconds
+/// for block construction and propagation.
+///
 /// This is calibrated so that:
-/// - A single-threaded CPU takes ~1-2 seconds
+/// - A single-threaded CPU takes ~7 seconds
 /// - Even with ASIC speedup, still provides anti-grinding protection
 /// - Does not create hardware-based competitive advantage
 ///
 /// Registration VDF (T_REGISTER_BASE) remains long for anti-Sybil protection.
-pub const T_BLOCK: u64 = 1_000_000;
+pub const T_BLOCK: u64 = 10_000_000;
 
 /// Base VDF parameter for producer registration (~10 minutes).
 ///

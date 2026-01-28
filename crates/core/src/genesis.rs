@@ -34,10 +34,9 @@ impl GenesisConfig {
     pub fn mainnet() -> Self {
         Self {
             network: Network::Mainnet,
-            timestamp: 1769904000, // 2026-02-01T00:00:00Z
-            reward: 500_000_000,   // 5 DOLI
-            message:
-                "El tiempo es el recurso mas democratico. DOLI lo convierte en dinero. 2026-02-01",
+            timestamp: 1769904000,  // 2026-02-01T00:00:00Z
+            reward: 100_000_000,    // 1 DOLI (same as initial block reward)
+            message: "Time is the only fair currency. 01/Feb/2026",
         }
     }
 
@@ -332,7 +331,7 @@ mod tests {
         assert_eq!(genesis.header.slot, 0);
         assert_eq!(genesis.header.timestamp, 1769904000);
         assert_eq!(genesis.transactions.len(), 1);
-        assert_eq!(genesis.transactions[0].outputs[0].amount, 500_000_000);
+        assert_eq!(genesis.transactions[0].outputs[0].amount, 100_000_000); // 1 DOLI
 
         // Verify it passes validation
         assert!(verify_genesis_block(&genesis, Network::Mainnet).is_ok());
@@ -387,8 +386,8 @@ mod tests {
         let genesis = generate_genesis_block(&GenesisConfig::mainnet());
         let message = String::from_utf8_lossy(&genesis.transactions[0].extra_data);
 
-        assert!(message.contains("El tiempo es el recurso mas democratico"));
-        assert!(message.contains("2026-02-01"));
+        assert!(message.contains("Time is the only fair currency"));
+        assert!(message.contains("01/Feb/2026"));
     }
 
     #[test]

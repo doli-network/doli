@@ -1605,12 +1605,12 @@ mod tests {
     fn test_validate_timestamp_advancing() {
         let ctx = test_context();
 
-        // With 1-second slots, slot 1 is at GENESIS_TIME + 1
+        // With 10-second slots, slot 1 is at GENESIS_TIME + 10
         let header = BlockHeader {
             version: 1,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
-            timestamp: GENESIS_TIME + 1,
+            timestamp: GENESIS_TIME + 10,
             slot: 1,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
             vdf_output: vdf::VdfOutput { value: vec![] },
@@ -1645,14 +1645,14 @@ mod tests {
     fn test_validate_slot_derivation() {
         let ctx = test_context();
 
-        // With 1-second slots, timestamp GENESIS_TIME + 60 = slot 60
-        // Claiming slot 5 should be invalid
+        // With 10-second slots, timestamp GENESIS_TIME + 60 = slot 6
+        // Claiming slot 5 should be invalid (actual slot should be 6)
         let header = BlockHeader {
             version: 1,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             timestamp: GENESIS_TIME + 60,
-            slot: 5, // Should be 60 with 1-second slots
+            slot: 5, // Should be 6 with 10-second slots
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
             vdf_output: vdf::VdfOutput { value: vec![] },
             vdf_proof: vdf::VdfProof::empty(),
