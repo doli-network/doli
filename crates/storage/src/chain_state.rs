@@ -3,6 +3,8 @@
 use std::path::Path;
 
 use crypto::Hash;
+use doli_core::consensus::TOTAL_SUPPLY;
+use doli_core::types::Amount;
 use serde::{Deserialize, Serialize};
 
 use crate::StorageError;
@@ -32,6 +34,12 @@ pub struct ChainState {
     /// have sequence_number = registration_sequence + 1.
     #[serde(default)]
     pub registration_sequence: u64,
+    /// Total coins minted (including genesis reward)
+    ///
+    /// This tracks all coinbase rewards ever issued. Used to enforce
+    /// the TOTAL_SUPPLY cap: `total_minted + reward <= TOTAL_SUPPLY`.
+    #[serde(default)]
+    pub total_minted: Amount,
 }
 
 impl ChainState {
@@ -45,6 +53,7 @@ impl ChainState {
             genesis_hash,
             last_registration_hash: Hash::ZERO,
             registration_sequence: 0,
+            total_minted: 0,
         }
     }
 
@@ -121,6 +130,67 @@ impl ChainState {
 
         prev_hash == expected_prev && sequence == expected_seq
     }
+
+    // ==================== Supply Tracking ====================
+
+    /// Apply a coinbase reward to the chain state
+    ///
+    /// This records the minted coins and enforces the TOTAL_SUPPLY cap.
+    /// Returns `Err` if applying this reward would exceed the cap.
+    ///
+    /// # Arguments
+    /// - `reward`: The coinbase reward amount
+    ///
+    /// # Returns
+    /// `Ok(())` if the reward was applied successfully
+    /// `Err(amount_over)` if this would exceed TOTAL_SUPPLY
+    pub fn apply_coinbase(&mut self, reward: Amount) -> Result<(), Amount> {
+        let new_total = self.total_minted.saturating_add(reward);
+        if new_total > TOTAL_SUPPLY {
+            let over = new_total - TOTAL_SUPPLY;
+            return Err(over);
+        }
+        self.total_minted = new_total;
+        Ok(())
+    }
+
+    /// Check if a coinbase reward would exceed the supply cap
+    ///
+    /// # Arguments
+    /// - `reward`: The proposed coinbase reward amount
+    ///
+    /// # Returns
+    /// `true` if the reward can be applied without exceeding TOTAL_SUPPLY
+    pub fn can_mint(&self, reward: Amount) -> bool {
+        self.total_minted.saturating_add(reward) <= TOTAL_SUPPLY
+    }
+
+    /// Get the remaining mintable supply
+    ///
+    /// Returns how many coins can still be minted before reaching TOTAL_SUPPLY.
+    pub fn remaining_supply(&self) -> Amount {
+        TOTAL_SUPPLY.saturating_sub(self.total_minted)
+    }
+
+    /// Calculate the effective block reward given remaining supply
+    ///
+    /// If the calculated reward would exceed remaining supply, returns
+    /// only the remaining supply (partial reward for the final era).
+    ///
+    /// # Arguments
+    /// - `calculated_reward`: The reward calculated from halving schedule
+    ///
+    /// # Returns
+    /// The actual reward to issue (may be less than calculated if near cap)
+    pub fn effective_reward(&self, calculated_reward: Amount) -> Amount {
+        let remaining = self.remaining_supply();
+        calculated_reward.min(remaining)
+    }
+
+    /// Get total minted coins
+    pub fn total_minted(&self) -> Amount {
+        self.total_minted
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +208,8 @@ mod tests {
         // Registration chain starts empty
         assert_eq!(state.last_registration_hash, Hash::ZERO);
         assert_eq!(state.registration_sequence, 0);
+        // Supply tracking starts at 0
+        assert_eq!(state.total_minted, 0);
     }
 
     #[test]
@@ -222,5 +294,111 @@ mod tests {
 
         // The attacker would need to reference the first registration
         assert!(state.verify_registration_chain(attacker_reg1, 2));
+    }
+
+    // ==================== Supply Tracking Tests ====================
+
+    #[test]
+    fn test_apply_coinbase() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Apply first coinbase
+        assert!(state.apply_coinbase(100_000_000).is_ok());
+        assert_eq!(state.total_minted, 100_000_000);
+
+        // Apply more coinbases
+        assert!(state.apply_coinbase(100_000_000).is_ok());
+        assert_eq!(state.total_minted, 200_000_000);
+    }
+
+    #[test]
+    fn test_apply_coinbase_enforces_supply_cap() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Mint almost all supply
+        state.total_minted = TOTAL_SUPPLY - 100;
+
+        // Can mint remaining 100
+        assert!(state.can_mint(100));
+        assert!(state.apply_coinbase(100).is_ok());
+        assert_eq!(state.total_minted, TOTAL_SUPPLY);
+
+        // Cannot mint any more
+        assert!(!state.can_mint(1));
+        let result = state.apply_coinbase(1);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 1); // Over by 1
+
+        // Total minted unchanged
+        assert_eq!(state.total_minted, TOTAL_SUPPLY);
+    }
+
+    #[test]
+    fn test_remaining_supply() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Initially all supply remains
+        assert_eq!(state.remaining_supply(), TOTAL_SUPPLY);
+
+        // After minting some
+        state.total_minted = 1_000_000_000_000;
+        assert_eq!(
+            state.remaining_supply(),
+            TOTAL_SUPPLY - 1_000_000_000_000
+        );
+
+        // At max supply
+        state.total_minted = TOTAL_SUPPLY;
+        assert_eq!(state.remaining_supply(), 0);
+    }
+
+    #[test]
+    fn test_effective_reward() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        let full_reward = 100_000_000;
+
+        // Normal case: full reward available
+        state.total_minted = 0;
+        assert_eq!(state.effective_reward(full_reward), full_reward);
+
+        // Partial reward: near cap
+        state.total_minted = TOTAL_SUPPLY - 50_000_000;
+        assert_eq!(state.effective_reward(full_reward), 50_000_000);
+
+        // No reward: at cap
+        state.total_minted = TOTAL_SUPPLY;
+        assert_eq!(state.effective_reward(full_reward), 0);
+    }
+
+    #[test]
+    fn test_supply_never_exceeds_cap() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Simulate mining many blocks
+        let reward = 100_000_000;
+        let mut blocks_mined = 0;
+
+        while state.can_mint(1) {
+            let effective = state.effective_reward(reward);
+            if effective == 0 {
+                break;
+            }
+            assert!(state.apply_coinbase(effective).is_ok());
+            blocks_mined += 1;
+
+            // Safety limit for test
+            if blocks_mined > TOTAL_SUPPLY / reward + 10 {
+                panic!("Too many iterations");
+            }
+        }
+
+        // Should never exceed cap
+        assert!(state.total_minted <= TOTAL_SUPPLY);
     }
 }
