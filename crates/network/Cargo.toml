@@ -1,0 +1,24 @@
+[package]
+name = "network"
+description = "P2P networking layer for DOLI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+doli-core = { workspace = true }
+crypto = { workspace = true }
+libp2p.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+bincode.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+prost.workspace = true
+
+[dev-dependencies]
+vdf = { workspace = true }

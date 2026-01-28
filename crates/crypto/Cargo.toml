@@ -1,0 +1,29 @@
+[package]
+name = "crypto"
+description = "Cryptographic primitives for DOLI: BLAKE3 hashing and Ed25519 signatures"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["cryptography", "blockchain", "ed25519", "blake3"]
+categories = ["cryptography", "no-std"]
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true

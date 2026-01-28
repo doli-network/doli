@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package doli.producer;
+
+// A cryptographically signed producer announcement with replay protection.
+// This message is broadcast during gossip to announce a producer's presence.
+message ProducerAnnouncement {
+    // Producer's Ed25519 public key (32 bytes)
+    bytes pubkey = 1;
+
+    // Network identifier (1=mainnet, 2=testnet, 99=devnet)
+    uint32 network_id = 2;
+
+    // Monotonically increasing sequence number for replay protection
+    uint64 sequence = 3;
+
+    // Unix timestamp in seconds when announcement was created
+    uint64 timestamp = 4;
+
+    // Ed25519 signature over (pubkey || network_id || sequence || timestamp)
+    bytes signature = 5;
+}
+
+// A set of producer announcements for full synchronization.
+message ProducerSet {
+    // All known producer announcements
+    repeated ProducerAnnouncement producers = 1;
+}
+
+// A bloom filter digest for delta synchronization.
+// Used to efficiently determine which producers a peer is missing.
+message ProducerSetDigest {
+    // Bloom filter bit array
+    bytes bloom_filter = 1;
+
+    // Number of hash functions used (k parameter)
+    uint32 bloom_k = 2;
+
+    // Number of elements in the filter (n parameter)
+    uint32 count = 3;
+
+    // Size of bloom filter in bits (m parameter)
+    uint32 size_bits = 4;
+}
+
+// Request for producer set information.
+// Peers use this to request either the full set or a delta.
+message ProducerSetRequest {
+    oneof request {
+        // Request full producer set (true = request, false = unused)
+        bool full_set = 1;
+
+        // Send bloom filter digest to receive only missing producers
+        ProducerSetDigest have = 2;
+    }
+}
+
+// Response to a producer set request.
+// Contains either the full set or a delta based on the request.
+message ProducerSetResponse {
+    // Producer announcements (either all or just the delta)
+    repeated ProducerAnnouncement producers = 1;
+
+    // True if this is a complete set, false if it's a delta
+    bool is_full_set = 2;
+
+    // Total number of producers the sender knows (for progress indication)
+    uint32 total_known = 3;
+}

@@ -1,0 +1,113 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/*",
+    "bins/*",
+    "testing/benchmarks",
+    "testing/integration",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DOLI Network <doli@protonmail.com>"]
+license = "MIT"
+repository = "https://github.com/doli-network/doli"
+homepage = "https://www.doli.network"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+crypto = { path = "crates/crypto" }
+vdf = { path = "crates/vdf" }
+doli-core = { path = "crates/core" }
+mempool = { path = "crates/mempool" }
+storage = { path = "crates/storage" }
+network = { path = "crates/network" }
+rpc = { path = "crates/rpc" }
+updater = { path = "crates/updater" }
+
+# Cryptography
+blake3 = "1.5"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "zeroize"] }
+rand = "0.8"
+rand_core = "0.6"
+zeroize = { version = "1.7", features = ["derive"] }
+subtle = "2.5"  # Constant-time operations
+sha2 = "0.10"   # For compatibility and cross-verification
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+prost = "0.13"
+prost-types = "0.13"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Networking
+libp2p = { version = "0.53", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "request-response", "tokio", "macros", "relay", "dcutr", "autonat"] }
+futures = "0.3"
+
+# HTTP server (for RPC)
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Async utilities
+async-trait = "0.1"
+
+# Storage
+rocksdb = "0.22"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Big integers (for VDF)
+# Using rug (GMP bindings) for ~10x faster BigInt operations vs pure Rust num-bigint
+# Required for VDF to complete in ~55 seconds (vs 7+ minutes with num-bigint)
+rug = { version = "1.28", features = ["integer", "serde"] }
+num-traits = "0.2"
+num-integer = "0.1"
+# Keep num-bigint for compatibility/non-performance-critical uses
+num-bigint = { version = "0.4", features = ["serde"] }
+
+# Time
+chrono = "0.4"
+
+# Hex encoding
+hex = "0.4"
+
+# Configuration
+toml = "0.8"
+dirs = "5.0"
+
+# Testing
+proptest = "1.4"
+tempfile = "3.10"
+
+# Bit manipulation
+bitvec = "1.0"
+
+# Metrics
+prometheus = "0.13"
+lazy_static = "1.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 1

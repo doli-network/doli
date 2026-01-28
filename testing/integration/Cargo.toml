@@ -1,0 +1,35 @@
+[package]
+name = "integration-tests"
+description = "Integration tests for DOLI blockchain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crypto = { workspace = true }
+doli-core = { workspace = true }
+storage = { workspace = true }
+vdf = { workspace = true }
+
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util", "macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "epoch_rewards"
+path = "epoch_rewards.rs"
+
+[[test]]
+name = "staggered_validator_rewards"
+path = "staggered_validator_rewards.rs"
+
+[[test]]
+name = "two_producer_pop"
+path = "two_producer_pop.rs"
+
+[[test]]
+name = "bond_stacking"
+path = "bond_stacking.rs"
