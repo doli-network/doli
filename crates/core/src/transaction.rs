@@ -414,16 +414,16 @@ impl EpochRewardData {
     }
 }
 
-// ==================== Proof of Presence ====================
+// ==================== Proof of Time ====================
 //
-// In Proof of Presence, there are NO multi-signature attestations.
+// In Proof of Time, there are NO multi-signature attestations.
 // Each block has exactly one producer who receives 100% of the block reward.
 //
-// Presence is proven by producing blocks when selected:
-// - One producer per slot (1 second)
-// - Selection based on presence_score (higher = selected more often)
+// Time is proven by producing blocks with valid VDF when selected:
+// - One producer per slot (10 seconds)
+// - Selection based on bond count (deterministic round-robin)
+// - VDF provides anti-grinding protection (~7s computation)
 // - Producer receives full block reward via coinbase transaction
-// - Missing assigned slots decreases presence_score
 //
 // This eliminates:
 // - Attestation structs and signatures

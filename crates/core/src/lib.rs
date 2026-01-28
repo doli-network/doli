@@ -9,25 +9,25 @@
 //! ## Overview
 //!
 //! DOLI uses a UTXO (Unspent Transaction Output) model similar to Bitcoin,
-//! combined with Proof of Presence (PoP) consensus.
+//! combined with Proof of Time (PoT) consensus using VDF.
 //!
-//! ## Proof of Presence
+//! ## Proof of Time
 //!
 //! Unlike other consensus mechanisms:
 //! - **Proof of Work**: Parallelizable computation (more hardware = more blocks)
 //! - **Proof of Stake**: Capital-based selection (more stake = higher chance)
-//! - **Proof of Presence**: Active participation (produce blocks = earn rewards)
+//! - **Proof of Time**: VDF-based sequential computation (time is the scarce resource)
 //!
 //! Key properties:
-//! - One producer per slot (1 second)
-//! - Selection based on presence_score (higher = selected more often)
+//! - One producer per slot (10 seconds)
+//! - Selection based on bond count (deterministic round-robin)
+//! - VDF provides anti-grinding protection (~7s computation)
 //! - 100% of block reward goes to the producer
-//! - Missing assigned slots decreases your score
 //!
 //! ## Modules
 //!
 //! - [`block`] - Block and header structures
-//! - [`consensus`] - Proof of Presence parameters and rules
+//! - [`consensus`] - Proof of Time parameters and rules
 //! - [`transaction`] - Transaction types including transfers and producer registration
 //! - [`types`] - Core numeric types (Amount, Slot, Epoch, Era)
 //! - [`validation`] - Block and transaction validation rules
@@ -38,9 +38,9 @@
 //!
 //! | Unit  | Duration    | Description                              |
 //! |-------|-------------|------------------------------------------|
-//! | Slot  | 1 second    | Single block production opportunity      |
-//! | Epoch | 1 hour      | 3,600 slots, producer set is stable      |
-//! | Era   | ~4 years    | 126,144,000 blocks, emission halving     |
+//! | Slot  | 10 seconds  | Single block production opportunity      |
+//! | Epoch | 1 hour      | 360 slots, producer set is stable        |
+//! | Era   | ~4 years    | 12,614,400 blocks, emission halving      |
 //!
 //! ## Transaction Types
 //!
@@ -164,7 +164,7 @@ pub use consensus::{
     SIGNATURE_WINDOW_MS,
     // Reward epoch constants
     SLOTS_PER_REWARD_EPOCH,
-    // Proof of Presence parameters
+    // Proof of Time parameters
     SLOT_DURATION,
     TERTIARY_WINDOW_MS,
     TERTIARY_WINDOW_SECS,
@@ -195,7 +195,7 @@ pub use validation::{
     validate_transaction_with_utxos, UtxoInfo, UtxoProvider, ValidationContext, ValidationError,
 };
 
-// TPoP (Temporal Proof of Presence) exports
+// TPoP (Temporal Proof of Presence) exports - telemetry module, not consensus
 pub use tpop::{
     calculate_heartbeat_score,
     // Functions
