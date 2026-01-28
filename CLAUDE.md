@@ -3,7 +3,9 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 
-### Prerequisites: Enter Nix Environment
+### Prerequisites: 
+1. Check @specs/SPECS.md and @docs/DOCS.md for instructions on how to build and test the project.
+2. Enter Nix Environment
 
 **All commands must be run inside the Nix environment.** This ensures all dependencies and tools are available.
 
