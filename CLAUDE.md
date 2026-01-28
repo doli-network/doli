@@ -113,8 +113,8 @@ bins/node (doli-node)          bins/cli (doli-cli)
 ### Key Crate Responsibilities
 
 - **`crypto`**: BLAKE3 hashing, Ed25519 signatures, key derivation. Foundation layer with no internal dependencies.
-- **`vdf`**: Hash-chain VDF with dynamic calibration (~10M iterations for ~700ms). Uses `rug` (GMP bindings) for performance.
-- **`core`**: Types, validation rules, consensus parameters. The `tpop/` module handles Temporal Proof of Presence (producer scheduling, heartbeat VDF, calibration).
+- **`vdf`**: Hash-chain VDF with dynamic calibration (~10M iterations for ~7s). Uses `rug` (GMP bindings) for performance.
+- **`core`**: Types, validation rules, consensus parameters. The `tpop/` module provides telemetry (heartbeat tracking, presence metrics) - not used in consensus selection.
 - **`storage`**: RocksDB-backed persistence for blocks, UTXO set, chain state, producer registry.
 - **`network`**: libp2p-based P2P layer with gossipsub, Kademlia DHT, header/body sync, equivocation detection.
 - **`mempool`**: Transaction pool with fee policies.

@@ -8,7 +8,7 @@ Master index for all DOLI protocol specifications.
 
 | File | Description |
 |------|-------------|
-| [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with TPoP consensus |
+| [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with Proof of Time (PoT) consensus |
 | [PROTOCOL.md](./PROTOCOL.md) | Wire protocol and message format specifications |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System architecture and component design |
 | [SECURITY_MODEL.md](./SECURITY_MODEL.md) | Security model, threat analysis, and cryptographic guarantees |

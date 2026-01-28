@@ -192,15 +192,17 @@ An epoch is 360 slots (1 hour). At epoch boundaries, the active producer set upd
 
 ### 4.3. Dynamic Calibration
 
-To maintain consistent timing (~700ms) regardless of hardware, iterations adjust dynamically:
+To maintain consistent timing (~7 seconds) regardless of hardware, iterations adjust dynamically:
 
 ```
-TARGET_TIME    = 700ms
+TARGET_TIME    = 7000ms
 TOLERANCE      = 10%
 MAX_ADJUSTMENT = 20% per cycle
 ```
 
 If measured VDF time deviates more than 10%, iterations adjust by up to 20% per cycle. This allows heterogeneous hardware to participate while maintaining consistent block times.
+
+With 10-second slots, the VDF takes ~7 seconds, leaving ~3 seconds for block construction and propagation.
 
 Every consensus system enforces a scarce resource. In DOLI, this resource is sequential time—analogous to energy in Proof of Work or capital in Proof of Stake. Nodes that cannot reliably supply sequential time and availability cannot earn rewards, just as offline miners or inactive validators cannot in existing systems.
 

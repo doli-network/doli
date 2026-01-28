@@ -792,9 +792,9 @@ cargo test -p integration partition_heal -- --nocapture
 
 **Tests Passed**: 15 emission-related tests
 
-**Emission Schedule Verified** (Proof of Presence with 1-second slots):
+**Emission Schedule Verified** (Proof of Time with 10-second slots):
 
-*Note: PoP uses 1-second slots (60× more blocks than original 60-second design), so per-block reward is 1/60th but era emission is identical.*
+*Note: PoT uses 10-second slots with VDF anti-grinding (~7s computation). Era emission totals remain consistent with design parameters.*
 
 | Era | Per-Block Reward | Blocks/Era | Era Emission | Cumulative |
 |-----|------------------|------------|--------------|------------|
@@ -960,8 +960,7 @@ cargo bench sig_verification
 *TPS Calculation* (Era 0):
 - Block size: 1,000,000 bytes (1 MB)
 - Avg TX size: ~250 bytes
-- Original design (60s slots): 1MB / 250 / 60s = **66 TPS** ✓
-- PoP design (1s slots): 1MB / 250 / 1s = **4,000 TPS** theoretical max
+- PoT design (10s slots): 1MB / 250 / 10s = **400 TPS** theoretical max
 
 *TX Validation Rate*:
 - 213 core tests in 0.06 seconds = ~3,550 tests/sec
@@ -1099,13 +1098,12 @@ Window tests: 8 passed
 Total: 65 tests passed
 
 Key Constants Verified:
-- MAX_DRIFT = 5 seconds (1-second slot appropriate)
+- MAX_DRIFT = 5 seconds (appropriate for 10-second slots)
 - MAX_FUTURE_SLOTS = 2 (blocks ≤2 slots in future)
 - MAX_PAST_SLOTS = 1920 (blocks ≤32 minutes old)
-- NETWORK_MARGIN_MS = 200 (buffer for presence collection)
+- NETWORK_MARGIN_MS = 200 (buffer for block propagation)
 
-Note: Original 120s clock drift was for 60s slots.
-With 1-second PoP slots, tighter tolerances (5s) are used.
+Note: With 10-second PoT slots and ~7s VDF, tight clock tolerances (5s) ensure orderly block production.
 ```
 
 **Exit Criteria**: All boundary conditions handled correctly ✅
