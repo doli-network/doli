@@ -15,7 +15,11 @@ use tracing::{debug, error, info, warn};
 use crypto::hash::{hash as crypto_hash, hash_concat};
 use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::block::BlockBuilder;
-use doli_core::consensus::{self, ConsensusParams, RewardMode, UNBONDING_PERIOD};
+use doli_core::consensus::{
+    self, construct_vdf_input, select_producer_for_slot, ConsensusParams, RewardMode,
+    UNBONDING_PERIOD,
+};
+use doli_core::types::UNITS_PER_COIN;
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
@@ -1427,7 +1431,7 @@ impl Node {
                                 warn!(
                                     "SLASHED: Producer {} burned {} DOLI (100% bond) for equivocation at height {}",
                                     crypto_hash(slash_data.producer_pubkey.as_bytes()),
-                                    burned_amount / 1_000_000_000, // Convert to DOLI
+                                    burned_amount / UNITS_PER_COIN, // Convert to DOLI
                                     height
                                 );
                             }
@@ -2059,7 +2063,7 @@ impl Node {
             // not "Proof of Delay" via long VDF.
             //
             // Algorithm: slot % total_bonds -> deterministic ticket assignment
-            let eligible = deterministic_producer_selection(current_slot, &active_with_weights);
+            let eligible = select_producer_for_slot(current_slot, &active_with_weights);
             (eligible, None)
         };
 
@@ -2132,7 +2136,13 @@ impl Node {
         // The VDF serves as anti-grinding protection, not timing enforcement
         // For devnet, VDF is disabled to enable rapid development
         let (vdf_output, vdf_proof) = if self.config.network.vdf_enabled() {
-            let vdf_input = prev_hash;
+            // Construct VDF input from block context: prev_hash || tx_root || slot || producer_key
+            let vdf_input = construct_vdf_input(
+                &prev_hash,
+                &header.merkle_root,
+                header.slot,
+                &header.producer,
+            );
 
             // Get calibrated iterations
             let iterations = self.vdf_calibrator.read().await.iterations();
@@ -2387,76 +2397,3 @@ impl Node {
 }
 
 // =============================================================================
-// EPOCH LOOKAHEAD: DETERMINISTIC PRODUCER SELECTION
-// =============================================================================
-
-/// Deterministic round-robin producer selection (anti-grinding).
-///
-/// This is the core of DOLI's anti-grinding design:
-/// - Selection based ONLY on slot number and bond distribution
-/// - NO dependency on prev_hash = NO grinding possible
-/// - Leaders are effectively determined at epoch start (when bonds are known)
-///
-/// Algorithm:
-/// 1. Sort producers by pubkey (deterministic order)
-/// 2. Calculate total_tickets = sum of all bond weights
-/// 3. ticket_index = slot % total_tickets
-/// 4. Walk through producers, accumulating tickets until we find the owner
-///
-/// Example: [Alice(1), Bob(5), Carol(4)] with total=10
-/// - slot 0: ticket 0 → Alice
-/// - slot 1-5: tickets 1-5 → Bob
-/// - slot 6-9: tickets 6-9 → Carol
-/// - slot 10: wraps to ticket 0 → Alice again
-///
-/// Returns the top 3 eligible producers (primary, secondary, tertiary fallback).
-fn deterministic_producer_selection(
-    slot: u32,
-    producers_with_weights: &[(PublicKey, u64)],
-) -> Vec<PublicKey> {
-    if producers_with_weights.is_empty() {
-        return Vec::new();
-    }
-
-    // Sort by pubkey for deterministic ordering (all nodes compute same order)
-    let mut sorted: Vec<_> = producers_with_weights.to_vec();
-    sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-
-    // Calculate total tickets (sum of weights, minimum 1 per producer)
-    let total_tickets: u64 = sorted.iter().map(|(_, weight)| (*weight).max(1)).sum();
-
-    if total_tickets == 0 {
-        return Vec::new();
-    }
-
-    // Select up to 3 producers for fallback (primary, secondary, tertiary)
-    let mut result = Vec::with_capacity(3);
-    let mut offset = 0u64;
-
-    for i in 0..3 {
-        let ticket_index = ((slot as u64) + offset) % total_tickets;
-
-        // Walk through producers, accumulating tickets until we find the owner
-        let mut cumulative: u64 = 0;
-        for (pubkey, weight) in &sorted {
-            cumulative += (*weight).max(1);
-            if ticket_index < cumulative {
-                // Don't add duplicates
-                if !result.contains(pubkey) {
-                    result.push(pubkey.clone());
-                }
-                break;
-            }
-        }
-
-        // Offset for next fallback producer
-        // Use prime offsets to avoid patterns and ensure different producers
-        offset += match i {
-            0 => total_tickets / 3 + 1, // ~33% offset for secondary
-            1 => total_tickets / 2 + 1, // ~50% offset for tertiary
-            _ => 1,
-        };
-    }
-
-    result
-}
