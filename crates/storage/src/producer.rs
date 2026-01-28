@@ -3,34 +3,24 @@
 //! Tracks the state of block producers including their bond status,
 //! registration height, exit/cooldown state, and seniority-based weight.
 //!
-//! ## Anti-Sybil: Weight by Seniority (Continuous Formula)
+//! ## Anti-Sybil: Weight by Seniority (Discrete Steps)
 //!
-//! A producer's power increases continuously with their time active in the network.
-//! This prevents whale attacks where an attacker could instantly acquire
-//! significant influence by registering many nodes.
+//! A producer's power increases in discrete yearly steps based on their
+//! time active in the network. This prevents whale attacks where an
+//! attacker could instantly acquire significant influence.
 //!
-//! Weight formula (continuous, not stepped):
-//! ```text
-//! w = 1 + sqrt(months_active / 12)
-//! ```
+//! Weight by years active:
+//! - 0-1 years: weight 1
+//! - 1-2 years: weight 2
+//! - 2-3 years: weight 3
+//! - 3+ years: weight 4 (cap)
 //!
-//! Example weights:
-//! - 0 months: weight 1.0
-//! - 3 months: weight 1.5
-//! - 12 months: weight 2.0
-//! - 24 months: weight 2.4
-//! - 36 months: weight 2.7
-//! - 48 months: weight 3.0
-//! - 108 months (9 years): weight 4.0 (cap)
-//!
-//! Advantages over stepped weights:
-//! - No sudden jumps that can be gamed by timing
-//! - Smooth progression rewards continuous participation
-//! - Maximum weight (4) requires ~9 years of commitment
+//! This uses SLOTS_PER_YEAR (3,153,600 slots at 10s per slot) for
+//! time calculation.
 //!
 //! Weight affects:
 //! - Reward distribution (proportional to weight)
-//! - Veto power (33% of total weight, not count)
+//! - Veto power (40% of total weight, not count)
 //! - Producer selection probability (proportional to weight)
 
 use std::collections::HashMap;
@@ -45,11 +35,14 @@ use crate::StorageError;
 
 // ==================== Seniority Weight System ====================
 
-/// Blocks per month (~262,800 at 6 blocks/minute = 10s slots)
-pub const BLOCKS_PER_MONTH: u64 = 262_800;
+/// Slots per year (from consensus parameters: 3,153,600 at 10s slots)
+pub const SLOTS_PER_YEAR: u64 = 3_153_600;
 
-/// Blocks per year (~3,153,600 at 6 blocks/minute = 10s slots)
-pub const BLOCKS_PER_YEAR: u64 = 3_153_600;
+/// Blocks per month - legacy alias
+pub const BLOCKS_PER_MONTH: u64 = SLOTS_PER_YEAR / 12;
+
+/// Blocks per year - legacy alias
+pub const BLOCKS_PER_YEAR: u64 = SLOTS_PER_YEAR;
 
 /// Maximum weight a producer can achieve
 pub const MAX_WEIGHT: u64 = 4;
@@ -74,90 +67,79 @@ pub const VETO_THRESHOLD_PERCENT: u64 = 40;
 /// 10 DOLI = 1_000_000_000 units (same as registration fee)
 pub const VETO_BOND_AMOUNT: u64 = 1_000_000_000;
 
-/// Calculate producer weight based on seniority (continuous formula)
+/// Calculate producer weight based on seniority (discrete yearly steps)
 ///
-/// Uses a continuous sqrt-based formula instead of discrete yearly steps:
-/// ```text
-/// w = 1 + sqrt(months_active / 12)
-/// ```
-///
-/// This prevents gaming by timing registrations around year boundaries.
+/// Weight is determined by years active:
+/// - 0-1 years: weight 1
+/// - 1-2 years: weight 2
+/// - 2-3 years: weight 3
+/// - 3+ years: weight 4 (cap)
 ///
 /// # Arguments
-/// - `registered_at`: Block height when the producer registered
-/// - `current_height`: Current block height
+/// - `registered_at`: Block/slot height when the producer registered
+/// - `current_height`: Current block/slot height
 ///
 /// # Returns
-/// The producer's weight (1-4), calculated continuously
-///
-/// # Example weights by time:
-/// - 0 months: 1.0
-/// - 3 months: ~1.5
-/// - 12 months: 2.0
-/// - 24 months: ~2.4
-/// - 36 months: ~2.7
-/// - 48 months: 3.0
-/// - 108 months (9 years): 4.0 (cap)
+/// The producer's weight (1-4)
 ///
 /// # Example
 /// ```rust
-/// use storage::producer::{producer_weight, BLOCKS_PER_YEAR, BLOCKS_PER_MONTH};
+/// use storage::producer::{producer_weight, SLOTS_PER_YEAR};
 ///
 /// // New producer has weight 1
 /// assert_eq!(producer_weight(1000, 1000), 1);
 ///
-/// // After 1 year, weight is 2 (1 + sqrt(12/12) = 1 + 1 = 2)
-/// assert_eq!(producer_weight(0, BLOCKS_PER_YEAR), 2);
+/// // After 1 year, weight is 2
+/// assert_eq!(producer_weight(0, SLOTS_PER_YEAR), 2);
 ///
-/// // After 4 years (48 months), weight is 3 (1 + sqrt(48/12) = 1 + 2 = 3)
-/// assert_eq!(producer_weight(0, 4 * BLOCKS_PER_YEAR), 3);
+/// // After 2 years, weight is 3
+/// assert_eq!(producer_weight(0, 2 * SLOTS_PER_YEAR), 3);
+///
+/// // After 3+ years, weight is 4 (cap)
+/// assert_eq!(producer_weight(0, 3 * SLOTS_PER_YEAR), 4);
 /// ```
 pub fn producer_weight(registered_at: u64, current_height: u64) -> u64 {
-    let blocks_active = current_height.saturating_sub(registered_at);
-    let months_active = blocks_active / BLOCKS_PER_MONTH;
+    let slots_active = current_height.saturating_sub(registered_at);
+    let years_active = slots_active / SLOTS_PER_YEAR;
 
-    // w = 1 + sqrt(months / 12), capped at MAX_WEIGHT
-    let sqrt_years = (months_active as f64 / 12.0).sqrt();
-    let weight = 1.0 + sqrt_years;
-
-    // Clamp to [MIN_WEIGHT, MAX_WEIGHT]
-    (weight.min(MAX_WEIGHT as f64) as u64).max(MIN_WEIGHT)
+    // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
+    match years_active {
+        0 => 1,
+        1 => 2,
+        2 => 3,
+        _ => 4, // 3+ years
+    }
 }
 
 /// Calculate producer weight with decimal precision (for proportional calculations)
 ///
-/// Same as `producer_weight` but returns f64 for more precise reward distribution.
+/// Same as `producer_weight` but returns f64 for API compatibility.
+/// Uses discrete yearly steps.
 pub fn producer_weight_precise(registered_at: u64, current_height: u64) -> f64 {
-    let blocks_active = current_height.saturating_sub(registered_at);
-    let months_active = blocks_active as f64 / BLOCKS_PER_MONTH as f64;
-
-    // w = 1 + sqrt(months / 12), capped at MAX_WEIGHT
-    let sqrt_years = (months_active / 12.0).sqrt();
-    let weight = 1.0 + sqrt_years;
-
-    weight.min(MAX_WEIGHT as f64).max(MIN_WEIGHT as f64)
+    producer_weight(registered_at, current_height) as f64
 }
 
 // ==================== Network-Aware Weight Functions ====================
 
 /// Calculate producer weight for a specific network
 ///
-/// Uses network-specific blocks_per_month for time acceleration on devnet/testnet.
+/// Uses network-specific blocks_per_year for time acceleration on devnet/testnet.
 pub fn producer_weight_for_network(
     registered_at: u64,
     current_height: u64,
     network: Network,
 ) -> u64 {
     let blocks_active = current_height.saturating_sub(registered_at);
-    let blocks_per_month = network.blocks_per_month();
-    let months_active = blocks_active / blocks_per_month;
+    let blocks_per_year = network.blocks_per_year();
+    let years_active = blocks_active / blocks_per_year;
 
-    // w = 1 + sqrt(months / 12), capped at MAX_WEIGHT
-    let sqrt_years = (months_active as f64 / 12.0).sqrt();
-    let weight = 1.0 + sqrt_years;
-
-    // Clamp to [MIN_WEIGHT, MAX_WEIGHT]
-    (weight.min(MAX_WEIGHT as f64) as u64).max(MIN_WEIGHT)
+    // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
+    match years_active {
+        0 => 1,
+        1 => 2,
+        2 => 3,
+        _ => 4,
+    }
 }
 
 /// Calculate producer weight with decimal precision for a specific network
@@ -166,15 +148,7 @@ pub fn producer_weight_precise_for_network(
     current_height: u64,
     network: Network,
 ) -> f64 {
-    let blocks_active = current_height.saturating_sub(registered_at);
-    let blocks_per_month = network.blocks_per_month() as f64;
-    let months_active = blocks_active as f64 / blocks_per_month;
-
-    // w = 1 + sqrt(months / 12), capped at MAX_WEIGHT
-    let sqrt_years = (months_active / 12.0).sqrt();
-    let weight = 1.0 + sqrt_years;
-
-    weight.min(MAX_WEIGHT as f64).max(MIN_WEIGHT as f64)
+    producer_weight_for_network(registered_at, current_height, network) as f64
 }
 
 /// Calculate total weight of all active producers for a specific network
@@ -258,12 +232,12 @@ pub enum ProducerStatus {
 }
 
 /// Inactivity threshold: ~1 week without producing triggers inactive status
-/// At 1 block/minute: 7 days × 24 hours × 60 minutes = 10,080 blocks
-pub const INACTIVITY_THRESHOLD: u64 = 10_080;
+/// At 10s slots (6 blocks/minute): 7 days × 24 hours × 360 blocks/hour = 60,480 blocks
+pub const INACTIVITY_THRESHOLD: u64 = 60_480;
 
 /// Reactivation threshold: ~1 day of continuous activity to regain Active status
-/// At 1 block/minute: 1 day × 24 hours × 60 minutes = 1,440 blocks
-pub const REACTIVATION_THRESHOLD: u64 = 1_440;
+/// At 10s slots (6 blocks/minute): 1 day × 24 hours × 360 blocks/hour = 8,640 blocks
+pub const REACTIVATION_THRESHOLD: u64 = 8_640;
 
 /// Weight penalty per activity gap (10%)
 pub const GAP_PENALTY_PERCENT: u64 = 10;
@@ -1736,20 +1710,13 @@ mod tests {
 
     #[test]
     fn test_weight_increases_with_age() {
-        // Weight increases continuously with sqrt formula: w = 1 + sqrt(months/12)
-        // Integer truncation occurs, so:
-        // Year 0: 1 + sqrt(0) = 1
-        // Year 1: 1 + sqrt(1) = 2
-        // Year 2: 1 + sqrt(2) ≈ 2.41 → 2
-        // Year 3: 1 + sqrt(3) ≈ 2.73 → 2
-        // Year 4: 1 + sqrt(4) = 3
-        // Year 9: 1 + sqrt(9) = 4 (max)
+        // Weight increases in discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
         assert_eq!(producer_weight(0, 0), 1); // Year 0
+        assert_eq!(producer_weight(0, BLOCKS_PER_YEAR - 1), 1); // Just before year 1
         assert_eq!(producer_weight(0, BLOCKS_PER_YEAR), 2); // Year 1
-        assert_eq!(producer_weight(0, 2 * BLOCKS_PER_YEAR), 2); // Year 2 (truncated)
-        assert_eq!(producer_weight(0, 3 * BLOCKS_PER_YEAR), 2); // Year 3 (truncated)
-        assert_eq!(producer_weight(0, 4 * BLOCKS_PER_YEAR), 3); // Year 4
-        assert_eq!(producer_weight(0, 9 * BLOCKS_PER_YEAR), 4); // Year 9 (max)
+        assert_eq!(producer_weight(0, 2 * BLOCKS_PER_YEAR), 3); // Year 2
+        assert_eq!(producer_weight(0, 3 * BLOCKS_PER_YEAR), 4); // Year 3
+        assert_eq!(producer_weight(0, 4 * BLOCKS_PER_YEAR), 4); // Year 4 (max)
         assert_eq!(producer_weight(0, 10 * BLOCKS_PER_YEAR), 4); // Year 10 (still max)
     }
 
@@ -1765,11 +1732,11 @@ mod tests {
     fn test_producer_weight_over_time() {
         let info = make_producer(0);
 
-        // After exactly 4 years: 1 + sqrt(4) = 3
-        assert_eq!(info.weight(4 * BLOCKS_PER_YEAR), 3);
-
-        // After 9 years: 1 + sqrt(9) = 4 (max)
-        assert_eq!(info.weight(9 * BLOCKS_PER_YEAR), 4);
+        // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
+        assert_eq!(info.weight(1 * BLOCKS_PER_YEAR), 2); // Year 1
+        assert_eq!(info.weight(2 * BLOCKS_PER_YEAR), 3); // Year 2
+        assert_eq!(info.weight(3 * BLOCKS_PER_YEAR), 4); // Year 3
+        assert_eq!(info.weight(4 * BLOCKS_PER_YEAR), 4); // Year 4 (max)
 
         // After 10 years, still weight 4 (max)
         assert_eq!(info.weight(10 * BLOCKS_PER_YEAR), 4);
@@ -2077,8 +2044,8 @@ mod tests {
     fn test_devnet_time_acceleration_weight() {
         let devnet = Network::Devnet;
 
-        // On devnet, 12 blocks = 1 year
-        // Producer registered at block 0
+        // On devnet, blocks_per_year = 12 (accelerated time)
+        // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
         let registered_at = 0;
 
         // After 0 blocks, weight = 1
@@ -2087,11 +2054,14 @@ mod tests {
         // After 12 blocks (1 simulated year), weight = 2
         assert_eq!(producer_weight_for_network(registered_at, 12, devnet), 2);
 
-        // After 48 blocks (4 simulated years), weight = 3
-        assert_eq!(producer_weight_for_network(registered_at, 48, devnet), 3);
+        // After 24 blocks (2 simulated years), weight = 3
+        assert_eq!(producer_weight_for_network(registered_at, 24, devnet), 3);
 
-        // After 108 blocks (9 simulated years), weight = 4 (max)
-        assert_eq!(producer_weight_for_network(registered_at, 108, devnet), 4);
+        // After 36 blocks (3 simulated years), weight = 4 (max)
+        assert_eq!(producer_weight_for_network(registered_at, 36, devnet), 4);
+
+        // After 48 blocks (4 simulated years), still weight = 4
+        assert_eq!(producer_weight_for_network(registered_at, 48, devnet), 4);
     }
 
     #[test]
@@ -2100,6 +2070,8 @@ mod tests {
         let mainnet = Network::Mainnet;
 
         let registered_at = 0;
+
+        // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
 
         // Devnet: 12 blocks = 1 year (devnet.blocks_per_year() = 12)
         assert_eq!(producer_weight_for_network(registered_at, 12, devnet), 2);
@@ -2110,13 +2082,13 @@ mod tests {
             2
         );
 
-        // Devnet: 48 blocks = 4 years
-        assert_eq!(producer_weight_for_network(registered_at, 48, devnet), 3);
+        // Devnet: 36 blocks = 3 years (max weight)
+        assert_eq!(producer_weight_for_network(registered_at, 36, devnet), 4);
 
-        // Mainnet: 4 * blocks_per_year() blocks = 4 years
+        // Mainnet: 3 * blocks_per_year() blocks = 3 years (max weight)
         assert_eq!(
-            producer_weight_for_network(registered_at, 4 * mainnet.blocks_per_year(), mainnet),
-            3
+            producer_weight_for_network(registered_at, 3 * mainnet.blocks_per_year(), mainnet),
+            4
         );
     }
 
@@ -2133,11 +2105,13 @@ mod tests {
 
         let devnet = Network::Devnet;
 
+        // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
+
         // After 12 blocks on devnet (1 simulated year)
         assert_eq!(info.weight_for_network(12, devnet), 2);
 
-        // After 48 blocks on devnet (4 simulated years)
-        assert_eq!(info.weight_for_network(48, devnet), 3);
+        // After 36 blocks on devnet (3 simulated years)
+        assert_eq!(info.weight_for_network(36, devnet), 4);
     }
 
     #[test]
@@ -2346,15 +2320,17 @@ mod tests {
         // Simulate activity patterns:
         // - keypair_active: produced block recently (within 1 week)
         // - keypair_dormant: no activity since genesis (Dormant)
-        // - keypair_recent: inactive 10 days ago (RecentlyInactive)
+        // - keypair_recent: inactive ~10 days ago (RecentlyInactive)
         if let Some(p) = set.get_by_pubkey_mut(keypair_active.public_key()) {
-            p.last_activity = current_height - 1000; // ~16 hours ago, still Active
+            // ~2 hours ago at 10s slots, still Active (within 1 week threshold)
+            p.last_activity = current_height - 720;
         }
         if let Some(p) = set.get_by_pubkey_mut(keypair_dormant.public_key()) {
             p.last_activity = 0; // Genesis, way past threshold
         }
         if let Some(p) = set.get_by_pubkey_mut(keypair_recent.public_key()) {
-            p.last_activity = current_height - (INACTIVITY_THRESHOLD + 1000); // ~8 days ago
+            // ~10 days ago: INACTIVITY_THRESHOLD + ~3 days = between 1-2 weeks
+            p.last_activity = current_height - (INACTIVITY_THRESHOLD + 25_000);
         }
 
         // Verify activity statuses
@@ -2386,16 +2362,16 @@ mod tests {
         assert!(!recent_info.counts_for_quorum(current_height));
 
         // All 3 have weight (for reward distribution - not governance)
-        // All registered at genesis, so after 4 years they all have weight 3
-        assert_eq!(set.total_weight(current_height), 9); // 3 * 3 = 9
+        // All registered at genesis, so after 4 years they all have weight 4 (max)
+        assert_eq!(set.total_weight(current_height), 12); // 3 * 4 = 12
 
         // But for governance (effective weight), only 1 Active producer counts
         assert_eq!(set.governance_participant_count(current_height), 1);
-        assert_eq!(set.total_effective_weight(current_height), 3); // Only active producer's weight
+        assert_eq!(set.total_effective_weight(current_height), 4); // Only active producer's weight (max)
 
         // Veto test: The active producer alone has 100% of governance weight
-        // 40% of 3 = 1.2, rounded up = 2
-        // Active producer has weight 3, so they CAN veto alone (3 >= 2)
+        // 40% of 4 = 1.6, rounded up = 2
+        // Active producer has weight 4, so they CAN veto alone (4 >= 2)
         assert!(set.has_weighted_veto(&[*keypair_active.public_key()], current_height));
 
         // Dormant producer has no governance power, cannot veto even with high seniority
@@ -2488,10 +2464,10 @@ mod tests {
         );
         set.register(info, 0).unwrap();
 
-        // After 4 years, check weight
+        // After 4 years, check weight (discrete steps: 3+ years = weight 4)
         let height_4_years = 4 * BLOCKS_PER_YEAR;
         let weight_before = set.get_by_pubkey(&pubkey).unwrap().weight(height_4_years);
-        assert_eq!(weight_before, 3); // sqrt(4) + 1 = 3
+        assert_eq!(weight_before, 4); // 4 years = max weight
 
         // Request exit
         set.request_exit(&pubkey, height_4_years).unwrap();
