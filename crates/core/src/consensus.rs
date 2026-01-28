@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// Genesis timestamp: 2026-02-01T00:00:00Z
 pub const GENESIS_TIME: u64 = 1769904000;
 
-// ==================== Proof of Presence Parameters ====================
+// ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.
 ///
@@ -83,9 +83,9 @@ pub const MIN_PRESENCE_RATE: u32 = 50;
 pub const MIN_ATTESTATION_RATE: u32 = MIN_PRESENCE_RATE;
 
 /// Attestation interval - kept for backward compatibility.
-/// In Proof of Presence, there are no attestations; each block
-/// production IS the presence proof.
-#[deprecated(note = "Attestations not used in Proof of Presence")]
+/// In Proof of Time, there are no attestations; each block
+/// production with valid VDF IS the proof of time spent.
+#[deprecated(note = "Attestations not used in Proof of Time")]
 pub const ATTESTATION_INTERVAL: u32 = 1;
 
 /// Slots per era (~4 years at 10-second slots)
@@ -359,7 +359,7 @@ pub fn calculate_slash(bond_amount: Amount) -> SlashResult {
     }
 }
 
-// ==================== Proof of Presence Types ====================
+// ==================== Proof of Time Types ====================
 
 /// Presence score for a producer.
 ///
@@ -385,16 +385,16 @@ pub const SCORE_MISS_PENALTY: PresenceScore = 2;
 
 /// Producer state tracked on-chain.
 ///
-/// # Proof of Presence
+/// # Proof of Time
 ///
-/// In PoP, presence is proven by producing blocks when selected:
-/// - One producer per slot (1 second)
+/// In PoT, time is proven by producing blocks with valid VDF when selected:
+/// - One producer per slot (10 seconds)
 /// - Producer receives 100% of block reward
-/// - Score determines selection priority
-/// - Missing assigned slots decreases score
+/// - Bond count determines selection (round-robin)
+/// - VDF provides anti-grinding protection
 ///
 /// There are no multi-signature attestations. The act of producing
-/// a valid block IS the presence proof.
+/// a valid block with VDF IS the proof of time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProducerState {
     /// Producer's public key hash
@@ -1215,7 +1215,7 @@ pub const SECONDARY_WINDOW_SECS: u64 = 6;
 /// Tertiary producer window in seconds (0-10s = full slot).
 pub const TERTIARY_WINDOW_SECS: u64 = 10;
 
-/// Fast block threshold - not used in PoP (no VDF timing)
+/// Fast block threshold - reserved for future VDF timing optimizations
 pub const FAST_THRESHOLD_MS: u64 = 0;
 pub const FAST_THRESHOLD: u64 = 0;
 
@@ -1278,15 +1278,15 @@ impl ConsensusParams {
 
     /// Create testnet parameters (same slot duration, faster eras for testing)
     ///
-    /// # Proof of Presence on Testnet
+    /// # Proof of Time on Testnet
     ///
-    /// Testnet uses the same 1-second slots as mainnet to ensure realistic
-    /// testing of the Proof of Presence consensus. However, eras and
+    /// Testnet uses the same 10-second slots as mainnet to ensure realistic
+    /// testing of the Proof of Time consensus with VDF. However, eras and
     /// other economic parameters are accelerated.
     pub fn testnet() -> Self {
         Self {
             genesis_time: 0,              // Will be set at testnet launch
-            slot_duration: SLOT_DURATION, // Same as mainnet for PoP testing
+            slot_duration: SLOT_DURATION, // Same as mainnet for PoT testing
             slots_per_epoch: 360,         // 6 minutes per epoch
             slots_per_reward_epoch: 360,  // 6 minutes per reward epoch (faster testing)
             attestation_interval: 1,      // Every block (presence signatures)
@@ -1464,16 +1464,16 @@ impl ConsensusParams {
         (reward_epoch + 1) * self.slots_per_reward_epoch
     }
 
-    // Legacy attestation methods - kept for API compatibility but unused in PoP
+    // Legacy attestation methods - kept for API compatibility but unused in PoT
 
     #[doc(hidden)]
-    #[deprecated(note = "Attestations not used in Proof of Presence")]
+    #[deprecated(note = "Attestations not used in Proof of Time")]
     pub fn attestations_per_reward_epoch(&self) -> u32 {
         self.slots_per_reward_epoch / self.attestation_interval
     }
 
     #[doc(hidden)]
-    #[deprecated(note = "Attestations not used in Proof of Presence")]
+    #[deprecated(note = "Attestations not used in Proof of Time")]
     pub fn min_attestations_required(&self) -> u32 {
         #[allow(deprecated)]
         let total = self.attestations_per_reward_epoch();
@@ -1481,13 +1481,13 @@ impl ConsensusParams {
     }
 
     #[doc(hidden)]
-    #[deprecated(note = "Attestations not used in Proof of Presence")]
+    #[deprecated(note = "Attestations not used in Proof of Time")]
     pub fn is_attestation_required(&self, _height: BlockHeight) -> bool {
-        false // No attestations in PoP
+        false // No attestations in PoT - VDF is used instead
     }
 
     #[doc(hidden)]
-    #[deprecated(note = "Rewards go directly to producer in PoP")]
+    #[deprecated(note = "Rewards go directly to producer in PoT")]
     pub fn calculate_epoch_reward_share(&self, total_reward: Amount, active_count: u32) -> Amount {
         if active_count == 0 {
             return 0;
@@ -1497,7 +1497,7 @@ impl ConsensusParams {
 
     /// Calculate total rewards produced in an epoch (for statistics).
     ///
-    /// In Proof of Presence, each block's reward goes to its producer.
+    /// In Proof of Time, each block's reward goes to its producer.
     /// This calculates the total rewards for all blocks in an epoch.
     pub fn total_epoch_reward(&self, height: BlockHeight) -> Amount {
         let block_reward = self.block_reward(height);
@@ -2092,8 +2092,8 @@ mod tests {
         );
     }
 
-    // Note: test_t_block_by_era, test_t_block_cap, test_t_block_monotonic removed.
-    // Block VDF is not used in Proof of Presence - VDF only used for registration (anti-Sybil).
+    // Note: Block VDF (T_BLOCK = 10M iterations) provides anti-grinding protection.
+    // VDF is mandatory for mainnet blocks; registration VDF is separate (anti-Sybil).
 
     #[test]
     fn test_select_producers_for_slot() {

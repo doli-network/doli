@@ -1,15 +1,14 @@
-//! # Presence Heartbeat - Micro-VDF Implementation
+//! # Presence Heartbeat - Micro-VDF Implementation (Telemetry)
 //!
-//! This module implements the simplified TPoP using micro-VDFs (~1 second)
-//! instead of the original 55-second VDFs.
+//! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
+//!
+//! Block VDF (T_BLOCK = 10M iterations, ~7s) provides anti-grinding for blocks.
+//! This module provides heartbeat proofs (~1s micro-VDF) for network health monitoring.
 //!
 //! ## Design Philosophy
 //!
-//! The long VDF was designed for anti-grinding in lottery-based selection.
-//! In TPoP with presence_score, there's no lottery to grind. The bond is
-//! the anti-Sybil mechanism, not the VDF.
-//!
-//! The micro-VDF serves only to prove:
+//! Block VDF provides anti-grinding for block production (Proof of Time).
+//! Heartbeat micro-VDF serves for network monitoring to prove:
 //! 1. You couldn't generate heartbeats instantaneously (need ~1s each)
 //! 2. You couldn't pre-compute (input depends on prev_block_hash)
 //! 3. You were active during the slot (must arrive on time)
