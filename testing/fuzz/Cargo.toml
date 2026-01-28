@@ -1,0 +1,64 @@
+[package]
+name = "doli-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+doli-core = { path = "../../crates/core" }
+crypto = { path = "../../crates/crypto" }
+vdf = { path = "../../crates/vdf" }
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.3", features = ["derive"] }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_block_deserialize"
+path = "targets/block_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tx_deserialize"
+path = "targets/tx_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vdf_verify"
+path = "targets/vdf_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_merkle"
+path = "targets/merkle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_signature"
+path = "targets/signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hash"
+path = "targets/hash.rs"
+test = false
+doc = false
+bench = false

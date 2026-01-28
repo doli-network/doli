@@ -1,0 +1,28 @@
+[package]
+name = "doli-core"
+description = "Core types, validation, and consensus rules for DOLI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crypto = { workspace = true }
+vdf = { workspace = true }
+thiserror.workspace = true
+serde.workspace = true
+bincode.workspace = true
+chrono.workspace = true
+hex.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bitvec.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+prost-build = "0.13"
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

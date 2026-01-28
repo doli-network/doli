@@ -1,0 +1,17 @@
+[package]
+name = "storage"
+description = "Storage layer for DOLI: blocks, UTXO set, and producer registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+doli-core = { workspace = true }
+crypto = { workspace = true }
+rocksdb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+bincode.workspace = true

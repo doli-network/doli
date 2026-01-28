@@ -1,0 +1,1 @@
+Check @specs/SPECS.md and @docs/DOCS.md and @CLAUDE.md for instructions on how to build and test the project.
