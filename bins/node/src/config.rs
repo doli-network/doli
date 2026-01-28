@@ -1,0 +1,107 @@
+//! Node configuration
+
+use std::path::PathBuf;
+
+use doli_core::Network;
+use serde::{Deserialize, Serialize};
+
+/// Node configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeConfig {
+    /// Network (mainnet, testnet, devnet)
+    pub network: Network,
+
+    /// Data directory
+    pub data_dir: PathBuf,
+
+    /// P2P listen address
+    pub listen_addr: String,
+
+    /// Bootstrap nodes
+    pub bootstrap_nodes: Vec<String>,
+
+    /// Maximum peers
+    pub max_peers: usize,
+
+    /// RPC settings
+    pub rpc: RpcConfig,
+
+    /// Producer settings (optional)
+    pub producer: Option<ProducerConfig>,
+
+    /// Disable DHT discovery (only connect to explicit bootstrap nodes)
+    /// Use this to isolate test networks from external peers
+    #[serde(default)]
+    pub no_dht: bool,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self::for_network(Network::Mainnet)
+    }
+}
+
+impl NodeConfig {
+    /// Create default configuration for a specific network
+    pub fn for_network(network: Network) -> Self {
+        let data_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".doli")
+            .join(network.data_dir_name());
+
+        Self {
+            network,
+            data_dir,
+            listen_addr: format!("0.0.0.0:{}", network.default_p2p_port()),
+            bootstrap_nodes: network
+                .bootstrap_nodes()
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            max_peers: 50,
+            rpc: RpcConfig::for_network(network),
+            producer: None,
+            no_dht: false,
+        }
+    }
+}
+
+/// RPC server configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RpcConfig {
+    /// Enable RPC server
+    pub enabled: bool,
+
+    /// RPC listen address
+    pub listen_addr: String,
+
+    /// Allowed methods (empty = all)
+    pub allowed_methods: Vec<String>,
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self::for_network(Network::Mainnet)
+    }
+}
+
+impl RpcConfig {
+    /// Create RPC configuration for a specific network
+    pub fn for_network(network: Network) -> Self {
+        Self {
+            enabled: true,
+            listen_addr: format!("127.0.0.1:{}", network.default_rpc_port()),
+            allowed_methods: vec![],
+        }
+    }
+}
+
+/// Producer configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProducerConfig {
+    /// Producer key file path
+    pub key_file: PathBuf,
+
+    /// Reward address
+    pub reward_address: String,
+}

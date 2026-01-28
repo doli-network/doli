@@ -1,0 +1,23 @@
+[package]
+name = "rpc"
+description = "JSON-RPC API server for DOLI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+doli-core = { workspace = true }
+crypto = { workspace = true }
+storage = { workspace = true }
+mempool = { workspace = true }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+hex.workspace = true
+bincode.workspace = true

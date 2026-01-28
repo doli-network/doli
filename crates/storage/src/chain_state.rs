@@ -1,0 +1,226 @@
+//! Chain state management
+
+use std::path::Path;
+
+use crypto::Hash;
+use serde::{Deserialize, Serialize};
+
+use crate::StorageError;
+
+/// Persistent chain state
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChainState {
+    /// Best block hash
+    pub best_hash: Hash,
+    /// Best block height
+    pub best_height: u64,
+    /// Best block slot
+    pub best_slot: u32,
+    /// Total difficulty (not used in VDF, but kept for compatibility)
+    pub total_work: u64,
+    /// Genesis hash
+    pub genesis_hash: Hash,
+    /// Hash of the last registration transaction (for chained VDF anti-Sybil)
+    ///
+    /// New registrations must reference this hash, creating a chain that
+    /// prevents parallel registration attacks. Hash::ZERO before any registration.
+    #[serde(default)]
+    pub last_registration_hash: Hash,
+    /// Global registration sequence number (for chained VDF anti-Sybil)
+    ///
+    /// Increments with each new registration. The next registration must
+    /// have sequence_number = registration_sequence + 1.
+    #[serde(default)]
+    pub registration_sequence: u64,
+}
+
+impl ChainState {
+    /// Create initial chain state
+    pub fn new(genesis_hash: Hash) -> Self {
+        Self {
+            best_hash: genesis_hash,
+            best_height: 0,
+            best_slot: 0,
+            total_work: 0,
+            genesis_hash,
+            last_registration_hash: Hash::ZERO,
+            registration_sequence: 0,
+        }
+    }
+
+    /// Load from disk
+    pub fn load(path: &Path) -> Result<Self, StorageError> {
+        let bytes = std::fs::read(path)?;
+        bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))
+    }
+
+    /// Save to disk
+    pub fn save(&self, path: &Path) -> Result<(), StorageError> {
+        let bytes =
+            bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Update with a new best block
+    pub fn update(&mut self, hash: Hash, height: u64, slot: u32) {
+        self.best_hash = hash;
+        self.best_height = height;
+        self.best_slot = slot;
+        self.total_work += 1;
+    }
+
+    /// Check if this is the genesis state
+    pub fn is_genesis(&self) -> bool {
+        self.best_height == 0 && self.best_hash == self.genesis_hash
+    }
+
+    /// Update the registration chain after a successful registration
+    ///
+    /// # Arguments
+    /// - `registration_tx_hash`: Hash of the registration transaction
+    ///
+    /// This should be called after a registration transaction is validated
+    /// and included in a block.
+    pub fn record_registration(&mut self, registration_tx_hash: Hash) {
+        self.last_registration_hash = registration_tx_hash;
+        self.registration_sequence += 1;
+    }
+
+    /// Get the expected prev_registration_hash for the next registration
+    ///
+    /// Returns the hash that the next registration's `prev_registration_hash`
+    /// field must match.
+    pub fn expected_prev_registration_hash(&self) -> Hash {
+        self.last_registration_hash
+    }
+
+    /// Get the expected sequence number for the next registration
+    ///
+    /// Returns the sequence number that the next registration must have.
+    /// For the first registration, this returns 0.
+    pub fn expected_registration_sequence(&self) -> u64 {
+        if self.last_registration_hash == Hash::ZERO {
+            0 // First registration
+        } else {
+            self.registration_sequence + 1
+        }
+    }
+
+    /// Verify that a registration's chain fields are valid
+    ///
+    /// # Arguments
+    /// - `prev_hash`: The `prev_registration_hash` from the registration data
+    /// - `sequence`: The `sequence_number` from the registration data
+    ///
+    /// # Returns
+    /// `true` if the registration chain fields are valid
+    pub fn verify_registration_chain(&self, prev_hash: Hash, sequence: u64) -> bool {
+        let expected_prev = self.expected_prev_registration_hash();
+        let expected_seq = self.expected_registration_sequence();
+
+        prev_hash == expected_prev && sequence == expected_seq
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chain_state_new() {
+        let genesis = Hash::zero();
+        let state = ChainState::new(genesis);
+
+        assert!(state.is_genesis());
+        assert_eq!(state.best_height, 0);
+        assert_eq!(state.best_hash, genesis);
+        // Registration chain starts empty
+        assert_eq!(state.last_registration_hash, Hash::ZERO);
+        assert_eq!(state.registration_sequence, 0);
+    }
+
+    #[test]
+    fn test_chain_state_update() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        let new_hash = crypto::hash::hash(b"block1");
+        state.update(new_hash, 1, 1);
+
+        assert!(!state.is_genesis());
+        assert_eq!(state.best_height, 1);
+        assert_eq!(state.best_hash, new_hash);
+    }
+
+    #[test]
+    fn test_registration_chain_first_registration() {
+        let genesis = Hash::zero();
+        let state = ChainState::new(genesis);
+
+        // First registration expects ZERO hash and sequence 0
+        assert_eq!(state.expected_prev_registration_hash(), Hash::ZERO);
+        assert_eq!(state.expected_registration_sequence(), 0);
+
+        // Verify first registration chain data
+        assert!(state.verify_registration_chain(Hash::ZERO, 0));
+        assert!(!state.verify_registration_chain(Hash::ZERO, 1)); // Wrong sequence
+        assert!(!state.verify_registration_chain(crypto::hash::hash(b"wrong"), 0));
+        // Wrong hash
+    }
+
+    #[test]
+    fn test_registration_chain_subsequent_registrations() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Record first registration
+        let reg1_hash = crypto::hash::hash(b"registration1");
+        state.record_registration(reg1_hash);
+
+        assert_eq!(state.last_registration_hash, reg1_hash);
+        assert_eq!(state.registration_sequence, 1);
+
+        // Second registration expects reg1's hash and sequence 2
+        assert_eq!(state.expected_prev_registration_hash(), reg1_hash);
+        assert_eq!(state.expected_registration_sequence(), 2);
+
+        // Verify second registration chain data
+        assert!(state.verify_registration_chain(reg1_hash, 2));
+        assert!(!state.verify_registration_chain(Hash::ZERO, 2)); // Wrong hash
+        assert!(!state.verify_registration_chain(reg1_hash, 1)); // Wrong sequence
+
+        // Record second registration
+        let reg2_hash = crypto::hash::hash(b"registration2");
+        state.record_registration(reg2_hash);
+
+        assert_eq!(state.last_registration_hash, reg2_hash);
+        assert_eq!(state.registration_sequence, 2);
+
+        // Third registration expects reg2's hash and sequence 3
+        assert_eq!(state.expected_prev_registration_hash(), reg2_hash);
+        assert_eq!(state.expected_registration_sequence(), 3);
+    }
+
+    #[test]
+    fn test_registration_chain_prevents_parallel_attack() {
+        let genesis = Hash::zero();
+        let mut state = ChainState::new(genesis);
+
+        // Attacker tries to register two nodes "simultaneously"
+        // Both claim to be the first registration
+        let attacker_reg1 = crypto::hash::hash(b"attacker1");
+        let attacker_reg2 = crypto::hash::hash(b"attacker2");
+
+        // First registration succeeds
+        assert!(state.verify_registration_chain(Hash::ZERO, 0));
+        state.record_registration(attacker_reg1);
+
+        // Second "parallel" registration fails - it still references ZERO
+        // but the chain has moved forward
+        assert!(!state.verify_registration_chain(Hash::ZERO, 0));
+
+        // The attacker would need to reference the first registration
+        assert!(state.verify_registration_chain(attacker_reg1, 2));
+    }
+}

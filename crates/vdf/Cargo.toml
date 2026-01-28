@@ -1,0 +1,23 @@
+[package]
+name = "vdf"
+description = "Wesolowski VDF implementation over class groups for DOLI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crypto = { workspace = true }
+# Using rug (GMP bindings) for ~10x faster VDF computation
+rug.workspace = true
+num-traits.workspace = true
+num-integer.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+hex.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
