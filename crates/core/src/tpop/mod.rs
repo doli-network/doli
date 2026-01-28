@@ -1,36 +1,37 @@
-//! # Temporal Proof of Presence (TPoP) for DOLI
+//! # Temporal Proof of Presence (TPoP) - Telemetry Module
 //!
-//! A revolutionary consensus mechanism where **time is the primary resource**.
+//! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
+//!
+//! Producer selection is determined by `consensus::select_producer_for_slot()` using
+//! bond-based round-robin. Block VDF (T_BLOCK = 10M iterations) provides anti-grinding.
+//!
+//! This module provides network health monitoring via heartbeat proofs.
 //!
 //! ## Architecture Overview
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │                        TPoP System                              │
+//! │                    TPoP Telemetry System                        │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                                                                 │
 //! │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-//! │  │  Heartbeat  │───▶│  Collector  │───▶│   Scorer    │        │
-//! │  │  (1s VDF)   │    │  (per slot) │    │  (ranking)  │        │
+//! │  │  Heartbeat  │───▶│  Collector  │───▶│   Metrics   │        │
+//! │  │  (1s VDF)   │    │  (per slot) │    │  (health)   │        │
 //! │  └─────────────┘    └─────────────┘    └─────────────┘        │
-//! │         │                                     │                 │
-//! │         ▼                                     ▼                 │
-//! │  ┌─────────────┐                      ┌─────────────┐          │
-//! │  │  Producer   │◀─────────────────────│  Selection  │          │
-//! │  │  (blocks)   │                      │  (by score) │          │
-//! │  └─────────────┘                      └─────────────┘          │
+//! │                                                                 │
+//! │  Note: Actual block production uses bond-based selection       │
+//! │  and block VDF (10M iterations) for anti-grinding.             │
 //! │                                                                 │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Key Innovation: Micro-VDF
+//! ## Micro-VDF for Heartbeats
 //!
-//! Instead of 55-second VDFs (designed for anti-grinding in lotteries),
-//! TPoP uses 1-second micro-VDFs. This is sufficient because:
+//! TPoP uses 1-second micro-VDFs for heartbeat proofs (separate from block VDF):
 //!
-//! 1. **No lottery to grind** - Selection is by score, not hash luck
-//! 2. **Bond is anti-Sybil** - VDF doesn't need to be the barrier
-//! 3. **Timing is the proof** - Must arrive during slot window
+//! 1. **Heartbeat proofs** - 1s micro-VDF proves continuous presence
+//! 2. **Block VDF** - 10M iterations (~7s) provides anti-grinding
+//! 3. **Registration VDF** - Long VDF for anti-Sybil protection
 //!
 //! ## Resource Efficiency
 //!
