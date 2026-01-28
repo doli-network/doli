@@ -1226,15 +1226,13 @@ pub const MAX_FALLBACK_PRODUCERS: usize = 3;
 
 /// Size of the eligible producer pool for weighted selection.
 ///
-/// Option C (Hybrid Anti-Grinding):
-/// - First, top ELIGIBLE_PRODUCER_POOL producers are selected by weight (deterministic, not grindable)
-/// - Then, hash-based ordering selects MAX_FALLBACK_PRODUCERS from this pool
+/// Anti-Grinding Selection:
+/// - Producers are sorted by pubkey (deterministic)
+/// - Selection uses consecutive tickets: slot % total_tickets
+/// - Fallbacks use consecutive offsets: (base + 1), (base + 2)
 ///
-/// This limits grinding attacks: attackers can only reorder within the top N,
-/// not exclude high-weight producers from eligibility.
-///
-/// Set higher than MAX_FALLBACK_PRODUCERS to allow some hash-based variety,
-/// but low enough that only legitimate high-weight producers are eligible.
+/// This prevents grinding attacks: prev_hash is not used in selection,
+/// making it impossible to influence future producer selection.
 pub const ELIGIBLE_PRODUCER_POOL: usize = 5;
 
 /// Consensus parameters (can be adjusted for testnets)
@@ -1743,9 +1741,9 @@ pub fn select_producer_for_slot(
         result.push(pk);
     }
 
-    // Secondary fallback: offset by ~33% of total tickets
+    // Secondary fallback: consecutive ticket (base + 1)
     if result.len() < MAX_FALLBACK_PRODUCERS {
-        let secondary_ticket = (primary_ticket + total_tickets / 3) % total_tickets;
+        let secondary_ticket = (primary_ticket + 1) % total_tickets;
         if let Some(pk) = find_producer(secondary_ticket) {
             if !result.contains(&pk) {
                 result.push(pk);
@@ -1753,9 +1751,9 @@ pub fn select_producer_for_slot(
         }
     }
 
-    // Tertiary fallback: offset by ~50% of total tickets
+    // Tertiary fallback: consecutive ticket (base + 2)
     if result.len() < MAX_FALLBACK_PRODUCERS {
-        let tertiary_ticket = (primary_ticket + total_tickets / 2) % total_tickets;
+        let tertiary_ticket = (primary_ticket + 2) % total_tickets;
         if let Some(pk) = find_producer(tertiary_ticket) {
             if !result.contains(&pk) {
                 result.push(pk);
@@ -1766,107 +1764,6 @@ pub fn select_producer_for_slot(
     result
 }
 
-/// Select eligible producers for a slot with fallback ordering.
-///
-/// **DEPRECATED**: Use `select_producer_for_slot()` instead, which is independent
-/// of prev_hash and uses consecutive tickets for deterministic selection.
-///
-/// Returns a vector of up to 3 producers ordered by priority:
-/// - Index 0: Primary producer (rank 0)
-/// - Index 1: Secondary fallback (rank 1)
-/// - Index 2: Tertiary fallback (rank 2)
-#[deprecated(note = "Use select_producer_for_slot() instead")]
-pub fn select_producers_for_slot(
-    slot: Slot,
-    active_producers: &[crypto::PublicKey],
-    prev_hash: &crypto::Hash,
-) -> Vec<crypto::PublicKey> {
-    use crypto::hash::hash_concat;
-
-    if active_producers.is_empty() {
-        return Vec::new();
-    }
-
-    // Generate deterministic seed from slot and previous hash
-    let seed = hash_concat(&[b"SEED", prev_hash.as_bytes(), &slot.to_le_bytes()]);
-
-    // Score each producer based on seed and their public key
-    let mut scored: Vec<_> = active_producers
-        .iter()
-        .map(|pk| {
-            let score = hash_concat(&[seed.as_bytes(), pk.as_bytes()]);
-            (score, pk.clone())
-        })
-        .collect();
-
-    // Sort by score (ascending) - lowest score wins
-    scored.sort_by_key(|(score, _)| *score);
-
-    // Return top MAX_FALLBACK_PRODUCERS producers
-    scored
-        .into_iter()
-        .take(MAX_FALLBACK_PRODUCERS)
-        .map(|(_, pk)| pk)
-        .collect()
-}
-
-/// Select eligible producers for a slot using weighted hybrid selection.
-///
-/// **DEPRECATED**: Use `select_producer_for_slot()` instead, which is independent
-/// of prev_hash and uses consecutive tickets for deterministic selection.
-#[deprecated(note = "Use select_producer_for_slot() instead")]
-pub fn select_producers_for_slot_weighted(
-    slot: Slot,
-    producers_with_weights: &[(crypto::PublicKey, u64)],
-    prev_hash: &crypto::Hash,
-) -> Vec<crypto::PublicKey> {
-    use crypto::hash::hash_concat;
-
-    if producers_with_weights.is_empty() {
-        return Vec::new();
-    }
-
-    // PHASE 1: Select top N by weight (DETERMINISTIC - not grindable)
-    // Sort by weight descending, then by pubkey for deterministic tie-breaking
-    let mut by_weight: Vec<_> = producers_with_weights.to_vec();
-    by_weight.sort_by(|a, b| {
-        // Higher weight first
-        match b.1.cmp(&a.1) {
-            std::cmp::Ordering::Equal => {
-                // Tie-break by pubkey (deterministic)
-                a.0.as_bytes().cmp(b.0.as_bytes())
-            }
-            other => other,
-        }
-    });
-
-    // Take top ELIGIBLE_PRODUCER_POOL (or all if fewer)
-    let pool_size = ELIGIBLE_PRODUCER_POOL.min(by_weight.len());
-    let eligible_pool: Vec<_> = by_weight.into_iter().take(pool_size).collect();
-
-    // PHASE 2: Hash-based ordering among the eligible pool (limited grinding)
-    // Generate deterministic seed from slot and previous hash
-    let seed = hash_concat(&[b"SEED", prev_hash.as_bytes(), &slot.to_le_bytes()]);
-
-    // Score each eligible producer based on seed and their public key
-    let mut scored: Vec<_> = eligible_pool
-        .iter()
-        .map(|(pk, _weight)| {
-            let score = hash_concat(&[seed.as_bytes(), pk.as_bytes()]);
-            (score, pk.clone())
-        })
-        .collect();
-
-    // Sort by score (ascending) - lowest score wins
-    scored.sort_by_key(|(score, _)| *score);
-
-    // Return top MAX_FALLBACK_PRODUCERS producers
-    scored
-        .into_iter()
-        .take(MAX_FALLBACK_PRODUCERS)
-        .map(|(_, pk)| pk)
-        .collect()
-}
 
 /// Determine the allowed producer rank based on slot offset (in seconds).
 ///
@@ -2094,191 +1991,6 @@ mod tests {
 
     // Note: Block VDF (T_BLOCK = 10M iterations) provides anti-grinding protection.
     // VDF is mandatory for mainnet blocks; registration VDF is separate (anti-Sybil).
-
-    #[test]
-    fn test_select_producers_for_slot() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-        let producers: Vec<crypto::PublicKey> = (0..10)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                crypto::PublicKey::from_bytes(bytes)
-            })
-            .collect();
-
-        let result = select_producers_for_slot(100, &producers, &prev_hash);
-
-        // Should return exactly 3 producers
-        assert_eq!(result.len(), 3);
-
-        // All results should be from the original list
-        for producer in &result {
-            assert!(producers.contains(producer));
-        }
-    }
-
-    #[test]
-    fn test_select_producers_empty() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-        let producers: Vec<crypto::PublicKey> = vec![];
-
-        let result = select_producers_for_slot(100, &producers, &prev_hash);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_select_producers_fewer_than_max() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-        let producers: Vec<crypto::PublicKey> = (0..2)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                crypto::PublicKey::from_bytes(bytes)
-            })
-            .collect();
-
-        let result = select_producers_for_slot(100, &producers, &prev_hash);
-
-        // Should return only 2 producers (as many as available)
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_select_producers_weighted_basic() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-
-        // Create 10 producers with varying weights
-        let producers: Vec<(crypto::PublicKey, u64)> = (0..10)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                // Weights: 1000, 900, 800, ..., 100
-                (crypto::PublicKey::from_bytes(bytes), (10 - i as u64) * 100)
-            })
-            .collect();
-
-        let result = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-
-        // Should return exactly 3 producers
-        assert_eq!(result.len(), MAX_FALLBACK_PRODUCERS);
-
-        // All results should be from top ELIGIBLE_PRODUCER_POOL by weight
-        // Top 5 by weight are indices 0-4 (weights 1000, 900, 800, 700, 600)
-        let top_by_weight: Vec<_> = producers
-            .iter()
-            .take(ELIGIBLE_PRODUCER_POOL)
-            .map(|(pk, _)| pk.clone())
-            .collect();
-
-        for producer in &result {
-            assert!(
-                top_by_weight.contains(producer),
-                "Producer should be from top {} by weight",
-                ELIGIBLE_PRODUCER_POOL
-            );
-        }
-    }
-
-    #[test]
-    fn test_select_producers_weighted_deterministic() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-
-        // Create producers with weights
-        let producers: Vec<(crypto::PublicKey, u64)> = (0..10)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                (crypto::PublicKey::from_bytes(bytes), (10 - i as u64) * 100)
-            })
-            .collect();
-
-        // Same inputs should produce same output
-        let result1 = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-        let result2 = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-
-        assert_eq!(
-            result1, result2,
-            "Weighted selection should be deterministic"
-        );
-    }
-
-    #[test]
-    fn test_select_producers_weighted_excludes_low_weight() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-
-        // Create producers where one low-weight producer would win hash lottery
-        // but should be excluded from eligibility due to weight filter
-        let producers: Vec<(crypto::PublicKey, u64)> = (0..10)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                // All have high weight except index 0
-                let weight = if i == 0 { 1 } else { 1000 };
-                (crypto::PublicKey::from_bytes(bytes), weight)
-            })
-            .collect();
-
-        // Many iterations to ensure low-weight producer never wins
-        for slot in 0..100 {
-            let result = select_producers_for_slot_weighted(slot, &producers, &prev_hash);
-
-            // The low-weight producer (index 0) should never be selected
-            let low_weight_pk = &producers[0].0;
-            assert!(
-                !result.contains(low_weight_pk),
-                "Low-weight producer should never be selected (slot {})",
-                slot
-            );
-        }
-    }
-
-    #[test]
-    fn test_select_producers_weighted_empty() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-        let producers: Vec<(crypto::PublicKey, u64)> = vec![];
-
-        let result = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_select_producers_weighted_fewer_than_pool() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-
-        // Only 3 producers (less than ELIGIBLE_PRODUCER_POOL)
-        let producers: Vec<(crypto::PublicKey, u64)> = (0..3)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                (crypto::PublicKey::from_bytes(bytes), (3 - i as u64) * 100)
-            })
-            .collect();
-
-        let result = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-
-        // Should return all 3 since we have fewer than ELIGIBLE_PRODUCER_POOL
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_select_producers_weighted_tie_breaking() {
-        let prev_hash = crypto::Hash::from_bytes([1u8; 32]);
-
-        // Create producers with equal weights - should use pubkey for tie-breaking
-        let producers: Vec<(crypto::PublicKey, u64)> = (0..10)
-            .map(|i| {
-                let mut bytes = [0u8; 32];
-                bytes[0] = i;
-                (crypto::PublicKey::from_bytes(bytes), 1000) // All same weight
-            })
-            .collect();
-
-        let result1 = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-        let result2 = select_producers_for_slot_weighted(100, &producers, &prev_hash);
-
-        // Should be deterministic even with equal weights
-        assert_eq!(result1, result2, "Tie-breaking should be deterministic");
-    }
 
     #[test]
     fn test_allowed_producer_rank() {
@@ -2619,38 +2331,37 @@ mod tests {
             }
         }
 
-        /// Fallback producer selection is deterministic
+        /// Fallback producer selection is deterministic (anti-grinding: no prev_hash dependency)
         #[test]
-        fn prop_fallback_deterministic(slot: u32, seed: [u8; 32]) {
-            let prev_hash = crypto::Hash::from_bytes(seed);
-            let producers: Vec<crypto::PublicKey> = (0..10)
+        fn prop_fallback_deterministic(slot: u32, num_producers in 1usize..20) {
+            let producers: Vec<(crypto::PublicKey, u64)> = (0..num_producers)
                 .map(|i| {
                     let mut bytes = [0u8; 32];
-                    bytes[0] = i;
-                    crypto::PublicKey::from_bytes(bytes)
+                    bytes[0] = i as u8;
+                    bytes[1] = (i / 256) as u8;
+                    (crypto::PublicKey::from_bytes(bytes), (i as u64 + 1) * 10)
                 })
                 .collect();
 
-            let result1 = select_producers_for_slot(slot, &producers, &prev_hash);
-            let result2 = select_producers_for_slot(slot, &producers, &prev_hash);
+            let result1 = select_producer_for_slot(slot, &producers);
+            let result2 = select_producer_for_slot(slot, &producers);
 
             prop_assert_eq!(result1, result2);
         }
 
         /// Fallback producer selection returns at most MAX_FALLBACK_PRODUCERS
         #[test]
-        fn prop_fallback_max_producers(slot: u32, seed: [u8; 32], num_producers in 1usize..20) {
-            let prev_hash = crypto::Hash::from_bytes(seed);
-            let producers: Vec<crypto::PublicKey> = (0..num_producers)
+        fn prop_fallback_max_producers(slot: u32, num_producers in 1usize..20) {
+            let producers: Vec<(crypto::PublicKey, u64)> = (0..num_producers)
                 .map(|i| {
                     let mut bytes = [0u8; 32];
                     bytes[0] = i as u8;
                     bytes[1] = (i / 256) as u8;
-                    crypto::PublicKey::from_bytes(bytes)
+                    (crypto::PublicKey::from_bytes(bytes), (i as u64 + 1) * 10)
                 })
                 .collect();
 
-            let result = select_producers_for_slot(slot, &producers, &prev_hash);
+            let result = select_producer_for_slot(slot, &producers);
 
             prop_assert!(result.len() <= MAX_FALLBACK_PRODUCERS);
             prop_assert!(result.len() <= producers.len());
@@ -3300,6 +3011,7 @@ mod tests {
 
     /// Test: selection_uses_consecutive_tickets
     /// Selection must use consecutive ticket ranges based on bond count
+    /// Fallbacks use consecutive tickets: (base + 1) % total, (base + 2) % total
     #[test]
     fn test_selection_uses_consecutive_tickets() {
         // Create producers with known bond counts
@@ -3348,6 +3060,40 @@ mod tests {
 
         // Slot 6 wraps back to producer_a
         assert_eq!(selection_6[0], producer_a);
+
+        // Test consecutive fallback selection (anti-grinding)
+        // For slot 0: base ticket = 0
+        //   - Primary (rank 0): ticket 0 -> producer_a
+        //   - Secondary (rank 1): ticket 1 -> producer_a (same producer, not added)
+        //   - Tertiary (rank 2): ticket 2 -> producer_a (same producer, not added)
+        // Result: only producer_a (consecutive tickets land on same producer)
+        assert!(selection_0.len() >= 1);
+        assert_eq!(selection_0[0], producer_a);
+
+        // For slot 2: base ticket = 2
+        //   - Primary (rank 0): ticket 2 -> producer_a
+        //   - Secondary (rank 1): ticket 3 -> producer_b
+        //   - Tertiary (rank 2): ticket 4 -> producer_b (same as secondary, not added)
+        assert_eq!(selection_2.len(), 2);
+        assert_eq!(selection_2[0], producer_a);
+        assert_eq!(selection_2[1], producer_b);
+
+        // For slot 3: base ticket = 3
+        //   - Primary (rank 0): ticket 3 -> producer_b
+        //   - Secondary (rank 1): ticket 4 -> producer_b (same, not added)
+        //   - Tertiary (rank 2): ticket 5 -> producer_c
+        assert_eq!(selection_3.len(), 2);
+        assert_eq!(selection_3[0], producer_b);
+        assert_eq!(selection_3[1], producer_c);
+
+        // For slot 4: base ticket = 4
+        //   - Primary (rank 0): ticket 4 -> producer_b
+        //   - Secondary (rank 1): ticket 5 -> producer_c
+        //   - Tertiary (rank 2): ticket 0 (wraps) -> producer_a
+        assert_eq!(selection_4.len(), 3);
+        assert_eq!(selection_4[0], producer_b);
+        assert_eq!(selection_4[1], producer_c);
+        assert_eq!(selection_4[2], producer_a);
     }
 
     /// Test: fallback_windows
