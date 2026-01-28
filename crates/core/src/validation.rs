@@ -25,9 +25,8 @@ use thiserror::Error;
 
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{
-    is_producer_eligible, max_block_size, select_producers_for_slot,
-    select_producers_for_slot_weighted, ConsensusParams, RewardMode, MAX_DRIFT, MAX_FUTURE_SLOTS,
-    MAX_PAST_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
+    is_producer_eligible, max_block_size, select_producer_for_slot, ConsensusParams, RewardMode,
+    MAX_DRIFT, MAX_FUTURE_SLOTS, MAX_PAST_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
 };
 use crate::network::Network;
 use crate::tpop::heartbeat::{verify_hash_chain_vdf, HEARTBEAT_VDF_ITERATIONS};
@@ -1520,19 +1519,9 @@ pub fn validate_producer_eligibility(
         return Ok(());
     }
 
-    // Select eligible producers for this slot
-    // Use weighted selection (Option C - anti-grinding) when weights are available
-    let eligible = if !ctx.active_producers_weighted.is_empty() {
-        // Weighted selection: top N by weight (deterministic), then hash among N
-        select_producers_for_slot_weighted(
-            header.slot,
-            &ctx.active_producers_weighted,
-            &ctx.prev_hash,
-        )
-    } else {
-        // Legacy: pure hash-based selection (for backward compatibility)
-        select_producers_for_slot(header.slot, &ctx.active_producers, &ctx.prev_hash)
-    };
+    // Select eligible producers for this slot using consecutive tickets
+    // Selection is independent of prev_hash (anti-grinding protection)
+    let eligible = select_producer_for_slot(header.slot, &ctx.active_producers_weighted);
 
     if eligible.is_empty() {
         return Err(ValidationError::InvalidProducer);
