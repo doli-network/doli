@@ -1,5 +1,5 @@
 {
-  description = "DOLI - VDF-based blockchain with Temporal Proof of Presence (TPoP)";
+  description = "DOLI - VDF-based blockchain with Proof of Time (PoT) consensus";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
