@@ -83,6 +83,25 @@ cargo +nightly fuzz run fuzz_tx_deserialize
 cargo +nightly fuzz run fuzz_vdf_verify
 ```
 
+## Test Scripts
+
+- All test scripts located in `scripts/`
+- Test script documentation maintained in `scripts/README.md`
+- Before creating a new test script, check `scripts/README.md` for existing scripts
+- When creating new scripts, update `scripts/README.md` and commit both together
+
+```bash
+# List available test scripts
+ls scripts/*.sh
+
+# Check script registry
+cat scripts/README.md
+
+# Run a test script
+./scripts/launch_testnet.sh
+./scripts/test_3node_proportional_rewards.sh
+```
+
 ## Nix Development Environment
 
 ```bash
