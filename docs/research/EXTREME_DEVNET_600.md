@@ -1,5 +1,9 @@
 # Escenario Extremo: Devnet con 600 Productores
 
+> **Nota:** Este documento fue escrito con parámetros de devnet anteriores (slot=5s, reward=500 DOLI).
+> Los parámetros actuales de devnet son: slot=1s, reward=1 DOLI, VDF=1M iteraciones (~70ms).
+> Las fórmulas siguen siendo válidas pero los valores numéricos deben recalcularse.
+
 Este documento analiza el comportamiento de DOLI bajo condiciones extremas con 600 validadores activos en devnet, aplicando todas las fórmulas del whitepaper.
 
 ## Resumen Ejecutivo
@@ -21,10 +25,10 @@ Este documento analiza el comportamiento de DOLI bajo condiciones extremas con 6
 Del whitepaper y `network.rs`:
 
 ```
-SLOT_DURATION      = 5 segundos
-VDF_ITERATIONS     = 1,000,000 (~1 segundo)
+SLOT_DURATION      = 1 segundo
+VDF_ITERATIONS     = 1,000,000 (~70ms)
 INITIAL_BOND       = 1 DOLI (100,000,000 satoshis)
-BLOCK_REWARD       = 500 DOLI (50,000,000,000 satoshis)
+BLOCK_REWARD       = 1 DOLI (100,000,000 satoshis)
 BOOTSTRAP_BLOCKS   = 100
 SLOTS_PER_EPOCH    = 60
 VETO_PERIOD        = 60 segundos
@@ -141,10 +145,10 @@ Total: ~5.5 minutos para tener 600 productores activos
 ### 4.1. Distribución de Recompensas
 
 ```
-BLOCK_REWARD = 500 DOLI
-SLOT_DURATION = 5 segundos
-BLOCKS_PER_HOUR = 3600 / 5 = 720 bloques
-REWARDS_PER_HOUR = 720 × 500 = 360,000 DOLI
+BLOCK_REWARD = 1 DOLI
+SLOT_DURATION = 1 segundo
+BLOCKS_PER_HOUR = 3600 / 1 = 3600 bloques
+REWARDS_PER_HOUR = 3600 × 1 = 3,600 DOLI
 ```
 
 **Por productor:**
@@ -525,7 +529,7 @@ era(H) = floor(H / 2,102,400)
 
 ```
 R(H) = R_initial × 0.5^(era(H))
-R_initial = 5 DOLI (mainnet), 500 DOLI (devnet)
+R_initial = 1 DOLI (all networks)
 ```
 
 ### A.5. Penalización por Salida Anticipada

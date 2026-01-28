@@ -113,9 +113,9 @@ impl Network {
     /// Get initial block reward for this network
     pub fn initial_reward(&self) -> u64 {
         match self {
-            Network::Mainnet => 100_000_000,   // 1 DOLI
-            Network::Testnet => 1_000_000_000, // 10 DOLI (for testing)
-            Network::Devnet => 10_000_000_000, // 100 DOLI (for testing)
+            Network::Mainnet => 100_000_000, // 1 DOLI
+            Network::Testnet => 100_000_000, // 1 DOLI
+            Network::Devnet => 100_000_000,  // 1 DOLI
         }
     }
 
@@ -206,7 +206,7 @@ impl Network {
         match self {
             Network::Mainnet => 10, // 10 seconds
             Network::Testnet => 10, // 10 seconds
-            Network::Devnet => 5,   // 5 seconds
+            Network::Devnet => 1,   // 1 second (fast development)
         }
     }
 
@@ -222,9 +222,30 @@ impl Network {
     ///
     /// | Network | Slot  | VDF Target | Purpose                    |
     /// |---------|-------|------------|----------------------------|
-    /// | All     | Any   | ~700ms     | Heartbeat proof of presence|
+    /// | Mainnet | 10s   | ~700ms     | Heartbeat proof of presence|
+    /// | Testnet | 10s   | ~700ms     | Heartbeat proof of presence|
+    /// | Devnet  | 1s    | ~70ms      | Fast development cycles    |
     pub fn vdf_target_time_ms(&self) -> u64 {
-        700 // ~700ms heartbeat VDF for all networks
+        match self {
+            Network::Mainnet => 700, // ~700ms
+            Network::Testnet => 700, // ~700ms
+            Network::Devnet => 70,   // ~70ms (fast development)
+        }
+    }
+
+    /// Get heartbeat VDF iterations for this network
+    ///
+    /// Hash-chain VDF iterations calibrated for target time:
+    /// - 10M iterations ≈ 700ms on modern hardware
+    /// - 1M iterations ≈ 70ms on modern hardware
+    ///
+    /// Devnet uses fewer iterations for faster block production.
+    pub fn heartbeat_vdf_iterations(&self) -> u64 {
+        match self {
+            Network::Mainnet => 10_000_000, // ~700ms
+            Network::Testnet => 10_000_000, // ~700ms
+            Network::Devnet => 1_000_000,   // ~70ms (fast development)
+        }
     }
 
     /// Get bootstrap blocks count
@@ -276,12 +297,12 @@ impl Network {
     ///
     /// - Mainnet: 3,153,600 blocks (~365.25 days at 6 blocks/minute)
     /// - Testnet: 8,640 blocks (1 real day = 1 simulated year)
-    /// - Devnet:  12 blocks (1 real minute = 1 simulated year)
+    /// - Devnet:  60 blocks (1 real minute = 1 simulated year, with 1s slots)
     pub fn blocks_per_year(&self) -> u64 {
         match self {
             Network::Mainnet => 3_153_600, // 365.25 days × 24h × 60min × 6 blocks/min
             Network::Testnet => 8_640,     // 1 real day = 1 simulated year
-            Network::Devnet => 12,         // 1 real minute = 1 simulated year
+            Network::Devnet => 60,         // 1 real minute = 1 simulated year (60 blocks × 1s)
         }
     }
 
@@ -318,7 +339,7 @@ impl Network {
         match self {
             Network::Mainnet => 60_480, // ~1 week at 10s slots
             Network::Testnet => 144,    // ~1 hour real time
-            Network::Devnet => 2,       // 2 blocks (~10 seconds)
+            Network::Devnet => 10,      // 10 blocks (~10 seconds with 1s slots)
         }
     }
 
@@ -330,7 +351,7 @@ impl Network {
         match self {
             Network::Mainnet => 259_200, // ~30 days at 10s slots
             Network::Testnet => 360,     // ~1 hour real time
-            Network::Devnet => 6,        // ~30 seconds
+            Network::Devnet => 30,       // ~30 seconds with 1s slots
         }
     }
 
@@ -535,26 +556,26 @@ mod tests {
     fn test_devnet_time_acceleration() {
         let devnet = Network::Devnet;
 
-        // 12 blocks = 1 simulated year
-        assert_eq!(devnet.blocks_per_year(), 12);
+        // 60 blocks = 1 simulated year (with 1s slots)
+        assert_eq!(devnet.blocks_per_year(), 60);
 
-        // 48 blocks = 1 era (4 simulated years)
-        assert_eq!(devnet.blocks_per_era(), 48);
+        // 240 blocks = 1 era (4 simulated years)
+        assert_eq!(devnet.blocks_per_era(), 240);
 
-        // 1 block = 5 seconds
-        assert_eq!(devnet.slot_duration(), 5);
+        // 1 block = 1 second
+        assert_eq!(devnet.slot_duration(), 1);
 
-        // 12 blocks × 5 seconds = 60 seconds = 1 minute = 1 simulated year
+        // 60 blocks × 1 second = 60 seconds = 1 minute = 1 simulated year
         assert_eq!(devnet.blocks_per_year() * devnet.slot_duration(), 60);
 
-        // 1 month = 1 block
-        assert_eq!(devnet.blocks_per_month(), 1);
+        // 1 month = 5 blocks
+        assert_eq!(devnet.blocks_per_month(), 5);
 
-        // Commitment period = 4 years = 48 blocks
-        assert_eq!(devnet.commitment_period(), 48);
+        // Commitment period = 4 years = 240 blocks
+        assert_eq!(devnet.commitment_period(), 240);
 
-        // Exit history retention = 8 years = 96 blocks
-        assert_eq!(devnet.exit_history_retention(), 96);
+        // Exit history retention = 8 years = 480 blocks
+        assert_eq!(devnet.exit_history_retention(), 480);
     }
 
     #[test]
@@ -644,10 +665,10 @@ mod tests {
         );
 
         // Verify inactivity threshold is quick for testing
-        assert_eq!(devnet.inactivity_threshold(), 2); // 10 seconds
+        assert_eq!(devnet.inactivity_threshold(), 10); // 10 seconds with 1s slots
 
         // Verify unbonding is quick for testing
-        assert_eq!(devnet.unbonding_period(), 6); // 30 seconds
+        assert_eq!(devnet.unbonding_period(), 30); // 30 seconds with 1s slots
     }
 
     #[test]

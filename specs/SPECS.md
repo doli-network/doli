@@ -2,6 +2,8 @@
 
 Master index for all DOLI protocol specifications.
 
+**Note:** All specification documents are now located in the `docs/` directory for unified documentation.
+
 ---
 
 ## Core Specifications
@@ -9,25 +11,25 @@ Master index for all DOLI protocol specifications.
 | File | Description |
 |------|-------------|
 | [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with Proof of Time (PoT) consensus |
-| [PROTOCOL.md](./PROTOCOL.md) | Wire protocol and message format specifications |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System architecture and component design |
-| [SECURITY_MODEL.md](./SECURITY_MODEL.md) | Security model, threat analysis, and cryptographic guarantees |
+| [PROTOCOL.md](/docs/PROTOCOL.md) | Wire protocol and message format specifications |
+| [ARCHITECTURE.md](/docs/ARCHITECTURE.md) | System architecture and component design |
+| [SECURITY_MODEL.md](/docs/SECURITY_MODEL.md) | Security model, threat analysis, and cryptographic guarantees |
 
 ---
 
 ## Quick Navigation
 
 ```
-specs/
-├── SPECS.md            # ← You are here
-├── /WHITEPAPER.md      # Protocol foundation (root level)
-├── PROTOCOL.md         # Network protocol
-├── ARCHITECTURE.md     # System design
-└── SECURITY_MODEL.md   # Security analysis
+/WHITEPAPER.md           # Protocol foundation (root level)
+docs/
+├── DOCS.md              # Full documentation index
+├── PROTOCOL.md          # Network protocol
+├── ARCHITECTURE.md      # System design
+└── SECURITY_MODEL.md    # Security analysis
 ```
 
 ---
 
-## Usage
+## See Also
 
-Use `[[UID:*]]` grep patterns to navigate directly to specific sections within spec files.
+For the complete documentation index including guides and research, see [docs/DOCS.md](/docs/DOCS.md).
