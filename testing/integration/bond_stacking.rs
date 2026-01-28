@@ -40,15 +40,15 @@ fn test_max_bonds_constant() {
 /// Test withdrawal delay constant
 #[test]
 fn test_withdrawal_delay_constant() {
-    // 7 days = 604,800 seconds = 604,800 slots
-    assert_eq!(WITHDRAWAL_DELAY_SLOTS, 604_800);
+    // 7 days at 10s slots = 7 * 24 * 360 = 60,480 slots
+    assert_eq!(WITHDRAWAL_DELAY_SLOTS, 60_480);
 }
 
 /// Test year in slots constant
 #[test]
 fn test_year_in_slots_constant() {
-    // 1 year = 365 * 24 * 60 * 60 = 31,536,000 slots
-    assert_eq!(YEAR_IN_SLOTS, 31_536_000);
+    // 1 year at 10s slots = 365 * 24 * 360 = 3,153,600 slots
+    assert_eq!(YEAR_IN_SLOTS, 3_153_600);
 }
 
 /// Test vesting penalty schedule

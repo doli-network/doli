@@ -1,55 +1,43 @@
 //! Consensus parameters and rules
 //!
-//! # Proof of Presence (PoP)
+//! # Proof of Time (PoT)
 //!
-//! DOLI uses Proof of Presence consensus. Unlike Proof of Work (parallelizable
-//! computation) or Proof of Stake (capital-based selection), PoP requires
-//! **active participation** to earn rewards.
+//! DOLI uses Proof of Time consensus with VDF-based anti-grinding. Unlike
+//! Proof of Work (parallelizable computation) or Proof of Stake (capital-based
+//! selection), PoT uses **time as the scarce resource**.
 //!
 //! ## Core Principle
 //!
-//! Presence is proven by producing blocks when selected:
-//! - One producer per slot (1 second)
-//! - Selection rotates based on presence_score
+//! Time is proven via VDF (Verifiable Delay Function):
+//! - One producer per slot (10 seconds)
+//! - Selection uses consecutive tickets based on bond count
+//! - VDF computation (~7s) proves sequential work
 //! - Producer receives 100% of block reward via coinbase
-//! - **You produce when selected → You earn. You miss → You don't.**
 //!
-//! ## Scoring System
+//! ## Selection System
 //!
-//! ```text
-//! +1 point:  Successfully produce a block when selected
-//! -2 points: Miss an assigned slot (fail to produce)
-//! ```
+//! Producer selection is deterministic and independent of previous block hash:
+//! - Total tickets = sum of all producer bond counts
+//! - Primary producer: slot % total_tickets
+//! - Fallback producers at +33% and +50% ticket offsets
 //!
-//! Higher score = selected more often. This creates a virtuous cycle:
-//! reliable producers get more opportunities, unreliable ones fade out.
+//! This prevents grinding attacks - changing the block hash cannot influence
+//! who gets selected for future slots.
 //!
-//! ## Why No VDF for Blocks?
+//! ## Why VDF for Blocks?
 //!
-//! VDF was designed for lottery-based producer selection (anti-grinding).
-//! In PoP, producer selection is by presence_score, not by hash:
-//! - `next_producer = highest presence_score` - deterministic
-//! - Block hash doesn't influence selection - nothing to grind
-//! - VDF is only used for registration (anti-Sybil), not block production
+//! VDF provides anti-grinding protection:
+//! - VDF input: HASH(prev_hash || tx_root || slot || producer_key)
+//! - ~7 seconds of sequential computation
+//! - Mandatory for mainnet blocks (vdf_output must be present)
+//! - Proof is self-verifying (hash-chain VDF)
 //!
-//! ## Why No Multi-Signature Attestations?
-//!
-//! Multi-signature models have delegation problems:
-//! - Give your key to a pool → pool signs for you → "fake" presence
-//! - Low risk/reward ratio encourages delegation
-//!
-//! With single-producer-per-block:
-//! - Give your key → delegatee gets ALL your rewards
-//! - High risk (key theft) vs no benefit (0 rewards to you)
-//! - No rational incentive to delegate
-//!
-//! ## Slot Timing (1 second)
+//! ## Slot Timing (10 seconds)
 //!
 //! ```text
-//! 0-300ms:     Primary producer window
-//! 300-600ms:   Secondary fallback window
-//! 600-800ms:   Tertiary fallback window
-//! 800-1000ms:  Block propagation
+//! 0-3s:    Primary producer window (rank 0 only)
+//! 3-6s:    Secondary fallback window (rank 0-1)
+//! 6-10s:   Tertiary fallback window (rank 0-2)
 //! ```
 
 use crate::network::Network;
@@ -63,27 +51,27 @@ pub const GENESIS_TIME: u64 = 1769904000;
 
 /// Slot duration in seconds.
 ///
-/// # Proof of Presence Timing
+/// # Proof of Time Timing
 ///
-/// With 1-second slots:
-/// - Block construction: ~50ms
-/// - Broadcast proposed block: ~50ms
-/// - Presence signature collection: ~600ms
-/// - Final block broadcast: ~200ms
-/// - Total: 1000ms = 1 second
+/// With 10-second slots:
+/// - VDF computation: ~7s (T_BLOCK iterations)
+/// - Block construction and broadcast: ~3s
+/// - Total: 10 seconds
 ///
-/// No VDF required - producer selection is by presence_score, not hash.
-pub const SLOT_DURATION: u64 = 1;
+/// VDF is required for anti-grinding protection.
+pub const SLOT_DURATION: u64 = 10;
 
-/// Slots per epoch (1 hour = 3,600 slots at 1s each)
+/// Slots per epoch (1 hour = 360 slots at 10s each)
 /// Used for consensus-level producer set stability.
-pub const SLOTS_PER_EPOCH: u32 = 3_600;
+pub const SLOTS_PER_EPOCH: u32 = 360;
 
-/// Slots per reward epoch (1 hour = 3,600 slots at 1s each)
-/// In Proof of Presence, each producer receives 100% of the block reward
-/// when they produce a block. This constant is used for presence tracking
-/// and producer set management.
-pub const SLOTS_PER_REWARD_EPOCH: u32 = 3_600;
+/// Slots per reward epoch (1 hour = 360 slots at 10s each)
+/// Each producer receives 100% of the block reward when they produce a block.
+pub const SLOTS_PER_REWARD_EPOCH: u32 = 360;
+
+/// Slots per year (365 days * 24 hours * 360 slots/hour)
+/// Used for seniority weight calculations.
+pub const SLOTS_PER_YEAR: u32 = 3_153_600;
 
 /// Minimum presence rate to remain in the active producer set (percentage).
 /// Producers must successfully produce at least this percentage of their
@@ -100,18 +88,24 @@ pub const MIN_ATTESTATION_RATE: u32 = MIN_PRESENCE_RATE;
 #[deprecated(note = "Attestations not used in Proof of Presence")]
 pub const ATTESTATION_INTERVAL: u32 = 1;
 
-/// Blocks per era (~4 years at 1-second slots)
-/// 4 years ≈ 126,144,000 seconds = 126,144,000 blocks
-pub const BLOCKS_PER_ERA: BlockHeight = 126_144_000;
+/// Slots per era (~4 years at 10-second slots)
+/// 4 years = 12,614,400 slots (halving interval)
+pub const SLOTS_PER_ERA: BlockHeight = 12_614_400;
 
-/// Bootstrap phase duration in blocks (~1 week at 1-second slots)
-/// 7 days = 604,800 seconds = 604,800 blocks
-pub const BOOTSTRAP_BLOCKS: BlockHeight = 604_800;
+/// Blocks per era - alias for SLOTS_PER_ERA
+pub const BLOCKS_PER_ERA: BlockHeight = SLOTS_PER_ERA;
+
+/// Halving interval - same as SLOTS_PER_ERA
+pub const HALVING_INTERVAL: BlockHeight = SLOTS_PER_ERA;
+
+/// Bootstrap phase duration in blocks (~1 week at 10-second slots)
+/// 7 days = 60,480 blocks
+pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 
 /// Maximum clock drift allowed (seconds).
 /// Nodes with clocks drifting more than this are considered out of sync.
-/// With 1-second slots, this is 5 slots worth of drift.
-pub const MAX_DRIFT: u64 = 5;
+/// With 10-second slots, this is 1 slot worth of drift.
+pub const MAX_DRIFT: u64 = 10;
 
 /// Network margin for block timing (milliseconds).
 /// Time reserved for presence signature collection.
@@ -125,37 +119,39 @@ pub const NETWORK_MARGIN: u64 = 1;
 /// Maximum slots in the future a block can be accepted.
 /// Prevents clock manipulation attacks where a node with a fast clock
 /// produces blocks for future slots.
-/// With 1-second slots, 2 slots = 2 seconds into the future.
-pub const MAX_FUTURE_SLOTS: u64 = 2;
+/// With 10-second slots, 1 slot = 10 seconds into the future.
+pub const MAX_FUTURE_SLOTS: u64 = 1;
 
 /// Maximum slots in the past a block can be accepted.
 /// Allows for late blocks due to network delays, but prevents
 /// producers from mining old slots indefinitely.
-/// With 1-second slots, 1920 slots = 32 minutes of history.
-pub const MAX_PAST_SLOTS: u64 = 1920;
+/// With 10-second slots, 192 slots = 32 minutes of history.
+pub const MAX_PAST_SLOTS: u64 = 192;
 
-/// Initial block reward pool (~0.0833 DOLI = 8,333,333 base units per block)
+/// Initial block reward (1 DOLI = 100,000,000 base units per block)
 ///
-/// # Proof of Presence Emission
+/// # Emission Schedule
 ///
-/// With 1-second slots (60x more blocks than original 60-second slots),
-/// the per-block reward pool maintains the same emission schedule:
-/// - Original: 5 DOLI × 2,102,400 blocks/era = 10,512,000 DOLI/era
-/// - PoP: 0.0833 DOLI × 126,144,000 blocks/era ≈ 10,512,000 DOLI/era
+/// With 10-second slots:
+/// - 1 DOLI per block × 12,614,400 blocks/era = 12,614,400 DOLI/era
+/// - Halves every era (~4 years)
+/// - Total supply converges to 25,228,800 DOLI
 ///
-/// Per epoch (1 hour = 3,600 blocks): ~300 DOLI distributed among signers
-///
-/// The reward is distributed proportionally to presence signatures:
-/// - If you signed 3,600/3,600 blocks: you get full share
-/// - If you signed 1,800/3,600 blocks: you get half share
-pub const INITIAL_REWARD: Amount = 8_333_333;
+/// Per epoch (1 hour = 360 blocks): 360 DOLI distributed
+pub const INITIAL_REWARD: Amount = 100_000_000;
+
+/// Initial block reward - alias for INITIAL_REWARD
+pub const INITIAL_BLOCK_REWARD: Amount = INITIAL_REWARD;
 
 /// Block reward pool per slot (alias for clarity)
 pub const BLOCK_REWARD_POOL: Amount = INITIAL_REWARD;
 
-/// Epoch reward pool (~300 DOLI per hour)
-/// 3,600 slots × 8,333,333 base units = 30,000,000,000 base units = 300 DOLI
+/// Epoch reward pool (360 DOLI per hour)
+/// 360 slots × 100,000,000 base units = 36,000,000,000 base units = 360 DOLI
 pub const EPOCH_REWARD_POOL: Amount = SLOTS_PER_REWARD_EPOCH as u64 * INITIAL_REWARD;
+
+/// Coinbase maturity (confirmations required before spending)
+pub const COINBASE_MATURITY: BlockHeight = 100;
 
 // ==================== Bond Stacking System ====================
 //
@@ -174,20 +170,22 @@ pub const INITIAL_BOND: Amount = BOND_UNIT;
 /// 100 bonds = 100,000 DOLI maximum stake per node
 pub const MAX_BONDS_PER_PRODUCER: u32 = 100;
 
-/// Withdrawal delay in slots (7 days)
+/// Withdrawal delay in slots (7 days at 10s slots)
 /// After requesting withdrawal, must wait this period before claiming
-pub const WITHDRAWAL_DELAY_SLOTS: Slot = 604_800; // 7 days * 24 * 60 * 60
+pub const WITHDRAWAL_DELAY_SLOTS: Slot = 60_480; // 7 days * 24 * 360 slots/hour
 
 /// One year in slots (used for vesting calculation)
-pub const YEAR_IN_SLOTS: Slot = 31_536_000; // 365 days * 24 * 60 * 60
+/// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
+pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 
 /// Commitment period for full vesting (4 years)
 /// After 4 years, bonds can be withdrawn with 0% penalty
 pub const COMMITMENT_PERIOD: BlockHeight = 4 * YEAR_IN_SLOTS as BlockHeight;
 
-/// Unbonding period for exit (~7 days at 1-second slots)
+/// Unbonding period for exit (~30 days at 10-second slots)
 /// After requesting exit, producers must wait this long before claiming bond
-pub const UNBONDING_PERIOD: BlockHeight = WITHDRAWAL_DELAY_SLOTS as BlockHeight;
+/// 259,200 slots = 30 days
+pub const UNBONDING_PERIOD: BlockHeight = 259_200;
 
 /// Lock duration for bonds (4 years for full vesting)
 pub const BOND_LOCK_BLOCKS: BlockHeight = COMMITMENT_PERIOD;
@@ -216,13 +214,16 @@ pub fn withdrawal_penalty_rate(bond_age_slots: Slot) -> u8 {
 }
 
 /// Maximum consecutive missed slots before considered inactive.
-/// With 1-second slots, 3000 missed slots = 50 minutes of inactivity.
-/// After this many misses, presence_score starts decaying faster.
-pub const MAX_FAILURES: u32 = 3000;
+/// With 10-second slots, 50 missed slots = ~8 minutes of inactivity.
+/// After this many misses, the producer is considered inactive.
+pub const MAX_FAILURES: u32 = 50;
 
-/// Exclusion period for slashing (7 days in slots at 1-second slots)
-/// 7 days = 604,800 seconds = 604,800 slots
-pub const EXCLUSION_SLOTS: Slot = 604_800;
+/// Inactivity threshold - same as MAX_FAILURES
+pub const INACTIVITY_THRESHOLD: u32 = MAX_FAILURES;
+
+/// Exclusion period for slashing (7 days in slots at 10-second slots)
+/// 7 days = 60,480 slots
+pub const EXCLUSION_SLOTS: Slot = 60_480;
 
 /// Reward maturity (confirmations required)
 pub const REWARD_MATURITY: BlockHeight = 100;
@@ -782,53 +783,73 @@ pub fn max_block_size(height: BlockHeight) -> usize {
     }
 }
 
-/// Total supply (21,024,000 coins)
-pub const TOTAL_SUPPLY: Amount = 2_102_400_000_000_000;
+/// Total supply (25,228,800 DOLI)
+/// Calculated as: sum of geometric series with initial reward and halving
+/// 25,228,800 DOLI * 100,000,000 base units = 2,522,880,000,000,000
+pub const TOTAL_SUPPLY: Amount = 2_522_880_000_000_000;
 
-// ==================== VDF Parameters (Registration Only) ====================
+// ==================== VDF Parameters ====================
 //
-// In Proof of Presence, VDF is ONLY used for producer registration (anti-Sybil).
-// Block production does NOT require VDF - selection is by presence_score.
+// VDF is used for both block production (anti-grinding) and registration (anti-Sybil).
+// Time is the scarce resource in DOLI - VDF ensures sequential computation.
 
-/// VDF discriminant bits for registration proofs.
+/// VDF discriminant bits for proofs.
 /// Must be large enough for cryptographic security.
 pub const VDF_DISCRIMINANT_BITS: u32 = 1024;
 
-/// Block VDF is NOT USED in Proof of Presence.
-/// This constant is kept for backward compatibility but blocks do not
-/// require VDF proofs. Producer selection is by presence_score.
-///
-/// The value represents what would have been used for anti-grinding,
-/// but grinding is irrelevant when selection is by score, not hash.
-#[deprecated(note = "Block VDF not used in Proof of Presence")]
-pub const T_BLOCK_BASE: u64 = 0;
+/// Block VDF iterations (10,000,000 iterations ~= 7 seconds on reference hardware)
+/// This is the fixed T parameter for block production VDF.
+pub const T_BLOCK: u64 = 10_000_000;
 
-/// Maximum T value - not used in PoP
-#[deprecated(note = "Block VDF not used in Proof of Presence")]
-pub const T_BLOCK_CAP: u64 = 0;
+/// Legacy alias for T_BLOCK
+pub const T_BLOCK_BASE: u64 = T_BLOCK;
 
-/// VDF target duration - not used for blocks in PoP
-#[deprecated(note = "Block VDF not used in Proof of Presence")]
-pub const VDF_TARGET_MS: u64 = 0;
+/// Maximum T value for blocks - same as T_BLOCK (fixed)
+pub const T_BLOCK_CAP: u64 = T_BLOCK;
 
-/// VDF deadline - not used for blocks in PoP
-#[deprecated(note = "Block VDF not used in Proof of Presence")]
-pub const VDF_DEADLINE_MS: u64 = 0;
+/// VDF target duration in milliseconds (~7 seconds)
+pub const VDF_TARGET_MS: u64 = 7_000;
 
-/// Calculate T parameter for block VDF.
+/// VDF deadline in milliseconds (must complete within slot)
+pub const VDF_DEADLINE_MS: u64 = 10_000;
+
+/// Get T parameter for block VDF (fixed at T_BLOCK).
 ///
-/// # Proof of Presence
-///
-/// In PoP, this function returns 0 because block VDF is not used.
-/// Producer selection is deterministic by presence_score.
-///
-/// VDF is only used for:
-/// - Producer registration (anti-Sybil, see T_REGISTER_BASE)
-/// - NOT for block production
+/// VDF is required for block production as anti-grinding protection.
+/// The input is constructed from: prev_hash, tx_root, slot, producer_key
 #[must_use]
-#[deprecated(note = "Block VDF not used in Proof of Presence")]
 pub fn t_block(_height: BlockHeight) -> u64 {
-    0 // No VDF required for blocks in PoP
+    T_BLOCK
+}
+
+/// Construct the VDF input for block production.
+///
+/// The VDF input is: HASH(prefix || prev_hash || tx_root || slot || producer_key)
+/// This ensures the VDF computation is bound to the specific block context.
+///
+/// # Arguments
+/// * `prev_hash` - Hash of the previous block
+/// * `tx_root` - Merkle root of transactions in this block
+/// * `slot` - The slot number for this block
+/// * `producer_key` - The producer's public key
+///
+/// # Returns
+/// A 32-byte hash to use as VDF input
+#[must_use]
+pub fn construct_vdf_input(
+    prev_hash: &crypto::Hash,
+    tx_root: &crypto::Hash,
+    slot: Slot,
+    producer_key: &crypto::PublicKey,
+) -> crypto::Hash {
+    use crypto::hash::hash_concat;
+    hash_concat(&[
+        b"DOLI_VDF_BLOCK_V1",
+        prev_hash.as_bytes(),
+        tx_root.as_bytes(),
+        &slot.to_le_bytes(),
+        producer_key.as_bytes(),
+    ])
 }
 
 /// Base registration VDF time (10 minutes in iterations)
@@ -1169,30 +1190,30 @@ impl RegistrationQueue {
 // The producer with highest presence_score builds the block.
 // If they don't submit in time, fallbacks can step in.
 
-/// Primary producer window in milliseconds (0-300ms).
-/// Only the primary producer (highest presence_score) can submit.
-pub const PRIMARY_WINDOW_MS: u64 = 300;
+/// Primary producer window in milliseconds (0-3000ms).
+/// Only the primary producer (rank 0) can submit.
+pub const PRIMARY_WINDOW_MS: u64 = 3_000;
 
-/// Secondary producer window in milliseconds (0-600ms).
-/// Primary or secondary (top 2 by presence_score) can submit.
-pub const SECONDARY_WINDOW_MS: u64 = 600;
+/// Secondary producer window in milliseconds (0-6000ms).
+/// Primary or secondary (rank 0-1) can submit.
+pub const SECONDARY_WINDOW_MS: u64 = 6_000;
 
-/// Tertiary producer window in milliseconds (0-800ms).
-/// Any of the top 3 producers by presence_score can submit.
-pub const TERTIARY_WINDOW_MS: u64 = 800;
+/// Tertiary producer window in milliseconds (0-10000ms).
+/// Any of the top 3 producers (rank 0-2) can submit.
+pub const TERTIARY_WINDOW_MS: u64 = 10_000;
 
-/// Signature collection window (800-1000ms).
-/// After block is submitted, other producers sign for presence attestation.
-pub const SIGNATURE_WINDOW_MS: u64 = 200;
+/// Signature collection window - deprecated with 10s slots.
+/// Block propagation happens within the slot window.
+pub const SIGNATURE_WINDOW_MS: u64 = 0;
 
-/// Primary producer window (effectively 0 seconds due to tight timing).
-pub const PRIMARY_WINDOW_SECS: u64 = 0;
+/// Primary producer window in seconds (0-3s).
+pub const PRIMARY_WINDOW_SECS: u64 = 3;
 
-/// Secondary producer window (effectively 0-1 seconds).
-pub const SECONDARY_WINDOW_SECS: u64 = 0;
+/// Secondary producer window in seconds (0-6s).
+pub const SECONDARY_WINDOW_SECS: u64 = 6;
 
-/// Tertiary producer window (effectively 0-1 seconds = full slot).
-pub const TERTIARY_WINDOW_SECS: u64 = 1;
+/// Tertiary producer window in seconds (0-10s = full slot).
+pub const TERTIARY_WINDOW_SECS: u64 = 10;
 
 /// Fast block threshold - not used in PoP (no VDF timing)
 pub const FAST_THRESHOLD_MS: u64 = 0;
@@ -1664,15 +1685,97 @@ pub fn allowed_producer_rank_scaled(slot_offset_secs: u64, slot_duration_secs: u
     }
 }
 
+/// Select the producer for a slot using consecutive tickets.
+///
+/// This is the primary selection function. It uses a deterministic round-robin
+/// based on bond count (consecutive tickets). Selection is independent of
+/// the previous block hash to prevent grinding attacks.
+///
+/// # Algorithm
+/// 1. Calculate total tickets = sum of all producer bond counts
+/// 2. ticket_index = slot % total_tickets
+/// 3. Find producer whose consecutive ticket range contains ticket_index
+/// 4. Return up to MAX_FALLBACK_PRODUCERS for fallback (offset by 33% and 50%)
+///
+/// # Arguments
+/// * `slot` - The slot number
+/// * `producers_with_bonds` - List of (PublicKey, bond_count) tuples, sorted by pubkey
+///
+/// # Returns
+/// Vector of up to MAX_FALLBACK_PRODUCERS public keys ordered by priority
+pub fn select_producer_for_slot(
+    slot: Slot,
+    producers_with_bonds: &[(crypto::PublicKey, u64)],
+) -> Vec<crypto::PublicKey> {
+    if producers_with_bonds.is_empty() {
+        return Vec::new();
+    }
+
+    // Sort producers by pubkey for deterministic ordering
+    let mut sorted: Vec<_> = producers_with_bonds.to_vec();
+    sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+
+    // Calculate total tickets (each bond = 1 ticket, minimum 1 per producer)
+    let total_tickets: u64 = sorted.iter().map(|(_, bonds)| (*bonds).max(1)).sum();
+
+    if total_tickets == 0 {
+        return Vec::new();
+    }
+
+    // Helper to find producer for a given ticket index
+    let find_producer = |ticket_idx: u64| -> Option<crypto::PublicKey> {
+        let mut cumulative: u64 = 0;
+        for (pk, bonds) in &sorted {
+            let tickets = (*bonds).max(1);
+            if ticket_idx < cumulative + tickets {
+                return Some(pk.clone());
+            }
+            cumulative += tickets;
+        }
+        None
+    };
+
+    let mut result = Vec::with_capacity(MAX_FALLBACK_PRODUCERS);
+
+    // Primary producer: slot % total_tickets
+    let primary_ticket = (slot as u64) % total_tickets;
+    if let Some(pk) = find_producer(primary_ticket) {
+        result.push(pk);
+    }
+
+    // Secondary fallback: offset by ~33% of total tickets
+    if result.len() < MAX_FALLBACK_PRODUCERS {
+        let secondary_ticket = (primary_ticket + total_tickets / 3) % total_tickets;
+        if let Some(pk) = find_producer(secondary_ticket) {
+            if !result.contains(&pk) {
+                result.push(pk);
+            }
+        }
+    }
+
+    // Tertiary fallback: offset by ~50% of total tickets
+    if result.len() < MAX_FALLBACK_PRODUCERS {
+        let tertiary_ticket = (primary_ticket + total_tickets / 2) % total_tickets;
+        if let Some(pk) = find_producer(tertiary_ticket) {
+            if !result.contains(&pk) {
+                result.push(pk);
+            }
+        }
+    }
+
+    result
+}
+
 /// Select eligible producers for a slot with fallback ordering.
+///
+/// **DEPRECATED**: Use `select_producer_for_slot()` instead, which is independent
+/// of prev_hash and uses consecutive tickets for deterministic selection.
 ///
 /// Returns a vector of up to 3 producers ordered by priority:
 /// - Index 0: Primary producer (rank 0)
 /// - Index 1: Secondary fallback (rank 1)
 /// - Index 2: Tertiary fallback (rank 2)
-///
-/// The selection is deterministic based on the slot and previous block hash,
-/// ensuring all nodes compute the same ordering.
+#[deprecated(note = "Use select_producer_for_slot() instead")]
 pub fn select_producers_for_slot(
     slot: Slot,
     active_producers: &[crypto::PublicKey],
@@ -1707,27 +1810,11 @@ pub fn select_producers_for_slot(
         .collect()
 }
 
-/// Select eligible producers for a slot using weighted hybrid selection (Option C).
+/// Select eligible producers for a slot using weighted hybrid selection.
 ///
-/// This is the anti-grinding resistant version that uses a two-phase selection:
-///
-/// **Phase 1 - Deterministic Weight Filter (NOT grindable):**
-/// Select top ELIGIBLE_PRODUCER_POOL producers by effective_weight.
-/// This is completely deterministic - no hash involved, so grinding the
-/// previous block hash cannot change who enters this pool.
-///
-/// **Phase 2 - Hash-Based Ordering (limited grinding):**
-/// Among the eligible pool, use hash-based ordering to select the final
-/// MAX_FALLBACK_PRODUCERS. Grinding can only reorder within this pool,
-/// but cannot exclude any high-weight producer from eligibility.
-///
-/// # Arguments
-/// * `slot` - The slot number
-/// * `producers_with_weights` - List of (PublicKey, effective_weight) tuples
-/// * `prev_hash` - Previous block hash (used only in Phase 2)
-///
-/// # Returns
-/// Vector of up to MAX_FALLBACK_PRODUCERS public keys ordered by priority
+/// **DEPRECATED**: Use `select_producer_for_slot()` instead, which is independent
+/// of prev_hash and uses consecutive tickets for deterministic selection.
+#[deprecated(note = "Use select_producer_for_slot() instead")]
 pub fn select_producers_for_slot_weighted(
     slot: Slot,
     producers_with_weights: &[(crypto::PublicKey, u64)],
@@ -1783,13 +1870,12 @@ pub fn select_producers_for_slot_weighted(
 
 /// Determine the allowed producer rank based on slot offset (in seconds).
 ///
-/// # Proof of Presence Windows
+/// # Proof of Time Windows
 ///
-/// With 1-second slots, all windows occur within sub-second timeframes (ms).
-/// This second-based function is provided for compatibility but returns rank 2
-/// (all producers eligible) for any offset >= 0.
-///
-/// For precise timing control, use `allowed_producer_rank_ms` instead.
+/// With 10-second slots, windows are:
+/// - 0-3s: Only rank 0 (primary)
+/// - 3-6s: Rank 0 or 1 (primary or secondary)
+/// - 6-10s: Rank 0, 1, or 2 (any of the top 3)
 pub fn allowed_producer_rank(slot_offset_secs: u64) -> usize {
     if slot_offset_secs < PRIMARY_WINDOW_SECS {
         0
@@ -1802,13 +1888,12 @@ pub fn allowed_producer_rank(slot_offset_secs: u64) -> usize {
 
 /// Determine the allowed producer rank based on slot offset (in milliseconds).
 ///
-/// # Proof of Presence Windows
+/// # Proof of Time Windows
 ///
-/// With 1-second slots, windows are:
-/// - 0-300ms: Only rank 0 (primary)
-/// - 300-600ms: Rank 0 or 1 (primary or secondary)
-/// - 600-800ms: Rank 0, 1, or 2 (any of the top 3)
-/// - 800-1000ms: Signature collection window
+/// With 10-second slots, windows are:
+/// - 0-3000ms: Only rank 0 (primary)
+/// - 3000-6000ms: Rank 0 or 1 (primary or secondary)
+/// - 6000-10000ms: Rank 0, 1, or 2 (any of the top 3)
 ///
 /// This is the preferred function for precise producer eligibility timing.
 pub fn allowed_producer_rank_ms(slot_offset_ms: u64) -> usize {
@@ -1819,6 +1904,24 @@ pub fn allowed_producer_rank_ms(slot_offset_ms: u64) -> usize {
     } else {
         2
     }
+}
+
+/// Check if a producer rank is eligible at a given time offset.
+///
+/// # Fallback Windows
+/// - 0-3s: Only rank 0 is eligible
+/// - 3-6s: Ranks 0-1 are eligible
+/// - 6-10s: Ranks 0-2 are eligible
+///
+/// # Arguments
+/// * `rank` - The producer's rank (0 = primary, 1 = secondary, 2 = tertiary)
+/// * `offset_ms` - Time offset within the slot in milliseconds
+///
+/// # Returns
+/// true if the rank is eligible at the given offset
+pub fn is_rank_eligible_at_offset(rank: usize, offset_ms: u64) -> bool {
+    let max_rank = allowed_producer_rank_ms(offset_ms);
+    rank <= max_rank
 }
 
 /// Check if a producer is eligible for a slot at the given time.
@@ -1862,26 +1965,26 @@ mod tests {
     fn test_slot_calculation() {
         let params = ConsensusParams::mainnet();
 
-        // With 1-second slots (Proof of Presence)
+        // With 10-second slots (Proof of Time)
         assert_eq!(params.timestamp_to_slot(GENESIS_TIME), 0);
-        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 1), 1);
-        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 2), 2);
-        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 3600), 3600); // 1 hour = 3600 slots
+        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 10), 1);
+        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 20), 2);
+        assert_eq!(params.timestamp_to_slot(GENESIS_TIME + 3600), 360); // 1 hour = 360 slots
     }
 
     #[test]
     fn test_block_reward() {
         let params = ConsensusParams::mainnet();
 
-        // Era 0: ~0.0833 DOLI per block (Proof of Presence emission schedule)
-        assert_eq!(params.block_reward(0), 8_333_333);
-        assert_eq!(params.block_reward(100), 8_333_333);
+        // Era 0: 1 DOLI per block (100,000,000 base units)
+        assert_eq!(params.block_reward(0), 100_000_000);
+        assert_eq!(params.block_reward(100), 100_000_000);
 
-        // Era 1: halved to ~0.0417 DOLI
-        assert_eq!(params.block_reward(BLOCKS_PER_ERA), 4_166_666);
+        // Era 1: halved to 0.5 DOLI (50,000,000 base units)
+        assert_eq!(params.block_reward(BLOCKS_PER_ERA), 50_000_000);
 
-        // Era 2: halved again to ~0.0208 DOLI
-        assert_eq!(params.block_reward(BLOCKS_PER_ERA * 2), 2_083_333);
+        // Era 2: halved again to 0.25 DOLI (25,000,000 base units)
+        assert_eq!(params.block_reward(BLOCKS_PER_ERA * 2), 25_000_000);
     }
 
     #[test]
@@ -1904,11 +2007,11 @@ mod tests {
     fn test_epoch_calculation() {
         let params = ConsensusParams::mainnet();
 
-        // With 3600 slots per epoch (1 hour at 1s slots)
+        // With 360 slots per epoch (1 hour at 10s slots)
         assert_eq!(params.slot_to_epoch(0), 0);
-        assert_eq!(params.slot_to_epoch(3599), 0);
-        assert_eq!(params.slot_to_epoch(3600), 1);
-        assert_eq!(params.slot_to_epoch(7200), 2);
+        assert_eq!(params.slot_to_epoch(359), 0);
+        assert_eq!(params.slot_to_epoch(360), 1);
+        assert_eq!(params.slot_to_epoch(720), 2);
     }
 
     #[test]
@@ -2179,47 +2282,43 @@ mod tests {
 
     #[test]
     fn test_allowed_producer_rank() {
-        // Proof of Presence with 1-second slots
-        // With sub-second windows (300ms/600ms/800ms), the second-based function
-        // cannot provide fine-grained control. Use allowed_producer_rank_ms instead.
-        //
-        // Second-based function returns:
-        // - offset < 0: rank 0 (never true)
-        // - offset < 0: rank 1 (never true)
-        // - else: rank 2 (always)
-        //
-        // This means all producers are eligible from second 0 onwards.
-        // For precise timing control, use allowed_producer_rank_ms.
-        assert_eq!(allowed_producer_rank(0), 2); // All ranks eligible
-        assert_eq!(allowed_producer_rank(1), 2);
+        // Proof of Time with 10-second slots
+        // Windows: 0-3s (rank 0), 3-6s (rank 1), 6-10s (rank 2)
+        assert_eq!(allowed_producer_rank(0), 0); // Primary only
+        assert_eq!(allowed_producer_rank(1), 0);
+        assert_eq!(allowed_producer_rank(2), 0);
+        assert_eq!(allowed_producer_rank(3), 1); // Primary + Secondary
+        assert_eq!(allowed_producer_rank(4), 1);
+        assert_eq!(allowed_producer_rank(5), 1);
+        assert_eq!(allowed_producer_rank(6), 2); // All eligible
+        assert_eq!(allowed_producer_rank(9), 2);
         assert_eq!(allowed_producer_rank(100), 2);
     }
 
     #[test]
     fn test_allowed_producer_rank_ms() {
-        // Proof of Presence windows with millisecond precision (1-second slots)
+        // Proof of Time windows with millisecond precision (10-second slots)
         //
         // Windows:
-        // - 0-300ms: Primary (rank 0)
-        // - 300-600ms: Secondary (rank 1)
-        // - 600-800ms: Tertiary (rank 2)
-        // - 800-1000ms: Signature collection window
+        // - 0-3000ms: Primary (rank 0)
+        // - 3000-6000ms: Secondary (rank 1)
+        // - 6000-10000ms: Tertiary (rank 2)
 
-        // Primary window: 0-300ms
+        // Primary window: 0-3000ms
         assert_eq!(allowed_producer_rank_ms(0), 0);
-        assert_eq!(allowed_producer_rank_ms(150), 0);
-        assert_eq!(allowed_producer_rank_ms(299), 0);
+        assert_eq!(allowed_producer_rank_ms(1500), 0);
+        assert_eq!(allowed_producer_rank_ms(2999), 0);
 
-        // Secondary window: 300-600ms
-        assert_eq!(allowed_producer_rank_ms(300), 1);
-        assert_eq!(allowed_producer_rank_ms(450), 1);
-        assert_eq!(allowed_producer_rank_ms(599), 1);
+        // Secondary window: 3000-6000ms
+        assert_eq!(allowed_producer_rank_ms(3000), 1);
+        assert_eq!(allowed_producer_rank_ms(4500), 1);
+        assert_eq!(allowed_producer_rank_ms(5999), 1);
 
-        // Tertiary window: 600ms+
-        assert_eq!(allowed_producer_rank_ms(600), 2);
-        assert_eq!(allowed_producer_rank_ms(800), 2);
-        assert_eq!(allowed_producer_rank_ms(1000), 2);
-        assert_eq!(allowed_producer_rank_ms(5000), 2); // Beyond slot is still tertiary
+        // Tertiary window: 6000ms+
+        assert_eq!(allowed_producer_rank_ms(6000), 2);
+        assert_eq!(allowed_producer_rank_ms(8000), 2);
+        assert_eq!(allowed_producer_rank_ms(10000), 2);
+        assert_eq!(allowed_producer_rank_ms(15000), 2); // Beyond slot is still tertiary
     }
 
     #[test]
@@ -2232,22 +2331,23 @@ mod tests {
             })
             .collect();
 
-        // Proof of Presence with 1-second slots:
-        // With sub-second windows (300ms/600ms/800ms), the second-based eligibility
-        // function allows all ranked producers from second 0.
-        //
-        // For precise timing control, use is_producer_eligible_ms instead.
-        // At second 0+, all 3 producers are eligible (max_rank = 2)
+        // Proof of Time with 10-second slots:
+        // Windows: 0-3s (rank 0), 3-6s (rank 1), 6-10s (rank 2)
 
-        // All producers are eligible at any second offset
+        // At second 0: only primary (rank 0) is eligible
         assert!(is_producer_eligible(&producers[0], &producers, 0));
-        assert!(is_producer_eligible(&producers[1], &producers, 0));
-        assert!(is_producer_eligible(&producers[2], &producers, 0));
+        assert!(!is_producer_eligible(&producers[1], &producers, 0));
+        assert!(!is_producer_eligible(&producers[2], &producers, 0));
 
-        // And still eligible in later seconds
-        assert!(is_producer_eligible(&producers[0], &producers, 1));
-        assert!(is_producer_eligible(&producers[1], &producers, 1));
-        assert!(is_producer_eligible(&producers[2], &producers, 1));
+        // At second 3: primary + secondary (rank 0-1) are eligible
+        assert!(is_producer_eligible(&producers[0], &producers, 3));
+        assert!(is_producer_eligible(&producers[1], &producers, 3));
+        assert!(!is_producer_eligible(&producers[2], &producers, 3));
+
+        // At second 6+: all are eligible
+        assert!(is_producer_eligible(&producers[0], &producers, 6));
+        assert!(is_producer_eligible(&producers[1], &producers, 6));
+        assert!(is_producer_eligible(&producers[2], &producers, 6));
     }
 
     #[test]
@@ -2359,16 +2459,16 @@ mod tests {
     }
 
     #[test]
-    fn test_unbonding_period_is_7_days() {
-        // At 1 block per second: 7 days = 7 * 24 * 60 * 60 = 604,800 blocks
-        // (60 blocks per minute with 1-second slots)
-        assert_eq!(UNBONDING_PERIOD, 604_800);
+    fn test_unbonding_period_is_30_days() {
+        // At 10 seconds per slot: 30 days = 30 * 24 * 360 slots/day = 259,200 slots
+        assert_eq!(UNBONDING_PERIOD, 259_200);
     }
 
     #[test]
     fn test_commitment_period_is_4_years() {
-        // Commitment period should equal one era (4 years)
-        assert_eq!(COMMITMENT_PERIOD, BLOCKS_PER_ERA);
+        // Commitment period: 4 years at 10s slots
+        // 4 * 365 * 24 * 360 = 12,614,400 slots
+        assert_eq!(COMMITMENT_PERIOD, 4 * YEAR_IN_SLOTS as BlockHeight);
     }
 
     // ==================== RewardMode Tests ====================
