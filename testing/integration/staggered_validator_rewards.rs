@@ -134,15 +134,16 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     let hash3 = hash(pubkey3.as_bytes());
 
     // Track join times (slot when each producer first produces)
+    // With 30 slots per epoch: epoch 0 = slots 1-30, epoch 1 = slots 31-60
     let join_slot_p1: Slot = 1;
-    let join_slot_p2: Slot = 10; // Mid-epoch
-    let join_slot_p3: Slot = 21; // Start of epoch 2
+    let join_slot_p2: Slot = 15; // Mid-epoch
+    let join_slot_p3: Slot = 31; // Start of epoch 1
 
     println!("=== Test Setup ===");
     println!("Epoch length: {} slots", epoch_length);
-    println!("Producer 1 joins at slot: {} (epoch 0)", join_slot_p1);
-    println!("Producer 2 joins at slot: {} (epoch 0, mid-way)", join_slot_p2);
-    println!("Producer 3 joins at slot: {} (epoch 1)", join_slot_p3);
+    println!("Producer 1 joins at slot: {} (epoch 0 start)", join_slot_p1);
+    println!("Producer 2 joins at slot: {} (epoch 0 mid-way)", join_slot_p2);
+    println!("Producer 3 joins at slot: {} (epoch 1 start)", join_slot_p3);
     println!();
 
     // Genesis block
@@ -152,8 +153,8 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
 
     let mut epoch_rewards: Vec<Vec<(PublicKey, Amount, u64)>> = Vec::new();
 
-    // Simulate 3 epochs (60 slots)
-    for slot in 1..=60 {
+    // Simulate 3 epochs (90 slots with 30 slots per epoch)
+    for slot in 1..=90 {
         // Determine who produces this slot based on round-robin
         let producer = if slot < join_slot_p2 {
             // Only P1 is active
@@ -206,12 +207,12 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
         }
     }
 
-    assert_eq!(node.height().await, 60);
+    assert_eq!(node.height().await, 90);
 
-    // Verify Epoch 0 rewards (slots 1-20)
-    // P1 produced slots 1-9 (9 blocks) alone
-    // P1 and P2 alternate slots 10-20 (6 for P1, 5 for P2)
-    // Total: P1=15, P2=5 blocks
+    // Verify Epoch 0 rewards (slots 1-30)
+    // P1 produced slots 1-14 (14 blocks) alone
+    // P1 and P2 alternate slots 15-30 (8 for P1, 8 for P2)
+    // Total: P1=22, P2=8 blocks
     println!("=== Verifying Epoch 0 ===");
     let epoch0 = &epoch_rewards[0];
 
@@ -270,7 +271,7 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
 
     println!();
 
-    // Verify Epoch 1 rewards (slots 21-40)
+    // Verify Epoch 1 rewards (slots 31-60)
     // P1, P2, P3 all active with round-robin
     println!("=== Verifying Epoch 1 ===");
     let epoch1 = &epoch_rewards[1];
@@ -291,7 +292,7 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     println!("  P3 blocks: {:?}", p3_in_epoch1.map(|(_, _, b)| b));
     println!();
 
-    // Verify Epoch 2 rewards (slots 41-60)
+    // Verify Epoch 2 rewards (slots 61-90)
     println!("=== Verifying Epoch 2 ===");
     let epoch2 = &epoch_rewards[2];
 
@@ -328,8 +329,8 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
     node.add_block(genesis.clone()).await.unwrap();
     let mut prev_hash = genesis.hash();
 
-    // Only P1 produces for the entire epoch
-    for slot in 1..=20 {
+    // Only P1 produces for the entire epoch (30 slots per epoch in devnet)
+    for slot in 1..=30 {
         let reward = params.block_reward(slot as BlockHeight);
         let coinbase = create_coinbase(slot as BlockHeight, &hash1, reward);
         let block = create_test_block(
@@ -345,8 +346,8 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
         tracker.track_block(pubkey1.clone(), slot as BlockHeight);
     }
 
-    // Check epoch boundary
-    let rewards = tracker.check_epoch_boundary(20).unwrap();
+    // Check epoch boundary (30 slots per epoch)
+    let rewards = tracker.check_epoch_boundary(30).unwrap();
 
     // Only P1 should receive rewards
     assert_eq!(rewards.len(), 1, "Only 1 producer should receive rewards");
@@ -383,8 +384,8 @@ async fn test_ten_producers_fair_distribution() {
     let hashes: Vec<_> = pubkeys.iter().map(|pk| hash(pk.as_bytes())).collect();
 
     // Join slots for each producer (spread across first epoch)
-    // P0: slot 1, P1: slot 3, P2: slot 5, ... P9: slot 19
-    let join_slots: Vec<Slot> = (0..10).map(|i| 1 + i * 2).collect();
+    // P0: slot 1, P1: slot 3, P2: slot 6, ... P9: slot 28 (spread over 30-slot epoch)
+    let join_slots: Vec<Slot> = (0..10).map(|i| 1 + i * 3).collect();
 
     println!("=== 10 Producer Staggered Join Test ===");
     for (i, slot) in join_slots.iter().enumerate() {
@@ -399,8 +400,8 @@ async fn test_ten_producers_fair_distribution() {
 
     let mut epoch_rewards: Vec<Vec<(PublicKey, Amount, u64)>> = Vec::new();
 
-    // Run for 3 epochs (60 slots)
-    for slot in 1..=60 {
+    // Run for 3 epochs (90 slots with 30 slots per epoch)
+    for slot in 1..=90 {
         // Find active producers at this slot
         let active: Vec<usize> = join_slots
             .iter()
@@ -435,18 +436,18 @@ async fn test_ten_producers_fair_distribution() {
         }
     }
 
-    assert_eq!(node.height().await, 60);
+    assert_eq!(node.height().await, 90);
 
     // Epoch 0: Not all producers are active yet
     println!("\n=== Epoch 0 Analysis ===");
     let epoch0 = &epoch_rewards[0];
     println!("Producers with rewards: {}", epoch0.len());
 
-    // Count how many should be active by slot 20
-    let expected_active_epoch0 = join_slots.iter().filter(|&&s| s <= 20).count();
+    // Count how many should be active by slot 30
+    let expected_active_epoch0 = join_slots.iter().filter(|&&s| s <= 30).count();
     assert!(
         epoch0.len() <= expected_active_epoch0,
-        "Only producers who joined by slot 20 should get epoch 0 rewards"
+        "Only producers who joined by slot 30 should get epoch 0 rewards"
     );
 
     // Epoch 1 and 2: All 10 producers should be active
@@ -506,18 +507,18 @@ async fn test_proportional_rewards_unequal_blocks() {
     let pubkey3 = producer3.public_key().clone();
 
     println!("=== Proportional Rewards Bug Fix Test ===");
-    println!("Simulating: Node1=5 blocks, Node2=14 blocks, Node3=1 block");
-    println!("Expected:   Node1=25%, Node2=70%, Node3=5%");
+    println!("Simulating: Node1=8 blocks, Node2=21 blocks, Node3=1 block");
+    println!("Expected:   Node1=~27%, Node2=70%, Node3=~3%");
     println!();
 
-    // Simulate 20 blocks with specific distribution:
-    // Node1: blocks 1-5 (5 blocks)
-    // Node2: blocks 6-19 (14 blocks)
-    // Node3: block 20 (1 block)
-    for height in 1..=20u64 {
-        let producer = if height <= 5 {
+    // Simulate 30 blocks with specific distribution (30 slots per epoch):
+    // Node1: blocks 1-8 (8 blocks)
+    // Node2: blocks 9-29 (21 blocks)
+    // Node3: block 30 (1 block)
+    for height in 1..=30u64 {
+        let producer = if height <= 8 {
             &pubkey1
-        } else if height <= 19 {
+        } else if height <= 29 {
             &pubkey2
         } else {
             &pubkey3
@@ -526,7 +527,7 @@ async fn test_proportional_rewards_unequal_blocks() {
     }
 
     // Get epoch rewards
-    let rewards = tracker.check_epoch_boundary(20).unwrap();
+    let rewards = tracker.check_epoch_boundary(30).unwrap();
 
     // Find each producer's reward
     let r1 = rewards.iter().find(|(pk, _, _)| pk == &pubkey1).unwrap();
@@ -549,45 +550,46 @@ async fn test_proportional_rewards_unequal_blocks() {
     println!("  Total: {} blocks, {} DOLI pool", total_blocks, total_pool / 100_000_000);
 
     // Verify block counts
-    assert_eq!(r1.2, 5, "Node1 should have 5 blocks");
-    assert_eq!(r2.2, 14, "Node2 should have 14 blocks");
+    assert_eq!(r1.2, 8, "Node1 should have 8 blocks");
+    assert_eq!(r2.2, 21, "Node2 should have 21 blocks");
     assert_eq!(r3.2, 1, "Node3 should have 1 block");
-    assert_eq!(total_blocks, 20, "Total should be 20 blocks");
+    assert_eq!(total_blocks, 30, "Total should be 30 blocks");
 
     // Verify proportional rewards
-    // Node2 (14 blocks) should get much more than Node1 (5 blocks)
+    // Node2 (21 blocks) should get much more than Node1 (8 blocks)
     assert!(
         r2.1 > r1.1 * 2,
-        "Node2 (14 blocks) should get >2x Node1's (5 blocks) reward: {} vs {}",
+        "Node2 (21 blocks) should get >2x Node1's (8 blocks) reward: {} vs {}",
         r2.1, r1.1
     );
 
-    // Node1 (5 blocks) should get exactly 5x Node3's (1 block) reward
-    let expected_ratio = 5.0;
+    // Node1 (8 blocks) should get exactly 8x Node3's (1 block) reward
+    let expected_ratio = 8.0;
     let actual_ratio = r1.1 as f64 / r3.1 as f64;
     assert!(
         (actual_ratio - expected_ratio).abs() < 0.1,
-        "Node1 should get ~5x Node3's reward: expected ratio {}, got {}",
+        "Node1 should get ~8x Node3's reward: expected ratio {}, got {}",
         expected_ratio, actual_ratio
     );
 
-    // Node2 (14 blocks) should get 14x Node3's (1 block) reward
-    let expected_ratio = 14.0;
+    // Node2 (21 blocks) should get 21x Node3's (1 block) reward
+    let expected_ratio = 21.0;
     let actual_ratio = r2.1 as f64 / r3.1 as f64;
     assert!(
         (actual_ratio - expected_ratio).abs() < 0.1,
-        "Node2 should get ~14x Node3's reward: expected ratio {}, got {}",
+        "Node2 should get ~21x Node3's reward: expected ratio {}, got {}",
         expected_ratio, actual_ratio
     );
 
     // Verify percentages are correct (within rounding)
+    // 8/30 = 26.7%, 21/30 = 70%, 1/30 = 3.3%
     let p1_pct = (r1.1 as f64 / total_pool as f64) * 100.0;
     let p2_pct = (r2.1 as f64 / total_pool as f64) * 100.0;
     let p3_pct = (r3.1 as f64 / total_pool as f64) * 100.0;
 
-    assert!((p1_pct - 25.0).abs() < 1.0, "Node1 should get ~25%: got {:.1}%", p1_pct);
+    assert!((p1_pct - 26.7).abs() < 1.0, "Node1 should get ~27%: got {:.1}%", p1_pct);
     assert!((p2_pct - 70.0).abs() < 1.0, "Node2 should get ~70%: got {:.1}%", p2_pct);
-    assert!((p3_pct - 5.0).abs() < 1.0, "Node3 should get ~5%: got {:.1}%", p3_pct);
+    assert!((p3_pct - 3.3).abs() < 1.0, "Node3 should get ~3.3%: got {:.1}%", p3_pct);
 
     println!("\n=== TEST PASSED ===");
     println!("Rewards are correctly proportional to blocks produced!");
