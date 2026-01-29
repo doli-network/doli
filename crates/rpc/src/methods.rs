@@ -49,6 +49,8 @@ pub struct RpcContext {
     pub broadcast_tx: Arc<dyn Fn(Transaction) + Send + Sync>,
     /// Sync status function
     pub sync_status: Arc<dyn Fn() -> SyncStatus + Send + Sync>,
+    /// Broadcast vote function (for governance veto system)
+    pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
 }
 
 impl RpcContext {
@@ -72,6 +74,7 @@ impl RpcContext {
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
             sync_status: Arc::new(|| SyncStatus::default()),
+            broadcast_vote: Arc::new(|_| {}),
         }
     }
 
@@ -110,6 +113,12 @@ impl RpcContext {
         self.producer_set = Some(producer_set);
         self
     }
+
+    /// Set broadcast vote callback (for governance veto system)
+    pub fn with_broadcast_vote(mut self, f: impl Fn(Vec<u8>) + Send + Sync + 'static) -> Self {
+        self.broadcast_vote = Arc::new(f);
+        self
+    }
 }
 
 impl RpcContext {
@@ -130,6 +139,9 @@ impl RpcContext {
             "getProducer" => self.get_producer(request.params).await,
             "getProducers" => self.get_producers(request.params).await,
             "getHistory" => self.get_history(request.params).await,
+            "submitVote" => self.submit_vote(request.params).await,
+            "getUpdateStatus" => self.get_update_status().await,
+            "getNodeInfo" => self.get_node_info().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -574,5 +586,47 @@ impl RpcContext {
         }
 
         serde_json::to_value(history).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Submit a vote for a pending update (governance veto system)
+    async fn submit_vote(&self, params: Value) -> Result<Value, RpcError> {
+        let params: SubmitVoteParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        // Serialize the vote message for broadcasting
+        let vote_data = serde_json::to_vec(&params.vote)
+            .map_err(|e| RpcError::internal_error(format!("Failed to serialize vote: {}", e)))?;
+
+        // Broadcast via gossip
+        (self.broadcast_vote)(vote_data);
+
+        Ok(serde_json::json!({
+            "status": "submitted",
+            "message": "Vote submitted and broadcast to network"
+        }))
+    }
+
+    /// Get the current update status (pending updates, votes, etc.)
+    async fn get_update_status(&self) -> Result<Value, RpcError> {
+        // For now, return a placeholder - full implementation would query the update service
+        Ok(serde_json::json!({
+            "pending_update": null,
+            "veto_period_active": false,
+            "veto_count": 0,
+            "veto_percent": 0,
+            "message": "Update status tracking not yet integrated with RPC"
+        }))
+    }
+
+    /// Get node information including version
+    async fn get_node_info(&self) -> Result<Value, RpcError> {
+        Ok(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "network": self.network,
+            "peerId": self.peer_id,
+            "peerCount": (self.peer_count)(),
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH
+        }))
     }
 }

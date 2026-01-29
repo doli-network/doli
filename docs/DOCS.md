@@ -29,6 +29,7 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [MANIFESTO.md](./MANIFESTO.md) | Project philosophy and principles |
 | [ROADMAP.md](./ROADMAP.md) | Development roadmap and milestones |
+| [AUTO_UPDATE_SYSTEM.md](./AUTO_UPDATE_SYSTEM.md) | Complete auto-update system - maintainer keys, voting, binary replacement |
 
 ## Testing
 
@@ -60,6 +61,7 @@ docs/
 ├── TROUBLESHOOTING.md        # Common issues
 ├── MANIFESTO.md              # Project philosophy
 ├── ROADMAP.md                # Development roadmap
+├── AUTO_UPDATE_SYSTEM.md     # Complete auto-update documentation
 ├── WHITEPAPER_TEST_PLAN.md   # Complete whitepaper test plan
 └── research/
     ├── ATTACK_ANALYSIS.md
