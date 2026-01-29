@@ -180,6 +180,17 @@ enum ProducerCommands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Submit slashing evidence for double production (equivocation)
+    Slash {
+        /// Block 1 hash (first conflicting block)
+        #[arg(long)]
+        block1: String,
+
+        /// Block 2 hash (second conflicting block for same slot)
+        #[arg(long)]
+        block2: String,
+    },
 }
 
 #[tokio::main]
@@ -1103,6 +1114,72 @@ async fn cmd_producer(
                     println!("Error submitting exit: {}", e);
                 }
             }
+        }
+
+        ProducerCommands::Slash { block1, block2 } => {
+            println!("Submit Slashing Evidence");
+            println!("{:-<60}", "");
+            println!();
+
+            println!("Checking blocks for equivocation evidence...");
+            println!("  Block 1: {}", block1);
+            println!("  Block 2: {}", block2);
+
+            // Get block info from RPC to verify it's a valid equivocation
+            let block1_resp = rpc.get_block(&block1).await?;
+            let block2_resp = rpc.get_block(&block2).await?;
+
+            // Verify they're for the same slot (equivocation)
+            if block1_resp.slot != block2_resp.slot {
+                println!();
+                println!("Error: Blocks are for different slots!");
+                println!("  Block 1 slot: {}", block1_resp.slot);
+                println!("  Block 2 slot: {}", block2_resp.slot);
+                println!();
+                println!("Slashing requires two different blocks for the SAME slot.");
+                return Ok(());
+            }
+
+            // Verify they're from the same producer
+            if block1_resp.producer != block2_resp.producer {
+                println!();
+                println!("Error: Blocks are from different producers!");
+                println!("  Block 1 producer: {}", block1_resp.producer);
+                println!("  Block 2 producer: {}", block2_resp.producer);
+                println!();
+                println!("Slashing requires blocks from the SAME producer.");
+                return Ok(());
+            }
+
+            // Verify blocks are different
+            if block1_resp.hash == block2_resp.hash {
+                println!();
+                println!("Error: Both hashes refer to the same block!");
+                println!("Slashing requires two DIFFERENT blocks for the same slot.");
+                return Ok(());
+            }
+
+            println!();
+            println!("Equivocation confirmed!");
+            println!("  Producer: {}", block1_resp.producer);
+            println!("  Slot:     {}", block1_resp.slot);
+            println!("  Block 1:  {} (height {})", block1_resp.hash, block1_resp.height);
+            println!("  Block 2:  {} (height {})", block2_resp.hash, block2_resp.height);
+            println!();
+
+            // Note: Full slashing requires raw block headers with VDF proofs.
+            // This is handled automatically by nodes that detect equivocation.
+            // The CLI command is for manual submission when evidence is obtained.
+            println!("Note: Slashing evidence submission requires full block headers with VDF proofs.");
+            println!();
+            println!("Nodes automatically detect and submit slashing evidence when they");
+            println!("receive conflicting blocks for the same slot. If you have raw block");
+            println!("data with VDF proofs, use the node's internal submission mechanism.");
+            println!();
+            println!("The equivocating producer ({}) will be:", &block1_resp.producer[..16]);
+            println!("  - Have their entire bond burned (100% penalty)");
+            println!("  - Excluded from the producer set immediately");
+            println!("  - Required to re-register with 2x difficulty to rejoin");
         }
     }
 

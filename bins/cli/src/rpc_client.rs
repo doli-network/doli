@@ -323,6 +323,32 @@ impl RpcClient {
             Err(_) => Ok(false),
         }
     }
+
+    /// Get block by hash
+    pub async fn get_block(&self, hash: &str) -> Result<BlockInfo> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            hash: &'a str,
+        }
+
+        self.call("getBlockByHash", Params { hash }).await
+    }
+}
+
+/// Block information (for CLI display)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockInfo {
+    /// Block hash
+    pub hash: String,
+    /// Block height
+    pub height: u64,
+    /// Slot number
+    pub slot: u32,
+    /// Producer public key (hex)
+    pub producer: String,
+    /// Timestamp
+    pub timestamp: u64,
 }
 
 /// Convert base units to display coins (8 decimal places)
