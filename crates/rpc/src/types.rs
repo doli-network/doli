@@ -396,6 +396,29 @@ pub struct GetProducersParams {
     pub active_only: bool,
 }
 
+/// Vote message for governance veto system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteMessageParams {
+    /// Version being voted on
+    pub version: String,
+    /// Vote type: "approve" or "veto"
+    pub vote: String,
+    /// Producer's public key (hex)
+    pub producer_id: String,
+    /// Unix timestamp of the vote
+    pub timestamp: u64,
+    /// Signature over "version:vote:timestamp" (hex)
+    pub signature: String,
+}
+
+/// Parameters for submitVote
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitVoteParams {
+    /// The signed vote message
+    pub vote: VoteMessageParams,
+}
+
 /// Producer response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
