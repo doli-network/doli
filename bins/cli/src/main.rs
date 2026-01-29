@@ -542,30 +542,37 @@ async fn cmd_history(wallet_path: &PathBuf, rpc_endpoint: &str, limit: usize) ->
     let primary_pubkey_hash = wallet.primary_pubkey_hash();
 
     match rpc.get_history(&primary_pubkey_hash, limit).await {
-        Ok(transactions) => {
-            if transactions.is_empty() {
+        Ok(entries) => {
+            if entries.is_empty() {
                 println!("No transactions found.");
             } else {
-                for tx in transactions {
-                    let status = if tx.confirmations > 0 {
-                        format!("{} confirmations", tx.confirmations)
+                for entry in entries {
+                    let status = if entry.confirmations > 0 {
+                        format!("{} confirmations", entry.confirmations)
                     } else {
                         "pending".to_string()
                     };
 
-                    let tx_type = match tx.tx_type {
-                        0 => "Transfer",
-                        1 => "Registration",
-                        2 => "Exit",
-                        _ => "Unknown",
-                    };
+                    // Capitalize first letter of tx_type
+                    let tx_type = entry
+                        .tx_type
+                        .chars()
+                        .next()
+                        .map(|c| c.to_uppercase().to_string())
+                        .unwrap_or_default()
+                        + &entry.tx_type.chars().skip(1).collect::<String>();
 
-                    println!("Hash:   {}", tx.hash);
-                    println!("Type:   {}", tx_type);
-                    println!("Status: {}", status);
-                    println!("Fee:    {}", format_balance(tx.fee));
-                    if let Some(height) = tx.block_height {
-                        println!("Block:  {}", height);
+                    println!("Hash:     {}", entry.hash);
+                    println!("Type:     {}", tx_type);
+                    println!("Block:    {} ({})", entry.height, status);
+                    if entry.amount_received > 0 {
+                        println!("Received: +{}", format_balance(entry.amount_received));
+                    }
+                    if entry.amount_sent > 0 {
+                        println!("Sent:     -{}", format_balance(entry.amount_sent));
+                    }
+                    if entry.fee > 0 {
+                        println!("Fee:      {}", format_balance(entry.fee));
                     }
                     println!();
                 }

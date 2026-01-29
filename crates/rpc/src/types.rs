@@ -343,6 +343,44 @@ pub struct GetUtxosParams {
     pub spendable_only: bool,
 }
 
+/// Parameters for getHistory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetHistoryParams {
+    /// Address or pubkey hash (hex)
+    pub address: String,
+    /// Maximum number of transactions to return
+    #[serde(default = "default_history_limit")]
+    pub limit: usize,
+}
+
+fn default_history_limit() -> usize {
+    10
+}
+
+/// History entry response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntryResponse {
+    /// Transaction hash
+    pub hash: String,
+    /// Transaction type
+    pub tx_type: String,
+    /// Block hash
+    pub block_hash: String,
+    /// Block height
+    pub height: u64,
+    /// Timestamp
+    pub timestamp: u64,
+    /// Amount received (if any)
+    pub amount_received: u64,
+    /// Amount sent (if any)
+    pub amount_sent: u64,
+    /// Fee (for outgoing transactions)
+    pub fee: u64,
+    /// Confirmations
+    pub confirmations: u64,
+}
+
 /// Parameters for getProducer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetProducerParams {
