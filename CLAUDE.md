@@ -141,7 +141,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 
 ### Consensus: How Proof of Time Works
 
-1. **Slot-based time**: 60-second slots, wall-clock time determines when slots occur
+1. **Slot-based time**: 10-second slots, wall-clock time determines when slots occur
 2. **Deterministic selection**: `slot % total_bonds` selects producer (no lottery variance)
 3. **Heartbeat VDF**: ~700ms proof of sequential presence per block (anti-grinding)
 4. **Epoch Lookahead**: Leaders determined at epoch start, so grinding current block cannot influence future selection
