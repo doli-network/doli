@@ -335,7 +335,7 @@ arch:
 # Display time structure info
 time-info:
     @echo "DOLI Time Structure:"
-    @echo "  • Slot    = 60 seconds (mainnet) / 10s (testnet) / 5s (devnet)"
+    @echo "  • Slot    = 10 seconds (mainnet/testnet) / 1s (devnet)"
     @echo "  • Epoch   = 60 slots (1 hour on mainnet)"
     @echo "  • Era     = 2,102,400 slots (~4 years) - triggers reward halving"
 
