@@ -2750,8 +2750,8 @@ mod tests {
     ///
     /// The VDF serves as anti-grinding protection, and parameters are
     /// calibrated per-network for practical operation:
-    /// - Mainnet: 2048-bit discriminant, higher iterations for security
-    /// - Testnet: 512-bit discriminant, lower iterations for practical testing
+    /// - Mainnet: 2048-bit discriminant, 100k iterations for security
+    /// - Testnet: Same as Mainnet (production-identical testing)
     /// - Devnet: 256-bit discriminant, uses fast hash-chain VDF
     #[test]
     fn test_vdf_validation_uses_network_specific_parameters() {
@@ -2760,29 +2760,24 @@ mod tests {
         assert!(Network::Testnet.vdf_enabled());
         assert!(Network::Devnet.vdf_enabled()); // Uses fast hash-chain VDF
 
-        // Each network has different VDF iterations (class-group VDF params, not used for devnet)
-        assert!(Network::Mainnet.vdf_iterations() > Network::Testnet.vdf_iterations());
-        assert!(Network::Testnet.vdf_iterations() > Network::Devnet.vdf_iterations());
-
-        // Testnet should have minimal iterations for practical testing
-        assert_eq!(Network::Testnet.vdf_iterations(), 10);
-
-        // Devnet has single iteration (uses hash-chain VDF instead)
-        assert_eq!(Network::Devnet.vdf_iterations(), 1);
-
-        // Each network has different discriminant sizes
-        assert!(
-            Network::Mainnet.vdf_discriminant_bits() > Network::Testnet.vdf_discriminant_bits()
+        // Testnet has identical VDF parameters to Mainnet (production-identical testing)
+        assert_eq!(
+            Network::Mainnet.vdf_iterations(),
+            Network::Testnet.vdf_iterations()
         );
-        assert!(Network::Testnet.vdf_discriminant_bits() > Network::Devnet.vdf_discriminant_bits());
+        assert_eq!(
+            Network::Mainnet.vdf_discriminant_bits(),
+            Network::Testnet.vdf_discriminant_bits()
+        );
 
-        // Mainnet uses production-grade 2048-bit discriminant
+        // Mainnet and Testnet use production-grade parameters
+        assert_eq!(Network::Mainnet.vdf_iterations(), 100_000);
         assert_eq!(Network::Mainnet.vdf_discriminant_bits(), 2048);
 
-        // Testnet uses 512-bit discriminant for faster testing
-        assert_eq!(Network::Testnet.vdf_discriminant_bits(), 512);
-
-        // Devnet uses 256-bit discriminant (uses hash-chain VDF)
+        // Devnet has minimal parameters (uses hash-chain VDF)
+        assert!(Network::Mainnet.vdf_iterations() > Network::Devnet.vdf_iterations());
+        assert!(Network::Mainnet.vdf_discriminant_bits() > Network::Devnet.vdf_discriminant_bits());
+        assert_eq!(Network::Devnet.vdf_iterations(), 1);
         assert_eq!(Network::Devnet.vdf_discriminant_bits(), 256);
 
         // Each network has unique VDF seeds
