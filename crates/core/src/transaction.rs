@@ -533,6 +533,45 @@ impl Transaction {
         EpochRewardData::from_bytes(&self.extra_data)
     }
 
+    /// Create a registration transaction
+    ///
+    /// This creates a transaction to register as a block producer.
+    /// Inputs must cover the bond amount. The bond is locked for 4 years.
+    ///
+    /// Note: For simplicity, this creates a basic registration. For full
+    /// registration with VDF proofs, use the node's registration flow.
+    pub fn new_registration(
+        inputs: Vec<Input>,
+        public_key: PublicKey,
+        bond_amount: Amount,
+        _bond_count: u32,
+    ) -> Self {
+        // Create registration data without VDF (for CLI use)
+        // Full VDF registration happens through node's registration flow
+        let reg_data = RegistrationData {
+            public_key,
+            epoch: 0,
+            vdf_output: Vec::new(),
+            vdf_proof: Vec::new(),
+            prev_registration_hash: Hash::ZERO,
+            sequence_number: 0,
+        };
+        let extra_data = bincode::serialize(&reg_data).unwrap_or_default();
+
+        // Create bond output (locked to producer's pubkey)
+        // Lock until is set to 0 here; actual lock calculation happens during validation
+        let pubkey_hash = crypto::hash::hash(public_key.as_bytes());
+        let bond_output = Output::bond(bond_amount, pubkey_hash, 0);
+
+        Self {
+            version: 1,
+            tx_type: TxType::Registration,
+            inputs,
+            outputs: vec![bond_output],
+            extra_data,
+        }
+    }
+
     /// Create an exit transaction
     pub fn new_exit(public_key: PublicKey) -> Self {
         let exit_data = ExitData { public_key };

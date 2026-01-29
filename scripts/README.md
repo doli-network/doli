@@ -177,6 +177,41 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_whitepaper_full.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_whitepaper_full.sh` |
+| **Purpose** | Comprehensive test of ALL WHITEPAPER.md functionalities |
+| **What it tests** | Genesis, VDF, multi-node sync, producer selection, rewards, inactivity, fallback, seniority weights |
+| **Dependencies** | `cargo build --release`, `doli-node`, `doli-cli` |
+| **Run time** | ~5-10 minutes |
+| **Output** | `/tmp/doli-whitepaper-test-*/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_whitepaper_full.sh
+```
+
+**Test categories:**
+1. Genesis & Distribution (no premine, genesis message)
+2. VDF & Proof of Time (computation time, slot progression)
+3. Multi-node Network (sync, same genesis)
+4. Producer Selection (round-robin, schedule)
+5. Epoch Rewards (distribution, amounts)
+6. Inactivity Handling (removal, reactivation)
+7. Fallback Mechanism (secondary producers)
+8. Chain Synchronization (height sync)
+9. Seniority Weights (time-based weight progression)
+
+**Output:**
+- `reports/summary.txt` - Test results summary
+- `logs/node*.log` - Individual node logs
+
+**See also:** `docs/WHITEPAPER_TEST_PLAN.md` for detailed manual test procedures.
+
+---
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |
@@ -187,6 +222,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | `test_validator_rewards_simple.sh` | 3 | ~5 min | Simple rewards |
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
+| `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
 
 ---
 

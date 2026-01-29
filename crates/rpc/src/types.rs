@@ -342,3 +342,57 @@ pub struct GetUtxosParams {
     #[serde(default)]
     pub spendable_only: bool,
 }
+
+/// Parameters for getProducer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetProducerParams {
+    /// Producer public key (hex)
+    pub public_key: String,
+}
+
+/// Parameters for getProducers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetProducersParams {
+    /// Only return active producers
+    #[serde(default)]
+    pub active_only: bool,
+}
+
+/// Producer response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducerResponse {
+    /// Public key (hex)
+    pub public_key: String,
+    /// Registration height
+    pub registration_height: u64,
+    /// Bond amount (total)
+    pub bond_amount: u64,
+    /// Number of bonds staked
+    pub bond_count: u32,
+    /// Status (active, unbonding, exited, slashed)
+    pub status: String,
+    /// Blocks produced
+    pub blocks_produced: u64,
+    /// Pending rewards (unclaimed)
+    pub pending_rewards: u64,
+    /// Current era
+    pub era: u64,
+    /// Pending withdrawals
+    #[serde(default)]
+    pub pending_withdrawals: Vec<PendingWithdrawalResponse>,
+}
+
+/// Pending withdrawal response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWithdrawalResponse {
+    /// Number of bonds being withdrawn
+    pub bond_count: u32,
+    /// Slot when withdrawal was requested
+    pub request_slot: u32,
+    /// Net amount after penalty
+    pub net_amount: u64,
+    /// Whether this withdrawal can be claimed now
+    pub claimable: bool,
+}

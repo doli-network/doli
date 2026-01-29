@@ -129,7 +129,11 @@ enum Commands {
 #[derive(Subcommand)]
 enum ProducerCommands {
     /// Register as a block producer
-    Register,
+    Register {
+        /// Number of bonds to stake (1-100, each bond = 1,000 DOLI)
+        #[arg(short, long, default_value = "1")]
+        bonds: u32,
+    },
 
     /// Check producer status
     Status {
@@ -138,8 +142,44 @@ enum ProducerCommands {
         pubkey: Option<String>,
     },
 
-    /// Withdraw from producer set
-    Withdraw,
+    /// List all producers in the network
+    List {
+        /// Show only active producers
+        #[arg(short, long)]
+        active: bool,
+    },
+
+    /// Add more bonds to increase stake (bond stacking)
+    AddBond {
+        /// Number of bonds to add (1-100)
+        #[arg(short, long)]
+        count: u32,
+    },
+
+    /// Request withdrawal of bonds (starts 7-day delay)
+    RequestWithdrawal {
+        /// Number of bonds to withdraw
+        #[arg(short, long)]
+        count: u32,
+
+        /// Destination address for withdrawn funds (hex pubkey_hash)
+        #[arg(short, long)]
+        destination: Option<String>,
+    },
+
+    /// Claim withdrawal after 7-day delay
+    ClaimWithdrawal {
+        /// Withdrawal index (use 'producer status' to see pending withdrawals)
+        #[arg(short, long, default_value = "0")]
+        index: u32,
+    },
+
+    /// Exit the producer set (early exit incurs penalty)
+    Exit {
+        /// Force early exit with penalty
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -590,6 +630,9 @@ async fn cmd_producer(
     rpc_endpoint: &str,
     command: ProducerCommands,
 ) -> Result<()> {
+    use crypto::{signature, Hash, PublicKey};
+    use doli_core::{Input, Output, Transaction};
+
     let rpc = RpcClient::new(rpc_endpoint);
 
     // Check connection
@@ -599,23 +642,98 @@ async fn cmd_producer(
     }
 
     match command {
-        ProducerCommands::Register => {
+        ProducerCommands::Register { bonds } => {
             let wallet = Wallet::load(wallet_path)?;
+            let keypair = wallet.primary_keypair()?;
+            let pubkey_hash = wallet.primary_pubkey_hash();
+
             println!("Producer Registration");
             println!("{:-<60}", "");
             println!();
-            println!("To register as a producer, you need:");
-            println!("  1. Complete a VDF proof (takes ~10 minutes)");
-            println!("  2. Have sufficient bond (check current era requirements)");
-            println!("  3. Submit a registration transaction");
+
+            // Validate bond count
+            if bonds < 1 || bonds > 100 {
+                println!("Error: Bond count must be between 1 and 100");
+                return Ok(());
+            }
+
+            // Each bond = 1,000 DOLI = 100,000,000,000 base units
+            let bond_unit: u64 = 100_000_000_000;
+            let required_amount = bond_unit * bonds as u64;
+
+            println!("Registering with {} bond(s) = {} DOLI", bonds, bonds * 1000);
             println!();
-            println!(
-                "Your wallet public key: {}",
-                wallet.addresses()[0].public_key
-            );
-            println!();
-            println!("Full registration flow requires additional implementation.");
-            println!("See docs/BECOMING_A_PRODUCER.md for manual steps.");
+
+            // Get spendable UTXOs
+            let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
+            let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
+            let fee: u64 = 10000; // 0.0001 DOLI fee
+
+            if total_available < required_amount + fee {
+                println!("Error: Insufficient balance for bond");
+                println!("  Required:  {} DOLI", bonds * 1000);
+                println!("  Available: {}", format_balance(total_available));
+                return Ok(());
+            }
+
+            // Select UTXOs
+            let mut selected_utxos = Vec::new();
+            let mut total_input = 0u64;
+            for utxo in &utxos {
+                if total_input >= required_amount + fee {
+                    break;
+                }
+                selected_utxos.push(utxo.clone());
+                total_input += utxo.amount;
+            }
+
+            // Build registration transaction
+            let mut inputs: Vec<Input> = Vec::new();
+            for utxo in &selected_utxos {
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+                inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+            }
+
+            // Parse public key for registration
+            let pubkey_bytes = hex::decode(&wallet.addresses()[0].public_key)?;
+            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+            // Create registration transaction with bonds
+            let mut tx =
+                Transaction::new_registration(inputs, producer_pubkey, required_amount, bonds);
+
+            // Add change output if needed
+            let change = total_input - required_amount - fee;
+            if change > 0 {
+                let change_hash = Hash::from_hex(&pubkey_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+                tx.outputs.push(Output::normal(change, change_hash));
+            }
+
+            // Sign each input
+            let signing_message = tx.signing_message();
+            for input in &mut tx.inputs {
+                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            }
+
+            // Submit transaction
+            let tx_hex = hex::encode(tx.serialize());
+            println!("Submitting registration transaction...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(hash) => {
+                    println!("Registration submitted successfully!");
+                    println!("TX Hash: {}", hash);
+                    println!();
+                    println!("Note: Registration requires VDF proof validation.");
+                    println!("Use 'doli producer status' to check registration status.");
+                }
+                Err(e) => {
+                    println!("Error submitting registration: {}", e);
+                }
+            }
         }
 
         ProducerCommands::Status { pubkey } => {
@@ -633,16 +751,31 @@ async fn cmd_producer(
 
             match rpc.get_producer(&pk).await {
                 Ok(info) => {
-                    println!("Public Key:    {}", info.public_key);
+                    println!("Public Key:    {}...{}", &info.public_key[..16], &info.public_key[info.public_key.len()-8..]);
                     println!("Status:        {}", info.status);
                     println!("Registered at: block {}", info.registration_height);
+                    println!("Bond Count:    {}", info.bond_count);
                     println!("Bond Amount:   {}", format_balance(info.bond_amount));
                     println!("Blocks Made:   {}", info.blocks_produced);
+                    println!("Rewards:       {}", format_balance(info.pending_rewards));
                     println!("Current Era:   {}", info.era);
+
+                    // Show pending withdrawals if any
+                    if !info.pending_withdrawals.is_empty() {
+                        println!();
+                        println!("Pending Withdrawals:");
+                        for (i, w) in info.pending_withdrawals.iter().enumerate() {
+                            let claimable = if w.claimable { " [READY]" } else { "" };
+                            println!(
+                                "  [{}] {} bonds, {} net{} (requested slot {})",
+                                i, w.bond_count, format_balance(w.net_amount), claimable, w.request_slot
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     if e.to_string().contains("not found") {
-                        println!("Producer not found: {}", pk);
+                        println!("Producer not found: {}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..]);
                         println!();
                         println!("This key is not registered as a producer.");
                         println!("Use 'doli producer register' to register.");
@@ -653,20 +786,323 @@ async fn cmd_producer(
             }
         }
 
-        ProducerCommands::Withdraw => {
+        ProducerCommands::List { active } => {
+            println!("Network Producers");
+            println!("{:-<80}", "");
+            println!();
+
+            match rpc.get_producers(active).await {
+                Ok(producers) => {
+                    if producers.is_empty() {
+                        println!("No producers found.");
+                    } else {
+                        println!(
+                            "{:<8} {:<18} {:<10} {:<8} {:<12} {:<10}",
+                            "Status", "Public Key", "Bonds", "Blocks", "Rewards", "Era"
+                        );
+                        println!("{:-<80}", "");
+
+                        for p in &producers {
+                            let pk_short = format!("{}...{}", &p.public_key[..8], &p.public_key[p.public_key.len()-4..]);
+                            println!(
+                                "{:<8} {:<18} {:<10} {:<8} {:<12} {:<10}",
+                                p.status,
+                                pk_short,
+                                p.bond_count,
+                                p.blocks_produced,
+                                format_balance(p.pending_rewards).replace(" DOLI", ""),
+                                p.era
+                            );
+                        }
+
+                        println!();
+                        println!("Total: {} producers", producers.len());
+                    }
+                }
+                Err(e) => {
+                    println!("Error fetching producers: {}", e);
+                }
+            }
+        }
+
+        ProducerCommands::AddBond { count } => {
             let wallet = Wallet::load(wallet_path)?;
-            println!("Producer Withdrawal");
+            let keypair = wallet.primary_keypair()?;
+            let pubkey_hash = wallet.primary_pubkey_hash();
+
+            println!("Add Bond");
             println!("{:-<60}", "");
             println!();
-            println!("Requesting withdrawal will:");
-            println!("  1. Start a cooldown period (~1 week)");
-            println!("  2. You continue producing during cooldown");
-            println!("  3. After cooldown, your bond is released");
+
+            if count < 1 || count > 100 {
+                println!("Error: Bond count must be between 1 and 100");
+                return Ok(());
+            }
+
+            let bond_unit: u64 = 100_000_000_000;
+            let required_amount = bond_unit * count as u64;
+            let fee: u64 = 10000;
+
+            println!("Adding {} bond(s) = {} DOLI", count, count * 1000);
             println!();
-            println!("Your public key: {}", wallet.addresses()[0].public_key);
+
+            // Get spendable UTXOs
+            let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
+            let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
+
+            if total_available < required_amount + fee {
+                println!("Error: Insufficient balance");
+                println!("  Required:  {} DOLI", count * 1000);
+                println!("  Available: {}", format_balance(total_available));
+                return Ok(());
+            }
+
+            // Select UTXOs
+            let mut selected_utxos = Vec::new();
+            let mut total_input = 0u64;
+            for utxo in &utxos {
+                if total_input >= required_amount + fee {
+                    break;
+                }
+                selected_utxos.push(utxo.clone());
+                total_input += utxo.amount;
+            }
+
+            // Build inputs
+            let mut inputs: Vec<Input> = Vec::new();
+            for utxo in &selected_utxos {
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+                inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+            }
+
+            // Parse producer public key
+            let pubkey_bytes = hex::decode(&wallet.addresses()[0].public_key)?;
+            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+            // Create add-bond transaction
+            let mut tx = Transaction::new_add_bond(inputs, producer_pubkey, count);
+
+            // Add change output
+            let change = total_input - required_amount - fee;
+            if change > 0 {
+                let change_hash = Hash::from_hex(&pubkey_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+                tx.outputs.push(Output::normal(change, change_hash));
+            }
+
+            // Sign
+            let signing_message = tx.signing_message();
+            for input in &mut tx.inputs {
+                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            }
+
+            // Submit
+            let tx_hex = hex::encode(tx.serialize());
+            println!("Submitting add-bond transaction...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(hash) => {
+                    println!("Bonds added successfully!");
+                    println!("TX Hash: {}", hash);
+                }
+                Err(e) => {
+                    println!("Error adding bonds: {}", e);
+                }
+            }
+        }
+
+        ProducerCommands::RequestWithdrawal { count, destination } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let keypair = wallet.primary_keypair()?;
+            let pubkey_hash = wallet.primary_pubkey_hash();
+
+            println!("Request Withdrawal");
+            println!("{:-<60}", "");
             println!();
-            println!("Full withdrawal flow requires additional implementation.");
-            println!("See docs/BECOMING_A_PRODUCER.md for details.");
+
+            if count < 1 {
+                println!("Error: Must withdraw at least 1 bond");
+                return Ok(());
+            }
+
+            // Destination defaults to wallet address
+            let dest_hash = match &destination {
+                Some(d) => Hash::from_hex(d)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid destination address"))?,
+                None => Hash::from_hex(&pubkey_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?,
+            };
+
+            println!("Requesting withdrawal of {} bond(s)", count);
+            println!("Destination: {}", dest_hash.to_hex());
+            println!();
+            println!("Note: Withdrawals have a 7-day delay period.");
+            println!("      Use 'doli producer claim-withdrawal' after delay.");
+            println!();
+
+            // Parse producer public key
+            let pubkey_bytes = hex::decode(&wallet.addresses()[0].public_key)?;
+            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+            // Create request-withdrawal transaction
+            let tx = Transaction::new_request_withdrawal(producer_pubkey, count, dest_hash);
+
+            // Sign (request-withdrawal is state-only, but still needs signature for authorization)
+            let tx_hex = hex::encode(tx.serialize());
+            println!("Submitting withdrawal request...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(hash) => {
+                    println!("Withdrawal request submitted!");
+                    println!("TX Hash: {}", hash);
+                    println!();
+                    println!("Use 'doli producer status' to track withdrawal status.");
+                }
+                Err(e) => {
+                    println!("Error requesting withdrawal: {}", e);
+                }
+            }
+        }
+
+        ProducerCommands::ClaimWithdrawal { index } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let pubkey_hash = wallet.primary_pubkey_hash();
+
+            println!("Claim Withdrawal");
+            println!("{:-<60}", "");
+            println!();
+
+            // First check producer status to get pending withdrawals
+            let pk = wallet.addresses()[0].public_key.clone();
+            let producer_info = rpc.get_producer(&pk).await?;
+
+            if producer_info.pending_withdrawals.is_empty() {
+                println!("No pending withdrawals found.");
+                return Ok(());
+            }
+
+            let withdrawal = producer_info
+                .pending_withdrawals
+                .get(index as usize)
+                .ok_or_else(|| anyhow::anyhow!("Withdrawal index {} not found", index))?;
+
+            if !withdrawal.claimable {
+                println!("Error: Withdrawal [{}] is not yet claimable.", index);
+                println!("       Wait for the 7-day delay period to complete.");
+                return Ok(());
+            }
+
+            println!("Claiming withdrawal [{}]:", index);
+            println!("  Bonds:      {}", withdrawal.bond_count);
+            println!("  Net Amount: {}", format_balance(withdrawal.net_amount));
+            println!();
+
+            // Parse producer public key
+            let pubkey_bytes = hex::decode(&wallet.addresses()[0].public_key)?;
+            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+            // Destination is the wallet's pubkey hash
+            let dest_hash = Hash::from_hex(&pubkey_hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid destination"))?;
+
+            // Create claim-withdrawal transaction
+            let tx = Transaction::new_claim_withdrawal(
+                producer_pubkey,
+                index,
+                withdrawal.net_amount,
+                dest_hash,
+            );
+
+            let tx_hex = hex::encode(tx.serialize());
+            println!("Submitting claim transaction...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(hash) => {
+                    println!("Withdrawal claimed successfully!");
+                    println!("TX Hash: {}", hash);
+                    println!();
+                    println!("Funds will be available in your wallet shortly.");
+                }
+                Err(e) => {
+                    println!("Error claiming withdrawal: {}", e);
+                }
+            }
+        }
+
+        ProducerCommands::Exit { force } => {
+            let wallet = Wallet::load(wallet_path)?;
+
+            println!("Producer Exit");
+            println!("{:-<60}", "");
+            println!();
+
+            // Check current status
+            let pk = wallet.addresses()[0].public_key.clone();
+            let producer_info = rpc.get_producer(&pk).await?;
+
+            if producer_info.status == "exited" {
+                println!("Producer has already exited.");
+                return Ok(());
+            }
+
+            // Calculate early exit penalty based on time active
+            let current_info = rpc.get_chain_info().await?;
+            let blocks_active = current_info.best_height.saturating_sub(producer_info.registration_height);
+            let slots_per_year = 365 * 24 * 60; // Approximate
+
+            let years_active = blocks_active as f64 / slots_per_year as f64;
+            let penalty_pct = if years_active < 1.0 {
+                75
+            } else if years_active < 2.0 {
+                50
+            } else if years_active < 3.0 {
+                25
+            } else {
+                0
+            };
+
+            if penalty_pct > 0 && !force {
+                println!("Warning: Early exit penalty applies!");
+                println!();
+                println!("  Time active:   {:.1} years", years_active);
+                println!("  Penalty:       {}%", penalty_pct);
+                println!("  Bond amount:   {}", format_balance(producer_info.bond_amount));
+                println!("  Penalty loss:  {}", format_balance(producer_info.bond_amount * penalty_pct / 100));
+                println!("  You receive:   {}", format_balance(producer_info.bond_amount * (100 - penalty_pct) / 100));
+                println!();
+                println!("Use --force to proceed with early exit.");
+                println!("Or wait {} more years to exit without penalty.", 4.0 - years_active);
+                return Ok(());
+            }
+
+            // Parse producer public key
+            let pubkey_bytes = hex::decode(&pk)?;
+            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+            // Create exit transaction
+            let tx = Transaction::new_exit(producer_pubkey);
+            let tx_hex = hex::encode(tx.serialize());
+
+            println!("Submitting exit transaction...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(hash) => {
+                    println!("Exit submitted successfully!");
+                    println!("TX Hash: {}", hash);
+                    if penalty_pct > 0 {
+                        println!();
+                        println!("Penalty of {}% applied. Remaining bond will be returned.", penalty_pct);
+                    }
+                }
+                Err(e) => {
+                    println!("Error submitting exit: {}", e);
+                }
+            }
         }
     }
 
