@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 
 use crypto::Hash;
 use doli_core::{Block, Transaction};
-use storage::{BlockStore, ChainState, Outpoint, UtxoSet};
+use storage::{BlockStore, ChainState, Outpoint, ProducerSet, UtxoSet};
 
 use crate::error::RpcError;
 use crate::types::*;
@@ -33,6 +33,8 @@ pub struct RpcContext {
     pub utxo_set: Arc<RwLock<UtxoSet>>,
     /// Chain state
     pub chain_state: Arc<RwLock<ChainState>>,
+    /// Producer set
+    pub producer_set: Option<Arc<RwLock<ProducerSet>>>,
     /// Mempool
     pub mempool: Arc<RwLock<Mempool>>,
     /// Consensus params
@@ -62,6 +64,7 @@ impl RpcContext {
             chain_state,
             block_store,
             utxo_set,
+            producer_set: None,
             mempool,
             params,
             network: "mainnet".to_string(),
@@ -101,6 +104,12 @@ impl RpcContext {
         self.sync_status = Arc::new(f);
         self
     }
+
+    /// Set producer set
+    pub fn with_producer_set(mut self, producer_set: Arc<RwLock<ProducerSet>>) -> Self {
+        self.producer_set = Some(producer_set);
+        self
+    }
 }
 
 impl RpcContext {
@@ -118,6 +127,8 @@ impl RpcContext {
             "getMempoolInfo" => self.get_mempool_info().await,
             "getNetworkInfo" => self.get_network_info().await,
             "getChainInfo" => self.get_chain_info().await,
+            "getProducer" => self.get_producer(request.params).await,
+            "getProducers" => self.get_producers(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -354,5 +365,97 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get producer information by public key
+    async fn get_producer(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetProducerParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let pubkey = crypto::PublicKey::from_hex(&params.public_key)
+            .map_err(|_| RpcError::invalid_params("Invalid public key format"))?;
+
+        let producers = producer_set.read().await;
+        let chain_state = self.chain_state.read().await;
+
+        let info = producers
+            .get_by_pubkey(&pubkey)
+            .ok_or_else(|| RpcError::producer_not_found())?;
+
+        let status = match &info.status {
+            storage::ProducerStatus::Active => "active",
+            storage::ProducerStatus::Unbonding { .. } => "unbonding",
+            storage::ProducerStatus::Exited => "exited",
+            storage::ProducerStatus::Slashed { .. } => "slashed",
+        };
+
+        // Calculate current era
+        let era = chain_state.best_height / self.params.blocks_per_era;
+
+        let response = ProducerResponse {
+            public_key: params.public_key,
+            registration_height: info.registered_at,
+            bond_amount: info.bond_amount,
+            bond_count: info.bond_count,
+            status: status.to_string(),
+            blocks_produced: info.blocks_produced,
+            pending_rewards: info.pending_rewards,
+            era,
+            pending_withdrawals: Vec::new(), // TODO: Add pending withdrawals when ProducerBonds is integrated
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get all producers in the network
+    async fn get_producers(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetProducersParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let producers = producer_set.read().await;
+        let chain_state = self.chain_state.read().await;
+        let era = chain_state.best_height / self.params.blocks_per_era;
+
+        let producer_list: Vec<&storage::ProducerInfo> = if params.active_only {
+            producers.active_producers()
+        } else {
+            producers.all_producers()
+        };
+
+        let responses: Vec<ProducerResponse> = producer_list
+            .iter()
+            .map(|info| {
+                let status = match &info.status {
+                    storage::ProducerStatus::Active => "active",
+                    storage::ProducerStatus::Unbonding { .. } => "unbonding",
+                    storage::ProducerStatus::Exited => "exited",
+                    storage::ProducerStatus::Slashed { .. } => "slashed",
+                };
+
+                ProducerResponse {
+                    public_key: hex::encode(info.public_key.as_bytes()),
+                    registration_height: info.registered_at,
+                    bond_amount: info.bond_amount,
+                    bond_count: info.bond_count,
+                    status: status.to_string(),
+                    blocks_produced: info.blocks_produced,
+                    pending_rewards: info.pending_rewards,
+                    era,
+                    pending_withdrawals: Vec::new(),
+                }
+            })
+            .collect();
+
+        serde_json::to_value(responses).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }

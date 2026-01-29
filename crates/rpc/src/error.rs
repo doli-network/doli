@@ -29,6 +29,8 @@ pub mod codes {
     pub const MEMPOOL_FULL: i32 = -32004;
     /// UTXO not found
     pub const UTXO_NOT_FOUND: i32 = -32005;
+    /// Producer not found
+    pub const PRODUCER_NOT_FOUND: i32 = -32006;
 }
 
 /// RPC error
@@ -118,6 +120,11 @@ impl RpcError {
     /// UTXO not found
     pub fn utxo_not_found() -> Self {
         Self::new(codes::UTXO_NOT_FOUND, "UTXO not found")
+    }
+
+    /// Producer not found
+    pub fn producer_not_found() -> Self {
+        Self::new(codes::PRODUCER_NOT_FOUND, "Producer not found")
     }
 }
 

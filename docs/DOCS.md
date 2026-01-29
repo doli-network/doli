@@ -29,6 +29,12 @@ Master index for all DOLI documentation.
 | [MANIFESTO.md](./MANIFESTO.md) | Project philosophy and principles |
 | [ROADMAP.md](./ROADMAP.md) | Development roadmap and milestones |
 
+## Testing
+
+| File | Description |
+|------|-------------|
+| [WHITEPAPER_TEST_PLAN.md](./WHITEPAPER_TEST_PLAN.md) | Complete test plan for ALL WHITEPAPER functionalities |
+
 ## Research
 
 | File | Description |
@@ -42,16 +48,17 @@ Master index for all DOLI documentation.
 
 ```
 docs/
-├── DOCS.md                # ← You are here
-├── PROTOCOL.md            # Wire protocol specification
-├── ARCHITECTURE.md        # System architecture
-├── SECURITY_MODEL.md      # Security analysis
-├── RUNNING_A_NODE.md      # Node operation guide
-├── BECOMING_A_PRODUCER.md # Producer guide
-├── RPC_REFERENCE.md       # API documentation
-├── TROUBLESHOOTING.md     # Common issues
-├── MANIFESTO.md           # Project philosophy
-├── ROADMAP.md             # Development roadmap
+├── DOCS.md                   # ← You are here
+├── PROTOCOL.md               # Wire protocol specification
+├── ARCHITECTURE.md           # System architecture
+├── SECURITY_MODEL.md         # Security analysis
+├── RUNNING_A_NODE.md         # Node operation guide
+├── BECOMING_A_PRODUCER.md    # Producer guide
+├── RPC_REFERENCE.md          # API documentation
+├── TROUBLESHOOTING.md        # Common issues
+├── MANIFESTO.md              # Project philosophy
+├── ROADMAP.md                # Development roadmap
+├── WHITEPAPER_TEST_PLAN.md   # Complete whitepaper test plan
 └── research/
     ├── ATTACK_ANALYSIS.md
     └── EXTREME_DEVNET_600.md

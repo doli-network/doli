@@ -371,6 +371,7 @@ impl Node {
             self.mempool.clone(),
             self.params.clone(),
         )
+        .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
 
         let server = RpcServer::new(rpc_config, context);
@@ -2260,8 +2261,8 @@ impl Node {
             "SLASHING: Producer {} created two blocks for slot {}: {} and {}",
             crypto_hash(proof.producer.as_bytes()),
             proof.slot,
-            proof.block_hash_1,
-            proof.block_hash_2
+            proof.block_header_1.hash(),
+            proof.block_header_2.hash()
         );
 
         // Check if the producer is actually registered (to avoid spam for unknown producers)
