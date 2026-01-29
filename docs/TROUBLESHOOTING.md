@@ -462,7 +462,7 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 ### Resources
 
 - **Documentation:** This repository's docs folder
-- **Issues:** https://github.com/doli-network/doli/issues
+- **Issues:** https://github.com/e-weil/doli/issues
 - **Community:** (add Discord/Telegram links)
 
 ### Reporting Bugs

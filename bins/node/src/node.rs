@@ -34,6 +34,8 @@ use network::{
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
 use updater::is_using_placeholder_keys;
+
+use crate::updater as node_updater;
 use vdf::{VdfOutput, VdfProof};
 
 use crate::config::NodeConfig;
@@ -103,7 +105,14 @@ pub struct Node {
 
 impl Node {
     /// Create a new node
-    pub async fn new(config: NodeConfig, producer_key: Option<KeyPair>) -> Result<Self> {
+    ///
+    /// If `producer_set` is Some, uses the provided ProducerSet (shared with update service).
+    /// Otherwise, loads from disk or creates a new one.
+    pub async fn new(
+        config: NodeConfig,
+        producer_key: Option<KeyPair>,
+        producer_set: Option<Arc<RwLock<ProducerSet>>>,
+    ) -> Result<Self> {
         let mut params = ConsensusParams::for_network(config.network);
 
         // Open storage
@@ -150,14 +159,18 @@ impl Node {
 
         let chain_state = Arc::new(RwLock::new(chain_state));
 
-        // Load or create producer set
-        let producers_path = config.data_dir.join("producers.bin");
-        let producer_set = if producers_path.exists() {
-            ProducerSet::load(&producers_path)?
+        // Load or create producer set (use provided one if available)
+        let producer_set = if let Some(set) = producer_set {
+            set
         } else {
-            ProducerSet::new()
+            let producers_path = config.data_dir.join("producers.bin");
+            let set = if producers_path.exists() {
+                ProducerSet::load(&producers_path)?
+            } else {
+                ProducerSet::new()
+            };
+            Arc::new(RwLock::new(set))
         };
-        let producer_set = Arc::new(RwLock::new(producer_set));
 
         // Create mempool
         let mempool_policy = match config.network {
@@ -827,6 +840,14 @@ impl Node {
                         let _ = network.send_producer_delta(peer_id, delta).await;
                     }
                 }
+            }
+
+            NetworkEvent::NewVote(vote_data) => {
+                // Vote received via gossip - forward to updater service
+                // The updater service will decode and validate the vote
+                debug!("Received vote message ({} bytes)", vote_data.len());
+                // TODO: Forward to updater service via vote_tx channel
+                // This will be connected when the updater integration is complete
             }
         }
 
@@ -1851,6 +1872,24 @@ impl Node {
             Some(k) => k,
             None => return Ok(()),
         };
+
+        // VERSION ENFORCEMENT CHECK
+        // If an update has been approved and grace period has passed,
+        // outdated nodes cannot produce blocks.
+        if let Err(blocked) = node_updater::is_production_allowed(&self.config.data_dir) {
+            // Log once per minute to avoid spam
+            static LAST_WARNING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last = LAST_WARNING.load(std::sync::atomic::Ordering::Relaxed);
+            if now_secs - last >= 60 {
+                LAST_WARNING.store(now_secs, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!("{}", blocked);
+            }
+            return Ok(());
+        }
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
