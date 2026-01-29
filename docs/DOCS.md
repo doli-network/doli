@@ -17,6 +17,7 @@ Master index for all DOLI documentation.
 
 | File | Description |
 |------|-------------|
+| [CLI.md](./CLI.md) | Complete CLI reference - all WHITEPAPER operations via command line |
 | [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) | Node setup and operation guide |
 | [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) | Block producer onboarding |
 | [RPC_REFERENCE.md](./RPC_REFERENCE.md) | RPC API documentation |
@@ -49,6 +50,7 @@ Master index for all DOLI documentation.
 ```
 docs/
 ├── DOCS.md                   # ← You are here
+├── CLI.md                    # Complete CLI reference
 ├── PROTOCOL.md               # Wire protocol specification
 ├── ARCHITECTURE.md           # System architecture
 ├── SECURITY_MODEL.md         # Security analysis
