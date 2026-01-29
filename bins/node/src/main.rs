@@ -23,6 +23,7 @@ use tracing_subscriber::FmtSubscriber;
 mod config;
 mod metrics;
 mod node;
+mod producer;
 mod updater;
 
 use config::NodeConfig;
@@ -92,6 +93,12 @@ enum Commands {
         /// Use this to isolate test networks from external peers
         #[arg(long)]
         no_dht: bool,
+
+        /// DANGEROUS: Skip duplicate key detection during producer startup.
+        /// Only use if you are CERTAIN no other instance is running with this key.
+        /// Using this incorrectly WILL cause slashing (100% bond loss).
+        #[arg(long)]
+        force_start: bool,
     },
 
     /// Initialize a new data directory
@@ -204,6 +211,7 @@ async fn main() -> Result<()> {
             metrics_port,
             bootstrap,
             no_dht,
+            force_start,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -221,6 +229,7 @@ async fn main() -> Result<()> {
                 metrics_port,
                 bootstrap,
                 no_dht,
+                force_start,
             )
             .await?;
         }
@@ -253,6 +262,7 @@ async fn main() -> Result<()> {
                 9090,
                 None,
                 false,
+                false,
             )
             .await?;
         }
@@ -272,6 +282,7 @@ async fn run_node(
     metrics_port: u16,
     bootstrap: Option<String>,
     no_dht: bool,
+    force_start: bool,
 ) -> Result<()> {
     info!("Starting node with data directory: {:?}", data_dir);
 
@@ -290,7 +301,7 @@ async fn run_node(
     std::fs::create_dir_all(&data_dir)?;
 
     // Load producer key if production is enabled
-    let producer_key = if producer {
+    let (producer_key, producer_guard, signed_slots_db) = if producer {
         let key_path = producer_key_path
             .ok_or_else(|| anyhow!("--producer-key required when --producer is enabled"))?;
 
@@ -300,10 +311,42 @@ async fn run_node(
             "Producer key loaded: {}",
             crypto::hash::hash(key.public_key().as_bytes())
         );
-        Some(key)
+
+        // PRODUCER SAFETY CHECKS
+        // These protect against accidental slashing by:
+        // 1. Preventing two instances on the same machine (lock file)
+        // 2. Preventing double-signing after restart (signed slots db)
+        // 3. Detecting if another node is using this key (duplicate detection)
+
+        // If --force-start is specified, require interactive confirmation
+        let force_start = if force_start {
+            if !producer::confirm_force_start() {
+                return Err(anyhow!("Force start cancelled by user"));
+            }
+            true
+        } else {
+            false
+        };
+
+        // Perform startup checks (lock file + signed slots db)
+        // Note: Duplicate key detection happens after network connection
+        // when we have access to recent blocks from peers
+        match producer::startup_checks(&data_dir, key.public_key(), force_start, None).await {
+            Ok((guard, db)) => {
+                info!("Producer safety checks passed");
+                (Some(key), Some(guard), Some(db))
+            }
+            Err(e) => {
+                error!("Producer startup blocked: {}", e);
+                return Err(anyhow!("{}", e));
+            }
+        }
     } else {
-        None
+        (None, None, None)
     };
+
+    // Keep guard alive for the duration of the process
+    let _producer_guard = producer_guard;
 
     // Load or create configuration for the network
     let mut config = NodeConfig::for_network(network);
@@ -387,8 +430,8 @@ async fn run_node(
         is_producer_fn,
     );
 
-    // Create and run the node (share the producer_set)
-    let mut node = node::Node::new(config, producer_key, Some(producer_set)).await?;
+    // Create and run the node (share the producer_set and signed_slots_db)
+    let mut node = node::Node::new(config, producer_key, Some(producer_set), signed_slots_db).await?;
 
     info!("Node running. Press Ctrl+C to stop.");
 
