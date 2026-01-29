@@ -1,39 +1,60 @@
 //! Binary download and verification
+//!
+//! Downloads DOLI binaries from GitHub Releases (primary) or fallback mirror.
+//! GitHub Releases provides:
+//! - Global CDN for fast downloads
+//! - High availability (99.9%+ uptime)
+//! - Verifiable history
+//! - Free hosting
 
-use crate::{platform_identifier, Release, Result, UpdateError, UPDATE_MIRRORS};
+use crate::{
+    platform_identifier, Release, Result, UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
+};
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
 /// Download the binary for the current platform
+///
+/// Tries sources in order:
+/// 1. Primary URL from release.binary_url_template
+/// 2. GitHub Releases (CDN)
+/// 3. Fallback mirror
 pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
     let platform = platform_identifier();
     let url = release.binary_url_template.replace("{platform}", platform);
 
     info!("Downloading {} for {}", release.version, platform);
 
-    // Try primary URL first, then mirrors
+    // Build list of URLs to try
     let mut urls_to_try = vec![url.clone()];
-    for mirror in UPDATE_MIRRORS {
-        urls_to_try.push(format!(
-            "{}/v{}/doli-node-{}",
-            mirror, release.version, platform
-        ));
-    }
+
+    // GitHub Releases URL
+    urls_to_try.push(format!(
+        "{}/v{}/doli-node-{}",
+        GITHUB_RELEASES_URL, release.version, platform
+    ));
+
+    // Fallback mirror
+    urls_to_try.push(format!(
+        "{}/v{}/doli-node-{}",
+        FALLBACK_MIRROR, release.version, platform
+    ));
 
     let mut last_error = None;
 
     for (i, url) in urls_to_try.iter().enumerate() {
-        debug!("Trying download from: {}", url);
+        let source = match i {
+            0 => "primary",
+            1 => "GitHub",
+            _ => "fallback",
+        };
+        debug!("Trying download from {} ({})", source, url);
 
         match download_from_url(url).await {
             Ok(bytes) => {
-                info!(
-                    "Downloaded {} bytes from {}",
-                    bytes.len(),
-                    if i == 0 { "primary" } else { "mirror" }
-                );
+                info!("Downloaded {} bytes from {}", bytes.len(), source);
                 return Ok(bytes);
             }
             Err(e) => {
@@ -83,30 +104,99 @@ pub fn verify_hash(binary: &[u8], expected_hash: &str) -> Result<()> {
     }
 }
 
-/// Fetch the latest release metadata from update server
+/// Fetch the latest release metadata
+///
+/// Tries sources in order:
+/// 1. Custom URL (if provided)
+/// 2. GitHub API (gets latest release tag, then downloads release.json)
+/// 3. Fallback mirror (legacy releases.doli.network/latest.json)
 pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Release>> {
-    let base_urls: Vec<&str> = if let Some(url) = custom_url {
-        vec![url]
-    } else {
-        UPDATE_MIRRORS.to_vec()
-    };
-
-    for base_url in base_urls {
-        let url = format!("{}/latest.json", base_url);
-        debug!("Checking for updates at: {}", url);
-
-        match fetch_release_from_url(&url).await {
+    // If custom URL provided, use it directly
+    if let Some(url) = custom_url {
+        debug!("Checking custom URL: {}", url);
+        match fetch_release_from_url(&format!("{}/latest.json", url)).await {
             Ok(release) => return Ok(Some(release)),
             Err(e) => {
-                warn!("Failed to fetch from {}: {}", url, e);
-                continue;
+                warn!("Failed to fetch from custom URL: {}", e);
+                return Ok(None);
             }
         }
     }
 
-    // All mirrors failed
-    warn!("Could not fetch release info from any mirror");
+    // Try GitHub API first (primary source)
+    debug!("Checking GitHub for latest release...");
+    match fetch_from_github().await {
+        Ok(Some(release)) => {
+            info!("Found latest release v{} from GitHub", release.version);
+            return Ok(Some(release));
+        }
+        Ok(None) => {
+            debug!("No releases found on GitHub");
+        }
+        Err(e) => {
+            warn!("GitHub API check failed: {}", e);
+        }
+    }
+
+    // Fallback to legacy mirror
+    let fallback_url = format!("{}/latest.json", FALLBACK_MIRROR);
+    debug!("Trying fallback mirror: {}", fallback_url);
+
+    match fetch_release_from_url(&fallback_url).await {
+        Ok(release) => {
+            info!("Found release v{} from fallback mirror", release.version);
+            return Ok(Some(release));
+        }
+        Err(e) => {
+            warn!("Fallback mirror failed: {}", e);
+        }
+    }
+
+    // All sources failed
+    warn!("Could not fetch release info from any source");
     Ok(None)
+}
+
+/// Fetch release info from GitHub API
+///
+/// 1. Get latest release tag from GitHub API
+/// 2. Download release.json from that release
+async fn fetch_from_github() -> Result<Option<Release>> {
+    use crate::GITHUB_API_URL;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("doli-node") // GitHub requires User-Agent
+        .build()?;
+
+    // Get latest release info from GitHub API
+    let response = client.get(GITHUB_API_URL).send().await?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        // No releases yet
+        return Ok(None);
+    }
+
+    if !response.status().is_success() {
+        return Err(UpdateError::DownloadFailed(format!(
+            "GitHub API returned HTTP {}",
+            response.status()
+        )));
+    }
+
+    // Parse GitHub API response to get tag name
+    let github_release: serde_json::Value = response.json().await?;
+    let tag_name = github_release["tag_name"]
+        .as_str()
+        .ok_or_else(|| UpdateError::DownloadFailed("No tag_name in GitHub response".into()))?;
+
+    debug!("Latest GitHub release: {}", tag_name);
+
+    // Download release.json from this release
+    let release_json_url = format!("{}/{}/release.json", GITHUB_RELEASES_URL, tag_name);
+    debug!("Fetching release metadata: {}", release_json_url);
+
+    fetch_release_from_url(&release_json_url).await.map(Some)
 }
 
 /// Fetch release metadata from a specific URL
