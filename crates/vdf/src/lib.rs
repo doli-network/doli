@@ -53,7 +53,7 @@
 //! |-----------|-------|---------|
 //! | Discriminant bits | 2048 | Security (infeasible to factor) |
 //! | Challenge bits | 128 | Proof soundness |
-//! | T_BLOCK | 10M | ~7 seconds anti-grinding VDF |
+//! | T_BLOCK | 10M | ~700ms anti-grinding VDF |
 //! | T_REGISTER_BASE | 600M | ~10 minutes for registration (anti-Sybil) |
 //!
 //! ## Time-Based Consensus
@@ -115,7 +115,7 @@ pub use class_group::{ClassGroupElement, ClassGroupError};
 
 use crypto::Hash;
 
-/// VDF parameter for block production (~7 seconds on reference hardware).
+/// VDF parameter for block production (~700ms on reference hardware).
 ///
 /// # Time-Based Consensus Model
 ///
@@ -128,11 +128,11 @@ use crypto::Hash;
 /// 1. Trying many block variations to find favorable randomness
 /// 2. Instantly producing blocks when their slot arrives
 ///
-/// With 10-second slots, the VDF takes ~7 seconds, leaving ~3 seconds
+/// With 10-second slots, the VDF takes ~700ms, leaving ~9 seconds
 /// for block construction and propagation.
 ///
 /// This is calibrated so that:
-/// - A single-threaded CPU takes ~7 seconds
+/// - A single-threaded CPU takes ~700ms
 /// - Even with ASIC speedup, still provides anti-grinding protection
 /// - Does not create hardware-based competitive advantage
 ///

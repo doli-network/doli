@@ -740,7 +740,7 @@ pub fn validate_transaction(
             validate_claim_bond_data(tx)?;
         }
         TxType::SlashProducer => {
-            validate_slash_data(tx)?;
+            validate_slash_data(tx, ctx)?;
         }
         TxType::Coinbase => {
             // Coinbase validation is handled at the block level
@@ -1095,11 +1095,12 @@ fn validate_claim_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
 /// Structural validation for SlashProducer transactions:
 /// - Must have no inputs
 /// - Must have no outputs (bond is burned, not redistributed)
-/// - Must have valid slash data with evidence
+/// - Must have valid slash data with cryptographically verifiable evidence
 ///
-/// Note: Evidence verification is done at the node level where we have
-/// access to the block history to verify double production or invalid blocks.
-fn validate_slash_data(tx: &Transaction) -> Result<(), ValidationError> {
+/// Evidence verification is now done here with VDF verification to prevent
+/// fabricated evidence attacks. The VDF proves the producer actually created
+/// both blocks (since the VDF input includes the producer's public key).
+fn validate_slash_data(tx: &Transaction, ctx: &ValidationContext) -> Result<(), ValidationError> {
     // Slash must have no inputs
     if !tx.inputs.is_empty() {
         return Err(ValidationError::InvalidSlash(
@@ -1125,26 +1126,61 @@ fn validate_slash_data(tx: &Transaction) -> Result<(), ValidationError> {
     let slash_data: SlashData = bincode::deserialize(&tx.extra_data)
         .map_err(|e| ValidationError::InvalidSlash(format!("invalid slash data: {}", e)))?;
 
-    // Validate evidence structure
+    // Validate evidence structure with full cryptographic verification
     // Only double production is slashable - this is the only unambiguously intentional offense
     match &slash_data.evidence {
         crate::transaction::SlashingEvidence::DoubleProduction {
-            block_hash_1,
-            block_hash_2,
-            slot: _,
+            block_header_1,
+            block_header_2,
         } => {
-            // Block hashes must be different (otherwise it's not double production)
-            if block_hash_1 == block_hash_2 {
+            // 1. Both headers must have the same producer
+            if block_header_1.producer != block_header_2.producer {
+                return Err(ValidationError::InvalidSlash(
+                    "double production evidence must have same producer in both headers".to_string(),
+                ));
+            }
+
+            // 2. Both headers must have the same slot
+            if block_header_1.slot != block_header_2.slot {
+                return Err(ValidationError::InvalidSlash(
+                    "double production evidence must have same slot in both headers".to_string(),
+                ));
+            }
+
+            // 3. Block hashes must be different (otherwise it's not double production)
+            if block_header_1.hash() == block_header_2.hash() {
                 return Err(ValidationError::InvalidSlash(
                     "double production evidence must have different block hashes".to_string(),
                 ));
             }
+
+            // 4. Producer in evidence must match slash_data.producer_pubkey
+            if block_header_1.producer != slash_data.producer_pubkey {
+                return Err(ValidationError::InvalidSlash(
+                    "evidence producer does not match slash target".to_string(),
+                ));
+            }
+
+            // 5. Verify VDF for header 1 (proves the producer actually created it)
+            validate_vdf(block_header_1, ctx.network).map_err(|_| {
+                ValidationError::InvalidSlash(
+                    "invalid VDF proof in first block header - evidence may be fabricated"
+                        .to_string(),
+                )
+            })?;
+
+            // 6. Verify VDF for header 2 (proves the producer actually created it)
+            validate_vdf(block_header_2, ctx.network).map_err(|_| {
+                ValidationError::InvalidSlash(
+                    "invalid VDF proof in second block header - evidence may be fabricated"
+                        .to_string(),
+                )
+            })?;
         }
     }
 
     // Note: The following validations are done at the node level:
     // - Producer exists and is active (not already slashed or exited)
-    // - Evidence is valid (blocks exist, signatures match producer, etc.)
     // - Reporter signature is valid
 
     Ok(())
