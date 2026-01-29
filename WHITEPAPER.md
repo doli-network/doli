@@ -137,6 +137,8 @@ The solution is to use **Verifiable Delay Functions**. A VDF is a function that:
 
 > **Scope clarification:** The VDF is used to prove sequential work per slot and to anchor time ordering. It is NOT used as a randomness source and does not affect leader selection. Producer selection is purely deterministic based on slot number and the epoch-frozen active set.
 
+> **Hardware acceleration:** Faster VDF hardware provides no advantage. The VDF is a "heartbeat"—proof of presence, not proof of work. Producer selection is determined by Epoch Lookahead: the schedule for slot *s* is fixed at epoch start, independent of VDF computation speed.
+
 For each block, the producer must calculate:
 
 ```
