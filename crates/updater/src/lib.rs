@@ -16,10 +16,15 @@
 
 mod apply;
 mod download;
+pub mod test_keys;
 mod vote;
 
 pub use apply::{apply_update, backup_current, restart_node, rollback};
 pub use download::{download_binary, fetch_latest_release, verify_hash};
+pub use test_keys::{
+    create_test_release_signatures, should_use_test_keys, sign_with_test_key,
+    test_maintainer_pubkeys, TestMaintainerKey, TEST_MAINTAINER_KEYS,
+};
 pub use vote::{Vote, VoteMessage, VoteTracker};
 
 use crypto::{PublicKey, Signature as CryptoSignature};
@@ -34,6 +39,9 @@ use tracing::{debug, error, info, warn};
 
 /// Veto period: 7 days for ALL updates
 pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// Grace period after approval: 48 hours to update before enforcement
+pub const GRACE_PERIOD: Duration = Duration::from_secs(48 * 3600);
 
 /// Veto threshold: 40% of active producers (weighted by seniority)
 ///
@@ -126,14 +134,33 @@ pub fn assert_production_keys() {
     }
 }
 
+/// Get the active maintainer public keys
+///
+/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns production keys.
+/// For devnet testing, set the environment variable before starting nodes.
+pub fn get_maintainer_keys() -> Vec<&'static str> {
+    if should_use_test_keys() {
+        test_maintainer_pubkeys()
+    } else {
+        MAINTAINER_KEYS.to_vec()
+    }
+}
+
 /// Default update check interval: 6 hours
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 
-/// Update server URLs (multiple for redundancy)
-pub const UPDATE_MIRRORS: [&str; 2] = [
-    "https://releases.doli.network",
-    "https://raw.githubusercontent.com/doli-network/releases/main",
-];
+/// GitHub repository for releases (primary source)
+/// Using author's personal repo for authenticity (like torvalds/linux, antirez/redis)
+pub const GITHUB_REPO: &str = "e-weil/doli";
+
+/// GitHub API URL for latest release
+pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
+
+/// GitHub releases download base URL
+pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/download";
+
+/// Fallback update server (if GitHub is unreachable)
+pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 
 // ============================================================================
 // Types
@@ -225,6 +252,21 @@ pub enum UpdateError {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("Veto period still active: {remaining_hours}h remaining")]
+    VetoPeriodActive {
+        remaining_hours: u64,
+        message: String,
+    },
+
+    #[error("Update rejected by community: {veto_percent}% veto (threshold: {threshold}%)")]
+    RejectedByVeto {
+        veto_percent: u8,
+        threshold: u8,
+    },
+
+    #[error("Update not yet approved")]
+    NotApproved,
 }
 
 pub type Result<T> = std::result::Result<T, UpdateError>;
@@ -236,6 +278,111 @@ pub struct VoteResult {
     pub veto_count: usize,
     pub veto_percent: u8,
     pub approved: bool,
+}
+
+/// Version enforcement state - tracks when production should be blocked
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionEnforcement {
+    /// Minimum required version to produce blocks
+    pub min_version: String,
+    /// Timestamp when enforcement begins (after grace period)
+    pub enforcement_time: u64,
+    /// Whether this enforcement is active
+    pub active: bool,
+}
+
+impl VersionEnforcement {
+    /// Create enforcement for an approved release
+    pub fn from_approved_release(release: &Release) -> Self {
+        let enforcement_time = veto_deadline(release) + GRACE_PERIOD.as_secs();
+        Self {
+            min_version: release.version.clone(),
+            enforcement_time,
+            active: false,
+        }
+    }
+
+    /// Check if enforcement should now be active
+    pub fn should_enforce(&self) -> bool {
+        current_timestamp() >= self.enforcement_time
+    }
+
+    /// Calculate seconds until enforcement
+    pub fn seconds_until_enforcement(&self) -> u64 {
+        self.enforcement_time.saturating_sub(current_timestamp())
+    }
+
+    /// Calculate hours until enforcement
+    pub fn hours_until_enforcement(&self) -> u64 {
+        self.seconds_until_enforcement() / 3600
+    }
+
+    /// Check if current version meets requirement
+    pub fn version_meets_requirement(&self, current: &str) -> bool {
+        !is_newer_version(&self.min_version, current)
+    }
+}
+
+/// Production blocked error with helpful message
+#[derive(Debug, Clone)]
+pub struct ProductionBlocked {
+    pub current_version: String,
+    pub required_version: String,
+}
+
+impl std::fmt::Display for ProductionBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            r#"
+╔══════════════════════════════════════════════════════════════════╗
+║                    ⚠️  PRODUCTION PAUSED                          ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  Your node ({}) is outdated.                                     ║
+║  Required version: {}                                            ║
+║                                                                  ║
+║  Network security requires all producers to be updated.          ║
+║  Block production is paused until update is complete.            ║
+║                                                                  ║
+║  To update, run:                                                 ║
+║    doli-node update apply                                        ║
+║                                                                  ║
+║  After updating, production will resume automatically.           ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+"#,
+            self.current_version, self.required_version
+        )
+    }
+}
+
+impl std::error::Error for ProductionBlocked {}
+
+/// Check if production is allowed based on version enforcement
+pub fn check_production_allowed(enforcement: Option<&VersionEnforcement>) -> std::result::Result<(), ProductionBlocked> {
+    if let Some(enf) = enforcement {
+        if enf.should_enforce() && !enf.version_meets_requirement(current_version()) {
+            return Err(ProductionBlocked {
+                current_version: current_version().to_string(),
+                required_version: enf.min_version.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Grace period deadline (when enforcement begins)
+pub fn grace_period_deadline(release: &Release) -> u64 {
+    veto_deadline(release) + GRACE_PERIOD.as_secs()
+}
+
+/// Check if we're in the grace period (after approval, before enforcement)
+pub fn in_grace_period(release: &Release) -> bool {
+    let now = current_timestamp();
+    let veto_end = veto_deadline(release);
+    let grace_end = grace_period_deadline(release);
+    now >= veto_end && now < grace_end
 }
 
 // ============================================================================

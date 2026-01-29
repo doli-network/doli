@@ -13,7 +13,7 @@ This guide explains how to run a full DOLI node.
 
 ```bash
 # Clone the repository
-git clone https://github.com/doli-network/doli.git
+git clone https://github.com/e-weil/doli.git
 cd doli
 
 # Build in release mode

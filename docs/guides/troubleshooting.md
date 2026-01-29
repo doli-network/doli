@@ -484,7 +484,7 @@ iotop -p $(pgrep doli-node)
 If these solutions don't resolve your issue:
 
 1. **Check logs** with `--log-level debug`
-2. **Search issues** at https://github.com/doli-network/doli/issues
+2. **Search issues** at https://github.com/e-weil/doli/issues
 3. **Ask in Discord** (link in README)
 4. **Open an issue** with:
    - Node version
