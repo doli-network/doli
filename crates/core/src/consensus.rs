@@ -28,7 +28,7 @@
 //!
 //! VDF provides anti-grinding protection:
 //! - VDF input: HASH(prev_hash || tx_root || slot || producer_key)
-//! - ~7 seconds of sequential computation
+//! - ~700ms of sequential computation
 //! - Mandatory for mainnet blocks (vdf_output must be present)
 //! - Proof is self-verifying (hash-chain VDF)
 //!
@@ -797,7 +797,7 @@ pub const TOTAL_SUPPLY: Amount = 2_522_880_000_000_000;
 /// Must be large enough for cryptographic security.
 pub const VDF_DISCRIMINANT_BITS: u32 = 1024;
 
-/// Block VDF iterations (10,000,000 iterations ~= 7 seconds on reference hardware)
+/// Block VDF iterations (10,000,000 iterations ~= 700ms on reference hardware)
 /// This is the fixed T parameter for block production VDF.
 pub const T_BLOCK: u64 = 10_000_000;
 

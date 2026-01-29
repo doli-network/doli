@@ -57,7 +57,7 @@ DOLI is built on three fundamental security principles:
 |----------|-------|
 | Group | Imaginary quadratic class groups |
 | Discriminant | 2048 bits |
-| Block iterations | 10,000,000 (~7 seconds) |
+| Block iterations | 10,000,000 (~700ms) |
 | Verification | O(log t) exponentiations |
 
 **Security guarantees:**

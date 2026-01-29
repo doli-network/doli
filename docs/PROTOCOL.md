@@ -287,7 +287,7 @@ struct VdfProof {
 ```
 
 **VDF Parameters:**
-- Block VDF: 10M iterations (~7 seconds)
+- Block VDF: 10M iterations (~700ms)
 - Registration VDF base: 600M iterations (~10 minutes)
 - Discriminant bits: 2048
 

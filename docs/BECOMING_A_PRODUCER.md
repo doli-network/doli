@@ -8,7 +8,7 @@ This guide covers how to become a block producer in the DOLI network.
 
 Block producers in DOLI:
 - Create new blocks at their assigned slots
-- Compute VDF proofs (~7 seconds per block)
+- Compute VDF proofs (~700ms per block)
 - Earn block rewards (1 DOLI per block in Era 1)
 - Require a bond (1,000 DOLI minimum)
 
