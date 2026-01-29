@@ -214,6 +214,40 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_critical_features.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_critical_features.sh` |
+| **Purpose** | E2E validation of critical whitepaper features on REAL devnet nodes |
+| **What it tests** | Block production, reward maturity, round-robin selection, sync, seniority, inactivity, VDF timing, genesis, epochs |
+| **Dependencies** | `cargo build --release`, `doli-node`, `doli-cli` |
+| **Run time** | ~3-5 minutes |
+| **Output** | `/tmp/doli-critical-test-*/` (logs, summary) |
+
+**Usage:**
+```bash
+./scripts/test_critical_features.sh
+```
+
+**Test categories:**
+1. Network Setup & Block Production
+2. Reward Maturity (Coinbase Lockup)
+3. Producer Selection (Deterministic Round-Robin)
+4. Chain Synchronization Across Nodes
+5. Seniority Weight System
+6. Inactivity Detection
+7. VDF Timing Verification
+8. Genesis Block Verification
+9. Transaction Fee System
+10. Epoch Transitions
+
+**Output:**
+- `summary.txt` - Test results summary
+- `logs/node*.log` - Individual node logs
+
+---
+
 ## Governance & Auto-Update Scripts
 
 ### test_12node_governance.sh
@@ -415,6 +449,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
+| `test_critical_features.sh` | 3 | ~3-5 min | **Real devnet E2E validation** |
 | `test_12node_governance.sh` | 5 | ~20 min | Era progression & governance |
 | `test_governance_scenarios.sh` | 5 | ~2 min | **All governance scenarios** |
 | `test_autoupdate_e2e.sh` | 5 | ~2 min | **E2E auto-update flow** |
