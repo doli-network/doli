@@ -110,6 +110,30 @@ pub struct TransactionInfo {
     pub fee: u64,
 }
 
+/// History entry from getHistory RPC
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    /// Transaction hash
+    pub hash: String,
+    /// Transaction type (string)
+    pub tx_type: String,
+    /// Block hash
+    pub block_hash: String,
+    /// Block height
+    pub height: u64,
+    /// Timestamp
+    pub timestamp: u64,
+    /// Amount received
+    pub amount_received: u64,
+    /// Amount sent
+    pub amount_sent: u64,
+    /// Fee
+    pub fee: u64,
+    /// Confirmations
+    pub confirmations: u64,
+}
+
 /// Producer information
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -266,7 +290,7 @@ impl RpcClient {
     }
 
     /// Get transaction history for an address
-    pub async fn get_history(&self, address: &str, limit: usize) -> Result<Vec<TransactionInfo>> {
+    pub async fn get_history(&self, address: &str, limit: usize) -> Result<Vec<HistoryEntry>> {
         #[derive(Serialize)]
         struct Params<'a> {
             address: &'a str,

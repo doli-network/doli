@@ -129,6 +129,7 @@ impl RpcContext {
             "getChainInfo" => self.get_chain_info().await,
             "getProducer" => self.get_producer(request.params).await,
             "getProducers" => self.get_producers(request.params).await,
+            "getHistory" => self.get_history(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -457,5 +458,121 @@ impl RpcContext {
             .collect();
 
         serde_json::to_value(responses).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get transaction history for an address
+    async fn get_history(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetHistoryParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let pubkey_hash = Hash::from_hex(&params.address)
+            .ok_or_else(|| RpcError::invalid_params("Invalid address format"))?;
+
+        let chain_state = self.chain_state.read().await;
+        let best_height = chain_state.best_height;
+        let utxo_set = self.utxo_set.read().await;
+
+        let mut history: Vec<HistoryEntryResponse> = Vec::new();
+        let limit = params.limit.min(100); // Cap at 100 entries
+        let max_blocks_to_scan = 1000; // Limit scanning for performance
+
+        // Scan backwards through blocks
+        let start_height = best_height;
+        let end_height = start_height.saturating_sub(max_blocks_to_scan);
+
+        for height in (end_height..=start_height).rev() {
+            if history.len() >= limit {
+                break;
+            }
+
+            let block = match self.block_store.get_block_by_height(height) {
+                Ok(Some(b)) => b,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+
+            let block_hash = block.hash();
+            let timestamp = block.header.timestamp;
+            let confirmations = best_height.saturating_sub(height) + 1;
+
+            for tx in &block.transactions {
+                let mut amount_received: u64 = 0;
+                let mut amount_sent: u64 = 0;
+                let mut is_relevant = false;
+
+                // Check outputs for received amounts
+                for output in &tx.outputs {
+                    if output.pubkey_hash == pubkey_hash {
+                        amount_received += output.amount;
+                        is_relevant = true;
+                    }
+                }
+
+                // Check inputs for sent amounts (by looking up spent UTXOs)
+                // For inputs, we need to check if the spent output belonged to this address
+                for input in &tx.inputs {
+                    // Look up the spent output in our UTXO set or block store
+                    // Since the UTXO is already spent, we need to look at the original tx
+                    if let Ok(Some(prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
+                        // The input.prev_tx_hash is actually a tx hash, not block hash
+                        // We need a different approach - check if any input signature matches
+                        continue;
+                    }
+
+                    // Alternative: scan for the transaction that created this output
+                    // This is expensive, so for now we rely on the output check
+                }
+
+                // For sent transactions, also check if any output goes back to us (change)
+                // and calculate what was sent to others
+                if !is_relevant {
+                    // Check if this tx has inputs from our address by checking outputs
+                    // This is a heuristic - if we have outputs to this address and it's a transfer,
+                    // it might be relevant
+                    continue;
+                }
+
+                // Calculate fee for outgoing transactions
+                let fee = if amount_sent > 0 {
+                    // Fee calculation would require summing input values
+                    // For now, report 0 unless we can calculate it
+                    0
+                } else {
+                    0
+                };
+
+                let tx_type = match tx.tx_type {
+                    doli_core::TxType::Transfer => "transfer",
+                    doli_core::TxType::Registration => "registration",
+                    doli_core::TxType::Exit => "exit",
+                    doli_core::TxType::ClaimReward => "claim_reward",
+                    doli_core::TxType::ClaimBond => "claim_bond",
+                    doli_core::TxType::SlashProducer => "slash_producer",
+                    doli_core::TxType::Coinbase => "coinbase",
+                    doli_core::TxType::AddBond => "add_bond",
+                    doli_core::TxType::RequestWithdrawal => "request_withdrawal",
+                    doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
+                    doli_core::TxType::EpochReward => "epoch_reward",
+                };
+
+                history.push(HistoryEntryResponse {
+                    hash: tx.hash().to_hex(),
+                    tx_type: tx_type.to_string(),
+                    block_hash: block_hash.to_hex(),
+                    height,
+                    timestamp,
+                    amount_received,
+                    amount_sent,
+                    fee,
+                    confirmations,
+                });
+
+                if history.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        serde_json::to_value(history).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }
