@@ -22,6 +22,10 @@ pub struct ChainState {
     pub total_work: u64,
     /// Genesis hash
     pub genesis_hash: Hash,
+    /// Genesis timestamp (for devnet dynamic genesis_time)
+    /// 0 means not yet set - will be initialized on first block production or sync
+    #[serde(default)]
+    pub genesis_timestamp: u64,
     /// Hash of the last registration transaction (for chained VDF anti-Sybil)
     ///
     /// New registrations must reference this hash, creating a chain that
@@ -51,6 +55,7 @@ impl ChainState {
             best_slot: 0,
             total_work: 0,
             genesis_hash,
+            genesis_timestamp: 0, // Will be set when first block is produced/synced
             last_registration_hash: Hash::ZERO,
             registration_sequence: 0,
             total_minted: 0,
