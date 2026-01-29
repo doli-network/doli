@@ -20,6 +20,7 @@ network = { workspace = true }
 storage = { workspace = true }
 rpc = { workspace = true }
 updater = { workspace = true }
+chrono.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true

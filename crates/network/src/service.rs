@@ -27,6 +27,7 @@ use crate::config::NetworkConfig;
 use crate::discovery::new_kademlia;
 use crate::gossip::{
     new_gossipsub, subscribe_to_topics, BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC,
+    VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
@@ -87,6 +88,8 @@ pub enum NetworkEvent {
         peer_id: PeerId,
         digest: ProducerBloomFilter,
     },
+    /// Vote message received for governance veto system
+    NewVote(Vec<u8>),
 }
 
 /// Commands to the network
@@ -133,6 +136,8 @@ pub enum NetworkCommand {
         peer_id: PeerId,
         announcements: Vec<ProducerAnnouncement>,
     },
+    /// Broadcast a vote message (governance veto system)
+    BroadcastVote(Vec<u8>),
 }
 
 /// Network service handle
@@ -577,6 +582,15 @@ async fn handle_behaviour_event(
                         }
                     }
                 }
+                VOTES_TOPIC => {
+                    // Forward raw vote data to the updater service
+                    debug!(
+                        "Received vote message ({} bytes) from {}",
+                        message.data.len(),
+                        propagation_source
+                    );
+                    let _ = event_tx.send(NetworkEvent::NewVote(message.data.clone())).await;
+                }
                 _ => {}
             }
         }
@@ -835,6 +849,15 @@ async fn handle_command(
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to send producer delta to {}: {}", peer_id, e);
+                }
+            }
+        }
+
+        NetworkCommand::BroadcastVote(vote_data) => {
+            let topic = IdentTopic::new(VOTES_TOPIC);
+            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, vote_data) {
+                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                    warn!("Failed to broadcast vote: {}", e);
                 }
             }
         }
