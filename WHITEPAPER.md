@@ -625,7 +625,38 @@ Transactions are final. There are no mechanisms to reverse transactions, recover
 
 ---
 
-## 17. Conclusion
+## 17. Protocol Updates
+
+Software requires maintenance. Bugs must be fixed. The question is: who decides?
+
+In centralized systems, the operator decides. In Bitcoin, informal consensus among developers, miners, and users determines which changes are adopted. This works but is slow and contentious.
+
+DOLI formalizes the process. Updates are signed by maintainers and reviewed by producers.
+
+### 17.1. Release Signing
+
+Every release requires signatures from 3 of 5 maintainers. A single compromised key cannot push malicious code.
+
+### 17.2. Veto Period
+
+When a new version is published, producers have 7 days to review. Any producer can vote to reject. If 40% or more vote against, the update is rejected.
+
+| Veto votes | Result   |
+|------------|----------|
+| < 40%      | Approved |
+| ≥ 40%      | Rejected |
+
+The threshold is weighted by seniority. An attacker cannot create many new nodes to force an update through.
+
+### 17.3. Adoption
+
+After approval, producers have 48 hours to update. Nodes running outdated versions cannot produce blocks. This is not punishment—it is protection. A vulnerability in old code affects the entire network.
+
+The choice is simple: participate in consensus with current software, or do not participate.
+
+---
+
+## 18. Conclusion
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
