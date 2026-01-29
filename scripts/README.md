@@ -160,10 +160,12 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 - Monitors for 5 minutes total (15 epochs)
 
 **Devnet parameters:**
-- 1-second slots
-- 20 slots per epoch (20s epochs)
-- 1.00000000 DOLI block reward
-- 1M VDF iterations (~70ms)
+- 5-second slots
+- 60 slots per epoch (~5 minute epochs)
+- 100 DOLI block reward
+- ~1M VDF iterations (~70ms)
+- Dynamic genesis_time (set at network start)
+- Fast grace periods (3-5s vs 15-30s on testnet)
 
 **Expected results:**
 - Early epochs: Node 1 dominates (was only producer)

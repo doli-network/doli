@@ -6,13 +6,16 @@ This document provides a comprehensive test plan to verify ALL functionalities d
 
 | Parameter | Mainnet | Devnet | Speedup |
 |-----------|---------|--------|---------|
-| Slot duration | 10s | 1s | 10x |
-| Slots per epoch | 360 | 20 | 18x |
-| Slots per "year" | 3,153,600 | 60 | 52,560x |
+| Slot duration | 10s | 5s | 2x |
+| Slots per epoch | 60 | 60 | 1x |
+| Slots per reward epoch | 360 | 20 | 18x |
 | Initial bond | 1,000 DOLI | 1 DOLI | N/A |
-| Inactivity threshold | 50 slots | 10 slots | 5x |
-| Unbonding period | 259,200 slots (~30 days) | 30 slots (~30s) | 8,640x |
-| Withdrawal delay | 60,480 slots (7 days) | 14 slots (~14s) | 4,320x |
+| Block reward | 100 DOLI | 100 DOLI | N/A |
+| Genesis time | Fixed | Dynamic (set at start) | N/A |
+| Producer list stability | 15s | 3s | 5x |
+| Discovery grace period | 30s | 5s | 6x |
+
+**Note:** Devnet uses dynamic genesis_time - the first node sets genesis_time to current timestamp, and other nodes sync this value when they receive the first block.
 
 ---
 

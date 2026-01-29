@@ -184,7 +184,9 @@ get_height() {
 # Get blocks produced count from logs
 get_blocks_produced() {
     local node_num=$1
-    grep -c "Produced block" "$TEST_DIR/logs/node${node_num}.log" 2>/dev/null || echo "0"
+    local count
+    count=$(grep -c "Produced block" "$TEST_DIR/logs/node${node_num}.log" 2>/dev/null) || count=0
+    echo "${count:-0}" | tr -d '[:space:]'
 }
 
 echo
