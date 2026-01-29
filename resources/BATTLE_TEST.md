@@ -546,7 +546,7 @@ cargo test -p integration bond_stacking -- --nocapture
 
 | Metric | Target | Test | Status |
 |--------|--------|------|--------|
-| TPS (Era 0, 1MB) | 66 TPS | Load test | [ ] |
+| TPS (Era 0, 1MB) | 400 TPS | Load test | [ ] |
 | TX validation rate | 10,000/sec | Benchmark | [ ] |
 | Signature verification | 15,000/sec | Benchmark | [ ] |
 
