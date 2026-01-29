@@ -118,14 +118,41 @@ pub struct ProducerInfo {
     pub public_key: String,
     /// Registration height
     pub registration_height: u64,
-    /// Bond amount
+    /// Bond amount (total)
     pub bond_amount: u64,
-    /// Status (active, inactive, exiting, exited)
+    /// Number of bonds staked
+    #[serde(default = "default_bond_count")]
+    pub bond_count: u32,
+    /// Status (active, unbonding, exited, slashed)
     pub status: String,
     /// Blocks produced
     pub blocks_produced: u64,
+    /// Pending rewards (unclaimed)
+    #[serde(default)]
+    pub pending_rewards: u64,
     /// Current era
     pub era: u64,
+    /// Pending withdrawals
+    #[serde(default)]
+    pub pending_withdrawals: Vec<PendingWithdrawalInfo>,
+}
+
+fn default_bond_count() -> u32 {
+    1
+}
+
+/// Pending withdrawal information
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWithdrawalInfo {
+    /// Number of bonds being withdrawn
+    pub bond_count: u32,
+    /// Slot when withdrawal was requested
+    pub request_slot: u32,
+    /// Net amount after penalty
+    pub net_amount: u64,
+    /// Whether this withdrawal can be claimed now
+    pub claimable: bool,
 }
 
 /// RPC client for communicating with DOLI nodes
@@ -257,6 +284,16 @@ impl RpcClient {
         }
 
         self.call("getProducer", Params { public_key }).await
+    }
+
+    /// Get all producers in the network
+    pub async fn get_producers(&self, active_only: bool) -> Result<Vec<ProducerInfo>> {
+        #[derive(Serialize)]
+        struct Params {
+            active_only: bool,
+        }
+
+        self.call("getProducers", Params { active_only }).await
     }
 
     /// Register as a producer

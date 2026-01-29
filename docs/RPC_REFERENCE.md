@@ -380,19 +380,27 @@ Returns information about a specific producer.
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| pubkey | string | Producer public key (hex) |
+| public_key | string | Producer public key (hex) |
 
 **Response:**
 ```json
 {
-    "pubkey": "0x...",
+    "publicKey": "0x...",
+    "registrationHeight": 100000,
+    "bondAmount": 5000000000000,
     "bondCount": 5,
-    "totalBondAmount": 5000000000000,
-    "weight": 3,
-    "activeSince": 100000,
     "status": "active",
-    "presenceScore": 95000,
-    "pendingWithdrawals": []
+    "blocksProduced": 1234,
+    "pendingRewards": 500000000,
+    "era": 0,
+    "pendingWithdrawals": [
+        {
+            "bondCount": 2,
+            "requestSlot": 45000,
+            "netAmount": 1800000000000,
+            "claimable": true
+        }
+    ]
 }
 ```
 
@@ -400,8 +408,51 @@ Returns information about a specific producer.
 | Status | Description |
 |--------|-------------|
 | active | Producing blocks |
-| inactive | Removed for inactivity |
-| exiting | Exit requested, unbonding |
+| unbonding | Exit requested, in unbonding period |
+| exited | Completed exit |
+| slashed | Slashed for misbehavior |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getProducer","params":{"public_key":"0x..."},"id":1}'
+```
+
+---
+
+### getProducers
+
+Returns all producers in the network.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| active_only | boolean | Only return active producers (default: false) |
+
+**Response:**
+```json
+[
+    {
+        "publicKey": "0x...",
+        "registrationHeight": 100000,
+        "bondAmount": 5000000000000,
+        "bondCount": 5,
+        "status": "active",
+        "blocksProduced": 1234,
+        "pendingRewards": 500000000,
+        "era": 0,
+        "pendingWithdrawals": []
+    }
+]
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
+```
 
 ---
 
@@ -420,6 +471,7 @@ Returns information about a specific producer.
 | -32003 | Already in mempool | Transaction already submitted |
 | -32004 | Mempool full | Mempool at capacity |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
+| -32006 | Producer not found | Producer not in registry |
 
 **Error Response Format:**
 ```json

@@ -1006,6 +1006,11 @@ impl ProducerSet {
         self.producers.values().filter(|p| p.is_active()).collect()
     }
 
+    /// Get all producers (all states)
+    pub fn all_producers(&self) -> Vec<&ProducerInfo> {
+        self.producers.values().collect()
+    }
+
     /// Get count of active producers
     pub fn active_count(&self) -> usize {
         self.producers.values().filter(|p| p.is_active()).count()
