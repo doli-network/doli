@@ -39,6 +39,7 @@ use crate::updater as node_updater;
 use vdf::{VdfOutput, VdfProof};
 
 use crate::config::NodeConfig;
+use crate::producer::SignedSlotsDb;
 
 /// The main node struct
 pub struct Node {
@@ -101,6 +102,8 @@ pub struct Node {
     our_announcement: Arc<RwLock<Option<ProducerAnnouncement>>>,
     /// Sequence number for our announcements (monotonically increasing)
     announcement_sequence: Arc<AtomicU64>,
+    /// Signed slots database (prevents double-signing after restart)
+    signed_slots_db: Option<SignedSlotsDb>,
 }
 
 impl Node {
@@ -108,10 +111,13 @@ impl Node {
     ///
     /// If `producer_set` is Some, uses the provided ProducerSet (shared with update service).
     /// Otherwise, loads from disk or creates a new one.
+    ///
+    /// If `signed_slots_db` is Some, uses it to prevent double-signing after restart.
     pub async fn new(
         config: NodeConfig,
         producer_key: Option<KeyPair>,
         producer_set: Option<Arc<RwLock<ProducerSet>>>,
+        signed_slots_db: Option<SignedSlotsDb>,
     ) -> Result<Self> {
         let mut params = ConsensusParams::for_network(config.network);
 
@@ -254,6 +260,7 @@ impl Node {
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
+            signed_slots_db,
         })
     }
 
@@ -2201,6 +2208,15 @@ impl Node {
             "Producing block for slot {} at height {} (offset {}s)",
             current_slot, height, slot_offset
         );
+
+        // SIGNED SLOTS PROTECTION: Check if we already signed this slot
+        // This prevents double-signing if we restart quickly
+        if let Some(ref signed_slots) = self.signed_slots_db {
+            if let Err(e) = signed_slots.check_and_mark(current_slot as u64) {
+                error!("SLASHING PROTECTION: {}", e);
+                return Ok(());
+            }
+        }
 
         // Build the block
         let mut builder = BlockBuilder::new(prev_hash, prev_slot, our_pubkey.clone())
