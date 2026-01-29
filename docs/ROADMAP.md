@@ -224,9 +224,9 @@ All changes require review before merge:
 Long-term research areas (no commitment to implementation):
 
 ### VDF Improvements
-- Alternative VDF constructions
-- Hardware acceleration resistance
+- Alternative VDF constructions (proof size, verification speed)
 - Proof size reduction
+- Note: Hardware acceleration provides no advantage in DOLI—producer selection uses Epoch Lookahead, not VDF output
 
 ### Consensus Extensions
 - Faster finality mechanisms
