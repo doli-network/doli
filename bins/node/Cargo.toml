@@ -33,3 +33,9 @@ lazy_static.workspace = true
 axum.workspace = true
 toml.workspace = true
 dirs.workspace = true
+fs2 = "0.4"        # Cross-platform file locking for producer guard
+sled = "0.34"      # Embedded database for signed slots tracking
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
