@@ -3,10 +3,14 @@
 //! This module detects when a producer creates two different blocks for the same slot,
 //! which is the only slashable offense in DOLI. Double production cannot happen by
 //! accident - it requires intentionally signing two different blocks for the same slot.
+//!
+//! The evidence includes full block headers with VDF proofs, which cryptographically
+//! prove that the producer actually created both blocks. This prevents fabricated
+//! evidence attacks where a malicious reporter could invent fake hashes.
 
 use crypto::{signature, Hash, KeyPair, PublicKey};
 use doli_core::transaction::{SlashData, SlashingEvidence};
-use doli_core::{Block, Transaction};
+use doli_core::{Block, BlockHeader, Transaction};
 use std::collections::{HashMap, VecDeque};
 use tracing::warn;
 
@@ -14,25 +18,31 @@ use tracing::warn;
 const MAX_TRACKED_SLOTS: usize = 1000;
 
 /// Evidence of double production that can be used to create a slash transaction
+///
+/// Contains full block headers (not just hashes) so that validators can verify
+/// the VDF proofs and confirm the producer actually created both blocks.
 #[derive(Clone, Debug)]
 pub struct EquivocationProof {
     /// Producer who committed the offense
     pub producer: PublicKey,
-    /// First block hash
-    pub block_hash_1: Hash,
-    /// Second block hash
-    pub block_hash_2: Hash,
+    /// First block header (complete, for VDF verification)
+    pub block_header_1: BlockHeader,
+    /// Second block header (complete, for VDF verification)
+    pub block_header_2: BlockHeader,
     /// Slot where double production occurred
     pub slot: u32,
 }
 
 impl EquivocationProof {
     /// Convert to SlashData for creating a slash transaction
+    ///
+    /// The evidence includes full block headers with VDF proofs, allowing
+    /// any validator to cryptographically verify the producer actually
+    /// created both blocks.
     pub fn to_slash_data(&self, reporter_keypair: &KeyPair) -> SlashData {
         let evidence = SlashingEvidence::DoubleProduction {
-            block_hash_1: self.block_hash_1,
-            block_hash_2: self.block_hash_2,
-            slot: self.slot,
+            block_header_1: self.block_header_1.clone(),
+            block_header_2: self.block_header_2.clone(),
         };
 
         // Sign the evidence to prove the reporter witnessed it
@@ -59,11 +69,15 @@ impl EquivocationProof {
 /// When it sees a second block from the same producer for the same slot with a
 /// different hash, it creates an EquivocationProof that can be used to slash
 /// the misbehaving producer.
+///
+/// The detector stores full block headers (not just hashes) so that the
+/// equivocation evidence includes VDF proofs for cryptographic verification.
 #[derive(Debug)]
 pub struct EquivocationDetector {
-    /// Map of (producer_pubkey, slot) -> first block hash seen
-    /// If a second different hash is seen for the same key, equivocation is detected
-    seen_blocks: HashMap<(PublicKey, u32), Hash>,
+    /// Map of (producer_pubkey, slot) -> first block header seen
+    /// If a second different block is seen for the same key, equivocation is detected
+    /// Stores full headers for VDF-verifiable evidence
+    seen_blocks: HashMap<(PublicKey, u32), BlockHeader>,
 
     /// LRU order for eviction (oldest first)
     /// Stores (producer_pubkey, slot) tuples in order of insertion
@@ -98,6 +112,9 @@ impl EquivocationDetector {
     /// Returns Some(EquivocationProof) if this block represents double production
     /// by its producer (i.e., we've already seen a different block from the same
     /// producer for the same slot).
+    ///
+    /// The proof includes full block headers with VDF proofs for cryptographic
+    /// verification that the producer actually created both blocks.
     pub fn check_block(&mut self, block: &Block) -> Option<EquivocationProof> {
         let producer = block.header.producer.clone();
         let slot = block.header.slot;
@@ -105,13 +122,13 @@ impl EquivocationDetector {
         let key = (producer.clone(), slot);
 
         // Check if we've already seen a block for this (producer, slot)
-        if let Some(&existing_hash) = self.seen_blocks.get(&key) {
-            if existing_hash != block_hash {
+        if let Some(existing_header) = self.seen_blocks.get(&key) {
+            if existing_header.hash() != block_hash {
                 // EQUIVOCATION DETECTED!
                 let proof = EquivocationProof {
                     producer: producer.clone(),
-                    block_hash_1: existing_hash,
-                    block_hash_2: block_hash,
+                    block_header_1: existing_header.clone(),
+                    block_header_2: block.header.clone(),
                     slot,
                 };
 
@@ -119,7 +136,7 @@ impl EquivocationDetector {
                     "EQUIVOCATION DETECTED: Producer {} created two blocks for slot {}: {} and {}",
                     crypto::hash::hash(producer.as_bytes()),
                     slot,
-                    existing_hash,
+                    existing_header.hash(),
                     block_hash
                 );
 
@@ -133,12 +150,12 @@ impl EquivocationDetector {
         }
 
         // First time seeing a block for this (producer, slot)
-        self.record_block(key, block_hash);
+        self.record_block(key, block.header.clone());
         None
     }
 
-    /// Record a new block in the tracker
-    fn record_block(&mut self, key: (PublicKey, u32), hash: Hash) {
+    /// Record a new block header in the tracker
+    fn record_block(&mut self, key: (PublicKey, u32), header: BlockHeader) {
         // Evict oldest if at capacity
         while self.seen_blocks.len() >= self.max_tracked {
             if let Some(old_key) = self.lru_order.pop_front() {
@@ -149,7 +166,7 @@ impl EquivocationDetector {
         }
 
         // Insert new entry
-        self.seen_blocks.insert(key.clone(), hash);
+        self.seen_blocks.insert(key.clone(), header);
         self.lru_order.push_back(key);
     }
 
@@ -258,8 +275,8 @@ mod tests {
         let proof = proof.unwrap();
         assert_eq!(proof.producer, producer);
         assert_eq!(proof.slot, 10);
-        assert_eq!(proof.block_hash_1, block1.hash());
-        assert_eq!(proof.block_hash_2, block2.hash());
+        assert_eq!(proof.block_header_1.hash(), block1.hash());
+        assert_eq!(proof.block_header_2.hash(), block2.hash());
 
         // Should also be in pending proofs
         assert!(detector.has_pending_proofs());
@@ -272,10 +289,32 @@ mod tests {
         let producer = PublicKey::from_bytes([1u8; 32]);
         let reporter = KeyPair::generate();
 
+        // Create test block headers
+        let header1 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            timestamp: 0,
+            slot: 42,
+            producer: producer.clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+        let header2 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: crypto::hash::hash(b"different"),
+            timestamp: 0,
+            slot: 42,
+            producer: producer.clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+
         let proof = EquivocationProof {
             producer: producer.clone(),
-            block_hash_1: Hash::ZERO,
-            block_hash_2: crypto::hash::hash(b"block2"),
+            block_header_1: header1.clone(),
+            block_header_2: header2.clone(),
             slot: 42,
         };
 
@@ -286,14 +325,14 @@ mod tests {
         assert_eq!(slash_data.producer_pubkey, producer);
 
         if let SlashingEvidence::DoubleProduction {
-            slot,
-            block_hash_1,
-            block_hash_2,
+            block_header_1,
+            block_header_2,
         } = slash_data.evidence
         {
-            assert_eq!(slot, 42);
-            assert_eq!(block_hash_1, proof.block_hash_1);
-            assert_eq!(block_hash_2, proof.block_hash_2);
+            assert_eq!(block_header_1.slot, 42);
+            assert_eq!(block_header_2.slot, 42);
+            assert_eq!(block_header_1.hash(), header1.hash());
+            assert_eq!(block_header_2.hash(), header2.hash());
         } else {
             panic!("Expected DoubleProduction evidence");
         }

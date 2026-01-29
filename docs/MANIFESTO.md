@@ -36,7 +36,7 @@ Verifiable Delay Functions changed this. First formalized in 2018, VDFs allow an
 
 ### 1. Time as Foundation
 
-DOLI anchors consensus to sequential time. Block production requires computing a VDF that takes approximately 7 seconds of sequential computation. This cannot be accelerated by adding parallel hardware.
+DOLI anchors consensus to sequential time. Block production requires computing a VDF that takes approximately 700ms of sequential computation. This cannot be accelerated by adding parallel hardware.
 
 One hour of DOLI consensus requires one hour of wall-clock time. This is true whether you're an individual running a single node or a corporation running a thousand.
 

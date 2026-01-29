@@ -211,13 +211,17 @@ pub struct ClaimBondData {
 pub enum SlashingEvidence {
     /// Producer created two different blocks for the same slot
     /// This is the ONLY slashable offense - it's unambiguously intentional
+    ///
+    /// The evidence includes full block headers so validators can verify:
+    /// 1. Both headers have the same producer
+    /// 2. Both headers have the same slot
+    /// 3. Both headers have different hashes
+    /// 4. Both headers have valid VDFs (proving the producer actually created them)
     DoubleProduction {
-        /// First block header hash
-        block_hash_1: Hash,
-        /// Second block header hash
-        block_hash_2: Hash,
-        /// Slot number where double production occurred
-        slot: u32,
+        /// First block header (complete, for VDF verification)
+        block_header_1: crate::BlockHeader,
+        /// Second block header (complete, for VDF verification)
+        block_header_2: crate::BlockHeader,
     },
     // Note: Invalid blocks are NOT slashable. The network simply rejects them.
     // This follows Bitcoin's philosophy: natural consequences (lost slot/reward)
@@ -1001,12 +1005,36 @@ mod tests {
 
     #[test]
     fn test_slash_producer_transaction() {
+        use crate::BlockHeader;
+        use vdf::{VdfOutput, VdfProof};
+
         let producer_keypair = crypto::KeyPair::generate();
 
-        let evidence = SlashingEvidence::DoubleProduction {
-            block_hash_1: crypto::hash::hash(b"block1"),
-            block_hash_2: crypto::hash::hash(b"block2"),
+        // Create test block headers with same producer and slot but different content
+        let header1 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: crypto::hash::hash(b"block1"),
+            timestamp: 0,
             slot: 12345,
+            producer: producer_keypair.public_key().clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+        let header2 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: crypto::hash::hash(b"block2"),
+            timestamp: 0,
+            slot: 12345,
+            producer: producer_keypair.public_key().clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+
+        let evidence = SlashingEvidence::DoubleProduction {
+            block_header_1: header1,
+            block_header_2: header2,
         };
 
         let slash_data = SlashData {
@@ -1032,13 +1060,36 @@ mod tests {
 
     #[test]
     fn test_slash_producer_serialization() {
+        use crate::BlockHeader;
+        use vdf::{VdfOutput, VdfProof};
+
         let producer_keypair = crypto::KeyPair::generate();
 
-        // Only double production is slashable
-        let evidence = SlashingEvidence::DoubleProduction {
-            block_hash_1: crypto::hash::hash(b"block_a"),
-            block_hash_2: crypto::hash::hash(b"block_b"),
+        // Create test block headers with same producer and slot but different content
+        let header1 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: crypto::hash::hash(b"block_a"),
+            timestamp: 0,
             slot: 99999,
+            producer: producer_keypair.public_key().clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+        let header2 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: crypto::hash::hash(b"block_b"),
+            timestamp: 0,
+            slot: 99999,
+            producer: producer_keypair.public_key().clone(),
+            vdf_output: VdfOutput { value: vec![] },
+            vdf_proof: VdfProof::empty(),
+        };
+
+        let evidence = SlashingEvidence::DoubleProduction {
+            block_header_1: header1,
+            block_header_2: header2,
         };
 
         let slash_data = SlashData {
@@ -1056,8 +1107,12 @@ mod tests {
 
         // Check evidence type matches
         match recovered_data.evidence {
-            SlashingEvidence::DoubleProduction { slot, .. } => {
-                assert_eq!(slot, 99999);
+            SlashingEvidence::DoubleProduction {
+                block_header_1,
+                block_header_2,
+            } => {
+                assert_eq!(block_header_1.slot, 99999);
+                assert_eq!(block_header_2.slot, 99999);
             }
         }
     }
