@@ -68,6 +68,12 @@ cargo build --release
 | Testnet | Testing | 10s | `~/.doli/testnet/` |
 | Devnet | Development | 5s | `~/.doli/devnet/` |
 
+**Devnet special features:**
+- **Dynamic genesis:** Genesis time is set automatically when the first node starts
+- **Fast grace periods:** Reduced wait times for quicker testing (3-5s vs 15-30s)
+- **Lower bonds:** Only 1 DOLI required for producer registration
+- **Faster epochs:** 60 slots per epoch (~5 minutes)
+
 ---
 
 ## 4. Running a Node

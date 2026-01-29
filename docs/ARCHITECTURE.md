@@ -153,6 +153,16 @@ crypto ──► bins/cli (wallet binary)
 | `chain_state.rs` | Consensus state tracking |
 | `producer.rs` | Producer registry |
 
+**ChainState fields:**
+- `best_hash` - Current chain tip hash
+- `best_height` - Current chain height
+- `best_slot` - Current slot number
+- `genesis_hash` - Genesis block hash
+- `genesis_timestamp` - Genesis time (for devnet dynamic genesis)
+- `last_registration_hash` - Chained registration anti-Sybil
+- `registration_sequence` - Global registration counter
+- `total_minted` - Total coins issued
+
 **Column families:**
 - `blocks` - Block headers and bodies
 - `utxos` - Unspent outputs
