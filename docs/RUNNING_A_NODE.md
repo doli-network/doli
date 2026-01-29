@@ -28,7 +28,7 @@ This guide covers installing, configuring, and operating a DOLI full node.
 
 ```bash
 # Clone repository
-git clone https://github.com/doli-network/doli.git
+git clone https://github.com/e-weil/doli.git
 cd doli
 
 # Enter Nix development environment
@@ -53,7 +53,7 @@ source ~/.cargo/env
 sudo apt install build-essential pkg-config libssl-dev libgmp-dev librocksdb-dev
 
 # Clone and build
-git clone https://github.com/doli-network/doli.git
+git clone https://github.com/e-weil/doli.git
 cd doli
 cargo build --release
 ```

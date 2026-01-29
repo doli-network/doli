@@ -9,11 +9,14 @@
 
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use crypto::{KeyPair, PrivateKey};
+use crypto::{KeyPair, PrivateKey, PublicKey};
 use doli_core::Network;
+use storage::ProducerSet;
+use tokio::sync::RwLock;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -150,6 +153,13 @@ enum UpdateCommands {
         #[arg(long)]
         key: PathBuf,
     },
+
+    /// Apply a pending approved update
+    Apply {
+        /// Force apply even if not in enforcement period
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -228,7 +238,7 @@ async fn main() -> Result<()> {
             export_blocks(&data_dir, &path, from, to)?;
         }
         Some(Commands::Update { action }) => {
-            handle_update_command(action).await?;
+            handle_update_command(action, &data_dir).await?;
         }
         None => {
             // Default: run the node with auto-updates enabled
@@ -324,7 +334,7 @@ async fn run_node(
 
     // Start auto-update service
     if update_config.enabled {
-        info!("Auto-updates enabled (7-day veto period, 33% threshold)");
+        info!("Auto-updates enabled (7-day veto period, 40% threshold)");
         if update_config.notify_only {
             info!("Notify-only mode: updates will not be applied automatically");
         }
@@ -332,16 +342,53 @@ async fn run_node(
         info!("Auto-updates disabled");
     }
 
-    // Spawn update service with placeholder functions
-    // In production, these would be connected to the actual producer registry
+    // Load producer set for update service (shared with Node)
+    let producers_path = data_dir.join("producers.bin");
+    let producer_set = if producers_path.exists() {
+        match ProducerSet::load(&producers_path) {
+            Ok(set) => set,
+            Err(e) => {
+                info!("Could not load producer set: {}, starting fresh", e);
+                ProducerSet::new()
+            }
+        }
+    } else {
+        ProducerSet::new()
+    };
+    let producer_set = Arc::new(RwLock::new(producer_set));
+
+    // Create closures for update service with actual producer registry
+    let producers_for_count = producer_set.clone();
+    let producer_count_fn = move || {
+        // Use try_read to avoid blocking, fall back to 0 if locked
+        producers_for_count
+            .try_read()
+            .map(|set| set.active_count())
+            .unwrap_or(0)
+    };
+
+    let producers_for_check = producer_set.clone();
+    let is_producer_fn = move |pubkey_hex: &str| {
+        if let Ok(pubkey) = PublicKey::from_hex(pubkey_hex) {
+            producers_for_check
+                .try_read()
+                .map(|set| set.get_by_pubkey(&pubkey).map(|p| p.is_active()).unwrap_or(false))
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
+    // Spawn update service with real producer registry
     let _vote_tx = updater::spawn_update_service(
         update_config,
-        || 100,    // TODO: Connect to actual producer count
-        |_| false, // TODO: Connect to actual producer registry
+        data_dir.clone(),
+        producer_count_fn,
+        is_producer_fn,
     );
 
-    // Create and run the node
-    let mut node = node::Node::new(config, producer_key).await?;
+    // Create and run the node (share the producer_set)
+    let mut node = node::Node::new(config, producer_key, Some(producer_set)).await?;
 
     info!("Node running. Press Ctrl+C to stop.");
 
@@ -392,7 +439,7 @@ fn load_producer_key(path: &PathBuf) -> Result<KeyPair> {
     Ok(KeyPair::from_private_key(private_key))
 }
 
-async fn handle_update_command(action: UpdateCommands) -> Result<()> {
+async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Result<()> {
     match action {
         UpdateCommands::Check => {
             info!("Checking for updates...");
@@ -415,27 +462,135 @@ async fn handle_update_command(action: UpdateCommands) -> Result<()> {
             }
         }
         UpdateCommands::Status => {
-            // This would need access to node state, simplified for now
-            println!("Current version: {}", updater::current_version());
-            println!("Use 'doli-node run' to see pending update status");
+            // Show status from disk-persisted pending update
+            updater::cli::show_status_from_disk(data_dir);
         }
         UpdateCommands::Vote { veto, approve, key } => {
             if veto == approve {
                 error!("Specify either --veto or --approve, not both or neither");
                 return Ok(());
             }
-            let vote = if veto {
+
+            let vote_type = if veto {
                 updater::Vote::Veto
             } else {
                 updater::Vote::Approve
             };
+
+            // Load producer key
+            let keypair = load_producer_key(&key)?;
+            let pubkey_hex = keypair.public_key().to_hex();
             info!(
-                "Vote {} with key {:?}",
+                "Voting {} with producer key: {}",
                 if veto { "VETO" } else { "APPROVE" },
-                key
+                &pubkey_hex[..16]
             );
-            // TODO: Load key, sign vote, broadcast
-            println!("Vote command not fully implemented yet");
+
+            // Auto-detect version from pending update on disk
+            let version = std::env::var("DOLI_VOTE_VERSION").ok().or_else(|| {
+                updater::get_pending_version(data_dir)
+            });
+
+            let version = match version {
+                Some(v) => v,
+                None => {
+                    println!("No pending update found.");
+                    println!("Run 'doli-node update status' to check for pending updates.");
+                    println!();
+                    println!("If you want to vote on a specific version, set DOLI_VOTE_VERSION:");
+                    println!("  DOLI_VOTE_VERSION=1.2.0 doli-node update vote --veto --key producer.json");
+                    return Ok(());
+                }
+            };
+
+            println!("Voting on update: v{}", version);
+
+            let mut vote_msg = updater::VoteMessage::new(version.clone(), vote_type, pubkey_hex);
+
+            // Sign the vote
+            let message_bytes = vote_msg.message_bytes();
+            let signature = crypto::signature::sign(&message_bytes, keypair.private_key());
+            vote_msg.signature = signature.to_hex();
+
+            // Serialize vote message
+            let vote_json = serde_json::to_string_pretty(&vote_msg)?;
+            println!();
+            println!("Signed vote message:");
+            println!("{}", vote_json);
+            println!();
+            println!("To submit this vote, send it to a running node via RPC:");
+            println!("curl -X POST http://localhost:28545 \\");
+            println!("  -H 'Content-Type: application/json' \\");
+            println!("  -d '{{\"jsonrpc\":\"2.0\",\"method\":\"submitVote\",\"params\":{{\"vote\":{}}},\"id\":1}}'",
+                     serde_json::to_string(&vote_msg)?);
+        }
+        UpdateCommands::Apply { force } => {
+            // Get pending update
+            let pending = match updater::get_pending_update(data_dir) {
+                Some(p) => p,
+                None => {
+                    println!("No pending update to apply.");
+                    println!("Run 'doli-node update check' to check for available updates.");
+                    return Ok(());
+                }
+            };
+
+            // Check if update is approved
+            if !pending.approved && !force {
+                println!("Update v{} is not yet approved.", pending.release.version);
+                println!("Veto period: {} days remaining.", pending.days_remaining());
+                println!();
+                println!("Use --force to apply anyway (not recommended).");
+                return Ok(());
+            }
+
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    Applying Update                               ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+            println!("║  Current version: {}                                            ║", updater::current_version());
+            println!("║  Target version:  {}                                            ║", pending.release.version);
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+            println!();
+
+            println!("Downloading {}...", pending.release.version);
+
+            // --force bypasses approval check but NEVER bypasses veto period check
+            // The veto period check is a critical security measure to prevent
+            // producers from applying potentially malicious updates before
+            // the community has had time to review.
+            let approved_or_forced = pending.approved || force;
+
+            match updater::apply_update(&pending.release, approved_or_forced, None).await {
+                Ok(()) => {
+                    println!();
+                    println!("╔══════════════════════════════════════════════════════════════════╗");
+                    println!("║                    ✅ UPDATE SUCCESSFUL                          ║");
+                    println!("╠══════════════════════════════════════════════════════════════════╣");
+                    println!("║                                                                  ║");
+                    println!("║  Version: {} → {}                                            ║", updater::current_version(), pending.release.version);
+                    println!("║  Status: Production enabled                                      ║");
+                    println!("║                                                                  ║");
+                    println!("║  Your node is now up to date.                                    ║");
+                    println!("║  Restarting node to apply changes...                             ║");
+                    println!("║                                                                  ║");
+                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!();
+
+                    // Remove pending update file
+                    if let Err(e) = updater::PendingUpdate::remove(data_dir) {
+                        error!("Failed to remove pending_update.json: {}", e);
+                    }
+
+                    // Restart node
+                    updater::restart_node();
+                }
+                Err(e) => {
+                    error!("Failed to apply update: {}", e);
+                    println!();
+                    println!("Update failed. Please try again or update manually.");
+                }
+            }
         }
     }
     Ok(())

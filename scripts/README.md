@@ -214,10 +214,200 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+## Governance & Auto-Update Scripts
+
+### test_12node_governance.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_12node_governance.sh` |
+| **Purpose** | Test 12-node network with era progression and governance system |
+| **What it tests** | Multi-node sync, era transitions, vote submission RPC |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Run time** | ~20 minutes (2 eras) |
+| **Output** | `/tmp/doli-12node-governance-*/` (logs, reports) |
+
+**Usage:**
+```bash
+DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
+```
+
+**Test scenario:**
+- 5 genesis producer nodes
+- 2 era progression (~20 minutes)
+- Vote submission RPC endpoint testing
+
+---
+
+### test_autoupdate_e2e.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_autoupdate_e2e.sh` |
+| **Purpose** | End-to-end test of complete auto-update flow with real nodes |
+| **What it tests** | Version reporting, vote submission, approval/rejection flows, vote propagation |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq`, `python3` |
+| **Run time** | ~2 minutes |
+| **Output** | `/tmp/doli-autoupdate-e2e-*/` (logs, reports, mock server) |
+
+**Usage:**
+```bash
+./scripts/test_autoupdate_e2e.sh
+```
+
+**Test scenarios:**
+1. Version reporting via getNodeInfo RPC
+2. Vote submission and broadcasting
+3. Approval flow (< 40% veto)
+4. Rejection flow (>= 40% veto)
+5. Majority rejection (60% veto)
+6. Vote propagation across network
+7. Node sync stability during voting
+
+**Mock server:**
+- Serves `latest.json` with signed release metadata
+- Uses test maintainer keys (DOLI_TEST_KEYS=1)
+- Runs on port 28800
+
+---
+
+### test_governance_scenarios.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_governance_scenarios.sh` |
+| **Purpose** | Test ALL governance approval/rejection scenarios with real nodes |
+| **What it tests** | Veto threshold calculations, vote submission, edge cases |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Run time** | ~2 minutes |
+| **Output** | `/tmp/doli-governance-scenarios-*/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_governance_scenarios.sh
+```
+
+**Test scenarios:**
+| Scenario | Vetos | Percentage | Expected |
+|----------|-------|------------|----------|
+| 1 | 0/5 | 0% | APPROVED |
+| 2 | 1/5 | 20% | APPROVED |
+| 3 | 2/5 | 40% | REJECTED |
+| 4 | 3/5 | 60% | REJECTED |
+| 5 | 5/5 | 100% | REJECTED |
+| 6 | Non-producer | N/A | Filtered |
+| 7 | Duplicate | N/A | Latest wins |
+| 8 | Boundary | 20% | APPROVED |
+
+---
+
+### test_update_notification.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_update_notification.sh` |
+| **Purpose** | Test the mandatory update notification system and CLI commands |
+| **What it tests** | Update status display, vote auto-detection, CLI commands |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Run time** | ~10 seconds |
+| **Output** | `/tmp/doli-notification-test-*/` (test artifacts) |
+
+**Usage:**
+```bash
+./scripts/test_update_notification.sh
+```
+
+**Test scenarios:**
+1. Update status shows pending update details
+2. Update status shows changelog
+3. Update status shows veto threshold
+4. Vote command auto-detects pending version
+5. Vote command creates signed veto message
+6. Vote command creates signed approve message
+7. Status handles no pending update
+8. Vote handles no pending update
+
+**CLI commands tested:**
+- `doli-node update status` - Show pending update details
+- `doli-node update vote --veto --key <file>` - Vote to veto
+- `doli-node update vote --approve --key <file>` - Vote to approve
+
+---
+
+### test_version_enforcement.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_version_enforcement.sh` |
+| **Purpose** | Test the "No Update = No Produce" version enforcement system |
+| **What it tests** | Veto period, grace period, enforcement, apply command |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Run time** | ~10 seconds |
+| **Output** | `/tmp/doli-enforcement-test-*/` (test artifacts) |
+
+**Usage:**
+```bash
+./scripts/test_version_enforcement.sh
+```
+
+**Test scenarios:**
+1. Veto period status display
+2. Grace period status after approval
+3. Enforcement active status (outdated warning)
+4. Update apply command behavior
+5. Apply rejected for unapproved updates
+6. Timeline display in status
+7. **Security: --force cannot bypass veto period**
+
+**Update phases tested:**
+- Day 0-7: Veto period (can vote to reject)
+- Day 7-9: Grace period (48h to update)
+- Day 9+: Enforcement (outdated nodes cannot produce)
+
+---
+
+## Utility Scripts
+
+### update.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/update.sh` |
+| **Purpose** | Manual binary update from GitHub Releases |
+| **What it does** | Downloads, verifies, and installs doli-node binary |
+| **Dependencies** | `curl`, `sha256sum` |
+| **Run time** | ~30 seconds |
+
+**Usage:**
+```bash
+# Update to latest version
+./scripts/update.sh
+
+# Update to specific version
+./scripts/update.sh v1.0.1
+
+# Via curl (no clone required)
+curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash -s v1.0.1
+```
+
+**Features:**
+- Detects platform automatically (linux-x64, linux-arm64, macos-x64, macos-arm64)
+- Downloads from GitHub Releases CDN
+- Verifies SHA-256 hash before installation
+- Creates backup of current binary
+- Requires sudo for installation to `/usr/local/bin`
+
+**Environment variables:**
+- `INSTALL_DIR` - Installation directory (default: `/usr/local/bin`)
+
+---
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |
 |--------|-------|----------|---------|
+| `update.sh` | 0 | ~30 sec | **Manual binary update** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |
 | `stress_test_600.sh` | 600 | Long | Scalability |
 | `test_staggered_validator_rewards.sh` | 10 | ~10 min | Staggered rewards |
@@ -225,6 +415,11 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
+| `test_12node_governance.sh` | 5 | ~20 min | Era progression & governance |
+| `test_governance_scenarios.sh` | 5 | ~2 min | **All governance scenarios** |
+| `test_autoupdate_e2e.sh` | 5 | ~2 min | **E2E auto-update flow** |
+| `test_update_notification.sh` | 0 | ~10 sec | **Update notification CLI** |
+| `test_version_enforcement.sh` | 0 | ~10 sec | **Version enforcement system** |
 
 ---
 

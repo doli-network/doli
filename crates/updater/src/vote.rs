@@ -83,7 +83,7 @@ impl VoteMessage {
 ///
 /// Supports both count-based and weight-based veto calculations.
 /// Weight-based voting gives more power to senior producers (anti-Sybil).
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteTracker {
     /// Version being tracked
     version: String,
@@ -96,7 +96,14 @@ pub struct VoteTracker {
 
     /// Weight of each producer (by ID)
     /// If empty, falls back to count-based calculation
+    #[serde(default)]
     producer_weights: std::collections::HashMap<String, u64>,
+}
+
+impl Default for VoteTracker {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
 }
 
 impl VoteTracker {
