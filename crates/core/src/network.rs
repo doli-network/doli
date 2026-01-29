@@ -105,7 +105,7 @@ impl Network {
     pub fn initial_bond(&self) -> u64 {
         match self {
             Network::Mainnet => 100_000_000_000, // 1000 DOLI
-            Network::Testnet => 1_000_000_000,   // 10 DOLI
+            Network::Testnet => 100_000_000_000, // 1000 DOLI (same as mainnet)
             Network::Devnet => 100_000_000,      // 1 DOLI
         }
     }
@@ -140,8 +140,8 @@ impl Network {
     pub fn vdf_iterations(&self) -> u64 {
         match self {
             Network::Mainnet => 100_000, // ~10-100 seconds with 2048-bit discriminant
-            Network::Testnet => 10,      // Minimal - just for protocol testing
-            Network::Devnet => 1,        // Single iteration (VDF is disabled anyway)
+            Network::Testnet => 100_000, // Same as mainnet
+            Network::Devnet => 1,        // Single iteration for fast development
         }
     }
 
@@ -151,11 +151,12 @@ impl Network {
     /// - Larger discriminants are more secure but slower
     /// - Smaller discriminants are faster but provide less security
     ///
-    /// For testnets and devnets, speed is more important than security.
+    /// Mainnet and Testnet use production-grade security.
+    /// Devnet uses minimal security for fast development.
     pub fn vdf_discriminant_bits(&self) -> usize {
         match self {
             Network::Mainnet => 2048, // Production security (~112-bit)
-            Network::Testnet => 512,  // Moderate security, much faster
+            Network::Testnet => 2048, // Same as mainnet (production security)
             Network::Devnet => 256,   // Minimal security, very fast
         }
     }
@@ -196,7 +197,7 @@ impl Network {
     pub fn veto_period_secs(&self) -> u64 {
         match self {
             Network::Mainnet => 7 * 24 * 3600, // 7 days
-            Network::Testnet => 24 * 3600,     // 1 day
+            Network::Testnet => 7 * 24 * 3600, // Same as mainnet (7 days)
             Network::Devnet => 60,             // 1 minute
         }
     }
@@ -243,7 +244,7 @@ impl Network {
     pub fn heartbeat_vdf_iterations(&self) -> u64 {
         match self {
             Network::Mainnet => 10_000_000, // ~700ms
-            Network::Testnet => 10_000_000, // ~700ms
+            Network::Testnet => 10_000_000, // Same as mainnet (~700ms)
             Network::Devnet => 1_000_000,   // ~70ms (fast development)
         }
     }
@@ -252,8 +253,8 @@ impl Network {
     pub fn bootstrap_blocks(&self) -> u64 {
         match self {
             Network::Mainnet => 60_480, // ~1 week at 10s slots
-            Network::Testnet => 1_000,  // ~2.7 hours at 10s slots
-            Network::Devnet => 100,     // ~8 minutes at 5s slots
+            Network::Testnet => 60_480, // Same as mainnet (~1 week)
+            Network::Devnet => 60,      // ~1 minute at 1s slots
         }
     }
 
@@ -262,8 +263,8 @@ impl Network {
     pub fn slots_per_reward_epoch(&self) -> u32 {
         match self {
             Network::Mainnet => 8_640, // 1 day (86,400 seconds / 10s slots)
-            Network::Testnet => 144,   // ~24 minutes at 10s slots
-            Network::Devnet => 20,     // ~100 seconds at 5s slots (fast testing)
+            Network::Testnet => 8_640, // Same as mainnet (1 day)
+            Network::Devnet => 30,     // 30 seconds at 1s slots (fast testing)
         }
     }
 
@@ -296,13 +297,13 @@ impl Network {
     /// Blocks per "year" (simulated)
     ///
     /// - Mainnet: 3,153,600 blocks (~365.25 days at 6 blocks/minute)
-    /// - Testnet: 8,640 blocks (1 real day = 1 simulated year)
-    /// - Devnet:  60 blocks (1 real minute = 1 simulated year, with 1s slots)
+    /// - Testnet: 3,153,600 blocks (same as mainnet)
+    /// - Devnet:  144 blocks (2.4 minutes = 1 simulated year, era ≈ 10 minutes)
     pub fn blocks_per_year(&self) -> u64 {
         match self {
             Network::Mainnet => 3_153_600, // 365.25 days × 24h × 60min × 6 blocks/min
-            Network::Testnet => 8_640,     // 1 real day = 1 simulated year
-            Network::Devnet => 60,         // 1 real minute = 1 simulated year (60 blocks × 1s)
+            Network::Testnet => 3_153_600, // Same as mainnet
+            Network::Devnet => 144,        // 144 blocks × 1s = 2.4 min/year, 576 blocks/era ≈ 10 min
         }
     }
 
@@ -338,8 +339,8 @@ impl Network {
     pub fn inactivity_threshold(&self) -> u64 {
         match self {
             Network::Mainnet => 60_480, // ~1 week at 10s slots
-            Network::Testnet => 144,    // ~1 hour real time
-            Network::Devnet => 10,      // 10 blocks (~10 seconds with 1s slots)
+            Network::Testnet => 60_480, // Same as mainnet (~1 week)
+            Network::Devnet => 30,      // 30 seconds with 1s slots
         }
     }
 
@@ -350,8 +351,8 @@ impl Network {
     pub fn unbonding_period(&self) -> u64 {
         match self {
             Network::Mainnet => 259_200, // ~30 days at 10s slots
-            Network::Testnet => 360,     // ~1 hour real time
-            Network::Devnet => 30,       // ~30 seconds with 1s slots
+            Network::Testnet => 259_200, // Same as mainnet (~30 days)
+            Network::Devnet => 60,       // ~1 minute with 1s slots
         }
     }
 
@@ -359,8 +360,8 @@ impl Network {
     pub fn veto_period_blocks(&self) -> u64 {
         match self {
             Network::Mainnet => 60_480, // 7 days at 10s slots
-            Network::Testnet => 720,    // ~2 hours real time
-            Network::Devnet => 14,      // ~70 seconds (just over 1 "year")
+            Network::Testnet => 60_480, // Same as mainnet (7 days)
+            Network::Devnet => 60,      // ~1 minute with 1s slots
         }
     }
 
@@ -370,8 +371,8 @@ impl Network {
     pub fn max_registrations_per_block(&self) -> u32 {
         match self {
             Network::Mainnet => 5,
-            Network::Testnet => 10,
-            Network::Devnet => 20, // Higher for rapid testing
+            Network::Testnet => 5,  // Same as mainnet
+            Network::Devnet => 20,  // Higher for rapid testing
         }
     }
 
@@ -381,7 +382,7 @@ impl Network {
     pub fn registration_base_fee(&self) -> u64 {
         match self {
             Network::Mainnet => 100_000, // 0.001 DOLI
-            Network::Testnet => 10_000,  // 0.0001 DOLI
+            Network::Testnet => 100_000, // Same as mainnet (0.001 DOLI)
             Network::Devnet => 1_000,    // 0.00001 DOLI (nearly free)
         }
     }
@@ -390,7 +391,7 @@ impl Network {
     pub fn vdf_register_iterations(&self) -> u64 {
         match self {
             Network::Mainnet => 600_000_000, // ~10 minutes
-            Network::Testnet => 30_000_000,  // ~30 seconds
+            Network::Testnet => 600_000_000, // Same as mainnet (~10 minutes)
             Network::Devnet => 5_000_000,    // ~5 seconds
         }
     }
@@ -401,7 +402,7 @@ impl Network {
     pub fn max_registration_fee(&self) -> u64 {
         match self {
             Network::Mainnet => 1_000_000_000, // 10 DOLI
-            Network::Testnet => 100_000_000,   // 1 DOLI
+            Network::Testnet => 1_000_000_000, // Same as mainnet (10 DOLI)
             Network::Devnet => 10_000_000,     // 0.1 DOLI
         }
     }
@@ -556,40 +557,41 @@ mod tests {
     fn test_devnet_time_acceleration() {
         let devnet = Network::Devnet;
 
-        // 60 blocks = 1 simulated year (with 1s slots)
-        assert_eq!(devnet.blocks_per_year(), 60);
+        // 144 blocks = 1 simulated year (with 1s slots)
+        assert_eq!(devnet.blocks_per_year(), 144);
 
-        // 240 blocks = 1 era (4 simulated years)
-        assert_eq!(devnet.blocks_per_era(), 240);
+        // 576 blocks = 1 era (4 simulated years) ≈ 9.6 minutes
+        assert_eq!(devnet.blocks_per_era(), 576);
 
         // 1 block = 1 second
         assert_eq!(devnet.slot_duration(), 1);
 
-        // 60 blocks × 1 second = 60 seconds = 1 minute = 1 simulated year
-        assert_eq!(devnet.blocks_per_year() * devnet.slot_duration(), 60);
+        // 144 blocks × 1 second = 144 seconds = 2.4 minutes = 1 simulated year
+        assert_eq!(devnet.blocks_per_year() * devnet.slot_duration(), 144);
 
-        // 1 month = 5 blocks
-        assert_eq!(devnet.blocks_per_month(), 5);
+        // 1 month = 12 blocks
+        assert_eq!(devnet.blocks_per_month(), 12);
 
-        // Commitment period = 4 years = 240 blocks
-        assert_eq!(devnet.commitment_period(), 240);
+        // Commitment period = 4 years = 576 blocks ≈ 9.6 minutes
+        assert_eq!(devnet.commitment_period(), 576);
 
-        // Exit history retention = 8 years = 480 blocks
-        assert_eq!(devnet.exit_history_retention(), 480);
+        // Exit history retention = 8 years = 1152 blocks ≈ 19.2 minutes
+        assert_eq!(devnet.exit_history_retention(), 1152);
     }
 
     #[test]
-    fn test_testnet_time_acceleration() {
+    fn test_testnet_same_as_mainnet() {
         let testnet = Network::Testnet;
+        let mainnet = Network::Mainnet;
 
-        // 8,640 blocks = 1 simulated year (1 real day)
-        assert_eq!(testnet.blocks_per_year(), 8_640);
-
-        // 1 real day = 8,640 blocks × 10 seconds = 86,400 seconds
-        assert_eq!(testnet.blocks_per_year() * testnet.slot_duration(), 86_400);
-
-        // 4 real days = 1 era
-        assert_eq!(testnet.blocks_per_era(), 34_560);
+        // Testnet should have same parameters as mainnet
+        assert_eq!(testnet.blocks_per_year(), mainnet.blocks_per_year());
+        assert_eq!(testnet.blocks_per_era(), mainnet.blocks_per_era());
+        assert_eq!(testnet.slot_duration(), mainnet.slot_duration());
+        assert_eq!(testnet.initial_bond(), mainnet.initial_bond());
+        assert_eq!(testnet.initial_reward(), mainnet.initial_reward());
+        assert_eq!(testnet.vdf_discriminant_bits(), mainnet.vdf_discriminant_bits());
+        assert_eq!(testnet.heartbeat_vdf_iterations(), mainnet.heartbeat_vdf_iterations());
     }
 
     #[test]
@@ -653,42 +655,49 @@ mod tests {
     fn test_devnet_simulation_timing() {
         let devnet = Network::Devnet;
 
-        // Verify that 20 minutes of devnet = 20 simulated years
-        let real_minutes = 20;
-        let real_seconds = real_minutes * 60;
-        let blocks_produced = real_seconds / devnet.slot_duration();
-        let simulated_years = blocks_produced / devnet.blocks_per_year();
-
+        // Verify era duration: 576 blocks = 576 seconds ≈ 9.6 minutes
+        assert_eq!(devnet.blocks_per_era(), 576);
         assert_eq!(
-            simulated_years, 20,
-            "20 real minutes should = 20 simulated years"
+            devnet.blocks_per_era() * devnet.slot_duration(),
+            576,
+            "1 era should = 576 seconds ≈ 9.6 minutes"
         );
 
+        // Verify 1 hour ≈ 6.25 eras (25 simulated years)
+        let one_hour_blocks = 3600 / devnet.slot_duration();
+        let eras = one_hour_blocks / devnet.blocks_per_era();
+        assert_eq!(eras, 6, "1 hour should ≈ 6 eras (6.25 rounded down)");
+
         // Verify inactivity threshold is quick for testing
-        assert_eq!(devnet.inactivity_threshold(), 10); // 10 seconds with 1s slots
+        assert_eq!(devnet.inactivity_threshold(), 30); // 30 seconds with 1s slots
 
         // Verify unbonding is quick for testing
-        assert_eq!(devnet.unbonding_period(), 30); // 30 seconds with 1s slots
+        assert_eq!(devnet.unbonding_period(), 60); // 60 seconds with 1s slots
     }
 
     #[test]
     fn test_registration_fees_scale_by_network() {
-        // Mainnet has highest fees
-        assert!(
-            Network::Mainnet.registration_base_fee() > Network::Testnet.registration_base_fee()
+        // Mainnet and Testnet have same fees
+        assert_eq!(
+            Network::Mainnet.registration_base_fee(),
+            Network::Testnet.registration_base_fee()
         );
         assert!(Network::Testnet.registration_base_fee() > Network::Devnet.registration_base_fee());
 
-        // Max fees follow same pattern
-        assert!(Network::Mainnet.max_registration_fee() > Network::Testnet.max_registration_fee());
+        // Max fees: Mainnet and Testnet equal, Devnet lower
+        assert_eq!(
+            Network::Mainnet.max_registration_fee(),
+            Network::Testnet.max_registration_fee()
+        );
         assert!(Network::Testnet.max_registration_fee() > Network::Devnet.max_registration_fee());
     }
 
     #[test]
     fn test_vdf_iterations_scale_by_network() {
-        // Mainnet has most iterations (slowest)
-        assert!(
-            Network::Mainnet.vdf_register_iterations() > Network::Testnet.vdf_register_iterations()
+        // Mainnet and Testnet have same iterations
+        assert_eq!(
+            Network::Mainnet.vdf_register_iterations(),
+            Network::Testnet.vdf_register_iterations()
         );
         assert!(
             Network::Testnet.vdf_register_iterations() > Network::Devnet.vdf_register_iterations()
@@ -700,17 +709,18 @@ mod tests {
 
     #[test]
     fn test_vdf_discriminant_bits_scale_by_network() {
-        // Mainnet has largest discriminant (most secure, slowest)
-        assert!(
-            Network::Mainnet.vdf_discriminant_bits() > Network::Testnet.vdf_discriminant_bits()
+        // Mainnet and Testnet have same discriminant (production security)
+        assert_eq!(
+            Network::Mainnet.vdf_discriminant_bits(),
+            Network::Testnet.vdf_discriminant_bits()
         );
         assert!(Network::Testnet.vdf_discriminant_bits() > Network::Devnet.vdf_discriminant_bits());
 
         // Mainnet uses 2048-bit for production security
         assert_eq!(Network::Mainnet.vdf_discriminant_bits(), 2048);
 
-        // Testnet uses 512-bit for faster testing
-        assert_eq!(Network::Testnet.vdf_discriminant_bits(), 512);
+        // Testnet uses same as mainnet (2048-bit)
+        assert_eq!(Network::Testnet.vdf_discriminant_bits(), 2048);
 
         // Devnet uses 256-bit for rapid development
         assert_eq!(Network::Devnet.vdf_discriminant_bits(), 256);
