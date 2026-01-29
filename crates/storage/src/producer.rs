@@ -2049,24 +2049,24 @@ mod tests {
     fn test_devnet_time_acceleration_weight() {
         let devnet = Network::Devnet;
 
-        // On devnet, blocks_per_year = 60 (accelerated time)
+        // On devnet, blocks_per_year = 144 (accelerated time for ~10min eras)
         // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
         let registered_at = 0;
 
         // After 0 blocks, weight = 1
         assert_eq!(producer_weight_for_network(registered_at, 0, devnet), 1);
 
-        // After 60 blocks (1 simulated year), weight = 2
-        assert_eq!(producer_weight_for_network(registered_at, 60, devnet), 2);
+        // After 144 blocks (1 simulated year), weight = 2
+        assert_eq!(producer_weight_for_network(registered_at, 144, devnet), 2);
 
-        // After 120 blocks (2 simulated years), weight = 3
-        assert_eq!(producer_weight_for_network(registered_at, 120, devnet), 3);
+        // After 288 blocks (2 simulated years), weight = 3
+        assert_eq!(producer_weight_for_network(registered_at, 288, devnet), 3);
 
-        // After 180 blocks (3 simulated years), weight = 4 (max)
-        assert_eq!(producer_weight_for_network(registered_at, 180, devnet), 4);
+        // After 432 blocks (3 simulated years), weight = 4 (max)
+        assert_eq!(producer_weight_for_network(registered_at, 432, devnet), 4);
 
-        // After 240 blocks (4 simulated years), still weight = 4
-        assert_eq!(producer_weight_for_network(registered_at, 240, devnet), 4);
+        // After 576 blocks (4 simulated years), still weight = 4
+        assert_eq!(producer_weight_for_network(registered_at, 576, devnet), 4);
     }
 
     #[test]
@@ -2078,8 +2078,8 @@ mod tests {
 
         // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
 
-        // Devnet: 60 blocks = 1 year (devnet.blocks_per_year() = 60)
-        assert_eq!(producer_weight_for_network(registered_at, 60, devnet), 2);
+        // Devnet: 144 blocks = 1 year (devnet.blocks_per_year() = 144)
+        assert_eq!(producer_weight_for_network(registered_at, 144, devnet), 2);
 
         // Mainnet: blocks_per_year() blocks = 1 year
         assert_eq!(
@@ -2087,8 +2087,8 @@ mod tests {
             2
         );
 
-        // Devnet: 180 blocks = 3 years (max weight)
-        assert_eq!(producer_weight_for_network(registered_at, 180, devnet), 4);
+        // Devnet: 432 blocks = 3 years (max weight)
+        assert_eq!(producer_weight_for_network(registered_at, 432, devnet), 4);
 
         // Mainnet: 3 * blocks_per_year() blocks = 3 years (max weight)
         assert_eq!(
@@ -2112,11 +2112,11 @@ mod tests {
 
         // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
 
-        // After 60 blocks on devnet (1 simulated year)
-        assert_eq!(info.weight_for_network(60, devnet), 2);
+        // After 144 blocks on devnet (1 simulated year)
+        assert_eq!(info.weight_for_network(144, devnet), 2);
 
-        // After 180 blocks on devnet (3 simulated years)
-        assert_eq!(info.weight_for_network(180, devnet), 4);
+        // After 432 blocks on devnet (3 simulated years)
+        assert_eq!(info.weight_for_network(432, devnet), 4);
     }
 
     #[test]
@@ -2184,16 +2184,16 @@ mod tests {
         let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
         set.register_for_network(info1, 0, devnet).unwrap();
 
-        // Exit at block 240 (4 years on devnet: 60 blocks/year × 4)
-        set.request_exit(&pubkey, 240).unwrap();
-        set.process_unbonding(240 + 30, 30); // devnet unbonding = 30 blocks
+        // Exit at block 576 (4 years on devnet: 144 blocks/year × 4)
+        set.request_exit(&pubkey, 576).unwrap();
+        set.process_unbonding(576 + 60, 60); // devnet unbonding = 60 blocks
         set.cleanup_exited();
 
-        // At block 270, exit is recent (within 8 year retention = 480 blocks)
-        assert!(set.has_prior_exit_for_network(&pubkey, 270, devnet));
+        // At block 700, exit is recent (within 8 year retention = 1152 blocks)
+        assert!(set.has_prior_exit_for_network(&pubkey, 700, devnet));
 
-        // At block 800, exit has expired (270 + 480 = 750, and 800 > 750)
-        assert!(!set.has_prior_exit_for_network(&pubkey, 800, devnet));
+        // At block 2000, exit has expired (636 + 1152 = 1788, and 2000 > 1788)
+        assert!(!set.has_prior_exit_for_network(&pubkey, 2000, devnet));
     }
 
     #[test]
@@ -2209,21 +2209,21 @@ mod tests {
 
         let devnet = Network::Devnet;
 
-        // Devnet inactivity threshold = 10 blocks
-        assert!(!info.is_inactive_for_network(5, devnet)); // 5 block gap, not inactive
-        assert!(!info.is_inactive_for_network(10, devnet)); // 10 blocks, still not inactive
-        assert!(info.is_inactive_for_network(11, devnet)); // 11 blocks, inactive
+        // Devnet inactivity threshold = 30 blocks
+        assert!(!info.is_inactive_for_network(15, devnet)); // 15 block gap, not inactive
+        assert!(!info.is_inactive_for_network(30, devnet)); // 30 blocks, still not inactive
+        assert!(info.is_inactive_for_network(31, devnet)); // 31 blocks, inactive
 
-        // Record activity at block 15, should incur a gap (15 > 10 threshold)
-        info.record_activity_for_network(15, devnet);
-        assert_eq!(info.activity_gaps, 1);
-
-        // Activity at block 20 (5 block gap <= 10), no new gap
-        info.record_activity_for_network(20, devnet);
-        assert_eq!(info.activity_gaps, 1);
-
-        // Activity at block 35 (15 block gap > 10 threshold), new gap
+        // Record activity at block 35, should incur a gap (35 > 30 threshold)
         info.record_activity_for_network(35, devnet);
+        assert_eq!(info.activity_gaps, 1);
+
+        // Activity at block 50 (15 block gap <= 30), no new gap
+        info.record_activity_for_network(50, devnet);
+        assert_eq!(info.activity_gaps, 1);
+
+        // Activity at block 85 (35 block gap > 30 threshold), new gap
+        info.record_activity_for_network(85, devnet);
         assert_eq!(info.activity_gaps, 2);
     }
 
@@ -2232,7 +2232,7 @@ mod tests {
         let mut set = ProducerSet::new();
         let devnet = Network::Devnet;
 
-        // Register producer at block 0 (will have 1 year seniority at block 60)
+        // Register producer at block 0 (will have 1 year seniority at block 144)
         let keypair1 = KeyPair::generate();
         let info1 = ProducerInfo::new(
             *keypair1.public_key(),
@@ -2243,24 +2243,24 @@ mod tests {
         );
         set.register_for_network(info1, 0, devnet).unwrap();
 
-        // Register producer at block 60 (0 seniority at block 60)
+        // Register producer at block 144 (0 seniority at block 144)
         let keypair2 = KeyPair::generate();
         let info2 = ProducerInfo::new(
             *keypair2.public_key(),
-            60,
+            144,
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
         );
-        set.register_for_network(info2, 60, devnet).unwrap();
+        set.register_for_network(info2, 144, devnet).unwrap();
 
-        // At block 60:
-        // Producer 1: 60 blocks = 1 year, weight = 2
+        // At block 144:
+        // Producer 1: 144 blocks = 1 year, weight = 2
         // Producer 2: 0 blocks = 0 years, weight = 1
         // Total weight = 3
 
         let total_reward = 300_000_000u64;
-        let distributed = set.distribute_weighted_rewards_for_network(total_reward, 60, devnet);
+        let distributed = set.distribute_weighted_rewards_for_network(total_reward, 144, devnet);
         assert_eq!(distributed, 2);
 
         // Producer 1 gets 2/3 = 200M
@@ -2271,26 +2271,25 @@ mod tests {
     }
 
     #[test]
-    fn test_20_minute_simulation_yields_20_years() {
+    fn test_10_minute_era_simulation() {
         let devnet = Network::Devnet;
 
-        // Verify the math: 20 real minutes = 20 simulated years
-        // Devnet: 1 second slots, 60 blocks = 1 year
-        // 20 minutes = 1200 seconds
-        // 1200 seconds / 1 second per block = 1200 blocks
-        // 1200 blocks / 60 blocks per year = 20 years
+        // Verify the math: ~10 real minutes = 1 simulated era (4 years)
+        // Devnet: 1 second slots, 144 blocks = 1 year
+        // Era = 576 blocks = 4 years (576 / 144 = 4)
+        // Era duration = 576 seconds ≈ 9.6 minutes real time
 
-        let real_minutes = 20;
-        let real_seconds = real_minutes * 60;
-        let blocks_produced = real_seconds / devnet.slot_duration();
-        let simulated_years = blocks_produced / devnet.blocks_per_year();
+        let era_blocks = 576u64;
+        let simulated_years = era_blocks / devnet.blocks_per_year();
+        let real_seconds = era_blocks * devnet.slot_duration();
+        let real_minutes = real_seconds / 60;
 
-        assert_eq!(blocks_produced, 1200);
-        assert_eq!(simulated_years, 20);
+        assert_eq!(simulated_years, 4);
+        assert_eq!(real_minutes, 9); // 576 seconds = 9.6 minutes, truncated to 9
 
-        // Verify weight after 20 simulated years = max (4)
-        let weight_at_20_years = producer_weight_for_network(0, 1200, devnet);
-        assert_eq!(weight_at_20_years, 4);
+        // Verify weight after 1 era (4 simulated years) = max (4)
+        let weight_at_4_years = producer_weight_for_network(0, era_blocks, devnet);
+        assert_eq!(weight_at_4_years, 4);
     }
 
     #[test]
