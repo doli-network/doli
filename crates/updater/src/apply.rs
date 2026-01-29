@@ -1,6 +1,9 @@
 //! Update application and rollback
 
-use crate::{download_binary, verify_hash, Release, Result, UpdateError};
+use crate::{
+    download_binary, veto_deadline, veto_period_ended, verify_hash, current_timestamp,
+    Release, Result, UpdateError, VETO_THRESHOLD_PERCENT,
+};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, error, info, warn};
@@ -39,13 +42,69 @@ pub async fn backup_current() -> Result<PathBuf> {
 /// Apply an update
 ///
 /// This function:
-/// 1. Downloads the new binary
-/// 2. Verifies the hash
-/// 3. Backs up the current binary
-/// 4. Installs the new binary
-/// 5. Sets executable permissions
-pub async fn apply_update(release: &Release) -> Result<()> {
-    info!("Applying update to version {}", release.version);
+/// 1. **SECURITY CHECK**: Verifies veto period has ended
+/// 2. **SECURITY CHECK**: Verifies update was approved (not rejected)
+/// 3. Downloads the new binary
+/// 4. Verifies the hash
+/// 5. Backs up the current binary
+/// 6. Installs the new binary
+/// 7. Sets executable permissions
+///
+/// # Arguments
+/// * `release` - The release to apply
+/// * `approved` - Whether the update was approved by the community
+/// * `veto_percent` - The percentage of veto votes (if known)
+///
+/// # Security
+/// Updates can ONLY be applied after:
+/// - The 7-day veto period has ended
+/// - The community has NOT rejected it (< 40% veto)
+///
+/// This prevents producers from applying potentially malicious updates
+/// before the community has a chance to review and veto.
+pub async fn apply_update(release: &Release, approved: bool, veto_percent: Option<u8>) -> Result<()> {
+    info!("Attempting to apply update to version {}", release.version);
+
+    // SECURITY CHECK 1: Veto period must be over
+    if !veto_period_ended(release) {
+        let deadline = veto_deadline(release);
+        let remaining_secs = deadline.saturating_sub(current_timestamp());
+        let remaining_hours = remaining_secs / 3600;
+
+        warn!(
+            "Cannot apply update v{}: veto period still active ({}h remaining)",
+            release.version, remaining_hours
+        );
+
+        return Err(UpdateError::VetoPeriodActive {
+            remaining_hours,
+            message: format!(
+                "Update v{} is still in veto period. The community must have the \
+                 opportunity to review and veto. Time remaining: {} hours.",
+                release.version, remaining_hours
+            ),
+        });
+    }
+
+    // SECURITY CHECK 2: Update must be approved
+    if !approved {
+        if let Some(pct) = veto_percent {
+            if pct >= VETO_THRESHOLD_PERCENT {
+                warn!(
+                    "Cannot apply update v{}: rejected by community ({}% veto)",
+                    release.version, pct
+                );
+                return Err(UpdateError::RejectedByVeto {
+                    veto_percent: pct,
+                    threshold: VETO_THRESHOLD_PERCENT,
+                });
+            }
+        }
+        warn!("Cannot apply update v{}: not yet approved", release.version);
+        return Err(UpdateError::NotApproved);
+    }
+
+    info!("Security checks passed. Applying update to version {}", release.version);
 
     // 1. Download
     let binary = download_binary(release).await?;
@@ -63,6 +122,23 @@ pub async fn apply_update(release: &Release) -> Result<()> {
     info!("Update to {} applied successfully", release.version);
     info!("Node will restart to apply changes");
 
+    Ok(())
+}
+
+/// Legacy apply function for internal use (bypasses checks)
+///
+/// **WARNING**: This should only be used by the automatic update service
+/// AFTER it has already verified approval. Do NOT use for CLI.
+pub(crate) async fn apply_update_internal(release: &Release) -> Result<()> {
+    info!("Applying update to version {} (internal)", release.version);
+
+    let binary = download_binary(release).await?;
+    verify_hash(&binary, &release.binary_sha256)?;
+    let _backup = backup_current().await?;
+    let current = current_binary_path()?;
+    install_binary(&binary, &current).await?;
+
+    info!("Update to {} applied successfully", release.version);
     Ok(())
 }
 
