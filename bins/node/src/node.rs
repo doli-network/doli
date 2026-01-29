@@ -104,7 +104,7 @@ pub struct Node {
 impl Node {
     /// Create a new node
     pub async fn new(config: NodeConfig, producer_key: Option<KeyPair>) -> Result<Self> {
-        let params = ConsensusParams::for_network(config.network);
+        let mut params = ConsensusParams::for_network(config.network);
 
         // Open storage
         let blocks_path = config.data_dir.join("blocks");
@@ -128,6 +128,26 @@ impl Node {
             ChainState::new(genesis_hash)
         };
         let genesis_hash = chain_state.genesis_hash;
+
+        // For devnet, handle dynamic genesis_time
+        // Use stored genesis_timestamp if available, otherwise set to current time
+        if config.network == Network::Devnet && params.genesis_time == 0 {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            if chain_state.genesis_timestamp != 0 {
+                // Use stored genesis timestamp from previous run
+                params.genesis_time = chain_state.genesis_timestamp;
+                info!("Devnet genesis time loaded from state: {}", params.genesis_time);
+            } else {
+                // New devnet - set genesis time to current timestamp (rounded to slot)
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                params.genesis_time = now - (now % params.slot_duration);
+                info!("Devnet genesis time initialized: {}", params.genesis_time);
+            }
+        }
+
         let chain_state = Arc::new(RwLock::new(chain_state));
 
         // Load or create producer set
@@ -1638,6 +1658,29 @@ impl Node {
         {
             let mut state = self.chain_state.write().await;
             state.update(block_hash, height, block.header.slot);
+
+            // For devnet: set genesis_timestamp from first block's timestamp
+            // This ensures all nodes agree on genesis time after syncing the genesis block
+            if state.genesis_timestamp == 0 && height <= 1 {
+                let block_timestamp = block.header.timestamp;
+                // Use the block timestamp as genesis time (rounded to slot boundary)
+                let new_genesis_time = block_timestamp - (block_timestamp % self.params.slot_duration);
+                state.genesis_timestamp = new_genesis_time;
+
+                // Also update params.genesis_time for devnet so slot calculations use synced value
+                if self.config.network == Network::Devnet && self.params.genesis_time != new_genesis_time {
+                    info!(
+                        "Devnet genesis time synced from block {}: {} (was {})",
+                        height, new_genesis_time, self.params.genesis_time
+                    );
+                    self.params.genesis_time = new_genesis_time;
+                } else {
+                    info!(
+                        "Genesis timestamp set from block {}: {}",
+                        height, state.genesis_timestamp
+                    );
+                }
+            }
         }
 
         // Remove transactions from mempool
@@ -1875,13 +1918,18 @@ impl Node {
                     //
                     // The stability window must be longer than the gossip interval (10 seconds)
                     // to ensure at least one full anti-entropy round has passed without changes.
-                    const PRODUCER_LIST_STABILITY_SECS: u64 = 15;
+                    // Use shorter window for devnet to enable faster testing.
+                    let producer_list_stability_secs: u64 = if self.config.network == Network::Devnet {
+                        3 // Fast for devnet testing
+                    } else {
+                        15 // Production-like for testnet
+                    };
                     if let Some(last_change) = self.last_producer_list_change {
                         let elapsed = last_change.elapsed();
-                        if elapsed.as_secs() < PRODUCER_LIST_STABILITY_SECS {
+                        if elapsed.as_secs() < producer_list_stability_secs {
                             debug!(
                                 "Producer list changed {:?} ago, waiting for stability ({} secs required)...",
-                                elapsed, PRODUCER_LIST_STABILITY_SECS
+                                elapsed, producer_list_stability_secs
                             );
                             return Ok(());
                         }
@@ -1939,12 +1987,17 @@ impl Node {
                         // This handles the case where all nodes reset simultaneously - they would
                         // all see each other at height 0 and think they're "synced". By waiting,
                         // we give sync a chance to actually fetch blocks from peers.
-                        const POST_RESYNC_GRACE_SECS: u64 = 30;
+                        // Use shorter grace for devnet testing.
+                        let post_resync_grace_secs: u64 = if self.config.network == Network::Devnet {
+                            5 // Fast for devnet testing
+                        } else {
+                            30 // Production-like for testnet
+                        };
                         if let Some(last_resync) = self.last_resync_time {
-                            if last_resync.elapsed().as_secs() < POST_RESYNC_GRACE_SECS {
+                            if last_resync.elapsed().as_secs() < post_resync_grace_secs {
                                 debug!(
                                     "Post-resync grace: waiting {}s before producing (peers may have more blocks)",
-                                    POST_RESYNC_GRACE_SECS - last_resync.elapsed().as_secs()
+                                    post_resync_grace_secs - last_resync.elapsed().as_secs()
                                 );
                                 return Ok(());
                             }
@@ -1963,7 +2016,12 @@ impl Node {
 
                     // Grace period only applies to seed nodes (no bootstrap config)
                     let is_seed_node = !has_bootstrap_nodes;
-                    let discovery_grace_secs = 30;
+                    // Use shorter grace period for devnet to enable faster testing
+                    let discovery_grace_secs: u64 = if self.config.network == Network::Devnet {
+                        5 // Fast for devnet testing
+                    } else {
+                        30 // Production-like for testnet
+                    };
                     let grace_period_active =
                         if let Some(first_peer_time) = self.first_peer_connected {
                             first_peer_time.elapsed().as_secs() < discovery_grace_secs
