@@ -20,6 +20,9 @@ pub const TRANSACTIONS_TOPIC: &str = "/doli/txs/1";
 /// GossipSub topic for producer announcements (bootstrap protocol)
 pub const PRODUCERS_TOPIC: &str = "/doli/producers/1";
 
+/// GossipSub topic for update votes (governance veto system)
+pub const VOTES_TOPIC: &str = "/doli/votes/1";
+
 /// Create a new GossipSub behaviour
 pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
     // Message ID function: hash of message data
@@ -58,11 +61,12 @@ pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
         .map_err(|e| GossipError::Init(e.to_string()))
 }
 
-/// Subscribe to block, transaction, and producer topics
+/// Subscribe to block, transaction, producer, and vote topics
 pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError> {
     let blocks_topic = IdentTopic::new(BLOCKS_TOPIC);
     let txs_topic = IdentTopic::new(TRANSACTIONS_TOPIC);
     let producers_topic = IdentTopic::new(PRODUCERS_TOPIC);
+    let votes_topic = IdentTopic::new(VOTES_TOPIC);
 
     gossipsub
         .subscribe(&blocks_topic)
@@ -73,6 +77,9 @@ pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError>
     gossipsub
         .subscribe(&producers_topic)
         .map_err(|e| GossipError::Subscribe(format!("producers: {}", e)))?;
+    gossipsub
+        .subscribe(&votes_topic)
+        .map_err(|e| GossipError::Subscribe(format!("votes: {}", e)))?;
 
     Ok(())
 }
@@ -104,6 +111,15 @@ pub fn publish_producer(
     gossipsub
         .publish(topic, producer_data)
         .map_err(|e| GossipError::Publish(format!("producer: {}", e)))?;
+    Ok(())
+}
+
+/// Publish a vote message to the network (for governance veto system)
+pub fn publish_vote(gossipsub: &mut Gossipsub, vote_data: Vec<u8>) -> Result<(), GossipError> {
+    let topic = IdentTopic::new(VOTES_TOPIC);
+    gossipsub
+        .publish(topic, vote_data)
+        .map_err(|e| GossipError::Publish(format!("vote: {}", e)))?;
     Ok(())
 }
 
