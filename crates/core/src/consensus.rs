@@ -1274,25 +1274,24 @@ impl ConsensusParams {
         }
     }
 
-    /// Create testnet parameters (same slot duration, faster eras for testing)
+    /// Create testnet parameters (identical to mainnet)
     ///
     /// # Proof of Time on Testnet
     ///
-    /// Testnet uses the same 10-second slots as mainnet to ensure realistic
-    /// testing of the Proof of Time consensus with VDF. However, eras and
-    /// other economic parameters are accelerated.
+    /// Testnet uses EXACTLY the same parameters as mainnet to ensure
+    /// realistic testing of the Proof of Time consensus with VDF.
     pub fn testnet() -> Self {
         Self {
             genesis_time: 0,              // Will be set at testnet launch
-            slot_duration: SLOT_DURATION, // Same as mainnet for PoT testing
-            slots_per_epoch: 360,         // 6 minutes per epoch
-            slots_per_reward_epoch: 360,  // 6 minutes per reward epoch (faster testing)
-            attestation_interval: 1,      // Every block (presence signatures)
+            slot_duration: SLOT_DURATION, // Same as mainnet (10 seconds)
+            slots_per_epoch: SLOTS_PER_EPOCH,         // Same as mainnet (360)
+            slots_per_reward_epoch: SLOTS_PER_REWARD_EPOCH,  // Same as mainnet
+            attestation_interval: ATTESTATION_INTERVAL,
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: 604_800, // ~1 week per era
-            bootstrap_blocks: 3600,  // 1 hour bootstrap
+            blocks_per_era: BLOCKS_PER_ERA, // Same as mainnet (~4 years)
+            bootstrap_blocks: BOOTSTRAP_BLOCKS, // Same as mainnet (~1 week)
             initial_reward: INITIAL_REWARD,
-            initial_bond: INITIAL_BOND / 100,
+            initial_bond: INITIAL_BOND,   // Same as mainnet (1000 DOLI)
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
@@ -1300,17 +1299,26 @@ impl ConsensusParams {
     }
 
     /// Create devnet parameters (fast slots and epochs for local development)
+    ///
+    /// # Devnet Time Acceleration
+    ///
+    /// - Slot duration: 1 second (fast block production)
+    /// - Era duration: ≈10 minutes (576 blocks = 9.6 minutes)
+    /// - Year simulation: 2.4 minutes (144 blocks)
+    /// - Reward epoch: 30 seconds (30 blocks)
+    ///
+    /// This allows testing the full tokenomics lifecycle in ~1 hour (6 eras).
     pub fn devnet() -> Self {
         Self {
             genesis_time: 0,       // Will be set at devnet start
-            slot_duration: 5,      // 5 seconds (fast)
-            slots_per_epoch: 60,   // 5 minutes per epoch
-            slots_per_reward_epoch: 20, // ~100 seconds per reward epoch (very fast testing)
+            slot_duration: 1,      // 1 second (fast)
+            slots_per_epoch: 60,   // 1 minute per epoch
+            slots_per_reward_epoch: 30, // 30 seconds per reward epoch
             attestation_interval: 1,    // Every block (presence signatures)
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: 10_000, // Fast era for testing
-            bootstrap_blocks: 100,  // ~8 minutes bootstrap
-            initial_reward: 10_000_000_000, // 100 DOLI per block
+            blocks_per_era: 576,        // ≈10 minutes per era (576 blocks × 1s = 9.6 min)
+            bootstrap_blocks: 60,       // ~1 minute bootstrap
+            initial_reward: INITIAL_REWARD, // 1 DOLI per block (same as mainnet)
             initial_bond: 100_000_000,      // 1 DOLI
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
