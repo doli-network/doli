@@ -1,12 +1,14 @@
 ---
 name: sync-docs
-description: Use this skill after completing a code implementation, bug fix, or feature to test, sync documentation, and commit. Run with "/sync-docs <crate>" or "/sync-docs" for full workspace.
-version: 1.0.0
+description: Use this skill after completing a code implementation, bug fix, or feature to verify documentation alignment and commit. Enforces the Documentation Alignment Principle. Run with "/sync-docs <crate>" or "/sync-docs" for full workspace. Use "/sync-docs --audit" for alignment check only (no commit).
+version: 2.0.0
 ---
 
 # Sync Documentation Skill
 
-This skill automates the post-implementation workflow: test → update docs → commit.
+This skill enforces the **Documentation Alignment Principle** by verifying and updating documentation after code changes.
+
+**Key change in v2.0**: Documentation alignment is now MANDATORY, not discretionary. This skill verifies the truth hierarchy before allowing commits.
 
 ## Git Author (Required)
 
@@ -18,159 +20,297 @@ Email: weil@doli.network
 
 Always include `--author="E. Weil <weil@doli.network>"` in git commit commands.
 
+## Truth Hierarchy
+
+```
+1. WHITEPAPER.md  →  Defines WHAT the protocol IS
+2. specs/*        →  Defines HOW it works technically
+3. docs/*         →  Defines HOW to use it
+4. Code           →  Implements the above
+```
+
+**Rule**: Higher levels govern lower levels. Code must match WHITEPAPER. Specs must match code. Docs must match reality.
+
+---
+
 ## Workflow
 
-When invoked, follow these steps **in order**:
-
-### Step 1: Run Unit Tests
+### Step 1: Run Tests
 
 Run tests for the specified crate or full workspace:
 
 ```bash
 # If crate specified:
-just test-crate <crate> 2>&1 | grep -i "pass\|fail\|error\|ok\|FAILED" | awk '!seen[$0]++' | head -30
+cargo test -p <crate> 2>&1 | grep -i "pass\|fail\|error\|ok\|FAILED" | awk '!seen[$0]++' | head -30
 
 # If no crate specified (full workspace):
-just test 2>&1 | grep -i "pass\|fail\|error\|ok\|FAILED" | awk '!seen[$0]++' | head -30
+cargo test 2>&1 | grep -i "pass\|fail\|error\|ok\|FAILED" | awk '!seen[$0]++' | head -30
 ```
 
-**STOP HERE if tests fail.** Report the failure and do not proceed.
+**STOP if tests fail.** Report failure and do not proceed.
+
+---
 
 ### Step 2: Analyze Changes
 
-If tests pass, analyze what was changed:
+Understand what was changed:
 
-1. Run `git diff --name-only` to see modified files
-2. Run `git diff` to understand the nature of changes
-3. Categorize changes:
-   - **Consensus changes**: VDF, producer selection, block validation, fork choice
-   - **Protocol changes**: Wire format, message types, network behavior
-   - **Economic changes**: Rewards, bonds, fees, slashing
-   - **API changes**: RPC endpoints, CLI commands
-   - **Architecture changes**: New crates, component interactions
+```bash
+git diff --name-only HEAD
+git diff HEAD
+```
 
-### Step 3: Check Documentation Updates
+**Categorize each change:**
 
-Based on the changes, determine if documentation needs updating:
+| Category | Examples | Documentation Impact |
+|----------|----------|---------------------|
+| **Consensus** | VDF, producer selection, fork choice, block validation | WHITEPAPER + specs + maybe docs |
+| **Economic** | Rewards, bonds, fees, slashing | WHITEPAPER + specs + docs |
+| **Protocol** | Wire format, message types, handshake | specs |
+| **Architecture** | New crates, component interactions | specs |
+| **API** | RPC endpoints, response formats | specs + docs |
+| **CLI** | Commands, flags, output | docs |
+| **Node operation** | Config, startup, networking | docs |
+| **Internal** | Refactoring, optimization, tests | NONE |
 
-#### WHITEPAPER.md (Root Level)
-Update if changes affect:
-- Consensus mechanism (Sections 4, 7, 8)
-- Transaction model (Section 2)
-- Network protocol (Section 5)
-- Producer registration/selection (Section 6, 7)
-- Economic model: rewards, bonds, fees (Section 9)
-- Security model (Section 11)
-- Time structure: slots, epochs, eras (Section 4.2)
+---
 
-**Do NOT update WHITEPAPER.md for:**
-- Internal refactoring
-- Bug fixes that don't change behavior
-- Test additions
-- Performance optimizations
-- Code style changes
+### Step 3: WHITEPAPER Alignment Check (MANDATORY)
 
-#### specs/* Files
-| File | Update When |
-|------|-------------|
-| `specs/protocol.md` | Wire format, message types, handshake changes |
-| `specs/architecture.md` | New crates, component interactions, data flow |
-| `specs/security_model.md` | New attack vectors, threat model changes |
-| `specs/SPECS.md` | New spec files added (master index) |
+**This step cannot be skipped for consensus, economic, or protocol changes.**
 
-#### docs/* Files
-| File | Update When |
-|------|-------------|
-| `docs/running_a_node.md` | Node configuration, CLI flags |
-| `docs/becoming_a_producer.md` | Registration, bonds, requirements |
-| `docs/rpc_reference.md` | New/changed RPC endpoints |
-| `docs/troubleshooting.md` | New error conditions |
-| `docs/roadmap.md` | Milestone completion |
-| `docs/attack_analysis.md` | Security findings |
-| `docs/DOCS.md` | New documentation files added (master index) |
+#### 3.1 Identify Relevant WHITEPAPER Sections
 
-### Step 4: Apply Updates
+Read the sections that govern the changed functionality:
 
-If updates are needed:
+| If change affects... | Read WHITEPAPER section... |
+|---------------------|---------------------------|
+| Block structure | Section 3 (Block Structure) |
+| Transactions | Section 2 (Transaction Model) |
+| Consensus/VDF | Sections 4, 7, 8 (Proof of Time) |
+| Producer selection | Sections 6, 7 (Producers) |
+| Rewards/economics | Section 9 (Economic Model) |
+| Network protocol | Section 5 (Network) |
+| Security properties | Section 11 (Security) |
 
-1. **Read the target file(s)** first to understand current content
-2. **Make minimal, precise edits** - only update affected sections
-3. **Maintain consistency** with existing style and format
-4. **Update version/date** if the file has one
+#### 3.2 Verify Compliance
 
-### Step 5: Commit Changes
+Answer explicitly:
 
-If documentation was updated OR code changes are ready:
+```
+WHITEPAPER Alignment Check:
+- Relevant section(s): <list sections>
+- Code implements spec: YES / NO / PARTIAL
+- Discrepancy found: YES / NO
+- If YES, describe: <discrepancy>
+```
+
+#### 3.3 Handle Discrepancies
+
+```
+Code differs from WHITEPAPER?
+├─ Code is WRONG → Fix the code, not the whitepaper
+├─ WHITEPAPER needs update → STOP, escalate to user
+└─ WHITEPAPER is silent → Document in specs, note gap
+```
+
+**STOP AND ESCALATE** if code intentionally differs from WHITEPAPER. User must approve whitepaper changes.
+
+---
+
+### Step 4: Specs Alignment Check (MANDATORY)
+
+For changes affecting protocol, architecture, or security:
+
+#### 4.1 Check Each Relevant Spec
+
+| File | Check when... |
+|------|---------------|
+| `specs/protocol.md` | Wire format, messages, encoding changed |
+| `specs/architecture.md` | Crate structure, component interaction changed |
+| `specs/security_model.md` | Attack vectors, threat model affected |
+
+#### 4.2 Verify Accuracy
+
+For each relevant spec file:
+
+1. **Read the current spec**
+2. **Compare to new code behavior**
+3. **Document findings:**
+
+```
+Specs Alignment Check:
+- specs/protocol.md: ACCURATE / NEEDS UPDATE / N/A
+- specs/architecture.md: ACCURATE / NEEDS UPDATE / N/A
+- specs/security_model.md: ACCURATE / NEEDS UPDATE / N/A
+```
+
+---
+
+### Step 5: Docs Alignment Check (MANDATORY)
+
+For changes affecting user-facing behavior:
+
+#### 5.1 Check Each Relevant Doc
+
+| File | Check when... |
+|------|---------------|
+| `docs/cli.md` | CLI commands, flags, output changed |
+| `docs/rpc_reference.md` | RPC endpoints, request/response changed |
+| `docs/running_a_node.md` | Node config, startup, operation changed |
+| `docs/becoming_a_producer.md` | Producer registration, requirements changed |
+| `docs/troubleshooting.md` | New error conditions, failure modes |
+
+#### 5.2 Verify Accuracy
+
+```
+Docs Alignment Check:
+- docs/cli.md: ACCURATE / NEEDS UPDATE / N/A
+- docs/rpc_reference.md: ACCURATE / NEEDS UPDATE / N/A
+- docs/running_a_node.md: ACCURATE / NEEDS UPDATE / N/A
+- docs/becoming_a_producer.md: ACCURATE / NEEDS UPDATE / N/A
+- docs/troubleshooting.md: ACCURATE / NEEDS UPDATE / N/A
+```
+
+---
+
+### Step 6: Apply Updates
+
+For each file marked "NEEDS UPDATE":
+
+1. **Read the file first** - Understand current content and style
+2. **Make minimal, precise edits** - Only update affected sections
+3. **Maintain consistency** - Match existing format and tone
+4. **No aspirational content** - Only document what EXISTS
+
+#### Update Checklist
+
+- [ ] WHITEPAPER.md updates (if approved by user)
+- [ ] specs/* updates
+- [ ] docs/* updates
+- [ ] Index files updated (SPECS.md, DOCS.md) if new files added
+
+---
+
+### Step 7: Present Alignment Report
+
+Before committing, present this report to the user:
+
+```
+## Documentation Alignment Report
+
+### Changes Analyzed
+- Files modified: <list>
+- Change category: <consensus|economic|protocol|api|cli|internal>
+
+### WHITEPAPER Compliance
+- Status: COMPLIANT / DISCREPANCY FOUND / N/A
+- Sections verified: <list>
+- Notes: <any concerns>
+
+### Specs Alignment
+- protocol.md: ✓ accurate | ✗ updated | - n/a
+- architecture.md: ✓ accurate | ✗ updated | - n/a
+- security_model.md: ✓ accurate | ✗ updated | - n/a
+
+### Docs Alignment
+- cli.md: ✓ accurate | ✗ updated | - n/a
+- rpc_reference.md: ✓ accurate | ✗ updated | - n/a
+- running_a_node.md: ✓ accurate | ✗ updated | - n/a
+- <other relevant docs>
+
+### Documentation Changes Made
+- <file>: <what was updated>
+- <file>: <what was updated>
+
+### Ready to Commit
+- [ ] Tests pass
+- [ ] WHITEPAPER compliance verified
+- [ ] Specs accurate
+- [ ] Docs accurate
+
+Proceed with commit? (waiting for confirmation)
+```
+
+---
+
+### Step 8: Commit (After User Confirmation)
+
+**Only proceed after user confirms the alignment report.**
 
 ```bash
 # Stage specific files (never use git add -A)
-git add <specific-files>
+git add <code-files> <doc-files>
 
-# Commit with author explicitly set (required for commits)
+# Commit with proper attribution
 git commit --author="E. Weil <weil@doli.network>" -m "$(cat <<'EOF'
 <type>(<scope>): <description>
 
-<body explaining what changed>
+<body explaining changes>
+
+Documentation: <specs|docs> updated for alignment
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 EOF
 )"
 ```
 
-**Git Author Configuration:**
-- Author: `E. Weil <weil@doli.network>`
-- Always use `--author` flag to ensure commits have correct attribution
-- This is required even if global git config exists
+---
 
-**Commit types:**
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation only
-- `refactor`: Code refactoring
-- `test`: Test additions
-- `chore`: Maintenance
+## Audit Mode
 
-### Step 6: Report Summary
-
-Output a summary:
-- Tests: PASSED/FAILED
-- Whitepaper: UPDATED/NO CHANGE NEEDED
-- Specs updated: list or "none"
-- Docs updated: list or "none"
-- Commit: hash or "not committed"
-
-## Usage Examples
+When invoked with `--audit` flag, perform Steps 1-7 only (no commit). Use this to:
+- Verify documentation alignment before major releases
+- Check for documentation drift
+- Audit after multiple changes
 
 ```
-/sync-docs core      # Test core crate, sync docs, commit
-/sync-docs vdf       # Test vdf crate, sync docs, commit
-/sync-docs crypto    # Test crypto crate, sync docs, commit
-/sync-docs           # Test all, sync docs, commit
+/sync-docs --audit        # Audit full workspace
+/sync-docs core --audit   # Audit specific crate
 ```
+
+---
+
+## Quick Reference
+
+```
+/sync-docs Workflow:
+
+1. TEST      → Run tests, stop if fail
+2. ANALYZE   → Categorize changes
+3. WHITEPAPER → Verify compliance (MANDATORY for consensus/economic)
+4. SPECS     → Verify accuracy (MANDATORY for protocol/arch)
+5. DOCS      → Verify accuracy (MANDATORY for user-facing)
+6. UPDATE    → Make necessary changes
+7. REPORT    → Present alignment report
+8. COMMIT    → After user confirms
+```
+
+## Prohibited Actions
+
+1. **NO commits without alignment verification** - Every commit must pass the checks
+2. **NO outdated documentation** - If you change behavior, you update docs
+3. **NO WHITEPAPER changes without approval** - Escalate discrepancies
+4. **NO aspirational documentation** - Only document what exists
+5. **NO skipping steps** - All mandatory checks must be performed
 
 ## Decision Tree
 
 ```
-Tests Pass?
-├─ NO → Report failure, STOP
-└─ YES → Analyze changes
-         │
-         ├─ Consensus/Protocol/Economic change?
-         │  └─ YES → Update WHITEPAPER.md
-         │
-         ├─ Wire format/Architecture change?
-         │  └─ YES → Update relevant specs/*
-         │
-         ├─ User-facing behavior change?
-         │  └─ YES → Update relevant docs/*
-         │
-         └─ Commit all changes
+Change made?
+│
+├─ Affects consensus/economic?
+│  └─ MUST verify WHITEPAPER alignment
+│     └─ Discrepancy? → STOP, escalate
+│
+├─ Affects protocol/architecture?
+│  └─ MUST verify specs/* accuracy
+│     └─ Outdated? → UPDATE before commit
+│
+├─ Affects user-facing behavior?
+│  └─ MUST verify docs/* accuracy
+│     └─ Outdated? → UPDATE before commit
+│
+└─ Internal only?
+   └─ Verify no doc impact, then commit
 ```
-
-## Important Rules
-
-1. **Never update docs for internal-only changes** (refactoring, optimization)
-2. **Always read files before editing** - understand context
-3. **Minimal edits** - don't rewrite entire sections
-4. **Test must pass first** - no documentation for broken code
-5. **One commit** - bundle code + docs together

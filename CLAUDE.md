@@ -176,9 +176,131 @@ bins/node (doli-node)          bins/cli (doli-cli)
 - **Flat structure**: `docs/` and `specs/` use flat structure (no subdirectories)
   - Exception: `docs/legacy/` for archived historical documents
 
+## Documentation Alignment Principle (MANDATORY)
+
+**CRITICAL**: Documentation drift is a protocol liability. In a blockchain system, outdated or incorrect documentation leads to implementation errors, security vulnerabilities, and consensus failures. Documentation must be treated as a first-class artifact, not an afterthought.
+
+### Truth Hierarchy
+
+The following hierarchy defines the source of truth. Higher levels govern lower levels:
+
+```
+┌─────────────────────────────────────────┐
+│  1. WHITEPAPER.md (Protocol Bible)      │  ← Defines WHAT the protocol IS
+├─────────────────────────────────────────┤
+│  2. specs/* (Technical Specifications)  │  ← Defines HOW it works technically
+├─────────────────────────────────────────┤
+│  3. docs/* (Operational Documentation)  │  ← Defines HOW to use it
+├─────────────────────────────────────────┤
+│  4. Code (Implementation)               │  ← Implements the above
+└─────────────────────────────────────────┘
+```
+
+**Rules:**
+1. **Code must implement WHITEPAPER** - If code differs from whitepaper, the code is wrong
+2. **Specs must reflect code accurately** - If specs differ from code, specs must be updated
+3. **Docs must describe reality** - If docs differ from behavior, docs must be updated
+4. **Never document aspirations** - Only document what EXISTS, not what's planned
+
+### Mandatory Alignment Checks
+
+Before ANY commit that modifies behavior:
+
+1. **Verify WHITEPAPER compliance** - Does the change align with whitepaper specifications?
+2. **Check specs accuracy** - Do technical specs still accurately describe the system?
+3. **Verify docs accuracy** - Do operational docs still accurately describe usage?
+4. **Update or flag** - Either update documentation OR flag misalignment for review
+
+### Zero Tolerance for Drift
+
+The following are strictly prohibited:
+
+- **Committing code that contradicts WHITEPAPER** without explicit approval to update whitepaper
+- **Leaving specs outdated** after changing wire formats, consensus rules, or architecture
+- **Leaving docs outdated** after changing CLI commands, RPC endpoints, or user-facing behavior
+- **Documenting unimplemented features** - No "coming soon" or aspirational content
+- **Assuming someone else will update docs** - If you change it, you document it
+
+### When to Update Each Layer
+
+| Change Type | WHITEPAPER | specs/* | docs/* |
+|-------------|------------|---------|--------|
+| Consensus rules | YES | YES | Maybe |
+| Economic parameters | YES | YES | YES |
+| Wire format/protocol | NO | YES | Maybe |
+| Architecture/crates | NO | YES | NO |
+| CLI commands | NO | NO | YES |
+| RPC endpoints | NO | Maybe | YES |
+| Node operation | NO | NO | YES |
+| Internal refactor | NO | NO | NO |
+| Bug fix (no behavior change) | NO | NO | NO |
+
+### Enforcement
+
+Use `/sync-docs` after any implementation to verify and update documentation alignment. This is not optional for changes that affect documented behavior.
+
+---
+
 ## Workflow Rules
 
-### After Passing Tests (Bug Fixes or New Features)
+### Bug Fixing Protocol (MANDATORY)
+
+**CRITICAL**: This is state-of-the-art blockchain technology. Quick fixes that mask symptoms without addressing root causes are strictly prohibited. Every bug fix must be treated as a potential architectural decision.
+
+#### Phase 1: Root Cause Analysis (REQUIRED)
+
+Before writing ANY fix:
+1. **Identify the true root cause** - Never fix symptoms. Trace the bug to its origin in the codebase.
+2. **Study the affected components** - Understand how the buggy code interacts with:
+   - Consensus logic (PoT, VDF validation, producer selection)
+   - State transitions (UTXO, bonds, rewards)
+   - Network protocol (message propagation, sync)
+   - Cryptographic guarantees (signatures, hashes)
+3. **Assess architectural implications** - Document answers to:
+   - Does this fix change any invariant or assumption in the protocol?
+   - Could this fix introduce race conditions or state inconsistencies?
+   - Does it affect any security properties defined in `specs/security_model.md`?
+   - Will it impact consensus finality or fork choice?
+
+#### Phase 2: Whitepaper Compliance (MANDATORY)
+
+**You are strictly prohibited from implementing anything not specified in the WHITEPAPER.**
+
+Before implementing:
+1. Verify the fix aligns with `WHITEPAPER.md` specifications
+2. If the bug reveals a gap between implementation and whitepaper, the whitepaper is the source of truth
+3. If the whitepaper is silent on the matter, escalate to the user before proceeding
+4. Never invent new mechanisms, parameters, or behaviors not documented in the whitepaper
+
+#### Phase 3: Implementation
+
+1. Implement the minimal fix that addresses the root cause
+2. Write or update tests that would have caught this bug
+3. Run full test suite: `cargo test`
+4. Run clippy and format: `cargo clippy && cargo fmt`
+
+#### Phase 4: User Validation (REQUIRED BEFORE COMMIT)
+
+**You are strictly prohibited from committing without explicit user validation.**
+
+After tests pass:
+1. **STOP** - Do not commit automatically
+2. Present to the user:
+   - Root cause analysis summary
+   - The fix applied and its rationale
+   - Any architectural implications identified
+   - Test results
+3. **ASK**: "Have you validated that this bug is fixed?"
+4. **WAIT** for explicit confirmation before proceeding
+
+#### Phase 5: Documentation and Commit
+
+Only after user confirms the fix is validated:
+1. Update `specs/` and `docs/` **only if the fix affects documented behavior**
+2. Do not add unnecessary documentation
+3. Commit with descriptive message: `fix(scope): description of root cause and fix`
+
+### After Passing Tests (New Features)
 
 Once code changes pass all unit tests:
 1. Update `specs/` and `docs/` if the changes affect documented behavior or specifications
@@ -187,10 +309,11 @@ Once code changes pass all unit tests:
 ### Handling Bug Reports (`REPORT_*.md` Files)
 
 When fixing a bug documented in a `REPORT_*.md` file:
-1. Implement the fix and verify tests pass
+1. **Follow the Bug Fixing Protocol above** (all phases mandatory)
 2. Update the report file with:
+   - Root cause analysis
    - Description of the fix applied
    - Resolution date
 3. Move the report to `docs/legacy/bugs/`
 4. Update `specs/` and `docs/` if affected
-5. Commit all changes together
+5. Commit all changes together (only after user validation)
