@@ -99,6 +99,11 @@ enum Commands {
         /// Using this incorrectly WILL cause slashing (100% bond loss).
         #[arg(long)]
         force_start: bool,
+
+        /// Path to chainspec JSON file (overrides built-in network config)
+        /// Use scripts/generate_chainspec.sh to create from wallet files
+        #[arg(long)]
+        chainspec: Option<PathBuf>,
     },
 
     /// Initialize a new data directory
@@ -212,6 +217,7 @@ async fn main() -> Result<()> {
             bootstrap,
             no_dht,
             force_start,
+            chainspec,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -230,6 +236,7 @@ async fn main() -> Result<()> {
                 bootstrap,
                 no_dht,
                 force_start,
+                chainspec,
             )
             .await?;
         }
@@ -283,6 +290,7 @@ async fn run_node(
     bootstrap: Option<String>,
     no_dht: bool,
     force_start: bool,
+    chainspec_path: Option<PathBuf>,
 ) -> Result<()> {
     info!("Starting node with data directory: {:?}", data_dir);
 
@@ -396,44 +404,83 @@ async fn run_node(
             }
         }
     } else {
-        // Initialize with genesis producers for mainnet/testnet
-        match network {
-            Network::Mainnet => {
-                use doli_core::genesis::{mainnet_genesis_producers, mainnet_using_placeholder_producers};
+        // Initialize with genesis producers from chainspec (preferred) or built-in defaults
+        use doli_core::chainspec::ChainSpec;
 
-                // Safety check: prevent mainnet launch with placeholder keys
-                if mainnet_using_placeholder_producers() {
-                    error!("CRITICAL: Mainnet genesis producers contain placeholder keys!");
-                    error!("Replace MAINNET_GENESIS_PRODUCERS in genesis.rs with actual pubkeys.");
-                    error!("See docs/GENESIS.md for instructions.");
+        // Try to load chainspec from provided path or default location
+        let chainspec = if let Some(ref path) = chainspec_path {
+            info!("Loading chainspec from {:?}", path);
+            match ChainSpec::load(path) {
+                Ok(spec) => {
+                    info!("Loaded chainspec: {} ({})", spec.name, spec.id);
+                    Some(spec)
+                }
+                Err(e) => {
+                    error!("Failed to load chainspec: {}", e);
                     std::process::exit(1);
                 }
+            }
+        } else {
+            // Try default chainspec location
+            let default_path = data_dir.join("chainspec.json");
+            if default_path.exists() {
+                match ChainSpec::load(&default_path) {
+                    Ok(spec) => {
+                        info!("Loaded chainspec from {:?}: {} ({})", default_path, spec.name, spec.id);
+                        Some(spec)
+                    }
+                    Err(e) => {
+                        warn!("Could not load default chainspec: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
 
-                let genesis_producers = mainnet_genesis_producers();
-                if !genesis_producers.is_empty() {
-                    info!(
-                        "Initializing mainnet with {} genesis producers",
-                        genesis_producers.len()
-                    );
-                    ProducerSet::with_genesis_producers(genesis_producers)
-                } else {
+        // Get genesis producers from chainspec or fall back to built-in (legacy)
+        if let Some(spec) = chainspec {
+            let genesis_producers = spec.get_genesis_producers();
+            if !genesis_producers.is_empty() {
+                info!(
+                    "Initializing {} with {} genesis producers from chainspec",
+                    network.name(),
+                    genesis_producers.len()
+                );
+                for (pk, bonds) in &genesis_producers {
+                    info!("  - {} (bonds: {})", pk.to_hex(), bonds);
+                }
+                ProducerSet::with_genesis_producers(genesis_producers)
+            } else {
+                info!("Chainspec has no genesis producers, using bootstrap mode");
+                ProducerSet::new()
+            }
+        } else {
+            // Legacy fallback: use hardcoded genesis producers
+            // This path is deprecated - prefer chainspec files
+            match network {
+                Network::Mainnet => {
+                    warn!("No chainspec provided for mainnet - using bootstrap mode");
+                    warn!("For production, use --chainspec with a validated chainspec file");
                     ProducerSet::new()
                 }
-            }
-            Network::Testnet => {
-                use doli_core::genesis::testnet_genesis_producers;
-                let genesis_producers = testnet_genesis_producers();
-                if !genesis_producers.is_empty() {
-                    info!(
-                        "Initializing testnet with {} genesis producers",
-                        genesis_producers.len()
-                    );
-                    ProducerSet::with_genesis_producers(genesis_producers)
-                } else {
-                    ProducerSet::new()
+                Network::Testnet => {
+                    // Legacy testnet support - fall back to hardcoded producers
+                    use doli_core::genesis::testnet_genesis_producers;
+                    let genesis_producers = testnet_genesis_producers();
+                    if !genesis_producers.is_empty() {
+                        info!(
+                            "Initializing testnet with {} genesis producers (legacy mode)",
+                            genesis_producers.len()
+                        );
+                        ProducerSet::with_genesis_producers(genesis_producers)
+                    } else {
+                        ProducerSet::new()
+                    }
                 }
+                Network::Devnet => ProducerSet::new(),
             }
-            Network::Devnet => ProducerSet::new(),
         }
     };
     let producer_set = Arc::new(RwLock::new(producer_set));
