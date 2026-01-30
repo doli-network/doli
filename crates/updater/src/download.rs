@@ -11,8 +11,6 @@ use crate::{
     platform_identifier, Release, Result, UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
 };
 use sha2::{Digest, Sha256};
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
 /// Download the binary for the current platform
@@ -218,18 +216,6 @@ async fn fetch_release_from_url(url: &str) -> Result<Release> {
     Ok(release)
 }
 
-/// Save binary to a temporary file for verification
-pub async fn save_to_temp(binary: &[u8], version: &str) -> Result<std::path::PathBuf> {
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("doli-node-{}.tmp", version));
-
-    let mut file = fs::File::create(&temp_path).await?;
-    file.write_all(binary).await?;
-    file.sync_all().await?;
-
-    debug!("Saved binary to: {:?}", temp_path);
-    Ok(temp_path)
-}
 
 #[cfg(test)]
 mod tests {

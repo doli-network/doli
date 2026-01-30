@@ -137,8 +137,7 @@ CHAINSPEC=$(cat <<EOF
     "bond_amount": $BOND_AMOUNT
   },
   "genesis_producers": [$PRODUCERS_JSON
-  ],
-  "maintainer_keys": []
+  ]
 }
 EOF
 )
