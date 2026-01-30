@@ -87,16 +87,19 @@ Configure the node using environment variables:
 |----------|-------------|---------|
 | `DOLI_NETWORK` | Network to join: `mainnet`, `testnet`, `devnet` | `mainnet` |
 | `DOLI_DATA_DIR` | Data directory inside container | `/data` |
-| `DOLI_LOG_LEVEL` | Log level: `error`, `warn`, `info`, `debug`, `trace` | `info` |
+| `DOLI_LOG_LEVEL` | Log level: `error`, `warn`, `info`, `debug`, `trace` | `info` (`debug` for devnet) |
 | `DOLI_P2P_PORT` | Override P2P listen port | Network default |
 | `DOLI_RPC_PORT` | Override RPC listen port | Network default |
 | `DOLI_METRICS_PORT` | Metrics server port | `9090` |
 | `DOLI_BOOTSTRAP` | Bootstrap node multiaddr | Network defaults |
-| `DOLI_PRODUCER` | Enable producer mode: `true` | `false` |
-| `DOLI_PRODUCER_KEY_FILE` | Path to producer key file (enables producer mode) | None |
+| `DOLI_PRODUCER_KEY` | Producer key (hex) - enables producer mode | None |
+| `DOLI_PRODUCER_KEY_FILE` | Path to producer key file - enables producer mode | None |
 | `DOLI_NO_AUTO_UPDATE` | Disable auto-updates: `true` | `false` |
 | `DOLI_NO_DHT` | Disable DHT discovery: `true` | `false` |
 | `DOLI_CHAINSPEC` | Path to custom chainspec JSON | None |
+
+**Note:** Producer mode is enabled by setting either `DOLI_PRODUCER_KEY` or `DOLI_PRODUCER_KEY_FILE`.
+Setting `DOLI_PRODUCER_KEY_FILE` takes precedence if both are set.
 
 ### Network Ports
 

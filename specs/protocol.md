@@ -37,11 +37,11 @@ Byte strings are concatenated directly without length prefixes or separators in 
 
 ASCII literals are encoded without NUL terminator:
 
-| Literal | Bytes                      |
-|---------|----------------------------|
-| "BLK"   | `0x42 0x4C 0x4B` (3 bytes) |
-| "REG"   | `0x52 0x45 0x47` (3 bytes) |
-| "SEED"  | `0x53 0x45 0x45 0x44` (4 bytes) |
+| Literal | Bytes | Usage |
+|---------|-------|-------|
+| "DOLI_VDF_BLOCK_V1" | 17 bytes | Block VDF preimage |
+| "DOLI_VDF_REGISTER_V1" | 20 bytes | Registration VDF preimage |
+| "SEED" | `0x53 0x45 0x45 0x44` (4 bytes) | Selection seed |
 
 ### 1.4 Addresses
 
@@ -209,15 +209,15 @@ Coinbase outputs require 100 confirmations before spending (REWARD_MATURITY).
 exit_tx = {
     version: 1,
     type: 2,
-    inputs: [...],               // To pay fee
-    outputs: [...],              // Change
+    inputs: [],                  // Must be empty
+    outputs: [],                 // Must be empty
     extra_data: {
         public_key: 32 bytes     // Producer public key
     }
 }
 ```
 
-Initiates the unbonding period. Producer is removed from active set.
+Initiates the 7-day unbonding period. Producer is removed from active set. Exit transactions must have no inputs or outputs - they simply identify the producer exiting. The bond is released after the unbonding period via ClaimBond transaction.
 
 ### 3.8 Claim Reward Transaction
 
@@ -317,6 +317,82 @@ epoch_reward_tx = {
 
 This ensures fair distribution proportional to each producer's contribution to the epoch.
 
+### 3.12 AddBond Transaction
+
+Allows a producer to add additional bonds (1-100 max total).
+
+```
+add_bond_tx = {
+    version: 1,
+    type: 7,
+    inputs: [...],               // Funds to become bonds
+    outputs: [],                 // Must be empty (funds go into bond state)
+    extra_data: {
+        producer_pubkey: 32 bytes,
+        bond_count: uint32       // Number of bonds to add (must be positive)
+    }
+}
+```
+
+**Validation rules:**
+- Producer must be registered
+- `bond_count` must be > 0
+- Input amount must equal `bond_count × BOND_UNIT`
+- Total bonds after addition must not exceed MAX_BONDS (100)
+
+### 3.13 RequestWithdrawal Transaction
+
+Initiates a 7-day withdrawal delay for partial bond withdrawal.
+
+```
+request_withdrawal_tx = {
+    version: 1,
+    type: 8,
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty (funds locked until claim)
+    extra_data: {
+        producer_pubkey: 32 bytes,
+        bond_count: uint32,      // Number of bonds to withdraw (must be positive)
+        destination: 32 bytes    // Pubkey hash to receive funds
+    }
+}
+```
+
+**Validation rules:**
+- Producer must be registered
+- `bond_count` must be > 0
+- `bond_count` must not exceed producer's current bonds
+- `destination` must not be zero hash
+- Creates a pending withdrawal with 7-day delay
+
+### 3.14 ClaimWithdrawal Transaction
+
+Completes a withdrawal after the 7-day delay period.
+
+```
+claim_withdrawal_tx = {
+    version: 1,
+    type: 9,
+    inputs: [],                  // Must be empty
+    outputs: [{
+        output_type: 0,          // Normal output
+        amount: net_amount,      // Bond value minus any early exit penalty
+        pubkey_hash: destination,
+        lock_until: 0
+    }],
+    extra_data: {
+        producer_pubkey: 32 bytes,
+        withdrawal_index: uint32 // Index of the pending withdrawal
+    }
+}
+```
+
+**Validation rules:**
+- Pending withdrawal must exist at the specified index
+- 7-day delay period must have elapsed
+- Output must be exactly one Normal output
+- Amount equals net bond value after any penalties
+
 ---
 
 ## 4. Blocks
@@ -374,15 +450,15 @@ def merkle_tree(hashes):
 ### 4.5 VDF Preimage
 
 ```
-vdf_input = HASH("BLK" || prev_hash || merkle_root || slot || producer)
+vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || merkle_root || slot || producer)
 
 // Breakdown:
-// "BLK"        = 3 bytes
+// "DOLI_VDF_BLOCK_V1" = 17 bytes (domain separator)
 // prev_hash    = 32 bytes
 // merkle_root  = 32 bytes
 // slot         = 4 bytes (uint32 LE)
 // producer     = 32 bytes
-// Total: 103 bytes before hashing
+// Total: 117 bytes before hashing
 ```
 
 ---
@@ -393,10 +469,10 @@ vdf_input = HASH("BLK" || prev_hash || merkle_root || slot || producer)
 
 ```
 GENESIS_TIME = 1769904000         // 2026-02-01T00:00:00Z
-SLOT_DURATION = 60                // seconds
-EPOCH_SLOTS = 60                  // 1 hour
-ERA_BLOCKS = 2_102_400            // ~4 years
-BOOTSTRAP_BLOCKS = 10_080         // ~1 week
+SLOT_DURATION = 10                // seconds (mainnet/testnet), 1s devnet
+SLOTS_PER_EPOCH = 360             // 1 hour (360 × 10s)
+SLOTS_PER_ERA = 12_614_400        // ~4 years
+BOOTSTRAP_BLOCKS = 60_480         // ~1 week
 ```
 
 ### 5.2 Slot Derivation
@@ -521,9 +597,21 @@ def accumulated_weight(block):
     return accumulated_weight(block.parent) + block.producer.effective_weight
 ```
 
-**Weight calculation:**
-- New producers: weight = 1
-- Weight increases with seniority: `1 + sqrt(months_active / 12)`, capped at 4
+**Weight calculation (seniority only, discrete yearly steps):**
+- Year 1: weight = 1
+- Year 2: weight = 2
+- Year 3: weight = 3
+- Year 4+: weight = 4 (maximum)
+
+**Important distinction:**
+- Weight is based on **seniority only** (years active)
+- Bond count affects **slot allocation** (more bonds = more slots per cycle)
+- Bond count does NOT affect weight
+
+**No activity penalty:**
+- Producers who miss slots simply miss rewards
+- No slashing or weight reduction for inactivity
+- Only slashable offense: double production (equivocation)
 
 This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
@@ -531,19 +619,19 @@ This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
 ```
 def block_reward(height):
-    era = height // ERA_BLOCKS
+    era = height // SLOTS_PER_ERA
     return INITIAL_REWARD >> era   // Right shift = halving
 
-INITIAL_REWARD = 500_000_000      // 5.0 coins (8 decimals)
+INITIAL_REWARD = 100_000_000      // 1.0 DOLI (8 decimals)
 ```
 
-| Era | Block Reward (base units) | Block Reward (coins) |
-|-----|---------------------------|----------------------|
-| 0   | 500,000,000               | 5.0                  |
-| 1   | 250,000,000               | 2.5                  |
-| 2   | 125,000,000               | 1.25                 |
-| 3   | 62,500,000                | 0.625                |
-| ... | ...                       | ...                  |
+| Era | Block Reward (base units) | Block Reward (DOLI) |
+|-----|---------------------------|---------------------|
+| 0   | 100,000,000               | 1.0                 |
+| 1   | 50,000,000                | 0.5                 |
+| 2   | 25,000,000                | 0.25                |
+| 3   | 12,500,000                | 0.125               |
+| ... | ...                       | ...                 |
 
 ---
 
@@ -588,13 +676,13 @@ LOCK_DURATION = ERA_BLOCKS       // ~4 years
 ### 6.3 Registration VDF
 
 ```
-reg_input = HASH("REG" || public_key || epoch)
+reg_input = HASH("DOLI_VDF_REGISTER_V1" || public_key || epoch)
 
 // Breakdown:
-// "REG"        = 3 bytes
+// "DOLI_VDF_REGISTER_V1" = 20 bytes (domain separator)
 // public_key   = 32 bytes
 // epoch        = 4 bytes (uint32 LE)
-// Total: 39 bytes before hashing
+// Total: 56 bytes before hashing
 
 vdf_output = VDF(reg_input, T_REGISTER(epoch))
 ```
@@ -724,14 +812,14 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Parameter | Mainnet | Testnet | Devnet |
 |-----------|---------|---------|--------|
 | Genesis Time | 2026-02-01T00:00:00Z | 2025-06-01T00:00:00Z | Dynamic |
-| Slot Duration | 60s | 10s | 5s |
+| Slot Duration | 10s | 10s | 1s |
 | P2P Port | 30303 | 40303 | 50303 |
 | RPC Port | 8545 | 18545 | 28545 |
-| Initial Bond | 1,000 DOLI | 10 DOLI | 1 DOLI |
-| Initial Reward | 5 DOLI | 50 DOLI | 500 DOLI |
+| Initial Bond | 1,000 DOLI | 1,000 DOLI | 1 DOLI |
+| Initial Reward | 1 DOLI | 1 DOLI | 1 DOLI |
 | VDF Target Time | ~700ms | ~700ms | ~700ms |
-| Bootstrap Blocks | 10,080 | 1,000 | 100 |
-| Veto Period | 7 days | 1 day | 1 minute |
+| Bootstrap Blocks | 60,480 | 60,480 | 60 |
+| Veto Period | 7 days | 7 days | 7 days |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` |
 
 All networks use hash-chain VDF with ~700ms target time for block production heartbeat.
@@ -817,12 +905,12 @@ Result:
 
 ```
 Input:
-  literal     = "REG" = 0x52 0x45 0x47
+  literal     = "DOLI_VDF_REGISTER_V1" (20 bytes)
   public_key  = 0x00 * 32
   epoch       = 0 = 0x00000000
 
-Concatenation (39 bytes):
-  524547
+Concatenation (56 bytes):
+  444F4C495F5644465F52454749535445525F5631  (DOLI_VDF_REGISTER_V1)
   0000000000000000000000000000000000000000000000000000000000000000
   00000000
 
@@ -834,14 +922,14 @@ Result:
 
 ```
 Input:
-  literal     = "BLK" = 0x42 0x4C 0x4B
+  literal     = "DOLI_VDF_BLOCK_V1" (17 bytes)
   prev_hash   = 0x00 * 32
   merkle_root = 0x00 * 32
   slot        = 0 = 0x00000000
   producer    = 0x00 * 32
 
-Concatenation (103 bytes):
-  424C4B
+Concatenation (117 bytes):
+  444F4C495F5644465F424C4F434B5F5631  (DOLI_VDF_BLOCK_V1)
   0000...0000  (32 bytes prev_hash)
   0000...0000  (32 bytes merkle_root)
   00000000     (4 bytes slot)
@@ -858,10 +946,10 @@ Result:
 | Parameter          | Value                    |
 |--------------------|--------------------------|
 | GENESIS_TIME       | 1769904000               |
-| SLOT_DURATION      | 60                       |
-| EPOCH_SLOTS        | 60                       |
-| ERA_BLOCKS         | 2,102,400                |
-| BOOTSTRAP_BLOCKS   | 10,080                   |
+| SLOT_DURATION      | 10 (mainnet/testnet), 1 (devnet) |
+| SLOTS_PER_EPOCH    | 360                      |
+| SLOTS_PER_ERA      | 12,614,400               |
+| BOOTSTRAP_BLOCKS   | 60,480                   |
 | DRIFT              | 120                      |
 | NETWORK_MARGIN     | 15                       |
 | VDF_ITERATIONS_DEFAULT | 10,000,000           |
@@ -872,20 +960,20 @@ Result:
 | T_REGISTER_CAP     | 86,400,000,000           |
 | R_TARGET           | 10                       |
 | R_CAP              | 100                      |
-| INITIAL_REWARD     | 500,000,000              |
-| INITIAL_BOND       | 100,000,000,000          |
-| COMMITMENT_PERIOD  | 2,102,400                |
-| UNBONDING_PERIOD   | 43,200                   |
+| INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
+| INITIAL_BOND       | 100,000,000,000 (1,000 DOLI) |
+| COMMITMENT_PERIOD  | 12,614,400               |
+| UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 100                      |
 | BASE_BLOCK_SIZE    | 1,000,000                |
 | MAX_BLOCK_SIZE_CAP | 32,000,000               |
 | BLOCK_SIZE_GROWTH  | ×2 per era               |
 | EXCLUSION_PERIOD   | 10,080                   |
-| TOTAL_SUPPLY       | 2,102,400,000,000,000    |
+| TOTAL_SUPPLY       | 2,522,880,000,000,000    |
 
 | VETO_PERIOD        | 604,800 (7 days)         |
-| VETO_THRESHOLD     | 33%                      |
+| VETO_THRESHOLD     | 40%                      |
 | REQUIRED_SIGS      | 3 of 5                   |
 
 ---
@@ -936,11 +1024,13 @@ Only active producers can vote. Votes propagate via gossip.
 ```
 veto_percent = (veto_count * 100) / total_active_producers
 
-if veto_percent >= 33:
+if veto_percent >= 40:
     update REJECTED
 else:
     update APPROVED after 7 days
 ```
+
+Note: Voting uses simple count-based voting (one vote per producer), not weighted voting.
 
 ---
 

@@ -319,8 +319,8 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 **Devnet parameters:**
 - 1-second slots
-- 60 slots per epoch (~1 minute epochs)
-- 100 DOLI block reward
+- 20 slots per epoch (~20 second epochs)
+- 1 DOLI block reward
 - ~1M VDF iterations (~70ms)
 - Dynamic genesis_time (set at network start)
 - Fast grace periods (3-5s vs 15-30s on testnet)
@@ -602,6 +602,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
+| `generate_chainspec.sh` | 0 | Instant | **Generate chainspec from wallet files** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |
 | `stress_test_600.sh` | 600 | Long | Scalability |
 | `test_staggered_validator_rewards.sh` | 10 | ~10 min | Staggered rewards |
