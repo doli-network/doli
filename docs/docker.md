@@ -29,7 +29,7 @@ git clone https://github.com/e-weil/doli.git
 cd doli
 
 # Build the image
-docker build -t doli-node .
+docker build -t doli-node -f docker/Dockerfile .
 
 # Run a mainnet node
 docker run -d \
@@ -48,19 +48,19 @@ For production deployments, use Docker Compose:
 
 ```bash
 # Start mainnet node
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # Start testnet node
-docker compose -f docker-compose.testnet.yml up -d
+docker compose -f docker/docker-compose.testnet.yml up -d
 
 # Start devnet node (local development)
-docker compose -f docker-compose.devnet.yml up -d
+docker compose -f docker/docker-compose.devnet.yml up -d
 
 # View logs
-docker compose logs -f
+docker compose -f docker/docker-compose.yml logs -f
 
 # Stop node
-docker compose down
+docker compose -f docker/docker-compose.yml down
 ```
 
 ### With Monitoring Stack
@@ -69,7 +69,7 @@ Run with Prometheus and Grafana for metrics visualization:
 
 ```bash
 # Start node with monitoring
-docker compose --profile monitoring up -d
+docker compose -f docker/docker-compose.yml --profile monitoring up -d
 
 # Access Grafana at http://localhost:3000
 # Default credentials: admin / doli
@@ -156,7 +156,7 @@ docker run --rm \
 
 ```bash
 # Remove container and data
-docker compose down -v
+docker compose -f docker/docker-compose.yml down -v
 
 # Or manually
 docker stop doli-node
@@ -205,7 +205,7 @@ docker run -d \
 
 ### Docker Compose Producer
 
-Edit `docker-compose.yml`:
+Edit `docker/docker-compose.yml`:
 
 ```yaml
 services:
@@ -302,7 +302,7 @@ curl -s http://localhost:8545 \
 Metrics are exposed at `http://localhost:9090/metrics`. Start with monitoring:
 
 ```bash
-docker compose --profile monitoring up -d
+docker compose -f docker/docker-compose.yml --profile monitoring up -d
 # Access Grafana at http://localhost:3000
 ```
 
@@ -340,7 +340,7 @@ sudo iptables -L -n | grep 30303
 The node uses RocksDB which can consume significant memory. Adjust limits:
 
 ```yaml
-# docker-compose.yml
+# docker/docker-compose.yml
 deploy:
   resources:
     limits:
@@ -362,7 +362,7 @@ docker rm doli-node
 docker volume rm doli-data
 
 # Start fresh
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 ---
@@ -376,7 +376,7 @@ docker compose up -d
 docker pull ghcr.io/e-weil/doli-node:latest
 
 # Recreate container with new image
-docker compose up -d --force-recreate
+docker compose -f docker/docker-compose.yml up -d --force-recreate
 ```
 
 ### Specific Version
@@ -408,28 +408,28 @@ docker run -d \
 
 ```bash
 # Start node
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # Stop node
-docker compose down
+docker compose -f docker/docker-compose.yml down
 
 # View logs
-docker compose logs -f
+docker compose -f docker/docker-compose.yml logs -f
 
 # Check status
-docker compose ps
+docker compose -f docker/docker-compose.yml ps
 
 # Restart node
-docker compose restart
+docker compose -f docker/docker-compose.yml restart
 
 # Update to latest
-docker compose pull && docker compose up -d
+docker compose -f docker/docker-compose.yml pull && docker compose -f docker/docker-compose.yml up -d
 
 # Shell into container
-docker compose exec doli-node bash
+docker compose -f docker/docker-compose.yml exec doli-node bash
 
 # Run CLI commands
-docker compose exec doli-node doli-node info
+docker compose -f docker/docker-compose.yml exec doli-node doli-node info
 ```
 
 ---

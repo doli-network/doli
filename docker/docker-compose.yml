@@ -1,13 +1,13 @@
 # DOLI Node - Docker Compose (Mainnet)
-# Usage: docker compose up -d
-# With monitoring: docker compose --profile monitoring up -d
+# Usage: docker compose -f docker/docker-compose.yml up -d
+# With monitoring: docker compose -f docker/docker-compose.yml --profile monitoring up -d
 
 services:
   doli-node:
     image: ghcr.io/e-weil/doli-node:latest
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: doli-node
     restart: unless-stopped
     environment:

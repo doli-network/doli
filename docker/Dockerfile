@@ -1,5 +1,5 @@
 # DOLI Node - Multi-stage Dockerfile
-# Build: docker build -t doli-node .
+# Build: docker build -t doli-node -f docker/Dockerfile .
 # Run: docker run -d -p 30303:30303 -p 8545:8545 -v doli-data:/data doli-node
 
 # =============================================================================
@@ -85,7 +85,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -sf http://localhost:${DOLI_RPC_PORT:-8545}/health || exit 1
 
 # Entrypoint script handles environment variable mapping
-COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
+COPY --chmod=755 docker/docker-entrypoint.sh /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["run"]
