@@ -4,7 +4,7 @@
 //!
 //! # Rules (no exceptions)
 //! - ALL updates: 7 days veto period
-//! - 33% of producers can veto any update
+//! - 40% of producers can veto any update
 //! - 3 of 5 maintainer signatures required
 //!
 //! # Flow

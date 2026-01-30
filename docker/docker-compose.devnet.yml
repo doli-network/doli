@@ -27,7 +27,7 @@ services:
         reservations:
           memory: 512M
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:28545/health"]
+      test: ["CMD-SHELL", "curl -sf -X POST http://localhost:28545 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep -q result"]
       interval: 30s
       timeout: 10s
       retries: 3

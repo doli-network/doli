@@ -1,7 +1,7 @@
 //! Veto voting system
 //!
 //! Producers can vote to veto any proposed update during the 7-day period.
-//! If >= 33% of active producers veto, the update is rejected.
+//! If >= 40% of active producers veto, the update is rejected.
 
 use crypto::{PublicKey, Signature as CryptoSignature};
 use serde::{Deserialize, Serialize};

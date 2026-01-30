@@ -202,7 +202,7 @@ Increase your stake (up to 100 bonds / 100,000 DOLI):
 
 ```bash
 # Add 2 more bonds (2,000 DOLI)
-./target/release/doli producer add-bond --amount 2000
+./target/release/doli producer add-bond --count 2
 ```
 
 ### 6.2. Requesting Withdrawal
@@ -211,7 +211,7 @@ Start the withdrawal process (7-day delay):
 
 ```bash
 # Request withdrawal of 1 bond (1,000 DOLI)
-./target/release/doli producer request-withdrawal --bonds 1
+./target/release/doli producer request-withdrawal --count 1
 ```
 
 ### 6.3. Claiming Withdrawal
