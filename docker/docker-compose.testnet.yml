@@ -1,12 +1,12 @@
 # DOLI Node - Docker Compose (Testnet)
-# Usage: docker compose -f docker-compose.testnet.yml up -d
+# Usage: docker compose -f docker/docker-compose.testnet.yml up -d
 
 services:
   doli-node:
     image: ghcr.io/e-weil/doli-node:latest
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: doli-testnet-node
     restart: unless-stopped
     environment:
