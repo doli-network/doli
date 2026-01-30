@@ -2,7 +2,7 @@
 //!
 //! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
 //!
-//! Block VDF (T_BLOCK = 10M iterations, ~7s) provides anti-grinding for blocks.
+//! Block VDF (T_BLOCK = 10M iterations, ~700ms) provides anti-grinding for blocks.
 //! This module provides heartbeat proofs (~1s micro-VDF) for network health monitoring.
 //!
 //! ## Design Philosophy
