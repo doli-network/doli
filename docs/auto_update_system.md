@@ -371,36 +371,37 @@ pub struct VoteMessage {
 }
 ```
 
-### Weighted Voting (Anti-Sybil)
+### Count-Based Voting
 
-Votes are weighted by producer seniority:
+Voting uses simple count-based calculation (one vote per producer):
 
 ```
-Weight = 1 + sqrt(months_active / 12)
-Maximum weight = 4 (capped)
+Veto percentage = (veto_count * 100) / total_active_producers
 
-Examples:
-- New producer (0 months): weight = 1
-- 1 year active: weight = 1 + sqrt(12/12) = 2
-- 4 years active: weight = 1 + sqrt(48/12) = 3
-- 16 years active: weight = 1 + sqrt(192/12) = 5 → capped to 4
+If veto_percent >= 40%: REJECTED
+If veto_percent < 40%: APPROVED after 7-day veto period
 ```
 
-This prevents a wealthy attacker from registering many new nodes to block updates.
+**Note:** While producer seniority affects consensus weight (fork choice), the
+veto system uses count-based voting for simplicity. Each active producer gets
+exactly one vote, regardless of seniority or bond count.
 
 ### Veto Threshold Calculation
 
 ```rust
-// Weighted calculation (preferred)
-pub fn should_reject_weighted(&self, total_weight: u64) -> bool {
-    let veto_weight = self.veto_weight();
-    let veto_percent = (veto_weight * 100) / total_weight;
-    veto_percent >= 40  // VETO_THRESHOLD_PERCENT
+// Count-based calculation
+pub fn calculate_veto_result(veto_count: usize, total_producers: usize) -> VoteResult {
+    let veto_percent = ((veto_count * 100) / total_producers) as u8;
+    if veto_percent >= 40 {  // VETO_THRESHOLD_PERCENT
+        VoteResult::Rejected
+    } else {
+        VoteResult::Approved
+    }
 }
 
-// Example with 5 producers (total weight 10):
-// - 2 junior vetos (weight 1 each) = 2/10 = 20% → APPROVED
-// - 1 senior veto (weight 4) = 4/10 = 40% → REJECTED
+// Example with 10 producers:
+// - 3 vetoes = 30% → APPROVED
+// - 4 vetoes = 40% → REJECTED
 ```
 
 ### Vote Deduplication
@@ -1277,16 +1278,17 @@ pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/d
 pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 ```
 
-## Appendix C: Devnet Parameters
+## Appendix C: Network Parameters
 
-For faster testing on devnet:
+| Parameter | Mainnet | Testnet | Devnet |
+|-----------|---------|---------|--------|
+| Veto period | 7 days | 7 days | 7 days |
+| Slot duration | 10 seconds | 10 seconds | 1 second |
+| Check interval | 6 hours | 6 hours | Configurable |
+| Test keys | NO | NO | YES (`DOLI_TEST_KEYS=1`) |
 
-| Parameter | Mainnet | Devnet |
-|-----------|---------|--------|
-| Veto period | 7 days | 60 blocks (~1 min) |
-| Slot duration | 60 seconds | 1 second |
-| Check interval | 6 hours | Configurable |
-| Test keys | NO | YES (`DOLI_TEST_KEYS=1`) |
+**Note:** Veto period is fixed at 7 days for all networks. This ensures consistent
+security properties across all environments.
 
 ---
 

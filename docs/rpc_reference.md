@@ -132,6 +132,10 @@ curl -X POST http://127.0.0.1:8545 \
 
 Returns transaction by its hash.
 
+**Note:** Currently only returns transactions in the mempool. Confirmed transaction
+lookup requires a transaction index which is not yet implemented. For confirmed
+transactions, use `getBlockByHash` or `getBlockByHeight` and search the transaction list.
+
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
@@ -368,10 +372,14 @@ Returns all producers in the network.
         "bondCount": 5,
         "status": "active",
         "blocksProduced": 1234,
+        "pendingRewards": 500000000,
+        "era": 0,
         "pendingWithdrawals": []
     }
 ]
 ```
+
+**Note:** `pendingWithdrawals` is currently always empty (pending ProducerBonds integration).
 
 **Example:**
 ```bash
@@ -430,37 +438,123 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-### getProducers
+### getHistory
 
-Returns all producers in the network.
+Returns transaction history for an address.
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| active_only | boolean | Only return active producers (default: false) |
+| address | string | Address or pubkey hash (hex) |
+| limit | integer | Maximum entries to return (default: 10) |
 
 **Response:**
 ```json
 [
     {
-        "publicKey": "0x...",
-        "registrationHeight": 100000,
-        "bondAmount": 5000000000000,
-        "bondCount": 5,
-        "status": "active",
-        "blocksProduced": 1234,
-        "pendingRewards": 500000000,
-        "era": 0,
-        "pendingWithdrawals": []
+        "hash": "0x...",
+        "type": "Transfer",
+        "height": 12345,
+        "status": "confirmed",
+        "received": 100000000,
+        "sent": 0,
+        "fee": 1000
     }
 ]
+```
+
+**Note:** Fee calculation may be incomplete for some transaction types.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getHistory","params":{"address":"0x...","limit":20},"id":1}'
+```
+
+---
+
+### getNodeInfo
+
+Returns information about the node.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "version": "0.1.0",
+    "network": "mainnet",
+    "peerId": "12D3KooW...",
+    "peerCount": 15,
+    "platform": "linux",
+    "arch": "x86_64"
+}
 ```
 
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8545 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getNodeInfo","params":{},"id":1}'
+```
+
+---
+
+### getUpdateStatus
+
+Returns the current auto-update status.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "pendingUpdate": "0.2.0",
+    "vetoPeriodActive": true,
+    "vetoCount": 5,
+    "vetoPercent": 12
+}
+```
+
+Returns `null` for `pendingUpdate` if no update is pending.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}'
+```
+
+---
+
+### submitVote
+
+Submit a veto vote for a pending update.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| version | string | Version to vote on |
+| vote | integer | 0 = APPROVE, 1 = VETO |
+| producer_id | string | Producer public key |
+| timestamp | integer | Unix timestamp |
+| signature | string | Signature over vote message |
+
+**Response:**
+```json
+{
+    "success": true
+}
+```
+
+**Note:** Only active producers can submit votes.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"submitVote","params":{"version":"0.2.0","vote":1,"producer_id":"0x...","timestamp":1706400000,"signature":"0x..."},"id":1}'
 ```
 
 ---

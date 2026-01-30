@@ -21,10 +21,10 @@
 //! │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
 //! │         │                │                │                  │
 //! │         ▼                ▼                ▼                  │
-//! │  ┌─────────────────────────────────────────────────┐        │
-//! │  │                   RocksDB                        │        │
-//! │  │  Column Families: blocks, utxos, state, index   │        │
-//! │  └─────────────────────────────────────────────────┘        │
+//! │  BlockStore uses RocksDB with column families:              │
+//! │  │  headers, bodies, height_index, slot_index               │
+//! │  UtxoSet, ChainState, ProducerSet use file-based I/O       │
+//! │  (in-memory HashMap + bincode serialization)               │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
