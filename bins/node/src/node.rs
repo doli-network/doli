@@ -456,6 +456,7 @@ impl Node {
             self.mempool.clone(),
             self.params.clone(),
         )
+        .with_network(self.config.network.name().to_string())
         .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
 
