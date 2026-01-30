@@ -83,14 +83,14 @@ pub const GENESIS_PUBKEY: [u8; 32] = [0u8; 32];
 /// Testnet genesis producers (pubkey hex, bond_count)
 ///
 /// These 5 producers are registered at genesis with 1 bond each.
-/// They use the same keys from the original testnet bootstrap.
+/// The pubkeys are derived from the testnet producer private keys.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
-    ("8f5b66af162a74d3d0992e73adbb3c6baf774ee3b75e01dd393eaba8907621a2", 1), // producer_1
-    ("2f2bc92b84423977e10c595f33099eacec476ea2a7353d01a51a54658b342895", 1), // producer_2
-    ("066c22d232fe36b5b415ad38b155034323c3b2083e18d5c6c269218541605674", 1), // producer_3
-    ("743a4ca3c0fc033a213195fa20352aac2118ef1a624cf77aaaba4ab59e2335d8", 1), // producer_4
-    ("7c8ce647c6d32eaea14ae47a282e78fba469f6c9117f062e9345143d4c967145", 1), // producer_5
+    ("0044ac328df80b575a86c783acbc839f4e2c03619f8e2e0e309bc40bf2045730", 1), // producer_1
+    ("63e0e81466b0b511da3d02b534cd6314a686a3351b46ff77e2b3f097265c33a3", 1), // producer_2
+    ("1c034369aba0d5edb4b43087712f7cfb78ad7a6b44a6e0b834324cc73841f936", 1), // producer_3
+    ("ab9f1e65dd15c079fc9d937627a37b9baca636a7ccfb10f3bfa6ca2356ede3c8", 1), // producer_4
+    ("6820b6692decdd43ee1034a98b844b3e472ced2a9a08d149b4f56c9defe24718", 1), // producer_5
 ];
 
 /// Parse testnet genesis producers into (PublicKey, bond_count) pairs
