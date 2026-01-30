@@ -229,7 +229,7 @@ doli-node --network testnet --chainspec testnet.json run \
     --producer --producer-key ~/.doli/genesis/producer_1.json
 ```
 
-See [GENESIS.md](./GENESIS.md) for complete network launch procedures.
+See [genesis.md](./genesis.md) for complete network launch procedures.
 
 ---
 
@@ -266,9 +266,9 @@ Hardcoded in binary at `crates/updater/src/lib.rs` for security.
 
 ## Resources
 
-- [CLI.md](./CLI.md) - CLI reference
-- [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) - Node guide
-- [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) - Producer guide
+- [cli.md](./cli.md) - CLI reference
+- [running_a_node.md](./running_a_node.md) - Node guide
+- [becoming_a_producer.md](./becoming_a_producer.md) - Producer guide
 - [WHITEPAPER.md](/WHITEPAPER.md) - Protocol spec
 
 ---

@@ -1,4 +1,4 @@
-# MANIFESTO.md - Project Philosophy
+# manifesto.md - Project Philosophy
 
 *"Time is the only fair currency."*
 

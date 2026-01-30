@@ -1,4 +1,4 @@
-# CLI.md - DOLI Command Line Interface Reference
+# cli.md - DOLI Command Line Interface Reference
 
 Complete reference for all DOLI CLI operations. Every operation described in the [WHITEPAPER.md](/WHITEPAPER.md) can be performed via CLI.
 
@@ -638,9 +638,9 @@ doli producer slash \
 ## See Also
 
 - [WHITEPAPER.md](/WHITEPAPER.md) - Protocol specification
-- [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) - Node operation guide
-- [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) - Detailed producer guide
-- [RPC_REFERENCE.md](./RPC_REFERENCE.md) - RPC API documentation
+- [running_a_node.md](./running_a_node.md) - Node operation guide
+- [becoming_a_producer.md](./becoming_a_producer.md) - Detailed producer guide
+- [rpc_reference.md](./rpc_reference.md) - RPC API documentation
 
 ---
 

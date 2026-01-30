@@ -4,6 +4,117 @@ This file documents all scripts in the `scripts/` directory. Before creating a n
 
 ---
 
+## Release & Build Scripts
+
+### smoke_test_release.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/smoke_test_release.sh` |
+| **Purpose** | Verify release artifacts work correctly before distribution |
+| **What it does** | Downloads binary, verifies checksum, starts node, tests RPC/P2P, clean shutdown |
+| **Dependencies** | `curl`, `sha256sum`, `nc` (optional) |
+| **Run time** | ~30-60 seconds |
+| **Output** | Test results to stdout, logs in `/tmp/doli-smoke-test-*` |
+
+**Usage:**
+```bash
+# Test locally built binary
+./scripts/smoke_test_release.sh --binary target/release/doli-node
+
+# Test specific release version
+./scripts/smoke_test_release.sh --version v1.0.0
+
+# Test from direct URL
+./scripts/smoke_test_release.sh --url https://example.com/doli.tar.gz
+
+# Test with specific target
+./scripts/smoke_test_release.sh --version v1.0.0 --target x86_64-unknown-linux-musl
+
+# Keep test directory for debugging
+./scripts/smoke_test_release.sh --binary ./doli-node --keep
+```
+
+**Options:**
+- `--binary PATH` - Path to pre-existing binary (skip download)
+- `--version VERSION` - Version tag to download (e.g., v1.0.0)
+- `--url URL` - Direct URL to download tarball
+- `--target TARGET` - Target triple (default: auto-detect)
+- `--timeout SECONDS` - Test timeout (default: 60)
+- `--keep` - Keep test directory on success
+
+**Exit codes:**
+| Code | Meaning |
+|------|---------|
+| 0 | All tests passed |
+| 1 | Test failed |
+| 2 | Invalid arguments |
+| 3 | Download/checksum failed |
+
+**Tests performed:**
+1. Binary acquisition (download or copy)
+2. Checksum verification (if available)
+3. Node startup in devnet mode
+4. RPC endpoint responding
+5. P2P port listening
+6. Clean shutdown (SIGTERM)
+
+---
+
+### build_release.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/build_release.sh` |
+| **Purpose** | Build release binaries for distribution |
+| **What it does** | Compiles optimized binaries, generates checksums, creates tarballs |
+| **Dependencies** | `cargo`, `cross` (for cross-compilation), `sha256sum` |
+| **Run time** | ~10-30 minutes (depending on targets) |
+| **Output** | `release/` directory with tarballs and checksums |
+
+**Usage:**
+```bash
+# Build for current platform
+./scripts/build_release.sh
+
+# Build for all platforms (requires cross)
+./scripts/build_release.sh --all
+
+# Build for specific target
+./scripts/build_release.sh --target x86_64-unknown-linux-musl
+
+# Build with specific version
+./scripts/build_release.sh --version v1.0.0 --linux
+
+# List supported targets
+./scripts/build_release.sh --list-targets
+```
+
+**Options:**
+- `--all` - Build for all supported platforms
+- `--linux` - Build for all Linux platforms
+- `--macos` - Build for all macOS platforms (requires macOS host)
+- `--target <TARGET>` - Build for specific target
+- `--version <VERSION>` - Set version string
+- `--skip-tests` - Skip running tests before build
+- `--clean` - Clean build directory first
+
+**Supported targets:**
+| Target | Description |
+|--------|-------------|
+| `x86_64-unknown-linux-gnu` | Linux Intel/AMD (dynamically linked) |
+| `x86_64-unknown-linux-musl` | Linux Intel/AMD (statically linked) |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 (dynamically linked) |
+| `aarch64-unknown-linux-musl` | Linux ARM64 (statically linked) |
+| `x86_64-apple-darwin` | macOS Intel |
+| `aarch64-apple-darwin` | macOS Apple Silicon |
+
+**Output:**
+- `release/doli-{version}-{target}.tar.gz` - Binary tarball
+- `release/doli-{version}-{target}.tar.gz.sha256` - Checksum file
+
+---
+
 ## Utility Scripts
 
 ### generate_chainspec.sh
@@ -257,7 +368,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 - `reports/summary.txt` - Test results summary
 - `logs/node*.log` - Individual node logs
 
-**See also:** `docs/WHITEPAPER_TEST_PLAN.md` for detailed manual test procedures.
+**See also:** `docs/whitepaper_test_plan.md` for detailed manual test procedures.
 
 ---
 
@@ -488,6 +599,8 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 
 | Script | Nodes | Duration | Purpose |
 |--------|-------|----------|---------|
+| `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
+| `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |
 | `stress_test_600.sh` | 600 | Long | Scalability |

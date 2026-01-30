@@ -944,4 +944,4 @@ else:
 
 ---
 
-*For architecture overview, see [ARCHITECTURE.md](ARCHITECTURE.md)*
+*For architecture overview, see [architecture.md](architecture.md)*

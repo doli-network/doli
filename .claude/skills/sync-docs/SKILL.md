@@ -73,21 +73,21 @@ Update if changes affect:
 #### specs/* Files
 | File | Update When |
 |------|-------------|
-| `specs/PROTOCOL.md` | Wire format, message types, handshake changes |
-| `specs/ARCHITECTURE.md` | New crates, component interactions, data flow |
-| `specs/SECURITY_MODEL.md` | New attack vectors, threat model changes |
-| `specs/SPECS.md` | New spec files added |
+| `specs/protocol.md` | Wire format, message types, handshake changes |
+| `specs/architecture.md` | New crates, component interactions, data flow |
+| `specs/security_model.md` | New attack vectors, threat model changes |
+| `specs/SPECS.md` | New spec files added (master index) |
 
 #### docs/* Files
 | File | Update When |
 |------|-------------|
-| `docs/guides/RUNNING_A_NODE.md` | Node configuration, CLI flags |
-| `docs/guides/BECOMING_A_PRODUCER.md` | Registration, bonds, requirements |
-| `docs/guides/RPC_REFERENCE.md` | New/changed RPC endpoints |
-| `docs/guides/TROUBLESHOOTING.md` | New error conditions |
-| `docs/governance/ROADMAP.md` | Milestone completion |
+| `docs/guides/running_a_node.md` | Node configuration, CLI flags |
+| `docs/guides/becoming_a_producer.md` | Registration, bonds, requirements |
+| `docs/guides/rpc_reference.md` | New/changed RPC endpoints |
+| `docs/guides/troubleshooting.md` | New error conditions |
+| `docs/governance/roadmap.md` | Milestone completion |
 | `docs/research/*` | Security findings, test results |
-| `docs/DOCS.md` | New documentation files added |
+| `docs/DOCS.md` | New documentation files added (master index) |
 
 ### Step 4: Apply Updates
 

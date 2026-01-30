@@ -1,4 +1,4 @@
-# ROADMAP.md - Development Roadmap
+# roadmap.md - Development Roadmap
 
 This document outlines the DOLI development roadmap and milestones.
 

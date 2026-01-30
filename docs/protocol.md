@@ -1,4 +1,4 @@
-# PROTOCOL.md - Wire Protocol Specification
+# protocol.md - Wire Protocol Specification
 
 This document specifies the DOLI network protocol, message formats, and P2P communication standards.
 

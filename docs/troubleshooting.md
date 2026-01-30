@@ -1,4 +1,4 @@
-# TROUBLESHOOTING.md - Common Issues and Solutions
+# troubleshooting.md - Common Issues and Solutions
 
 This guide helps diagnose and resolve common issues with DOLI nodes and wallets.
 

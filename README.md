@@ -1,5 +1,10 @@
 # DOLI
 
+[![CI](https://github.com/e-weil/doli/actions/workflows/ci.yml/badge.svg)](https://github.com/e-weil/doli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/e-weil/doli)](https://github.com/e-weil/doli/releases)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fe--weil%2Fdoli--node-blue)](https://github.com/e-weil/doli/pkgs/container/doli-node)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **A Peer-to-Peer Electronic Cash System Based on Time**
 
 DOLI is a cryptocurrency that uses Verifiable Delay Functions (VDF) instead of traditional Proof of Work. The scarce resource is not energy or permanent capital, but **time**.
@@ -34,25 +39,55 @@ In DOLI, sequential time is the only resource that determines consensus. The eco
 
 ## Quick Start
 
-```bash
-# Clone the repository
-git clone https://github.com/doli-network/doli.git
-cd doli
+### Option 1: Pre-built Binary (Fastest)
 
-# Build
+```bash
+# Download and install
+curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+
+# Run a node
+doli-node run
+
+# Generate a wallet
+doli wallet new
+```
+
+### Option 2: Docker
+
+```bash
+# Run a mainnet node
+docker run -d --name doli-node \
+  -p 30303:30303 -p 8545:8545 \
+  -v doli-data:/data \
+  ghcr.io/e-weil/doli-node:latest
+
+# View logs
+docker logs -f doli-node
+```
+
+### Option 3: Build from Source
+
+```bash
+# Clone and build
+git clone https://github.com/e-weil/doli.git
+cd doli
 cargo build --release
 
-# Run a node (mainnet by default)
+# Run
 ./target/release/doli-node run
+```
 
-# Run on testnet
-./target/release/doli-node --network testnet run
+### Network Selection
 
-# Run on devnet (for local development)
-./target/release/doli-node --network devnet run
+```bash
+# Mainnet (default)
+doli-node run
 
-# Generate a new wallet
-./target/release/doli wallet new
+# Testnet
+doli-node --network testnet run
+
+# Devnet (local development)
+doli-node --network devnet run
 ```
 
 ## Crate Structure
@@ -72,9 +107,9 @@ DOLI is implemented as a Rust workspace with the following crates:
 ## Documentation
 
 - [Whitepaper (Spanish)](WHITEPAPER.md) - Complete technical specification
-- [Architecture](docs/ARCHITECTURE.md) - System design and components
-- [Protocol Specification](docs/PROTOCOL.md) - Detailed protocol rules
-- [Roadmap](ROADMAP.md) - Development timeline and milestones
+- [Architecture](docs/architecture.md) - System design and components
+- [Protocol Specification](docs/protocol.md) - Detailed protocol rules
+- [Roadmap](docs/roadmap.md) - Development timeline and milestones
 - [Contributing](CONTRIBUTING.md) - How to contribute to the project
 
 ### API Documentation
