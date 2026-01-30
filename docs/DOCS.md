@@ -9,47 +9,49 @@ Master index for all DOLI documentation.
 | File | Description |
 |------|-------------|
 | [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with Proof of Time (PoT) consensus |
-| [PROTOCOL.md](./PROTOCOL.md) | Wire protocol and message format specifications |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System architecture and component design |
-| [SECURITY_MODEL.md](./SECURITY_MODEL.md) | Security model, threat analysis, and cryptographic guarantees |
+| [protocol.md](./protocol.md) | Wire protocol and message format specifications |
+| [architecture.md](./architecture.md) | System architecture and component design |
+| [security_model.md](./security_model.md) | Security model, threat analysis, and cryptographic guarantees |
 
 ## Networks
 
 | File | Description |
 |------|-------------|
-| [GENESIS.md](./GENESIS.md) | **Mainnet genesis launch guide** - critical checklist, key generation, and launch procedure |
-| [TESTNET.md](./TESTNET.md) | Testnet information, bootstrap nodes, and setup guide for joining |
+| [genesis.md](./genesis.md) | **Mainnet genesis launch guide** - critical checklist, key generation, and launch procedure |
+| [testnet.md](./testnet.md) | Testnet information, bootstrap nodes, and setup guide for joining |
 
 ## Guides
 
 | File | Description |
 |------|-------------|
-| [CLI.md](./CLI.md) | Complete CLI reference - all WHITEPAPER operations via command line |
-| [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) | Node setup and operation guide |
-| [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) | Block producer onboarding |
-| [RPC_REFERENCE.md](./RPC_REFERENCE.md) | RPC API documentation |
-| [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) | Common issues and solutions |
+| [cli.md](./cli.md) | Complete CLI reference - all WHITEPAPER operations via command line |
+| [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
+| [running_a_node.md](./running_a_node.md) | Node setup and operation guide |
+| [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
+| [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
+| [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
+| [releases.md](./releases.md) | Release process, versioning, and download verification |
 
 ## Governance
 
 | File | Description |
 |------|-------------|
-| [MANIFESTO.md](./MANIFESTO.md) | Project philosophy and principles |
-| [ROADMAP.md](./ROADMAP.md) | Development roadmap and milestones |
-| [AUTO_UPDATE_SYSTEM.md](./AUTO_UPDATE_SYSTEM.md) | Complete auto-update system - maintainer keys, voting, binary replacement |
+| [manifesto.md](./manifesto.md) | Project philosophy and principles |
+| [roadmap.md](./roadmap.md) | Development roadmap and milestones |
+| [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - maintainer keys, voting, binary replacement |
 
 ## Testing
 
 | File | Description |
 |------|-------------|
-| [WHITEPAPER_TEST_PLAN.md](./WHITEPAPER_TEST_PLAN.md) | Complete test plan for ALL WHITEPAPER functionalities |
+| [whitepaper_test_plan.md](./whitepaper_test_plan.md) | Complete test plan for ALL WHITEPAPER functionalities |
 
 ## Research
 
 | File | Description |
 |------|-------------|
-| [ATTACK_ANALYSIS.md](./research/ATTACK_ANALYSIS.md) | Security analysis and attack vectors |
-| [EXTREME_DEVNET_600.md](./research/EXTREME_DEVNET_600.md) | Extreme network testing results |
+| [attack_analysis.md](./research/attack_analysis.md) | Security analysis and attack vectors |
+| [extreme_devnet_600.md](./research/extreme_devnet_600.md) | Extreme network testing results |
 
 ---
 
@@ -57,24 +59,26 @@ Master index for all DOLI documentation.
 
 ```
 docs/
-├── DOCS.md                   # ← You are here
-├── GENESIS.md                # Mainnet genesis launch guide (CRITICAL!)
-├── TESTNET.md                # Testnet setup and bootstrap nodes
-├── CLI.md                    # Complete CLI reference
-├── PROTOCOL.md               # Wire protocol specification
-├── ARCHITECTURE.md           # System architecture
-├── SECURITY_MODEL.md         # Security analysis
-├── RUNNING_A_NODE.md         # Node operation guide
-├── BECOMING_A_PRODUCER.md    # Producer guide
-├── RPC_REFERENCE.md          # API documentation
-├── TROUBLESHOOTING.md        # Common issues
-├── MANIFESTO.md              # Project philosophy
-├── ROADMAP.md                # Development roadmap
-├── AUTO_UPDATE_SYSTEM.md     # Complete auto-update documentation
-├── WHITEPAPER_TEST_PLAN.md   # Complete whitepaper test plan
+├── DOCS.md                   # ← You are here (master index)
+├── genesis.md                # Mainnet genesis launch guide (CRITICAL!)
+├── testnet.md                # Testnet setup and bootstrap nodes
+├── cli.md                    # Complete CLI reference
+├── docker.md                 # Docker deployment guide
+├── protocol.md               # Wire protocol specification
+├── architecture.md           # System architecture
+├── security_model.md         # Security analysis
+├── running_a_node.md         # Node operation guide
+├── becoming_a_producer.md    # Producer guide
+├── rpc_reference.md          # API documentation
+├── troubleshooting.md        # Common issues
+├── releases.md               # Release process and verification
+├── manifesto.md              # Project philosophy
+├── roadmap.md                # Development roadmap
+├── auto_update_system.md     # Complete auto-update documentation
+├── whitepaper_test_plan.md   # Complete whitepaper test plan
 └── research/
-    ├── ATTACK_ANALYSIS.md
-    └── EXTREME_DEVNET_600.md
+    ├── attack_analysis.md
+    └── extreme_devnet_600.md
 ```
 
 ---
