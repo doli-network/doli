@@ -1,6 +1,17 @@
 # DOLI Mainnet Genesis Launch Guide
 
-Complete technical documentation for launching DOLI mainnet. This document covers every critical detail to avoid the mistakes that occurred during testnet launch.
+Complete technical documentation for launching DOLI mainnet.
+
+## Key Points
+
+| Component | Location | Configurable? |
+|-----------|----------|---------------|
+| Genesis producers (5) | Chainspec JSON | Yes - `--chainspec` flag |
+| Maintainer keys (5) | Binary | No - recompile required |
+
+- **Genesis producers**: FREE, no bond, pubkeys in chainspec
+- **Regular producers**: 1000 DOLI bond, `doli producer register`
+- **Maintainer keys**: Hardcoded in `crates/updater/src/lib.rs` for security
 
 ---
 
@@ -8,7 +19,7 @@ Complete technical documentation for launching DOLI mainnet. This document cover
 
 1. [Pre-Launch Checklist](#1-pre-launch-checklist)
 2. [Critical Lessons from Testnet](#2-critical-lessons-from-testnet)
-3. [Maintainer Key Generation](#3-maintainer-key-generation)
+3. [Maintainer Keys](#3-maintainer-keys-auto-update-system)
 4. [Genesis Producer Setup](#4-genesis-producer-setup)
 5. [Network Parameters](#5-network-parameters)
 6. [DNS Configuration](#6-dns-configuration)
@@ -26,9 +37,22 @@ Complete technical documentation for launching DOLI mainnet. This document cover
 
 - [ ] `MAINTAINER_KEYS` in `crates/updater/src/lib.rs` contains 5 real Ed25519 public keys
 - [ ] `is_using_placeholder_keys()` returns `false`
-- [ ] Genesis producer pubkeys match actual wallet files (LESSON FROM TESTNET!)
 - [ ] All unit tests pass: `cargo test`
 - [ ] Release build compiles: `cargo build --release`
+
+### Chainspec Verification
+
+- [ ] Chainspec generated from wallet files using `generate_chainspec.sh` (NOT manually!)
+- [ ] Chainspec contains 5 genesis producers
+- [ ] Chainspec pubkeys match wallet file pubkeys (automatic if using script)
+- [ ] No placeholder keys (starting with `00000000`) in chainspec
+- [ ] Chainspec copied to `resources/chainspec/mainnet.json`
+
+```bash
+# Verify chainspec
+./scripts/generate_chainspec.sh mainnet ~/.doli/mainnet/producer_keys /dev/stdout | jq '.genesis_producers | length'
+# Expected: 5
+```
 
 ### Parameter Verification
 
@@ -43,7 +67,7 @@ Complete technical documentation for launching DOLI mainnet. This document cover
 - [ ] DNS record `mainnet.doli.network` points to seed server IP
 - [ ] Firewall allows port 30303 (P2P) and 8545 (RPC)
 - [ ] 5 producer servers ready with wallet files
-- [ ] Binary deployed to all 5 servers
+- [ ] Binary AND chainspec deployed to all 5 servers
 
 ---
 
@@ -53,21 +77,23 @@ Complete technical documentation for launching DOLI mainnet. This document cover
 
 **What happened**: Genesis producers were registered with incorrect public keys that didn't match the wallet files. Nodes couldn't produce blocks because their actual pubkey wasn't in the registered producer list.
 
-**Root cause**: The pubkeys in `genesis.rs` were NOT the same as the pubkeys in the wallet JSON files.
+**Root cause**: Manual copying of pubkeys from wallet files to `genesis.rs` introduced human error.
 
-**How to avoid**:
-1. Generate wallet files FIRST
-2. Extract pubkeys from wallet files
-3. Copy those EXACT pubkeys to genesis.rs
-4. VERIFY they match before launch
+**Solution implemented**: **Industry-standard chainspec system**
+
+Instead of manually copying pubkeys, we now use:
+1. `scripts/generate_chainspec.sh` - Automatically extracts pubkeys from wallet files
+2. `--chainspec` flag - Loads genesis config from JSON file at runtime
+3. Validation - Chainspec rejects placeholder keys and validates pubkey format
 
 ```bash
-# Extract pubkey from wallet file
-cat producer_keys/producer_1.json | grep public_key
-# Output: "public_key": "8f5b66af162a74d3d0992e73adbb3c6baf774ee3b75e01dd393eaba8907621a2"
-
-# This EXACT string must appear in MAINNET_GENESIS_PRODUCERS in genesis.rs
+# OLD (error-prone): Manually copy pubkeys to genesis.rs
+# NEW (safe): Generate chainspec from wallets automatically
+./scripts/generate_chainspec.sh mainnet ~/.doli/mainnet/producer_keys mainnet.json
+./doli-node --network mainnet --chainspec mainnet.json run --producer
 ```
+
+This follows the same pattern as Ethereum, Cosmos, and Polkadot.
 
 ### Bug #2: Epoch State Not Persisting
 
@@ -91,141 +117,70 @@ cat producer_keys/producer_1.json | grep public_key
 
 ---
 
-## 3. Maintainer Key Generation
-
-### Overview
+## 3. Maintainer Keys (Auto-Update System)
 
 5 maintainers control protocol updates with a 3-of-5 signature threshold.
 
-| Role | Responsibility |
-|------|----------------|
-| Maintainer 1-5 | Sign protocol updates, can veto malicious changes |
-| 3-of-5 required | Any 3 maintainers must sign for update to be valid |
+**Hardcoded in binary** (not in chainspec) for security - can't be changed via config files.
 
-### Key Generation Process
+| Location | `crates/updater/src/lib.rs` |
+|----------|------------------------------|
+| Keys | 5 Ed25519 public keys |
+| Threshold | 3-of-5 signatures required |
 
-Each maintainer must:
-
-1. **Generate offline** on air-gapped machine:
-```bash
-# Using OpenSSL
-openssl genpkey -algorithm ed25519 -out maintainer_private.pem
-openssl pkey -in maintainer_private.pem -pubout -outform DER | tail -c 32 | xxd -p -c 32
-
-# Or using doli-cli
-./target/release/doli wallet new --output maintainer_wallet.json
-cat maintainer_wallet.json | jq -r '.addresses[0].public_key'
-```
-
-2. **Store private key** in secure offline storage (never online!)
-
-3. **Submit public key** (hex-encoded) for inclusion in code
-
-### Current Maintainer Keys (Testnet)
-
-Location: `crates/updater/src/lib.rs`
+### Current Keys
 
 ```rust
 pub const MAINTAINER_KEYS: [&str; 5] = [
-    "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9", // Maintainer 1
-    "d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d", // Maintainer 2
-    "9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697", // Maintainer 3
-    "97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f", // Maintainer 4
-    "82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096", // Maintainer 5
+    "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9",
+    "d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d",
+    "9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697",
+    "97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f",
+    "82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096",
 ];
 ```
 
-**FOR MAINNET**: Replace with production keys generated offline!
+### Generating New Keys (for mainnet)
+
+```bash
+doli new -w maintainer.json
+doli info -w maintainer.json  # Shows public key
+# Store private key offline, submit public key for inclusion in code
+```
 
 ---
 
 ## 4. Genesis Producer Setup
 
-### Step 1: Generate Producer Wallets
+**Genesis producers are FREE** - no bond required. Pre-registered at block 0.
 
-On the mainnet seed server, create 5 producer wallet files:
+| Type | Bond | How |
+|------|------|-----|
+| Genesis producer | None | Pubkey in chainspec |
+| Regular producer | 1000 DOLI | `doli producer register` |
 
-```bash
-mkdir -p ~/.doli/mainnet/producer_keys
-
-for i in 1 2 3 4 5; do
-    ./target/release/doli wallet new --output ~/.doli/mainnet/producer_keys/producer_$i.json
-done
-```
-
-### Step 2: Extract Public Keys
+### Regular Producer (Joining After Genesis)
 
 ```bash
-for i in 1 2 3 4 5; do
-    echo "Producer $i:"
-    cat ~/.doli/mainnet/producer_keys/producer_$i.json | jq -r '.addresses[0].public_key'
-done
+doli new -w producer.json
+doli-node --network mainnet run --producer --producer-key producer.json
+doli producer register --bonds 1 -w producer.json
 ```
 
-Save these pubkeys - they will be needed for genesis.rs!
-
-### Step 3: Update genesis.rs
-
-**CRITICAL**: Use the EXACT pubkeys from Step 2!
-
-```rust
-// In crates/core/src/genesis.rs
-pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
-    ("<pubkey_from_producer_1.json>", 1),
-    ("<pubkey_from_producer_2.json>", 1),
-    ("<pubkey_from_producer_3.json>", 1),
-    ("<pubkey_from_producer_4.json>", 1),
-    ("<pubkey_from_producer_5.json>", 1),
-];
-
-pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
-    MAINNET_GENESIS_PRODUCERS
-        .iter()
-        .filter_map(|(hex, bonds)| {
-            let bytes = hex::decode(hex).ok()?;
-            if bytes.len() != 32 {
-                return None;
-            }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Some((PublicKey::from_bytes(arr), *bonds))
-        })
-        .collect()
-}
-```
-
-### Step 4: Update main.rs for Mainnet Genesis
-
-Ensure `bins/node/src/main.rs` initializes genesis producers for mainnet:
-
-```rust
-// In producer_set initialization
-if network == Network::Mainnet {
-    use doli_core::genesis::mainnet_genesis_producers;
-    let genesis_producers = mainnet_genesis_producers();
-    if !genesis_producers.is_empty() {
-        info!("Initializing mainnet with {} genesis producers", genesis_producers.len());
-        ProducerSet::with_genesis_producers(genesis_producers)
-    } else {
-        ProducerSet::new()
-    }
-}
-```
-
-### Step 5: Verify Pubkey Match
-
-**BEFORE BUILDING**, double-check:
+### Genesis Producer (Network Launch)
 
 ```bash
-# From genesis.rs
-grep -A5 "MAINNET_GENESIS_PRODUCERS" crates/core/src/genesis.rs
-
-# From wallet files
+# 1. Create wallets
 for i in 1 2 3 4 5; do
-    cat ~/.doli/mainnet/producer_keys/producer_$i.json | jq -r '.addresses[0].public_key'
+    doli new -w ~/.doli/mainnet/producer_$i.json
 done
 
-# THESE MUST MATCH EXACTLY!
+# 2. Generate chainspec (auto-extracts pubkeys)
+./scripts/generate_chainspec.sh mainnet ~/.doli/mainnet mainnet.json
+
+# 3. Run node
+doli-node --network mainnet --chainspec mainnet.json run \
+    --producer --producer-key ~/.doli/mainnet/producer_1.json
 ```
 
 ---
@@ -295,11 +250,19 @@ Local peer id: 12D3KooW...
 
 ### Phase 1: Final Preparation (T-24h)
 
-1. Finalize all code changes
-2. Run full test suite: `cargo test`
-3. Build release binary: `cargo build --release`
-4. Deploy binary to all 5 servers
-5. Copy producer key files to each server
+```bash
+# 1. Create wallets
+for i in 1 2 3 4 5; do doli new -w producer_$i.json; done
+
+# 2. Generate chainspec
+./scripts/generate_chainspec.sh mainnet . mainnet.json
+
+# 3. Build and test
+cargo test && cargo build --release
+
+# 4. Deploy to servers
+# Copy binary, chainspec, and wallet files to each server
+```
 
 ### Phase 2: Pre-Genesis (T-1h)
 
@@ -319,37 +282,26 @@ sudo ufw status
 # Should show 30303/tcp ALLOW
 ```
 
+4. Verify chainspec is present and valid:
+```bash
+cat resources/chainspec/mainnet.json | jq '.genesis_producers | length'
+# Should output: 5
+```
+
 ### Phase 3: Genesis (T-0)
 
-1. Start seed node (Node 1) FIRST:
 ```bash
-./doli-node --network mainnet -d node1/data run \
-    --producer \
-    --producer-key producer_keys/producer_1.json \
-    --p2p-port 30303 \
-    --rpc-port 8545 \
-    > node1/node.log 2>&1 &
-```
+# 1. Start seed node
+doli-node --network mainnet --chainspec mainnet.json run \
+    --producer --producer-key producer_1.json
 
-2. Get seed node peer ID:
-```bash
-grep "Local peer id" node1/node.log
-# Example: 12D3KooWEVkrAJ8Xikd3xVSeMzX9LL5ZQidBG9x8qA2HvPb7hYp4
-```
+# 2. Get peer ID from logs
+grep "Local peer id" node.log
 
-3. Start remaining nodes with bootstrap:
-```bash
-BOOTSTRAP="/dns4/mainnet.doli.network/tcp/30303/p2p/<PEER_ID>"
-
-for i in 2 3 4 5; do
-    ./doli-node --network mainnet -d node$i/data run \
-        --producer \
-        --producer-key producer_keys/producer_$i.json \
-        --p2p-port $((30303 + i - 1)) \
-        --rpc-port $((8545 + i - 1)) \
-        --bootstrap "$BOOTSTRAP" \
-        > node$i/node.log 2>&1 &
-done
+# 3. Start other nodes (on other servers)
+doli-node --network mainnet --chainspec mainnet.json run \
+    --producer --producer-key producer_2.json \
+    --bootstrap /dns4/mainnet.doli.network/tcp/30303/p2p/<PEER_ID>
 ```
 
 ---
@@ -465,14 +417,30 @@ Look for log messages about epoch tracking.
 
 ## Appendix A: File Locations
 
+### Chainspec (genesis producers - configurable)
+
 | File | Purpose |
 |------|---------|
-| `crates/core/src/genesis.rs` | Genesis configuration, producer pubkeys |
-| `crates/core/src/network.rs` | Network parameters (rewards, timing) |
-| `crates/updater/src/lib.rs` | Maintainer keys for auto-update |
+| `resources/chainspec/mainnet.json` | Mainnet genesis producers |
+| `resources/chainspec/testnet.json` | Testnet genesis producers |
+| `scripts/generate_chainspec.sh` | Generate chainspec from wallet files |
+| `crates/core/src/chainspec.rs` | Chainspec parsing and validation |
+
+### Binary (maintainer keys - hardcoded)
+
+| File | Purpose |
+|------|---------|
+| `crates/updater/src/lib.rs` | **5 maintainer keys** (3-of-5 for auto-update) |
+
+### Other
+
+| File | Purpose |
+|------|---------|
+| `crates/core/src/genesis.rs` | Genesis configuration (fallback) |
+| `crates/core/src/network.rs` | Network parameters |
 | `crates/storage/src/chain_state.rs` | Epoch state persistence |
-| `bins/node/src/main.rs` | Genesis producer initialization |
-| `bins/node/src/node.rs` | Production logic, RPC context |
+| `bins/node/src/main.rs` | `--chainspec` flag |
+| `bins/node/src/node.rs` | Production logic |
 
 ## Appendix B: Key Constants
 
@@ -495,6 +463,10 @@ pub const REQUIRED_SIGNATURES: usize = 3;  // 3-of-5 maintainers
 
 ---
 
-**Document Version**: 1.0
+**Document Version**: 2.1
 **Last Updated**: 2026-01-30
 **Author**: DOLI Core Team
+
+**Changelog:**
+- v2.1: Clarified maintainer keys are hardcoded in binary (not chainspec)
+- v2.0: Added industry-standard chainspec system for genesis configuration
