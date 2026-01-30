@@ -163,6 +163,35 @@ impl Node {
             }
         }
 
+        // Extract epoch state from chain_state for persistence across restarts
+        // This fixes the bug where epoch counters reset on restart, preventing reward distribution
+        let epoch_start_height = chain_state.epoch_start_height;
+        let epoch_reward_pool = chain_state.epoch_reward_pool;
+        let current_reward_epoch = chain_state.current_reward_epoch;
+        let epoch_producer_blocks_map: HashMap<PublicKey, u64> = chain_state
+            .epoch_producer_blocks
+            .iter()
+            .filter_map(|(hex, count)| {
+                let bytes = hex::decode(hex).ok()?;
+                if bytes.len() != 32 {
+                    return None;
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some((PublicKey::from_bytes(arr), *count))
+            })
+            .collect();
+
+        if current_reward_epoch > 0 || epoch_start_height > 0 {
+            info!(
+                "Loaded epoch state: epoch={}, start_height={}, pool={}, producers={}",
+                current_reward_epoch,
+                epoch_start_height,
+                epoch_reward_pool,
+                epoch_producer_blocks_map.len()
+            );
+        }
+
         let chain_state = Arc::new(RwLock::new(chain_state));
 
         // Load or create producer set (use provided one if available)
@@ -173,7 +202,22 @@ impl Node {
             let set = if producers_path.exists() {
                 ProducerSet::load(&producers_path)?
             } else {
-                ProducerSet::new()
+                // For testnet: initialize with genesis producers
+                if config.network == Network::Testnet {
+                    use doli_core::genesis::testnet_genesis_producers;
+                    let genesis_producers = testnet_genesis_producers();
+                    if !genesis_producers.is_empty() {
+                        info!(
+                            "Initializing testnet with {} genesis producers",
+                            genesis_producers.len()
+                        );
+                        ProducerSet::with_genesis_producers(genesis_producers)
+                    } else {
+                        ProducerSet::new()
+                    }
+                } else {
+                    ProducerSet::new()
+                }
             };
             Arc::new(RwLock::new(set))
         };
@@ -244,10 +288,11 @@ impl Node {
             producer_key,
             last_produced_slot: 0,
             last_production_check: Instant::now(),
-            epoch_producer_blocks: Arc::new(RwLock::new(HashMap::new())),
-            epoch_start_height: 0,
-            epoch_reward_pool: 0,
-            current_reward_epoch: 0,
+            // Load epoch state from ChainState (persisted across restarts)
+            epoch_producer_blocks: Arc::new(RwLock::new(epoch_producer_blocks_map)),
+            epoch_start_height,
+            epoch_reward_pool,
+            current_reward_epoch,
             known_producers: Arc::new(RwLock::new(Vec::new())),
             pending_epoch_rewards: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
@@ -2496,6 +2541,30 @@ impl Node {
         // Save UTXO set
         let utxo_path = self.config.data_dir.join("utxo");
         self.utxo_set.read().await.save(&utxo_path)?;
+
+        // Save epoch state to ChainState before saving
+        // This ensures epoch tracking persists across restarts
+        {
+            let mut chain_state = self.chain_state.write().await;
+            let epoch_blocks = self.epoch_producer_blocks.read().await;
+
+            // Convert PublicKey -> hex string for serialization
+            chain_state.epoch_producer_blocks = epoch_blocks
+                .iter()
+                .map(|(pk, count)| (hex::encode(pk.as_bytes()), *count))
+                .collect();
+            chain_state.epoch_start_height = self.epoch_start_height;
+            chain_state.epoch_reward_pool = self.epoch_reward_pool;
+            chain_state.current_reward_epoch = self.current_reward_epoch;
+
+            info!(
+                "Saving epoch state: epoch={}, start_height={}, pool={}, producers={}",
+                self.current_reward_epoch,
+                self.epoch_start_height,
+                self.epoch_reward_pool,
+                epoch_blocks.len()
+            );
+        }
 
         // Save chain state
         let state_path = self.config.data_dir.join("chain_state.bin");

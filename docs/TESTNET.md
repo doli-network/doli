@@ -6,29 +6,27 @@ Official DOLI testnet for testing and development.
 
 ---
 
-## Bootstrap Phase (NOW - No Bonds Required!)
+## Testnet v2 (Fresh Genesis with Mainnet Parameters)
 
-The testnet is currently in **bootstrap phase** (first 7 days after genesis).
+The testnet has been relaunched with parameters matching mainnet exactly.
 
 | Status | Value |
 |--------|-------|
-| Genesis | January 29, 2026 |
-| Bootstrap Ends | ~February 5, 2026 |
-| Bonds Required | **NO** (during bootstrap) |
-| Block Reward | 50 tDOLI |
+| Genesis | January 29, 2026 22:00 UTC |
+| Block Reward | **1 tDOLI** (matches mainnet) |
+| Genesis Producers | 5 pre-registered |
+| Slot Duration | 10 seconds |
+| Epoch Length | 360 blocks (1 hour) |
 
-**During bootstrap:**
-- Anyone can produce blocks with just `--producer` flag
-- No bonds or tDOLI required
-- Build your presence history before bonds are required
-- Earn 50 tDOLI per block produced
+**What's new in v2:**
+- Block reward now 1 tDOLI (was 50, now matches mainnet exactly)
+- 5 genesis producers pre-registered at genesis
+- Epoch state persistence (rewards distribute correctly after restart)
+- All consensus parameters match mainnet
 
-**After bootstrap (~Feb 5):**
-- Bonds required (1,000 tDOLI per bond)
-- Producer eligibility enforced
-- Full consensus rules apply
-
-**This is the best time to join!**
+**To join:**
+- Run with `--producer` flag to participate in block production
+- Producers are selected in round-robin based on bond count
 
 ---
 
@@ -69,8 +67,9 @@ You earn **50 tDOLI per block** you produce. No registration needed during boots
 | Network | Testnet |
 | Address Prefix | `tdoli` |
 | Slot Duration | 10 seconds |
-| Block Reward | 50 tDOLI |
-| Bootstrap Period | 7 days (60,480 blocks) |
+| Block Reward | **1 tDOLI** |
+| Epoch Length | 360 blocks (1 hour) |
+| Genesis Producers | 5 |
 | P2P Port | 40303 |
 | RPC Port | 18545 |
 

@@ -42,14 +42,14 @@ impl GenesisConfig {
 
     /// Testnet genesis configuration
     ///
-    /// Genesis time: 2026-01-29T21:20:00Z
-    /// Testnet launched January 2026
+    /// Genesis time: 2026-01-29T22:00:00Z
+    /// Testnet v2 launched January 2026 (fresh genesis with mainnet parameters)
     pub fn testnet() -> Self {
         Self {
             network: Network::Testnet,
-            timestamp: 1769736000, // 2026-01-29T21:20:00Z (testnet launch)
-            reward: 5_000_000_000, // 50 DOLI (10x mainnet for testing)
-            message: "DOLI Testnet Genesis - Time is money",
+            timestamp: 1769738400, // 2026-01-29T22:00:00Z (testnet v2 launch)
+            reward: 100_000_000,   // 1 DOLI (matches mainnet exactly)
+            message: "DOLI Testnet v2 Genesis - Time is the only fair currency",
         }
     }
 
@@ -79,6 +79,35 @@ impl GenesisConfig {
 /// The "null" public key used for genesis coinbase
 /// This is a well-known unspendable key (all zeros)
 pub const GENESIS_PUBKEY: [u8; 32] = [0u8; 32];
+
+/// Testnet genesis producers (pubkey hex, bond_count)
+///
+/// These 5 producers are registered at genesis with 1 bond each.
+/// They use the same keys from the original testnet bootstrap.
+/// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
+pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
+    ("8f5b66af162a74d3d0992e73adbb3c6baf774ee3b75e01dd393eaba8907621a2", 1), // producer_1
+    ("2f2bc92b84423977e10c595f33099eacec476ea2a7353d01a51a54658b342895", 1), // producer_2
+    ("066c22d232fe36b5b415ad38b155034323c3b2083e18d5c6c269218541605674", 1), // producer_3
+    ("743a4ca3c0fc033a213195fa20352aac2118ef1a624cf77aaaba4ab59e2335d8", 1), // producer_4
+    ("7c8ce647c6d32eaea14ae47a282e78fba469f6c9117f062e9345143d4c967145", 1), // producer_5
+];
+
+/// Parse testnet genesis producers into (PublicKey, bond_count) pairs
+pub fn testnet_genesis_producers() -> Vec<(PublicKey, u32)> {
+    TESTNET_GENESIS_PRODUCERS
+        .iter()
+        .filter_map(|(hex, bonds)| {
+            let bytes = hex::decode(hex).ok()?;
+            if bytes.len() != 32 {
+                return None;
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some((PublicKey::from_bytes(arr), *bonds))
+        })
+        .collect()
+}
 
 /// The "null" hash used as prev_hash for genesis block
 pub const NULL_HASH: [u8; 32] = [0u8; 32];
@@ -343,8 +372,8 @@ mod tests {
         let genesis = generate_genesis_block(&config);
 
         assert_eq!(genesis.header.slot, 0);
-        assert_eq!(genesis.header.timestamp, 1769736000);
-        assert_eq!(genesis.transactions[0].outputs[0].amount, 5_000_000_000);
+        assert_eq!(genesis.header.timestamp, 1769738400); // Testnet v2 genesis
+        assert_eq!(genesis.transactions[0].outputs[0].amount, 100_000_000); // 1 DOLI (matches mainnet)
 
         assert!(verify_genesis_block(&genesis, Network::Testnet).is_ok());
     }

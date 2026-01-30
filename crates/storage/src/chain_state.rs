@@ -1,5 +1,6 @@
 //! Chain state management
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crypto::Hash;
@@ -44,6 +45,27 @@ pub struct ChainState {
     /// the TOTAL_SUPPLY cap: `total_minted + reward <= TOTAL_SUPPLY`.
     #[serde(default)]
     pub total_minted: Amount,
+
+    // ==================== Epoch State Persistence ====================
+    // These fields persist epoch tracking across node restarts.
+    // Without persistence, epoch counters reset and rewards are never distributed.
+
+    /// Epoch tracking: maps producer pubkey (hex) to blocks produced in current epoch
+    /// Used for proportional reward distribution in EpochPool mode
+    #[serde(default)]
+    pub epoch_producer_blocks: HashMap<String, u64>,
+
+    /// Epoch tracking: starting height of current reward epoch
+    #[serde(default)]
+    pub epoch_start_height: u64,
+
+    /// Epoch tracking: total rewards accumulated in current epoch (not yet distributed)
+    #[serde(default)]
+    pub epoch_reward_pool: u64,
+
+    /// Current reward epoch number (increments at epoch boundaries)
+    #[serde(default)]
+    pub current_reward_epoch: u64,
 }
 
 impl ChainState {
@@ -59,6 +81,11 @@ impl ChainState {
             last_registration_hash: Hash::ZERO,
             registration_sequence: 0,
             total_minted: 0,
+            // Epoch state (persisted across restarts)
+            epoch_producer_blocks: HashMap::new(),
+            epoch_start_height: 0,
+            epoch_reward_pool: 0,
+            current_reward_epoch: 0,
         }
     }
 
@@ -195,6 +222,42 @@ impl ChainState {
     /// Get total minted coins
     pub fn total_minted(&self) -> Amount {
         self.total_minted
+    }
+
+    // ==================== Epoch State Management ====================
+
+    /// Record a block produced by a producer in the current epoch
+    pub fn record_epoch_block(&mut self, producer_pubkey: &str, reward: u64) {
+        *self.epoch_producer_blocks.entry(producer_pubkey.to_string()).or_insert(0) += 1;
+        self.epoch_reward_pool += reward;
+    }
+
+    /// Reset epoch state for a new epoch
+    pub fn start_new_epoch(&mut self, new_epoch: u64, start_height: u64) {
+        self.current_reward_epoch = new_epoch;
+        self.epoch_start_height = start_height;
+        self.epoch_producer_blocks.clear();
+        self.epoch_reward_pool = 0;
+    }
+
+    /// Get epoch producer blocks map
+    pub fn epoch_producer_blocks(&self) -> &HashMap<String, u64> {
+        &self.epoch_producer_blocks
+    }
+
+    /// Get current epoch reward pool
+    pub fn epoch_reward_pool(&self) -> u64 {
+        self.epoch_reward_pool
+    }
+
+    /// Get current epoch number
+    pub fn current_reward_epoch(&self) -> u64 {
+        self.current_reward_epoch
+    }
+
+    /// Get epoch start height
+    pub fn epoch_start_height(&self) -> u64 {
+        self.epoch_start_height
     }
 }
 
