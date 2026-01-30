@@ -25,7 +25,7 @@ Official DOLI testnet for testing and development.
 
 ```bash
 # Clone repository
-git clone https://github.com/dolinetwork/doli.git
+git clone https://github.com/e-weil/doli.git
 cd doli
 
 # Build with Nix (recommended)
@@ -174,7 +174,7 @@ exec $SHELL
 
 ```bash
 cd ~
-git clone https://github.com/dolinetwork/doli.git
+git clone https://github.com/e-weil/doli.git
 cd doli
 nix develop --command cargo build --release
 ```
@@ -278,4 +278,4 @@ These 5 keys control protocol updates (3-of-5 threshold):
 
 ## Contact
 
-- GitHub: [github.com/dolinetwork/doli](https://github.com/dolinetwork/doli)
+- GitHub: [github.com/e-weil/doli](https://github.com/e-weil/doli)
