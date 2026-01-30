@@ -125,23 +125,6 @@ pub async fn apply_update(release: &Release, approved: bool, veto_percent: Optio
     Ok(())
 }
 
-/// Legacy apply function for internal use (bypasses checks)
-///
-/// **WARNING**: This should only be used by the automatic update service
-/// AFTER it has already verified approval. Do NOT use for CLI.
-pub(crate) async fn apply_update_internal(release: &Release) -> Result<()> {
-    info!("Applying update to version {} (internal)", release.version);
-
-    let binary = download_binary(release).await?;
-    verify_hash(&binary, &release.binary_sha256)?;
-    let _backup = backup_current().await?;
-    let current = current_binary_path()?;
-    install_binary(&binary, &current).await?;
-
-    info!("Update to {} applied successfully", release.version);
-    Ok(())
-}
-
 /// Install binary to target path
 async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     // On Unix, we need to handle the case where the binary is running
@@ -225,18 +208,6 @@ pub fn restart_node() -> ! {
             }
         }
     }
-}
-
-/// Clean up old backup after successful update
-pub async fn cleanup_backup() -> Result<()> {
-    let backup = backup_path()?;
-
-    if backup.exists() {
-        fs::remove_file(&backup).await?;
-        debug!("Cleaned up backup file");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
