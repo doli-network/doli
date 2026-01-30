@@ -17,7 +17,7 @@ use crypto::{KeyPair, PrivateKey, PublicKey};
 use doli_core::Network;
 use storage::ProducerSet;
 use tokio::sync::RwLock;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
@@ -270,6 +270,7 @@ async fn main() -> Result<()> {
                 None,
                 false,
                 false,
+                None, // chainspec
             )
             .await?;
         }
