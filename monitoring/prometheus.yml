@@ -1,0 +1,32 @@
+# Prometheus configuration for DOLI node monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Mainnet node metrics
+  - job_name: 'doli-mainnet'
+    static_configs:
+      - targets: ['doli-node:9090']
+        labels:
+          network: 'mainnet'
+
+  # Testnet node metrics (when running testnet profile)
+  - job_name: 'doli-testnet'
+    static_configs:
+      - targets: ['doli-testnet:9090']
+        labels:
+          network: 'testnet'
+
+  # Devnet node metrics (when running devnet profile)
+  - job_name: 'doli-devnet'
+    static_configs:
+      - targets: ['doli-devnet:9090']
+        labels:
+          network: 'devnet'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
