@@ -215,7 +215,7 @@ pub fn weighted_veto_threshold(producers: &[ProducerInfo], current_height: u64) 
 pub enum ProducerStatus {
     /// Producer is actively participating in block production
     Active,
-    /// Producer has requested exit, in unbonding period (30 days)
+    /// Producer has requested exit, in unbonding period (7 days)
     /// During this period, producer can still produce blocks
     Unbonding {
         /// Block height when unbonding started
@@ -1576,13 +1576,13 @@ mod tests {
         assert!(info.is_active());
         assert!(info.can_produce());
 
-        // Start unbonding (30 days = 43,200 blocks)
+        // Start unbonding (test uses 43,200 blocks as arbitrary duration)
         info.start_unbonding(2000);
         assert!(info.is_active()); // Still active during unbonding
         assert!(info.can_produce());
         assert!(!info.is_unbonding_complete(2000, 43_200));
         assert!(!info.is_unbonding_complete(45_000, 43_200)); // Just before completion
-        assert!(info.is_unbonding_complete(45_200, 43_200)); // After 30 days
+        assert!(info.is_unbonding_complete(45_200, 43_200)); // After unbonding period
 
         // Complete exit
         info.complete_exit();
@@ -1636,11 +1636,11 @@ mod tests {
         // Can't register twice
         assert!(set.register(info, 1000).is_err());
 
-        // Request exit (starts 30-day unbonding period)
+        // Request exit (starts 7-day unbonding period)
         set.request_exit(&*keypair.public_key(), 2000).unwrap();
         assert_eq!(set.active_count(), 1); // Still active during unbonding
 
-        // Process unbonding (30 days = 43,200 blocks)
+        // Process unbonding (test uses 43,200 blocks as arbitrary duration)
         let completed = set.process_unbonding(45_200, 43_200);
         assert_eq!(completed.len(), 1);
         assert_eq!(set.active_count(), 0);
@@ -1985,7 +1985,7 @@ mod tests {
         // Still not in exit history (unbonding not complete)
         assert!(!set.has_prior_exit(&*keypair.public_key(), 1000));
 
-        // Complete unbonding (30 days = 43,200 blocks)
+        // Complete unbonding (test uses arbitrary 43,200 blocks)
         let unbonding_duration = 43_200;
         let exit_height = 1000 + unbonding_duration;
         set.process_unbonding(exit_height, unbonding_duration);
@@ -2499,7 +2499,7 @@ mod tests {
 
         // Cannot cancel exit after it's complete
         set.request_exit(&pubkey, 3000).unwrap();
-        // Simulate unbonding completion (30 days = 43,200 blocks)
+        // Simulate unbonding completion (test uses 43,200 blocks as arbitrary duration)
         set.process_unbonding(3000 + 43_200 + 1, 43_200);
 
         // Now producer is Exited, cannot cancel
