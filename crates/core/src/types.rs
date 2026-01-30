@@ -12,10 +12,10 @@ pub type BlockHeight = u64;
 /// Slot number (time-based)
 pub type Slot = u32;
 
-/// Epoch number (60 slots = 1 epoch)
+/// Epoch number (360 slots = 1 epoch = 1 hour at 10s/slot)
 pub type Epoch = u32;
 
-/// Era number (2,102,400 blocks = 1 era)
+/// Era number (12,614,400 blocks = 1 era = ~4 years)
 pub type Era = u32;
 
 /// Number of decimal places

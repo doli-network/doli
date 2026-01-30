@@ -318,8 +318,8 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 - Monitors for 5 minutes total (15 epochs)
 
 **Devnet parameters:**
-- 5-second slots
-- 60 slots per epoch (~5 minute epochs)
+- 1-second slots
+- 60 slots per epoch (~1 minute epochs)
 - 100 DOLI block reward
 - ~1M VDF iterations (~70ms)
 - Dynamic genesis_time (set at network start)
