@@ -276,7 +276,8 @@ impl Network {
                 "/dns4/seed2.doli.network/tcp/30303",
             ],
             Network::Testnet => vec![
-                "/ip4/198.51.100.1/tcp/40303", // omegacortex.ai
+                "/dns4/bootstrap1.testnet.doli.network/tcp/40303",
+                "/dns4/bootstrap2.testnet.doli.network/tcp/40304",
             ],
             Network::Devnet => vec![], // No bootstrap for local devnet
         }
