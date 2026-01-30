@@ -96,17 +96,13 @@ nc -zv your-node-ip 30303
 
 | Possible Cause | Solution |
 |----------------|----------|
-| Large mempool | Configure mempool limits |
-| Many peers | Reduce `max_peers` in config |
+| Large mempool | Restart node (mempool clears on restart) |
+| Many peers | Use `--max-peers 25` flag |
 | Memory leak | Update to latest version |
 
-**Configure limits in config.toml:**
-```toml
-max_peers = 25
-
-[mempool]
-max_count = 2500
-max_size_bytes = 2621440  # 2.5 MB
+**Reduce resource usage with CLI flags:**
+```bash
+./doli-node --max-peers 25 run
 ```
 
 ---

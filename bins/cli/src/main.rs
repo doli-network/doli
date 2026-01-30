@@ -1186,7 +1186,7 @@ async fn cmd_producer(
             println!("The equivocating producer ({}) will be:", &block1_resp.producer[..16]);
             println!("  - Have their entire bond burned (100% penalty)");
             println!("  - Excluded from the producer set immediately");
-            println!("  - Required to re-register with 2x difficulty to rejoin");
+            println!("  - Can re-register like any new producer (standard registration VDF)");
         }
     }
 

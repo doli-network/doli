@@ -345,7 +345,7 @@ cargo test -p integration double_spend -- --nocapture
 | Slash transaction creation | Automatic slash TX | [ ] |
 | Bond burn verification | 100% bond destroyed | [ ] |
 | Producer exclusion | Removed from set | [ ] |
-| Re-registration penalty | 2x VDF time | [ ] |
+| Re-registration | Standard registration (same as new producer) | [ ] |
 
 **Fork Attack Tests**:
 

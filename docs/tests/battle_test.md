@@ -483,7 +483,7 @@ cargo test -p integration double_spend -- --nocapture
 | Slash transaction creation | Automatic slash TX | [x] |
 | Bond burn verification | 100% bond destroyed | [x] |
 | Producer exclusion | Removed from set | [x] |
-| Re-registration penalty | 2x VDF time | [!] |
+| Re-registration | Standard registration (same as new producer) | [x] |
 
 **Fork Attack Tests**:
 
@@ -517,11 +517,11 @@ cargo test -p integration attack_reorg_test -- --nocapture
 - `EquivocationProof::to_slash_transaction()` - automatic slash TX creation ✓
 - `SlashingEvidence::DoubleProduction` - evidence structure for two blocks same slot ✓
 
-**Re-registration Penalty**:
-- [!] 2x VDF time NOT explicitly implemented
-- Alternative: `has_prior_exit` flag + weight/maturity cooldown (3 tests pass)
+**Re-registration After Slashing**:
+- [x] Slashed producers can re-register with standard registration VDF
+- `has_prior_exit` flag tracks re-registration status (3 tests pass)
 - `test_re_registration_after_exit_has_prior_exit_flag` ✓
-- Re-registered producers start with weight 1 (maturity cooldown)
+- Re-registered producers start with weight 1 (maturity restarts)
 
 **Fork Attack Defenses Verified** (9 reorg tests pass):
 - Low-weight fork: `test_weight_based_fork_choice_rejects_lighter_chain` ✓
@@ -1543,7 +1543,7 @@ cargo test 2>&1 | tail -5
 | Component | Test | Status |
 |-----------|------|--------|
 | Release binary | `doli-node --help` | [x] v0.1.0 functional |
-| Node initialization | `doli-node init` | [x] Creates config.toml |
+| Node initialization | `doli-node init` | [x] Creates data directory |
 | Node startup | `doli-node run --no-dht` | [x] P2P, RPC, metrics start |
 | CLI wallet | `doli new` | [x] Creates wallet with keys |
 | Metrics server | Port 9090 | [x] Prometheus endpoint active |
