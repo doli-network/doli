@@ -105,10 +105,10 @@ impl ChainSpec {
     /// Load chainspec from a JSON file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ChainSpecError> {
         let contents = std::fs::read_to_string(path.as_ref())
-            .map_err(|e| ChainSpecError::IoError(e.to_string()))?;
+            .map_err(|e: std::io::Error| ChainSpecError::IoError(e.to_string()))?;
 
         let spec: ChainSpec = serde_json::from_str(&contents)
-            .map_err(|e| ChainSpecError::ParseError(e.to_string()))?;
+            .map_err(|e: serde_json::Error| ChainSpecError::ParseError(e.to_string()))?;
 
         spec.validate()?;
         Ok(spec)
@@ -117,10 +117,10 @@ impl ChainSpec {
     /// Save chainspec to a JSON file
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ChainSpecError> {
         let contents = serde_json::to_string_pretty(self)
-            .map_err(|e| ChainSpecError::SerializeError(e.to_string()))?;
+            .map_err(|e: serde_json::Error| ChainSpecError::SerializeError(e.to_string()))?;
 
         std::fs::write(path, contents)
-            .map_err(|e| ChainSpecError::IoError(e.to_string()))?;
+            .map_err(|e: std::io::Error| ChainSpecError::IoError(e.to_string()))?;
 
         Ok(())
     }

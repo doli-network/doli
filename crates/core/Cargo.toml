@@ -12,6 +12,7 @@ crypto = { workspace = true }
 vdf = { workspace = true }
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 bincode.workspace = true
 chrono.workspace = true
 hex.workspace = true
