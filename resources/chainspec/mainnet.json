@@ -1,0 +1,17 @@
+{
+  "name": "DOLI Mainnet",
+  "id": "mainnet",
+  "network": "Mainnet",
+  "genesis": {
+    "timestamp": 1769904000,
+    "message": "Time is the only fair currency. 01/Feb/2026",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 10,
+    "slots_per_epoch": 360,
+    "bond_amount": 100000000000
+  },
+  "genesis_producers": [],
+  "maintainer_keys": []
+}
