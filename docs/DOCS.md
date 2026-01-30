@@ -40,18 +40,18 @@ Master index for all DOLI documentation.
 | [roadmap.md](./roadmap.md) | Development roadmap and milestones |
 | [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - maintainer keys, voting, binary replacement |
 
-## Testing
+## Testing & Research
 
 | File | Description |
 |------|-------------|
 | [whitepaper_test_plan.md](./whitepaper_test_plan.md) | Complete test plan for ALL WHITEPAPER functionalities |
+| [battle_test.md](./battle_test.md) | Battle testing scenarios and results |
+| [attack_analysis.md](./attack_analysis.md) | Security analysis and attack vectors |
+| [extreme_devnet_600.md](./extreme_devnet_600.md) | Extreme network testing results |
 
-## Research
+## Legacy
 
-| File | Description |
-|------|-------------|
-| [attack_analysis.md](./research/attack_analysis.md) | Security analysis and attack vectors |
-| [extreme_devnet_600.md](./research/extreme_devnet_600.md) | Extreme network testing results |
+Archived historical documents in `legacy/` subdirectory.
 
 ---
 
@@ -60,25 +60,26 @@ Master index for all DOLI documentation.
 ```
 docs/
 ├── DOCS.md                   # ← You are here (master index)
-├── genesis.md                # Mainnet genesis launch guide (CRITICAL!)
-├── testnet.md                # Testnet setup and bootstrap nodes
-├── cli.md                    # Complete CLI reference
-├── docker.md                 # Docker deployment guide
-├── protocol.md               # Wire protocol specification
 ├── architecture.md           # System architecture
-├── security_model.md         # Security analysis
-├── running_a_node.md         # Node operation guide
+├── attack_analysis.md        # Security analysis
+├── auto_update_system.md     # Auto-update documentation
+├── battle_test.md            # Battle testing
 ├── becoming_a_producer.md    # Producer guide
-├── rpc_reference.md          # API documentation
-├── troubleshooting.md        # Common issues
-├── releases.md               # Release process and verification
+├── cli.md                    # CLI reference
+├── docker.md                 # Docker deployment
+├── extreme_devnet_600.md     # Extreme testing results
+├── genesis.md                # Genesis launch guide
 ├── manifesto.md              # Project philosophy
+├── protocol.md               # Wire protocol spec
+├── releases.md               # Release process
 ├── roadmap.md                # Development roadmap
-├── auto_update_system.md     # Complete auto-update documentation
-├── whitepaper_test_plan.md   # Complete whitepaper test plan
-└── research/
-    ├── attack_analysis.md
-    └── extreme_devnet_600.md
+├── rpc_reference.md          # API documentation
+├── running_a_node.md         # Node operation guide
+├── security_model.md         # Security model
+├── testnet.md                # Testnet setup
+├── troubleshooting.md        # Common issues
+├── whitepaper_test_plan.md   # Whitepaper test plan
+└── legacy/                   # Archived documents
 ```
 
 ---
