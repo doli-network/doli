@@ -376,7 +376,7 @@ doli producer add-bond --count 3
 
 ### 4.5. Request Withdrawal
 
-Request to withdraw bonds. Starts a 7-day unbonding period.
+Request to withdraw bonds. Starts a ~30-day unbonding period (259,200 blocks).
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]
