@@ -83,17 +83,18 @@ pub const REQUIRED_SIGNATURES: usize = 3;
 ///
 /// Before mainnet: `is_using_placeholder_keys()` must return `false`
 pub const MAINTAINER_KEYS: [&str; 5] = [
-    // PLACEHOLDER KEYS - REPLACE BEFORE MAINNET
-    // Key 1: Maintainer TBD
-    "0000000000000000000000000000000000000000000000000000000000000001",
-    // Key 2: Maintainer TBD
-    "0000000000000000000000000000000000000000000000000000000000000002",
-    // Key 3: Maintainer TBD
-    "0000000000000000000000000000000000000000000000000000000000000003",
-    // Key 4: Maintainer TBD
-    "0000000000000000000000000000000000000000000000000000000000000004",
-    // Key 5: Maintainer TBD
-    "0000000000000000000000000000000000000000000000000000000000000005",
+    // Testnet maintainer keys (also used for mainnet until replaced)
+    // These are the 5 keys that control protocol updates (3-of-5 threshold)
+    // Key 1
+    "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9",
+    // Key 2
+    "d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d",
+    // Key 3
+    "9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697",
+    // Key 4
+    "97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f",
+    // Key 5
+    "82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096",
 ];
 
 /// Check if the maintainer keys are still placeholders
