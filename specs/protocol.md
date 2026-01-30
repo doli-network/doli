@@ -51,17 +51,12 @@ address = HASH(public_key)[0:20]   // First 20 bytes of hash
 
 ### 1.5 Serialization
 
-Transactions and blocks are serialized using a simple TLV-like format:
+Transactions and blocks are serialized using **bincode** format with the following configuration:
+- Little-endian byte order
+- Fixed-int encoding (no varint compression)
+- No length limits
 
-```
-field := type (1 byte) || length (varint) || data (length bytes)
-```
-
-Varint encoding (unsigned):
-- 0x00-0xFC: 1 byte (value as-is)
-- 0xFD: 3 bytes (0xFD || uint16)
-- 0xFE: 5 bytes (0xFE || uint32)
-- 0xFF: 9 bytes (0xFF || uint64)
+This matches the Rust `bincode` crate with `standard()` configuration.
 
 ---
 
@@ -494,7 +489,7 @@ A block B is valid if ALL conditions hold:
 
 2. TIMING:
    B.timestamp > prev_block.timestamp
-   B.timestamp <= local_time + DRIFT (120 seconds)
+   B.timestamp <= local_time + DRIFT (10 seconds)
    B.timestamp >= slot_start + (SLOT_DURATION - NETWORK_MARGIN)
    B.timestamp <= slot_start + SLOT_DURATION + DRIFT
 
@@ -507,7 +502,7 @@ A block B is valid if ALL conditions hold:
    B.producer is in active_producer_set
 
 5. VDF:
-   vdf_input = HASH("BLK" || prev_hash || B.merkle_root || B.slot || B.producer)
+   vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || B.merkle_root || B.slot || B.producer)
    VDF_verify(vdf_input, B.vdf_output, B.vdf_proof, T_BLOCK) == true
 
 6. TRANSACTIONS:
@@ -815,7 +810,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Slot Duration | 10s | 10s | 1s |
 | P2P Port | 30303 | 40303 | 50303 |
 | RPC Port | 8545 | 18545 | 28545 |
-| Initial Bond | 1,000 DOLI | 1,000 DOLI | 1 DOLI |
+| Initial Bond | 1,000 DOLI | 1,000 DOLI | 1,000 DOLI |
 | Initial Reward | 1 DOLI | 1 DOLI | 1 DOLI |
 | VDF Target Time | ~700ms | ~700ms | ~700ms |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 |
@@ -950,8 +945,8 @@ Result:
 | SLOTS_PER_EPOCH    | 360                      |
 | SLOTS_PER_ERA      | 12,614,400               |
 | BOOTSTRAP_BLOCKS   | 60,480                   |
-| DRIFT              | 120                      |
-| NETWORK_MARGIN     | 15                       |
+| DRIFT              | 10                       |
+| NETWORK_MARGIN     | 1                        |
 | VDF_ITERATIONS_DEFAULT | 10,000,000           |
 | VDF_ITERATIONS_MIN | 100,000                  |
 | VDF_ITERATIONS_MAX | 100,000,000              |

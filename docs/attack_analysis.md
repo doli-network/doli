@@ -106,7 +106,7 @@ Producer registers, votes for malicious proposal, then exits before consequences
 - Exit history is permanently recorded
 - Re-registering producers start fresh at weight 1
 - All accumulated seniority is lost
-- 30-day unbonding period gives time to detect malicious votes
+- 7-day unbonding period gives time to detect malicious votes
 
 **Exit History Tracking**:
 - `has_prior_exit` flag marks repeat registrants
@@ -142,8 +142,8 @@ Attacker coordinates multiple compromised producers to vote, exit, and re-regist
 - 30 producers × weight 1 = only 30 total weight
 - Existing honest producers maintain higher weights
 
-**30-Day Unbonding Window**:
-- Community has 30 days to analyze suspicious voting
+**7-Day Unbonding Window**:
+- Community has 7 days to analyze suspicious voting
 - Time to implement countermeasures
 - Social/economic consequences can be applied
 

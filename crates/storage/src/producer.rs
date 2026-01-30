@@ -166,15 +166,15 @@ pub fn total_weight_for_network(
 
 /// Calculate the weighted veto threshold for a specific network
 ///
-/// Returns the minimum total weight required for a veto to pass (33%).
+/// Returns the minimum total weight required for a veto to pass (40%).
 pub fn weighted_veto_threshold_for_network(
     producers: &[ProducerInfo],
     current_height: u64,
     network: Network,
 ) -> u64 {
     let total = total_weight_for_network(producers, current_height, network);
-    // 33% threshold, rounded up to be conservative
-    (total * 33 + 99) / 100
+    // 40% threshold, rounded up to be conservative
+    (total * VETO_THRESHOLD_PERCENT + 99) / 100
 }
 
 /// Calculate total weight of all active producers
@@ -196,18 +196,18 @@ pub fn total_weight(producers: &[ProducerInfo], current_height: u64) -> u64 {
 /// Calculate the weighted veto threshold
 ///
 /// Returns the minimum total weight required for a veto to pass.
-/// This is 33% of the total weight of all active producers.
+/// This is 40% of the total weight of all active producers.
 ///
 /// # Arguments
 /// - `producers`: Slice of producer information
 /// - `current_height`: Current block height
 ///
 /// # Returns
-/// The weight threshold needed for veto (33% of total weight)
+/// The weight threshold needed for veto (40% of total weight)
 pub fn weighted_veto_threshold(producers: &[ProducerInfo], current_height: u64) -> u64 {
     let total = total_weight(producers, current_height);
-    // 33% threshold, rounded up to be conservative
-    (total * 33 + 99) / 100
+    // 40% threshold, rounded up to be conservative
+    (total * VETO_THRESHOLD_PERCENT + 99) / 100
 }
 
 /// Producer status in the network

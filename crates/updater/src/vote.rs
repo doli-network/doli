@@ -299,17 +299,17 @@ mod tests {
         // Junior votes veto (weight 1)
         tracker.record_vote("junior1".into(), Vote::Veto);
         assert_eq!(tracker.veto_weight(), 1);
-        assert!(!tracker.should_reject_weighted(10)); // 10% < 33%
+        assert!(!tracker.should_reject_weighted(10)); // 10% < 40%
 
         // Another junior votes veto (total weight 2)
         tracker.record_vote("junior2".into(), Vote::Veto);
         assert_eq!(tracker.veto_weight(), 2);
-        assert!(!tracker.should_reject_weighted(10)); // 20% < 33%
+        assert!(!tracker.should_reject_weighted(10)); // 20% < 40%
 
         // Senior producer votes veto (weight 4, total 6)
         tracker.record_vote("senior1".into(), Vote::Veto);
         assert_eq!(tracker.veto_weight(), 6);
-        assert!(tracker.should_reject_weighted(10)); // 60% >= 33%
+        assert!(tracker.should_reject_weighted(10)); // 60% >= 40%
     }
 
     #[test]

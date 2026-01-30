@@ -50,7 +50,7 @@ Block producers in DOLI:
 |-------|----------|
 | Registration VDF | ~10 minutes (base) |
 | Bond lock | 4 years |
-| Unbonding period | 30 days |
+| Unbonding period | 7 days |
 | Withdrawal delay | 7 days |
 
 ---
@@ -227,10 +227,10 @@ After 7-day delay:
 Full exit from producer set:
 
 ```bash
-# Exit (starts 30-day unbonding)
+# Exit (starts 7-day unbonding)
 ./target/release/doli producer exit
 
-# After 30 days, claim bond
+# After 7 days, claim bond
 ./target/release/doli producer claim-bond
 ```
 

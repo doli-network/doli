@@ -807,8 +807,8 @@ pub const T_BLOCK_BASE: u64 = T_BLOCK;
 /// Maximum T value for blocks - same as T_BLOCK (fixed)
 pub const T_BLOCK_CAP: u64 = T_BLOCK;
 
-/// VDF target duration in milliseconds (~7 seconds)
-pub const VDF_TARGET_MS: u64 = 7_000;
+/// VDF target duration in milliseconds (~700ms heartbeat)
+pub const VDF_TARGET_MS: u64 = 700;
 
 /// VDF deadline in milliseconds (must complete within slot)
 pub const VDF_DEADLINE_MS: u64 = 10_000;
