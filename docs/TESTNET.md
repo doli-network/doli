@@ -6,6 +6,62 @@ Official DOLI testnet for testing and development.
 
 ---
 
+## Bootstrap Phase (NOW - No Bonds Required!)
+
+The testnet is currently in **bootstrap phase** (first 7 days after genesis).
+
+| Status | Value |
+|--------|-------|
+| Genesis | January 29, 2026 |
+| Bootstrap Ends | ~February 5, 2026 |
+| Bonds Required | **NO** (during bootstrap) |
+| Block Reward | 50 tDOLI |
+
+**During bootstrap:**
+- Anyone can produce blocks with just `--producer` flag
+- No bonds or tDOLI required
+- Build your presence history before bonds are required
+- Earn 50 tDOLI per block produced
+
+**After bootstrap (~Feb 5):**
+- Bonds required (1,000 tDOLI per bond)
+- Producer eligibility enforced
+- Full consensus rules apply
+
+**This is the best time to join!**
+
+---
+
+## Quick Start (3 Steps)
+
+### 1. Build DOLI
+
+```bash
+git clone https://github.com/e-weil/doli.git
+cd doli
+nix develop
+cargo build --release
+```
+
+### 2. Run as Producer
+
+```bash
+./target/release/doli-node --network testnet run --producer
+```
+
+Your node auto-connects to `testnet.doli.network` and starts producing blocks immediately.
+
+### 3. Start Earning tDOLI
+
+Once synced, you'll see:
+```
+Block produced at height X
+```
+
+You earn **50 tDOLI per block** you produce. No registration needed during bootstrap!
+
+---
+
 ## Network Information
 
 | Parameter | Value |
@@ -14,133 +70,101 @@ Official DOLI testnet for testing and development.
 | Address Prefix | `tdoli` |
 | Slot Duration | 10 seconds |
 | Block Reward | 50 tDOLI |
-| RPC Port | 18545 |
+| Bootstrap Period | 7 days (60,480 blocks) |
 | P2P Port | 40303 |
+| RPC Port | 18545 |
 
 ---
 
-## Quick Start
+## After Bootstrap (February 5+)
 
-### 1. Install DOLI
-
-```bash
-# Clone repository
-git clone https://github.com/e-weil/doli.git
-cd doli
-
-# Build with Nix (recommended)
-nix develop
-cargo build --release
-
-# Binaries created:
-#   ./target/release/doli-node  (full node)
-#   ./target/release/doli       (CLI wallet)
-```
-
-### 2. Run a Testnet Node
+Once bootstrap ends, you'll need to register with bonds:
 
 ```bash
-# Start testnet node (auto-connects to testnet.doli.network)
-./target/release/doli-node --network testnet run
-```
-
-Your node will automatically connect to:
-- `bootstrap1.testnet.doli.network:40303`
-- `bootstrap2.testnet.doli.network:40304`
-
-And begin syncing the blockchain. No manual configuration needed.
-
-### 3. Create a Wallet
-
-```bash
-# Create new wallet (testnet uses port 18545)
-./target/release/doli new --rpc http://127.0.0.1:18545
-```
-
-### 4. Check Your Balance
-
-```bash
+# Check your balance (should have tDOLI from producing during bootstrap)
 ./target/release/doli balance --rpc http://127.0.0.1:18545
-```
 
----
-
-## Become a Testnet Validator
-
-### Step 1: Start Your Node
-
-```bash
-# Initialize and run as a producer
-./target/release/doli-node --network testnet run --producer
-```
-
-### Step 2: Register as Producer
-
-Once your node is synced:
-
-```bash
-# Register with 1 bond (1,000 tDOLI required)
+# Register with 1 bond (1,000 tDOLI)
 ./target/release/doli producer register --bonds 1 --rpc http://127.0.0.1:18545
-```
 
-### Step 3: Check Producer Status
-
-```bash
+# Check status
 ./target/release/doli producer status --rpc http://127.0.0.1:18545
 ```
 
 ---
 
-## CLI Commands (Testnet)
+## CLI Commands
 
-All `doli` commands require `--rpc http://127.0.0.1:18545` for testnet:
-
-```bash
-# Wallet
-doli new --rpc http://127.0.0.1:18545              # Create wallet
-doli balance --rpc http://127.0.0.1:18545          # Check balance
-doli send <address> <amount> --rpc http://127.0.0.1:18545  # Send tDOLI
-
-# Producer
-doli producer register --bonds 1 --rpc http://127.0.0.1:18545
-doli producer status --rpc http://127.0.0.1:18545
-doli producer list --rpc http://127.0.0.1:18545
-
-# Chain info
-doli chain --rpc http://127.0.0.1:18545
-```
-
-**Tip**: Set environment variable to avoid typing RPC every time:
+Set the RPC endpoint once:
 ```bash
 export DOLI_RPC=http://127.0.0.1:18545
-doli balance  # Now works without --rpc flag
+```
+
+Then use:
+```bash
+doli balance                    # Check balance
+doli send <address> <amount>    # Send tDOLI
+doli chain                      # Chain info
+doli producer status            # Producer status
+doli producer list              # List all producers
 ```
 
 ---
 
-## Running a Persistent Node
+## Server Setup (Complete Guide)
 
-### Using Systemd
+### 1. Requirements
 
-Create `/etc/systemd/system/doli-testnet.service`:
+- Ubuntu 22.04+ or similar Linux
+- 2+ CPU cores, 4 GB RAM, 50 GB SSD
+- Port 40303 open
 
-```ini
+### 2. Install & Build
+
+```bash
+# Install Nix
+curl -L https://nixos.org/nix/install | sh -s -- --daemon
+exec $SHELL
+
+# Build DOLI
+git clone https://github.com/e-weil/doli.git
+cd doli
+nix develop --command cargo build --release
+```
+
+### 3. Open Firewall
+
+```bash
+sudo ufw allow 40303/tcp comment 'DOLI Testnet P2P'
+sudo ufw enable
+```
+
+### 4. Run as Producer
+
+```bash
+./target/release/doli-node --network testnet run --producer
+```
+
+### 5. Run as Systemd Service (Recommended)
+
+```bash
+sudo tee /etc/systemd/system/doli-testnet.service > /dev/null << 'EOF'
 [Unit]
-Description=DOLI Testnet Node
+Description=DOLI Testnet Producer
 After=network.target
 
 [Service]
 Type=simple
 User=YOUR_USER
-ExecStart=/path/to/doli-node --network testnet run --producer
+ExecStart=/home/YOUR_USER/doli/target/release/doli-node --network testnet run --producer
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-```
+EOF
 
-```bash
+sudo sed -i "s/YOUR_USER/$USER/g" /etc/systemd/system/doli-testnet.service
 sudo systemctl daemon-reload
 sudo systemctl enable doli-testnet
 sudo systemctl start doli-testnet
@@ -151,115 +175,33 @@ journalctl -u doli-testnet -f
 
 ---
 
-## Server Setup (Complete Guide)
-
-For setting up a testnet node on a fresh server:
-
-### 1. System Requirements
-
-- **OS**: Ubuntu 22.04+ or similar Linux
-- **CPU**: 2+ cores
-- **RAM**: 4 GB minimum
-- **Disk**: 50 GB SSD
-- **Network**: Port 40303 open (P2P)
-
-### 2. Install Dependencies
-
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install Nix
-curl -L https://nixos.org/nix/install | sh -s -- --daemon
-exec $SHELL
-```
-
-### 3. Build DOLI
-
-```bash
-cd ~
-git clone https://github.com/e-weil/doli.git
-cd doli
-nix develop --command cargo build --release
-```
-
-### 4. Configure Firewall
-
-```bash
-sudo ufw allow 40303/tcp comment 'DOLI Testnet P2P'
-sudo ufw enable
-```
-
-### 5. Start the Node
-
-```bash
-./target/release/doli-node --network testnet run
-```
-
-### 6. Verify Sync
-
-Check logs for sync progress:
-```
-Sync progress: height 100, 5 blocks/sec
-```
-
----
-
-## Getting Testnet Coins (tDOLI)
-
-1. **Run a producer node** - Earn 50 tDOLI per block produced
-2. **Faucet** - Coming soon
-3. **Community** - Ask in Discord/Telegram
-
----
-
 ## Troubleshooting
 
 ### Node won't sync
-
 ```bash
-# Check if P2P port is open
-nc -zv testnet.doli.network 40303
-
-# Check firewall
-sudo ufw status
+nc -zv testnet.doli.network 40303  # Test connectivity
+sudo ufw status                     # Check firewall
 ```
 
-### CLI can't connect to node
-
-```bash
-# Verify node is running
-pgrep -a doli-node
-
-# Check RPC is accessible
-curl http://127.0.0.1:18545
-```
-
-### Producer not producing blocks
-
+### Not producing blocks
 1. Ensure `--producer` flag is set
-2. Check you're fully synced: `doli chain --rpc http://127.0.0.1:18545`
+2. Wait for sync to complete
 3. Wait 15 seconds for producer discovery
+
+### Check node status
+```bash
+journalctl -u doli-testnet | grep -i "height\|produced"
+```
 
 ---
 
-## Seed Server Information
+## Seed Server
 
-The testnet is operated from `testnet.doli.network` (198.51.100.1).
+The testnet runs on `testnet.doli.network` (198.51.100.1).
 
-### Directory Structure
+### Maintainer Keys (Auto-Update System)
 
-```
-~/.doli/testnet/
-├── maintainer_keys/     # Auto-update signing keys (5 Ed25519 keypairs)
-├── producer_keys/       # Validator keys (5 producers)
-├── node1/ - node5/      # Validator node data
-└── start_nodes.sh       # Startup script
-```
-
-### Maintainer Public Keys (Auto-Update System)
-
-These 5 keys control protocol updates (3-of-5 threshold):
+5 keys control protocol updates (3-of-5 threshold):
 
 | # | Public Key |
 |---|------------|
@@ -273,10 +215,10 @@ These 5 keys control protocol updates (3-of-5 threshold):
 
 ## Resources
 
-- [CLI.md](./CLI.md) - Complete CLI reference
-- [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) - Detailed node operation guide
-- [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) - Producer setup guide
-- [WHITEPAPER.md](/WHITEPAPER.md) - Protocol specification
+- [CLI.md](./CLI.md) - CLI reference
+- [RUNNING_A_NODE.md](./RUNNING_A_NODE.md) - Node guide
+- [BECOMING_A_PRODUCER.md](./BECOMING_A_PRODUCER.md) - Producer guide
+- [WHITEPAPER.md](/WHITEPAPER.md) - Protocol spec
 
 ---
 
