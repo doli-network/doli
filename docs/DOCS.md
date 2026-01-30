@@ -17,6 +17,7 @@ Master index for all DOLI documentation.
 
 | File | Description |
 |------|-------------|
+| [GENESIS.md](./GENESIS.md) | **Mainnet genesis launch guide** - critical checklist, key generation, and launch procedure |
 | [TESTNET.md](./TESTNET.md) | Testnet information, bootstrap nodes, and setup guide for joining |
 
 ## Guides
@@ -57,6 +58,7 @@ Master index for all DOLI documentation.
 ```
 docs/
 ├── DOCS.md                   # ← You are here
+├── GENESIS.md                # Mainnet genesis launch guide (CRITICAL!)
 ├── TESTNET.md                # Testnet setup and bootstrap nodes
 ├── CLI.md                    # Complete CLI reference
 ├── PROTOCOL.md               # Wire protocol specification
