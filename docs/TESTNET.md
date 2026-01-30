@@ -2,6 +2,8 @@
 
 Official DOLI testnet for testing and development.
 
+**Seed Server**: `testnet.doli.network` (198.51.100.1)
+
 ---
 
 ## Network Information
@@ -22,14 +24,14 @@ Official DOLI testnet for testing and development.
 Connect to the testnet using these bootstrap addresses:
 
 ```
-/ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
-/ip4/198.51.100.1/tcp/40304/p2p/12D3KooWKfg37CcNfgoWvCpm4xNCGB9uTQgRzjS6v6NYgUqQ1Nbr
-```
-
-Once DNS is configured:
-```
 /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 /dns4/bootstrap2.testnet.doli.network/tcp/40304/p2p/12D3KooWKfg37CcNfgoWvCpm4xNCGB9uTQgRzjS6v6NYgUqQ1Nbr
+```
+
+Alternative (IP-based):
+```
+/ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+/ip4/198.51.100.1/tcp/40304/p2p/12D3KooWKfg37CcNfgoWvCpm4xNCGB9uTQgRzjS6v6NYgUqQ1Nbr
 ```
 
 ---
@@ -44,6 +46,41 @@ Once DNS is configured:
 
 ---
 
+## Seed Server Directory Structure
+
+The testnet seed server maintains the following structure:
+
+```
+~/.doli/testnet/
+├── maintainer_keys/           # Auto-update signing keys (5 Ed25519 keypairs)
+│   ├── maintainer_1_private.pem
+│   ├── maintainer_1_public.pem
+│   ├── maintainer_2_private.pem
+│   ├── maintainer_2_public.pem
+│   ├── maintainer_3_private.pem
+│   ├── maintainer_3_public.pem
+│   ├── maintainer_4_private.pem
+│   ├── maintainer_4_public.pem
+│   ├── maintainer_5_private.pem
+│   └── maintainer_5_public.pem
+├── producer_keys/             # Validator signing keys (5 producer wallets)
+│   ├── producer_1.json
+│   ├── producer_2.json
+│   ├── producer_3.json
+│   ├── producer_4.json
+│   └── producer_5.json
+├── node1/                     # Validator node 1 data
+│   ├── data/
+│   └── node.log
+├── node2/                     # Validator node 2 data
+├── node3/                     # Validator node 3 data
+├── node4/                     # Validator node 4 data
+├── node5/                     # Validator node 5 data
+└── start_nodes.sh             # Startup script
+```
+
+---
+
 ## Maintainer Keys (Auto-Update System)
 
 These 5 Ed25519 public keys control the auto-update system (3-of-5 threshold):
@@ -55,6 +92,8 @@ These 5 Ed25519 public keys control the auto-update system (3-of-5 threshold):
 | 3 | `9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697` |
 | 4 | `97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f` |
 | 5 | `82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096` |
+
+**Key Storage**: Private keys are stored on the seed server at `~/.doli/testnet/maintainer_keys/`
 
 ---
 
@@ -83,7 +122,7 @@ nix develop --command cargo build --release
 
 # Run a sync-only node
 ./target/release/doli-node --network testnet run \
-    --bootstrap /ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+    --bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 ```
 
 ### Option B: Run a Producer Node (Validator)
@@ -107,7 +146,7 @@ To participate in block production, you need a producer key.
 ./target/release/doli-node --network testnet run \
     --producer \
     --producer-key ~/.doli/testnet/wallet.json \
-    --bootstrap /ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+    --bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 ```
 
 #### Step 3: Create a Systemd Service (Recommended)
@@ -127,7 +166,7 @@ WorkingDirectory=/home/YOUR_USERNAME
 ExecStart=/home/YOUR_USERNAME/doli/target/release/doli-node --network testnet run \
     --producer \
     --producer-key /home/YOUR_USERNAME/.doli/testnet/wallet.json \
-    --bootstrap /ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+    --bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -239,13 +278,13 @@ WorkingDirectory=/home/YOUR_USERNAME/.doli/testnet
 Environment="RUST_LOG=info"
 
 # For sync-only node (remove --producer flags):
-# ExecStart=/home/YOUR_USERNAME/doli/target/release/doli-node --network testnet run --bootstrap /ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+# ExecStart=/home/YOUR_USERNAME/doli/target/release/doli-node --network testnet run --bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 
 # For producer node:
 ExecStart=/home/YOUR_USERNAME/doli/target/release/doli-node --network testnet run \
     --producer \
     --producer-key /home/YOUR_USERNAME/.doli/testnet/producer.json \
-    --bootstrap /ip4/198.51.100.1/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
+    --bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40303/p2p/12D3KooWCKTKPZWVREhd1XBem2eoFcYVFxJRid87WCij95heprha
 
 Restart=on-failure
 RestartSec=10
@@ -315,8 +354,9 @@ Block produced at height X
 ### Node won't connect to peers
 
 1. Check firewall: `sudo ufw status`
-2. Verify port is open: `nc -zv 198.51.100.1 40303`
-3. Check bootstrap address is correct
+2. Verify DNS resolution: `dig +short bootstrap1.testnet.doli.network`
+3. Test connectivity: `nc -zv bootstrap1.testnet.doli.network 40303`
+4. Try IP-based bootstrap address as fallback
 
 ### Node crashes on startup
 
@@ -327,7 +367,7 @@ Block produced at height X
 ### Sync is slow
 
 1. Check network connectivity
-2. Ensure you have multiple bootstrap nodes configured
+2. Add both bootstrap nodes for redundancy
 3. The initial sync from genesis takes time - be patient
 
 ### Producer not producing blocks
