@@ -1,4 +1,4 @@
-# BECOMING_A_PRODUCER.md - Block Producer Guide
+# becoming_a_producer.md - Block Producer Guide
 
 This guide covers how to become a block producer in the DOLI network.
 

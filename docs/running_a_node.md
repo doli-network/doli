@@ -1,4 +1,4 @@
-# RUNNING_A_NODE.md - Node Setup Guide
+# running_a_node.md - Node Setup Guide
 
 This guide covers installing, configuring, and operating a DOLI full node.
 
@@ -18,31 +18,99 @@ This guide covers installing, configuring, and operating a DOLI full node.
 ### 1.2. Software Requirements
 
 - Linux (Ubuntu 22.04+, Debian 12+, Fedora 38+) or macOS 13+
-- Nix package manager (recommended) or Rust 1.75+
+- No additional dependencies for pre-built binaries
 
 ---
 
 ## 2. Installation
 
-### 2.1. Using Nix (Recommended)
+Choose one of the following installation methods. Pre-built binaries are recommended for most users.
+
+### 2.1. Pre-built Binary (Recommended)
+
+Download and run in under a minute:
 
 ```bash
-# Clone repository
+# Download latest release (Linux x64)
+curl -LO https://github.com/e-weil/doli/releases/latest/download/doli-latest-x86_64-unknown-linux-musl.tar.gz
+
+# Or use the install script
+curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+
+# Verify installation
+doli-node --version
+```
+
+**Platform-specific downloads:**
+
+| Platform | Download |
+|----------|----------|
+| Linux x64 (static) | `doli-{version}-x86_64-unknown-linux-musl.tar.gz` |
+| Linux x64 | `doli-{version}-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 (static) | `doli-{version}-aarch64-unknown-linux-musl.tar.gz` |
+| Linux ARM64 | `doli-{version}-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Intel | `doli-{version}-x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `doli-{version}-aarch64-apple-darwin.tar.gz` |
+
+Download from: https://github.com/e-weil/doli/releases
+
+**Verify checksums:**
+```bash
+# Download checksum file
+curl -LO https://github.com/e-weil/doli/releases/latest/download/SHA256SUMS.txt
+
+# Verify
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+### 2.2. Docker (Recommended for Servers)
+
+Run a containerized node with persistent data:
+
+```bash
+# Quick start (mainnet)
+docker run -d \
+  --name doli-node \
+  -p 30303:30303 \
+  -p 8545:8545 \
+  -v doli-data:/data \
+  ghcr.io/e-weil/doli-node:latest
+
+# Testnet
+docker run -d \
+  --name doli-testnet \
+  -e DOLI_NETWORK=testnet \
+  -p 40303:40303 \
+  -p 18545:18545 \
+  -v doli-testnet-data:/data \
+  ghcr.io/e-weil/doli-node:latest
+
+# View logs
+docker logs -f doli-node
+```
+
+**Using Docker Compose:**
+
+```bash
+# Clone repository (for compose files)
 git clone https://github.com/e-weil/doli.git
 cd doli
 
-# Enter Nix development environment
-nix develop
+# Start mainnet node
+docker compose up -d
 
-# Build release binaries
-cargo build --release
+# Start testnet node
+docker compose -f docker-compose.testnet.yml up -d
 
-# Binaries located at:
-# ./target/release/doli-node
-# ./target/release/doli
+# Start with monitoring (Prometheus + Grafana)
+docker compose --profile monitoring up -d
 ```
 
-### 2.2. Manual Build
+See [docker.md](./docker.md) for complete Docker documentation.
+
+### 2.3. Build from Source
+
+For developers or when pre-built binaries aren't available:
 
 ```bash
 # Install Rust
@@ -55,6 +123,18 @@ sudo apt install build-essential pkg-config libssl-dev libgmp-dev librocksdb-dev
 # Clone and build
 git clone https://github.com/e-weil/doli.git
 cd doli
+cargo build --release
+
+# Install binaries
+sudo cp target/release/doli-node target/release/doli /usr/local/bin/
+```
+
+**Using Nix (for development):**
+
+```bash
+git clone https://github.com/e-weil/doli.git
+cd doli
+nix develop
 cargo build --release
 ```
 
