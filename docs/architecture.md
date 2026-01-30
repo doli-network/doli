@@ -1,4 +1,4 @@
-# ARCHITECTURE.md - System Architecture
+# architecture.md - System Architecture
 
 This document describes the DOLI system architecture, component design, and data flows.
 

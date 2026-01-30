@@ -169,6 +169,18 @@ bins/node (doli-node)          bins/cli (doli-cli)
 - Unit tests in same file, integration tests in `testing/`
 - Property-based testing (proptest) for cryptographic code
 
+### Documentation Naming Convention
+
+- **Lowercase**: All documentation files use lowercase with underscores
+  - Examples: `protocol.md`, `running_a_node.md`, `security_model.md`
+- **UPPERCASE**: Only master index files that represent folder contents
+  - `README.md` - Repository/folder index (standard convention)
+  - `CLAUDE.md` - Claude Code instructions
+  - `DOCS.md` - Documentation index (`docs/`)
+  - `SPECS.md` - Specifications index (`specs/`)
+  - `SKILL.md` - Skill definition (`.claude/skills/*/`)
+  - `WHITEPAPER.md` - Protocol whitepaper (root level master document)
+
 ## Workflow Rules
 
 ### After Passing Tests (Bug Fixes or New Features)

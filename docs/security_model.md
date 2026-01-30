@@ -1,4 +1,4 @@
-# SECURITY_MODEL.md - Security Analysis
+# security_model.md - Security Analysis
 
 This document describes DOLI's security model, threat analysis, and cryptographic guarantees.
 

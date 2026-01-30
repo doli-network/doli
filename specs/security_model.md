@@ -969,6 +969,6 @@ echo "=== Audit Complete ==="
 ## Resources
 
 - [DOLI Security Advisories](https://github.com/doli-network/doli/security/advisories)
-- [Troubleshooting Guide](./TROUBLESHOOTING.md)
-- [Node Operation Guide](./RUNNING_A_NODE.md)
-- [Producer Guide](./BECOMING_A_PRODUCER.md)
+- [Troubleshooting Guide](./troubleshooting.md)
+- [Node Operation Guide](./running_a_node.md)
+- [Producer Guide](./becoming_a_producer.md)

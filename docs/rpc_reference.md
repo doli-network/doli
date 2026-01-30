@@ -1,4 +1,4 @@
-# RPC_REFERENCE.md - JSON-RPC API Documentation
+# rpc_reference.md - JSON-RPC API Documentation
 
 This document describes the DOLI node JSON-RPC API.
 
