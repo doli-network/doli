@@ -62,7 +62,7 @@ case "$NETWORK" in
         GENESIS_TIMESTAMP=0
         GENESIS_MESSAGE="DOLI Devnet - Development and Testing"
         CHAIN_NAME="DOLI Devnet"
-        SLOT_DURATION=5
+        SLOT_DURATION=1
         SLOTS_PER_EPOCH=60
         BOND_AMOUNT=100000000
         ;;
