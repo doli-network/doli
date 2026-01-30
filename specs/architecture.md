@@ -132,24 +132,24 @@ A minimal client that:
 
 ### 2. Storage Layer
 
-#### Block Store
+#### Block Store (RocksDB)
 ```
-blocks/
-├── headers/          # Block headers by height
-│   ├── 000000.bin   # Headers 0-99999
-│   ├── 000001.bin   # Headers 100000-199999
-│   └── ...
-├── bodies/           # Block bodies by hash
-│   └── {hash}.bin
-└── index/
-    ├── height.idx    # Height → Hash
-    └── slot.idx      # Slot → Hash
+Column Families:
+├── headers           # Hash → BlockHeader (serialized)
+├── bodies            # Hash → Vec<Transaction> (serialized)
+├── height_index      # Height (u64 LE) → Hash
+└── slot_index        # Slot (u32 LE) → Hash
 ```
 
-#### UTXO Set
-- In-memory structure with disk persistence
-- Key: `txid || output_index`
-- Value: `amount || pubkey_hash || lock_height`
+#### UTXO Set (File I/O)
+- In-memory HashMap with file-based persistence
+- Key: `Outpoint (txid, output_index)`
+- Value: `UtxoEntry { output, height, is_coinbase, is_epoch_reward }`
+- Serialized via bincode
+
+#### ChainState (File I/O)
+- Single file persistence via bincode
+- Contains: best_hash, best_height, best_slot, genesis info, epoch state
 
 #### Producer Registry
 - List of registered producers with:
@@ -222,10 +222,10 @@ This prevents Sybil attacks where an attacker creates many low-weight blocks.
 ├─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────────┤
 │ S0  │ S1  │ S2  │ S3  │ S4  │ S5  │ S6  │ S7  │ S8  │ ...     │
 ├─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────────┤
-│ 60s │ 60s │ 60s │ 60s │ 60s │ 60s │ 60s │ 60s │ 60s │ ...     │
+│ 10s │ 10s │ 10s │ 10s │ 10s │ 10s │ 10s │ 10s │ 10s │ ...     │
 └───────────────────────────────────────────────────────────────┘
 
-slot = floor((now - GENESIS_TIME) / 60)
+slot = floor((now - GENESIS_TIME) / 10)  // 10 seconds per slot
 ```
 
 ### 5. Producer Manager
@@ -552,20 +552,30 @@ Producer withdraws when convenient → Single UTXO
 
 ### 4. Seniority-Weighted Consensus
 
-Producers gain weight over time, preventing Sybil attacks:
+Producers gain weight over time using discrete yearly steps:
 
 ```
-Weight = 1 + sqrt(months_active / 12), capped at 4.0
+Weight based on years active (seniority only):
 
-Month 0:  weight = 1.0
-Month 12: weight = 2.0
-Month 48: weight = 3.0
-Month 108: weight = 4.0 (maximum)
+Year 1:  weight = 1
+Year 2:  weight = 2
+Year 3:  weight = 3
+Year 4+: weight = 4 (maximum)
 ```
+
+**Key distinction:**
+- **Weight** (seniority): Affects fork choice. Senior producers' chains are preferred.
+- **Bond count**: Affects slot allocation. More bonds = more slots per cycle.
+- Bond count does NOT increase weight. A 100-bond producer has the same weight as a 1-bond producer with the same seniority.
+
+**No activity penalty:**
+- Producers who miss slots simply miss rewards
+- No slashing, no weight reduction for inactivity
+- Only slashable offense: double production (equivocation)
 
 **Enterprise implications:**
 - New producers start at weight 1
-- Long-running producers have 4x influence
+- Long-running producers have up to 4x influence
 - Prevents flash attacks with newly registered producers
 
 ### 5. VDF Anti-Grinding (Not Timing)
@@ -619,24 +629,24 @@ For devnet/testnet without registered producers:
 
 ```
 doli/
-├── cmd/
-│   ├── doli-node/      # Full node binary
-│   └── doli-wallet/    # Wallet CLI
-├── pkg/
-│   ├── chain/          # Chain management
-│   ├── consensus/      # Consensus logic
-│   ├── crypto/         # Cryptographic primitives
-│   │   ├── blake3/
-│   │   ├── ed25519/
-│   │   └── vdf/
-│   ├── mempool/        # Transaction pool
-│   ├── network/        # P2P networking
-│   ├── storage/        # Database layer
-│   ├── types/          # Core data types
-│   └── validation/     # Validation rules
-├── configs/            # Configuration files
+├── bins/
+│   ├── node/           # Full node binary (doli-node)
+│   └── cli/            # Wallet CLI (doli binary)
+├── crates/
+│   ├── core/           # Types, consensus, validation, chainspec
+│   │   └── tpop/       # Telemetry (heartbeat, presence - not consensus)
+│   ├── crypto/         # BLAKE3, Ed25519, key management
+│   ├── vdf/            # Hash-chain VDF for blocks, Wesolowski for registration
+│   ├── mempool/        # Transaction pool with fee policies
+│   ├── network/        # libp2p P2P networking (gossip, sync, DHT)
+│   ├── storage/        # RocksDB blocks, File I/O for UTXO/state
+│   ├── rpc/            # JSON-RPC API server (Axum)
+│   └── updater/        # Auto-update with community veto
+├── docker/             # Docker configuration files
 ├── docs/               # Documentation
-└── tests/              # Integration tests
+├── specs/              # Technical specifications
+├── scripts/            # Test and utility scripts
+└── testing/            # Integration tests, benchmarks, fuzz tests
 ```
 
 ---

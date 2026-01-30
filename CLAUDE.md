@@ -125,7 +125,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 ### Key Crate Responsibilities
 
 - **`crypto`**: BLAKE3 hashing, Ed25519 signatures, key derivation. Foundation layer with no internal dependencies.
-- **`vdf`**: Hash-chain VDF with dynamic calibration (~10M iterations for ~7s). Uses `rug` (GMP bindings) for performance.
+- **`vdf`**: Hash-chain VDF with ~10M iterations for ~700ms heartbeat. Uses `rug` (GMP bindings) for performance.
 - **`core`**: Types, validation rules, consensus parameters. The `tpop/` module provides telemetry (heartbeat tracking, presence metrics) - not used in consensus selection.
 - **`storage`**: RocksDB-backed persistence for blocks, UTXO set, chain state, producer registry.
 - **`network`**: libp2p-based P2P layer with gossipsub, Kademlia DHT, header/body sync, equivocation detection.
@@ -138,12 +138,12 @@ bins/node (doli-node)          bins/cli (doli-cli)
 2. **Deterministic selection**: `slot % total_bonds` selects producer (no lottery variance)
 3. **Heartbeat VDF**: ~700ms proof of sequential presence per block (anti-grinding)
 4. **Epoch Lookahead**: Leaders determined at epoch start, so grinding current block cannot influence future selection
-5. **Weight-based fork choice**: Chain with highest accumulated producer weight wins (weight = 1 + sqrt(months_active/12), capped at 4)
+5. **Weight-based fork choice**: Chain with highest accumulated producer weight wins (discrete yearly steps: 0-1yr=1, 1-2yr=2, 2-3yr=3, 3+yr=4)
 
 ### Time Structure
 
-- Slot = 10 seconds (mainnet), 10s (testnet), 5s (devnet)
-- Epoch = 60 slots (1 hour mainnet)
+- Slot = 10 seconds (mainnet), 10s (testnet), 1s (devnet)
+- Epoch = 360 slots (1 hour mainnet)
 - Era = 12,614,400 slots (~4 years) - triggers reward halving
 
 ### Networks
@@ -152,7 +152,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 |---------|-----|------|----------|----------|----------------|
 | Mainnet | 1   | 10s  | 30303    | 8545     | `doli`         |
 | Testnet | 2   | 10s  | 40303    | 18545    | `tdoli`        |
-| Devnet  | 99  | 5s   | 50303    | 28545    | `ddoli`        |
+| Devnet  | 99  | 1s   | 50303    | 28545    | `ddoli`        |
 
 ## Code Conventions
 

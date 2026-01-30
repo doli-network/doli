@@ -182,10 +182,10 @@ pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 /// After 4 years, bonds can be withdrawn with 0% penalty
 pub const COMMITMENT_PERIOD: BlockHeight = 4 * YEAR_IN_SLOTS as BlockHeight;
 
-/// Unbonding period for exit (~30 days at 10-second slots)
+/// Unbonding period for exit (~7 days at 10-second slots)
 /// After requesting exit, producers must wait this long before claiming bond
-/// 259,200 slots = 30 days
-pub const UNBONDING_PERIOD: BlockHeight = 259_200;
+/// 60,480 slots = 7 days (matches WITHDRAWAL_DELAY_SLOTS)
+pub const UNBONDING_PERIOD: BlockHeight = 60_480;
 
 /// Lock duration for bonds (4 years for full vesting)
 pub const BOND_LOCK_BLOCKS: BlockHeight = COMMITMENT_PERIOD;
@@ -2179,9 +2179,9 @@ mod tests {
     }
 
     #[test]
-    fn test_unbonding_period_is_30_days() {
-        // At 10 seconds per slot: 30 days = 30 * 24 * 360 slots/day = 259,200 slots
-        assert_eq!(UNBONDING_PERIOD, 259_200);
+    fn test_unbonding_period_is_7_days() {
+        // At 10 seconds per slot: 7 days = 7 * 24 * 360 slots/day = 60,480 slots
+        assert_eq!(UNBONDING_PERIOD, 60_480);
     }
 
     #[test]
@@ -2982,8 +2982,8 @@ mod tests {
         assert_eq!(SECONDARY_WINDOW_MS, 6000);
         assert_eq!(TERTIARY_WINDOW_MS, 10000);
 
-        // Unbonding period: 30 days = 259,200 slots
-        assert_eq!(UNBONDING_PERIOD, 259_200);
+        // Unbonding period: 7 days = 60,480 slots
+        assert_eq!(UNBONDING_PERIOD, 60_480);
     }
 
     /// Test: selection_independent_of_prev_hash

@@ -6,13 +6,15 @@ This document analyzes potential attack vectors against the DOLI protocol and ex
 
 DOLI implements multiple anti-Sybil mechanisms:
 
-1. **Weight by Seniority** - Producer power increases with time active (1-4 years)
+1. **Weight by Seniority** - Producer weight increases with time active (1-4 years)
 2. **Chained VDF Registration** - Sequential registration prevents parallel attacks
 3. **Maturity Cooldown on Exit** - Producers who exit lose all accumulated seniority
-4. **Activity Gap Penalty** - Dormant producers lose up to 50% of effective weight
-5. **40% Veto Threshold** - Higher threshold makes governance attacks more expensive
-6. **Bond Stacking with Anti-Whale Cap** - Max 100 bonds (100,000 DOLI) per producer
-7. **Deterministic Round-Robin** - No lottery variance, guaranteed proportional allocation
+4. **40% Veto Threshold** - Higher threshold makes governance attacks more expensive
+5. **Bond Stacking with Anti-Whale Cap** - Max 100 bonds (100,000 DOLI) per producer
+6. **Deterministic Round-Robin** - No lottery variance, guaranteed proportional allocation
+
+**Note:** There is NO activity penalty. Producers who miss slots simply miss rewards.
+Only slashable offense is double production (equivocation).
 
 These defenses work together to protect the network against various attack vectors.
 
@@ -230,11 +232,10 @@ Attacker attempts to push malicious software update by manipulating the veto pro
 - Code audits can identify malicious changes
 - Any producer can trigger veto investigation
 
-**40% Weighted Veto Threshold**:
-- 40% of total *effective* weight needed to reject
-- Senior producers have more veto power
-- Dormant attackers lose up to 50% weight (activity penalty)
-- Single senior producer (weight 4) has significant influence
+**40% Veto Threshold**:
+- 40% of total votes needed to reject (count-based, not weighted)
+- Each producer gets one vote regardless of seniority
+- Sustained participation required to maintain voting power
 
 **Multi-Signature Requirement**:
 - Maintainer keys required to sign releases
@@ -284,26 +285,24 @@ With original 33% threshold, only 10 nodes ($44,000) would suffice.
 ### Defenses
 
 **40% Veto Threshold** (raised from 33%):
-- Requires 50% more weight to block proposals
-- 10-node attacker loses veto power 1 year earlier
+- Requires more producers to block proposals
+- 10-node attacker has less margin for error
 - Forces attacker to commit more capital upfront
-
-**Activity Gap Penalty**:
-- Dormant producers lose 10% weight per week of inactivity
-- Maximum 50% penalty for sustained dormancy
-- "Register and wait" strategy becomes ineffective
-- Attackers must actively maintain nodes or lose influence
 
 **Network Growth Dilution**:
 - Each new honest producer dilutes attacker's percentage
 - After 4 years with +5 nodes/year, attacker is heavily diluted
 - Long-term veto requires disproportionate initial investment
 
+**Sustained Commitment Required**:
+- Attackers must keep nodes running to vote
+- Server costs accumulate over time
+- Missed slots = missed rewards (natural deterrent)
+
 ### Result
 Attack is feasible at ~$66K but:
 - Requires 4-year sustained commitment
 - Dilution makes long-term blocking increasingly expensive
-- Activity penalty punishes "sleeper" strategies
 - 40% threshold (vs 33%) reduces attack window by 1-2 years
 
 **Risk Level**: Medium. Acceptable for a network where $66K sustained attack only provides temporary governance blocking, not theft or protocol corruption.
@@ -406,8 +405,8 @@ The anti-whale cap combined with deterministic allocation ensures:
 | Coordinated Rapid Exit | Chained Registration | Unbonding Period | High |
 | VDF Computation Farm | Chained VDF | Sequential Dependency | Very High |
 | Bond Manipulation | 4-Year Lock | Maturity Cooldown | High |
-| Update Manipulation | Veto Period | Weighted Veto (40%) | High |
-| Early Active Attacker | 40% Threshold | Activity Penalty | Medium |
+| Update Manipulation | Veto Period | 40% Threshold | High |
+| Early Active Attacker | 40% Threshold | Network Dilution | Medium |
 | Low-Weight Fork Attack | Weight-Based Fork Choice | Equivocation Detection | Very High |
 | Bond Stacking Whale | Anti-Whale Cap (100) | Deterministic Rotation | High |
 
@@ -442,10 +441,10 @@ Potential enhancements being researched:
 5. **Slashing Extensions** - Additional slashable offenses beyond double-production
 6. **Governance Evolution** - Adjust parameters based on network maturity
 
-**Note**: Current defenses (40% threshold + activity penalty) are considered sufficient for launch. HOLD/BLOCK + bond is optional enhancement if governance attacks prove more sophisticated than modeled.
+**Note**: Current defenses (40% threshold + seniority-based weights) are considered sufficient for launch. HOLD/BLOCK + bond is optional enhancement if governance attacks prove more sophisticated than modeled.
 
 ---
 
 *This analysis covers known attack vectors as of protocol version 2.9. Security is an ongoing process - new vectors will be analyzed as they emerge.*
 
-*Last updated: January 2026 - Added Early Active Attacker analysis, 40% veto threshold, activity gap penalty, weight-based fork choice rule, automatic equivocation detection.*
+*Last updated: January 2026 - Added Early Active Attacker analysis, 40% veto threshold, weight-based fork choice rule, automatic equivocation detection. Removed activity gap penalty (no longer part of protocol).*
