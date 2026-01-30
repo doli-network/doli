@@ -19,10 +19,9 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 pub use updater::{
     apply_update, calculate_veto_result, check_production_allowed, current_version,
-    fetch_latest_release, grace_period_deadline, in_grace_period, is_newer_version, restart_node,
-    verify_release_signatures, veto_deadline, veto_period_ended, ProductionBlocked, Release,
-    UpdateConfig, UpdateError, VersionEnforcement, Vote, VoteMessage, VoteTracker, GRACE_PERIOD,
-    VETO_PERIOD, VETO_THRESHOLD_PERCENT,
+    fetch_latest_release, is_newer_version, restart_node, verify_release_signatures, veto_deadline,
+    veto_period_ended, ProductionBlocked, Release, UpdateConfig, UpdateError, VersionEnforcement,
+    Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -267,15 +266,6 @@ impl UpdateService {
     /// Get a sender for vote messages (to be connected to network gossip)
     pub fn vote_sender(&self) -> mpsc::Sender<VoteMessage> {
         self.vote_tx.clone()
-    }
-
-    /// Get the pending update if any
-    pub async fn pending_update(&self) -> Option<Release> {
-        self.pending
-            .read()
-            .await
-            .as_ref()
-            .map(|p| p.release.clone())
     }
 
     /// Run the update service
@@ -711,36 +701,4 @@ pub mod cli {
         }
     }
 
-    /// Show update status (for in-memory state)
-    pub fn show_status(pending: Option<&PendingUpdate>, total_producers: usize) {
-        match pending {
-            Some(p) => {
-                let veto_pct = p.vote_tracker.veto_percent(total_producers);
-                let deadline = veto_deadline(&p.release);
-                let now = updater::current_timestamp();
-                let remaining = deadline.saturating_sub(now);
-                let days = remaining / 86400;
-                let hours = (remaining % 86400) / 3600;
-
-                println!("Pending Update: v{}", p.release.version);
-                println!("Changelog: {}", p.release.changelog);
-                println!();
-                println!("Veto Status:");
-                println!("  Vetos: {} ({}%)", p.vote_tracker.veto_count(), veto_pct);
-                println!("  Threshold: {}%", VETO_THRESHOLD_PERCENT);
-                println!("  Time remaining: {}d {}h", days, hours);
-                println!();
-
-                if veto_pct as u8 >= VETO_THRESHOLD_PERCENT {
-                    println!("Status: WILL BE REJECTED (threshold reached)");
-                } else {
-                    println!("Status: ON TRACK TO PASS");
-                }
-            }
-            None => {
-                println!("No pending updates");
-                println!("Current version: {}", current_version());
-            }
-        }
-    }
 }
