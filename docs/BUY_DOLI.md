@@ -291,6 +291,8 @@ CREATE TABLE state (
 
 ## Bot Implementation
 
+The bot runs **continuously as a background service**, independent of the frontend. It actively polls Ethereum every 15 seconds looking for USDT transfers to the pool address. The frontend only creates orders in the database; the bot handles payment detection and DOLI delivery automatically.
+
 The bot uses **block polling** (not WebSocket events) for compatibility with public RPC endpoints.
 
 ### Polling Logic
@@ -384,12 +386,19 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
+**Service Behavior:**
+- **Auto-start on reboot**: Yes (`WantedBy=multi-user.target` + `enabled`)
+- **Auto-restart on crash**: Yes (`Restart=on-failure`, waits 10s)
+- **Runs continuously**: 24/7 active polling, not triggered by frontend
+
 **Commands:**
 ```bash
 sudo systemctl start doli-swap      # Start
 sudo systemctl stop doli-swap       # Stop
 sudo systemctl restart doli-swap    # Restart
 sudo systemctl status doli-swap     # Status
+sudo systemctl enable doli-swap     # Enable auto-start on boot
+sudo systemctl disable doli-swap    # Disable auto-start on boot
 journalctl -u doli-swap -f          # View logs
 ```
 
