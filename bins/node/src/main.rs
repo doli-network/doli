@@ -396,7 +396,22 @@ async fn run_node(
             }
         }
     } else {
-        ProducerSet::new()
+        // For testnet: initialize with genesis producers
+        if network == Network::Testnet {
+            use doli_core::genesis::testnet_genesis_producers;
+            let genesis_producers = testnet_genesis_producers();
+            if !genesis_producers.is_empty() {
+                info!(
+                    "Initializing testnet with {} genesis producers",
+                    genesis_producers.len()
+                );
+                ProducerSet::with_genesis_producers(genesis_producers)
+            } else {
+                ProducerSet::new()
+            }
+        } else {
+            ProducerSet::new()
+        }
     };
     let producer_set = Arc::new(RwLock::new(producer_set));
 
