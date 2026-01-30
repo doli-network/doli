@@ -101,13 +101,6 @@ cat scripts/README.md
 ./scripts/launch_testnet.sh
 ./scripts/test_3node_proportional_rewards.sh
 ```
-
-## Nix Development Environment
-
-```bash
-nix develop  # Enters shell with Rust 1.75, GMP, RocksDB, OpenSSL
-```
-
 ## Architecture
 
 ### Crate Dependency Flow
