@@ -1,6 +1,53 @@
-# Test Scripts Registry
+# Scripts Registry
 
-This file documents all test scripts in the `scripts/` directory. Before creating a new test script, check this registry to see if an existing script can be used or modified.
+This file documents all scripts in the `scripts/` directory. Before creating a new script, check this registry to see if an existing script can be used or modified.
+
+---
+
+## Utility Scripts
+
+### generate_chainspec.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/generate_chainspec.sh` |
+| **Purpose** | Generate chainspec JSON from wallet files |
+| **What it does** | Reads producer wallet JSON files and creates a chainspec with correct public keys |
+| **Dependencies** | `bash`, `python3`, `jq` (optional) |
+| **Run time** | Instant |
+| **Output** | JSON to stdout or specified file |
+
+**Usage:**
+```bash
+# Generate chainspec for testnet from wallet files
+./scripts/generate_chainspec.sh testnet ~/.doli/testnet/producer_keys testnet.json
+
+# Generate and output to stdout
+./scripts/generate_chainspec.sh mainnet ~/.doli/mainnet/producer_keys
+
+# Generate devnet chainspec
+./scripts/generate_chainspec.sh devnet ./keys devnet.json
+```
+
+**Key features:**
+- Automatically extracts public keys from wallet JSON files
+- Validates public key format (64 hex chars)
+- Sets network-specific parameters (timestamps, rewards, slot duration)
+- Prevents manual pubkey copying errors (common source of bugs!)
+
+**Example workflow:**
+```bash
+# 1. Generate wallet files
+for i in 1 2 3 4 5; do
+    ./target/release/doli wallet new --output producer_$i.json
+done
+
+# 2. Generate chainspec
+./scripts/generate_chainspec.sh testnet . chainspec.json
+
+# 3. Start node with chainspec
+./target/release/doli-node --network testnet run --chainspec chainspec.json --producer
+```
 
 ---
 
