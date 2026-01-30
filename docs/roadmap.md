@@ -60,8 +60,8 @@ The protocol is feature-complete and undergoing security review and testing befo
 - [x] Equivocation detection
 - [x] Automatic slashing transactions
 - [x] Anti-Sybil defenses (chained VDF registration)
-- [x] 40% weighted veto threshold
-- [x] Activity gap penalty
+- [x] 40% veto threshold (count-based)
+- [x] Seniority-based weight (no activity penalty)
 - [ ] External security audit
 - [ ] Formal verification of critical paths
 - [ ] Fuzzing campaign completion
