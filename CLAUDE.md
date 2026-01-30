@@ -180,6 +180,8 @@ bins/node (doli-node)          bins/cli (doli-cli)
   - `SPECS.md` - Specifications index (`specs/`)
   - `SKILL.md` - Skill definition (`.claude/skills/*/`)
   - `WHITEPAPER.md` - Protocol whitepaper (root level master document)
+- **Flat structure**: `docs/` and `specs/` use flat structure (no subdirectories)
+  - Exception: `docs/legacy/` for archived historical documents
 
 ## Workflow Rules
 
