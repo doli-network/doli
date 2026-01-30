@@ -396,21 +396,44 @@ async fn run_node(
             }
         }
     } else {
-        // For testnet: initialize with genesis producers
-        if network == Network::Testnet {
-            use doli_core::genesis::testnet_genesis_producers;
-            let genesis_producers = testnet_genesis_producers();
-            if !genesis_producers.is_empty() {
-                info!(
-                    "Initializing testnet with {} genesis producers",
-                    genesis_producers.len()
-                );
-                ProducerSet::with_genesis_producers(genesis_producers)
-            } else {
-                ProducerSet::new()
+        // Initialize with genesis producers for mainnet/testnet
+        match network {
+            Network::Mainnet => {
+                use doli_core::genesis::{mainnet_genesis_producers, mainnet_using_placeholder_producers};
+
+                // Safety check: prevent mainnet launch with placeholder keys
+                if mainnet_using_placeholder_producers() {
+                    error!("CRITICAL: Mainnet genesis producers contain placeholder keys!");
+                    error!("Replace MAINNET_GENESIS_PRODUCERS in genesis.rs with actual pubkeys.");
+                    error!("See docs/GENESIS.md for instructions.");
+                    std::process::exit(1);
+                }
+
+                let genesis_producers = mainnet_genesis_producers();
+                if !genesis_producers.is_empty() {
+                    info!(
+                        "Initializing mainnet with {} genesis producers",
+                        genesis_producers.len()
+                    );
+                    ProducerSet::with_genesis_producers(genesis_producers)
+                } else {
+                    ProducerSet::new()
+                }
             }
-        } else {
-            ProducerSet::new()
+            Network::Testnet => {
+                use doli_core::genesis::testnet_genesis_producers;
+                let genesis_producers = testnet_genesis_producers();
+                if !genesis_producers.is_empty() {
+                    info!(
+                        "Initializing testnet with {} genesis producers",
+                        genesis_producers.len()
+                    );
+                    ProducerSet::with_genesis_producers(genesis_producers)
+                } else {
+                    ProducerSet::new()
+                }
+            }
+            Network::Devnet => ProducerSet::new(),
         }
     };
     let producer_set = Arc::new(RwLock::new(producer_set));

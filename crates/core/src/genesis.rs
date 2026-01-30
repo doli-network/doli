@@ -80,6 +80,60 @@ impl GenesisConfig {
 /// This is a well-known unspendable key (all zeros)
 pub const GENESIS_PUBKEY: [u8; 32] = [0u8; 32];
 
+/// Mainnet genesis producers (pubkey hex, bond_count)
+///
+/// **CRITICAL**: These pubkeys MUST match the actual wallet files!
+/// See docs/GENESIS.md for the correct procedure to generate these.
+///
+/// These 5 producers are registered at genesis with 1 bond each.
+/// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
+///
+/// **BEFORE MAINNET**: Replace with actual pubkeys from producer wallet files!
+pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
+    // PLACEHOLDER - Replace with actual mainnet producer pubkeys before launch!
+    // Generate wallets first, then copy pubkeys here.
+    // See docs/GENESIS.md Section 4 for instructions.
+    ("0000000000000000000000000000000000000000000000000000000000000001", 1), // producer_1 - REPLACE!
+    ("0000000000000000000000000000000000000000000000000000000000000002", 1), // producer_2 - REPLACE!
+    ("0000000000000000000000000000000000000000000000000000000000000003", 1), // producer_3 - REPLACE!
+    ("0000000000000000000000000000000000000000000000000000000000000004", 1), // producer_4 - REPLACE!
+    ("0000000000000000000000000000000000000000000000000000000000000005", 1), // producer_5 - REPLACE!
+];
+
+/// Check if mainnet genesis producers are still placeholders
+pub fn mainnet_using_placeholder_producers() -> bool {
+    MAINNET_GENESIS_PRODUCERS
+        .iter()
+        .any(|(hex, _)| hex.starts_with("00000000"))
+}
+
+/// Parse mainnet genesis producers into (PublicKey, bond_count) pairs
+///
+/// **WARNING**: Will panic in debug builds if placeholder keys detected!
+pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
+    #[cfg(debug_assertions)]
+    if mainnet_using_placeholder_producers() {
+        panic!(
+            "MAINNET_GENESIS_PRODUCERS contains placeholder keys! \
+             Replace with actual pubkeys before mainnet launch. \
+             See docs/GENESIS.md for instructions."
+        );
+    }
+
+    MAINNET_GENESIS_PRODUCERS
+        .iter()
+        .filter_map(|(hex, bonds)| {
+            let bytes = hex::decode(hex).ok()?;
+            if bytes.len() != 32 {
+                return None;
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some((PublicKey::from_bytes(arr), *bonds))
+        })
+        .collect()
+}
+
 /// Testnet genesis producers (pubkey hex, bond_count)
 ///
 /// These 5 producers are registered at genesis with 1 bond each.
