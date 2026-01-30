@@ -1,0 +1,66 @@
+# Cargo configuration for DOLI builds
+# This file configures target-specific settings for release builds
+
+# =============================================================================
+# Build settings
+# =============================================================================
+[build]
+# Use all available CPU cores
+jobs = -1
+
+# =============================================================================
+# Linux musl (static) target
+# =============================================================================
+[target.x86_64-unknown-linux-musl]
+# Use musl-gcc for linking
+linker = "x86_64-linux-musl-gcc"
+
+# Static linking flags
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+]
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+]
+
+# =============================================================================
+# Linux GNU targets
+# =============================================================================
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-Wl,--as-needed",
+]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-Wl,--as-needed",
+]
+
+# =============================================================================
+# macOS targets
+# =============================================================================
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-mmacosx-version-min=13.0",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-mmacosx-version-min=13.0",
+]
+
+# =============================================================================
+# Alias for common operations
+# =============================================================================
+[alias]
+# Build release binary
+br = "build --release"
+# Build release for specific package
+brp = "build --release -p"
+# Test with release optimizations
+tr = "test --release"
