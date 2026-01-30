@@ -156,18 +156,18 @@ Input: prev_hash || slot || producer_key
          │
          ▼
     ┌─────────┐
-    │ SHA-256 │ ◄──┐
+    │ BLAKE3  │ ◄──┐
     └────┬────┘    │
          │         │
          └─────────┘  × 10,000,000 iterations
          │
          ▼
-      Output + Proof π
+      Output (hash chain result)
 ```
 
-**Verification:** Any node can verify by recomputing the hash chain or by checking π using the Wesolowski proof scheme.
+**Verification:** Nodes verify by recomputing the hash chain. Since the computation is inherently sequential, verification requires the same work as computation. This is acceptable because the block VDF (~700ms) is short.
 
-The implementation uses iterated SHA-256 hashing. This construction is well-studied and has known security properties.
+The block VDF uses iterated BLAKE3 hashing (hash chain). This construction is simple, well-studied, and sufficient for the "heartbeat" proof of presence required per block.
 
 ### 4.2. Time Structure
 
