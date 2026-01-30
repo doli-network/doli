@@ -1,0 +1,40 @@
+# Cross-compilation configuration for DOLI
+# See: https://github.com/cross-rs/cross
+
+[build.env]
+passthrough = [
+    "RUST_BACKTRACE",
+    "CARGO_INCREMENTAL",
+]
+
+# x86_64 Linux with musl (fully static binary)
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:main"
+pre-build = [
+    "apt-get update && apt-get install -y cmake libclang-dev llvm-dev m4"
+]
+
+[target.x86_64-unknown-linux-musl.env]
+passthrough = [
+    "OPENSSL_STATIC=1",
+    "OPENSSL_DIR=/musl",
+]
+
+# aarch64 Linux with musl (fully static binary)
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
+pre-build = [
+    "apt-get update && apt-get install -y cmake libclang-dev llvm-dev m4"
+]
+
+[target.aarch64-unknown-linux-musl.env]
+passthrough = [
+    "OPENSSL_STATIC=1",
+]
+
+# x86_64 Linux with glibc (standard dynamic binary)
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
+pre-build = [
+    "apt-get update && apt-get install -y cmake libclang-dev llvm-dev libgmp-dev librocksdb-dev m4"
+]

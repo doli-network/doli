@@ -1,0 +1,237 @@
+# DOLI Release Workflow
+# Triggers on version tags (v*)
+# Builds binaries for all platforms and creates GitHub release
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: doli-node
+
+jobs:
+  # Build Linux binaries
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact: doli-node-linux-x64
+          - target: x86_64-unknown-linux-musl
+            artifact: doli-node-linux-x64-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --package doli-node
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          ARTIFACT_NAME="${BINARY_NAME}-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$ARTIFACT_NAME"
+          cp "target/${{ matrix.target }}/release/$BINARY_NAME" "$ARTIFACT_NAME/"
+          cp README.md LICENSE* "$ARTIFACT_NAME/" 2>/dev/null || true
+          tar -czf "$ARTIFACT_NAME.tar.gz" "$ARTIFACT_NAME"
+          sha256sum "$ARTIFACT_NAME.tar.gz" | cut -d' ' -f1 > "$ARTIFACT_NAME.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            *.tar.gz
+            *.sha256
+
+  # Build macOS binaries
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            artifact: doli-node-macos-x64
+          - target: aarch64-apple-darwin
+            artifact: doli-node-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: brew install gmp mpfr
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --package doli-node
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          ARTIFACT_NAME="${BINARY_NAME}-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$ARTIFACT_NAME"
+          cp "target/${{ matrix.target }}/release/$BINARY_NAME" "$ARTIFACT_NAME/"
+          cp README.md LICENSE* "$ARTIFACT_NAME/" 2>/dev/null || true
+          tar -czf "$ARTIFACT_NAME.tar.gz" "$ARTIFACT_NAME"
+          shasum -a 256 "$ARTIFACT_NAME.tar.gz" | cut -d' ' -f1 > "$ARTIFACT_NAME.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            *.tar.gz
+            *.sha256
+
+  # Build and push Docker image
+  docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/doli-node
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Create GitHub Release
+  release:
+    name: Create Release
+    needs: [build-linux, build-macos, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release/ \;
+
+      - name: Generate checksums file
+        run: |
+          cd release
+          cat *.sha256 > CHECKSUMS.txt
+          echo "" >> CHECKSUMS.txt
+          echo "To verify: sha256sum -c CHECKSUMS.txt" >> CHECKSUMS.txt
+
+      - name: Generate release notes
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          echo "## What's Changed" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+
+          if [ -n "$PREV_TAG" ]; then
+            git log ${PREV_TAG}..HEAD --pretty=format:"* %s" >> RELEASE_NOTES.md
+          else
+            git log --pretty=format:"* %s" -20 >> RELEASE_NOTES.md
+          fi
+
+          echo "" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## Downloads" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "| Platform | File | SHA256 |" >> RELEASE_NOTES.md
+          echo "|----------|------|--------|" >> RELEASE_NOTES.md
+
+          for f in release/*.tar.gz; do
+            if [ -f "$f" ]; then
+              NAME=$(basename "$f")
+              SHA=$(cat "$f.sha256" 2>/dev/null || echo "N/A")
+              echo "| ${NAME%.tar.gz} | $NAME | \`${SHA:0:16}...\` |" >> RELEASE_NOTES.md
+            fi
+          done
+
+          echo "" >> RELEASE_NOTES.md
+          echo "## Docker" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "\`\`\`bash" >> RELEASE_NOTES.md
+          echo "docker pull ghcr.io/${{ github.repository_owner }}/doli-node:${VERSION#v}" >> RELEASE_NOTES.md
+          echo "\`\`\`" >> RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            release/*.tar.gz
+            release/*.sha256
+            release/CHECKSUMS.txt
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

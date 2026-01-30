@@ -1,0 +1,10 @@
+# Prometheus configuration for DOLI Node monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'doli-node'
+    static_configs:
+      - targets: ['doli-node:9090']
+    metrics_path: /metrics

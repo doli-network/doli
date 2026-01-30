@@ -1,0 +1,42 @@
+# DOLI Node - Docker Compose (Devnet)
+# Usage: docker compose -f docker-compose.devnet.yml up -d
+# For local development and testing
+
+services:
+  doli-node:
+    image: ghcr.io/e-weil/doli-node:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doli-devnet-node
+    restart: unless-stopped
+    environment:
+      - DOLI_NETWORK=devnet
+      - DOLI_DATA_DIR=/data
+      - DOLI_LOG_LEVEL=debug
+    ports:
+      - "50303:50303"   # P2P (devnet)
+      - "28545:28545"   # RPC (devnet)
+      - "9090:9090"     # Metrics
+    volumes:
+      - doli-devnet-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:28545/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  doli-devnet-data:
+    name: doli-devnet-data
+
+networks:
+  default:
+    name: doli-devnet-network

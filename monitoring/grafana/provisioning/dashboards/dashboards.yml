@@ -1,0 +1,12 @@
+# Grafana dashboard provisioning for DOLI monitoring
+apiVersion: 1
+
+providers:
+  - name: 'DOLI Dashboards'
+    orgId: 1
+    folder: 'DOLI'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

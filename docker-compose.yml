@@ -1,0 +1,84 @@
+# DOLI Node - Docker Compose (Mainnet)
+# Usage: docker compose up -d
+# With monitoring: docker compose --profile monitoring up -d
+
+services:
+  doli-node:
+    image: ghcr.io/e-weil/doli-node:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doli-node
+    restart: unless-stopped
+    environment:
+      - DOLI_NETWORK=mainnet
+      - DOLI_DATA_DIR=/data
+      - DOLI_LOG_LEVEL=info
+    ports:
+      - "30303:30303"   # P2P
+      - "8545:8545"     # RPC
+      - "9090:9090"     # Metrics
+    volumes:
+      - doli-mainnet-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: Prometheus metrics collection
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: doli-prometheus
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - doli-node
+
+  # Optional: Grafana dashboards
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: doli-grafana
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=doli
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  doli-mainnet-data:
+    name: doli-mainnet-data
+  prometheus-data:
+    name: doli-prometheus-data
+  grafana-data:
+    name: doli-grafana-data
+
+networks:
+  default:
+    name: doli-network
