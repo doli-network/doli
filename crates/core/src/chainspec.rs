@@ -50,10 +50,7 @@ pub struct ChainSpec {
     /// Initial producers (optional - if empty, uses bootstrap mode)
     #[serde(default)]
     pub genesis_producers: Vec<GenesisProducer>,
-
-    /// Maintainer public keys for auto-update system (3-of-5 threshold)
-    #[serde(default)]
-    pub maintainer_keys: Vec<String>,
+    // Note: Maintainer keys are hardcoded in crates/updater/src/lib.rs for security
 }
 
 /// Genesis block specification
@@ -154,22 +151,6 @@ impl ChainSpec {
             }
         }
 
-        // Validate maintainer keys
-        for (i, key) in self.maintainer_keys.iter().enumerate() {
-            if key.len() != 64 {
-                return Err(ChainSpecError::InvalidPubkey(format!(
-                    "Maintainer key {} has invalid length",
-                    i + 1
-                )));
-            }
-            if key.starts_with("00000000") {
-                return Err(ChainSpecError::PlaceholderKey(format!(
-                    "Maintainer key {} is a placeholder - replace with real key!",
-                    i + 1
-                )));
-            }
-        }
-
         // Validate consensus params
         if self.consensus.slot_duration == 0 {
             return Err(ChainSpecError::InvalidParam("slot_duration cannot be 0".into()));
@@ -220,8 +201,7 @@ impl ChainSpec {
                 slots_per_epoch: 360,
                 bond_amount: 100_000_000_000, // 1000 DOLI
             },
-            genesis_producers: vec![], // Load from file for production!
-            maintainer_keys: vec![],   // Load from file for production!
+            genesis_producers: vec![], // Load from chainspec file
         }
     }
 
@@ -241,8 +221,7 @@ impl ChainSpec {
                 slots_per_epoch: 360,
                 bond_amount: 100_000_000_000, // 1000 DOLI
             },
-            genesis_producers: vec![], // Will be loaded from chainspec file
-            maintainer_keys: vec![],
+            genesis_producers: vec![], // Load from chainspec file
         }
     }
 
@@ -263,7 +242,6 @@ impl ChainSpec {
                 bond_amount: 100_000_000, // 1 DOLI (easier testing)
             },
             genesis_producers: vec![], // Uses bootstrap mode
-            maintainer_keys: vec![],
         }
     }
 }

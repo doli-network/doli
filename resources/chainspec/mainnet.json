@@ -12,6 +12,5 @@
     "slots_per_epoch": 360,
     "bond_amount": 100000000000
   },
-  "genesis_producers": [],
-  "maintainer_keys": []
+  "genesis_producers": []
 }
