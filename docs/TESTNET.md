@@ -41,22 +41,31 @@ nix develop
 cargo build --release
 ```
 
-### 2. Run as Producer
+### 2. Create a Producer Wallet
 
 ```bash
-./target/release/doli-node --network testnet run --producer
+# Create wallet for your producer
+doli new -w ~/.doli/testnet/producer.json
+
+# View your public key
+doli info -w ~/.doli/testnet/producer.json
+```
+
+### 3. Run as Producer
+
+```bash
+# Run node with your producer wallet
+doli-node --network testnet run --producer --producer-key ~/.doli/testnet/producer.json
 ```
 
 Your node auto-connects to `testnet.doli.network` and starts producing blocks immediately.
-
-### 3. Start Earning tDOLI
 
 Once synced, you'll see:
 ```
 Block produced at height X
 ```
 
-You earn **1 tDOLI per block** you produce (matches mainnet). No registration needed during bootstrap!
+You earn **1 tDOLI per block** you produce (matches mainnet).
 
 ---
 
@@ -75,19 +84,27 @@ You earn **1 tDOLI per block** you produce (matches mainnet). No registration ne
 
 ---
 
-## After Bootstrap (February 5+)
+## Becoming a Registered Producer
 
-Once bootstrap ends, you'll need to register with bonds:
+To earn block rewards, you need to register as a producer with bonds:
 
 ```bash
-# Check your balance (should have tDOLI from producing during bootstrap)
-./target/release/doli balance --rpc http://127.0.0.1:18545
+# Check your wallet balance
+doli balance -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
 
 # Register with 1 bond (1,000 tDOLI)
-./target/release/doli producer register --bonds 1 --rpc http://127.0.0.1:18545
+doli producer register --bonds 1 -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
 
-# Check status
-./target/release/doli producer status --rpc http://127.0.0.1:18545
+# Check registration status
+doli producer status -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
+
+# List all network producers
+doli producer list --rpc http://127.0.0.1:18545
+```
+
+**Bond stacking** - Add more bonds to increase your selection probability:
+```bash
+doli producer add-bond --count 2 -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
 ```
 
 ---
@@ -138,13 +155,23 @@ sudo ufw allow 40303/tcp comment 'DOLI Testnet P2P'
 sudo ufw enable
 ```
 
-### 4. Run as Producer
+### 4. Create Producer Wallet
 
 ```bash
-./target/release/doli-node --network testnet run --producer
+# Create wallet
+./target/release/doli new -w ~/.doli/testnet/producer.json
+
+# View wallet info (shows public key)
+./target/release/doli info -w ~/.doli/testnet/producer.json
 ```
 
-### 5. Run as Systemd Service (Recommended)
+### 5. Run as Producer
+
+```bash
+./target/release/doli-node --network testnet run --producer --producer-key ~/.doli/testnet/producer.json
+```
+
+### 6. Run as Systemd Service (Recommended)
 
 ```bash
 sudo tee /etc/systemd/system/doli-testnet.service > /dev/null << 'EOF'
@@ -155,7 +182,7 @@ After=network.target
 [Service]
 Type=simple
 User=YOUR_USER
-ExecStart=/home/YOUR_USER/doli/target/release/doli-node --network testnet run --producer
+ExecStart=/home/YOUR_USER/doli/target/release/doli-node --network testnet run --producer --producer-key /home/YOUR_USER/.doli/testnet/producer.json
 Restart=on-failure
 RestartSec=10
 
@@ -171,6 +198,38 @@ sudo systemctl start doli-testnet
 # View logs
 journalctl -u doli-testnet -f
 ```
+
+---
+
+## Chainspec Configuration (Network Operators Only)
+
+**Note:** This section is for network operators launching a new network. Regular producers joining an existing network do NOT need chainspec - just use the CLI commands above.
+
+Chainspec files define genesis producers (pre-registered at block 0) for new network launches. This follows industry standards (Ethereum, Cosmos, Polkadot).
+
+### When You Need Chainspec
+
+- Launching a new testnet/mainnet from scratch
+- Running the seed nodes that bootstrap a network
+- NOT needed for joining an existing network
+
+### Generating Chainspec
+
+```bash
+# 1. Create wallets for genesis producers
+for i in 1 2 3 4 5; do
+    doli new -w ~/.doli/genesis/producer_$i.json
+done
+
+# 2. Generate chainspec (automatically extracts pubkeys)
+./scripts/generate_chainspec.sh testnet ~/.doli/genesis testnet.json
+
+# 3. Start genesis node with chainspec
+doli-node --network testnet --chainspec testnet.json run \
+    --producer --producer-key ~/.doli/genesis/producer_1.json
+```
+
+See [GENESIS.md](./GENESIS.md) for complete network launch procedures.
 
 ---
 
@@ -200,15 +259,8 @@ The testnet runs on `testnet.doli.network` (198.51.100.1).
 
 ### Maintainer Keys (Auto-Update System)
 
-5 keys control protocol updates (3-of-5 threshold):
-
-| # | Public Key |
-|---|------------|
-| 1 | `721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9` |
-| 2 | `d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d` |
-| 3 | `9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697` |
-| 4 | `97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f` |
-| 5 | `82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096` |
+5 keys control protocol updates (3-of-5 threshold).
+Hardcoded in binary at `crates/updater/src/lib.rs` for security.
 
 ---
 
