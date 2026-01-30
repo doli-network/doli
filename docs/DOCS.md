@@ -31,6 +31,7 @@ Master index for all DOLI documentation.
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
+| [buy_doli.md](./buy_doli.md) | DOLI/USDT exchange system - API, deployment, and operational guide |
 
 ## Governance
 
@@ -65,6 +66,7 @@ docs/
 ├── auto_update_system.md     # Auto-update documentation
 ├── battle_test.md            # Battle testing
 ├── becoming_a_producer.md    # Producer guide
+├── buy_doli.md               # Exchange system guide
 ├── cli.md                    # CLI reference
 ├── docker.md                 # Docker deployment
 ├── extreme_devnet_600.md     # Extreme testing results

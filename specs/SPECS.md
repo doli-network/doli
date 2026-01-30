@@ -2,8 +2,6 @@
 
 Master index for all DOLI protocol specifications.
 
-**Note:** All specification documents are now located in the `docs/` directory for unified documentation.
-
 ---
 
 ## Core Specifications
@@ -11,25 +9,26 @@ Master index for all DOLI protocol specifications.
 | File | Description |
 |------|-------------|
 | [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with Proof of Time (PoT) consensus |
-| [protocol.md](/docs/protocol.md) | Wire protocol and message format specifications |
-| [architecture.md](/docs/architecture.md) | System architecture and component design |
-| [security_model.md](/docs/security_model.md) | Security model, threat analysis, and cryptographic guarantees |
+| [protocol.md](./protocol.md) | Full protocol specification - encoding, cryptographic primitives, consensus rules, test vectors |
+| [architecture.md](./architecture.md) | Comprehensive system architecture - all crate responsibilities and component interactions |
+| [security_model.md](./security_model.md) | Complete security model - threat analysis, attack vectors, cryptographic guarantees |
 
 ---
 
 ## Quick Navigation
 
 ```
-/WHITEPAPER.md           # Protocol foundation (root level)
-docs/
-├── DOCS.md              # Full documentation index (master)
-├── protocol.md          # Network protocol
-├── architecture.md      # System design
-└── security_model.md    # Security analysis
+specs/
+├── SPECS.md             # ← You are here (specifications index)
+├── protocol.md          # Full protocol specification
+├── architecture.md      # Comprehensive architecture
+└── security_model.md    # Complete security model
 ```
 
 ---
 
 ## See Also
 
-For the complete documentation index including guides and research, see [docs/DOCS.md](/docs/DOCS.md).
+For user-facing documentation, operational guides, and implementation references, see [docs/DOCS.md](/docs/DOCS.md).
+
+**Note:** The `docs/` directory contains user-facing guides and operational documentation derived from these specifications. When implementing protocol features, refer to the specs in this directory. When operating nodes or using the CLI, refer to docs/.
