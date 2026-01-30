@@ -51,19 +51,29 @@ DOLI is built on three fundamental security principles:
 - `VDF_V1` - VDF preimage
 - `ADDR_V1` - Address derivation
 
-### 2.3. VDF: Wesolowski over Class Groups
+### 2.3. VDF Implementations
 
+**Block/Heartbeat VDF (Hash-Chain):**
+| Property | Value |
+|----------|-------|
+| Construction | Iterated SHA-256 hash chain |
+| Iterations | ~10,000,000 (~700ms) |
+| Verification | Recompute (linear time) |
+| Purpose | Block production heartbeat |
+
+**Registration VDF (Wesolowski Class Groups):**
 | Property | Value |
 |----------|-------|
 | Group | Imaginary quadratic class groups |
 | Discriminant | 2048 bits |
-| Block iterations | 10,000,000 (~700ms) |
-| Verification | O(log t) exponentiations |
+| Base iterations | 600,000,000 (~10 min) |
+| Verification | O(log t) using Wesolowski proof |
+| Purpose | Anti-Sybil protection |
 
 **Security guarantees:**
 - Sequential computation required (no parallelization)
-- Verification much faster than computation
-- Unknown group order prevents shortcuts
+- Grinding prevention via Epoch Lookahead (deterministic selection)
+- Registration time investment prevents Sybil attacks
 
 ---
 
@@ -198,17 +208,22 @@ Peers below threshold are disconnected and banned.
    - Prevents parallel identity creation
    - One identity per registration window
 
-2. **Weight by Seniority**
-   - New producers: weight 1
-   - 1-2 years: weight 2
-   - 2-3 years: weight 3
-   - 3+ years: weight 4
+2. **Weight by Seniority** (only factor affecting weight)
+   - Year 1: weight 1
+   - Year 2: weight 2
+   - Year 3: weight 3
+   - Year 4+: weight 4
 
-3. **Activity Penalty**
-   - Dormant producers lose up to 50% effective weight
-   - 10% penalty per week of inactivity
+3. **No Activity Penalty**
+   - Producers who miss slots simply miss rewards
+   - No slashing or weight reduction for inactivity
+   - Only slashable offense: double production (equivocation)
 
-4. **Bond Stacking Cap**
+4. **Bond Count vs Weight**
+   - Bond count affects slot allocation (more slots per cycle)
+   - Bond count does NOT affect weight (seniority only)
+
+5. **Bond Stacking Cap**
    - Maximum 100 bonds per producer
    - Prevents single-identity dominance
 

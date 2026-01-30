@@ -165,7 +165,10 @@ DOLI uses two VDF types for different purposes:
 - **Sequentiality**: Cannot be parallelized
 - **Verification**: Recompute the entire chain (O(T))
 - **Unique output**: Given input, only one valid output exists
-- **Dynamic calibration**: Iterations auto-adjust ±20% to maintain ~700ms timing
+- **Fixed iterations**: Currently uses network-specific fixed iterations (~10M for mainnet/testnet)
+
+**Note**: A dynamic calibration module exists in the codebase but is not currently
+used for block production. Block iterations are fixed per network configuration.
 
 **Security Considerations**:
 1. Input includes domain tag ("DOLI_HEARTBEAT_V1") for separation
@@ -553,14 +556,17 @@ Track producer win rates. Statistically significant deviation from expected dist
 
 | Date | Scope | Reviewer | Status |
 |------|-------|----------|--------|
-| 2026-01-25 | VDF validation | Internal audit | Fixed (1f939e2) |
+| 2026-01-25 | VDF slashing evidence | Internal audit | Fixed (5863805) |
 | TBD | Full protocol | TBD | Pending |
 
-**2026-01-25 - VDF Validation Fix**:
-- **Issue**: `validate_vdf()` used fixed `T_BLOCK` constant instead of era-dependent `t_block(height)`
-- **Impact**: In Era 2+, attackers could produce blocks with lower T (faster VDF)
-- **Fix**: Changed validation to use height-dependent T scaling
-- **Commit**: `1f939e2`
+**2026-01-25 - VDF Slashing Evidence Fix**:
+- **Issue**: Slashing evidence only contained block hashes, not full headers
+- **Impact**: Verifiers couldn't validate VDF proofs in slashing claims
+- **Fix**: Changed SlashingEvidence to include full BlockHeaders for VDF verification
+- **Commit**: `5863805`
+
+**Note**: VDF iterations are currently network-dependent (fixed per network), not
+era-dependent. Block production uses ~10M iterations across all eras.
 
 ### 8.3 Test Coverage
 

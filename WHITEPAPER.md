@@ -337,7 +337,7 @@ The bond has a 4-year commitment period:
 
 ```
 T_commitment = 12,614,400 blocks (~4 years)
-T_unbonding  = 259,200 blocks (~30 days)
+T_unbonding  = 60,480 blocks (~7 days)
 ```
 
 After 4 years, the producer can exit without penalty or renew with a reduced bond at the current era rate.

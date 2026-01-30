@@ -11,8 +11,8 @@
 //! 1. Release published (signed by 3/5 maintainers)
 //! 2. 7-day veto period begins
 //! 3. Producers can vote to veto
-//! 4. If >= 33% veto: REJECTED
-//! 5. If < 33% veto: APPROVED and applied
+//! 4. If >= 40% veto: REJECTED
+//! 5. If < 40% veto: APPROVED and applied
 
 mod apply;
 mod download;

@@ -27,7 +27,7 @@ This document describes the DOLI system architecture, component design, and data
 │  │                     Storage Layer                      │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐ │  │
 │  │  │BlockStore│  │ UtxoSet  │  │   ChainState         │ │  │
-│  │  │(RocksDB) │  │(RocksDB) │  │   (RocksDB)          │ │  │
+│  │  │(RocksDB) │  │(File I/O)│  │   (File I/O)         │ │  │
 │  │  └──────────┘  └──────────┘  └──────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                                                              │
@@ -163,11 +163,11 @@ crypto ──► bins/cli (wallet binary)
 - `registration_sequence` - Global registration counter
 - `total_minted` - Total coins issued
 
-**Column families:**
-- `blocks` - Block headers and bodies
-- `utxos` - Unspent outputs
-- `state` - Chain tip, active producers
-- `index` - Height-to-hash index
+**Storage technologies:**
+- **BlockStore** (RocksDB): Column families `headers`, `bodies`, `height_index`, `slot_index`
+- **UtxoSet** (File I/O): In-memory HashMap with disk persistence via bincode
+- **ChainState** (File I/O): Single file persistence via bincode
+- **ProducerSet** (File I/O): Single file persistence via bincode
 
 ### 3.5. network
 
@@ -189,13 +189,32 @@ crypto ──► bins/cli (wallet binary)
 
 ### 3.6. mempool
 
-**Purpose:** Pending transaction management.
+**Purpose:** Pending transaction management with fee-based prioritization.
 
 | Module | Function |
 |--------|----------|
-| `pool.rs` | Transaction pool |
-| `entry.rs` | Tx metadata (fee, size, time) |
-| `policy.rs` | Fee and size policies |
+| `pool.rs` | Transaction pool with fee-based selection |
+| `entry.rs` | Tx metadata (fee, size, time, ancestors) |
+| `policy.rs` | Fee and size policies per network |
+
+**Key behaviors:**
+- **Fee-based prioritization**: Transactions selected by descending fee rate
+- **CPFP support**: Child-Pays-For-Parent via ancestor tracking
+- **Eviction policy**: Removes lowest fee rate transactions without descendants
+- **Dynamic fees**: Minimum fee increases when pool >90% full
+- **System transactions**: SlashProducer etc. bypass fee requirements
+- **14-day expiration**: Old transactions automatically removed
+- **Revalidation**: After chain reorg, invalid transactions are purged
+
+**Default policy (mainnet):**
+| Parameter | Value |
+|-----------|-------|
+| Max transactions | 5,000 |
+| Max size | 10 MB |
+| Min fee rate | 1 sat/byte |
+| Max tx size | 100 KB |
+| Max ancestors | 25 |
+| Max age | 14 days |
 
 ### 3.7. rpc
 
@@ -374,40 +393,54 @@ Weight-based selection (not longest chain):
 ```
 Chain weight = sum of producer weights for all blocks
 
-Producer weight based on seniority:
-  - 0-1 years: weight 1
-  - 1-2 years: weight 2
-  - 2-3 years: weight 3
-  - 3+ years:  weight 4
+Producer weight based on seniority only (discrete yearly steps):
+  - Year 1: weight = 1
+  - Year 2: weight = 2
+  - Year 3: weight = 3
+  - Year 4+: weight = 4 (maximum)
+
+Note: Bond count affects slot allocation (more bonds = more slots),
+NOT producer weight. Weight is purely seniority-based.
+
+There is NO activity gap penalty. Producers who miss slots simply
+miss rewards - no slashing or weight reduction occurs.
 ```
 
 ---
 
 ## 6. Storage Schema
 
-### 6.1. RocksDB Column Families
+### 6.1. BlockStore (RocksDB)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     RocksDB                              │
+│                  BlockStore (RocksDB)                    │
 ├─────────────────────────────────────────────────────────┤
-│ CF: blocks                                               │
+│ CF: headers                                              │
 │   Key: Hash (32 bytes)                                   │
-│   Value: Block (serialized)                              │
+│   Value: BlockHeader (serialized)                        │
 ├─────────────────────────────────────────────────────────┤
-│ CF: utxos                                                │
-│   Key: Outpoint (txid + index)                          │
-│   Value: UtxoEntry (output + height + spent)            │
+│ CF: bodies                                               │
+│   Key: Hash (32 bytes)                                   │
+│   Value: Vec<Transaction> (serialized)                   │
 ├─────────────────────────────────────────────────────────┤
-│ CF: state                                                │
-│   Key: "best_hash" | "best_height" | "producers"        │
-│   Value: Varies                                          │
+│ CF: height_index                                         │
+│   Key: Height (u64, little-endian)                       │
+│   Value: Hash (32 bytes)                                 │
 ├─────────────────────────────────────────────────────────┤
-│ CF: index                                                │
-│   Key: Height (u64)                                      │
+│ CF: slot_index                                           │
+│   Key: Slot (u32, little-endian)                         │
 │   Value: Hash (32 bytes)                                 │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### 6.2. UtxoSet, ChainState, ProducerSet (File I/O)
+
+These components use in-memory structures with file-based persistence:
+
+- **UtxoSet**: `HashMap<Outpoint, UtxoEntry>` serialized via bincode
+- **ChainState**: Struct containing best_hash, best_height, epoch state
+- **ProducerSet**: Producer registry with bond information
 
 ---
 
