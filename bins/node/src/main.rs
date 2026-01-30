@@ -5,7 +5,7 @@
 //! - Maintains the UTXO set
 //! - Participates in P2P network
 //! - Optionally produces blocks (if registered as producer)
-//! - Auto-updates with community veto (7 days, 33% threshold)
+//! - Auto-updates with community veto (7 days, 40% threshold)
 
 use std::path::PathBuf;
 use std::str::FromStr;

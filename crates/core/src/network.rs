@@ -106,7 +106,7 @@ impl Network {
         match self {
             Network::Mainnet => 100_000_000_000, // 1000 DOLI
             Network::Testnet => 100_000_000_000, // 1000 DOLI (same as mainnet)
-            Network::Devnet => 100_000_000,      // 1 DOLI
+            Network::Devnet => 100_000_000_000,  // 1000 DOLI (same as mainnet)
         }
     }
 
@@ -348,12 +348,12 @@ impl Network {
     /// Unbonding period in blocks
     ///
     /// After requesting exit, producers must wait this long before
-    /// claiming their bond.
+    /// claiming their bond. (7 days)
     pub fn unbonding_period(&self) -> u64 {
         match self {
-            Network::Mainnet => 259_200, // ~30 days at 10s slots
-            Network::Testnet => 259_200, // Same as mainnet (~30 days)
-            Network::Devnet => 60,       // ~1 minute with 1s slots
+            Network::Mainnet => 60_480, // 7 days at 10s slots
+            Network::Testnet => 60_480, // Same as mainnet (7 days)
+            Network::Devnet => 60,      // ~1 minute with 1s slots
         }
     }
 

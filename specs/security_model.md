@@ -201,10 +201,14 @@ used for block production. Block iterations are fixed per network configuration.
 
 ```rust
 // All domain tags are unique to prevent cross-protocol attacks
-pub const DOMAIN_BLOCK: &[u8] = b"BLK";
-pub const DOMAIN_REGISTRATION: &[u8] = b"REG";
-pub const DOMAIN_SEED: &[u8] = b"SEED";
-pub const DOMAIN_TX: &[u8] = b"doli-tx-v1";
+pub const SIGN_DOMAIN: &[u8] = b"DOLI_SIGN_V1";
+pub const ADDRESS_DOMAIN: &[u8] = b"DOLI_ADDR_V1";
+pub const TX_DOMAIN: &[u8] = b"DOLI_TX_V1";
+pub const BLOCK_DOMAIN: &[u8] = b"DOLI_BLOCK_V1";
+pub const VDF_DOMAIN: &[u8] = b"DOLI_VDF_V1";
+pub const VDF_BLOCK_DOMAIN: &[u8] = b"DOLI_VDF_BLOCK_V1";
+pub const VDF_REGISTER_DOMAIN: &[u8] = b"DOLI_VDF_REGISTER_V1";
+pub const SEED_DOMAIN: &[u8] = b"SEED";
 
 // Hash output size
 pub const HASH_SIZE: usize = 32;
