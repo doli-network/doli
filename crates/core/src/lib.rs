@@ -113,6 +113,7 @@
 //! For complete security documentation, see `SECURITY.md` in the repository root.
 
 pub mod block;
+pub mod chainspec;
 pub mod consensus;
 pub mod discovery;
 pub mod genesis;
