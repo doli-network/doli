@@ -13,6 +13,12 @@ Master index for all DOLI documentation.
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System architecture and component design |
 | [SECURITY_MODEL.md](./SECURITY_MODEL.md) | Security model, threat analysis, and cryptographic guarantees |
 
+## Networks
+
+| File | Description |
+|------|-------------|
+| [TESTNET.md](./TESTNET.md) | Testnet information, bootstrap nodes, and setup guide for joining |
+
 ## Guides
 
 | File | Description |
@@ -51,6 +57,7 @@ Master index for all DOLI documentation.
 ```
 docs/
 ├── DOCS.md                   # ← You are here
+├── TESTNET.md                # Testnet setup and bootstrap nodes
 ├── CLI.md                    # Complete CLI reference
 ├── PROTOCOL.md               # Wire protocol specification
 ├── ARCHITECTURE.md           # System architecture
