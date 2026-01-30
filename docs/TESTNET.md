@@ -56,7 +56,7 @@ Once synced, you'll see:
 Block produced at height X
 ```
 
-You earn **50 tDOLI per block** you produce. No registration needed during bootstrap!
+You earn **1 tDOLI per block** you produce (matches mainnet). No registration needed during bootstrap!
 
 ---
 
