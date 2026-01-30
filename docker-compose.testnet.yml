@@ -1,0 +1,44 @@
+# DOLI Testnet Node - Docker Compose Configuration
+# Usage: docker compose -f docker-compose.testnet.yml up -d
+
+services:
+  doli-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: doli-node:latest
+    container_name: doli-testnet
+    restart: unless-stopped
+
+    environment:
+      - DOLI_NETWORK=testnet
+      - DOLI_LOG_LEVEL=info
+      # Uncomment and set for producer mode:
+      # - DOLI_PRODUCER_KEY_FILE=/keys/producer.key
+
+    volumes:
+      - doli-testnet-data:/data
+      # Optional: Mount keys directory for producer mode
+      # - ./keys:/keys:ro
+
+    ports:
+      - "40303:40303"  # P2P
+      - "18545:18545"  # RPC
+      - "9090:9090"    # Metrics
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  doli-testnet-data:
+    name: doli-testnet-data
