@@ -42,12 +42,12 @@ impl GenesisConfig {
 
     /// Testnet genesis configuration
     ///
-    /// Genesis time: 2025-06-01T00:00:00Z
-    /// Earlier launch for testing
+    /// Genesis time: 2026-01-29T21:20:00Z
+    /// Testnet launched January 2026
     pub fn testnet() -> Self {
         Self {
             network: Network::Testnet,
-            timestamp: 1748736000, // 2025-06-01T00:00:00Z
+            timestamp: 1769736000, // 2026-01-29T21:20:00Z (testnet launch)
             reward: 5_000_000_000, // 50 DOLI (10x mainnet for testing)
             message: "DOLI Testnet Genesis - Time is money",
         }
@@ -343,7 +343,7 @@ mod tests {
         let genesis = generate_genesis_block(&config);
 
         assert_eq!(genesis.header.slot, 0);
-        assert_eq!(genesis.header.timestamp, 1748736000);
+        assert_eq!(genesis.header.timestamp, 1769736000);
         assert_eq!(genesis.transactions[0].outputs[0].amount, 5_000_000_000);
 
         assert!(verify_genesis_block(&genesis, Network::Testnet).is_ok());
