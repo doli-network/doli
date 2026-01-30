@@ -237,9 +237,9 @@ impl ChainSpec {
                 initial_reward: 100_000_000, // 1 DOLI
             },
             consensus: ConsensusSpec {
-                slot_duration: 5, // Faster for testing
+                slot_duration: 1, // 1 second slots for fast testing
                 slots_per_epoch: 60,
-                bond_amount: 100_000_000, // 1 DOLI (easier testing)
+                bond_amount: 100_000_000_000, // 1000 DOLI (same as mainnet/testnet)
             },
             genesis_producers: vec![], // Uses bootstrap mode
         }
@@ -296,7 +296,7 @@ mod tests {
         let spec = ChainSpec::devnet();
         assert_eq!(spec.id, "devnet");
         assert_eq!(spec.genesis.timestamp, 0); // Dynamic
-        assert_eq!(spec.consensus.slot_duration, 5); // Faster
+        assert_eq!(spec.consensus.slot_duration, 1); // 1 second slots
     }
 
     #[test]

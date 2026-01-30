@@ -44,6 +44,7 @@ fn create_test_block(
 }
 
 /// Helper to create a producer set with registered producers
+#[allow(deprecated)] // activity_gaps field is deprecated but needed for struct initialization
 fn create_producer_set_with_bonds(producers: &[(&PublicKey, u64)]) -> ProducerSet {
     let mut set = ProducerSet::new();
     for (pubkey, bond_amount) in producers {

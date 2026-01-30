@@ -146,13 +146,13 @@ cargo build --release
 |---------|---------|-----------|----------------|
 | Mainnet | Production | 10s | `~/.doli/mainnet/` |
 | Testnet | Testing | 10s | `~/.doli/testnet/` |
-| Devnet | Development | 5s | `~/.doli/devnet/` |
+| Devnet | Development | 1s | `~/.doli/devnet/` |
 
 **Devnet special features:**
 - **Dynamic genesis:** Genesis time is set automatically when the first node starts
-- **Fast grace periods:** Reduced wait times for quicker testing (3-5s vs 15-30s)
-- **Lower bonds:** Only 1 DOLI required for producer registration
-- **Faster epochs:** 60 slots per epoch (~5 minutes)
+- **Fast grace periods:** Reduced wait times for quicker testing
+- **Same bond requirements:** 1000 DOLI required (same as mainnet/testnet)
+- **Faster epochs:** 60 slots per epoch (~1 minute with 1s slots)
 
 ---
 
@@ -198,37 +198,35 @@ cargo build --release
 
 ---
 
-## 5. Configuration File
+## 5. Configuration
 
-Create `config.toml` in the data directory:
+DOLI nodes are configured via CLI flags. All settings have sensible defaults.
 
-```toml
-# Network settings
-network = "mainnet"
-data_dir = "/var/lib/doli"
-listen_addr = "0.0.0.0:30303"
-max_peers = 50
+**Common flags:**
+```bash
+# Network selection
+--network <mainnet|testnet|devnet>
 
-# Bootstrap nodes (mainnet defaults used if empty)
-bootstrap_nodes = [
-    "/ip4/boot1.doli.network/tcp/30303",
-    "/ip4/boot2.doli.network/tcp/30303"
-]
+# Data directory (default: ~/.doli/<network>/)
+--data-dir /path/to/data
+
+# P2P settings
+--listen-addr 0.0.0.0:30303
+--max-peers 50
 
 # RPC settings
-[rpc]
-enabled = true
-listen_addr = "127.0.0.1:8545"
+--rpc-addr 127.0.0.1:8545
 
 # Metrics (Prometheus)
-[metrics]
-enabled = true
-listen_addr = "127.0.0.1:9090"
+--metrics-addr 127.0.0.1:9090
 
 # Logging
-[logging]
-level = "info"
-format = "json"  # or "pretty"
+--log-level <trace|debug|info|warn|error>
+```
+
+**Example with custom settings:**
+```bash
+./doli-node --network mainnet --data-dir /var/lib/doli --listen-addr 0.0.0.0:30303 --rpc-addr 127.0.0.1:8545 run
 ```
 
 ---
@@ -250,7 +248,7 @@ After=network.target
 Type=simple
 User=doli
 Group=doli
-ExecStart=/usr/local/bin/doli-node --config /etc/doli/config.toml run
+ExecStart=/usr/local/bin/doli-node --network mainnet --data-dir /var/lib/doli run
 Restart=always
 RestartSec=10
 LimitNOFILE=65535
@@ -271,12 +269,11 @@ WantedBy=multi-user.target
 ```bash
 # Create doli user
 sudo useradd -r -s /bin/false doli
-sudo mkdir -p /var/lib/doli /etc/doli
+sudo mkdir -p /var/lib/doli
 sudo chown doli:doli /var/lib/doli
 
-# Copy binary and config
+# Copy binary
 sudo cp target/release/doli-node /usr/local/bin/
-sudo cp config.toml /etc/doli/
 
 # Enable and start service
 sudo systemctl daemon-reload
