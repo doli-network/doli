@@ -976,6 +976,65 @@ impl ProducerSet {
             .retain(|_, &mut exit_height| current_height.saturating_sub(exit_height) < retention);
     }
 
+    /// Register a genesis producer (special registration without VDF/UTXO verification)
+    ///
+    /// Genesis producers are registered at height 0 with synthetic bond outpoints
+    /// (Hash::ZERO). They cannot unbond their genesis bonds but can participate
+    /// in block production from the start.
+    ///
+    /// # Arguments
+    /// - `pubkey`: Producer's public key
+    /// - `bond_count`: Number of bonds (typically 1)
+    ///
+    /// # Returns
+    /// `Ok(())` if registered, `Err` if already exists
+    pub fn register_genesis_producer(
+        &mut self,
+        pubkey: PublicKey,
+        bond_count: u32,
+    ) -> Result<(), StorageError> {
+        let key = crypto_hash(pubkey.as_bytes());
+        if self.producers.contains_key(&key) {
+            return Err(StorageError::AlreadyExists(
+                "Genesis producer already registered".to_string(),
+            ));
+        }
+
+        let bond_amount = (bond_count as u64) * BOND_UNIT;
+        let info = ProducerInfo {
+            public_key: pubkey,
+            registered_at: 0, // Genesis registration
+            bond_amount,
+            bond_outpoint: (Hash::ZERO, 0), // Synthetic - cannot unbond
+            status: ProducerStatus::Active,
+            blocks_produced: 0,
+            slots_missed: 0,
+            registration_era: 0,
+            pending_rewards: 0,
+            has_prior_exit: false,
+            last_activity: 0,
+            activity_gaps: 0,
+            bond_count,
+            additional_bonds: Vec::new(),
+        };
+
+        self.producers.insert(key, info);
+        Ok(())
+    }
+
+    /// Create a ProducerSet with genesis producers pre-registered
+    ///
+    /// # Arguments
+    /// - `producers`: Vec of (PublicKey, bond_count) tuples
+    pub fn with_genesis_producers(producers: Vec<(PublicKey, u32)>) -> Self {
+        let mut set = Self::new();
+        for (pubkey, bond_count) in producers {
+            // Ignore errors (shouldn't happen for fresh set)
+            let _ = set.register_genesis_producer(pubkey, bond_count);
+        }
+        set
+    }
+
     /// Get the size of the exit history (for monitoring)
     pub fn exit_history_size(&self) -> usize {
         self.exit_history.len()
