@@ -80,9 +80,12 @@ VOLUME ["/data"]
 # Switch to non-root user
 USER doli
 
-# Health check - verify RPC is responding
+# Health check - verify RPC is responding via JSON-RPC getChainInfo
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -sf http://localhost:${DOLI_RPC_PORT:-8545}/health || exit 1
+    CMD curl -sf -X POST http://localhost:${DOLI_RPC_PORT:-8545} \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
+        | grep -q '"result"' || exit 1
 
 # Entrypoint script handles environment variable mapping
 COPY --chmod=755 docker/docker-entrypoint.sh /docker-entrypoint.sh

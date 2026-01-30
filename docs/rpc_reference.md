@@ -251,7 +251,7 @@ Returns unspent transaction outputs for an address.
 | Name | Type | Description |
 |------|------|-------------|
 | address | string | Address or pubkey hash (hex) |
-| spendableOnly | boolean | Only return spendable UTXOs (default: false) |
+| spendable_only | boolean | Only return spendable UTXOs (default: false) |
 
 **Response:**
 ```json
@@ -287,7 +287,7 @@ Returns unspent transaction outputs for an address.
 ```bash
 curl -X POST http://127.0.0.1:8545 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"0x...","spendableOnly":true},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"0x...","spendable_only":true},"id":1}'
 ```
 
 ---
@@ -349,26 +349,35 @@ curl -X POST http://127.0.0.1:8545 \
 
 ## 8. Producer Methods
 
-### getProducerSet
+### getProducers
 
-Returns the active producer set.
+Returns all producers in the network.
 
-**Parameters:** None
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| active_only | boolean | Only return active producers (default: false) |
 
 **Response:**
 ```json
-{
-    "epoch": 1234,
-    "totalBonds": 50000,
-    "producers": [
-        {
-            "pubkey": "0x...",
-            "bondCount": 5,
-            "weight": 3,
-            "activeSince": 100000
-        }
-    ]
-}
+[
+    {
+        "publicKey": "0x...",
+        "registrationHeight": 100000,
+        "bondAmount": 5000000000000,
+        "bondCount": 5,
+        "status": "active",
+        "blocksProduced": 1234,
+        "pendingWithdrawals": []
+    }
+]
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
 ```
 
 ---
