@@ -8,7 +8,7 @@
 //! The private keys are included here for testing purposes only.
 //! In production, maintainer private keys must be kept secure and offline.
 
-use crypto::{PrivateKey, PublicKey, Signature};
+use crypto::PrivateKey;
 use std::sync::LazyLock;
 
 /// Test maintainer key pair (public and private keys as hex strings)
