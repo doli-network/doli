@@ -731,7 +731,7 @@ grep -i "equivocation\|double.*production\|slash" $TEST_DIR/logs/*.log
 # VERIFY:
 # - Bond is burned (not redistributed)
 # - Producer removed immediately
-# - Must re-register with 2x VDF difficulty
+# - Can re-register with standard VDF (same as new producer)
 ```
 
 ### 8.4 Early Withdrawal Penalty (Section 6.4)

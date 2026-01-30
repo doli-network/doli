@@ -239,14 +239,6 @@ pub const INACTIVITY_THRESHOLD: u64 = 60_480;
 /// At 10s slots (6 blocks/minute): 1 day × 24 hours × 360 blocks/hour = 8,640 blocks
 pub const REACTIVATION_THRESHOLD: u64 = 8_640;
 
-/// Weight penalty per activity gap - DEPRECATED, no longer used
-/// Per alignment decision: No activity penalty. Producers who miss slots simply miss rewards.
-pub const GAP_PENALTY_PERCENT: u64 = 0;
-
-/// Maximum activity gap penalty - DEPRECATED, no longer used
-/// Per alignment decision: No activity penalty.
-pub const MAX_GAP_PENALTY_PERCENT: u64 = 0;
-
 // ==================== Activity Status System ====================
 
 /// Activity status of a producer
@@ -311,12 +303,13 @@ pub struct ProducerInfo {
     /// Used for uptime tracking. Dormant nodes have reduced effective weight.
     #[serde(default)]
     pub last_activity: u64,
-    /// Number of prolonged inactivity gaps (>1 week without activity)
-    ///
-    /// Each gap reduces effective weight by 10%, up to 50% maximum penalty.
-    /// This prevents "sleeper" attacks where nodes stay dormant for years
-    /// and then wake up with full seniority weight.
+    /// DEPRECATED: Activity gaps are no longer tracked or penalized.
+    /// Per alignment decision: No activity penalty. Producers who miss slots
+    /// simply miss rewards - no weight reduction. Only slashable offense is
+    /// double production (equivocation).
+    /// Field retained for serialization backwards compatibility only.
     #[serde(default)]
+    #[deprecated(note = "Activity gaps no longer affect consensus - field kept for backwards compatibility")]
     pub activity_gaps: u64,
     /// Number of bonds staked (1-100)
     ///
@@ -690,27 +683,16 @@ impl ProducerInfo {
     /// Record activity (block production or voting)
     ///
     /// Call this when the producer produces a block or casts a vote.
-    /// If there's been a gap > INACTIVITY_THRESHOLD since last activity,
-    /// increment the gap counter.
+    /// Updates last_activity timestamp for activity status tracking.
+    /// Note: Activity gaps are no longer tracked or penalized per alignment decision.
     pub fn record_activity(&mut self, current_height: u64) {
-        let gap = current_height.saturating_sub(self.last_activity);
-
-        if gap > INACTIVITY_THRESHOLD {
-            self.activity_gaps = self.activity_gaps.saturating_add(1);
-        }
-
         self.last_activity = current_height;
     }
 
     /// Record activity with network-specific inactivity threshold
-    pub fn record_activity_for_network(&mut self, current_height: u64, network: Network) {
-        let gap = current_height.saturating_sub(self.last_activity);
-        let threshold = network.inactivity_threshold();
-
-        if gap > threshold {
-            self.activity_gaps = self.activity_gaps.saturating_add(1);
-        }
-
+    ///
+    /// Note: Activity gaps are no longer tracked or penalized per alignment decision.
+    pub fn record_activity_for_network(&mut self, current_height: u64, _network: Network) {
         self.last_activity = current_height;
     }
 
@@ -729,12 +711,14 @@ impl ProducerInfo {
         current_height.saturating_sub(self.last_activity)
     }
 
-    /// Reset activity gaps (e.g., after sustained good behavior)
-    ///
-    /// Could be called after a producer maintains continuous activity
-    /// for an extended period.
+    /// DEPRECATED: Activity gaps are no longer tracked or penalized.
+    /// This method is kept for API compatibility but does nothing meaningful.
+    #[deprecated(note = "Activity gaps no longer affect consensus")]
     pub fn reset_activity_gaps(&mut self) {
-        self.activity_gaps = 0;
+        #[allow(deprecated)]
+        {
+            self.activity_gaps = 0;
+        }
     }
 
     // ==================== Activity Status System ====================
@@ -2269,17 +2253,16 @@ mod tests {
         assert!(!info.is_inactive_for_network(30, devnet)); // 30 blocks, still not inactive
         assert!(info.is_inactive_for_network(31, devnet)); // 31 blocks, inactive
 
-        // Record activity at block 35, should incur a gap (35 > 30 threshold)
+        // Record activity updates last_activity timestamp
+        // Note: Activity gaps are no longer tracked per alignment decision
         info.record_activity_for_network(35, devnet);
-        assert_eq!(info.activity_gaps, 1);
+        assert_eq!(info.last_activity, 35);
 
-        // Activity at block 50 (15 block gap <= 30), no new gap
         info.record_activity_for_network(50, devnet);
-        assert_eq!(info.activity_gaps, 1);
+        assert_eq!(info.last_activity, 50);
 
-        // Activity at block 85 (35 block gap > 30 threshold), new gap
         info.record_activity_for_network(85, devnet);
-        assert_eq!(info.activity_gaps, 2);
+        assert_eq!(info.last_activity, 85);
     }
 
     #[test]
