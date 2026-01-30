@@ -239,11 +239,13 @@ pub const INACTIVITY_THRESHOLD: u64 = 60_480;
 /// At 10s slots (6 blocks/minute): 1 day × 24 hours × 360 blocks/hour = 8,640 blocks
 pub const REACTIVATION_THRESHOLD: u64 = 8_640;
 
-/// Weight penalty per activity gap (10%)
-pub const GAP_PENALTY_PERCENT: u64 = 10;
+/// Weight penalty per activity gap - DEPRECATED, no longer used
+/// Per alignment decision: No activity penalty. Producers who miss slots simply miss rewards.
+pub const GAP_PENALTY_PERCENT: u64 = 0;
 
-/// Maximum activity gap penalty (50%)
-pub const MAX_GAP_PENALTY_PERCENT: u64 = 50;
+/// Maximum activity gap penalty - DEPRECATED, no longer used
+/// Per alignment decision: No activity penalty.
+pub const MAX_GAP_PENALTY_PERCENT: u64 = 0;
 
 // ==================== Activity Status System ====================
 
@@ -632,7 +634,7 @@ impl ProducerInfo {
 
     /// Get the producer's base weight based on seniority
     ///
-    /// Uses continuous formula: w = 1 + sqrt(months/12), max 4
+    /// Uses discrete yearly steps: 0-1yr=1, 1-2yr=2, 2-3yr=3, 3+yr=4 (max)
     pub fn weight(&self, current_height: u64) -> u64 {
         producer_weight(self.registered_at, current_height)
     }
@@ -646,49 +648,43 @@ impl ProducerInfo {
 
     /// Get the producer's effective weight
     ///
-    /// Dormant nodes have reduced weight:
-    /// - Each activity gap (>1 week inactivity) reduces weight by 10%
-    /// - Maximum penalty is 50% (5+ gaps)
+    /// Per alignment decision: NO activity penalty. Weight is purely seniority-based.
+    /// Producers who miss slots simply miss rewards - no weight reduction.
+    /// Only slashable offense is double production (equivocation).
     ///
-    /// This prevents "sleeper" attacks where nodes stay dormant and wake up
-    /// with full seniority weight.
+    /// Note: activity_gaps field is retained for tracking purposes but does not
+    /// affect weight calculation.
     pub fn effective_weight(&self, current_height: u64) -> u64 {
-        let base = producer_weight(self.registered_at, current_height);
-        let penalty_percent =
-            (self.activity_gaps * GAP_PENALTY_PERCENT).min(MAX_GAP_PENALTY_PERCENT);
-        let effective = base * (100 - penalty_percent) / 100;
-        effective.max(MIN_WEIGHT)
+        // No penalty - just return base seniority weight
+        producer_weight(self.registered_at, current_height)
     }
 
     /// Get the producer's effective weight with decimal precision
+    ///
+    /// Per alignment decision: NO activity penalty.
     pub fn effective_weight_precise(&self, current_height: u64) -> f64 {
-        let base = producer_weight_precise(self.registered_at, current_height);
-        let penalty = (self.activity_gaps as f64 * (GAP_PENALTY_PERCENT as f64 / 100.0))
-            .min(MAX_GAP_PENALTY_PERCENT as f64 / 100.0);
-        let effective = base * (1.0 - penalty);
-        effective.max(MIN_WEIGHT as f64)
+        // No penalty - just return base seniority weight
+        producer_weight_precise(self.registered_at, current_height)
     }
 
     /// Get the producer's effective weight for a specific network
+    ///
+    /// Per alignment decision: NO activity penalty.
     pub fn effective_weight_for_network(&self, current_height: u64, network: Network) -> u64 {
-        let base = producer_weight_for_network(self.registered_at, current_height, network);
-        let penalty_percent =
-            (self.activity_gaps * GAP_PENALTY_PERCENT).min(MAX_GAP_PENALTY_PERCENT);
-        let effective = base * (100 - penalty_percent) / 100;
-        effective.max(MIN_WEIGHT)
+        // No penalty - just return base seniority weight
+        producer_weight_for_network(self.registered_at, current_height, network)
     }
 
     /// Get the producer's effective weight with decimal precision for a specific network
+    ///
+    /// Per alignment decision: NO activity penalty.
     pub fn effective_weight_precise_for_network(
         &self,
         current_height: u64,
         network: Network,
     ) -> f64 {
-        let base = producer_weight_precise_for_network(self.registered_at, current_height, network);
-        let penalty = (self.activity_gaps as f64 * (GAP_PENALTY_PERCENT as f64 / 100.0))
-            .min(MAX_GAP_PENALTY_PERCENT as f64 / 100.0);
-        let effective = base * (1.0 - penalty);
-        effective.max(MIN_WEIGHT as f64)
+        // No penalty - just return base seniority weight
+        producer_weight_precise_for_network(self.registered_at, current_height, network)
     }
 
     /// Record activity (block production or voting)

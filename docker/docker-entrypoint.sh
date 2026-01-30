@@ -64,14 +64,18 @@ if [ -n "$DOLI_BOOTSTRAP" ]; then
     ARGS="$ARGS --bootstrap $DOLI_BOOTSTRAP"
 fi
 
-# Producer mode via key file
+# Producer mode via key file (preferred)
+# Note: --producer-key accepts a file path to the key file
 if [ -n "$DOLI_PRODUCER_KEY_FILE" ]; then
-    ARGS="$ARGS --producer-key-file $DOLI_PRODUCER_KEY_FILE"
+    ARGS="$ARGS --producer --producer-key $DOLI_PRODUCER_KEY_FILE"
 fi
 
-# Producer mode via key (less secure)
-if [ -n "$DOLI_PRODUCER_KEY" ]; then
-    ARGS="$ARGS --producer-key $DOLI_PRODUCER_KEY"
+# Producer mode via inline key (less secure, for testing)
+# If key file not set, use inline key
+if [ -z "$DOLI_PRODUCER_KEY_FILE" ] && [ -n "$DOLI_PRODUCER_KEY" ]; then
+    # Create temp key file from inline key
+    echo "$DOLI_PRODUCER_KEY" > /tmp/producer.key
+    ARGS="$ARGS --producer --producer-key /tmp/producer.key"
 fi
 
 # Disable auto-update
