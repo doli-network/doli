@@ -660,4 +660,4 @@ doli/
 
 ---
 
-*For implementation details, see [PROTOCOL.md](PROTOCOL.md)*
+*For implementation details, see [protocol.md](protocol.md)*
