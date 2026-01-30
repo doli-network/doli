@@ -1,13 +1,13 @@
 # DOLI Node - Docker Compose (Devnet)
-# Usage: docker compose -f docker-compose.devnet.yml up -d
+# Usage: docker compose -f docker/docker-compose.devnet.yml up -d
 # For local development and testing
 
 services:
   doli-node:
     image: ghcr.io/e-weil/doli-node:latest
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: doli-devnet-node
     restart: unless-stopped
     environment:
