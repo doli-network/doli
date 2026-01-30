@@ -40,11 +40,15 @@ cargo build --release
 ### 2. Run a Testnet Node
 
 ```bash
-# Start testnet node
+# Start testnet node (auto-connects to testnet.doli.network)
 ./target/release/doli-node --network testnet run
 ```
 
-Your node will automatically connect to the testnet bootstrap nodes and begin syncing.
+Your node will automatically connect to:
+- `bootstrap1.testnet.doli.network:40303`
+- `bootstrap2.testnet.doli.network:40304`
+
+And begin syncing the blockchain. No manual configuration needed.
 
 ### 3. Create a Wallet
 
