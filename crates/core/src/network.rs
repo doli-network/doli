@@ -94,8 +94,8 @@ impl Network {
         match self {
             // 2026-02-01T00:00:00Z
             Network::Mainnet => 1769904000,
-            // 2026-01-29T21:20:00Z (testnet launch)
-            Network::Testnet => 1769736000,
+            // 2026-01-29T22:00:00Z (testnet v2 launch) - must match genesis.rs
+            Network::Testnet => 1769738400,
             // Dynamic - use current time (will be set at runtime)
             Network::Devnet => 0,
         }
