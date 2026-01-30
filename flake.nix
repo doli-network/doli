@@ -49,6 +49,7 @@
           pkg-config
           clang
           llvmPackages.libclang
+          m4  # Required for gmp-mpfr-sys build
         ];
 
       in {
