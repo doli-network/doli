@@ -127,7 +127,7 @@ Confirmations    Reorganization probability
 | Minimum bond | 1,000 DOLI |
 | Maximum bonds per producer | 100 |
 | Lock period | 4 years |
-| Unbonding period | 30 days |
+| Unbonding period | 7 days |
 | Withdrawal delay | 7 days |
 
 ### 4.2. Slashing Conditions
