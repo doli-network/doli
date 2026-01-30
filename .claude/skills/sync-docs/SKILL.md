@@ -81,12 +81,12 @@ Update if changes affect:
 #### docs/* Files
 | File | Update When |
 |------|-------------|
-| `docs/guides/running_a_node.md` | Node configuration, CLI flags |
-| `docs/guides/becoming_a_producer.md` | Registration, bonds, requirements |
-| `docs/guides/rpc_reference.md` | New/changed RPC endpoints |
-| `docs/guides/troubleshooting.md` | New error conditions |
-| `docs/governance/roadmap.md` | Milestone completion |
-| `docs/research/*` | Security findings, test results |
+| `docs/running_a_node.md` | Node configuration, CLI flags |
+| `docs/becoming_a_producer.md` | Registration, bonds, requirements |
+| `docs/rpc_reference.md` | New/changed RPC endpoints |
+| `docs/troubleshooting.md` | New error conditions |
+| `docs/roadmap.md` | Milestone completion |
+| `docs/attack_analysis.md` | Security findings |
 | `docs/DOCS.md` | New documentation files added (master index) |
 
 ### Step 4: Apply Updates
