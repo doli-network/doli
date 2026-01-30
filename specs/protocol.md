@@ -726,57 +726,54 @@ MAX_FAILURES = 50
 
 ## 7. Network Protocol
 
-### 7.1 Message Format
+DOLI uses **libp2p** for all P2P networking. This provides a robust, modular networking stack with built-in support for NAT traversal, peer discovery, and encrypted connections.
 
-```
-message = {
-    magic:    4 bytes,           // Network identifier
-    command:  12 bytes,          // Command name (ASCII, null-padded)
-    length:   uint32,            // Payload length
-    checksum: 4 bytes,           // First 4 bytes of HASH(payload)
-    payload:  bytes
-}
-```
+### 7.1 Transport Layer
 
-### 7.2 Commands
+- **Protocol**: libp2p with Noise encryption and Yamux multiplexing
+- **Discovery**: Kademlia DHT for peer discovery
+- **Gossip**: GossipSub for block and transaction propagation
+- **Sync**: Request-response protocol for block synchronization
 
-| Command      | Payload                              |
-|--------------|--------------------------------------|
-| `version`    | Protocol version, height, timestamp  |
-| `verack`     | (empty)                              |
-| `getblocks`  | Locator hashes, stop hash            |
-| `inv`        | Type, hash list                      |
-| `getdata`    | Type, hash list                      |
-| `block`      | Block header + body                  |
-| `tx`         | Transaction                          |
-| `getheaders` | Locator hashes, stop hash            |
-| `headers`    | Block headers                        |
-| `ping`       | Nonce                                |
-| `pong`       | Nonce                                |
-| `addr`       | Peer addresses                       |
-| `getaddr`    | (empty)                              |
+### 7.2 GossipSub Topics
 
-### 7.3 Connection Handshake
+| Topic | Content | Purpose |
+|-------|---------|---------|
+| `/doli/{network_id}/blocks` | Block headers + bodies | New block announcements |
+| `/doli/{network_id}/txs` | Transactions | Transaction propagation |
+
+### 7.3 Request-Response Protocols
+
+| Protocol | Request | Response |
+|----------|---------|----------|
+| `/doli/status/1` | Status request | Chain tip, height, genesis hash |
+| `/doli/headers/1` | Block hash range | Block headers |
+| `/doli/bodies/1` | Block hashes | Block bodies |
+
+### 7.4 Connection Flow
 
 ```
 Initiator                     Responder
     |                             |
-    |-------- version ----------->|
-    |<------- version ------------|
-    |<------- verack -------------|
-    |-------- verack ------------>|
+    |--- Noise handshake -------->|
+    |<-- Noise handshake ---------|
+    |--- Status exchange -------->|
+    |<-- Status exchange ---------|
+    |--- (sync if needed) ------->|
+    |<-- (gossip subscribed) -----|
     |                             |
 ```
 
-### 7.4 Block Propagation
+### 7.5 Block Propagation
+
+New blocks are propagated via GossipSub:
 
 ```
-Producer                      Peer
-    |                          |
-    |------ inv (block) ------>|
-    |<----- getdata -----------|
-    |------ block ------------>|
-    |                          |
+Producer                      Network
+    |                            |
+    |-- publish to /blocks ----->|
+    |                            | (gossip to all peers)
+    |                            |
 ```
 
 ---
@@ -796,11 +793,11 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 
 ### 8.1 Network Identifiers
 
-| Network | ID | Address Prefix | Magic Bytes |
-|---------|-----|----------------|-------------|
-| Mainnet | 1   | `doli`  | `D0 11 00 01` |
-| Testnet | 2   | `tdoli` | `D0 11 00 02` |
-| Devnet  | 99  | `ddoli` | `D0 11 00 63` |
+| Network | ID | Address Prefix | P2P Port | RPC Port |
+|---------|-----|----------------|----------|----------|
+| Mainnet | 1   | `doli`  | 30303 | 8545 |
+| Testnet | 2   | `tdoli` | 40303 | 18545 |
+| Devnet  | 99  | `ddoli` | 50303 | 28545 |
 
 ### 8.2 Network Parameters
 
@@ -823,8 +820,8 @@ All networks use hash-chain VDF with ~700ms target time for block production hea
 
 Networks are isolated at multiple levels:
 
-1. **Magic bytes**: P2P messages include network-specific magic bytes
-2. **Network ID**: Exchanged during peer handshake
+1. **GossipSub topics**: Topic names include network ID (e.g., `/doli/1/blocks`)
+2. **Network ID**: Exchanged during peer status exchange
 3. **Genesis hash**: Validated during peer status exchange
 4. **Address prefix**: Prevents cross-network address confusion
 5. **Ports**: Different default ports allow running multiple networks simultaneously
