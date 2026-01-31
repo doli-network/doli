@@ -427,7 +427,10 @@ async fn run_node(
             if default_path.exists() {
                 match ChainSpec::load(&default_path) {
                     Ok(spec) => {
-                        info!("Loaded chainspec from {:?}: {} ({})", default_path, spec.name, spec.id);
+                        info!(
+                            "Loaded chainspec from {:?}: {} ({})",
+                            default_path, spec.name, spec.id
+                        );
                         Some(spec)
                     }
                     Err(e) => {
@@ -501,7 +504,11 @@ async fn run_node(
         if let Ok(pubkey) = PublicKey::from_hex(pubkey_hex) {
             producers_for_check
                 .try_read()
-                .map(|set| set.get_by_pubkey(&pubkey).map(|p| p.is_active()).unwrap_or(false))
+                .map(|set| {
+                    set.get_by_pubkey(&pubkey)
+                        .map(|p| p.is_active())
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false)
         } else {
             false
@@ -517,7 +524,8 @@ async fn run_node(
     );
 
     // Create and run the node (share the producer_set and signed_slots_db)
-    let mut node = node::Node::new(config, producer_key, Some(producer_set), signed_slots_db).await?;
+    let mut node =
+        node::Node::new(config, producer_key, Some(producer_set), signed_slots_db).await?;
 
     info!("Node running. Press Ctrl+C to stop.");
 
@@ -616,9 +624,9 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
             );
 
             // Auto-detect version from pending update on disk
-            let version = std::env::var("DOLI_VOTE_VERSION").ok().or_else(|| {
-                updater::get_pending_version(data_dir)
-            });
+            let version = std::env::var("DOLI_VOTE_VERSION")
+                .ok()
+                .or_else(|| updater::get_pending_version(data_dir));
 
             let version = match version {
                 Some(v) => v,
@@ -677,8 +685,14 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
             println!("╔══════════════════════════════════════════════════════════════════╗");
             println!("║                    Applying Update                               ║");
             println!("╠══════════════════════════════════════════════════════════════════╣");
-            println!("║  Current version: {}                                            ║", updater::current_version());
-            println!("║  Target version:  {}                                            ║", pending.release.version);
+            println!(
+                "║  Current version: {}                                            ║",
+                updater::current_version()
+            );
+            println!(
+                "║  Target version:  {}                                            ║",
+                pending.release.version
+            );
             println!("╚══════════════════════════════════════════════════════════════════╝");
             println!();
 
@@ -693,17 +707,41 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
             match updater::apply_update(&pending.release, approved_or_forced, None).await {
                 Ok(()) => {
                     println!();
-                    println!("╔══════════════════════════════════════════════════════════════════╗");
-                    println!("║                    ✅ UPDATE SUCCESSFUL                          ║");
-                    println!("╠══════════════════════════════════════════════════════════════════╣");
-                    println!("║                                                                  ║");
-                    println!("║  Version: {} → {}                                            ║", updater::current_version(), pending.release.version);
-                    println!("║  Status: Production enabled                                      ║");
-                    println!("║                                                                  ║");
-                    println!("║  Your node is now up to date.                                    ║");
-                    println!("║  Restarting node to apply changes...                             ║");
-                    println!("║                                                                  ║");
-                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!(
+                        "╔══════════════════════════════════════════════════════════════════╗"
+                    );
+                    println!(
+                        "║                    ✅ UPDATE SUCCESSFUL                          ║"
+                    );
+                    println!(
+                        "╠══════════════════════════════════════════════════════════════════╣"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Version: {} → {}                                            ║",
+                        updater::current_version(),
+                        pending.release.version
+                    );
+                    println!(
+                        "║  Status: Production enabled                                      ║"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Your node is now up to date.                                    ║"
+                    );
+                    println!(
+                        "║  Restarting node to apply changes...                             ║"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "╚══════════════════════════════════════════════════════════════════╝"
+                    );
                     println!();
 
                     // Remove pending update file

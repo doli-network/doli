@@ -153,10 +153,14 @@ impl ChainSpec {
 
         // Validate consensus params
         if self.consensus.slot_duration == 0 {
-            return Err(ChainSpecError::InvalidParam("slot_duration cannot be 0".into()));
+            return Err(ChainSpecError::InvalidParam(
+                "slot_duration cannot be 0".into(),
+            ));
         }
         if self.consensus.slots_per_epoch == 0 {
-            return Err(ChainSpecError::InvalidParam("slots_per_epoch cannot be 0".into()));
+            return Err(ChainSpecError::InvalidParam(
+                "slots_per_epoch cannot be 0".into(),
+            ));
         }
 
         Ok(())

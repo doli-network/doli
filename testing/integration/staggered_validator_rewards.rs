@@ -15,11 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::{create_coinbase, create_test_block, init_test_logging, TestNode, TestNodeConfig};
-use doli_core::{
-    consensus::ConsensusParams,
-    Amount, BlockHeight, Slot,
-};
 use crypto::{hash::hash, KeyPair, PublicKey};
+use doli_core::{consensus::ConsensusParams, Amount, BlockHeight, Slot};
 use tempfile::TempDir;
 
 /// Simulates epoch reward distribution tracking
@@ -142,12 +139,16 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     println!("=== Test Setup ===");
     println!("Epoch length: {} slots", epoch_length);
     println!("Producer 1 joins at slot: {} (epoch 0 start)", join_slot_p1);
-    println!("Producer 2 joins at slot: {} (epoch 0 mid-way)", join_slot_p2);
+    println!(
+        "Producer 2 joins at slot: {} (epoch 0 mid-way)",
+        join_slot_p2
+    );
     println!("Producer 3 joins at slot: {} (epoch 1 start)", join_slot_p3);
     println!();
 
     // Genesis block
-    let genesis = doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
+    let genesis =
+        doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
     node.add_block(genesis.clone()).await.unwrap();
     let mut prev_hash = genesis.hash();
 
@@ -178,12 +179,7 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
         // Create and add block
         let reward = params.block_reward(slot as BlockHeight);
         let coinbase = create_coinbase(slot as BlockHeight, producer.2, reward);
-        let block = create_test_block(
-            slot as BlockHeight,
-            prev_hash,
-            producer.1,
-            vec![coinbase],
-        );
+        let block = create_test_block(slot as BlockHeight, prev_hash, producer.1, vec![coinbase]);
         prev_hash = block.hash();
         node.add_block(block).await.unwrap();
 
@@ -192,7 +188,11 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
 
         // Check for epoch boundary
         if let Some(rewards) = tracker.check_epoch_boundary(slot as BlockHeight) {
-            println!("=== Epoch {} Complete (slot {}) ===", epoch_rewards.len(), slot);
+            println!(
+                "=== Epoch {} Complete (slot {}) ===",
+                epoch_rewards.len(),
+                slot
+            );
             for (pubkey, amount, blocks) in &rewards {
                 let pubkey_short = &hash(pubkey.as_bytes()).to_hex()[..16];
                 println!(
@@ -229,7 +229,10 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
 
     // P3 should NOT be in epoch 0 (hasn't joined yet)
     let p3_in_epoch0 = epoch0.iter().find(|(pk, _, _)| pk == &pubkey3);
-    assert!(p3_in_epoch0.is_none(), "P3 should NOT receive epoch 0 rewards");
+    assert!(
+        p3_in_epoch0.is_none(),
+        "P3 should NOT receive epoch 0 rewards"
+    );
 
     // Verify reward distribution is PROPORTIONAL to blocks produced
     let (_, p1_amount, p1_blocks) = p1_in_epoch0.unwrap();
@@ -238,8 +241,18 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     let total_pool: Amount = epoch0.iter().map(|(_, a, _)| a).sum();
 
     println!("Epoch 0: {} producers received rewards", epoch0.len());
-    println!("  P1: {} blocks ({:.1}%) -> {} DOLI", p1_blocks, (*p1_blocks as f64 / total_blocks as f64) * 100.0, p1_amount / 100_000_000);
-    println!("  P2: {} blocks ({:.1}%) -> {} DOLI", p2_blocks, (*p2_blocks as f64 / total_blocks as f64) * 100.0, p2_amount / 100_000_000);
+    println!(
+        "  P1: {} blocks ({:.1}%) -> {} DOLI",
+        p1_blocks,
+        (*p1_blocks as f64 / total_blocks as f64) * 100.0,
+        p1_amount / 100_000_000
+    );
+    println!(
+        "  P2: {} blocks ({:.1}%) -> {} DOLI",
+        p2_blocks,
+        (*p2_blocks as f64 / total_blocks as f64) * 100.0,
+        p2_amount / 100_000_000
+    );
     println!("  Total pool: {} DOLI", total_pool / 100_000_000);
 
     // Verify proportional distribution: reward ratio should match block ratio
@@ -261,12 +274,14 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     assert!(
         (*p1_amount as i64 - expected_p1_share as i64).abs() < 100,
         "P1 reward should be proportional to blocks: expected ~{}, got {}",
-        expected_p1_share, p1_amount
+        expected_p1_share,
+        p1_amount
     );
     assert!(
         (*p2_amount as i64 - expected_p2_share as i64).abs() < 100,
         "P2 reward should be proportional to blocks: expected ~{}, got {}",
-        expected_p2_share, p2_amount
+        expected_p2_share,
+        p2_amount
     );
 
     println!();
@@ -276,7 +291,11 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     println!("=== Verifying Epoch 1 ===");
     let epoch1 = &epoch_rewards[1];
 
-    assert_eq!(epoch1.len(), 3, "Epoch 1 should have 3 participating producers");
+    assert_eq!(
+        epoch1.len(),
+        3,
+        "Epoch 1 should have 3 participating producers"
+    );
 
     let p1_in_epoch1 = epoch1.iter().find(|(pk, _, _)| pk == &pubkey1);
     let p2_in_epoch1 = epoch1.iter().find(|(pk, _, _)| pk == &pubkey2);
@@ -296,7 +315,11 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     println!("=== Verifying Epoch 2 ===");
     let epoch2 = &epoch_rewards[2];
 
-    assert_eq!(epoch2.len(), 3, "Epoch 2 should have 3 participating producers");
+    assert_eq!(
+        epoch2.len(),
+        3,
+        "Epoch 2 should have 3 participating producers"
+    );
 
     println!("Epoch 2: {} producers received rewards", epoch2.len());
 
@@ -325,7 +348,8 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
     let hash1 = hash(pubkey1.as_bytes());
 
     // Genesis block
-    let genesis = doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
+    let genesis =
+        doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
     node.add_block(genesis.clone()).await.unwrap();
     let mut prev_hash = genesis.hash();
 
@@ -333,12 +357,7 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
     for slot in 1..=30 {
         let reward = params.block_reward(slot as BlockHeight);
         let coinbase = create_coinbase(slot as BlockHeight, &hash1, reward);
-        let block = create_test_block(
-            slot as BlockHeight,
-            prev_hash,
-            &pubkey1,
-            vec![coinbase],
-        );
+        let block = create_test_block(slot as BlockHeight, prev_hash, &pubkey1, vec![coinbase]);
         prev_hash = block.hash();
         node.add_block(block).await.unwrap();
 
@@ -351,10 +370,7 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
 
     // Only P1 should receive rewards
     assert_eq!(rewards.len(), 1, "Only 1 producer should receive rewards");
-    assert_eq!(
-        &rewards[0].0, &pubkey1,
-        "P1 should receive all rewards"
-    );
+    assert_eq!(&rewards[0].0, &pubkey1, "P1 should receive all rewards");
 
     // P2 "joined" the network but never produced - no rewards
     let p2_reward = rewards.iter().find(|(pk, _, _)| pk == &pubkey2);
@@ -394,7 +410,8 @@ async fn test_ten_producers_fair_distribution() {
     println!();
 
     // Genesis block
-    let genesis = doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
+    let genesis =
+        doli_core::genesis::generate_genesis_block(&doli_core::genesis::GenesisConfig::devnet());
     node.add_block(genesis.clone()).await.unwrap();
     let mut prev_hash = genesis.hash();
 
@@ -431,7 +448,11 @@ async fn test_ten_producers_fair_distribution() {
         tracker.track_block(pubkeys[producer_idx].clone(), slot as BlockHeight);
 
         if let Some(rewards) = tracker.check_epoch_boundary(slot as BlockHeight) {
-            println!("Epoch {} complete: {} producers rewarded", epoch_rewards.len(), rewards.len());
+            println!(
+                "Epoch {} complete: {} producers rewarded",
+                epoch_rewards.len(),
+                rewards.len()
+            );
             epoch_rewards.push(rewards);
         }
     }
@@ -454,12 +475,20 @@ async fn test_ten_producers_fair_distribution() {
     println!("\n=== Epoch 1 Analysis ===");
     let epoch1 = &epoch_rewards[1];
     println!("Producers with rewards: {}", epoch1.len());
-    assert_eq!(epoch1.len(), 10, "All 10 producers should be active in epoch 1");
+    assert_eq!(
+        epoch1.len(),
+        10,
+        "All 10 producers should be active in epoch 1"
+    );
 
     println!("\n=== Epoch 2 Analysis ===");
     let epoch2 = &epoch_rewards[2];
     println!("Producers with rewards: {}", epoch2.len());
-    assert_eq!(epoch2.len(), 10, "All 10 producers should be active in epoch 2");
+    assert_eq!(
+        epoch2.len(),
+        10,
+        "All 10 producers should be active in epoch 2"
+    );
 
     // Verify proportional distribution in epoch 2 (all 10 active)
     // With round-robin, each producer should have ~2 blocks, so rewards should be ~proportional
@@ -473,14 +502,19 @@ async fn test_ten_producers_fair_distribution() {
         let expected_proportional = (total_pool * blocks) / total_blocks;
         let diff = (*amount as i64 - expected_proportional as i64).abs();
 
-        println!("  Producer: {} blocks -> {} DOLI (expected ~{})",
-            blocks, amount / 100_000_000, expected_proportional / 100_000_000);
+        println!(
+            "  Producer: {} blocks -> {} DOLI (expected ~{})",
+            blocks,
+            amount / 100_000_000,
+            expected_proportional / 100_000_000
+        );
 
         // Allow for rounding (last producer gets dust)
         assert!(
             diff <= params.block_reward(1) as i64, // At most one block reward difference
             "Reward should be proportional to blocks: expected ~{}, got {}",
-            expected_proportional, amount
+            expected_proportional,
+            amount
         );
     }
 
@@ -538,16 +572,32 @@ async fn test_proportional_rewards_unequal_blocks() {
     let total_blocks: u64 = rewards.iter().map(|(_, _, b)| b).sum();
 
     println!("Results:");
-    println!("  Node1: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
-        r1.2, (r1.2 as f64 / total_blocks as f64) * 100.0,
-        r1.1 / 100_000_000, (r1.1 as f64 / total_pool as f64) * 100.0);
-    println!("  Node2: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
-        r2.2, (r2.2 as f64 / total_blocks as f64) * 100.0,
-        r2.1 / 100_000_000, (r2.1 as f64 / total_pool as f64) * 100.0);
-    println!("  Node3: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
-        r3.2, (r3.2 as f64 / total_blocks as f64) * 100.0,
-        r3.1 / 100_000_000, (r3.1 as f64 / total_pool as f64) * 100.0);
-    println!("  Total: {} blocks, {} DOLI pool", total_blocks, total_pool / 100_000_000);
+    println!(
+        "  Node1: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
+        r1.2,
+        (r1.2 as f64 / total_blocks as f64) * 100.0,
+        r1.1 / 100_000_000,
+        (r1.1 as f64 / total_pool as f64) * 100.0
+    );
+    println!(
+        "  Node2: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
+        r2.2,
+        (r2.2 as f64 / total_blocks as f64) * 100.0,
+        r2.1 / 100_000_000,
+        (r2.1 as f64 / total_pool as f64) * 100.0
+    );
+    println!(
+        "  Node3: {} blocks ({:.1}%) -> {} DOLI ({:.1}%)",
+        r3.2,
+        (r3.2 as f64 / total_blocks as f64) * 100.0,
+        r3.1 / 100_000_000,
+        (r3.1 as f64 / total_pool as f64) * 100.0
+    );
+    println!(
+        "  Total: {} blocks, {} DOLI pool",
+        total_blocks,
+        total_pool / 100_000_000
+    );
 
     // Verify block counts
     assert_eq!(r1.2, 8, "Node1 should have 8 blocks");
@@ -560,7 +610,8 @@ async fn test_proportional_rewards_unequal_blocks() {
     assert!(
         r2.1 > r1.1 * 2,
         "Node2 (21 blocks) should get >2x Node1's (8 blocks) reward: {} vs {}",
-        r2.1, r1.1
+        r2.1,
+        r1.1
     );
 
     // Node1 (8 blocks) should get exactly 8x Node3's (1 block) reward
@@ -569,7 +620,8 @@ async fn test_proportional_rewards_unequal_blocks() {
     assert!(
         (actual_ratio - expected_ratio).abs() < 0.1,
         "Node1 should get ~8x Node3's reward: expected ratio {}, got {}",
-        expected_ratio, actual_ratio
+        expected_ratio,
+        actual_ratio
     );
 
     // Node2 (21 blocks) should get 21x Node3's (1 block) reward
@@ -578,7 +630,8 @@ async fn test_proportional_rewards_unequal_blocks() {
     assert!(
         (actual_ratio - expected_ratio).abs() < 0.1,
         "Node2 should get ~21x Node3's reward: expected ratio {}, got {}",
-        expected_ratio, actual_ratio
+        expected_ratio,
+        actual_ratio
     );
 
     // Verify percentages are correct (within rounding)
@@ -587,9 +640,21 @@ async fn test_proportional_rewards_unequal_blocks() {
     let p2_pct = (r2.1 as f64 / total_pool as f64) * 100.0;
     let p3_pct = (r3.1 as f64 / total_pool as f64) * 100.0;
 
-    assert!((p1_pct - 26.7).abs() < 1.0, "Node1 should get ~27%: got {:.1}%", p1_pct);
-    assert!((p2_pct - 70.0).abs() < 1.0, "Node2 should get ~70%: got {:.1}%", p2_pct);
-    assert!((p3_pct - 3.3).abs() < 1.0, "Node3 should get ~3.3%: got {:.1}%", p3_pct);
+    assert!(
+        (p1_pct - 26.7).abs() < 1.0,
+        "Node1 should get ~27%: got {:.1}%",
+        p1_pct
+    );
+    assert!(
+        (p2_pct - 70.0).abs() < 1.0,
+        "Node2 should get ~70%: got {:.1}%",
+        p2_pct
+    );
+    assert!(
+        (p3_pct - 3.3).abs() < 1.0,
+        "Node3 should get ~3.3%: got {:.1}%",
+        p3_pct
+    );
 
     println!("\n=== TEST PASSED ===");
     println!("Rewards are correctly proportional to blocks produced!");

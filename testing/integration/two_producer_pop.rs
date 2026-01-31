@@ -10,16 +10,13 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{
-    create_coinbase, create_test_block, init_test_logging,
-    TestNode, TestNodeConfig,
-};
+use common::{create_coinbase, create_test_block, init_test_logging, TestNode, TestNodeConfig};
+use crypto::{hash::hash, Hash, KeyPair};
 use doli_core::{
-    BlockHeight, Slot,
-    ProducerState, INITIAL_PRESENCE_SCORE, SCORE_PRODUCE_BONUS, SCORE_MISS_PENALTY,
     genesis::{generate_genesis_block, GenesisConfig},
+    BlockHeight, ProducerState, Slot, INITIAL_PRESENCE_SCORE, SCORE_MISS_PENALTY,
+    SCORE_PRODUCE_BONUS,
 };
-use crypto::{Hash, KeyPair, hash::hash};
 use tempfile::TempDir;
 
 /// Test basic two producer alternating blocks
@@ -83,11 +80,17 @@ async fn test_two_producers_alternating() {
     // Verify producer states
     // Producer 1 produced slots 1, 3, 5, 7, 9 = 5 blocks
     assert_eq!(state1.blocks_produced, 5);
-    assert_eq!(state1.presence_score, INITIAL_PRESENCE_SCORE + 5 * SCORE_PRODUCE_BONUS);
+    assert_eq!(
+        state1.presence_score,
+        INITIAL_PRESENCE_SCORE + 5 * SCORE_PRODUCE_BONUS
+    );
 
     // Producer 2 produced slots 2, 4, 6, 8, 10 = 5 blocks
     assert_eq!(state2.blocks_produced, 5);
-    assert_eq!(state2.presence_score, INITIAL_PRESENCE_SCORE + 5 * SCORE_PRODUCE_BONUS);
+    assert_eq!(
+        state2.presence_score,
+        INITIAL_PRESENCE_SCORE + 5 * SCORE_PRODUCE_BONUS
+    );
 }
 
 /// Test producer missing assigned slots and score penalty
@@ -379,10 +382,20 @@ async fn test_full_pop_chain() {
     assert_eq!(node.height().await, 100);
 
     // Producer 1 should have higher score (more reliable)
-    println!("Producer 1: score={}, produced={}, missed={}, rate={}%",
-        state1.presence_score, state1.blocks_produced, state1.blocks_missed, state1.presence_rate());
-    println!("Producer 2: score={}, produced={}, missed={}, rate={}%",
-        state2.presence_score, state2.blocks_produced, state2.blocks_missed, state2.presence_rate());
+    println!(
+        "Producer 1: score={}, produced={}, missed={}, rate={}%",
+        state1.presence_score,
+        state1.blocks_produced,
+        state1.blocks_missed,
+        state1.presence_rate()
+    );
+    println!(
+        "Producer 2: score={}, produced={}, missed={}, rate={}%",
+        state2.presence_score,
+        state2.blocks_produced,
+        state2.blocks_missed,
+        state2.presence_rate()
+    );
 
     assert!(state1.presence_score > state2.presence_score);
     assert!(state1.presence_rate() > state2.presence_rate());

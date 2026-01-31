@@ -11,17 +11,27 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use crypto::{hash::hash, Hash, KeyPair};
 use doli_core::{
-    // Bond constants
-    BOND_UNIT, MAX_BONDS_PER_PRODUCER, WITHDRAWAL_DELAY_SLOTS, YEAR_IN_SLOTS,
     withdrawal_penalty_rate,
-    // Bond types
-    BondEntry, PendingWithdrawal, ProducerBonds, BondsMaturitySummary, BondError,
     // Transaction types
-    AddBondData, WithdrawalRequestData, ClaimWithdrawalData,
-    Transaction, TxType,
+    AddBondData,
+    // Bond types
+    BondEntry,
+    BondError,
+    BondsMaturitySummary,
+    ClaimWithdrawalData,
+    PendingWithdrawal,
+    ProducerBonds,
+    Transaction,
+    TxType,
+    WithdrawalRequestData,
+    // Bond constants
+    BOND_UNIT,
+    MAX_BONDS_PER_PRODUCER,
+    WITHDRAWAL_DELAY_SLOTS,
+    YEAR_IN_SLOTS,
 };
-use crypto::{Hash, KeyPair, hash::hash};
 
 /// Test bond unit constant
 #[test]
@@ -192,7 +202,9 @@ fn test_producer_bonds_fifo_withdrawal() {
     let current_slot = 3 * YEAR_IN_SLOTS;
 
     // Request withdrawal of 3 bonds (should take 3 oldest)
-    let withdrawal = bonds.request_withdrawal(3, current_slot, destination).unwrap();
+    let withdrawal = bonds
+        .request_withdrawal(3, current_slot, destination)
+        .unwrap();
 
     // 3 oldest bonds have 0% penalty (3+ years = fully vested)
     let expected_penalty = 0;
@@ -236,7 +248,9 @@ fn test_producer_bonds_claim_withdrawal() {
 
     // Request withdrawal
     let current_slot = YEAR_IN_SLOTS; // Year 2 = 50% penalty
-    let withdrawal = bonds.request_withdrawal(5, current_slot, destination).unwrap();
+    let withdrawal = bonds
+        .request_withdrawal(5, current_slot, destination)
+        .unwrap();
 
     assert!(bonds.has_pending_withdrawals());
 
@@ -245,7 +259,9 @@ fn test_producer_bonds_claim_withdrawal() {
     assert!(matches!(err, BondError::NoClaimableWithdrawal));
 
     // Claim after delay
-    let claimed = bonds.claim_withdrawal(current_slot + WITHDRAWAL_DELAY_SLOTS).unwrap();
+    let claimed = bonds
+        .claim_withdrawal(current_slot + WITHDRAWAL_DELAY_SLOTS)
+        .unwrap();
     assert_eq!(claimed.net_amount, withdrawal.net_amount);
 
     // No more pending withdrawals
@@ -258,10 +274,10 @@ fn test_bonds_maturity_summary() {
     let mut bonds = ProducerBonds::new();
 
     // Add bonds at different creation times
-    bonds.add_bonds(2, 0).unwrap();                        // age 4Y at check → year_4_plus
-    bonds.add_bonds(3, YEAR_IN_SLOTS).unwrap();            // age 3Y at check → year_4_plus (3+ years = vested)
-    bonds.add_bonds(4, 2 * YEAR_IN_SLOTS).unwrap();        // age 2Y at check → year_3 (25% penalty)
-    bonds.add_bonds(1, 3 * YEAR_IN_SLOTS).unwrap();        // age 1Y at check → year_2 (50% penalty)
+    bonds.add_bonds(2, 0).unwrap(); // age 4Y at check → year_4_plus
+    bonds.add_bonds(3, YEAR_IN_SLOTS).unwrap(); // age 3Y at check → year_4_plus (3+ years = vested)
+    bonds.add_bonds(4, 2 * YEAR_IN_SLOTS).unwrap(); // age 2Y at check → year_3 (25% penalty)
+    bonds.add_bonds(1, 3 * YEAR_IN_SLOTS).unwrap(); // age 1Y at check → year_2 (50% penalty)
 
     // Check at 4 years from epoch 0
     let current_slot = 4 * YEAR_IN_SLOTS;
@@ -380,12 +396,8 @@ fn test_claim_withdrawal_transaction() {
     let destination = hash(b"destination");
     let net_amount = 5 * BOND_UNIT / 2; // After 50% penalty
 
-    let tx = Transaction::new_claim_withdrawal(
-        keypair.public_key().clone(),
-        0,
-        net_amount,
-        destination,
-    );
+    let tx =
+        Transaction::new_claim_withdrawal(keypair.public_key().clone(), 0, net_amount, destination);
 
     assert_eq!(tx.tx_type, TxType::ClaimWithdrawal);
     assert!(tx.is_claim_withdrawal());
@@ -443,9 +455,9 @@ fn test_realistic_bond_scenario() {
     // First 10 bonds are now 2 years old → year_3 (25% penalty)
     // Next 5 bonds are 1.5 years old → year_2 (50% penalty)
     let summary = bonds.maturity_summary(two_years);
-    assert_eq!(summary.year_1, 0);   // no bonds < 1Y old
-    assert_eq!(summary.year_2, 5);   // 5 bonds from 6 months (1.5Y old)
-    assert_eq!(summary.year_3, 10);  // 10 bonds from slot 0 (2Y old)
+    assert_eq!(summary.year_1, 0); // no bonds < 1Y old
+    assert_eq!(summary.year_2, 5); // 5 bonds from 6 months (1.5Y old)
+    assert_eq!(summary.year_3, 10); // 10 bonds from slot 0 (2Y old)
 
     // Withdraw 5 oldest bonds (25% penalty - they're 2Y old, in year_3)
     let withdrawal = bonds.request_withdrawal(5, two_years, destination).unwrap();
@@ -465,7 +477,9 @@ fn test_realistic_bond_scenario() {
 
     // After 4 years total, withdraw remaining with no penalty
     let four_years = 4 * YEAR_IN_SLOTS;
-    let final_withdrawal = bonds.request_withdrawal(10, four_years, destination).unwrap();
+    let final_withdrawal = bonds
+        .request_withdrawal(10, four_years, destination)
+        .unwrap();
 
     // After the first withdrawal of 5 bonds, we have:
     // - 5 bonds from slot 0 (remaining original bonds)

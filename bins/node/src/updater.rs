@@ -136,24 +136,77 @@ pub fn display_update_notification(pending: &PendingUpdate, total_producers: usi
     let hours = pending.hours_remaining();
     let veto_count = pending.vote_tracker.veto_count();
     let veto_pct = pending.vote_tracker.veto_percent(total_producers);
-    let veto_color = if veto_pct >= VETO_THRESHOLD_PERCENT { RED } else { GREEN };
+    let veto_color = if veto_pct >= VETO_THRESHOLD_PERCENT {
+        RED
+    } else {
+        GREEN
+    };
 
     // Prominent banner
     eprintln!();
-    eprintln!("{}╔══════════════════════════════════════════════════════════════════╗{}", YELLOW, RESET);
-    eprintln!("{}║                    ⚠️  UPDATE PENDING                             ║{}", YELLOW, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", YELLOW, RESET);
-    eprintln!("{}║{}  Version: {}{} -> {}{}                                         {}║{}", YELLOW, RESET, CYAN, current_version(), pending.release.version, RESET, YELLOW, RESET);
-    eprintln!("{}║{}  Veto period: {}{} days, {} hours remaining{}                  {}║{}", YELLOW, RESET, BOLD, days, hours, RESET, YELLOW, RESET);
-    eprintln!("{}║{}  Current vetos: {}{}/{} ({}%){}                                {}║{}", YELLOW, RESET, veto_color, veto_count, total_producers, veto_pct, RESET, YELLOW, RESET);
-    eprintln!("{}║{}  Threshold to reject: {}%                                    {}║{}", YELLOW, RESET, VETO_THRESHOLD_PERCENT, YELLOW, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", YELLOW, RESET);
-    eprintln!("{}║{}  Review changelog and vote if you have objections:             {}║{}", YELLOW, RESET, YELLOW, RESET);
-    eprintln!("{}║{}                                                                {}║{}", YELLOW, RESET, YELLOW, RESET);
-    eprintln!("{}║{}    {}doli-node update status{}         # See full details        {}║{}", YELLOW, RESET, CYAN, RESET, YELLOW, RESET);
-    eprintln!("{}║{}    {}doli-node update vote --veto --key <producer.json>{}        {}║{}", YELLOW, RESET, CYAN, RESET, YELLOW, RESET);
-    eprintln!("{}║{}                                                                {}║{}", YELLOW, RESET, YELLOW, RESET);
-    eprintln!("{}╚══════════════════════════════════════════════════════════════════╝{}", YELLOW, RESET);
+    eprintln!(
+        "{}╔══════════════════════════════════════════════════════════════════╗{}",
+        YELLOW, RESET
+    );
+    eprintln!(
+        "{}║                    ⚠️  UPDATE PENDING                             ║{}",
+        YELLOW, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}  Version: {}{} -> {}{}                                         {}║{}",
+        YELLOW,
+        RESET,
+        CYAN,
+        current_version(),
+        pending.release.version,
+        RESET,
+        YELLOW,
+        RESET
+    );
+    eprintln!(
+        "{}║{}  Veto period: {}{} days, {} hours remaining{}                  {}║{}",
+        YELLOW, RESET, BOLD, days, hours, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}  Current vetos: {}{}/{} ({}%){}                                {}║{}",
+        YELLOW, RESET, veto_color, veto_count, total_producers, veto_pct, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}  Threshold to reject: {}%                                    {}║{}",
+        YELLOW, RESET, VETO_THRESHOLD_PERCENT, YELLOW, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}  Review changelog and vote if you have objections:             {}║{}",
+        YELLOW, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        YELLOW, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}    {}doli-node update status{}         # See full details        {}║{}",
+        YELLOW, RESET, CYAN, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}    {}doli-node update vote --veto --key <producer.json>{}        {}║{}",
+        YELLOW, RESET, CYAN, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        YELLOW, RESET, YELLOW, RESET
+    );
+    eprintln!(
+        "{}╚══════════════════════════════════════════════════════════════════╝{}",
+        YELLOW, RESET
+    );
     eprintln!();
 
     // Log to tracing as well
@@ -167,25 +220,76 @@ pub fn display_update_notification(pending: &PendingUpdate, total_producers: usi
 fn display_grace_period_notification(pending: &PendingUpdate) {
     use colors::*;
 
-    let hours = pending.enforcement.as_ref()
+    let hours = pending
+        .enforcement
+        .as_ref()
         .map(|e| e.hours_until_enforcement())
         .unwrap_or(48);
 
     eprintln!();
-    eprintln!("{}╔══════════════════════════════════════════════════════════════════╗{}", GREEN, RESET);
-    eprintln!("{}║                    ✅ UPDATE APPROVED                             ║{}", GREEN, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", GREEN, RESET);
-    eprintln!("{}║{}  Version: {}{} -> {}{}                                         {}║{}", GREEN, RESET, CYAN, current_version(), pending.release.version, RESET, GREEN, RESET);
-    eprintln!("{}║{}                                                                {}║{}", GREEN, RESET, GREEN, RESET);
-    eprintln!("{}║{}  The community has approved this update.                       {}║{}", GREEN, RESET, GREEN, RESET);
-    eprintln!("{}║{}  Grace period: {}{} hours{} until enforcement.                   {}║{}", GREEN, RESET, BOLD, hours, RESET, GREEN, RESET);
-    eprintln!("{}║{}                                                                {}║{}", GREEN, RESET, GREEN, RESET);
-    eprintln!("{}║{}  After grace period, {}outdated nodes cannot produce blocks{}.   {}║{}", GREEN, RESET, YELLOW, RESET, GREEN, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", GREEN, RESET);
-    eprintln!("{}║{}  To update now:                                                {}║{}", GREEN, RESET, GREEN, RESET);
-    eprintln!("{}║{}    {}doli-node update apply{}                                    {}║{}", GREEN, RESET, CYAN, RESET, GREEN, RESET);
-    eprintln!("{}║{}                                                                {}║{}", GREEN, RESET, GREEN, RESET);
-    eprintln!("{}╚══════════════════════════════════════════════════════════════════╝{}", GREEN, RESET);
+    eprintln!(
+        "{}╔══════════════════════════════════════════════════════════════════╗{}",
+        GREEN, RESET
+    );
+    eprintln!(
+        "{}║                    ✅ UPDATE APPROVED                             ║{}",
+        GREEN, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}  Version: {}{} -> {}{}                                         {}║{}",
+        GREEN,
+        RESET,
+        CYAN,
+        current_version(),
+        pending.release.version,
+        RESET,
+        GREEN,
+        RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        GREEN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}  The community has approved this update.                       {}║{}",
+        GREEN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}  Grace period: {}{} hours{} until enforcement.                   {}║{}",
+        GREEN, RESET, BOLD, hours, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        GREEN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}  After grace period, {}outdated nodes cannot produce blocks{}.   {}║{}",
+        GREEN, RESET, YELLOW, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}  To update now:                                                {}║{}",
+        GREEN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}    {}doli-node update apply{}                                    {}║{}",
+        GREEN, RESET, CYAN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        GREEN, RESET, GREEN, RESET
+    );
+    eprintln!(
+        "{}╚══════════════════════════════════════════════════════════════════╝{}",
+        GREEN, RESET
+    );
     eprintln!();
 
     info!(
@@ -199,28 +303,86 @@ fn display_enforcement_notification(pending: &PendingUpdate) {
     use colors::*;
 
     eprintln!();
-    eprintln!("{}╔══════════════════════════════════════════════════════════════════╗{}", RED, RESET);
-    eprintln!("{}║                    ⚠️  PRODUCTION PAUSED                          ║{}", RED, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", RED, RESET);
-    eprintln!("{}║{}                                                                {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}  Your node ({}{}{}) is outdated.                               {}║{}", RED, RESET, YELLOW, current_version(), RESET, RED, RESET);
-    eprintln!("{}║{}  Required version: {}{}{}                                        {}║{}", RED, RESET, GREEN, pending.release.version, RESET, RED, RESET);
-    eprintln!("{}║{}                                                                {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}  Network security requires all producers to be updated.        {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}  Block production is paused until update is complete.          {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}                                                                {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}╠══════════════════════════════════════════════════════════════════╣{}", RED, RESET);
-    eprintln!("{}║{}  To update, run:                                               {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}    {}doli-node update apply{}                                    {}║{}", RED, RESET, CYAN, RESET, RED, RESET);
-    eprintln!("{}║{}                                                                {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}  After updating, production will resume automatically.         {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}║{}                                                                {}║{}", RED, RESET, RED, RESET);
-    eprintln!("{}╚══════════════════════════════════════════════════════════════════╝{}", RED, RESET);
+    eprintln!(
+        "{}╔══════════════════════════════════════════════════════════════════╗{}",
+        RED, RESET
+    );
+    eprintln!(
+        "{}║                    ⚠️  PRODUCTION PAUSED                          ║{}",
+        RED, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        RED, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}  Your node ({}{}{}) is outdated.                               {}║{}",
+        RED,
+        RESET,
+        YELLOW,
+        current_version(),
+        RESET,
+        RED,
+        RESET
+    );
+    eprintln!(
+        "{}║{}  Required version: {}{}{}                                        {}║{}",
+        RED, RESET, GREEN, pending.release.version, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}  Network security requires all producers to be updated.        {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}  Block production is paused until update is complete.          {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}╠══════════════════════════════════════════════════════════════════╣{}",
+        RED, RESET
+    );
+    eprintln!(
+        "{}║{}  To update, run:                                               {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}    {}doli-node update apply{}                                    {}║{}",
+        RED, RESET, CYAN, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}  After updating, production will resume automatically.         {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}║{}                                                                {}║{}",
+        RED, RESET, RED, RESET
+    );
+    eprintln!(
+        "{}╚══════════════════════════════════════════════════════════════════╝{}",
+        RED, RESET
+    );
     eprintln!();
 
     warn!(
         "PRODUCTION PAUSED: Node {} is outdated, required version {}",
-        current_version(), pending.release.version
+        current_version(),
+        pending.release.version
     );
 }
 
@@ -606,11 +768,21 @@ pub mod cli {
                 println!();
                 println!("{}═══ Pending Update ═══{}", BOLD, RESET);
                 println!();
-                println!("{}Version:{} {} -> {}", BOLD, RESET, current_version(), p.release.version);
-                println!("{}Published:{} {}", BOLD, RESET,
+                println!(
+                    "{}Version:{} {} -> {}",
+                    BOLD,
+                    RESET,
+                    current_version(),
+                    p.release.version
+                );
+                println!(
+                    "{}Published:{} {}",
+                    BOLD,
+                    RESET,
                     chrono::DateTime::from_timestamp(p.release.published_at as i64, 0)
                         .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
-                        .unwrap_or_else(|| "Unknown".to_string()));
+                        .unwrap_or_else(|| "Unknown".to_string())
+                );
                 println!();
                 println!("{}═══ Changelog ═══{}", BOLD, RESET);
                 println!();
@@ -624,7 +796,10 @@ pub mod cli {
                         println!("{}═══ Status: ENFORCEMENT ACTIVE ═══{}", RED, RESET);
                         println!();
                         if enforcement.version_meets_requirement(current_version()) {
-                            println!("{}✅ Your node meets the version requirement.{}", GREEN, RESET);
+                            println!(
+                                "{}✅ Your node meets the version requirement.{}",
+                                GREEN, RESET
+                            );
                         } else {
                             println!("{}❌ Your node is OUTDATED.{}", RED, RESET);
                             println!("{}   Block production is PAUSED.{}", RED, RESET);
@@ -679,9 +854,15 @@ pub mod cli {
                     println!();
                     println!("If you have objections to this update, vote to veto:");
                     println!();
-                    println!("  {}doli-node update vote --veto --key <producer.json>{}", CYAN, RESET);
+                    println!(
+                        "  {}doli-node update vote --veto --key <producer.json>{}",
+                        CYAN, RESET
+                    );
                     println!();
-                    println!("If the veto threshold ({}%) is reached, the update will be rejected.", VETO_THRESHOLD_PERCENT);
+                    println!(
+                        "If the veto threshold ({}%) is reached, the update will be rejected.",
+                        VETO_THRESHOLD_PERCENT
+                    );
                     println!("If not vetoed, the update will be approved after the veto period.");
                     println!();
                 }
@@ -700,5 +881,4 @@ pub mod cli {
             }
         }
     }
-
 }

@@ -34,8 +34,8 @@ impl GenesisConfig {
     pub fn mainnet() -> Self {
         Self {
             network: Network::Mainnet,
-            timestamp: 1769904000,  // 2026-02-01T00:00:00Z
-            reward: 100_000_000,    // 1 DOLI (same as initial block reward)
+            timestamp: 1769904000, // 2026-02-01T00:00:00Z
+            reward: 100_000_000,   // 1 DOLI (same as initial block reward)
             message: "Time is the only fair currency. 01/Feb/2026",
         }
     }
@@ -93,11 +93,26 @@ pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
     // PLACEHOLDER - Replace with actual mainnet producer pubkeys before launch!
     // Generate wallets first, then copy pubkeys here.
     // See docs/GENESIS.md Section 4 for instructions.
-    ("0000000000000000000000000000000000000000000000000000000000000001", 1), // producer_1 - REPLACE!
-    ("0000000000000000000000000000000000000000000000000000000000000002", 1), // producer_2 - REPLACE!
-    ("0000000000000000000000000000000000000000000000000000000000000003", 1), // producer_3 - REPLACE!
-    ("0000000000000000000000000000000000000000000000000000000000000004", 1), // producer_4 - REPLACE!
-    ("0000000000000000000000000000000000000000000000000000000000000005", 1), // producer_5 - REPLACE!
+    (
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        1,
+    ), // producer_1 - REPLACE!
+    (
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        1,
+    ), // producer_2 - REPLACE!
+    (
+        "0000000000000000000000000000000000000000000000000000000000000003",
+        1,
+    ), // producer_3 - REPLACE!
+    (
+        "0000000000000000000000000000000000000000000000000000000000000004",
+        1,
+    ), // producer_4 - REPLACE!
+    (
+        "0000000000000000000000000000000000000000000000000000000000000005",
+        1,
+    ), // producer_5 - REPLACE!
 ];
 
 /// Check if mainnet genesis producers are still placeholders
@@ -140,11 +155,26 @@ pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
 /// The pubkeys are derived from the testnet producer private keys.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
-    ("8f5b66af162a74d3d0992e73adbb3c6baf774ee3b75e01dd393eaba8907621a2", 1), // producer_1
-    ("2f2bc92b84423977e10c595f33099eacec476ea2a7353d01a51a54658b342895", 1), // producer_2
-    ("066c22d232fe36b5b415ad38b155034323c3b2083e18d5c6c269218541605674", 1), // producer_3
-    ("743a4ca3c0fc033a213195fa20352aac2118ef1a624cf77aaaba4ab59e2335d8", 1), // producer_4
-    ("7c8ce647c6d32eaea14ae47a282e78fba469f6c9117f062e9345143d4c967145", 1), // producer_5
+    (
+        "8f5b66af162a74d3d0992e73adbb3c6baf774ee3b75e01dd393eaba8907621a2",
+        1,
+    ), // producer_1
+    (
+        "2f2bc92b84423977e10c595f33099eacec476ea2a7353d01a51a54658b342895",
+        1,
+    ), // producer_2
+    (
+        "066c22d232fe36b5b415ad38b155034323c3b2083e18d5c6c269218541605674",
+        1,
+    ), // producer_3
+    (
+        "743a4ca3c0fc033a213195fa20352aac2118ef1a624cf77aaaba4ab59e2335d8",
+        1,
+    ), // producer_4
+    (
+        "7c8ce647c6d32eaea14ae47a282e78fba469f6c9117f062e9345143d4c967145",
+        1,
+    ), // producer_5
 ];
 
 /// Parse testnet genesis producers into (PublicKey, bond_count) pairs

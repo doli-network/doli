@@ -536,15 +536,24 @@ mod tests {
 
         // First announcement with sequence 0
         let ann1 = ProducerAnnouncement::new(&keypair, 1, 0);
-        assert!(matches!(gset.merge_one(ann1), Ok(MergeOneResult::NewProducer)));
+        assert!(matches!(
+            gset.merge_one(ann1),
+            Ok(MergeOneResult::NewProducer)
+        ));
 
         // Second announcement with sequence 1 should update
         let ann2 = ProducerAnnouncement::new(&keypair, 1, 1);
-        assert!(matches!(gset.merge_one(ann2), Ok(MergeOneResult::SequenceUpdate)));
+        assert!(matches!(
+            gset.merge_one(ann2),
+            Ok(MergeOneResult::SequenceUpdate)
+        ));
 
         // Old sequence should be rejected (no change)
         let ann3 = ProducerAnnouncement::new(&keypair, 1, 0);
-        assert!(matches!(gset.merge_one(ann3), Ok(MergeOneResult::Duplicate)));
+        assert!(matches!(
+            gset.merge_one(ann3),
+            Ok(MergeOneResult::Duplicate)
+        ));
 
         assert_eq!(gset.len(), 1); // Still only one producer
         assert_eq!(gset.sequence_for(keypair.public_key()), 1);
@@ -659,11 +668,17 @@ mod tests {
 
         // Add same announcement twice
         let ann = ProducerAnnouncement::new(&keypair, 1, 0);
-        assert!(matches!(gset.merge_one(ann.clone()), Ok(MergeOneResult::NewProducer)));
+        assert!(matches!(
+            gset.merge_one(ann.clone()),
+            Ok(MergeOneResult::NewProducer)
+        ));
 
         // Same sequence number - should be duplicate
         let ann2 = ProducerAnnouncement::new(&keypair, 1, 0);
-        assert!(matches!(gset.merge_one(ann2), Ok(MergeOneResult::Duplicate)));
+        assert!(matches!(
+            gset.merge_one(ann2),
+            Ok(MergeOneResult::Duplicate)
+        ));
 
         assert_eq!(gset.len(), 1);
     }

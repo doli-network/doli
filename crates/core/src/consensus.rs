@@ -1282,16 +1282,16 @@ impl ConsensusParams {
     /// realistic testing of the Proof of Time consensus with VDF.
     pub fn testnet() -> Self {
         Self {
-            genesis_time: 0,              // Will be set at testnet launch
-            slot_duration: SLOT_DURATION, // Same as mainnet (10 seconds)
-            slots_per_epoch: SLOTS_PER_EPOCH,         // Same as mainnet (360)
-            slots_per_reward_epoch: SLOTS_PER_REWARD_EPOCH,  // Same as mainnet
+            genesis_time: 0,                                // Will be set at testnet launch
+            slot_duration: SLOT_DURATION,                   // Same as mainnet (10 seconds)
+            slots_per_epoch: SLOTS_PER_EPOCH,               // Same as mainnet (360)
+            slots_per_reward_epoch: SLOTS_PER_REWARD_EPOCH, // Same as mainnet
             attestation_interval: ATTESTATION_INTERVAL,
             min_attestation_rate: MIN_ATTESTATION_RATE,
             blocks_per_era: BLOCKS_PER_ERA, // Same as mainnet (~4 years)
             bootstrap_blocks: BOOTSTRAP_BLOCKS, // Same as mainnet (~1 week)
             initial_reward: INITIAL_REWARD,
-            initial_bond: INITIAL_BOND,   // Same as mainnet (1000 DOLI)
+            initial_bond: INITIAL_BOND, // Same as mainnet (1000 DOLI)
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
@@ -1310,16 +1310,16 @@ impl ConsensusParams {
     /// This allows testing the full tokenomics lifecycle in ~1 hour (6 eras).
     pub fn devnet() -> Self {
         Self {
-            genesis_time: 0,       // Will be set at devnet start
-            slot_duration: 1,      // 1 second (fast)
-            slots_per_epoch: 60,   // 1 minute per epoch
+            genesis_time: 0,            // Will be set at devnet start
+            slot_duration: 1,           // 1 second (fast)
+            slots_per_epoch: 60,        // 1 minute per epoch
             slots_per_reward_epoch: 30, // 30 seconds per reward epoch
             attestation_interval: 1,    // Every block (presence signatures)
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: 576,        // ≈10 minutes per era (576 blocks × 1s = 9.6 min)
-            bootstrap_blocks: 60,       // ~1 minute bootstrap
+            blocks_per_era: 576, // ≈10 minutes per era (576 blocks × 1s = 9.6 min)
+            bootstrap_blocks: 60, // ~1 minute bootstrap
             initial_reward: INITIAL_REWARD, // 1 DOLI per block (same as mainnet)
-            initial_bond: 100_000_000,      // 1 DOLI
+            initial_bond: 100_000_000, // 1 DOLI
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
@@ -1771,7 +1771,6 @@ pub fn select_producer_for_slot(
 
     result
 }
-
 
 /// Determine the allowed producer rank based on slot offset (in seconds).
 ///
@@ -3146,7 +3145,7 @@ mod tests {
         // Test scaled_fallback_windows (used for non-mainnet networks)
         // Uses 50%/75%/100% ratios
         let (primary, secondary, tertiary) = scaled_fallback_windows(10);
-        assert_eq!(primary, 5);   // 50% of 10
+        assert_eq!(primary, 5); // 50% of 10
         assert_eq!(secondary, 7); // 75% of 10
         assert_eq!(tertiary, 10); // 100% of 10
     }

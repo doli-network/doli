@@ -270,7 +270,8 @@ mod tests {
     fn test_utxo_entry_epoch_reward_maturity() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
+        let tx =
+            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
@@ -382,7 +383,8 @@ mod tests {
     fn test_utxo_entry_serialization_roundtrip() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
+        let tx =
+            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
 
         let mut utxo_set = UtxoSet::new();
         utxo_set.add_transaction(&tx, 100, false);

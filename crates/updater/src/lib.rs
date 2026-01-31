@@ -261,10 +261,7 @@ pub enum UpdateError {
     },
 
     #[error("Update rejected by community: {veto_percent}% veto (threshold: {threshold}%)")]
-    RejectedByVeto {
-        veto_percent: u8,
-        threshold: u8,
-    },
+    RejectedByVeto { veto_percent: u8, threshold: u8 },
 
     #[error("Update not yet approved")]
     NotApproved,
@@ -361,7 +358,9 @@ impl std::fmt::Display for ProductionBlocked {
 impl std::error::Error for ProductionBlocked {}
 
 /// Check if production is allowed based on version enforcement
-pub fn check_production_allowed(enforcement: Option<&VersionEnforcement>) -> std::result::Result<(), ProductionBlocked> {
+pub fn check_production_allowed(
+    enforcement: Option<&VersionEnforcement>,
+) -> std::result::Result<(), ProductionBlocked> {
     if let Some(enf) = enforcement {
         if enf.should_enforce() && !enf.version_meets_requirement(current_version()) {
             return Err(ProductionBlocked {

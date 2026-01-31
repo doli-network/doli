@@ -1,8 +1,8 @@
 //! Update application and rollback
 
 use crate::{
-    download_binary, veto_deadline, veto_period_ended, verify_hash, current_timestamp,
-    Release, Result, UpdateError, VETO_THRESHOLD_PERCENT,
+    current_timestamp, download_binary, verify_hash, veto_deadline, veto_period_ended, Release,
+    Result, UpdateError, VETO_THRESHOLD_PERCENT,
 };
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -62,7 +62,11 @@ pub async fn backup_current() -> Result<PathBuf> {
 ///
 /// This prevents producers from applying potentially malicious updates
 /// before the community has a chance to review and veto.
-pub async fn apply_update(release: &Release, approved: bool, veto_percent: Option<u8>) -> Result<()> {
+pub async fn apply_update(
+    release: &Release,
+    approved: bool,
+    veto_percent: Option<u8>,
+) -> Result<()> {
     info!("Attempting to apply update to version {}", release.version);
 
     // SECURITY CHECK 1: Veto period must be over
@@ -104,7 +108,10 @@ pub async fn apply_update(release: &Release, approved: bool, veto_percent: Optio
         return Err(UpdateError::NotApproved);
     }
 
-    info!("Security checks passed. Applying update to version {}", release.version);
+    info!(
+        "Security checks passed. Applying update to version {}",
+        release.version
+    );
 
     // 1. Download
     let binary = download_binary(release).await?;

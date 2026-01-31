@@ -9,7 +9,7 @@
 //! CRITICAL: These tests MUST pass before genesis. If slashing doesn't work,
 //! the security model is broken and double-spend attacks become possible.
 
-use crypto::{hash::hash, KeyPair, PublicKey, Hash};
+use crypto::{hash::hash, Hash, KeyPair, PublicKey};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::ConsensusParams;
 use doli_core::transaction::{SlashData, SlashingEvidence, Transaction};
@@ -22,12 +22,7 @@ use vdf::{VdfOutput, VdfProof};
 const BOND_AMOUNT: u64 = 1_000 * 100_000_000; // 1000 DOLI
 
 /// Helper to create a test block with specified parameters
-fn create_test_block(
-    slot: u32,
-    producer: &PublicKey,
-    prev_hash: Hash,
-    merkle_root: Hash,
-) -> Block {
+fn create_test_block(slot: u32, producer: &PublicKey, prev_hash: Hash, merkle_root: Hash) -> Block {
     let header = BlockHeader {
         version: 1,
         prev_hash,
@@ -82,12 +77,7 @@ async fn test_equivocation_detection_basic() {
 
     // Create two DIFFERENT blocks for the SAME slot
     let slot = 100;
-    let block_a = create_test_block(
-        slot,
-        &producer_pubkey,
-        Hash::ZERO,
-        hash(b"transactions_a"),
-    );
+    let block_a = create_test_block(slot, &producer_pubkey, Hash::ZERO, hash(b"transactions_a"));
     let block_b = create_test_block(
         slot,
         &producer_pubkey,
@@ -209,7 +199,10 @@ async fn test_proof_contains_vdf_verifiable_headers() {
     assert_eq!(proof.block_header_2.producer, producer_pubkey);
 
     // Headers must have VDF outputs (even if empty for tests)
-    assert!(!proof.block_header_1.vdf_output.value.is_empty() || proof.block_header_1.vdf_proof.is_empty());
+    assert!(
+        !proof.block_header_1.vdf_output.value.is_empty()
+            || proof.block_header_1.vdf_proof.is_empty()
+    );
 
     println!("✓ VDF-verifiable headers test passed");
 }
@@ -255,7 +248,11 @@ async fn test_proof_to_slash_transaction() {
     }
 
     // Reporter signature should be present (prevents spam)
-    assert!(!slash_data.reporter_signature.as_bytes().iter().all(|&b| b == 0));
+    assert!(!slash_data
+        .reporter_signature
+        .as_bytes()
+        .iter()
+        .all(|&b| b == 0));
 
     println!("✓ Proof to slash transaction test passed");
 }
@@ -305,9 +302,7 @@ async fn test_slashing_updates_producer_status() {
 async fn test_slashed_producer_cannot_reregister() {
     let malicious = KeyPair::generate();
 
-    let mut producer_set = create_producer_set_with_bonds(&[
-        (malicious.public_key(), BOND_AMOUNT),
-    ]);
+    let mut producer_set = create_producer_set_with_bonds(&[(malicious.public_key(), BOND_AMOUNT)]);
 
     // Slash the producer
     let _ = producer_set.slash_producer(malicious.public_key(), 500);
@@ -455,7 +450,10 @@ async fn test_equivocation_slashing_e2e() {
     println!("  - Proof generated with both block headers");
     println!("  - Slash transaction created");
     println!("  - Producer excluded from active set");
-    println!("  - Active bonds reduced: {} -> {}", initial_supply, total_bonds_after);
+    println!(
+        "  - Active bonds reduced: {} -> {}",
+        initial_supply, total_bonds_after
+    );
 }
 
 // ============================================================================

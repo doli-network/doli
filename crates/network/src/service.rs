@@ -589,7 +589,9 @@ async fn handle_behaviour_event(
                         message.data.len(),
                         propagation_source
                     );
-                    let _ = event_tx.send(NetworkEvent::NewVote(message.data.clone())).await;
+                    let _ = event_tx
+                        .send(NetworkEvent::NewVote(message.data.clone()))
+                        .await;
                 }
                 _ => {}
             }
