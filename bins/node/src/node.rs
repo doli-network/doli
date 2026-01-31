@@ -2216,6 +2216,7 @@ impl Node {
         let block = Block {
             header: final_header,
             transactions,
+            presence: None, // TODO: Add presence commitment from heartbeats (Milestone 8)
         };
 
         let block_hash = block.hash();
