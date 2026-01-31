@@ -69,19 +69,8 @@ pub struct Node {
     last_produced_slot: u32,
     /// Last time we checked for production opportunity
     last_production_check: Instant,
-    /// Epoch tracking: maps producer pubkey to blocks produced in current epoch
-    /// Used for fair reward distribution in EpochPool mode
-    epoch_producer_blocks: Arc<RwLock<HashMap<PublicKey, u64>>>,
-    /// Epoch tracking: starting height of current reward epoch
-    epoch_start_height: u64,
-    /// Epoch tracking: total rewards accumulated in current epoch (not yet distributed)
-    epoch_reward_pool: u64,
-    /// Current reward epoch number (increments at epoch boundaries)
-    current_reward_epoch: u64,
     /// All known producers (persists across epochs for round-robin)
     known_producers: Arc<RwLock<Vec<PublicKey>>>,
-    /// Pending epoch redistribution transactions to include in next block
-    pending_epoch_rewards: Arc<RwLock<Vec<Transaction>>>,
     /// Time when we first connected to a peer (for discovery grace period)
     first_peer_connected: Option<Instant>,
     /// Equivocation detector for slashing double-signers
@@ -161,35 +150,6 @@ impl Node {
                 params.genesis_time = now - (now % params.slot_duration);
                 info!("Devnet genesis time initialized: {}", params.genesis_time);
             }
-        }
-
-        // Extract epoch state from chain_state for persistence across restarts
-        // This fixes the bug where epoch counters reset on restart, preventing reward distribution
-        let epoch_start_height = chain_state.epoch_start_height;
-        let epoch_reward_pool = chain_state.epoch_reward_pool;
-        let current_reward_epoch = chain_state.current_reward_epoch;
-        let epoch_producer_blocks_map: HashMap<PublicKey, u64> = chain_state
-            .epoch_producer_blocks
-            .iter()
-            .filter_map(|(hex, count)| {
-                let bytes = hex::decode(hex).ok()?;
-                if bytes.len() != 32 {
-                    return None;
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes);
-                Some((PublicKey::from_bytes(arr), *count))
-            })
-            .collect();
-
-        if current_reward_epoch > 0 || epoch_start_height > 0 {
-            info!(
-                "Loaded epoch state: epoch={}, start_height={}, pool={}, producers={}",
-                current_reward_epoch,
-                epoch_start_height,
-                epoch_reward_pool,
-                epoch_producer_blocks_map.len()
-            );
         }
 
         let chain_state = Arc::new(RwLock::new(chain_state));
@@ -288,13 +248,7 @@ impl Node {
             producer_key,
             last_produced_slot: 0,
             last_production_check: Instant::now(),
-            // Load epoch state from ChainState (persisted across restarts)
-            epoch_producer_blocks: Arc::new(RwLock::new(epoch_producer_blocks_map)),
-            epoch_start_height,
-            epoch_reward_pool,
-            current_reward_epoch,
             known_producers: Arc::new(RwLock::new(Vec::new())),
-            pending_epoch_rewards: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector,
             vdf_calibrator,
@@ -1422,15 +1376,6 @@ impl Node {
             cache.clear();
         }
 
-        // Clear bootstrap tracking
-        {
-            let mut producers = self.epoch_producer_blocks.write().await;
-            producers.clear();
-        }
-        self.epoch_reward_pool = 0;
-        self.epoch_start_height = 0;
-        self.current_reward_epoch = 0;
-
         // Reset sync manager
         {
             let mut sync = self.sync_manager.write().await;
@@ -1552,179 +1497,20 @@ impl Node {
             }
         }
 
-        // Epoch-based equitable rewards tracking (Pool-First Distribution)
-        // Track all block producers and distribute rewards equally at epoch boundaries
+        // Track known producers for round-robin scheduling
+        // (Epoch rewards will be calculated from BlockStore in Milestone 3)
         if self.params.reward_mode == RewardMode::EpochPool {
             let block_producer = block.header.producer.clone();
-            let block_reward = self.params.block_reward(height);
-
-            // Track this producer's participation in the epoch
-            {
-                let mut producers = self.epoch_producer_blocks.write().await;
-                *producers.entry(block_producer.clone()).or_insert(0) += 1;
-            }
-
-            // Also track in the persistent known producers list (for round-robin scheduling)
-            {
-                let mut known = self.known_producers.write().await;
-                if !known.contains(&block_producer) {
-                    known.push(block_producer.clone());
-                    // Keep sorted for deterministic ordering
-                    known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                    info!(
-                        "New producer discovered: {} (now {} known)",
-                        &crypto_hash(block_producer.as_bytes()).to_hex()[..16],
-                        known.len()
-                    );
-                }
-            }
-
-            // Accumulate block reward in pool
-            self.epoch_reward_pool += block_reward;
-
-            // Initialize epoch start if needed
-            if self.epoch_start_height == 0 {
-                self.epoch_start_height = height;
-            }
-
-            // Check for epoch boundary (every slots_per_reward_epoch blocks)
-            let epoch_length = self.params.slots_per_reward_epoch as u64;
-            let blocks_in_epoch = height - self.epoch_start_height + 1;
-
-            let producers = self.epoch_producer_blocks.read().await;
-            if blocks_in_epoch >= epoch_length && !producers.is_empty() {
-                let num_producers = producers.len();
-                // Calculate total blocks for proportional distribution
-                let total_blocks: u64 = producers.values().sum();
-
-                // Determine distribution mode based on bond counts and block variance
-                // - Equal bonds + steady-state (low variance) → equal distribution
-                // - Unequal bonds OR high variance (staggered joins) → proportional distribution
-                let use_equal_distribution = {
-                    let producer_set = self.producer_set.read().await;
-                    let bond_counts: Vec<u32> = producers
-                        .keys()
-                        .filter_map(|pubkey| {
-                            producer_set.get_by_pubkey(pubkey).map(|p| p.bond_count)
-                        })
-                        .collect();
-
-                    // Check if bonds are equal (or unknown in bootstrap mode)
-                    let equal_bonds = if bond_counts.is_empty() {
-                        // Bootstrap mode: assume equal bonds
-                        true
-                    } else if bond_counts.len() == producers.len() {
-                        // All producers found: check if they have equal bonds
-                        bond_counts.iter().all(|&c| c == bond_counts[0])
-                    } else {
-                        // Partial info: assume unequal bonds
-                        false
-                    };
-
-                    // Check block variance to detect steady-state vs staggered joins
-                    // Steady-state round-robin: all producers within ±1 block of expected average
-                    let block_counts: Vec<u64> = producers.values().copied().collect();
-                    let max_blocks = block_counts.iter().max().copied().unwrap_or(0);
-                    let min_blocks = block_counts.iter().min().copied().unwrap_or(0);
-                    let variance = max_blocks - min_blocks;
-
-                    // Steady-state: variance ≤ 1 (accounts for slot alignment at epoch boundary)
-                    // Staggered joins: variance > 1 (significant difference in blocks produced)
-                    let is_steady_state = variance <= 1;
-
-                    // Use equal distribution only when BOTH conditions are met:
-                    // 1. All producers have equal bonds (or bootstrap mode)
-                    // 2. Block production is in steady-state (low variance)
-                    equal_bonds && is_steady_state
-                };
-
-                let distribution_mode = if use_equal_distribution { "equally" } else { "proportionally" };
+            let mut known = self.known_producers.write().await;
+            if !known.contains(&block_producer) {
+                known.push(block_producer.clone());
+                // Keep sorted for deterministic ordering
+                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                 info!(
-                    "Epoch {} complete at height {}: distributing {} DOLI {} to {} producers ({} total blocks)",
-                    self.current_reward_epoch,
-                    height,
-                    self.epoch_reward_pool / 100_000_000,
-                    distribution_mode,
-                    num_producers,
-                    total_blocks
+                    "New producer discovered: {} (now {} known)",
+                    &crypto_hash(block_producer.as_bytes()).to_hex()[..16],
+                    known.len()
                 );
-
-                // Sort producers for deterministic ordering
-                let mut sorted_producers: Vec<_> = producers.iter().collect();
-                sorted_producers.sort_by(|(a, _), (b, _)| a.as_bytes().cmp(b.as_bytes()));
-
-                // Track distributed amount to handle rounding dust
-                let mut distributed: u64 = 0;
-
-                // Calculate equal share for steady-state distribution (8-decimal precision)
-                // Pool is already in base units (1 DOLI = 100_000_000 base units)
-                let equal_share = self.epoch_reward_pool / num_producers as u64;
-                let remainder = self.epoch_reward_pool % num_producers as u64;
-
-                // Deterministic random index for remainder assignment (based on block hash)
-                // Uses first byte of block hash for randomness - same result on all nodes
-                let random_index = (block_hash.as_bytes()[0] as usize) % num_producers;
-
-                // Create epoch reward transactions for all producers
-                let mut epoch_reward_txs = Vec::new();
-
-                for (i, (pubkey, blocks)) in sorted_producers.iter().enumerate() {
-                    let pubkey_hash = crypto_hash(pubkey.as_bytes());
-                    let recipient_hash = crypto_hash(pubkey.as_bytes());
-
-                    // Determine reward amount based on distribution mode
-                    let amount = if use_equal_distribution {
-                        // Equal distribution for steady-state round-robin (equal bonds)
-                        // Random producer (determined by block hash) gets the sub-unit remainder
-                        if i == random_index {
-                            equal_share + remainder
-                        } else {
-                            equal_share
-                        }
-                    } else if i == sorted_producers.len() - 1 {
-                        // Proportional distribution: last producer gets dust from rounding
-                        self.epoch_reward_pool - distributed
-                    } else {
-                        // Proportional distribution for unequal bonds or staggered joins
-                        (self.epoch_reward_pool * *blocks) / total_blocks
-                    };
-                    distributed += amount;
-
-                    // Create epoch reward transaction
-                    let epoch_reward_tx = Transaction::new_epoch_reward(
-                        self.current_reward_epoch,
-                        (*pubkey).clone(),
-                        amount,
-                        recipient_hash,
-                    );
-
-                    info!(
-                        "  Producer {}: {} blocks ({:.1}%) -> {:.8} DOLI reward",
-                        &pubkey_hash.to_hex()[..16],
-                        blocks,
-                        (**blocks as f64 / total_blocks as f64) * 100.0,
-                        amount as f64 / 100_000_000.0,
-                    );
-
-                    epoch_reward_txs.push(epoch_reward_tx);
-                }
-                drop(producers);
-
-                // Store epoch reward transactions to be included in next block
-                if !epoch_reward_txs.is_empty() {
-                    info!(
-                        "Created {} epoch reward transactions for distribution",
-                        epoch_reward_txs.len()
-                    );
-                    let mut pending = self.pending_epoch_rewards.write().await;
-                    pending.extend(epoch_reward_txs);
-                }
-
-                // Reset epoch tracking for next epoch
-                self.epoch_producer_blocks.write().await.clear();
-                self.epoch_reward_pool = 0;
-                self.epoch_start_height = height + 1;
-                self.current_reward_epoch += 1;
             }
         }
 
@@ -2372,15 +2158,9 @@ impl Node {
                 ));
             }
             RewardMode::EpochPool => {
-                // Pool-first mode: no coinbase, include pending epoch reward transactions
-                let mut pending_rewards = self.pending_epoch_rewards.write().await;
-                if !pending_rewards.is_empty() {
-                    info!(
-                        "Including {} epoch reward transactions in block",
-                        pending_rewards.len()
-                    );
-                    transactions.extend(pending_rewards.drain(..));
-                }
+                // Pool-first mode: rewards calculated from BlockStore at epoch boundaries
+                // TODO(Milestone 3): Implement calculate_epoch_rewards() and should_include_epoch_rewards()
+                // For now, no per-block reward - epoch rewards will be added in Milestone 3
             }
         }
 
@@ -2542,30 +2322,6 @@ impl Node {
         // Save UTXO set
         let utxo_path = self.config.data_dir.join("utxo");
         self.utxo_set.read().await.save(&utxo_path)?;
-
-        // Save epoch state to ChainState before saving
-        // This ensures epoch tracking persists across restarts
-        {
-            let mut chain_state = self.chain_state.write().await;
-            let epoch_blocks = self.epoch_producer_blocks.read().await;
-
-            // Convert PublicKey -> hex string for serialization
-            chain_state.epoch_producer_blocks = epoch_blocks
-                .iter()
-                .map(|(pk, count)| (hex::encode(pk.as_bytes()), *count))
-                .collect();
-            chain_state.epoch_start_height = self.epoch_start_height;
-            chain_state.epoch_reward_pool = self.epoch_reward_pool;
-            chain_state.current_reward_epoch = self.current_reward_epoch;
-
-            info!(
-                "Saving epoch state: epoch={}, start_height={}, pool={}, producers={}",
-                self.current_reward_epoch,
-                self.epoch_start_height,
-                self.epoch_reward_pool,
-                epoch_blocks.len()
-            );
-        }
 
         // Save chain state
         let state_path = self.config.data_dir.join("chain_state.bin");
