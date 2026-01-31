@@ -117,6 +117,7 @@ pub mod chainspec;
 pub mod consensus;
 pub mod discovery;
 pub mod genesis;
+pub mod heartbeat;
 pub mod network;
 pub mod presence;
 pub mod tpop;
@@ -181,6 +182,15 @@ pub use consensus::reward_epoch;
 
 // Presence commitment for weighted presence rewards
 pub use presence::PresenceCommitment;
+
+// Heartbeat VDF and witness system for presence proofs (consensus-affecting)
+// Note: Use `heartbeat::` prefix to access these types to avoid conflict with tpop telemetry
+pub use heartbeat::{
+    hash_chain_vdf, verify_hash_chain_vdf, Heartbeat, WitnessSignature,
+    HEARTBEAT_VERSION, MIN_WITNESS_SIGNATURES,
+};
+// HeartbeatError and HEARTBEAT_VDF_ITERATIONS are exported from tpop (telemetry)
+// For consensus heartbeat error, use heartbeat::HeartbeatError directly
 
 pub use genesis::{
     generate_genesis_block, genesis_hash, verify_genesis_block, GenesisConfig, GenesisError,
