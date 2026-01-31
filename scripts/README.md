@@ -442,6 +442,47 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_5node_presence_rewards.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_5node_presence_rewards.sh` |
+| **Purpose** | E2E test of 5-node presence tracking and claim flow at scale |
+| **What it tests** | 5-node round-robin, presence tracking, multi-producer claims, double-claim prevention, chain sync |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `python3` |
+| **Run time** | ~12-15 minutes (2 epochs) |
+| **Output** | `/tmp/doli-5node-presence-test/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_5node_presence_rewards.sh
+```
+
+**Test phases:**
+1. Start 5 producer nodes on devnet
+2. Wait for 2 epochs to complete (720 blocks)
+3. Verify round-robin block distribution (~20% per node)
+4. Test getEpochInfo and getClaimableRewards RPC endpoints
+5. Test rewards CLI commands (info, list)
+6. Claim epoch 0 for Node 1 and Node 3
+7. Verify double-claim prevention (Node 1 second claim rejected)
+8. Check claim history for claiming nodes
+9. Verify all nodes are synced (within 2 blocks)
+
+**Key validations:**
+- All 5 nodes are producing blocks with ~20% share each
+- RPC endpoints return valid data
+- CLI commands work correctly
+- Claims succeed and are recorded
+- Double-claims are rejected
+- Chain remains consistent across all nodes
+
+**Notes:**
+- Currently only block producers are marked as present (heartbeat gossip pending)
+- Full weighted distribution testing requires heartbeat gossip implementation
+
+---
+
 ### test_whitepaper_full.sh
 
 | Property | Value |
@@ -717,6 +758,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
 | `test_claim_epoch_reward.sh` | 3 | ~3 min | **ClaimEpochReward E2E test** |
 | `test_weighted_presence_rewards.sh` | 3 | ~2 min | **Weighted presence infrastructure** |
+| `test_5node_presence_rewards.sh` | 5 | ~12-15 min | **5-node presence tracking at scale** |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
 | `test_critical_features.sh` | 3 | ~3-5 min | **Real devnet E2E validation** |
 | `test_12node_governance.sh` | 5 | ~20 min | Era progression & governance |
