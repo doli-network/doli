@@ -14,7 +14,7 @@ This skill guides you through setting up and running DOLI nodes and producers on
 |-----------|--------|---------|---------|
 | **Network ID** | 99 | 2 | 1 |
 | **Address Prefix** | `ddoli` | `tdoli` | `doli` |
-| **Slot Duration** | 5 seconds | 10 seconds | 10 seconds |
+| **Slot Duration** | 1 second | 10 seconds | 10 seconds |
 | **Epoch Length** | 360 blocks | 360 blocks | 360 blocks |
 | **P2P Port** | 50303 | 40303 | 30303 |
 | **RPC Port** | 28545 | 18545 | 8545 |
@@ -39,7 +39,7 @@ Replace `<NETWORK>` with `devnet`, `testnet`, or `mainnet`.
 User wants to...
 │
 ├─ Local development/testing?
-│  └─ Use devnet (fast 5s blocks, no external dependencies)
+│  └─ Use devnet (fast 1s blocks, no external dependencies)
 │
 ├─ Public testing with other operators?
 │  └─ Use testnet (mirrors mainnet timing)
@@ -225,7 +225,7 @@ journalctl -u doli-<NETWORK> | grep -i "height\|produced"
 ```bash
 # Replace port: 28545 (devnet), 18545 (testnet), 8545 (mainnet)
 curl -s http://127.0.0.1:<RPC_PORT> -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"chain_getInfo","params":[],"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
 
 ## Server Requirements

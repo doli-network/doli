@@ -146,7 +146,7 @@ done
     --producer --producer-key ~/.doli/genesis/producer_1.json
 ```
 
-See [GENESIS.md](/docs/GENESIS.md) for complete network launch procedures.
+See [genesis.md](/docs/genesis.md) for complete network launch procedures.
 
 ## CLI Commands Reference
 
@@ -190,7 +190,7 @@ journalctl -u doli-testnet | grep -i "height\|produced"
 ```bash
 # Check if RPC is responding
 curl -s http://127.0.0.1:18545 -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"chain_getInfo","params":[],"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
 
 ## Server Requirements
@@ -215,16 +215,16 @@ User wants to...
 │
 ├─ Launch brand new network?
 │  └─ Follow Scenario 3 (Network Operators)
-│     └─ Also read: docs/GENESIS.md
+│     └─ Also read: docs/genesis.md
 │
 └─ Just check testnet status?
-   └─ doli chain --rpc http://testnet.doli.network:18545
+   └─ Use /doli-network skill or: curl -s http://127.0.0.1:18545 -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
 
 ## Related Documentation
 
-- [TESTNET.md](/docs/TESTNET.md) - Full testnet documentation
-- [GENESIS.md](/docs/GENESIS.md) - Network launch procedures
-- [RUNNING_A_NODE.md](/docs/RUNNING_A_NODE.md) - Node operation guide
-- [BECOMING_A_PRODUCER.md](/docs/BECOMING_A_PRODUCER.md) - Producer guide
-- [CLI.md](/docs/CLI.md) - Complete CLI reference
+- [testnet.md](/docs/testnet.md) - Full testnet documentation
+- [genesis.md](/docs/genesis.md) - Network launch procedures
+- [running_a_node.md](/docs/running_a_node.md) - Node operation guide
+- [becoming_a_producer.md](/docs/becoming_a_producer.md) - Producer guide
+- [cli.md](/docs/cli.md) - Complete CLI reference
