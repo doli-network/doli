@@ -281,14 +281,29 @@ pub struct ProducerInfo {
     pub bond_outpoint: (Hash, u32),
     /// Current status
     pub status: ProducerStatus,
-    /// Number of blocks produced
+    /// DEPRECATED: Blocks produced counter (never updated by EpochPool rewards)
+    ///
+    /// This field is vestigial from the Pull/Claim reward model. The active
+    /// EpochPool system calculates block counts from the BlockStore on-demand.
+    /// Field retained for serialization backwards compatibility only.
+    #[deprecated(
+        note = "Block counts are calculated from BlockStore - this field is never updated"
+    )]
+    #[serde(default)]
     pub blocks_produced: u64,
     /// Number of missed slots
     pub slots_missed: u64,
     /// Era when registered (for renewal tracking)
     pub registration_era: u32,
-    /// Accumulated rewards waiting to be claimed (Pull/Claim model)
-    /// Instead of creating UTXOs per block, rewards accumulate here
+    /// DEPRECATED: Pending rewards counter (never updated by EpochPool rewards)
+    ///
+    /// This field is vestigial from the Pull/Claim reward model. The active
+    /// EpochPool system distributes rewards directly to UTXOs via EpochReward
+    /// transactions. Field retained for serialization backwards compatibility only.
+    #[deprecated(
+        note = "Rewards go directly to UTXOs via EpochReward txs - this field is never updated"
+    )]
+    #[serde(default)]
     pub pending_rewards: u64,
     /// Whether this producer has previously exited (anti-Sybil: maturity cooldown)
     ///
@@ -309,7 +324,9 @@ pub struct ProducerInfo {
     /// double production (equivocation).
     /// Field retained for serialization backwards compatibility only.
     #[serde(default)]
-    #[deprecated(note = "Activity gaps no longer affect consensus - field kept for backwards compatibility")]
+    #[deprecated(
+        note = "Activity gaps no longer affect consensus - field kept for backwards compatibility"
+    )]
     pub activity_gaps: u64,
     /// Number of bonds staked (1-100)
     ///
@@ -599,30 +616,47 @@ impl ProducerInfo {
         }
     }
 
-    /// Credit reward to this producer's pending balance
+    /// DEPRECATED: Credit reward to this producer's pending balance
     ///
-    /// Instead of creating a UTXO per block, rewards accumulate here.
-    /// The producer can claim them later via a ClaimReward transaction.
+    /// This method is vestigial from the Pull/Claim reward model.
+    /// The active EpochPool system distributes rewards directly to UTXOs.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
     pub fn credit_reward(&mut self, amount: u64) {
-        self.pending_rewards = self.pending_rewards.saturating_add(amount);
-    }
-
-    /// Claim all pending rewards
-    ///
-    /// Returns the amount claimed and resets pending_rewards to 0.
-    /// Returns None if there are no rewards to claim.
-    pub fn claim_rewards(&mut self) -> Option<u64> {
-        if self.pending_rewards == 0 {
-            return None;
+        #[allow(deprecated)]
+        {
+            self.pending_rewards = self.pending_rewards.saturating_add(amount);
         }
-        let amount = self.pending_rewards;
-        self.pending_rewards = 0;
-        Some(amount)
     }
 
-    /// Check if producer has pending rewards to claim
+    /// DEPRECATED: Claim all pending rewards
+    ///
+    /// This method is vestigial from the Pull/Claim reward model.
+    /// The active EpochPool system distributes rewards directly to UTXOs.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
+    pub fn claim_rewards(&mut self) -> Option<u64> {
+        #[allow(deprecated)]
+        {
+            if self.pending_rewards == 0 {
+                return None;
+            }
+            let amount = self.pending_rewards;
+            self.pending_rewards = 0;
+            Some(amount)
+        }
+    }
+
+    /// DEPRECATED: Check if producer has pending rewards to claim
+    ///
+    /// This method is vestigial from the Pull/Claim reward model.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
     pub fn has_pending_rewards(&self) -> bool {
-        self.pending_rewards > 0
+        #[allow(deprecated)]
+        {
+            self.pending_rewards > 0
+        }
     }
 
     /// Get the producer's base weight based on seniority
@@ -1220,8 +1254,14 @@ impl ProducerSet {
         self.producers.iter()
     }
 
-    /// Record a produced block for a producer
+    /// DEPRECATED: Record a produced block for a producer
+    ///
+    /// This method is vestigial from the Pull/Claim reward model.
+    /// Block counts are now calculated from BlockStore on-demand.
+    #[deprecated(note = "Block counts calculated from BlockStore - this is never called")]
+    #[allow(dead_code)]
     pub fn record_block_produced(&mut self, pubkey: &PublicKey) {
+        #[allow(deprecated)]
         if let Some(info) = self.get_by_pubkey_mut(pubkey) {
             info.blocks_produced += 1;
         }
@@ -1234,43 +1274,54 @@ impl ProducerSet {
         }
     }
 
-    /// Credit reward to a producer (Pull/Claim model)
+    /// DEPRECATED: Credit reward to a producer (Pull/Claim model)
     ///
-    /// Instead of creating a UTXO immediately, the reward is added to
-    /// the producer's pending_rewards balance. They can claim it later.
+    /// This method is vestigial from the Pull/Claim reward model.
+    /// The active EpochPool system distributes rewards directly to UTXOs.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
     pub fn credit_reward(&mut self, pubkey: &PublicKey, amount: u64) {
+        #[allow(deprecated)]
         if let Some(info) = self.get_by_pubkey_mut(pubkey) {
             info.credit_reward(amount);
         }
     }
 
-    /// Process a reward claim from a producer
+    /// DEPRECATED: Process a reward claim from a producer
     ///
-    /// Returns the amount to be paid out if the producer has pending rewards.
-    /// This should be called when validating a ClaimReward transaction.
+    /// This method is vestigial from the Pull/Claim reward model.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
     pub fn process_claim(&mut self, pubkey: &PublicKey) -> Option<u64> {
+        #[allow(deprecated)]
         self.get_by_pubkey_mut(pubkey)?.claim_rewards()
     }
 
-    /// Get pending rewards for a producer without claiming them
+    /// DEPRECATED: Get pending rewards for a producer without claiming them
+    ///
+    /// This method is vestigial from the Pull/Claim reward model.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - rewards go directly to UTXOs")]
+    #[allow(dead_code)]
     pub fn pending_rewards(&self, pubkey: &PublicKey) -> u64 {
+        #[allow(deprecated)]
         self.get_by_pubkey(pubkey)
             .map(|info| info.pending_rewards)
             .unwrap_or(0)
     }
 
-    /// Distribute block reward among producers
+    /// DEPRECATED: Distribute block reward among producers (Pull/Claim model)
     ///
-    /// This is the Pull/Claim model implementation:
-    /// - Block producer gets their share credited to pending_rewards
-    /// - No UTXOs are created until the producer claims
-    ///
-    /// This dramatically reduces UTXO growth:
-    /// - Old model: ~262M UTXOs/year (1 per block × 500 producers)
-    /// - New model: ~6000 UTXOs/year (producers claim periodically)
+    /// This method is vestigial from the Pull/Claim reward model.
+    /// The active EpochPool system distributes rewards via EpochReward transactions
+    /// calculated deterministically from the BlockStore.
+    #[deprecated(note = "Pull/Claim model replaced by EpochPool - see calculate_epoch_rewards()")]
+    #[allow(dead_code)]
     pub fn distribute_block_reward(&mut self, producer_pubkey: &PublicKey, reward: u64) {
-        self.credit_reward(producer_pubkey, reward);
-        self.record_block_produced(producer_pubkey);
+        #[allow(deprecated)]
+        {
+            self.credit_reward(producer_pubkey, reward);
+            self.record_block_produced(producer_pubkey);
+        }
     }
 
     // ==================== Seniority Weight Methods ====================

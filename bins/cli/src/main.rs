@@ -769,13 +769,15 @@ async fn cmd_producer(
 
             match rpc.get_producer(&pk).await {
                 Ok(info) => {
-                    println!("Public Key:    {}...{}", &info.public_key[..16], &info.public_key[info.public_key.len()-8..]);
+                    println!(
+                        "Public Key:    {}...{}",
+                        &info.public_key[..16],
+                        &info.public_key[info.public_key.len() - 8..]
+                    );
                     println!("Status:        {}", info.status);
                     println!("Registered at: block {}", info.registration_height);
                     println!("Bond Count:    {}", info.bond_count);
                     println!("Bond Amount:   {}", format_balance(info.bond_amount));
-                    println!("Blocks Made:   {}", info.blocks_produced);
-                    println!("Rewards:       {}", format_balance(info.pending_rewards));
                     println!("Current Era:   {}", info.era);
 
                     // Show pending withdrawals if any
@@ -786,14 +788,22 @@ async fn cmd_producer(
                             let claimable = if w.claimable { " [READY]" } else { "" };
                             println!(
                                 "  [{}] {} bonds, {} net{} (requested slot {})",
-                                i, w.bond_count, format_balance(w.net_amount), claimable, w.request_slot
+                                i,
+                                w.bond_count,
+                                format_balance(w.net_amount),
+                                claimable,
+                                w.request_slot
                             );
                         }
                     }
                 }
                 Err(e) => {
                     if e.to_string().contains("not found") {
-                        println!("Producer not found: {}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..]);
+                        println!(
+                            "Producer not found: {}...{}",
+                            &pk[..16],
+                            &pk[pk.len().saturating_sub(8)..]
+                        );
                         println!();
                         println!("This key is not registered as a producer.");
                         println!("Use 'doli producer register' to register.");
@@ -815,21 +825,20 @@ async fn cmd_producer(
                         println!("No producers found.");
                     } else {
                         println!(
-                            "{:<8} {:<18} {:<10} {:<8} {:<12} {:<10}",
-                            "Status", "Public Key", "Bonds", "Blocks", "Rewards", "Era"
+                            "{:<10} {:<18} {:<10} {:<10}",
+                            "Status", "Public Key", "Bonds", "Era"
                         );
-                        println!("{:-<80}", "");
+                        println!("{:-<50}", "");
 
                         for p in &producers {
-                            let pk_short = format!("{}...{}", &p.public_key[..8], &p.public_key[p.public_key.len()-4..]);
+                            let pk_short = format!(
+                                "{}...{}",
+                                &p.public_key[..8],
+                                &p.public_key[p.public_key.len() - 4..]
+                            );
                             println!(
-                                "{:<8} {:<18} {:<10} {:<8} {:<12} {:<10}",
-                                p.status,
-                                pk_short,
-                                p.bond_count,
-                                p.blocks_produced,
-                                format_balance(p.pending_rewards).replace(" DOLI", ""),
-                                p.era
+                                "{:<10} {:<18} {:<10} {:<10}",
+                                p.status, pk_short, p.bond_count, p.era
                             );
                         }
 
@@ -1069,7 +1078,9 @@ async fn cmd_producer(
 
             // Calculate early exit penalty based on time active
             let current_info = rpc.get_chain_info().await?;
-            let blocks_active = current_info.best_height.saturating_sub(producer_info.registration_height);
+            let blocks_active = current_info
+                .best_height
+                .saturating_sub(producer_info.registration_height);
             let slots_per_year = 365 * 24 * 60; // Approximate
 
             let years_active = blocks_active as f64 / slots_per_year as f64;
@@ -1088,12 +1099,24 @@ async fn cmd_producer(
                 println!();
                 println!("  Time active:   {:.1} years", years_active);
                 println!("  Penalty:       {}%", penalty_pct);
-                println!("  Bond amount:   {}", format_balance(producer_info.bond_amount));
-                println!("  Penalty loss:  {}", format_balance(producer_info.bond_amount * penalty_pct / 100));
-                println!("  You receive:   {}", format_balance(producer_info.bond_amount * (100 - penalty_pct) / 100));
+                println!(
+                    "  Bond amount:   {}",
+                    format_balance(producer_info.bond_amount)
+                );
+                println!(
+                    "  Penalty loss:  {}",
+                    format_balance(producer_info.bond_amount * penalty_pct / 100)
+                );
+                println!(
+                    "  You receive:   {}",
+                    format_balance(producer_info.bond_amount * (100 - penalty_pct) / 100)
+                );
                 println!();
                 println!("Use --force to proceed with early exit.");
-                println!("Or wait {} more years to exit without penalty.", 4.0 - years_active);
+                println!(
+                    "Or wait {} more years to exit without penalty.",
+                    4.0 - years_active
+                );
                 return Ok(());
             }
 
@@ -1114,7 +1137,10 @@ async fn cmd_producer(
                     println!("TX Hash: {}", hash);
                     if penalty_pct > 0 {
                         println!();
-                        println!("Penalty of {}% applied. Remaining bond will be returned.", penalty_pct);
+                        println!(
+                            "Penalty of {}% applied. Remaining bond will be returned.",
+                            penalty_pct
+                        );
                     }
                 }
                 Err(e) => {
@@ -1170,20 +1196,31 @@ async fn cmd_producer(
             println!("Equivocation confirmed!");
             println!("  Producer: {}", block1_resp.producer);
             println!("  Slot:     {}", block1_resp.slot);
-            println!("  Block 1:  {} (height {})", block1_resp.hash, block1_resp.height);
-            println!("  Block 2:  {} (height {})", block2_resp.hash, block2_resp.height);
+            println!(
+                "  Block 1:  {} (height {})",
+                block1_resp.hash, block1_resp.height
+            );
+            println!(
+                "  Block 2:  {} (height {})",
+                block2_resp.hash, block2_resp.height
+            );
             println!();
 
             // Note: Full slashing requires raw block headers with VDF proofs.
             // This is handled automatically by nodes that detect equivocation.
             // The CLI command is for manual submission when evidence is obtained.
-            println!("Note: Slashing evidence submission requires full block headers with VDF proofs.");
+            println!(
+                "Note: Slashing evidence submission requires full block headers with VDF proofs."
+            );
             println!();
             println!("Nodes automatically detect and submit slashing evidence when they");
             println!("receive conflicting blocks for the same slot. If you have raw block");
             println!("data with VDF proofs, use the node's internal submission mechanism.");
             println!();
-            println!("The equivocating producer ({}) will be:", &block1_resp.producer[..16]);
+            println!(
+                "The equivocating producer ({}) will be:",
+                &block1_resp.producer[..16]
+            );
             println!("  - Have their entire bond burned (100% penalty)");
             println!("  - Excluded from the producer set immediately");
             println!("  - Can re-register like any new producer (standard registration VDF)");
