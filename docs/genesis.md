@@ -60,7 +60,7 @@ Complete technical documentation for launching DOLI mainnet.
 - [ ] Slot duration: 10 seconds
 - [ ] Epoch length: 360 blocks (1 hour)
 - [ ] Genesis timestamp: 2026-02-01T00:00:00Z (Unix: 1769904000)
-- [ ] Epoch state persistence fields exist in ChainState
+- [ ] BlockStore query methods for epoch rewards exist
 
 ### Infrastructure
 
@@ -95,17 +95,15 @@ Instead of manually copying pubkeys, we now use:
 
 This follows the same pattern as Ethereum, Cosmos, and Polkadot.
 
-### Bug #2: Epoch State Not Persisting
+### Bug #2: Epoch State Not Persisting (Superseded)
 
 **What happened**: After node restart, epoch tracking reset to zero. Rewards were never distributed because epoch counters reset on every restart.
 
-**Resolution**: Added persistent epoch state fields to ChainState:
-- `epoch_producer_blocks`: HashMap<String, u64>
-- `epoch_start_height`: u64
-- `epoch_reward_pool`: u64
-- `current_reward_epoch`: u64
+**Original fix**: Added persistent epoch state fields to ChainState.
 
-**Status**: FIXED in storage/src/chain_state.rs with `#[serde(default)]` for backward compatibility.
+**Final resolution**: Replaced with deterministic BlockStore-based rewards (see `REWARDS.md`). Epoch rewards are now calculated from the immutable BlockStore at epoch boundaries, eliminating all local state. The system queries `BlockStore::get_last_rewarded_epoch()` and `BlockStore::get_blocks_in_slot_range()` to determine what rewards are due.
+
+**Status**: SUPERSEDED - Deterministic rewards system implemented. No local epoch state required.
 
 ### Bug #3: RPC Showed Wrong Network
 
@@ -331,16 +329,16 @@ done
 ### 1-Hour Check (After First Epoch)
 
 ```bash
-# Verify epoch reward distribution
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
-    -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}' \
-    | jq '.result[] | {publicKey: .publicKey[0:16], blocksProduced}'
-# Expected: blocksProduced > 0 for all producers
-
 # Check height (should be ~360 after 1 hour)
 curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
     | jq '.result.bestHeight'
+
+# Verify epoch reward distribution by checking block 361 for EpochReward transactions
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+    -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":361},"id":1}' \
+    | jq '.result.transactions[] | select(.type == "EpochReward")'
+# Expected: EpochReward transactions for each producer who produced blocks
 ```
 
 ### Node Restart Test (Critical!)
@@ -361,8 +359,8 @@ sleep 30
     --bootstrap "$BOOTSTRAP" \
     > node3/node.log 2>&1 &
 
-# Verify epoch state persisted (check logs for "Loaded epoch state")
-grep -i "epoch" node3/node.log | head -5
+# Verify chain state loaded correctly (node resumes from BlockStore)
+grep -i "Loaded chain state\|Resuming" node3/node.log | head -5
 ```
 
 ---
@@ -410,8 +408,15 @@ let context = RpcContext::new(...)
 
 **Symptom**: After 360 blocks, no rewards distributed
 
-**Check**: Verify epoch state is being saved on shutdown and loaded on startup.
-Look for log messages about epoch tracking.
+**Check**: Epoch rewards are now calculated deterministically from the BlockStore. At each epoch boundary, the producer includes `EpochReward` transactions for the previous epoch. To verify:
+
+```bash
+# Check for EpochReward transactions in recent blocks
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+    -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":361},"id":1}' | jq '.result.transactions'
+```
+
+If missing, verify the producer is correctly calculating epoch boundaries.
 
 ---
 
@@ -438,7 +443,8 @@ Look for log messages about epoch tracking.
 |------|---------|
 | `crates/core/src/genesis.rs` | Genesis configuration (fallback) |
 | `crates/core/src/network.rs` | Network parameters |
-| `crates/storage/src/chain_state.rs` | Epoch state persistence |
+| `crates/storage/src/chain_state.rs` | Chain state (tip, supply tracking) |
+| `crates/storage/src/block_store.rs` | Block storage and epoch reward queries |
 | `bins/node/src/main.rs` | `--chainspec` flag |
 | `bins/node/src/node.rs` | Production logic |
 
@@ -463,10 +469,11 @@ pub const REQUIRED_SIGNATURES: usize = 3;  // 3-of-5 maintainers
 
 ---
 
-**Document Version**: 2.1
-**Last Updated**: 2026-01-30
+**Document Version**: 2.2
+**Last Updated**: 2026-01-31
 **Author**: DOLI Core Team
 
 **Changelog:**
+- v2.2: Updated for deterministic BlockStore-based rewards (removed epoch state persistence references)
 - v2.1: Clarified maintainer keys are hardcoded in binary (not chainspec)
 - v2.0: Added industry-standard chainspec system for genesis configuration
