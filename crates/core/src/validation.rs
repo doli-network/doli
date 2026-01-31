@@ -245,6 +245,10 @@ pub enum ValidationError {
     #[error("invalid epoch reward: {0}")]
     InvalidEpochReward(String),
 
+    /// Claim epoch reward transaction validation failed.
+    #[error("invalid claim epoch reward: {0}")]
+    InvalidClaimEpochReward(String),
+
     /// Epoch rewards present in non-boundary block.
     #[error("unexpected epoch reward: rewards only allowed at epoch boundaries")]
     UnexpectedEpochReward,
@@ -1103,6 +1107,11 @@ pub fn validate_transaction(
         TxType::EpochReward => {
             validate_epoch_reward_data(tx)?;
         }
+        TxType::ClaimEpochReward => {
+            // Structural validation only - full validation (amount, epoch complete, etc.)
+            // is done in validate_claim_epoch_reward() in Milestone 7
+            validate_claim_epoch_reward_data(tx)?;
+        }
     }
 
     Ok(())
@@ -1715,6 +1724,56 @@ fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Validate ClaimEpochReward transaction structure.
+///
+/// Basic structural validation:
+/// - Must have no inputs (minted)
+/// - Must have exactly one output
+/// - Output must be Normal type
+/// - Must have valid ClaimEpochRewardData (72+ bytes)
+/// - Must have signature (total extra_data >= 136 bytes)
+///
+/// Note: Full validation (epoch complete, not claimed, correct amount)
+/// is done in validate_claim_epoch_reward() implemented in Milestone 7.
+fn validate_claim_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::transaction::ClaimEpochRewardData;
+
+    // Must have no inputs (minted)
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward must have no inputs".to_string(),
+        ));
+    }
+
+    // Must have exactly one output
+    if tx.outputs.len() != 1 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward must have exactly one output".to_string(),
+        ));
+    }
+
+    // Output must be Normal type
+    if tx.outputs[0].output_type != OutputType::Normal {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward output must be Normal type".to_string(),
+        ));
+    }
+
+    // Must have valid ClaimEpochRewardData (at least 72 bytes)
+    let _claim_data = ClaimEpochRewardData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidClaimEpochReward("invalid claim epoch reward data".to_string())
+    })?;
+
+    // Must have signature (extra_data must be at least 136 bytes)
+    if tx.extra_data.len() < 136 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward missing signature".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Validate a transaction with full UTXO context.
 ///
 /// This performs complete validation including:
@@ -1735,8 +1794,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     // First, perform structural validation
     validate_transaction(tx, ctx)?;
 
-    // Coinbase and EpochReward transactions don't need UTXO validation (minted)
-    if tx.is_coinbase() || tx.is_epoch_reward() {
+    // Coinbase, EpochReward, and ClaimEpochReward transactions don't need UTXO validation (minted)
+    if tx.is_coinbase() || tx.is_epoch_reward() || tx.is_claim_epoch_reward() {
         return Ok(());
     }
 
