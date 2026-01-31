@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # DOLI Network Setup Skill
@@ -27,9 +27,9 @@ This skill guides you through setting up and running DOLI nodes and producers on
 |--------|---------|
 | Run node | `doli-node --network <NETWORK> run` |
 | Run as producer | `doli-node --network <NETWORK> run --producer --producer-key <wallet>` |
-| Create wallet | `doli new -w <wallet-path>` |
-| Check balance | `doli balance -w <wallet> --rpc <RPC_URL>` |
-| Register producer | `doli producer register --bonds 1 -w <wallet> --rpc <RPC_URL>` |
+| Create wallet | `doli -w <wallet-path> new` |
+| Check balance | `doli -w <wallet> balance` |
+| Register producer | `doli -w <wallet> producer register --bonds 1` |
 
 Replace `<NETWORK>` with `devnet`, `testnet`, or `mainnet`.
 
@@ -71,10 +71,10 @@ cargo build --release
 ```bash
 # Create directory and wallet
 mkdir -p ~/.doli/<NETWORK>
-./target/release/doli new -w ~/.doli/<NETWORK>/producer.json
+./target/release/doli -w ~/.doli/<NETWORK>/producer.json new
 
 # View public key (save this!)
-./target/release/doli info -w ~/.doli/<NETWORK>/producer.json
+./target/release/doli -w ~/.doli/<NETWORK>/producer.json info
 ```
 
 ### Step 3: Open Firewall (testnet/mainnet only)
@@ -111,13 +111,13 @@ For testnet/mainnet, the node auto-connects to bootstrap nodes and starts syncin
 export DOLI_RPC=http://127.0.0.1:<RPC_PORT>  # 28545 (devnet), 18545 (testnet), 8545 (mainnet)
 
 # Check balance (need 1,000 tokens per bond)
-./target/release/doli balance -w ~/.doli/<NETWORK>/producer.json
+./target/release/doli -w ~/.doli/<NETWORK>/producer.json balance
 
 # Register with 1 bond
-./target/release/doli producer register --bonds 1 -w ~/.doli/<NETWORK>/producer.json
+./target/release/doli -w ~/.doli/<NETWORK>/producer.json producer register --bonds 1
 
 # Verify registration
-./target/release/doli producer status -w ~/.doli/<NETWORK>/producer.json
+./target/release/doli -w ~/.doli/<NETWORK>/producer.json producer status
 
 # List all producers
 ./target/release/doli producer list
@@ -146,12 +146,16 @@ For more control (e.g., 5 nodes with specific configuration):
 ```bash
 # Set up directories
 export TESTNET_DIR=~/.doli/testnet
-mkdir -p $TESTNET_DIR
+mkdir -p $TESTNET_DIR/keys $TESTNET_DIR/logs
+mkdir -p $TESTNET_DIR/{node1,node2,node3,node4,node5}/data
 
 # Generate N producer wallets
 for i in 1 2 3 4 5; do
-    ./target/release/doli new -w $TESTNET_DIR/producer_$i.json
+    ./target/release/doli -w $TESTNET_DIR/keys/producer_$i.json new
 done
+
+# IMPORTANT: Generate chainspec from wallets (required for local testnet)
+./scripts/generate_chainspec.sh testnet $TESTNET_DIR/keys $TESTNET_DIR/chainspec.json
 ```
 
 **Start Node 1 (Bootstrap/Seed):**
@@ -160,12 +164,14 @@ done
     --data-dir $TESTNET_DIR/node1/data \
     --network testnet \
     run \
+    --chainspec $TESTNET_DIR/chainspec.json \
     --producer \
-    --producer-key $TESTNET_DIR/producer_1.json \
+    --producer-key $TESTNET_DIR/keys/producer_1.json \
     --p2p-port 40303 \
     --rpc-port 18545 \
     --metrics-port 9090 \
-    --no-auto-update
+    --no-auto-update \
+    --no-dht
 ```
 
 **Start Nodes 2-N (Bootstrap from Node 1):**
@@ -175,19 +181,26 @@ done
     --data-dir $TESTNET_DIR/node2/data \
     --network testnet \
     run \
+    --chainspec $TESTNET_DIR/chainspec.json \
     --producer \
-    --producer-key $TESTNET_DIR/producer_2.json \
+    --producer-key $TESTNET_DIR/keys/producer_2.json \
     --p2p-port 40304 \
     --rpc-port 18546 \
     --metrics-port 9091 \
     --bootstrap "/ip4/127.0.0.1/tcp/40303" \
-    --no-auto-update
+    --no-auto-update \
+    --no-dht
 
 # Pattern for nodes 3-N: increment ports by 1 for each node
 # Node 3: p2p=40305, rpc=18547, metrics=9092
 # Node 4: p2p=40306, rpc=18548, metrics=9093
 # Node 5: p2p=40307, rpc=18549, metrics=9094
 ```
+
+**Key flags for local testnet:**
+- `--chainspec`: Use custom genesis with your producer wallets
+- `--no-dht`: Isolate from external peers (prevents connecting to public testnet)
+- `--no-auto-update`: Disable auto-updates during testing
 
 ### Port Allocation Pattern
 
@@ -266,7 +279,7 @@ Only for launching a completely new network from scratch.
 mkdir -p ~/.doli/genesis
 
 for i in 1 2 3 4 5; do
-    ./target/release/doli new -w ~/.doli/genesis/producer_$i.json
+    ./target/release/doli -w ~/.doli/genesis/producer_$i.json new
 done
 ```
 
@@ -315,6 +328,7 @@ sudo ufw status
 2. Wait for sync to complete (testnet/mainnet)
 3. Wait 15 seconds for producer discovery
 4. Check registration status: `doli producer status`
+5. **For local testnet**: Ensure you're using `--chainspec` with a chainspec generated from your producer wallets (see Scenario 2 Option B)
 
 ### Check node status
 
