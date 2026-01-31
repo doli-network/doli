@@ -2698,6 +2698,7 @@ mod tests {
                     vdf_proof: vdf::VdfProof::empty(),
                         },
                 transactions: vec![tx1, tx2],
+                presence: None,
             };
 
             let result = check_internal_double_spend(&block);
@@ -3283,6 +3284,7 @@ mod tests {
         Block {
             header,
             transactions,
+            presence: None,
         }
     }
 

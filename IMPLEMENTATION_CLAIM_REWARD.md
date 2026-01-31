@@ -348,14 +348,18 @@ pub mod reward_epoch {
 
 ---
 
-### Milestone 2: Presence Commitment Structure
+### Milestone 2: Presence Commitment Structure ✅ COMPLETED
 **~200 lines changed**
+**Status:** Implemented 2026-01-31, all tests passing
 
 Add presence tracking data structure to blocks.
 
 **Files Affected:**
-- `crates/core/src/block.rs`
+- `crates/core/src/block.rs` (added `presence: Option<PresenceCommitment>` field)
 - `crates/core/src/presence.rs` (NEW)
+- `crates/core/src/genesis.rs` (updated for presence field)
+- `crates/core/src/validation.rs` (updated test helpers)
+- `crates/core/src/lib.rs` (exported PresenceCommitment)
 
 **Changes Summary:**
 ```rust
@@ -452,14 +456,23 @@ pub struct Block {
 }
 ```
 
-**Dependencies:** Milestone 1
+**Dependencies:** Milestone 1 ✅
 
 **Test Criteria:**
-- [ ] Bitfield correctly encodes presence
-- [ ] `is_present()` returns correct values
-- [ ] `get_weight()` returns correct weight for present producers
-- [ ] `get_weight()` returns None for absent producers
-- [ ] Serialization/deserialization roundtrips correctly
+- [x] Bitfield correctly encodes presence
+- [x] `is_present()` returns correct values
+- [x] `get_weight()` returns correct weight for present producers
+- [x] `get_weight()` returns None for absent producers
+- [x] Serialization/deserialization roundtrips correctly
+
+**Additional tests implemented:**
+- [x] Empty commitment handling
+- [x] Total weight verification
+- [x] Bitfield/weight count verification
+- [x] Iterator over present producers
+- [x] Large producer set (100 producers)
+- [x] Size estimation
+- [x] Panic on mismatched lengths
 
 ---
 
