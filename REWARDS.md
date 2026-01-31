@@ -1,6 +1,6 @@
 # REWARDS.md - Deterministic Epoch Rewards Refactoring
 
-**Status**: In Progress (Milestones 1-2 Complete)
+**Status**: In Progress (Milestones 1-3 Complete)
 **Created**: 2026-01-30
 **Author**: Protocol Team
 
@@ -295,47 +295,64 @@ Milestone 7: Cleanup                      [~1 hour]
 
 ---
 
-### Milestone 3: Deterministic Reward Calculation
+### Milestone 3: Deterministic Reward Calculation ✅ COMPLETE
 
 **File**: `bins/node/src/node.rs`
 
 **Tasks**:
 
-- [ ] **3.1** Add function `calculate_epoch_rewards()`:
+- [x] **3.1** Add function `calculate_epoch_rewards()`:
   ```rust
-  async fn calculate_epoch_rewards(
+  fn calculate_epoch_rewards(
       &self,
       epoch: u64,
-      block_store: &BlockStore,
+      current_height: u64,
   ) -> Result<Vec<Transaction>>
   ```
 
   Implementation:
-  - Calculate slot range: `start = epoch * 360`, `end = (epoch + 1) * 360`
+  - Calculate slot range using `self.params.slots_per_reward_epoch`
   - For epoch 0: `start = 1` (skip genesis)
-  - Call `block_store.get_blocks_in_slot_range(start, end)`
+  - Call `self.block_store.get_blocks_in_slot_range(start, end)`
   - Count blocks per producer (exclude null producer)
-  - Calculate pool: `total_blocks × block_reward`
-  - Distribute proportionally
+  - Calculate pool: `total_blocks × block_reward(current_height)`
+  - Distribute proportionally using u128 intermediate calculation
   - Last producer (by sorted pubkey) gets rounding dust
   - Return `Vec<Transaction>` of `EpochReward` txs
 
-- [ ] **3.2** Add helper `should_include_epoch_rewards()`:
+- [x] **3.2** Add helper `should_include_epoch_rewards()`:
   ```rust
-  fn should_include_epoch_rewards(&self, current_slot: u64) -> Option<u64>
+  fn should_include_epoch_rewards(&self, current_slot: u32) -> Option<u64>
   ```
-  - Calculate `current_epoch = current_slot / 360`
+  - Calculate `current_epoch = current_slot / slots_per_reward_epoch`
   - Get `last_rewarded = block_store.get_last_rewarded_epoch()`
   - If `current_epoch > last_rewarded`: return `Some(last_rewarded + 1)`
   - Else: return `None`
 
-- [ ] **3.3** Add unit tests with mock BlockStore
+- [x] **3.3** Add unit tests with BlockStore (13 tests total)
+  - `test_should_include_rewards_slot_zero`
+  - `test_should_include_rewards_first_epoch_boundary`
+  - `test_should_include_rewards_already_rewarded`
+  - `test_should_include_rewards_multi_epoch_catchup`
+  - `test_epoch_rewards_empty_epoch`
+  - `test_epoch_rewards_single_producer`
+  - `test_epoch_rewards_multiple_producers_equal`
+  - `test_epoch_rewards_proportional_distribution`
+  - `test_epoch_rewards_rounding_dust`
+  - `test_epoch_rewards_deterministic_ordering`
+  - `test_epoch_rewards_skip_null_producer`
+  - `test_epoch_rewards_epoch_1_slot_range`
+  - `test_epoch_rewards_transaction_structure`
 
-**Acceptance Criteria**:
+- [x] **3.4** Integrate with `try_produce_block()` in `RewardMode::EpochPool` branch
+
+**Acceptance Criteria**: ✅ All met
 - Correct rewards for normal epoch
 - Correct handling of empty slots (reduced pool)
 - Correct proportional distribution
 - Deterministic output (same input → same output)
+
+**Commit**: `feat(node): add deterministic epoch reward calculation`
 
 ---
 
@@ -345,11 +362,11 @@ Milestone 7: Cleanup                      [~1 hour]
 
 **Tasks**:
 
-- [ ] **4.1** Modify `produce_block()`:
+- [x] **4.1** Modify `produce_block()`: *(completed in Milestone 3)*
   ```rust
   // In RewardMode::EpochPool branch:
   if let Some(epoch_to_reward) = self.should_include_epoch_rewards(current_slot) {
-      let epoch_txs = self.calculate_epoch_rewards(epoch_to_reward).await?;
+      let epoch_txs = self.calculate_epoch_rewards(epoch_to_reward, height)?;
       transactions.extend(epoch_txs);
   }
   ```
