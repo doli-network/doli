@@ -263,7 +263,7 @@ impl Network {
     pub fn slots_per_reward_epoch(&self) -> u32 {
         match self {
             Network::Mainnet => 8_640, // 1 day (86,400 seconds / 10s slots)
-            Network::Testnet => 8_640, // Same as mainnet (1 day)
+            Network::Testnet => 360,   // 1 hour (3,600 seconds / 10s slots) - shorter for testing
             Network::Devnet => 30,     // 30 seconds at 1s slots (fast testing)
         }
     }
