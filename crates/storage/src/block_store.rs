@@ -198,6 +198,25 @@ impl BlockStore {
         Ok(blocks)
     }
 
+    /// Check if any block exists in the specified slot range.
+    ///
+    /// Range is `[start, end)` - inclusive start, exclusive end.
+    /// Returns true if at least one block exists in the range.
+    ///
+    /// This is more efficient than `get_blocks_in_slot_range` when you only
+    /// need to check for emptiness (e.g., skipping empty epochs during catch-up).
+    pub fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, StorageError> {
+        if start >= end {
+            return Ok(false);
+        }
+        for slot in start..end {
+            if self.get_hash_by_slot(slot)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Get the last rewarded epoch number from the chain
     ///
     /// Scans backwards from the chain tip to find the most recent block
@@ -256,6 +275,11 @@ impl doli_core::validation::EpochBlockSource for BlockStore {
 
     fn blocks_in_slot_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
         self.get_blocks_in_slot_range(start, end)
+            .map_err(|e| format!("storage error: {}", e))
+    }
+
+    fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, String> {
+        self.has_any_block_in_slot_range(start, end)
             .map_err(|e| format!("storage error: {}", e))
     }
 }
@@ -497,6 +521,33 @@ mod tests {
         // Non-existent slot
         let hash = store.get_hash_by_slot(999).unwrap();
         assert!(hash.is_none());
+    }
+
+    #[test]
+    fn test_has_any_block_in_slot_range() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks at slots 100, 150, 200
+        for (height, slot) in [(0, 100u32), (1, 150), (2, 200)] {
+            let block = create_test_block(slot, &producer);
+            store.put_block(&block, height).unwrap();
+        }
+
+        // Range with blocks
+        assert!(store.has_any_block_in_slot_range(100, 200).unwrap());
+        assert!(store.has_any_block_in_slot_range(99, 101).unwrap());
+        assert!(store.has_any_block_in_slot_range(150, 151).unwrap());
+
+        // Range without blocks (empty epochs)
+        assert!(!store.has_any_block_in_slot_range(0, 100).unwrap());
+        assert!(!store.has_any_block_in_slot_range(101, 150).unwrap());
+        assert!(!store.has_any_block_in_slot_range(201, 300).unwrap());
+
+        // Edge cases
+        assert!(!store.has_any_block_in_slot_range(100, 100).unwrap()); // Empty range
+        assert!(!store.has_any_block_in_slot_range(200, 100).unwrap()); // Invalid range
     }
 
     // =========================================================================
