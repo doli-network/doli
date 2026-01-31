@@ -164,7 +164,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 
 ## Documentation Alignment (MANDATORY)
 
-Documentation drift is a protocol liability. Outdated docs lead to implementation errors and security vulnerabilities.
+Documentation drift is a protocol liability. **Use `/sync-docs` after any implementation.**
 
 ### Truth Hierarchy
 
@@ -180,22 +180,6 @@ Documentation drift is a protocol liability. Outdated docs lead to implementatio
 - Specs must reflect code—if they differ, update specs
 - Docs must describe reality—never document aspirations
 
-### When to Update Documentation
-
-| Change Type | WHITEPAPER | specs/* | docs/* |
-|-------------|:----------:|:-------:|:------:|
-| Consensus rules | ✓ | ✓ | Maybe |
-| Economic parameters | ✓ | ✓ | ✓ |
-| Wire format/protocol | — | ✓ | Maybe |
-| Architecture/crates | — | ✓ | — |
-| CLI commands | — | — | ✓ |
-| RPC endpoints | — | Maybe | ✓ |
-| Node operation | — | — | ✓ |
-| Internal refactor | — | — | — |
-| Bug fix (no behavior change) | — | — | — |
-
-**Use `/sync-docs` after any implementation affecting documented behavior.**
-
 ## Workflow Rules
 
 ### For All Changes
@@ -207,42 +191,9 @@ After tests pass:
 
 ### Bug Fixing Protocol (MANDATORY)
 
-Bugs in blockchain systems require rigorous analysis. Quick fixes that mask symptoms are prohibited.
+**Use `/fix-bug` for all bug fixes.** Quick fixes that mask symptoms are prohibited.
 
-#### Phase 1: Root Cause Analysis
-
-Before writing ANY fix:
-1. **Trace to origin**—never fix symptoms
-2. **Study affected components**: consensus, state transitions, network, crypto
-3. **Assess implications**:
-   - Does this change any protocol invariant?
-   - Could it introduce race conditions or state inconsistencies?
-   - Does it affect security properties in `specs/security_model.md`?
-   - Will it impact consensus finality or fork choice?
-
-#### Phase 2: Whitepaper Compliance
-
-**You are prohibited from implementing anything not specified in WHITEPAPER.md.**
-
+Key constraints:
+- You are prohibited from implementing anything not specified in WHITEPAPER.md
 - If code differs from whitepaper, whitepaper is truth
-- If whitepaper is silent, escalate before proceeding
-- Never invent new mechanisms not in the whitepaper
-
-#### Phase 3: Implementation
-
-1. Implement minimal fix addressing root cause
-2. Write tests that would have caught this bug
-3. Run: `cargo test && cargo clippy && cargo fmt`
-
-#### Phase 4: Commit
-
-After user confirms:
-1. Update docs if fix affects documented behavior (see table)
-2. Commit with: `fix(scope): description of root cause and fix`
-
-### Handling `REPORT_*.md` Files
-
-1. Follow Bug Fixing Protocol above
-2. Update report with root cause and fix description
-3. Move to `docs/legacy/bugs/`
-4. Update specs/docs if affected
+- Never commit without explicit user validation
