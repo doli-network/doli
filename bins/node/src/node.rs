@@ -2370,6 +2370,11 @@ impl Node {
     ///
     /// This is fully deterministic - any node can independently verify which
     /// epoch needs rewards by scanning the BlockStore.
+    ///
+    /// **Empty Epoch Handling**: Epochs with no blocks are skipped. This handles
+    /// the case where nodes start running after the genesis timestamp, leaving
+    /// earlier epochs empty. The function scans forward from `last_rewarded + 1`
+    /// to find the first epoch that actually contains blocks.
     fn should_include_epoch_rewards(&self, current_slot: u32) -> Option<u64> {
         let slots_per_epoch = self.params.slots_per_reward_epoch as u64;
 
@@ -2389,13 +2394,33 @@ impl Node {
             }
         };
 
-        // If we're in a new epoch that hasn't been rewarded yet, distribute rewards
-        // for the oldest unrewarded epoch (one at a time for catch-up)
-        if current_epoch > last_rewarded {
-            Some(last_rewarded + 1)
-        } else {
-            None
+        // Only finished epochs (< current_epoch) are eligible for rewards
+        if current_epoch <= last_rewarded {
+            return None;
         }
+
+        // Find the first epoch after last_rewarded that has blocks
+        // This skips empty epochs (e.g., when chain starts after genesis timestamp)
+        for epoch in (last_rewarded + 1)..current_epoch {
+            let start_slot = if epoch == 0 {
+                1u32 // Skip genesis slot
+            } else {
+                (epoch * slots_per_epoch) as u32
+            };
+            let end_slot = ((epoch + 1) * slots_per_epoch) as u32;
+
+            match self.block_store.has_any_block_in_slot_range(start_slot, end_slot) {
+                Ok(true) => return Some(epoch),
+                Ok(false) => continue,
+                Err(e) => {
+                    warn!("Failed to check epoch {} for blocks: {:?}", epoch, e);
+                    return None;
+                }
+            }
+        }
+
+        // All epochs between last_rewarded and current are empty - no rewards needed
+        None
     }
 
     /// Calculate epoch rewards for the given epoch.
