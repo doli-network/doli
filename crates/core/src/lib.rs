@@ -141,6 +141,8 @@ pub use consensus::{
     ProducerBonds,
     ProducerState,
     BLOCK_REWARD_POOL,
+    // Block-height based reward epochs
+    BLOCKS_PER_REWARD_EPOCH,
     // Bond stacking system
     BOND_UNIT,
     ELIGIBLE_PRODUCER_POOL,
@@ -162,7 +164,7 @@ pub use consensus::{
     SECONDARY_WINDOW_MS,
     SECONDARY_WINDOW_SECS,
     SIGNATURE_WINDOW_MS,
-    // Reward epoch constants
+    // Reward epoch constants (slot-based, legacy)
     SLOTS_PER_REWARD_EPOCH,
     // Proof of Time parameters
     SLOT_DURATION,
@@ -172,6 +174,9 @@ pub use consensus::{
     WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
 };
+
+// Block-height based reward epoch utilities
+pub use consensus::reward_epoch;
 pub use genesis::{
     generate_genesis_block, genesis_hash, verify_genesis_block, GenesisConfig, GenesisError,
 };

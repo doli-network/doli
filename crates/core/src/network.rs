@@ -268,6 +268,25 @@ impl Network {
         }
     }
 
+    /// Get blocks per reward epoch for this network (block-height based epochs).
+    ///
+    /// This is the primary constant for the weighted presence reward system.
+    /// Block-height based epochs are simpler than slot-based epochs because
+    /// block heights are sequential with no gaps.
+    ///
+    /// # Examples
+    ///
+    /// - Mainnet: 360 blocks ≈ 1 hour at 10s blocks
+    /// - Testnet: 360 blocks ≈ 1 hour at 10s blocks
+    /// - Devnet: 60 blocks ≈ 1 minute at 1s blocks
+    pub fn blocks_per_reward_epoch(&self) -> u64 {
+        match self {
+            Network::Mainnet => 360, // ~1 hour (360 blocks × 10s)
+            Network::Testnet => 360, // ~1 hour (360 blocks × 10s)
+            Network::Devnet => 60,   // ~1 minute (60 blocks × 1s)
+        }
+    }
+
     /// Get default bootstrap nodes for this network
     pub fn bootstrap_nodes(&self) -> Vec<&'static str> {
         match self {

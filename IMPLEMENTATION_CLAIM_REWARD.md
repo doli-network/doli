@@ -268,14 +268,16 @@ Block 1000 → Epoch 2 (1000/360 = 2)
 
 ## 4. Implementation Milestones
 
-### Milestone 1: Epoch Constants and Utilities
+### Milestone 1: Epoch Constants and Utilities ✅ COMPLETED
 **~100 lines changed**
+**Status:** Implemented 2026-01-31, all tests passing
 
 Add block-based epoch system with easily modifiable constants.
 
 **Files Affected:**
 - `crates/core/src/consensus.rs`
 - `crates/core/src/lib.rs`
+- `crates/core/src/network.rs` (added `blocks_per_reward_epoch()` method)
 
 **Changes Summary:**
 ```rust
@@ -330,13 +332,19 @@ pub mod reward_epoch {
 **Dependencies:** None
 
 **Test Criteria:**
-- [ ] `from_height(0)` returns 0
-- [ ] `from_height(359)` returns 0
-- [ ] `from_height(360)` returns 1
-- [ ] `boundaries(0)` returns (0, 360)
-- [ ] `boundaries(5)` returns (1800, 2160)
-- [ ] `is_complete(0, 359)` returns false
-- [ ] `is_complete(0, 360)` returns true
+- [x] `from_height(0)` returns 0
+- [x] `from_height(359)` returns 0
+- [x] `from_height(360)` returns 1
+- [x] `boundaries(0)` returns (0, 360)
+- [x] `boundaries(5)` returns (1800, 2160)
+- [x] `is_complete(0, 359)` returns false
+- [x] `is_complete(0, 360)` returns true
+
+**Additional tests implemented:**
+- [x] `last_complete()` returns None for incomplete epochs
+- [x] `is_epoch_start()` detects epoch boundaries
+- [x] `complete_epochs()` counts completed epochs
+- [x] `blocks_per_epoch()` returns constant value
 
 ---
 
@@ -1675,3 +1683,178 @@ Net: ~250 more lines, but much cleaner architecture with no epoch boundary bugs.
 ---
 
 **End of Implementation Plan v2.0**
+
+---
+
+## Appendix A: Purist Design Summary
+
+# DOLI Blockchain: Proof of Time with Presence and Epoch-based Rewards
+
+## Overview
+
+Implement a presence-based reward system for DOLI's Proof of Time consensus. Producers prove they are online each slot via VDF heartbeats. Rewards accumulate per epoch and are claimed on demand.
+
+## Core Principles
+
+### Purist Genesis (No Special Cases)
+- Genesis block creates real coins AND registers founders as producers in one atomic block
+- Distribution transaction creates coins, Registration transaction locks them as bond
+- After genesis, everything follows normal rules with zero exceptions
+- No virtual bonds, no grace periods, no implicit weights
+
+### Proof of Time = Proof of Presence
+- Every slot (10 seconds), producers broadcast VDF heartbeat proving ~1 second of work
+- Heartbeat requires k=2 witness signatures from other producers
+- Only producers with valid witnessed heartbeats are "present"
+- Only present producers receive rewards
+
+### Weighted Rewards
+- Rewards proportional to bond amount
+- 2000 DOLI bond = 2× rewards vs 1000 DOLI bond
+- Weight can increase anytime (producer adds more bond)
+- Use u128 for calculation to avoid overflow, dust is burned
+
+### Epoch-based Claims
+- Epoch = 8,640 blocks (~1 day)
+- When epoch closes, calculate rewards once and cache forever
+- Producers claim completed epochs whenever they want
+- Claim transaction mints coins (no inputs, creates UTXO)
+- No checkpoints needed - epochs ARE the natural checkpoints
+
+## Constants
+
+```
+DECIMALS = 10 (minimal dust)
+UNITS_PER_COIN = 10,000,000,000
+EPOCH_LENGTH = 8,640 blocks
+BOND_UNIT = 1,000 DOLI minimum
+REQUIRED_WITNESSES = 2
+HEARTBEAT_VDF_ITERATIONS = ~1 second
+```
+
+## Data Structures
+
+### PresenceCommitment (in BlockHeader)
+- bitfield: which producers are present (sorted by pubkey)
+- weights: bond amounts of present producers
+- total_weight: sum of weights
+- merkle_root: for fraud proofs
+- present_count: number of present
+
+### EpochRewards (cached when epoch closes)
+- epoch number
+- rewards: map of producer → total reward for epoch
+- dust_burned: remainder from integer division
+
+### RewardClaim Transaction
+- producer pubkey
+- from_epoch (must be last_claimed_epoch + 1)
+- to_epoch (must be closed)
+- amount (must match calculated sum)
+
+## Flows
+
+### Genesis
+1. Create distribution tx for each founder (coins from nothing)
+2. Create registration tx for each founder (locks coins as bond)
+3. Both in same block, registration references distribution output
+4. Result: founders are registered producers with real locked bonds
+
+### Each Slot
+1. t=0-1.5s: Producers compute VDF, broadcast heartbeat
+2. t=1.5-3s: Producers witness others' heartbeats (sign them)
+3. t=3-7s: Block producer collects valid heartbeats (≥2 witnesses)
+4. t=7-10s: Build block with presence commitment
+
+### Epoch Close
+1. Detect epoch boundary (height % EPOCH_LENGTH == 0)
+2. Scan all blocks in completed epoch
+3. For each block: distribute block_reward proportional to weights
+4. Cache EpochRewards permanently
+5. Never recalculate
+
+### Reward Claim
+1. Producer submits claim tx (from_epoch, to_epoch)
+2. Validate: from_epoch == last_claimed_epoch + 1
+3. Validate: to_epoch is closed (current_epoch - 1 or earlier)
+4. Calculate: sum epoch_cache[e].rewards[producer] for e in range
+5. Validate: tx amount matches calculation
+6. Execute: create UTXO, update last_claimed_epoch
+
+## Validation Rules
+
+### Heartbeat Valid If
+- Producer in active ProducerSet
+- Slot is current or current+1
+- prev_block_hash matches chain tip
+- VDF proof verifies
+- Producer signature valid
+- ≥2 witness signatures from other producers
+
+### Block Valid If
+- Existing rules plus:
+- presence.bitfield size matches producer count
+- Block producer is marked present
+- present_count matches bitfield popcount
+- weights.len() == present_count
+- total_weight == sum(weights)
+- Each weight matches producer's current bond
+
+### Claim Valid If
+- from_epoch == producer.last_claimed_epoch + 1
+- to_epoch < current_epoch (epoch is closed)
+- amount == sum of cached rewards for range
+- recipient == producer's address
+
+## Storage
+
+### In Blockchain
+- Block headers with presence commitment
+- Claim transactions (the mint record)
+
+### In ProducerSet
+- last_claimed_epoch per producer
+
+### Local Cache (regenerable)
+- EpochRewards per completed epoch
+- PresencePool (memory only, current slot)
+
+## Disk Usage
+
+| Component | Per Year |
+|-----------|----------|
+| Blocks + presence + weights | ~5 GB |
+| Epoch cache | ~2-60 MB |
+| Total | ~5 GB (10× smaller than Bitcoin) |
+
+## Anti-DoS
+
+- Heartbeats only from registered producers
+- 1 heartbeat per (producer, slot, prev_hash)
+- Verify signature before VDF (cheaper first)
+- PresencePool keeps only current and next slot
+
+## Implementation Order
+
+1. Genesis with distribution + registration
+2. PresenceCommitment structure
+3. Heartbeat with witness signatures
+4. PresencePool (memory)
+5. Block production with presence
+6. EpochRewards cache
+7. RewardClaim transaction
+8. Validation rules
+9. Remove old epoch reward code
+
+## Design Summary
+
+| Aspect | Value |
+|--------|-------|
+| Lines of prompt | ~150 |
+| Code included | None |
+| Special cases | Zero |
+| Approach | Purist |
+
+---
+
+**End of Appendix A**
