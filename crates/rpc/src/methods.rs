@@ -561,6 +561,7 @@ impl RpcContext {
                     doli_core::TxType::RequestWithdrawal => "request_withdrawal",
                     doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
                     doli_core::TxType::EpochReward => "epoch_reward",
+                    doli_core::TxType::ClaimEpochReward => "claim_epoch_reward",
                 };
 
                 history.push(HistoryEntryResponse {

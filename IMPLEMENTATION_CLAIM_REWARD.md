@@ -710,20 +710,25 @@ impl ClaimRegistry {
 
 ---
 
-### Milestone 5: ClaimEpochReward Transaction Type
+### Milestone 5: ClaimEpochReward Transaction Type ✅ COMPLETED
 **~250 lines changed**
+**Status:** Implemented 2026-01-31, all tests passing (11 tests)
 
 Add new transaction type for claiming weighted presence rewards.
 
 **Files Affected:**
-- `crates/core/src/transaction.rs`
+- `crates/core/src/transaction.rs` (added TxType::ClaimEpochReward, ClaimEpochRewardData)
+- `crates/core/src/validation.rs` (added validate_claim_epoch_reward_data)
+- `crates/core/src/lib.rs` (exported ClaimEpochRewardData)
+- `crates/rpc/src/methods.rs` (added tx type string mapping)
+- `crates/rpc/src/types.rs` (added tx type string mapping)
 
 **Changes Summary:**
 ```rust
 // transaction.rs
 
 /// Transaction type for claiming epoch presence rewards
-pub const TX_TYPE_CLAIM_EPOCH_REWARD: u32 = 11;
+TxType::ClaimEpochReward = 11;
 
 /// Data for ClaimEpochReward transaction
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -802,13 +807,23 @@ impl Transaction {
 }
 ```
 
-**Dependencies:** Milestone 4
+**Dependencies:** Milestone 4 ✅
 
 **Test Criteria:**
-- [ ] Transaction serializes correctly
-- [ ] Data parsing works
-- [ ] Signature extraction works
-- [ ] Output contains correct amount and recipient
+- [x] Transaction serializes correctly (`test_claim_epoch_reward_serialization_roundtrip`)
+- [x] Data parsing works (`test_claim_epoch_reward_data_serialization`, `test_new_claim_epoch_reward_transaction`)
+- [x] Signature extraction works (`test_new_claim_epoch_reward_transaction`)
+- [x] Output contains correct amount and recipient (`test_new_claim_epoch_reward_transaction`)
+
+**Additional tests implemented:**
+- [x] TxType value is 11 (`test_tx_type_claim_epoch_reward_value`)
+- [x] Data from_bytes rejects short input (`test_claim_epoch_reward_data_from_bytes_short`)
+- [x] Signing message is deterministic (`test_claim_epoch_reward_data_signing_message`)
+- [x] Not coinbase (`test_claim_epoch_reward_not_coinbase`)
+- [x] Hash is deterministic (`test_claim_epoch_reward_hash_deterministic`)
+- [x] None for non-claim tx (`test_claim_epoch_reward_data_none_for_non_claim_tx`)
+- [x] Signature rejects short data (`test_claim_epoch_reward_signature_short_data`)
+- [x] Different epochs produce different hashes (`test_claim_epoch_reward_different_epochs_different_hash`)
 
 ---
 
