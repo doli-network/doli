@@ -250,7 +250,9 @@ pub enum ValidationError {
     UnexpectedEpochReward,
 
     /// Missing required epoch rewards at boundary.
-    #[error("missing epoch reward: block at epoch boundary must include rewards for epoch {epoch}")]
+    #[error(
+        "missing epoch reward: block at epoch boundary must include rewards for epoch {epoch}"
+    )]
     MissingEpochReward {
         /// The epoch that should have been rewarded.
         epoch: u64,
@@ -920,7 +922,8 @@ pub fn validate_block_rewards_exact<S: EpochBlockSource>(
         }
 
         // Build a map of expected rewards for comparison
-        let mut expected_map: std::collections::HashMap<&PublicKey, u64> = std::collections::HashMap::new();
+        let mut expected_map: std::collections::HashMap<&PublicKey, u64> =
+            std::collections::HashMap::new();
         for (pubkey, amount) in &expected_rewards {
             expected_map.insert(pubkey, *amount);
         }
@@ -1450,7 +1453,8 @@ fn validate_slash_data(tx: &Transaction, ctx: &ValidationContext) -> Result<(), 
             // 1. Both headers must have the same producer
             if block_header_1.producer != block_header_2.producer {
                 return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have same producer in both headers".to_string(),
+                    "double production evidence must have same producer in both headers"
+                        .to_string(),
                 ));
             }
 
@@ -3218,8 +3222,17 @@ mod tests {
         let mut params = ConsensusParams::mainnet();
         params.reward_mode = RewardMode::EpochPool;
 
-        ValidationContext::new(params, Network::Mainnet, GENESIS_TIME + (slot as u64 * 60), slot as u64)
-            .with_prev_block(slot.saturating_sub(1), GENESIS_TIME + ((slot as u64 - 1) * 60), Hash::ZERO)
+        ValidationContext::new(
+            params,
+            Network::Mainnet,
+            GENESIS_TIME + (slot as u64 * 60),
+            slot as u64,
+        )
+        .with_prev_block(
+            slot.saturating_sub(1),
+            GENESIS_TIME + ((slot as u64 - 1) * 60),
+            Hash::ZERO,
+        )
     }
 
     /// Create a minimal test block at a given slot
@@ -3395,7 +3408,10 @@ mod tests {
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards(&block, &ctx);
-        assert!(matches!(result, Err(ValidationError::InvalidEpochReward(_))));
+        assert!(matches!(
+            result,
+            Err(ValidationError::InvalidEpochReward(_))
+        ));
     }
 
     // ==========================================================================
@@ -3539,8 +3555,14 @@ mod tests {
         // Each producer creates 2 blocks
         let mut blocks = Vec::new();
         for (i, producer) in producers.iter().enumerate() {
-            blocks.push(create_test_block_with_producer((i * 2 + 1) as u32, producer));
-            blocks.push(create_test_block_with_producer((i * 2 + 2) as u32, producer));
+            blocks.push(create_test_block_with_producer(
+                (i * 2 + 1) as u32,
+                producer,
+            ));
+            blocks.push(create_test_block_with_producer(
+                (i * 2 + 2) as u32,
+                producer,
+            ));
         }
 
         // Calculate twice to verify determinism
@@ -3585,7 +3607,10 @@ mod tests {
 
         let result = epoch_needing_rewards(0, &params, &source);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Slot 0 should not trigger rewards");
+        assert!(
+            result.unwrap().is_none(),
+            "Slot 0 should not trigger rewards"
+        );
     }
 
     #[test]
@@ -3610,7 +3635,10 @@ mod tests {
         let result = epoch_needing_rewards(boundary_slot, &params, &source);
 
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Already rewarded epoch should return None");
+        assert!(
+            result.unwrap().is_none(),
+            "Already rewarded epoch should return None"
+        );
     }
 
     #[test]
@@ -3623,7 +3651,11 @@ mod tests {
         let result = epoch_needing_rewards(slot_in_epoch_3, &params, &source);
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(1), "Should reward oldest unrewarded epoch (1)");
+        assert_eq!(
+            result.unwrap(),
+            Some(1),
+            "Should reward oldest unrewarded epoch (1)"
+        );
     }
 
     #[test]
@@ -3722,16 +3754,22 @@ mod tests {
         let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
 
         // Calculate expected rewards for epoch 1
-        let expected = calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
         assert_eq!(expected.len(), 1, "Should have one reward");
 
         // Create valid epoch reward transaction
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-        let epoch_reward = Transaction::new_epoch_reward(1, producer.clone(), expected[0].1, pubkey_hash);
+        let epoch_reward =
+            Transaction::new_epoch_reward(1, producer.clone(), expected[0].1, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
-        assert!(result.is_ok(), "Valid epoch rewards should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Valid epoch rewards should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -3766,7 +3804,8 @@ mod tests {
         // Create epoch reward with WRONG amount
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
         let wrong_amount = 12345; // Arbitrary wrong amount
-        let epoch_reward = Transaction::new_epoch_reward(1, producer.clone(), wrong_amount, pubkey_hash);
+        let epoch_reward =
+            Transaction::new_epoch_reward(1, producer.clone(), wrong_amount, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -3807,12 +3846,14 @@ mod tests {
         let source = MockEpochBlockSource::new(0, epoch_blocks);
 
         // Calculate correct amount but use WRONG recipient
-        let expected = calculate_expected_epoch_rewards(1, &source.blocks, ctx.current_height, &ctx_params);
+        let expected =
+            calculate_expected_epoch_rewards(1, &source.blocks, ctx.current_height, &ctx_params);
         let keypair2 = crypto::KeyPair::generate();
         let wrong_recipient = keypair2.public_key().clone();
         let pubkey_hash = crypto::hash::hash(wrong_recipient.as_bytes());
 
-        let epoch_reward = Transaction::new_epoch_reward(1, wrong_recipient, expected[0].1, pubkey_hash);
+        let epoch_reward =
+            Transaction::new_epoch_reward(1, wrong_recipient, expected[0].1, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -3879,7 +3920,8 @@ mod tests {
         // At slot 720, last_rewarded=0 means epoch 1 is next
         let source2 = MockEpochBlockSource::new(0, epoch1_blocks.clone());
 
-        let expected = calculate_expected_epoch_rewards(1, &epoch1_blocks, ctx.current_height, &ctx_params);
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch1_blocks, ctx.current_height, &ctx_params);
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
 
         // Create epoch reward with WRONG epoch number (should be 1)
@@ -3895,6 +3937,355 @@ mod tests {
         assert!(
             matches!(result, Err(ValidationError::InvalidEpochReward(_))),
             "Should reject wrong epoch number: {:?}",
+            result
+        );
+    }
+
+    // =========================================================================
+    // Milestone 6: Additional Validation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_block_rewards_exact_many_producers() {
+        // Test validation with 10 producers to verify scalability
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch * 2; // slot 720
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        // Create 10 producers, each with 1 block in epoch 1
+        let keypairs: Vec<_> = (0..10).map(|_| crypto::KeyPair::generate()).collect();
+        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+
+        let start_slot = params.slots_per_reward_epoch;
+        let epoch_blocks: Vec<Block> = producers
+            .iter()
+            .enumerate()
+            .map(|(i, producer)| create_test_block_with_producer(start_slot + i as u32, producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected rewards
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        assert_eq!(expected.len(), 10, "Should have 10 reward entries");
+
+        // Create valid epoch reward transactions
+        let epoch_txs: Vec<Transaction> = expected
+            .iter()
+            .map(|(producer, amount)| {
+                let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+            })
+            .collect();
+
+        let block = create_test_block_at_slot(boundary_slot, epoch_txs);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            result.is_ok(),
+            "Valid 10-producer rewards should pass: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exact_dust_handling() {
+        // Test validation with rounding dust (e.g., 100 units / 3 producers)
+        let params = ConsensusParams::mainnet();
+        // Use second boundary (slot 720) to reward epoch 1 (slots 360-719)
+        let boundary_slot = params.slots_per_reward_epoch * 2;
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        // Create 3 producers with equal blocks (1 each) in epoch 1 range
+        let keypairs: Vec<_> = (0..3).map(|_| crypto::KeyPair::generate()).collect();
+        let mut producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+
+        // Sort producers by pubkey for deterministic dust assignment
+        producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        // Create blocks in epoch 1 range (slots 360-719)
+        let start_slot = params.slots_per_reward_epoch;
+        let epoch_blocks: Vec<Block> = producers
+            .iter()
+            .enumerate()
+            .map(|(i, producer)| create_test_block_with_producer(start_slot + i as u32, producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected rewards (dust goes to last sorted producer)
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        assert_eq!(expected.len(), 3);
+
+        // Verify dust is assigned to last producer
+        let total_pool: u64 = expected.iter().map(|(_, amt)| *amt).sum();
+        let base_share = total_pool / 3;
+
+        // Last producer should get base_share + remainder
+        let last_producer_amount = expected.last().unwrap().1;
+        let dust = total_pool % 3;
+        assert_eq!(
+            last_producer_amount,
+            base_share + dust,
+            "Last producer should get dust"
+        );
+
+        // Create valid epoch reward transactions
+        let epoch_txs: Vec<Transaction> = expected
+            .iter()
+            .map(|(producer, amount)| {
+                let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+            })
+            .collect();
+
+        let block = create_test_block_at_slot(boundary_slot, epoch_txs);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            result.is_ok(),
+            "Valid dust distribution should pass: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exact_over_distribution() {
+        // Test rejection of rewards that exceed expected amounts
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch;
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        let epoch_blocks: Vec<Block> = (1..=10)
+            .map(|slot| create_test_block_with_producer(slot, &producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected, then add extra
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        let correct_amount = expected[0].1;
+        let inflated_amount = correct_amount + 1_000_000; // Add 1M extra units
+
+        let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+        let epoch_reward =
+            Transaction::new_epoch_reward(1, producer.clone(), inflated_amount, pubkey_hash);
+        let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            matches!(result, Err(ValidationError::EpochRewardMismatch { .. })),
+            "Should reject over-distribution: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exact_under_distribution() {
+        // Test rejection of rewards that are less than expected
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch;
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        let epoch_blocks: Vec<Block> = (1..=10)
+            .map(|slot| create_test_block_with_producer(slot, &producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected, then subtract
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        let correct_amount = expected[0].1;
+        let reduced_amount = correct_amount - 1_000_000; // Remove 1M units
+
+        let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+        let epoch_reward =
+            Transaction::new_epoch_reward(1, producer.clone(), reduced_amount, pubkey_hash);
+        let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            matches!(result, Err(ValidationError::EpochRewardMismatch { .. })),
+            "Should reject under-distribution: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exact_partial_producer_list() {
+        // Test rejection when some producers are missing from rewards
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch;
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        // Create 3 producers with blocks
+        let keypairs: Vec<_> = (0..3).map(|_| crypto::KeyPair::generate()).collect();
+        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+
+        let epoch_blocks: Vec<Block> = producers
+            .iter()
+            .enumerate()
+            .map(|(i, producer)| create_test_block_with_producer(i as u32 + 1, producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected (should have 3 entries)
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        assert_eq!(expected.len(), 3);
+
+        // Only include 2 of 3 producers (missing last one)
+        let partial_txs: Vec<Transaction> = expected
+            .iter()
+            .take(2) // Only first 2 producers
+            .map(|(producer, amount)| {
+                let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+            })
+            .collect();
+
+        let block = create_test_block_at_slot(boundary_slot, partial_txs);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            matches!(result, Err(ValidationError::EpochRewardMismatch { .. })),
+            "Should reject partial producer list: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exact_extra_reward_tx() {
+        // Test rejection when block has more reward transactions than expected
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch;
+
+        let mut ctx_params = ConsensusParams::mainnet();
+        ctx_params.reward_mode = RewardMode::EpochPool;
+
+        let ctx = ValidationContext::new(
+            ctx_params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + (boundary_slot as u64 * 60),
+            boundary_slot as u64,
+        )
+        .with_prev_block(
+            boundary_slot - 1,
+            GENESIS_TIME + ((boundary_slot as u64 - 1) * 60),
+            Hash::ZERO,
+        );
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        let epoch_blocks: Vec<Block> = (1..=10)
+            .map(|slot| create_test_block_with_producer(slot, &producer))
+            .collect();
+
+        let source = MockEpochBlockSource::new(0, epoch_blocks.clone());
+
+        // Calculate expected (should have 1 entry)
+        let expected =
+            calculate_expected_epoch_rewards(1, &epoch_blocks, ctx.current_height, &ctx_params);
+        assert_eq!(expected.len(), 1);
+
+        // Create valid reward plus an EXTRA reward to a fake producer
+        let pubkey_hash = crypto::hash::hash(producer.as_bytes());
+        let valid_reward =
+            Transaction::new_epoch_reward(1, producer.clone(), expected[0].1, pubkey_hash);
+
+        let fake_keypair = crypto::KeyPair::generate();
+        let fake_producer = fake_keypair.public_key().clone();
+        let fake_hash = crypto::hash::hash(fake_producer.as_bytes());
+        let extra_reward = Transaction::new_epoch_reward(1, fake_producer, 1_000_000, fake_hash);
+
+        let block = create_test_block_at_slot(boundary_slot, vec![valid_reward, extra_reward]);
+
+        let result = validate_block_rewards_exact(&block, &ctx, &source);
+        assert!(
+            matches!(result, Err(ValidationError::EpochRewardMismatch { .. })),
+            "Should reject extra reward transaction: {:?}",
             result
         );
     }
