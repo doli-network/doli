@@ -246,6 +246,20 @@ impl BlockStore {
     }
 }
 
+/// Implement EpochBlockSource trait for BlockStore to enable deterministic
+/// epoch reward validation in the core crate.
+impl doli_core::validation::EpochBlockSource for BlockStore {
+    fn last_rewarded_epoch(&self) -> Result<u64, String> {
+        self.get_last_rewarded_epoch()
+            .map_err(|e| format!("storage error: {}", e))
+    }
+
+    fn blocks_in_slot_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
+        self.get_blocks_in_slot_range(start, end)
+            .map_err(|e| format!("storage error: {}", e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
