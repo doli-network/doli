@@ -295,6 +295,36 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_5node_epoch_rewards_consistency.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_5node_epoch_rewards_consistency.sh` |
+| **Purpose** | Milestone 6 test: Verify deterministic epoch rewards across 5 nodes with restart |
+| **What it tests** | Node sync, epoch reward consistency, mid-epoch restart recovery |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Run time** | ~2 minutes |
+| **Output** | `/tmp/doli-5node-epoch-rewards-test/` (logs) |
+
+**Usage:**
+```bash
+./scripts/test_5node_epoch_rewards_consistency.sh
+```
+
+**Test phases:**
+1. Start 5 producer nodes
+2. Run for 1 epoch, verify all nodes sync
+3. Restart node 3 mid-epoch (test persistence)
+4. Continue running for 2+ epochs total
+5. Verify all nodes agree on chain state
+
+**Key validations:**
+- All 5 nodes running and synced
+- Ran for expected number of epochs
+- Node 3 recovered correctly after mid-epoch restart
+
+---
+
 ### test_devnet_3node_rewards.sh
 
 | Property | Value |
@@ -608,6 +638,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_staggered_validator_rewards.sh` | 10 | ~10 min | Staggered rewards |
 | `test_validator_rewards_simple.sh` | 3 | ~5 min | Simple rewards |
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
+| `test_5node_epoch_rewards_consistency.sh` | 5 | ~2 min | **Milestone 6: Deterministic rewards** |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
 | `test_critical_features.sh` | 3 | ~3-5 min | **Real devnet E2E validation** |
