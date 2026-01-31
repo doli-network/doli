@@ -329,9 +329,11 @@ async fn cmd_balance(
     } else {
         // Query balance for each wallet address using pubkey_hash
         for wallet_addr in wallet.addresses() {
-            // Compute pubkey_hash from the public key
+            // Compute pubkey_hash from the public key using domain separation
+            // This must match the address format used by epoch rewards
             let pubkey_bytes = hex::decode(&wallet_addr.public_key)?;
-            let pubkey_hash = crypto::hash::hash(&pubkey_bytes).to_hex();
+            let pubkey_hash =
+                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes).to_hex();
 
             let label = wallet_addr.label.as_deref().unwrap_or("");
 

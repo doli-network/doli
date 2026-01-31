@@ -12,8 +12,8 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crypto::hash::{hash as crypto_hash, hash_concat};
-use crypto::{Hash, KeyPair, PublicKey};
+use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
+use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, construct_vdf_input, select_producer_for_slot, ConsensusParams, RewardMode,
@@ -2481,7 +2481,9 @@ impl Node {
             };
 
             if share > 0 {
-                let recipient_hash = crypto_hash(producer_pubkey.as_bytes());
+                // Use domain-separated hash for address to match wallet format
+                let recipient_hash =
+                    hash_with_domain(ADDRESS_DOMAIN, producer_pubkey.as_bytes());
                 let tx = Transaction::new_epoch_reward(
                     epoch,
                     producer_pubkey.clone(),
@@ -2494,7 +2496,7 @@ impl Node {
                 debug!(
                     "Epoch {} reward: producer {} gets {} ({} blocks)",
                     epoch,
-                    &crypto_hash(producer_pubkey.as_bytes()).to_hex()[..16],
+                    &recipient_hash.to_hex()[..16],
                     share,
                     blocks_produced
                 );
@@ -2608,7 +2610,7 @@ mod epoch_reward_tests {
             epoch,
             producer.clone(),
             100_000_000,
-            crypto_hash(producer.as_bytes()),
+            hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes()),
         );
         Block::new(create_test_header(slot, producer), vec![epoch_reward_tx])
     }
@@ -2970,7 +2972,7 @@ mod epoch_reward_tests {
         let producer = keypair.public_key().clone();
         let amount = 100_000_000u64;
         let epoch = 5u64;
-        let recipient_hash = crypto_hash(producer.as_bytes());
+        let recipient_hash = hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes());
 
         let tx = Transaction::new_epoch_reward(epoch, producer.clone(), amount, recipient_hash);
 
@@ -3003,8 +3005,8 @@ mod epoch_reward_tests {
         let keypair2 = KeyPair::generate();
         let producer1 = keypair1.public_key().clone();
         let producer2 = keypair2.public_key().clone();
-        let recipient_hash1 = crypto_hash(producer1.as_bytes());
-        let recipient_hash2 = crypto_hash(producer2.as_bytes());
+        let recipient_hash1 = hash_with_domain(ADDRESS_DOMAIN, producer1.as_bytes());
+        let recipient_hash2 = hash_with_domain(ADDRESS_DOMAIN, producer2.as_bytes());
 
         // Create EpochReward transactions (as would be generated at epoch boundary)
         let epoch_tx1 =
