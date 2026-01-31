@@ -337,6 +337,14 @@ pub trait EpochBlockSource {
     /// Range is `[start, end)` - inclusive start, exclusive end.
     /// Empty slots are skipped (not included in result).
     fn blocks_in_slot_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String>;
+
+    /// Check if any block exists in the specified slot range.
+    ///
+    /// Range is `[start, end)` - inclusive start, exclusive end.
+    /// Returns true if at least one block exists in the range.
+    ///
+    /// This is used to skip empty epochs during reward catch-up.
+    fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, String>;
 }
 
 /// Registration chain state for anti-Sybil verification.
@@ -720,6 +728,11 @@ pub fn calculate_expected_epoch_rewards(
 ///
 /// This handles catch-up scenarios where multiple epochs may need rewards.
 /// Only one epoch is rewarded per block (oldest first).
+///
+/// **Empty Epoch Handling**: Epochs with no blocks are skipped. This handles
+/// the case where nodes start running after the genesis timestamp, leaving
+/// earlier epochs empty. The function scans forward from `last_rewarded + 1`
+/// to find the first epoch that actually contains blocks.
 pub fn epoch_needing_rewards<S: EpochBlockSource>(
     current_slot: u32,
     params: &ConsensusParams,
@@ -737,13 +750,28 @@ pub fn epoch_needing_rewards<S: EpochBlockSource>(
     // Get the last epoch that received rewards from BlockStore
     let last_rewarded = source.last_rewarded_epoch()?;
 
-    // If we're in a new epoch that hasn't been rewarded yet, distribute rewards
-    // for the oldest unrewarded epoch (one at a time for catch-up)
-    if current_epoch > last_rewarded {
-        Ok(Some(last_rewarded + 1))
-    } else {
-        Ok(None)
+    // Only finished epochs (< current_epoch) are eligible for rewards
+    if current_epoch <= last_rewarded {
+        return Ok(None);
     }
+
+    // Find the first epoch after last_rewarded that has blocks
+    // This skips empty epochs (e.g., when chain starts after genesis timestamp)
+    for epoch in (last_rewarded + 1)..current_epoch {
+        let start_slot = if epoch == 0 {
+            1u32 // Skip genesis slot
+        } else {
+            (epoch * slots_per_epoch) as u32
+        };
+        let end_slot = ((epoch + 1) * slots_per_epoch) as u32;
+
+        if source.has_any_block_in_slot_range(start_slot, end_slot)? {
+            return Ok(Some(epoch));
+        }
+    }
+
+    // All epochs between last_rewarded and current are empty - no rewards needed
+    Ok(None)
 }
 
 /// Validate block reward transactions for epoch distribution mode.
@@ -3446,6 +3474,13 @@ mod tests {
                 .cloned()
                 .collect())
         }
+
+        fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, String> {
+            Ok(self
+                .blocks
+                .iter()
+                .any(|b| b.header.slot >= start && b.header.slot < end))
+        }
     }
 
     /// Create a test block with a specific producer
@@ -3616,14 +3651,39 @@ mod tests {
     #[test]
     fn test_epoch_needing_rewards_first_epoch_boundary() {
         let params = ConsensusParams::mainnet();
-        let source = MockEpochBlockSource::new(0, vec![]); // No rewards yet
+        let keypair = crypto::KeyPair::generate();
+        let pubkey = keypair.public_key().clone();
+        // Add a block in epoch 1 (slots 360-719) so it has blocks to reward
+        // Note: We're at slot 720 (epoch 2), checking if epoch 1 needs rewards
+        let block_in_epoch_1 = create_test_block_with_producer(
+            params.slots_per_reward_epoch + 50, // Slot 410 (in epoch 1)
+            &pubkey,
+        );
+        let source = MockEpochBlockSource::new(0, vec![block_in_epoch_1]);
 
-        // First slot of epoch 1 should trigger epoch 0+1 = 1 rewards
-        let boundary_slot = params.slots_per_reward_epoch;
+        // First slot of epoch 2 should trigger epoch 1 rewards (epoch 1 is finished and has blocks)
+        let boundary_slot = params.slots_per_reward_epoch * 2;
         let result = epoch_needing_rewards(boundary_slot, &params, &source);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(1), "Should reward epoch 1");
+    }
+
+    #[test]
+    fn test_epoch_needing_rewards_empty_epoch_skipped() {
+        let params = ConsensusParams::mainnet();
+        // No blocks in epoch 0 or 1 - they should be skipped
+        let source = MockEpochBlockSource::new(0, vec![]);
+
+        // In epoch 2, but epochs 0 and 1 are empty
+        let slot_in_epoch_2 = params.slots_per_reward_epoch * 2 + 5;
+        let result = epoch_needing_rewards(slot_in_epoch_2, &params, &source);
+
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "Empty epochs should be skipped, no rewards needed"
+        );
     }
 
     #[test]
@@ -3644,9 +3704,22 @@ mod tests {
     #[test]
     fn test_epoch_needing_rewards_multi_epoch_catchup() {
         let params = ConsensusParams::mainnet();
-        let source = MockEpochBlockSource::new(0, vec![]); // No rewards yet
+        let keypair = crypto::KeyPair::generate();
+        let pubkey = keypair.public_key().clone();
+
+        // Add blocks in epochs 1 and 2 (epoch 0 is empty)
+        let block_in_epoch_1 = create_test_block_with_producer(
+            params.slots_per_reward_epoch + 50,
+            &pubkey,
+        );
+        let block_in_epoch_2 = create_test_block_with_producer(
+            params.slots_per_reward_epoch * 2 + 50,
+            &pubkey,
+        );
+        let source = MockEpochBlockSource::new(0, vec![block_in_epoch_1, block_in_epoch_2]);
 
         // In epoch 3 but no rewards distributed - should catch up with epoch 1
+        // (epoch 0 is empty and skipped, epoch 1 has blocks)
         let slot_in_epoch_3 = params.slots_per_reward_epoch * 3 + 5;
         let result = epoch_needing_rewards(slot_in_epoch_3, &params, &source);
 
@@ -3654,7 +3727,32 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             Some(1),
-            "Should reward oldest unrewarded epoch (1)"
+            "Should reward oldest non-empty unrewarded epoch (1, skipping empty epoch 0)"
+        );
+    }
+
+    #[test]
+    fn test_epoch_needing_rewards_late_start_skips_empty() {
+        let params = ConsensusParams::mainnet();
+        let keypair = crypto::KeyPair::generate();
+        let pubkey = keypair.public_key().clone();
+
+        // Simulate chain starting late: only epoch 5 has blocks
+        let block_in_epoch_5 = create_test_block_with_producer(
+            params.slots_per_reward_epoch * 5 + 50,
+            &pubkey,
+        );
+        let source = MockEpochBlockSource::new(0, vec![block_in_epoch_5]);
+
+        // In epoch 6 - should skip epochs 0-4 (empty) and reward epoch 5
+        let slot_in_epoch_6 = params.slots_per_reward_epoch * 6 + 5;
+        let result = epoch_needing_rewards(slot_in_epoch_6, &params, &source);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            Some(5),
+            "Should skip empty epochs 0-4 and reward epoch 5"
         );
     }
 
