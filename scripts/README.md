@@ -367,6 +367,81 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 ---
 
+### test_claim_epoch_reward.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_claim_epoch_reward.sh` |
+| **Purpose** | E2E test of ClaimEpochReward transaction flow |
+| **What it tests** | Presence commitment, reward calculation, claim validation, RPC endpoints, CLI commands |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Run time** | ~3 minutes |
+| **Output** | `/tmp/doli-claim-epoch-test/` (logs) |
+
+**Usage:**
+```bash
+./scripts/test_claim_epoch_reward.sh
+```
+
+**Test scenario:**
+1. Start 3 producer nodes on devnet
+2. Wait for 2 epochs to complete (~120 blocks)
+3. Test `rewards info` - Show epoch information
+4. Test `rewards list` - List claimable epochs
+5. Test `rewards claim 0` - Claim epoch 0 rewards
+6. Test `rewards history` - Verify claim recorded
+7. Check wallet balance after claim
+
+**Tests implemented features:**
+- Milestone 5: ClaimEpochReward transaction type
+- Milestone 6: Weighted reward calculation
+- Milestone 7: Claim validation
+- Milestone 8: Block production with presence
+- Milestone 9: Block application with claims
+- Milestone 11: RPC endpoints
+- Milestone 12: CLI commands
+
+---
+
+### test_weighted_presence_rewards.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_weighted_presence_rewards.sh` |
+| **Purpose** | Test weighted presence reward infrastructure and proportional distribution |
+| **What it tests** | Round-robin block production, presence infrastructure, CLI reward commands, proportional distribution |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `python3` |
+| **Run time** | ~2 minutes |
+| **Output** | `/tmp/doli-weighted-presence-test/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_weighted_presence_rewards.sh
+```
+
+**Test scenario:**
+1. Start 3 producer nodes on devnet
+2. Wait for 120 blocks (tests in-progress epoch)
+3. Verify round-robin block production (~33% each)
+4. Verify presence infrastructure through block production
+5. Test `rewards info` - Show epoch information
+6. Test `rewards list` - List claimable epochs (expected: none yet)
+7. Test `rewards claim` - Verify epoch completion check
+8. Generate markdown report
+
+**Key validations:**
+- Block production is proportional (round-robin gives ~33% each)
+- CLI commands work correctly
+- Epoch completion logic is enforced
+- Presence infrastructure is active during block production
+
+**Notes:**
+- Currently only block producers are marked as present (heartbeat gossip pending)
+- Full weighted distribution testing requires heartbeat gossip implementation
+- RPC BlockResponse doesn't expose presence field yet (stored in blocks)
+
+---
+
 ### test_whitepaper_full.sh
 
 | Property | Value |
@@ -640,6 +715,8 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
 | `test_5node_epoch_rewards_consistency.sh` | 5 | ~2 min | **Milestone 6: Deterministic rewards** |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
+| `test_claim_epoch_reward.sh` | 3 | ~3 min | **ClaimEpochReward E2E test** |
+| `test_weighted_presence_rewards.sh` | 3 | ~2 min | **Weighted presence infrastructure** |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
 | `test_critical_features.sh` | 3 | ~3-5 min | **Real devnet E2E validation** |
 | `test_12node_governance.sh` | 5 | ~20 min | Era progression & governance |
