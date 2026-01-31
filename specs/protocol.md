@@ -282,9 +282,8 @@ Burns 100% of producer's bond. This is the only slashable offense because it's t
 
 ### 3.11 Epoch Reward Transaction
 
-Epoch rewards are distributed at epoch boundaries (every `slots_per_reward_epoch` slots).
-In EpochPool mode, block rewards accumulate in a pool and are distributed proportionally
-to the number of blocks each producer created during the epoch.
+Epoch rewards are distributed at epoch boundaries using a fully deterministic,
+BlockStore-derived model. All calculations derive from on-chain data with zero local state.
 
 ```
 epoch_reward_tx = {
@@ -298,25 +297,122 @@ epoch_reward_tx = {
         lock_until: 0
     }],
     extra_data: {
-        epoch: uint64,           // Epoch number
+        epoch: uint64,           // Epoch number being rewarded
         public_key: 32 bytes     // Recipient producer's public key
     }
 }
 ```
 
-**Pool-First Distribution (Deterministic):**
-1. Block rewards accumulate conceptually in epoch pool (no coinbase per block)
-2. At epoch boundary, pool is calculated deterministically from BlockStore:
-   - Pool = blocks_produced_in_epoch × block_reward(current_height)
-   - Block counts are read from BlockStore via `get_blocks_in_slot_range()`
-3. Rewards distributed proportionally: each producer receives (pool × their_blocks) / total_blocks
-4. Last producer (by sorted public key) receives any remainder from rounding
-5. Epoch reward outputs require 100 confirmations before spending (same as coinbase)
+**Epoch Boundary Detection:**
 
-This deterministic approach ensures:
-- All nodes calculate identical rewards from the same BlockStore
-- No local state required (restart-safe)
-- Fork-safe: each chain fork recalculates from its own blocks
+Rewards are triggered when `current_epoch > last_rewarded_epoch`:
+
+```python
+def should_include_epoch_rewards(current_slot):
+    current_epoch = current_slot // slots_per_reward_epoch
+    last_rewarded = scan_chain_for_last_epoch_reward()  # From BlockStore
+    if current_epoch > last_rewarded:
+        return last_rewarded + 1  # Epoch to reward
+    return None
+
+def scan_chain_for_last_epoch_reward():
+    # Scan backwards from tip, find most recent EpochReward tx
+    # Extract epoch number from EpochRewardData.epoch field
+    # Return 0 if no rewards ever distributed
+```
+
+**Pool Calculation (No Phantom Rewards):**
+
+The reward pool is calculated from actual blocks produced, not slot count:
+
+```
+pool = produced_blocks × block_reward(current_height)
+```
+
+Empty slots do NOT inflate the pool. If an epoch has 300 blocks out of 360 slots,
+the pool is `300 × block_reward`, not `360 × block_reward`.
+
+**Distribution Algorithm:**
+
+```python
+def calculate_epoch_rewards(epoch, current_height):
+    start_slot = epoch * slots_per_reward_epoch
+    end_slot = start_slot + slots_per_reward_epoch
+    if epoch == 0:
+        start_slot = 1  # Skip genesis block (null producer)
+
+    blocks = block_store.get_blocks_in_slot_range(start_slot, end_slot)
+
+    # Count blocks per producer (skip null producer)
+    producer_blocks = {}
+    for block in blocks:
+        if block.producer != NULL_PRODUCER:
+            producer_blocks[block.producer] += 1
+
+    total_blocks = sum(producer_blocks.values())
+    if total_blocks == 0:
+        return []  # Empty epoch, no rewards
+
+    pool = total_blocks * block_reward(current_height)
+
+    # Sort producers by pubkey for deterministic ordering
+    sorted_producers = sorted(producer_blocks.keys())
+
+    rewards = []
+    distributed = 0
+    for i, producer in enumerate(sorted_producers):
+        blocks_by_producer = producer_blocks[producer]
+        # Use u128 intermediate to prevent overflow
+        share = (pool * blocks_by_producer) // total_blocks
+        if i == len(sorted_producers) - 1:
+            share = pool - distributed  # Last producer gets rounding dust
+        distributed += share
+        rewards.append(EpochRewardTx(epoch, producer, share))
+
+    return rewards
+```
+
+**Catch-Up Mechanism:**
+
+If multiple epochs pass without blocks (e.g., network downtime), rewards catch up
+one epoch at a time:
+
+```
+Slot 1080 (epoch 3), last_rewarded = 0:
+
+Block N+0: current_epoch=3 > last_rewarded=0 → distribute epoch 1
+           (after apply: last_rewarded = 1)
+
+Block N+1: current_epoch=3 > last_rewarded=1 → distribute epoch 2
+           (after apply: last_rewarded = 2)
+
+Block N+2: current_epoch=3 > last_rewarded=2 → distribute epoch 3
+           (after apply: last_rewarded = 3)
+
+Block N+3: current_epoch=3 == last_rewarded=3 → normal block, no rewards
+```
+
+**Validation Rules (Exact Match Required):**
+
+Validators recalculate expected rewards from BlockStore and require exact match:
+
+| Condition | Rule |
+|-----------|------|
+| At epoch boundary | Block MUST contain correct EpochReward txs |
+| At non-boundary | Block MUST NOT contain EpochReward txs |
+| Amounts | Each reward MUST match `(pool × producer_blocks) / total_blocks` exactly |
+| Recipients | Only producers who produced blocks in the epoch |
+| Ordering | EpochReward txs sorted by producer pubkey |
+| Epoch number | Must match `last_rewarded + 1` |
+| No coinbase | Epoch boundary blocks MUST NOT have coinbase tx |
+
+**Guarantees:**
+
+- **Deterministic**: Any node calculates identical rewards from the same BlockStore
+- **Restart-safe**: No local state to lose on node restart
+- **Sync-safe**: Nodes syncing from peers validate all historical rewards
+- **Fork-safe**: Each chain fork recalculates rewards from its own blocks
+- **Maturity**: Epoch reward outputs require 100 confirmations (REWARD_MATURITY)
 
 ### 3.12 AddBond Transaction
 
