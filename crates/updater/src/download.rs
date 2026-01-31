@@ -216,7 +216,6 @@ async fn fetch_release_from_url(url: &str) -> Result<Release> {
     Ok(release)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
