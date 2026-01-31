@@ -30,7 +30,10 @@ pub enum TxType {
     /// Claim withdrawal after 7-day delay
     ClaimWithdrawal = 9,
     /// Epoch reward transaction (fair share distribution at epoch boundary)
+    /// DEPRECATED: Use ClaimEpochReward instead
     EpochReward = 10,
+    /// Claim weighted presence rewards for a completed epoch
+    ClaimEpochReward = 11,
 }
 
 impl TxType {
@@ -47,6 +50,7 @@ impl TxType {
             8 => Some(Self::RequestWithdrawal),
             9 => Some(Self::ClaimWithdrawal),
             10 => Some(Self::EpochReward),
+            11 => Some(Self::ClaimEpochReward),
             _ => None,
         }
     }
@@ -418,6 +422,85 @@ impl EpochRewardData {
     }
 }
 
+// ==================== Weighted Presence Reward Claims ====================
+//
+// ClaimEpochReward is the new on-demand claim system that replaces EpochReward.
+// Producers prove presence via VDF heartbeats each slot and claim rewards at
+// their convenience after an epoch completes.
+
+/// Data for ClaimEpochReward transaction
+///
+/// This transaction allows a producer to claim their weighted presence rewards
+/// for a completed epoch. The reward amount is calculated based on presence
+/// (VDF heartbeats with witness signatures) and bond weight during the epoch.
+///
+/// Layout in extra_data:
+/// - bytes 0-7:   epoch (u64 LE)
+/// - bytes 8-39:  producer_pubkey (32 bytes)
+/// - bytes 40-71: recipient_hash (32 bytes)
+/// - bytes 72-135: signature (64 bytes) [appended by new_claim_epoch_reward]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimEpochRewardData {
+    /// Epoch number being claimed
+    pub epoch: u64,
+    /// Claiming producer's public key
+    pub producer_pubkey: PublicKey,
+    /// Recipient address (can differ from producer)
+    pub recipient_hash: Hash,
+}
+
+impl ClaimEpochRewardData {
+    /// Create new claim epoch reward data
+    pub fn new(epoch: u64, producer_pubkey: PublicKey, recipient_hash: Hash) -> Self {
+        Self {
+            epoch,
+            producer_pubkey,
+            recipient_hash,
+        }
+    }
+
+    /// Serialize to bytes for storage in extra_data
+    ///
+    /// Returns 72 bytes: epoch (8) + producer_pubkey (32) + recipient_hash (32)
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(72);
+        bytes.extend_from_slice(&self.epoch.to_le_bytes()); // 8 bytes
+        bytes.extend_from_slice(self.producer_pubkey.as_bytes()); // 32 bytes
+        bytes.extend_from_slice(self.recipient_hash.as_bytes()); // 32 bytes
+        bytes
+    }
+
+    /// Deserialize from bytes
+    ///
+    /// Expects at least 72 bytes
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 72 {
+            return None;
+        }
+        let epoch = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
+        let pubkey_bytes: [u8; 32] = bytes[8..40].try_into().ok()?;
+        let hash_bytes: [u8; 32] = bytes[40..72].try_into().ok()?;
+        Some(Self {
+            epoch,
+            producer_pubkey: PublicKey::from_bytes(pubkey_bytes),
+            recipient_hash: Hash::from_bytes(hash_bytes),
+        })
+    }
+
+    /// Compute the message to sign for this claim
+    ///
+    /// Includes epoch, producer, recipient, and amount to prevent any manipulation.
+    pub fn signing_message(&self, amount: Amount) -> Hash {
+        crypto::hash::hash_concat(&[
+            b"DOLI_CLAIM_SIGN_V1",
+            &self.epoch.to_le_bytes(),
+            self.producer_pubkey.as_bytes(),
+            self.recipient_hash.as_bytes(),
+            &amount.to_le_bytes(),
+        ])
+    }
+}
+
 // ==================== Proof of Time ====================
 //
 // In Proof of Time, there are NO multi-signature attestations.
@@ -502,6 +585,65 @@ impl Transaction {
     /// Check if this is an epoch reward transaction
     pub fn is_epoch_reward(&self) -> bool {
         self.tx_type == TxType::EpochReward
+    }
+
+    /// Check if this is a claim epoch reward transaction (new weighted presence system)
+    pub fn is_claim_epoch_reward(&self) -> bool {
+        self.tx_type == TxType::ClaimEpochReward
+    }
+
+    /// Create a claim epoch reward transaction
+    ///
+    /// This is the new on-demand claim system for weighted presence rewards.
+    /// The producer claims their share of rewards for a completed epoch based
+    /// on their presence (VDF heartbeats) and bond weight.
+    ///
+    /// # Arguments
+    /// * `epoch` - The epoch number being claimed
+    /// * `producer_pubkey` - The claiming producer's public key
+    /// * `amount` - The calculated reward amount (validated by network)
+    /// * `recipient_hash` - Where to send the reward (can differ from producer)
+    /// * `signature` - Producer's signature over the claim data + amount
+    pub fn new_claim_epoch_reward(
+        epoch: u64,
+        producer_pubkey: PublicKey,
+        amount: Amount,
+        recipient_hash: Hash,
+        signature: Signature,
+    ) -> Self {
+        let data = ClaimEpochRewardData::new(epoch, producer_pubkey, recipient_hash);
+        let mut extra_data = data.to_bytes(); // 72 bytes
+        extra_data.extend_from_slice(signature.as_bytes()); // 64 bytes = 136 total
+
+        Self {
+            version: 1,
+            tx_type: TxType::ClaimEpochReward,
+            inputs: Vec::new(), // Minted - no inputs
+            outputs: vec![Output::normal(amount, recipient_hash)],
+            extra_data,
+        }
+    }
+
+    /// Parse claim epoch reward data from extra_data
+    pub fn claim_epoch_reward_data(&self) -> Option<ClaimEpochRewardData> {
+        if self.tx_type != TxType::ClaimEpochReward {
+            return None;
+        }
+        ClaimEpochRewardData::from_bytes(&self.extra_data)
+    }
+
+    /// Get signature from claim epoch reward transaction
+    ///
+    /// Returns None if not a ClaimEpochReward tx or if extra_data is too short.
+    pub fn claim_epoch_reward_signature(&self) -> Option<Signature> {
+        if self.tx_type != TxType::ClaimEpochReward {
+            return None;
+        }
+        if self.extra_data.len() < 136 {
+            return None;
+        }
+        let sig_bytes: [u8; 64] = self.extra_data[72..136].try_into().ok()?;
+        Some(Signature::from_bytes(sig_bytes))
     }
 
     /// Create an epoch reward transaction for fair distribution
@@ -906,7 +1048,8 @@ mod tests {
         assert_eq!(TxType::from_u32(8), Some(TxType::RequestWithdrawal));
         assert_eq!(TxType::from_u32(9), Some(TxType::ClaimWithdrawal));
         assert_eq!(TxType::from_u32(10), Some(TxType::EpochReward));
-        assert_eq!(TxType::from_u32(11), None);
+        assert_eq!(TxType::from_u32(11), Some(TxType::ClaimEpochReward));
+        assert_eq!(TxType::from_u32(12), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
@@ -1255,6 +1398,216 @@ mod tests {
     fn test_epoch_reward_data_none_for_non_epoch_reward() {
         let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
         assert!(tx.epoch_reward_data().is_none());
+    }
+
+    // ==================== ClaimEpochReward Transaction Tests ====================
+
+    #[test]
+    fn test_tx_type_claim_epoch_reward_value() {
+        assert_eq!(TxType::ClaimEpochReward as u32, 11);
+        assert_eq!(TxType::from_u32(11), Some(TxType::ClaimEpochReward));
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_data_serialization() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = crypto::hash::hash(b"recipient");
+
+        let data = ClaimEpochRewardData::new(42, keypair.public_key().clone(), recipient_hash);
+
+        let bytes = data.to_bytes();
+        assert_eq!(bytes.len(), 72); // 8 + 32 + 32
+
+        let parsed = ClaimEpochRewardData::from_bytes(&bytes).unwrap();
+        assert_eq!(data.epoch, parsed.epoch);
+        assert_eq!(data.producer_pubkey, parsed.producer_pubkey);
+        assert_eq!(data.recipient_hash, parsed.recipient_hash);
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_data_from_bytes_short() {
+        // Less than 72 bytes should return None
+        let short_bytes = vec![0u8; 71];
+        assert!(ClaimEpochRewardData::from_bytes(&short_bytes).is_none());
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_data_signing_message() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = crypto::hash::hash(b"recipient");
+
+        let data = ClaimEpochRewardData::new(42, keypair.public_key().clone(), recipient_hash);
+
+        let msg1 = data.signing_message(1000);
+        let msg2 = data.signing_message(1000);
+        assert_eq!(msg1, msg2); // Deterministic
+
+        let msg3 = data.signing_message(2000);
+        assert_ne!(msg1, msg3); // Different amount = different message
+    }
+
+    #[test]
+    fn test_new_claim_epoch_reward_transaction() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
+
+        let data = ClaimEpochRewardData::new(5, keypair.public_key().clone(), recipient_hash);
+        let amount = 47_500_000_000u64;
+        let signing_msg = data.signing_message(amount);
+
+        // Sign the message
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            5,
+            keypair.public_key().clone(),
+            amount,
+            recipient_hash,
+            signature,
+        );
+
+        // Verify structure
+        assert!(tx.is_claim_epoch_reward());
+        assert!(!tx.is_coinbase());
+        assert!(!tx.is_epoch_reward());
+        assert_eq!(tx.tx_type, TxType::ClaimEpochReward);
+        assert!(tx.inputs.is_empty());
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].amount, amount);
+        assert_eq!(tx.outputs[0].output_type, OutputType::Normal);
+        assert_eq!(tx.outputs[0].pubkey_hash, recipient_hash);
+        assert_eq!(tx.extra_data.len(), 136); // 72 + 64
+
+        // Verify data parsing
+        let parsed_data = tx.claim_epoch_reward_data().unwrap();
+        assert_eq!(parsed_data.epoch, 5);
+        assert_eq!(parsed_data.producer_pubkey, *keypair.public_key());
+        assert_eq!(parsed_data.recipient_hash, recipient_hash);
+
+        // Verify signature extraction
+        let parsed_sig = tx.claim_epoch_reward_signature().unwrap();
+        assert_eq!(parsed_sig, signature);
+
+        // Verify signature is valid
+        let verify_msg = parsed_data.signing_message(amount);
+        assert!(
+            crypto::signature::verify_hash(&verify_msg, &parsed_sig, &parsed_data.producer_pubkey)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_not_coinbase() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = Hash::ZERO;
+        let signature = Signature::default();
+
+        let tx = Transaction::new_claim_epoch_reward(
+            1,
+            keypair.public_key().clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        assert!(!tx.is_coinbase());
+        assert!(tx.is_claim_epoch_reward());
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_hash_deterministic() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = Hash::ZERO;
+        let signature = Signature::default();
+
+        let tx1 = Transaction::new_claim_epoch_reward(
+            1,
+            keypair.public_key().clone(),
+            1000,
+            recipient_hash,
+            signature.clone(),
+        );
+        let tx2 = Transaction::new_claim_epoch_reward(
+            1,
+            keypair.public_key().clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        assert_eq!(tx1.hash(), tx2.hash());
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_serialization_roundtrip() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = crypto::hash::hash(b"recipient");
+        let signature = Signature::default();
+
+        let tx = Transaction::new_claim_epoch_reward(
+            100,
+            keypair.public_key().clone(),
+            50_000_000,
+            recipient_hash,
+            signature,
+        );
+
+        let bytes = tx.serialize();
+        let recovered = Transaction::deserialize(&bytes).unwrap();
+
+        assert_eq!(tx.tx_type, recovered.tx_type);
+        assert_eq!(tx, recovered);
+
+        let recovered_data = recovered.claim_epoch_reward_data().unwrap();
+        assert_eq!(recovered_data.epoch, 100);
+        assert_eq!(recovered_data.producer_pubkey, *keypair.public_key());
+        assert_eq!(recovered_data.recipient_hash, recipient_hash);
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_data_none_for_non_claim_tx() {
+        let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+        assert!(tx.claim_epoch_reward_data().is_none());
+        assert!(tx.claim_epoch_reward_signature().is_none());
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_signature_short_data() {
+        // Create a tx with short extra_data
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::ClaimEpochReward,
+            inputs: vec![],
+            outputs: vec![Output::normal(1000, Hash::ZERO)],
+            extra_data: vec![0u8; 100], // Less than 136 bytes
+        };
+
+        assert!(tx.claim_epoch_reward_signature().is_none());
+    }
+
+    #[test]
+    fn test_claim_epoch_reward_different_epochs_different_hash() {
+        let keypair = crypto::KeyPair::generate();
+        let recipient_hash = Hash::ZERO;
+        let signature = Signature::default();
+
+        let tx1 = Transaction::new_claim_epoch_reward(
+            1,
+            keypair.public_key().clone(),
+            1000,
+            recipient_hash,
+            signature.clone(),
+        );
+        let tx2 = Transaction::new_claim_epoch_reward(
+            2, // Different epoch
+            keypair.public_key().clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        assert_ne!(tx1.hash(), tx2.hash());
     }
 
     // Property-based tests
