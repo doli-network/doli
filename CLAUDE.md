@@ -149,6 +149,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 
 - **Branches**: `feature/`, `fix/`, `docs/`, `refactor/`
 - **Commits**: Conventional Commits (`feat(scope): description`, `fix(scope): description`)
+- **Git Author**: All commits must use `--author="E. Weil <weil@doli.network>"`
 - **Line length**: 100 characters max
 - **Tests**: Unit tests in same file, integration tests in `testing/`
 - **Crypto code**: Use property-based testing (proptest)
