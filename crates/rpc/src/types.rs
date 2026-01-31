@@ -433,10 +433,6 @@ pub struct ProducerResponse {
     pub bond_count: u32,
     /// Status (active, unbonding, exited, slashed)
     pub status: String,
-    /// Blocks produced
-    pub blocks_produced: u64,
-    /// Pending rewards (unclaimed)
-    pub pending_rewards: u64,
     /// Current era
     pub era: u64,
     /// Pending withdrawals
