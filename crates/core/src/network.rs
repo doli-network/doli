@@ -304,7 +304,7 @@ impl Network {
         match self {
             Network::Mainnet => 3_153_600, // 365.25 days × 24h × 60min × 6 blocks/min
             Network::Testnet => 3_153_600, // Same as mainnet
-            Network::Devnet => 144,        // 144 blocks × 1s = 2.4 min/year, 576 blocks/era ≈ 10 min
+            Network::Devnet => 144, // 144 blocks × 1s = 2.4 min/year, 576 blocks/era ≈ 10 min
         }
     }
 
@@ -372,8 +372,8 @@ impl Network {
     pub fn max_registrations_per_block(&self) -> u32 {
         match self {
             Network::Mainnet => 5,
-            Network::Testnet => 5,  // Same as mainnet
-            Network::Devnet => 20,  // Higher for rapid testing
+            Network::Testnet => 5, // Same as mainnet
+            Network::Devnet => 20, // Higher for rapid testing
         }
     }
 
@@ -591,8 +591,14 @@ mod tests {
         assert_eq!(testnet.slot_duration(), mainnet.slot_duration());
         assert_eq!(testnet.initial_bond(), mainnet.initial_bond());
         assert_eq!(testnet.initial_reward(), mainnet.initial_reward());
-        assert_eq!(testnet.vdf_discriminant_bits(), mainnet.vdf_discriminant_bits());
-        assert_eq!(testnet.heartbeat_vdf_iterations(), mainnet.heartbeat_vdf_iterations());
+        assert_eq!(
+            testnet.vdf_discriminant_bits(),
+            mainnet.vdf_discriminant_bits()
+        );
+        assert_eq!(
+            testnet.heartbeat_vdf_iterations(),
+            mainnet.heartbeat_vdf_iterations()
+        );
     }
 
     #[test]
