@@ -1,3 +1,5 @@
+> **SUPERSEDED**: This document describes the original Pool-First Epoch Reward design with Node-tracked epoch state (epoch_reward_pool, epoch_producer_blocks, etc.). The reward system was refactored to a fully deterministic BlockStore-derived model that eliminates runtime state tracking. See `/REWARDS.md` for the current implementation.
+
 # IMPLEMENTATION_STATUS.md
 # Pool-First Epoch Reward Distribution System
 

@@ -65,6 +65,6 @@ done
 - `publicKey`: Producer's public key
 - `bondCount`: Number of bonds
 - `bondAmount`: Total bonded amount (divide by 1e9 for DOLI)
-- `blocksProduced`: Blocks produced count
-- `pendingRewards`: Unclaimed rewards (divide by 1e9 for DOLI)
 - `status`: active/inactive
+- `era`: Current era
+- `pendingWithdrawals`: List of pending bond withdrawals
