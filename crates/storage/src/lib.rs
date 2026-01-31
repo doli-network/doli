@@ -86,10 +86,12 @@
 
 pub mod block_store;
 pub mod chain_state;
+pub mod claim_registry;
 pub mod producer;
 pub mod utxo;
 
 pub use block_store::BlockStore;
+pub use claim_registry::{ClaimKey, ClaimRecord, ClaimRegistry};
 pub use chain_state::ChainState;
 pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
