@@ -132,4 +132,343 @@ impl BlockStore {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
         Ok(self.db.get_cf(cf_headers, hash.as_bytes())?.is_some())
     }
+
+    // ==================== Milestone 1: BlockStore Query Methods ====================
+    //
+    // These methods support deterministic epoch reward calculation from the BlockStore.
+    // See REWARDS.md for the complete refactoring plan.
+
+    /// Get block hash by slot
+    ///
+    /// Uses CF_SLOT_INDEX to look up the block hash for a given slot.
+    /// Returns None for empty slots (slots where no block was produced).
+    pub fn get_hash_by_slot(&self, slot: u32) -> Result<Option<Hash>, StorageError> {
+        let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
+
+        let bytes = match self.db.get_cf(cf_slot, slot.to_le_bytes())? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        if bytes.len() != 32 {
+            return Err(StorageError::Serialization("invalid hash length".into()));
+        }
+
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(Some(Hash::from_bytes(arr)))
+    }
+
+    /// Get block by slot
+    ///
+    /// Returns the block at the given slot, or None if the slot is empty.
+    /// This is the primary method for slot-based block retrieval.
+    pub fn get_block_by_slot(&self, slot: u32) -> Result<Option<Block>, StorageError> {
+        let hash = match self.get_hash_by_slot(slot)? {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        self.get_block(&hash)
+    }
+
+    /// Get all blocks in a slot range (inclusive start, exclusive end)
+    ///
+    /// Returns blocks in slot order, skipping empty slots.
+    /// Used for calculating epoch rewards from a deterministic slot range.
+    ///
+    /// # Arguments
+    /// * `start` - First slot in range (inclusive)
+    /// * `end` - Last slot in range (exclusive)
+    ///
+    /// # Returns
+    /// Vec of blocks in slot order. Empty slots are skipped.
+    pub fn get_blocks_in_slot_range(
+        &self,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<Block>, StorageError> {
+        let mut blocks = Vec::new();
+
+        for slot in start..end {
+            if let Some(block) = self.get_block_by_slot(slot)? {
+                blocks.push(block);
+            }
+        }
+
+        Ok(blocks)
+    }
+
+    /// Get the last rewarded epoch number from the chain
+    ///
+    /// Scans backwards from the chain tip to find the most recent block
+    /// containing an EpochReward transaction, then extracts the epoch number.
+    ///
+    /// Returns 0 if no epoch rewards have ever been distributed.
+    ///
+    /// This is used to determine which epoch(s) need reward distribution
+    /// at the current block production time.
+    pub fn get_last_rewarded_epoch(&self) -> Result<u64, StorageError> {
+        use doli_core::transaction::EpochRewardData;
+
+        // Iterate backwards through the height index to find the most recent
+        // block with an EpochReward transaction
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+
+        // Use RocksDB iterator in reverse mode
+        let mut iter = self.db.iterator_cf(
+            cf_height,
+            rocksdb::IteratorMode::End, // Start from the end (highest height)
+        );
+
+        while let Some(Ok((_, hash_bytes))) = iter.next() {
+            if hash_bytes.len() != 32 {
+                continue;
+            }
+
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&hash_bytes);
+            let hash = Hash::from_bytes(arr);
+
+            if let Some(block) = self.get_block(&hash)? {
+                // Check if this block has any EpochReward transactions
+                for tx in &block.transactions {
+                    if tx.is_epoch_reward() {
+                        if let Some(data) = EpochRewardData::from_bytes(&tx.extra_data) {
+                            return Ok(data.epoch);
+                        }
+                    }
+                }
+            }
+        }
+
+        // No epoch rewards found - this is epoch 0 or no rewards distributed yet
+        Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crypto::hash::hash as crypto_hash;
+    use crypto::{KeyPair, PublicKey};
+    use doli_core::{Block, BlockHeader, Transaction};
+    use tempfile::TempDir;
+    use vdf::{VdfOutput, VdfProof};
+
+    /// Create a test BlockStore in a temporary directory
+    fn create_test_store() -> (BlockStore, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let store = BlockStore::open(temp_dir.path()).unwrap();
+        (store, temp_dir)
+    }
+
+    /// Create a test block header with specified slot and producer
+    fn create_test_header(slot: u32, producer: &PublicKey) -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            timestamp: 1000 + slot as u64 * 10,
+            slot,
+            producer: producer.clone(),
+            vdf_output: VdfOutput { value: Vec::new() },
+            vdf_proof: VdfProof::empty(),
+        }
+    }
+
+    /// Create a simple test block with no transactions
+    fn create_test_block(slot: u32, producer: &PublicKey) -> Block {
+        Block::new(create_test_header(slot, producer), vec![])
+    }
+
+    /// Create a block with an EpochReward transaction
+    fn create_epoch_reward_block(slot: u32, producer: &PublicKey, epoch: u64) -> Block {
+        let epoch_reward_tx = Transaction::new_epoch_reward(
+            epoch,
+            producer.clone(),
+            100_000_000, // 1 DOLI
+            crypto_hash(producer.as_bytes()),
+        );
+        Block::new(create_test_header(slot, producer), vec![epoch_reward_tx])
+    }
+
+    #[test]
+    fn test_get_block_by_slot_empty() {
+        let (store, _dir) = create_test_store();
+
+        // Query non-existent slot
+        let result = store.get_block_by_slot(100).unwrap();
+        assert!(result.is_none(), "Empty slot should return None");
+    }
+
+    #[test]
+    fn test_get_block_by_slot_found() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store a block at slot 42
+        let block = create_test_block(42, &producer);
+        store.put_block(&block, 1).unwrap();
+
+        // Retrieve by slot
+        let retrieved = store.get_block_by_slot(42).unwrap();
+        assert!(retrieved.is_some(), "Block should be found at slot 42");
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.slot(), 42);
+        assert_eq!(retrieved.header.producer, producer);
+    }
+
+    #[test]
+    fn test_get_blocks_in_slot_range_empty() {
+        let (store, _dir) = create_test_store();
+
+        // Query empty range
+        let blocks = store.get_blocks_in_slot_range(0, 100).unwrap();
+        assert!(blocks.is_empty(), "Empty range should return empty vec");
+    }
+
+    #[test]
+    fn test_get_blocks_in_slot_range_with_gaps() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks at slots 10, 12, 15 (with gaps at 11, 13, 14)
+        let slots = [10u32, 12, 15];
+        for (height, &slot) in slots.iter().enumerate() {
+            let block = create_test_block(slot, &producer);
+            store.put_block(&block, height as u64).unwrap();
+        }
+
+        // Query range 10..20
+        let blocks = store.get_blocks_in_slot_range(10, 20).unwrap();
+        assert_eq!(blocks.len(), 3, "Should return 3 blocks");
+        assert_eq!(blocks[0].slot(), 10);
+        assert_eq!(blocks[1].slot(), 12);
+        assert_eq!(blocks[2].slot(), 15);
+    }
+
+    #[test]
+    fn test_get_blocks_in_slot_range_ordering() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks in non-sequential order
+        for (height, slot) in [(0, 5u32), (1, 3), (2, 7), (3, 1)] {
+            let block = create_test_block(slot, &producer);
+            store.put_block(&block, height).unwrap();
+        }
+
+        // Blocks should be returned in slot order
+        let blocks = store.get_blocks_in_slot_range(0, 10).unwrap();
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(blocks[0].slot(), 1);
+        assert_eq!(blocks[1].slot(), 3);
+        assert_eq!(blocks[2].slot(), 5);
+        assert_eq!(blocks[3].slot(), 7);
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_no_rewards() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks without epoch rewards
+        for height in 0..5 {
+            let block = create_test_block(height as u32, &producer);
+            store.put_block(&block, height).unwrap();
+        }
+
+        // Should return 0 when no rewards exist
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 0, "No rewards should return epoch 0");
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_single_reward() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store a block with epoch reward for epoch 5
+        let block = create_epoch_reward_block(360, &producer, 5);
+        store.put_block(&block, 0).unwrap();
+
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 5, "Should return epoch 5");
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_multiple_rewards() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks with epoch rewards for epochs 1, 2, 3
+        let reward_blocks = [
+            (360, 1u64),   // epoch 1 at slot 360
+            (720, 2),     // epoch 2 at slot 720
+            (1080, 3),    // epoch 3 at slot 1080
+        ];
+
+        for (height, (slot, epoch)) in reward_blocks.iter().enumerate() {
+            let block = create_epoch_reward_block(*slot, &producer, *epoch);
+            store.put_block(&block, height as u64).unwrap();
+        }
+
+        // Should return the most recent (highest) epoch
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 3, "Should return most recent epoch 3");
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_mixed_blocks() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store a mix of regular blocks and epoch reward blocks
+        // height 0: regular block
+        store.put_block(&create_test_block(1, &producer), 0).unwrap();
+
+        // height 1: epoch reward for epoch 1
+        store.put_block(&create_epoch_reward_block(360, &producer, 1), 1).unwrap();
+
+        // height 2: regular block
+        store.put_block(&create_test_block(361, &producer), 2).unwrap();
+
+        // height 3: epoch reward for epoch 2
+        store.put_block(&create_epoch_reward_block(720, &producer, 2), 3).unwrap();
+
+        // height 4: regular block (most recent)
+        store.put_block(&create_test_block(721, &producer), 4).unwrap();
+
+        // Should still find epoch 2 as the last rewarded
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 2, "Should find epoch 2 through non-reward blocks");
+    }
+
+    #[test]
+    fn test_get_hash_by_slot() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store a block
+        let block = create_test_block(42, &producer);
+        let expected_hash = block.hash();
+        store.put_block(&block, 0).unwrap();
+
+        // Retrieve hash by slot
+        let hash = store.get_hash_by_slot(42).unwrap();
+        assert!(hash.is_some());
+        assert_eq!(hash.unwrap(), expected_hash);
+
+        // Non-existent slot
+        let hash = store.get_hash_by_slot(999).unwrap();
+        assert!(hash.is_none());
+    }
 }
