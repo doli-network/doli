@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use vdf::{VdfOutput, VdfProof};
 
 use crate::consensus::ConsensusParams;
+use crate::presence::PresenceCommitment;
 use crate::transaction::Transaction;
 use crate::types::{BlockHeight, Slot};
 
@@ -77,14 +78,34 @@ pub struct Block {
     pub header: BlockHeader,
     /// Block transactions
     pub transactions: Vec<Transaction>,
+    /// Presence commitment for weighted rewards (optional for backward compatibility)
+    ///
+    /// Records which producers submitted valid heartbeats during this slot
+    /// and their bond weights. Used for calculating weighted presence rewards.
+    #[serde(default)]
+    pub presence: Option<PresenceCommitment>,
 }
 
 impl Block {
-    /// Create a new block
+    /// Create a new block without presence commitment (legacy)
     pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
         Self {
             header,
             transactions,
+            presence: None,
+        }
+    }
+
+    /// Create a new block with presence commitment
+    pub fn new_with_presence(
+        header: BlockHeader,
+        transactions: Vec<Transaction>,
+        presence: PresenceCommitment,
+    ) -> Self {
+        Self {
+            header,
+            transactions,
+            presence: Some(presence),
         }
     }
 
@@ -139,6 +160,21 @@ impl Block {
         0
     }
 
+    /// Get the presence commitment if present
+    pub fn presence(&self) -> Option<&PresenceCommitment> {
+        self.presence.as_ref()
+    }
+
+    /// Check if this block has a presence commitment
+    pub fn has_presence(&self) -> bool {
+        self.presence.is_some()
+    }
+
+    /// Set the presence commitment
+    pub fn set_presence(&mut self, presence: PresenceCommitment) {
+        self.presence = Some(presence);
+    }
+
     /// Serialize the block
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap_or_default()
@@ -189,6 +225,7 @@ pub struct BlockBuilder {
     producer: PublicKey,
     transactions: Vec<Transaction>,
     params: ConsensusParams,
+    presence: Option<PresenceCommitment>,
 }
 
 impl BlockBuilder {
@@ -200,12 +237,19 @@ impl BlockBuilder {
             producer,
             transactions: Vec::new(),
             params: ConsensusParams::mainnet(),
+            presence: None,
         }
     }
 
     /// Set consensus params
     pub fn with_params(mut self, params: ConsensusParams) -> Self {
         self.params = params;
+        self
+    }
+
+    /// Set the presence commitment for this block
+    pub fn with_presence(mut self, presence: PresenceCommitment) -> Self {
+        self.presence = Some(presence);
         self
     }
 

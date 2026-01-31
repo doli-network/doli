@@ -118,12 +118,13 @@ pub mod consensus;
 pub mod discovery;
 pub mod genesis;
 pub mod network;
+pub mod presence;
 pub mod tpop;
 pub mod transaction;
 pub mod types;
 pub mod validation;
 
-pub use block::{Block, BlockHeader};
+pub use block::{Block, BlockBuilder, BlockHeader};
 pub use consensus::{
     allowed_producer_rank,
     allowed_producer_rank_ms,
@@ -177,6 +178,10 @@ pub use consensus::{
 
 // Block-height based reward epoch utilities
 pub use consensus::reward_epoch;
+
+// Presence commitment for weighted presence rewards
+pub use presence::PresenceCommitment;
+
 pub use genesis::{
     generate_genesis_block, genesis_hash, verify_genesis_block, GenesisConfig, GenesisError,
 };
