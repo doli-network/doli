@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crypto::Hash;
 use doli_core::{Block, BlockHeader};
+use tracing::{debug, info};
 
 use crate::StorageError;
 
@@ -36,6 +37,13 @@ impl BlockStore {
     pub fn put_block(&self, block: &Block, height: u64) -> Result<(), StorageError> {
         let hash = block.hash();
         let hash_bytes = hash.as_bytes();
+        let slot = block.slot();
+
+        // Log block storage with slot info (info level for visibility)
+        info!(
+            "[BLOCK_STORE] put_block: height={}, slot={}",
+            height, slot
+        );
 
         // Store header
         let header_bytes = bincode::serialize(&block.header)
@@ -57,7 +65,7 @@ impl BlockStore {
         // Update slot index
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
         self.db
-            .put_cf(cf_slot, block.slot().to_le_bytes(), hash_bytes)?;
+            .put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
 
         Ok(())
     }
@@ -211,10 +219,45 @@ impl BlockStore {
         }
         for slot in start..end {
             if self.get_hash_by_slot(slot)?.is_some() {
+                debug!(
+                    "[BLOCK_STORE] Found block at slot {} in range [{}, {})",
+                    slot, start, end
+                );
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Count total blocks in the slot index (diagnostic method)
+    pub fn count_slot_index_entries(&self) -> Result<u64, StorageError> {
+        let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
+        let iter = self.db.iterator_cf(cf_slot, rocksdb::IteratorMode::Start);
+        let mut count = 0u64;
+        let mut min_slot = u32::MAX;
+        let mut max_slot = 0u32;
+
+        for item in iter {
+            if let Ok((key, _)) = item {
+                count += 1;
+                if key.len() == 4 {
+                    let slot = u32::from_le_bytes([key[0], key[1], key[2], key[3]]);
+                    min_slot = min_slot.min(slot);
+                    max_slot = max_slot.max(slot);
+                }
+            }
+        }
+
+        if count > 0 {
+            debug!(
+                "[BLOCK_STORE] Slot index: {} entries, slots {} to {}",
+                count, min_slot, max_slot
+            );
+        } else {
+            debug!("[BLOCK_STORE] Slot index: EMPTY");
+        }
+
+        Ok(count)
     }
 
     /// Get the last rewarded epoch number from the chain

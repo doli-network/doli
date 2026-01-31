@@ -2380,6 +2380,7 @@ impl Node {
 
         // Skip epoch 0 boundary (slot 0 is genesis, can't distribute before epoch 0 ends)
         if current_slot == 0 {
+            debug!("[REWARD_DEBUG] Skipping rewards: current_slot=0 (genesis)");
             return None;
         }
 
@@ -2394,13 +2395,41 @@ impl Node {
             }
         };
 
+        // Log reward check on every block production (use info! to ensure visibility)
+        info!(
+            "[REWARD_CHECK] slot={}, epoch={}, last_rewarded={}, slots_per_epoch={}",
+            current_slot, current_epoch, last_rewarded, slots_per_epoch
+        );
+
+        // Periodically log slot index diagnostics (every 60 slots = 10 minutes on testnet)
+        if current_slot % 60 == 0 {
+            if let Ok(count) = self.block_store.count_slot_index_entries() {
+                info!(
+                    "[REWARD_CHECK] Slot index: {} blocks indexed",
+                    count
+                );
+            }
+        }
+
         // Only finished epochs (< current_epoch) are eligible for rewards
         if current_epoch <= last_rewarded {
+            info!(
+                "[REWARD_CHECK] Skip: current_epoch({}) <= last_rewarded({})",
+                current_epoch, last_rewarded
+            );
             return None;
         }
 
         // Find the first epoch after last_rewarded that has blocks
         // This skips empty epochs (e.g., when chain starts after genesis timestamp)
+        let epochs_to_check = current_epoch.saturating_sub(last_rewarded + 1);
+        info!(
+            "[REWARD_CHECK] Scanning {} epochs for blocks (epochs {}..{})",
+            epochs_to_check,
+            last_rewarded + 1,
+            current_epoch
+        );
+
         for epoch in (last_rewarded + 1)..current_epoch {
             let start_slot = if epoch == 0 {
                 1u32 // Skip genesis slot
@@ -2410,8 +2439,23 @@ impl Node {
             let end_slot = ((epoch + 1) * slots_per_epoch) as u32;
 
             match self.block_store.has_any_block_in_slot_range(start_slot, end_slot) {
-                Ok(true) => return Some(epoch),
-                Ok(false) => continue,
+                Ok(true) => {
+                    info!(
+                        "[REWARD_CHECK] FOUND blocks in epoch {}: slots [{}, {})",
+                        epoch, start_slot, end_slot
+                    );
+                    return Some(epoch);
+                }
+                Ok(false) => {
+                    // Log first empty epoch and every 10th
+                    if epoch % 10 == 0 || epoch == last_rewarded + 1 {
+                        info!(
+                            "[REWARD_CHECK] Epoch {} empty: slots [{}, {})",
+                            epoch, start_slot, end_slot
+                        );
+                    }
+                    continue;
+                }
                 Err(e) => {
                     warn!("Failed to check epoch {} for blocks: {:?}", epoch, e);
                     return None;
@@ -2420,6 +2464,12 @@ impl Node {
         }
 
         // All epochs between last_rewarded and current are empty - no rewards needed
+        info!(
+            "[REWARD_CHECK] All {} epochs empty - no rewards (epochs {}..{})",
+            epochs_to_check,
+            last_rewarded + 1,
+            current_epoch
+        );
         None
     }
 
