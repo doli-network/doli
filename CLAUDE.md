@@ -164,7 +164,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 
 ## Documentation Alignment (MANDATORY)
 
-Documentation drift is a protocol liability. **Use `/sync-docs` after any implementation.**
+Documentation drift is a protocol liability.
 
 ### Truth Hierarchy
 
@@ -182,10 +182,39 @@ Documentation drift is a protocol liability. **Use `/sync-docs` after any implem
 
 ## Workflow Rules
 
+### Pre-Commit Gate (BLOCKING)
+
+**BEFORE EVERY COMMIT, you MUST complete this checklist. No exceptions.**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PRE-COMMIT DOCUMENTATION GATE                                  │
+│  Cannot proceed to `git commit` until ALL boxes are checked     │
+├─────────────────────────────────────────────────────────────────┤
+│  [ ] 1. Run `/sync-docs` OR manually verify:                    │
+│         - specs/protocol.md reflects any protocol changes       │
+│         - docs/*.md reflects any user-facing changes            │
+│         - docs/rpc_reference.md reflects any RPC changes        │
+│         - docs/cli.md reflects any CLI changes                  │
+│                                                                 │
+│  [ ] 2. If implementation adds/changes behavior:                │
+│         - specs/ updated with technical details                 │
+│         - docs/ updated with usage instructions                 │
+│                                                                 │
+│  [ ] 3. If implementation adds/changes tests:                   │
+│         - scripts/README.md updated (if test script added)      │
+│         - Test coverage documented in relevant docs             │
+│                                                                 │
+│  [ ] 4. State which docs were checked/updated in commit message │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**If you skip this gate, you are violating CLAUDE.md.**
+
 ### For All Changes
 
 After tests pass:
-1. Check if changes affect documented behavior (see table above)
+1. **EXECUTE Pre-Commit Gate above** (this is not optional)
 2. Update relevant documentation immediately
 3. Commit code and docs together
 
