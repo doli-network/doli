@@ -1,6 +1,6 @@
 # REWARDS.md - Deterministic Epoch Rewards Refactoring
 
-**Status**: In Progress (Milestones 1-3 Complete)
+**Status**: In Progress (Milestones 1-4 Complete)
 **Created**: 2026-01-30
 **Author**: Protocol Team
 
@@ -356,7 +356,7 @@ Milestone 7: Cleanup                      [~1 hour]
 
 ---
 
-### Milestone 4: Producer Integration
+### Milestone 4: Producer Integration ✅ COMPLETE
 
 **File**: `bins/node/src/node.rs`
 
@@ -371,16 +371,22 @@ Milestone 7: Cleanup                      [~1 hour]
   }
   ```
 
-- [ ] **4.2** Ensure block includes EpochReward txs at correct position
-  - EpochReward txs should be first (before user txs)
-  - Or define clear ordering rule
+- [x] **4.2** Ensure block includes EpochReward txs at correct position
+  - EpochReward txs are added first to empty Vec
+  - Mempool txs are extended after epoch rewards
+  - Test: `test_epoch_rewards_positioned_before_user_txs`
 
-- [ ] **4.3** Integration test: produce block at epoch boundary
+- [x] **4.3** Integration test: produce block at epoch boundary
+  - Test: `test_block_production_at_epoch_boundary`
+  - Verifies epoch boundary detection and proportional reward calculation
 
-**Acceptance Criteria**:
+**Acceptance Criteria**: ✅ All met
 - Producer creates correct EpochReward txs at boundary
 - Non-boundary blocks have no reward txs
 - Multiple empty epochs catch up correctly
+- 15 total epoch reward tests (13 existing + 2 new)
+
+**Commit**: `036df1c test(node): add Milestone 4 producer integration tests`
 
 ---
 
