@@ -263,8 +263,8 @@ impl doli_core::validation::EpochBlockSource for BlockStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::hash::hash as crypto_hash;
-    use crypto::{KeyPair, PublicKey};
+    use crypto::hash::{hash as crypto_hash, hash_with_domain};
+    use crypto::{KeyPair, PublicKey, ADDRESS_DOMAIN};
     use doli_core::{Block, BlockHeader, Transaction};
     use tempfile::TempDir;
     use vdf::{VdfOutput, VdfProof};
@@ -301,7 +301,7 @@ mod tests {
             epoch,
             producer.clone(),
             100_000_000, // 1 DOLI
-            crypto_hash(producer.as_bytes()),
+            hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes()),
         );
         Block::new(create_test_header(slot, producer), vec![epoch_reward_tx])
     }
