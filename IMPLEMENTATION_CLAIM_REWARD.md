@@ -1618,7 +1618,7 @@ test_batch_claims()
 |--------|--------|-------------|
 | `test_claim_epoch_reward.sh` | ✅ Implemented | Full ClaimEpochReward flow (milestones 5-12) |
 | `test_weighted_presence_rewards.sh` | ✅ Implemented 2026-01-31 | Weighted presence reward distribution |
-| `test_5node_presence_rewards.sh` | ⏳ Pending | 5-node presence tracking test |
+| `test_5node_presence_rewards.sh` | ✅ Implemented 2026-01-31 | 5-node presence tracking test |
 
 ---
 
