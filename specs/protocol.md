@@ -304,13 +304,19 @@ epoch_reward_tx = {
 }
 ```
 
-**Pool-First Distribution:**
-1. Block rewards accumulate in epoch pool (no coinbase per block)
-2. At epoch boundary, pool is distributed proportionally based on blocks produced
-3. Last producer (by sorted public key) receives any remainder from rounding
-4. Epoch reward outputs require 100 confirmations before spending (same as coinbase)
+**Pool-First Distribution (Deterministic):**
+1. Block rewards accumulate conceptually in epoch pool (no coinbase per block)
+2. At epoch boundary, pool is calculated deterministically from BlockStore:
+   - Pool = blocks_produced_in_epoch × block_reward(current_height)
+   - Block counts are read from BlockStore via `get_blocks_in_slot_range()`
+3. Rewards distributed proportionally: each producer receives (pool × their_blocks) / total_blocks
+4. Last producer (by sorted public key) receives any remainder from rounding
+5. Epoch reward outputs require 100 confirmations before spending (same as coinbase)
 
-This ensures fair distribution proportional to each producer's contribution to the epoch.
+This deterministic approach ensures:
+- All nodes calculate identical rewards from the same BlockStore
+- No local state required (restart-safe)
+- Fork-safe: each chain fork recalculates from its own blocks
 
 ### 3.12 AddBond Transaction
 

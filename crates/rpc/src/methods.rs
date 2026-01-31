@@ -416,8 +416,6 @@ impl RpcContext {
             bond_amount: info.bond_amount,
             bond_count: info.bond_count,
             status: status.to_string(),
-            blocks_produced: info.blocks_produced,
-            pending_rewards: info.pending_rewards,
             era,
             pending_withdrawals: Vec::new(), // TODO: Add pending withdrawals when ProducerBonds is integrated
         };
@@ -461,8 +459,6 @@ impl RpcContext {
                     bond_amount: info.bond_amount,
                     bond_count: info.bond_count,
                     status: status.to_string(),
-                    blocks_produced: info.blocks_produced,
-                    pending_rewards: info.pending_rewards,
                     era,
                     pending_withdrawals: Vec::new(),
                 }
