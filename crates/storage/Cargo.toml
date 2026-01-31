@@ -15,3 +15,7 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 bincode.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+vdf = { workspace = true }
