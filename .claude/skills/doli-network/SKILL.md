@@ -68,3 +68,75 @@ done
 - `status`: active/inactive
 - `era`: Current era
 - `pendingWithdrawals`: List of pending bond withdrawals
+
+## Checking Blocks Produced
+
+### From Node Logs
+```bash
+# Count blocks produced per node
+grep -c "Block.*produced" /path/to/node.log
+
+# Show block production details
+grep "Block.*produced" /path/to/node.log | tail -10
+```
+
+### From RPC - Scan Chain for Producer
+```bash
+# Count blocks by a specific producer (by pubkey prefix)
+PRODUCER_PREFIX="7655d10a"  # First 8 chars of pubkey
+for h in $(seq 1 100); do
+  BLOCK=$(curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockByHeight\",\"params\":{\"height\":$h},\"id\":1}")
+  PRODUCER=$(echo $BLOCK | jq -r '.result.producer // ""')
+  if [[ "$PRODUCER" == "$PRODUCER_PREFIX"* ]]; then
+    echo "Height $h: Producer $PRODUCER"
+  fi
+done
+```
+
+## Checking Epoch Rewards
+
+### From Node Logs
+```bash
+# Show epoch reward distribution
+grep "Epoch.*rewards:" /path/to/node.log
+
+# Show all epoch reward inclusions
+grep "Including.*epoch reward" /path/to/node.log
+```
+
+### Find Epoch Boundary Blocks
+```bash
+# Devnet: 30 slots/epoch, Testnet: 360 slots/epoch
+SLOTS_PER_EPOCH=30  # For devnet
+
+for h in $(seq 1 200); do
+  BLOCK=$(curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockByHeight\",\"params\":{\"height\":$h},\"id\":1}")
+  SLOT=$(echo $BLOCK | jq -r '.result.slot // 0')
+  TX_COUNT=$(echo $BLOCK | jq -r '.result.txCount // 0')
+  EPOCH=$((SLOT / SLOTS_PER_EPOCH))
+
+  # First block of new epoch has reward transactions
+  if [ "$TX_COUNT" -gt 0 ]; then
+    echo "Height $h (Slot $SLOT, Epoch $EPOCH): $TX_COUNT transactions"
+  fi
+done
+```
+
+### Multi-Node Block Production Summary
+```bash
+# For 5-node testnet logs
+for i in 1 2 3 4 5; do
+  COUNT=$(grep -c "Block.*produced" /path/to/logs/node$i.log 2>/dev/null || echo "0")
+  echo "Node $i: $COUNT blocks produced"
+done
+```
+
+## Epoch Parameters by Network
+
+| Network | Slots/Epoch | Slot Duration | Epoch Duration |
+|---------|-------------|---------------|----------------|
+| Mainnet | 360 | 10s | 1 hour |
+| Testnet | 360 | 10s | 1 hour |
+| Devnet | 30 | 1s | 30 seconds |
