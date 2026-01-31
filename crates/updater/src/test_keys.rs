@@ -97,6 +97,7 @@ pub fn should_use_test_keys() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::{PublicKey, Signature};
 
     #[test]
     fn test_sign_and_verify() {
