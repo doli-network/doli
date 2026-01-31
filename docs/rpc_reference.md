@@ -371,8 +371,6 @@ Returns all producers in the network.
         "bondAmount": 5000000000000,
         "bondCount": 5,
         "status": "active",
-        "blocksProduced": 1234,
-        "pendingRewards": 500000000,
         "era": 0,
         "pendingWithdrawals": []
     }
@@ -407,8 +405,6 @@ Returns information about a specific producer.
     "bondAmount": 5000000000000,
     "bondCount": 5,
     "status": "active",
-    "blocksProduced": 1234,
-    "pendingRewards": 500000000,
     "era": 0,
     "pendingWithdrawals": [
         {
