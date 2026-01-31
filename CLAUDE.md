@@ -306,6 +306,51 @@ Once code changes pass all unit tests:
 1. Update `specs/` and `docs/` if the changes affect documented behavior or specifications
 2. Commit all changes together
 
+### Milestone/Task Documentation Sync (MANDATORY)
+
+**CRITICAL**: When implementation is divided into milestones or tasks, documentation alignment is MANDATORY after EACH milestone or task passes its tests—not just at the end.
+
+#### The Rule
+
+After ANY milestone or task successfully passes unit tests:
+
+1. **STOP** - Do not proceed to the next milestone
+2. **Review documentation impact** - Check if the completed work affects:
+   - `WHITEPAPER.md` - Protocol-level behavior or specifications
+   - `specs/*` - Technical specifications, architecture, wire formats
+   - `docs/*` - User-facing behavior, CLI, RPC, operational guides
+3. **Update immediately** - If documentation is affected, update it NOW
+4. **Use `/sync-docs`** - Run the sync-docs skill to verify alignment
+5. **Commit together** - Code changes AND documentation updates in the same commit
+
+#### Why This Matters
+
+```
+❌ WRONG: Complete all milestones → Update docs at the end
+✅ RIGHT: Complete milestone → Sync docs → Commit → Next milestone
+```
+
+**Rationale:**
+- Documentation drift accumulates when deferred
+- Each milestone may change assumptions that affect later work
+- Other developers (or future Claude sessions) need accurate docs to continue
+- Blockchain protocols require precise documentation—bugs kill trust
+
+#### Enforcement Checklist
+
+After each milestone/task passes tests, answer:
+
+| Question | If YES |
+|----------|--------|
+| Does this change protocol behavior? | Update WHITEPAPER.md |
+| Does this change internal architecture? | Update specs/architecture.md |
+| Does this change consensus rules? | Update specs/protocol.md |
+| Does this change CLI commands? | Update docs/cli.md |
+| Does this change RPC endpoints? | Update docs/rpc_reference.md |
+| Does this change node operation? | Update docs/running_a_node.md |
+
+**If you cannot answer "no documentation needed" with certainty, run `/sync-docs`.**
+
 ### Handling Bug Reports (`REPORT_*.md` Files)
 
 When fixing a bug documented in a `REPORT_*.md` file:
