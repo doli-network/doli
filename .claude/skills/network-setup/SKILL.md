@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.0.0
+version: 2.1.0
 ---
 
 # DOLI Network Setup Skill
@@ -47,8 +47,11 @@ User wants to...
 ├─ Production deployment?
 │  └─ Use mainnet
 │
+├─ Run as background service?
+│  └─ See Scenario 3 (Systemd Service)
+│
 └─ Launch a brand new network?
-   └─ See Scenario 3 (Network Operators)
+   └─ See Scenario 4 (Network Operators)
 ```
 
 ## Scenario 1: Run a Producer Node
@@ -120,9 +123,108 @@ export DOLI_RPC=http://127.0.0.1:<RPC_PORT>  # 28545 (devnet), 18545 (testnet), 
 ./target/release/doli producer list
 ```
 
-## Scenario 2: Run as Systemd Service (Production)
+## Scenario 2: Local Multi-Node Testnet
 
-For persistent testnet/mainnet operation:
+For development and testing with multiple nodes on a single machine.
+
+### Option A: Quick 2-Node Launch
+
+```bash
+# Use the built-in script
+./scripts/launch_testnet.sh
+```
+
+This script:
+- Creates 2 producer nodes with auto-generated keys
+- Sets up proper P2P bootstrapping
+- Provides status check and log viewing commands
+
+### Option B: Custom N-Node Testnet
+
+For more control (e.g., 5 nodes with specific configuration):
+
+```bash
+# Set up directories
+export TESTNET_DIR=~/.doli/testnet
+mkdir -p $TESTNET_DIR
+
+# Generate N producer wallets
+for i in 1 2 3 4 5; do
+    ./target/release/doli new -w $TESTNET_DIR/producer_$i.json
+done
+```
+
+**Start Node 1 (Bootstrap/Seed):**
+```bash
+./target/release/doli-node \
+    --data-dir $TESTNET_DIR/node1/data \
+    --network testnet \
+    run \
+    --producer \
+    --producer-key $TESTNET_DIR/producer_1.json \
+    --p2p-port 40303 \
+    --rpc-port 18545 \
+    --metrics-port 9090 \
+    --no-auto-update
+```
+
+**Start Nodes 2-N (Bootstrap from Node 1):**
+```bash
+# Node 2
+./target/release/doli-node \
+    --data-dir $TESTNET_DIR/node2/data \
+    --network testnet \
+    run \
+    --producer \
+    --producer-key $TESTNET_DIR/producer_2.json \
+    --p2p-port 40304 \
+    --rpc-port 18546 \
+    --metrics-port 9091 \
+    --bootstrap "/ip4/127.0.0.1/tcp/40303" \
+    --no-auto-update
+
+# Pattern for nodes 3-N: increment ports by 1 for each node
+# Node 3: p2p=40305, rpc=18547, metrics=9092
+# Node 4: p2p=40306, rpc=18548, metrics=9093
+# Node 5: p2p=40307, rpc=18549, metrics=9094
+```
+
+### Port Allocation Pattern
+
+| Node | P2P Port | RPC Port | Metrics Port |
+|------|----------|----------|--------------|
+| 1 | 40303 | 18545 | 9090 |
+| 2 | 40304 | 18546 | 9091 |
+| 3 | 40305 | 18547 | 9092 |
+| N | 40303+(N-1) | 18545+(N-1) | 9090+(N-1) |
+
+### Check Multi-Node Status
+
+```bash
+# Quick status check for 5 nodes
+for port in 18545 18546 18547 18548 18549; do
+  echo "=== RPC $port ==="
+  curl -s http://127.0.0.1:$port -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | \
+    jq -c '.result | {height: .bestHeight, slot: .bestSlot}'
+done
+```
+
+### Available Test Scripts
+
+| Script | Description |
+|--------|-------------|
+| `scripts/launch_testnet.sh` | Quick 2-node devnet |
+| `scripts/test_3node_proportional_rewards.sh` | 3-node reward testing |
+| `scripts/test_5node_epoch_rewards_consistency.sh` | 5-node epoch rewards |
+| `scripts/test_devnet_3node_rewards.sh` | 3-node devnet rewards |
+
+---
+
+## Scenario 3: Run as Systemd Service (Production)
+
+For persistent production operation (testnet/mainnet):
 
 ```bash
 sudo tee /etc/systemd/system/doli-<NETWORK>.service > /dev/null << 'EOF'
@@ -154,7 +256,7 @@ sudo systemctl start doli-<NETWORK>
 journalctl -u doli-<NETWORK> -f
 ```
 
-## Scenario 3: Launch New Network (Network Operators Only)
+## Scenario 4: Launch New Network (Network Operators Only)
 
 Only for launching a completely new network from scratch.
 
