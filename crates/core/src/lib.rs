@@ -208,6 +208,8 @@ pub use transaction::{
     Transaction,
     TxType,
     WithdrawalRequestData,
+    // Weighted presence reward claims
+    ClaimEpochRewardData,
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
