@@ -523,9 +523,19 @@ async fn run_node(
         is_producer_fn,
     );
 
-    // Create and run the node (share the producer_set and signed_slots_db)
-    let mut node =
-        node::Node::new(config, producer_key, Some(producer_set), signed_slots_db).await?;
+    // Create shared shutdown flag for graceful shutdown signaling
+    let shutdown_flag = Arc::new(RwLock::new(false));
+    let shutdown_flag_for_node = shutdown_flag.clone();
+
+    // Create and run the node (share the producer_set, signed_slots_db, and shutdown flag)
+    let mut node = node::Node::new(
+        config,
+        producer_key,
+        Some(producer_set),
+        signed_slots_db,
+        Some(shutdown_flag_for_node),
+    )
+    .await?;
 
     info!("Node running. Press Ctrl+C to stop.");
 
@@ -539,10 +549,23 @@ async fn run_node(
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
 
-    info!("Shutting down...");
+    info!("Shutting down gracefully...");
 
-    // Cancel the node task
-    node_handle.abort();
+    // Signal the node to shutdown (instead of aborting)
+    *shutdown_flag.write().await = true;
+
+    // Wait for node to complete graceful shutdown (with timeout)
+    match tokio::time::timeout(std::time::Duration::from_secs(30), node_handle).await {
+        Ok(Ok(())) => {
+            info!("Node shutdown complete");
+        }
+        Ok(Err(e)) => {
+            error!("Node task panicked: {}", e);
+        }
+        Err(_) => {
+            warn!("Shutdown timeout - forcing exit");
+        }
+    }
 
     Ok(())
 }

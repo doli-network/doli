@@ -93,7 +93,12 @@ pub struct Node {
     announcement_sequence: Arc<AtomicU64>,
     /// Signed slots database (prevents double-signing after restart)
     signed_slots_db: Option<SignedSlotsDb>,
+    /// Blocks applied since last state save (for periodic persistence)
+    blocks_since_save: u64,
 }
+
+/// How often to save state (every N blocks applied)
+const STATE_SAVE_INTERVAL: u64 = 10;
 
 impl Node {
     /// Create a new node
@@ -102,11 +107,15 @@ impl Node {
     /// Otherwise, loads from disk or creates a new one.
     ///
     /// If `signed_slots_db` is Some, uses it to prevent double-signing after restart.
+    ///
+    /// If `shutdown_flag` is Some, uses the provided flag for graceful shutdown signaling.
+    /// Otherwise, creates a new flag internally.
     pub async fn new(
         config: NodeConfig,
         producer_key: Option<KeyPair>,
         producer_set: Option<Arc<RwLock<ProducerSet>>>,
         signed_slots_db: Option<SignedSlotsDb>,
+        shutdown_flag: Option<Arc<RwLock<bool>>>,
     ) -> Result<Self> {
         let mut params = ConsensusParams::for_network(config.network);
 
@@ -237,6 +246,9 @@ impl Node {
         // Initialize adaptive gossip controller
         let adaptive_gossip = Arc::new(RwLock::new(AdaptiveGossip::new()));
 
+        // Use provided shutdown flag or create a new one
+        let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
+
         Ok(Self {
             config,
             params,
@@ -247,7 +259,7 @@ impl Node {
             mempool,
             network: None,
             sync_manager,
-            shutdown: Arc::new(RwLock::new(false)),
+            shutdown,
             producer_key,
             last_produced_slot: 0,
             last_production_check: Instant::now(),
@@ -263,6 +275,7 @@ impl Node {
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
+            blocks_since_save: 0,
         })
     }
 
@@ -327,6 +340,9 @@ impl Node {
 
         // Main event loop
         self.run_event_loop().await?;
+
+        // Graceful shutdown: save all state before exiting
+        self.shutdown().await?;
 
         Ok(())
     }
@@ -1573,6 +1589,10 @@ impl Node {
             block.header.prev_hash,
         );
 
+        // Periodic state save for crash resilience
+        // This ensures state is persisted even if the node crashes before graceful shutdown
+        self.maybe_save_state().await?;
+
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
         // should be broadcast explicitly by the caller (produce_block).
@@ -2492,6 +2512,41 @@ impl Node {
         Ok(reward_transactions)
     }
 
+    /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
+    ///
+    /// This provides crash resilience by persisting state to disk without
+    /// waiting for graceful shutdown. Called after applying each block.
+    async fn maybe_save_state(&mut self) -> Result<()> {
+        self.blocks_since_save += 1;
+
+        if self.blocks_since_save >= STATE_SAVE_INTERVAL {
+            self.save_state().await?;
+            self.blocks_since_save = 0;
+        }
+
+        Ok(())
+    }
+
+    /// Save all node state to disk
+    async fn save_state(&self) -> Result<()> {
+        debug!("Saving node state to disk...");
+
+        // Save chain state
+        let state_path = self.config.data_dir.join("chain_state.bin");
+        self.chain_state.read().await.save(&state_path)?;
+
+        // Save UTXO set
+        let utxo_path = self.config.data_dir.join("utxo");
+        self.utxo_set.read().await.save(&utxo_path)?;
+
+        // Save producer set
+        let producers_path = self.config.data_dir.join("producers.bin");
+        self.producer_set.read().await.save(&producers_path)?;
+
+        debug!("Node state saved");
+        Ok(())
+    }
+
     /// Shutdown the node
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down node...");
@@ -2499,17 +2554,8 @@ impl Node {
         // Set shutdown flag
         *self.shutdown.write().await = true;
 
-        // Save UTXO set
-        let utxo_path = self.config.data_dir.join("utxo");
-        self.utxo_set.read().await.save(&utxo_path)?;
-
-        // Save chain state
-        let state_path = self.config.data_dir.join("chain_state.bin");
-        self.chain_state.read().await.save(&state_path)?;
-
-        // Save producer set
-        let producers_path = self.config.data_dir.join("producers.bin");
-        self.producer_set.read().await.save(&producers_path)?;
+        // Final state save
+        self.save_state().await?;
 
         info!("Node shutdown complete");
         Ok(())
