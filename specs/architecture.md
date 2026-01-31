@@ -517,38 +517,48 @@ New nodes use state-based production gating, not time-based warmup:
 - Each node naturally syncs before competing
 - Seed nodes bootstrap immediately
 
-### 3. Epoch-Based Reward Accumulation (No Dust)
+### 3. Epoch-Based Reward Distribution (Deterministic)
 
-Rewards are NOT per-block UTXOs. They accumulate in `pending_rewards`:
+Rewards are distributed as **EpochReward transactions** at epoch boundaries, calculated deterministically from the BlockStore:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Reward Flow                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  Block produced → Reward added to ProducerInfo.pending_rewards  │
-│                                                                 │
-│  1,440 blocks (1 day) → Epoch ends → Rewards distributed       │
-│                                                                 │
-│  Producer decides to withdraw → Single UTXO created            │
+│  Epoch ends (slot % 360 == 0)                                   │
+│         │                                                       │
+│         ├── Scan BlockStore: count blocks per producer          │
+│         │                                                       │
+│         ├── Calculate pool: produced_blocks × block_reward      │
+│         │   (empty slots do NOT contribute to pool)             │
+│         │                                                       │
+│         ├── Distribute proportionally to block producers        │
+│         │                                                       │
+│         └── Create EpochReward transactions → UTXO set          │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Example with 10,000 producers:**
+**Deterministic Calculation from BlockStore:**
 ```
-Daily reward pool: 5 DOLI × 1,440 blocks = 7,200 DOLI
-Per producer: 7,200 ÷ 10,000 = 0.72 DOLI/day
+Epoch boundary detected:
+  current_epoch = current_slot / 360
+  last_rewarded = scan BlockStore for most recent EpochReward tx
 
-Accumulates in memory, NOT as UTXOs
-Producer withdraws when convenient → Single UTXO
+If current_epoch > last_rewarded:
+  1. Query blocks in epoch slot range from BlockStore
+  2. Count blocks per producer (exclude null producer)
+  3. Pool = total_blocks × block_reward(current_height)
+  4. Distribute proportionally (last producer by sorted pubkey gets dust)
+  5. Create EpochReward transactions with exact amounts
 ```
 
-**Why this prevents dust:**
-- No UTXO per block (would be 0.0005 DOLI per block with 10K producers)
-- Rewards accumulate in compact `u64` field
-- Single withdrawal transaction when producer claims
-- Can enforce minimum withdrawal amount
+**Key Properties:**
+- **Deterministic**: Any node calculates identical rewards from same blocks
+- **Restart-safe**: No local state to lose (reads from BlockStore)
+- **Sync-safe**: All nodes derive same rewards independently
+- **Exact validation**: Validators recalculate and must match exactly
 
 ### 4. Seniority-Weighted Consensus
 

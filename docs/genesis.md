@@ -26,6 +26,7 @@ Complete technical documentation for launching DOLI mainnet.
 7. [Launch Procedure](#7-launch-procedure)
 8. [Verification Steps](#8-verification-steps)
 9. [Troubleshooting](#9-troubleshooting)
+10. [Epoch Rewards Architecture](#10-epoch-rewards-architecture)
 
 ---
 
@@ -101,9 +102,9 @@ This follows the same pattern as Ethereum, Cosmos, and Polkadot.
 
 **Original fix**: Added persistent epoch state fields to ChainState.
 
-**Final resolution**: Replaced with deterministic BlockStore-based rewards (see `REWARDS.md`). Epoch rewards are now calculated from the immutable BlockStore at epoch boundaries, eliminating all local state. The system queries `BlockStore::get_last_rewarded_epoch()` and `BlockStore::get_blocks_in_slot_range()` to determine what rewards are due.
+**Final resolution**: Replaced with deterministic BlockStore-based rewards (see `REWARDS.md`).
 
-**Status**: SUPERSEDED - Deterministic rewards system implemented. No local epoch state required.
+**Status**: SUPERSEDED - Deterministic rewards system implemented. See [Epoch Rewards Architecture](#epoch-rewards-architecture) below.
 
 ### Bug #3: RPC Showed Wrong Network
 
@@ -408,7 +409,7 @@ let context = RpcContext::new(...)
 
 **Symptom**: After 360 blocks, no rewards distributed
 
-**Check**: Epoch rewards are now calculated deterministically from the BlockStore. At each epoch boundary, the producer includes `EpochReward` transactions for the previous epoch. To verify:
+**Check**: Epoch rewards are calculated deterministically from the BlockStore (see [Epoch Rewards Architecture](#epoch-rewards-architecture)). At each epoch boundary, the producer queries the BlockStore to determine what rewards are due and includes `EpochReward` transactions. To verify:
 
 ```bash
 # Check for EpochReward transactions in recent blocks
@@ -416,7 +417,68 @@ curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
     -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":361},"id":1}' | jq '.result.transactions'
 ```
 
-If missing, verify the producer is correctly calculating epoch boundaries.
+If missing, check:
+1. The producer is running in `EpochPool` reward mode (default)
+2. BlockStore query methods are returning correct data
+3. The producer's slot calculation matches the epoch boundary
+
+**Key behavior**: If the epoch boundary slot is empty, the next block that gets produced will distribute the rewards. Empty slots reduce the reward pool (no phantom rewards).
+
+---
+
+## 10. Epoch Rewards Architecture
+
+DOLI uses a deterministic, BlockStore-based reward system. This design ensures all nodes calculate identical rewards without maintaining local state.
+
+### Core Principle
+
+> **Everything is derived from the BlockStore. Zero local state.**
+
+Any node can independently verify rewards by reading the same blocks. No synchronization of reward state is required between nodes.
+
+### Key Properties
+
+| Property | Description |
+|----------|-------------|
+| **No local state** | Epoch tracking is derived, never stored in memory or ChainState |
+| **Restart-safe** | Node can restart at any time; rewards recalculate from BlockStore |
+| **Sync-safe** | New nodes verify all historical rewards during sync |
+| **Fork-safe** | Chain reorganizations automatically recalculate from the new fork |
+
+### How It Works
+
+1. **Epoch detection**: `current_epoch = current_slot / 360`
+2. **Boundary check**: Query `BlockStore::get_last_rewarded_epoch()` to find the most recent epoch with distributed rewards
+3. **Trigger**: If `current_epoch > last_rewarded_epoch`, rewards are due
+4. **Calculation**: Query `BlockStore::get_blocks_in_slot_range()` for the epoch's blocks
+5. **Distribution**: Create `EpochReward` transactions proportional to blocks produced
+
+### Empty Slot Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Empty slots within epoch | Reduce the reward pool (no phantom rewards for unproduced blocks) |
+| Empty boundary slot | Next block distributes rewards for the previous epoch |
+| Multiple empty epochs | Catch-up one epoch per block until current |
+
+### Multi-Epoch Catch-up
+
+If multiple epochs pass without blocks (e.g., network outage), the first block back distributes rewards for one epoch. Each subsequent block distributes the next epoch until caught up:
+
+```
+Slot 1080 (epoch 3), last_rewarded = 0:
+
+Block N+0: epoch 3 > last_rewarded 0 → distribute epoch 1
+Block N+1: epoch 3 > last_rewarded 1 → distribute epoch 2
+Block N+2: epoch 3 > last_rewarded 2 → distribute epoch 3
+Block N+3: epoch 3 == last_rewarded 3 → normal block, no rewards
+```
+
+### Verification
+
+Validators independently recalculate expected rewards from the BlockStore and reject blocks with incorrect `EpochReward` transactions. The validation is exact-match, not approximate.
+
+For implementation details, see `REWARDS.md` in the repository root.
 
 ---
 
@@ -469,11 +531,12 @@ pub const REQUIRED_SIGNATURES: usize = 3;  // 3-of-5 maintainers
 
 ---
 
-**Document Version**: 2.2
+**Document Version**: 2.3
 **Last Updated**: 2026-01-31
 **Author**: DOLI Core Team
 
 **Changelog:**
+- v2.3: Added comprehensive Epoch Rewards Architecture section (BlockStore-based design)
 - v2.2: Updated for deterministic BlockStore-based rewards (removed epoch state persistence references)
 - v2.1: Clarified maintainer keys are hardcoded in binary (not chainspec)
 - v2.0: Added industry-standard chainspec system for genesis configuration

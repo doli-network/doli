@@ -171,7 +171,42 @@ Lower rank always wins if multiple valid blocks exist.
 | 3 | 8-12 | 0.25 DOLI |
 | 4 | 12-16 | 0.125 DOLI |
 
-### 5.2. ROI Calculation
+### 5.2. Distribution Mechanism
+
+Rewards are distributed automatically at **epoch boundaries** (every 360 slots / 1 hour on mainnet):
+
+| Aspect | Behavior |
+|--------|----------|
+| Timing | Distributed at first block of new epoch |
+| Calculation | Proportional to blocks produced in the epoch |
+| Delivery | Direct to producer's UTXO via `EpochReward` transactions |
+| Empty slots | Reduce the reward pool (only actual blocks count) |
+
+**Key characteristics:**
+
+- **Deterministic**: Any node can independently verify rewards by reading the BlockStore
+- **No claiming required**: Rewards appear directly in your UTXO set
+- **Proportional**: If you produce 10% of blocks in an epoch, you receive 10% of rewards
+- **Empty slot handling**: Missed slots mean fewer rewards for the pool (no phantom rewards)
+
+**Example epoch distribution:**
+
+```
+Epoch with 358 produced blocks (2 empty slots):
+
+Pool = 358 blocks × 1 DOLI = 358 DOLI
+
+Producer distribution:
+- Alice: 72 blocks → 72/358 × 358 = 72 DOLI
+- Bob:   71 blocks → 71/358 × 358 = 71 DOLI
+- Carol: 72 blocks → 72/358 × 358 = 72 DOLI
+- Dave:  71 blocks → 71/358 × 358 = 71 DOLI
+- Eve:   72 blocks → 72/358 × 358 = 72 DOLI
+```
+
+For technical details, see [REWARDS.md](/REWARDS.md).
+
+### 5.3. ROI Calculation
 
 **All producers earn identical ROI percentage:**
 
@@ -188,7 +223,7 @@ Annual ROI = 3,153.6 / 1,000 = 315.36%
 
 **Note:** ROI decreases as more producers join and rewards halve.
 
-### 5.3. Fee Income
+### 5.4. Fee Income
 
 Producers also earn transaction fees from included transactions.
 
