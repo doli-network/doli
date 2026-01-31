@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.2.0
+version: 2.3.0
 ---
 
 # DOLI Network Setup Skill
@@ -223,6 +223,28 @@ for port in 18545 18546 18547 18548 18549; do
     jq -c '.result | {height: .bestHeight, slot: .bestSlot}'
 done
 ```
+
+### Testnet Management Scripts
+
+After setting up a local testnet, these scripts help manage it:
+
+| Script | Location | Description |
+|--------|----------|-------------|
+| `start_5node_testnet.sh` | `~/.doli/testnet/` | Start all 5 nodes |
+| `stop_testnet.sh` | `~/.doli/testnet/` | Stop all nodes gracefully |
+| `status.sh` | `~/.doli/testnet/` | Check status of all nodes |
+| `rebuild_restart.sh` | `~/.doli/testnet/` | Rebuild binary and restart nodes |
+
+**Rebuild and Restart (after code changes):**
+```bash
+~/.doli/testnet/rebuild_restart.sh
+```
+
+This script:
+1. Stops all running testnet nodes
+2. Rebuilds the binary with `cargo build --release`
+3. Restarts all nodes with the new binary
+4. Shows chain status to verify restart
 
 ### Available Test Scripts
 
