@@ -69,6 +69,18 @@ pub const SLOTS_PER_EPOCH: u32 = 360;
 /// Each producer receives 100% of the block reward when they produce a block.
 pub const SLOTS_PER_REWARD_EPOCH: u32 = 360;
 
+/// Blocks per reward epoch (360 blocks for mainnet/testnet)
+///
+/// This is the primary constant for the weighted presence reward system.
+/// Reward epochs are defined by block height (not slot), making calculation
+/// simpler since block heights are sequential with no gaps.
+///
+/// Examples:
+/// - 360 blocks ≈ 1 hour at 10s blocks (mainnet)
+/// - 60 blocks  ≈ 1 minute at 1s blocks (devnet)
+/// - 8640 blocks ≈ 24 hours (daily rewards)
+pub const BLOCKS_PER_REWARD_EPOCH: BlockHeight = 360;
+
 /// Slots per year (365 days * 24 hours * 360 slots/hour)
 /// Used for seniority weight calculations.
 pub const SLOTS_PER_YEAR: u32 = 3_153_600;
@@ -1861,6 +1873,166 @@ pub fn get_producer_rank(
     eligible_producers.iter().position(|p| p == producer)
 }
 
+// =============================================================================
+// REWARD EPOCH UTILITIES (BLOCK-HEIGHT BASED)
+// =============================================================================
+
+/// Block-height based reward epoch utilities.
+///
+/// Unlike slot-based epochs, block-height epochs are sequential with no gaps,
+/// making reward calculation simpler and deterministic.
+///
+/// # Examples
+///
+/// ```
+/// use doli_core::consensus::reward_epoch;
+///
+/// // Epoch 0: blocks 0-359
+/// assert_eq!(reward_epoch::from_height(0), 0);
+/// assert_eq!(reward_epoch::from_height(359), 0);
+///
+/// // Epoch 1: blocks 360-719
+/// assert_eq!(reward_epoch::from_height(360), 1);
+///
+/// // Get epoch boundaries
+/// let (start, end) = reward_epoch::boundaries(5);
+/// assert_eq!(start, 1800);
+/// assert_eq!(end, 2160);
+/// ```
+pub mod reward_epoch {
+    use super::BLOCKS_PER_REWARD_EPOCH;
+    use crate::types::BlockHeight;
+
+    /// Get reward epoch number from block height.
+    ///
+    /// Simple division: `height / BLOCKS_PER_REWARD_EPOCH`
+    ///
+    /// # Examples
+    ///
+    /// With `BLOCKS_PER_REWARD_EPOCH = 360`:
+    /// - Height 0 → Epoch 0
+    /// - Height 359 → Epoch 0
+    /// - Height 360 → Epoch 1
+    /// - Height 1000 → Epoch 2
+    #[inline]
+    pub fn from_height(height: BlockHeight) -> u64 {
+        height / BLOCKS_PER_REWARD_EPOCH
+    }
+
+    /// Get (start_height, end_height) for a reward epoch.
+    ///
+    /// Note: `end_height` is exclusive (the range is `start..end`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use doli_core::consensus::reward_epoch;
+    ///
+    /// let (start, end) = reward_epoch::boundaries(0);
+    /// assert_eq!(start, 0);
+    /// assert_eq!(end, 360);
+    ///
+    /// let (start, end) = reward_epoch::boundaries(5);
+    /// assert_eq!(start, 1800);
+    /// assert_eq!(end, 2160);
+    /// ```
+    #[inline]
+    pub fn boundaries(epoch: u64) -> (BlockHeight, BlockHeight) {
+        let start = epoch * BLOCKS_PER_REWARD_EPOCH;
+        let end = start + BLOCKS_PER_REWARD_EPOCH;
+        (start, end)
+    }
+
+    /// Check if a reward epoch is complete given the current block height.
+    ///
+    /// An epoch is complete when the current height is at or beyond the
+    /// epoch's end boundary.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use doli_core::consensus::reward_epoch;
+    ///
+    /// // Epoch 0 ends at block 360
+    /// assert!(!reward_epoch::is_complete(0, 359));
+    /// assert!(reward_epoch::is_complete(0, 360));
+    /// assert!(reward_epoch::is_complete(0, 1000));
+    /// ```
+    #[inline]
+    pub fn is_complete(epoch: u64, current_height: BlockHeight) -> bool {
+        let (_, end) = boundaries(epoch);
+        current_height >= end
+    }
+
+    /// Get the current reward epoch from block height.
+    ///
+    /// This is an alias for `from_height` for clarity in contexts
+    /// where we're interested in the "current" epoch.
+    #[inline]
+    pub fn current(height: BlockHeight) -> u64 {
+        from_height(height)
+    }
+
+    /// Get the last complete reward epoch from block height.
+    ///
+    /// Returns `None` if no epoch has been completed yet (height < BLOCKS_PER_REWARD_EPOCH).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use doli_core::consensus::reward_epoch;
+    ///
+    /// // No complete epochs yet
+    /// assert_eq!(reward_epoch::last_complete(0), None);
+    /// assert_eq!(reward_epoch::last_complete(359), None);
+    ///
+    /// // First epoch just completed
+    /// assert_eq!(reward_epoch::last_complete(360), Some(0));
+    /// assert_eq!(reward_epoch::last_complete(719), Some(0));
+    ///
+    /// // Two epochs completed
+    /// assert_eq!(reward_epoch::last_complete(720), Some(1));
+    /// ```
+    #[inline]
+    pub fn last_complete(height: BlockHeight) -> Option<u64> {
+        let current_epoch = from_height(height);
+        if current_epoch > 0 {
+            Some(current_epoch - 1)
+        } else {
+            None
+        }
+    }
+
+    /// Check if height is the first block of a reward epoch.
+    ///
+    /// Useful for detecting epoch boundaries in block processing.
+    #[inline]
+    pub fn is_epoch_start(height: BlockHeight) -> bool {
+        height % BLOCKS_PER_REWARD_EPOCH == 0
+    }
+
+    /// Get the number of blocks per reward epoch.
+    ///
+    /// Returns the constant `BLOCKS_PER_REWARD_EPOCH`.
+    #[inline]
+    pub fn blocks_per_epoch() -> BlockHeight {
+        BLOCKS_PER_REWARD_EPOCH
+    }
+
+    /// Calculate how many complete epochs exist up to a given height.
+    ///
+    /// This is the same as `from_height` for heights >= BLOCKS_PER_REWARD_EPOCH.
+    /// For heights < BLOCKS_PER_REWARD_EPOCH, returns 0.
+    #[inline]
+    pub fn complete_epochs(height: BlockHeight) -> u64 {
+        if height < BLOCKS_PER_REWARD_EPOCH {
+            0
+        } else {
+            from_height(height)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3228,5 +3400,102 @@ mod tests {
 
         // Even if presence tracking exists (in tpop/presence.rs),
         // it's marked as telemetry-only and doesn't affect this selection
+    }
+
+    // =========================================================================
+    // REWARD EPOCH TESTS (Block-height based)
+    // =========================================================================
+
+    #[test]
+    fn test_reward_epoch_from_height() {
+        // Test the from_height function matches the spec
+        assert_eq!(reward_epoch::from_height(0), 0);
+        assert_eq!(reward_epoch::from_height(359), 0);
+        assert_eq!(reward_epoch::from_height(360), 1);
+        assert_eq!(reward_epoch::from_height(719), 1);
+        assert_eq!(reward_epoch::from_height(720), 2);
+        assert_eq!(reward_epoch::from_height(1000), 2); // 1000/360 = 2
+    }
+
+    #[test]
+    fn test_reward_epoch_boundaries() {
+        // Test boundaries function
+        let (start, end) = reward_epoch::boundaries(0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 360);
+
+        let (start, end) = reward_epoch::boundaries(1);
+        assert_eq!(start, 360);
+        assert_eq!(end, 720);
+
+        let (start, end) = reward_epoch::boundaries(5);
+        assert_eq!(start, 1800);
+        assert_eq!(end, 2160);
+    }
+
+    #[test]
+    fn test_reward_epoch_is_complete() {
+        // Epoch 0 ends at block 360
+        assert!(!reward_epoch::is_complete(0, 0));
+        assert!(!reward_epoch::is_complete(0, 359));
+        assert!(reward_epoch::is_complete(0, 360));
+        assert!(reward_epoch::is_complete(0, 1000));
+
+        // Epoch 1 ends at block 720
+        assert!(!reward_epoch::is_complete(1, 360));
+        assert!(!reward_epoch::is_complete(1, 719));
+        assert!(reward_epoch::is_complete(1, 720));
+    }
+
+    #[test]
+    fn test_reward_epoch_last_complete() {
+        // No complete epochs yet
+        assert_eq!(reward_epoch::last_complete(0), None);
+        assert_eq!(reward_epoch::last_complete(359), None);
+
+        // First epoch just completed
+        assert_eq!(reward_epoch::last_complete(360), Some(0));
+        assert_eq!(reward_epoch::last_complete(719), Some(0));
+
+        // Two epochs completed
+        assert_eq!(reward_epoch::last_complete(720), Some(1));
+        assert_eq!(reward_epoch::last_complete(1000), Some(1));
+    }
+
+    #[test]
+    fn test_reward_epoch_is_epoch_start() {
+        assert!(reward_epoch::is_epoch_start(0));
+        assert!(!reward_epoch::is_epoch_start(1));
+        assert!(!reward_epoch::is_epoch_start(359));
+        assert!(reward_epoch::is_epoch_start(360));
+        assert!(reward_epoch::is_epoch_start(720));
+    }
+
+    #[test]
+    fn test_reward_epoch_current() {
+        // current() is an alias for from_height()
+        assert_eq!(reward_epoch::current(0), reward_epoch::from_height(0));
+        assert_eq!(reward_epoch::current(500), reward_epoch::from_height(500));
+        assert_eq!(reward_epoch::current(1000), reward_epoch::from_height(1000));
+    }
+
+    #[test]
+    fn test_reward_epoch_complete_epochs() {
+        // Before first epoch completes
+        assert_eq!(reward_epoch::complete_epochs(0), 0);
+        assert_eq!(reward_epoch::complete_epochs(359), 0);
+
+        // After first epoch completes
+        assert_eq!(reward_epoch::complete_epochs(360), 1);
+        assert_eq!(reward_epoch::complete_epochs(719), 1);
+
+        // After second epoch completes
+        assert_eq!(reward_epoch::complete_epochs(720), 2);
+    }
+
+    #[test]
+    fn test_reward_epoch_blocks_per_epoch() {
+        assert_eq!(reward_epoch::blocks_per_epoch(), BLOCKS_PER_REWARD_EPOCH);
+        assert_eq!(reward_epoch::blocks_per_epoch(), 360);
     }
 }
