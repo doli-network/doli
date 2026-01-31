@@ -423,9 +423,9 @@ mod tests {
 
         // Store blocks with epoch rewards for epochs 1, 2, 3
         let reward_blocks = [
-            (360, 1u64),   // epoch 1 at slot 360
-            (720, 2),     // epoch 2 at slot 720
-            (1080, 3),    // epoch 3 at slot 1080
+            (360, 1u64), // epoch 1 at slot 360
+            (720, 2),    // epoch 2 at slot 720
+            (1080, 3),   // epoch 3 at slot 1080
         ];
 
         for (height, (slot, epoch)) in reward_blocks.iter().enumerate() {
@@ -446,23 +446,36 @@ mod tests {
 
         // Store a mix of regular blocks and epoch reward blocks
         // height 0: regular block
-        store.put_block(&create_test_block(1, &producer), 0).unwrap();
+        store
+            .put_block(&create_test_block(1, &producer), 0)
+            .unwrap();
 
         // height 1: epoch reward for epoch 1
-        store.put_block(&create_epoch_reward_block(360, &producer, 1), 1).unwrap();
+        store
+            .put_block(&create_epoch_reward_block(360, &producer, 1), 1)
+            .unwrap();
 
         // height 2: regular block
-        store.put_block(&create_test_block(361, &producer), 2).unwrap();
+        store
+            .put_block(&create_test_block(361, &producer), 2)
+            .unwrap();
 
         // height 3: epoch reward for epoch 2
-        store.put_block(&create_epoch_reward_block(720, &producer, 2), 3).unwrap();
+        store
+            .put_block(&create_epoch_reward_block(720, &producer, 2), 3)
+            .unwrap();
 
         // height 4: regular block (most recent)
-        store.put_block(&create_test_block(721, &producer), 4).unwrap();
+        store
+            .put_block(&create_test_block(721, &producer), 4)
+            .unwrap();
 
         // Should still find epoch 2 as the last rewarded
         let last_epoch = store.get_last_rewarded_epoch().unwrap();
-        assert_eq!(last_epoch, 2, "Should find epoch 2 through non-reward blocks");
+        assert_eq!(
+            last_epoch, 2,
+            "Should find epoch 2 through non-reward blocks"
+        );
     }
 
     #[test]
@@ -484,5 +497,213 @@ mod tests {
         // Non-existent slot
         let hash = store.get_hash_by_slot(999).unwrap();
         assert!(hash.is_none());
+    }
+
+    // =========================================================================
+    // Milestone 6: Additional Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_block_by_slot_empty_in_chain_with_gaps() {
+        // Query an empty slot in a chain that has blocks with gaps
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks at slots 10, 12, 15 (gaps at 11, 13, 14)
+        let slots = [10u32, 12, 15];
+        for (height, &slot) in slots.iter().enumerate() {
+            let block = create_test_block(slot, &producer);
+            store.put_block(&block, height as u64).unwrap();
+        }
+
+        // Query empty slot 11 (between 10 and 12)
+        let result = store.get_block_by_slot(11).unwrap();
+        assert!(result.is_none(), "Empty slot 11 should return None");
+
+        // Query empty slot 13 (between 12 and 15)
+        let result = store.get_block_by_slot(13).unwrap();
+        assert!(result.is_none(), "Empty slot 13 should return None");
+
+        // Query empty slot 14 (between 12 and 15)
+        let result = store.get_block_by_slot(14).unwrap();
+        assert!(result.is_none(), "Empty slot 14 should return None");
+
+        // Verify existing slots still work
+        assert!(store.get_block_by_slot(10).unwrap().is_some());
+        assert!(store.get_block_by_slot(12).unwrap().is_some());
+        assert!(store.get_block_by_slot(15).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_get_blocks_in_slot_range_boundary_conditions() {
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store blocks at slots 5, 10, 15
+        for (height, slot) in [(0, 5u32), (1, 10), (2, 15)] {
+            let block = create_test_block(slot, &producer);
+            store.put_block(&block, height).unwrap();
+        }
+
+        // Test: start == end (empty range)
+        let blocks = store.get_blocks_in_slot_range(10, 10).unwrap();
+        assert!(blocks.is_empty(), "start == end should return empty vec");
+
+        // Test: start > end (invalid range)
+        let blocks = store.get_blocks_in_slot_range(15, 5).unwrap();
+        assert!(blocks.is_empty(), "start > end should return empty vec");
+
+        // Test: range before any blocks
+        let blocks = store.get_blocks_in_slot_range(0, 4).unwrap();
+        assert!(blocks.is_empty(), "Range before blocks should be empty");
+
+        // Test: range after all blocks
+        let blocks = store.get_blocks_in_slot_range(20, 30).unwrap();
+        assert!(blocks.is_empty(), "Range after blocks should be empty");
+
+        // Test: range exactly matches one block
+        let blocks = store.get_blocks_in_slot_range(10, 11).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].slot(), 10);
+
+        // Test: range includes all blocks
+        let blocks = store.get_blocks_in_slot_range(0, 20).unwrap();
+        assert_eq!(blocks.len(), 3);
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_with_epoch_gaps() {
+        // Test that get_last_rewarded_epoch handles non-sequential epoch numbers
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store epoch rewards for epochs 1, 3, 5 (skipping 2 and 4)
+        // This simulates a scenario where some epochs had no blocks
+        let epochs = [(360, 1u64), (1080, 3), (1800, 5)];
+        for (height, (slot, epoch)) in epochs.iter().enumerate() {
+            let block = create_epoch_reward_block(*slot, &producer, *epoch);
+            store.put_block(&block, height as u64).unwrap();
+        }
+
+        // Should return the highest epoch (5), not just the most recent by height
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 5, "Should return highest epoch 5");
+    }
+
+    #[test]
+    fn test_get_blocks_in_slot_range_multiple_epochs() {
+        // Test querying blocks across multiple epochs
+        let (store, _dir) = create_test_store();
+        let keypair1 = KeyPair::generate();
+        let keypair2 = KeyPair::generate();
+        let producer1 = keypair1.public_key().clone();
+        let producer2 = keypair2.public_key().clone();
+
+        // Store blocks across 3 epochs (using devnet 30 slots/epoch)
+        // Epoch 0: slots 1-29
+        // Epoch 1: slots 30-59
+        // Epoch 2: slots 60-89
+
+        // Add some blocks in each epoch
+        let mut height = 0u64;
+
+        // Epoch 0: producer1 at slots 5, 10, 15
+        for slot in [5u32, 10, 15] {
+            store
+                .put_block(&create_test_block(slot, &producer1), height)
+                .unwrap();
+            height += 1;
+        }
+
+        // Epoch 1: producer2 at slots 35, 40, 45
+        for slot in [35u32, 40, 45] {
+            store
+                .put_block(&create_test_block(slot, &producer2), height)
+                .unwrap();
+            height += 1;
+        }
+
+        // Epoch 2: both producers at slots 65, 70, 75, 80
+        for (i, slot) in [65u32, 70, 75, 80].iter().enumerate() {
+            let producer = if i % 2 == 0 { &producer1 } else { &producer2 };
+            store
+                .put_block(&create_test_block(*slot, producer), height)
+                .unwrap();
+            height += 1;
+        }
+
+        // Query epoch 0 range (1-30)
+        let epoch0_blocks = store.get_blocks_in_slot_range(1, 30).unwrap();
+        assert_eq!(epoch0_blocks.len(), 3, "Epoch 0 should have 3 blocks");
+        for block in &epoch0_blocks {
+            assert!(block.slot() < 30, "All blocks should be in epoch 0");
+            assert_eq!(block.header.producer, producer1);
+        }
+
+        // Query epoch 1 range (30-60)
+        let epoch1_blocks = store.get_blocks_in_slot_range(30, 60).unwrap();
+        assert_eq!(epoch1_blocks.len(), 3, "Epoch 1 should have 3 blocks");
+        for block in &epoch1_blocks {
+            assert!(block.slot() >= 30 && block.slot() < 60);
+            assert_eq!(block.header.producer, producer2);
+        }
+
+        // Query epoch 2 range (60-90)
+        let epoch2_blocks = store.get_blocks_in_slot_range(60, 90).unwrap();
+        assert_eq!(epoch2_blocks.len(), 4, "Epoch 2 should have 4 blocks");
+
+        // Query cross-epoch range (20-70)
+        // Should include: epoch 1 blocks (35, 40, 45) + epoch 2 block at 65
+        // 70 is excluded (exclusive end), so 4 blocks total
+        let cross_epoch = store.get_blocks_in_slot_range(20, 70).unwrap();
+        assert_eq!(
+            cross_epoch.len(),
+            4,
+            "Cross-epoch query should return 4 blocks"
+        );
+        // Verify sorted by slot
+        for i in 1..cross_epoch.len() {
+            assert!(
+                cross_epoch[i - 1].slot() < cross_epoch[i].slot(),
+                "Blocks should be sorted by slot"
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_block_by_slot_out_of_range() {
+        // Test querying slots before first block and after last block
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store a single block at slot 100
+        let block = create_test_block(100, &producer);
+        store.put_block(&block, 0).unwrap();
+
+        // Query before first block
+        assert!(store.get_block_by_slot(0).unwrap().is_none());
+        assert!(store.get_block_by_slot(50).unwrap().is_none());
+        assert!(store.get_block_by_slot(99).unwrap().is_none());
+
+        // Query exact slot
+        assert!(store.get_block_by_slot(100).unwrap().is_some());
+
+        // Query after last block
+        assert!(store.get_block_by_slot(101).unwrap().is_none());
+        assert!(store.get_block_by_slot(1000).unwrap().is_none());
+        assert!(store.get_block_by_slot(u32::MAX).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_last_rewarded_epoch_empty_chain() {
+        // Test that empty chain returns 0
+        let (store, _dir) = create_test_store();
+
+        let last_epoch = store.get_last_rewarded_epoch().unwrap();
+        assert_eq!(last_epoch, 0, "Empty chain should return epoch 0");
     }
 }
