@@ -6,15 +6,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use doli_core::{
-    Block, BlockHeader, BlockHeight, Slot, Transaction, Output, Amount,
-    consensus::ConsensusParams,
-};
 use crypto::{Hash, KeyPair, PublicKey};
-use storage::{BlockStore, ChainState, UtxoSet, UtxoEntry, Outpoint};
-use vdf::{VdfOutput, VdfProof};
+use doli_core::{
+    consensus::ConsensusParams, Amount, Block, BlockHeader, BlockHeight, Output, Slot, Transaction,
+};
+use storage::{BlockStore, ChainState, Outpoint, UtxoEntry, UtxoSet};
 use tempfile::TempDir;
 use tokio::sync::{mpsc, RwLock};
+use vdf::{VdfOutput, VdfProof};
 
 /// Test node configuration
 #[derive(Clone)]
@@ -62,7 +61,10 @@ pub struct TestNode {
 impl TestNode {
     pub fn new(config: TestNodeConfig) -> Self {
         let genesis_hash = Hash::ZERO;
-        let keypair = config.producer_key.clone().unwrap_or_else(KeyPair::generate);
+        let keypair = config
+            .producer_key
+            .clone()
+            .unwrap_or_else(KeyPair::generate);
 
         Self {
             config,
@@ -156,7 +158,9 @@ impl TestNode {
 
         for _ in 0..count {
             let current_hash = self.best_hash().await;
-            let block = self.get_block(&current_hash).await
+            let block = self
+                .get_block(&current_hash)
+                .await
                 .ok_or("Block not found")?;
 
             // Revert UTXO changes
@@ -230,7 +234,9 @@ pub fn create_test_block(
         timestamp,
         slot,
         producer: producer.clone(),
-        vdf_output: VdfOutput { value: vec![0u8; 32] },
+        vdf_output: VdfOutput {
+            value: vec![0u8; 32],
+        },
         vdf_proof: VdfProof::empty(),
     };
 
@@ -382,7 +388,7 @@ mod tests {
 
         // Verify chain links
         for i in 1..chain.len() {
-            assert_eq!(chain[i].header.prev_hash, chain[i-1].hash());
+            assert_eq!(chain[i].header.prev_hash, chain[i - 1].hash());
         }
     }
 }

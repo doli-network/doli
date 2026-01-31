@@ -65,7 +65,10 @@ impl SignedSlotsDb {
             }
             Err(_) => {
                 // Key already exists - slot was already signed!
-                warn!("BLOCKED: Attempted to sign slot {} which was already signed!", slot);
+                warn!(
+                    "BLOCKED: Attempted to sign slot {} which was already signed!",
+                    slot
+                );
                 Err(ProducerStartupError::SlotAlreadySigned { slot })
             }
         }
@@ -105,7 +108,10 @@ impl SignedSlotsDb {
         }
 
         if removed > 0 {
-            debug!("Pruned {} old signed slot entries (cutoff slot: {})", removed, cutoff);
+            debug!(
+                "Pruned {} old signed slot entries (cutoff slot: {})",
+                removed, cutoff
+            );
         }
 
         Ok(removed)
