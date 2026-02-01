@@ -1905,8 +1905,14 @@ where
     // 6. CALCULATE EXPECTED REWARD
     let calculator = WeightedRewardCalculator::new(block_source, &ctx.params);
     let calculation = calculator
-        .calculate_producer_reward(&claim_data.producer_pubkey, producer_index, claim_data.epoch)
-        .map_err(|e| ValidationError::InvalidClaimEpochReward(format!("reward calculation failed: {}", e)))?;
+        .calculate_producer_reward(
+            &claim_data.producer_pubkey,
+            producer_index,
+            claim_data.epoch,
+        )
+        .map_err(|e| {
+            ValidationError::InvalidClaimEpochReward(format!("reward calculation failed: {}", e))
+        })?;
 
     // 7. VERIFY PRODUCER WAS PRESENT
     if calculation.blocks_present == 0 {
@@ -1928,9 +1934,7 @@ where
     // 9. VERIFY SIGNATURE
     let signing_message = claim_data.signing_message(claimed_amount);
     crypto::signature::verify_hash(&signing_message, &signature, &claim_data.producer_pubkey)
-        .map_err(|_| {
-            ValidationError::InvalidClaimEpochReward("invalid signature".to_string())
-        })?;
+        .map_err(|_| ValidationError::InvalidClaimEpochReward("invalid signature".to_string()))?;
 
     // 10. VERIFY OUTPUT RECIPIENT
     if tx.outputs[0].pubkey_hash != claim_data.recipient_hash {
@@ -3946,14 +3950,10 @@ mod tests {
         let pubkey = keypair.public_key().clone();
 
         // Add blocks in epochs 1 and 2 (epoch 0 is empty)
-        let block_in_epoch_1 = create_test_block_with_producer(
-            params.slots_per_reward_epoch + 50,
-            &pubkey,
-        );
-        let block_in_epoch_2 = create_test_block_with_producer(
-            params.slots_per_reward_epoch * 2 + 50,
-            &pubkey,
-        );
+        let block_in_epoch_1 =
+            create_test_block_with_producer(params.slots_per_reward_epoch + 50, &pubkey);
+        let block_in_epoch_2 =
+            create_test_block_with_producer(params.slots_per_reward_epoch * 2 + 50, &pubkey);
         let source = MockEpochBlockSource::new(0, vec![block_in_epoch_1, block_in_epoch_2]);
 
         // In epoch 3 but no rewards distributed - should catch up with epoch 1
@@ -3976,10 +3976,8 @@ mod tests {
         let pubkey = keypair.public_key().clone();
 
         // Simulate chain starting late: only epoch 5 has blocks
-        let block_in_epoch_5 = create_test_block_with_producer(
-            params.slots_per_reward_epoch * 5 + 50,
-            &pubkey,
-        );
+        let block_in_epoch_5 =
+            create_test_block_with_producer(params.slots_per_reward_epoch * 5 + 50, &pubkey);
         let source = MockEpochBlockSource::new(0, vec![block_in_epoch_5]);
 
         // In epoch 6 - should skip epochs 0-4 (empty) and reward epoch 5
@@ -4682,7 +4680,8 @@ mod tests {
 
     impl ClaimChecker for MockClaimChecker {
         fn is_claimed(&self, producer: &PublicKey, epoch: u64) -> bool {
-            self.claimed.contains(&(producer.as_bytes().to_vec(), epoch))
+            self.claimed
+                .contains(&(producer.as_bytes().to_vec(), epoch))
         }
     }
 
@@ -4862,7 +4861,8 @@ mod tests {
         let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
 
         match &result {
-            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("already claimed") => {}
+            Err(ValidationError::InvalidClaimEpochReward(msg))
+                if msg.contains("already claimed") => {}
             _ => panic!("Should reject double claim: {:?}", result),
         }
     }
@@ -4911,7 +4911,8 @@ mod tests {
         let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
 
         match &result {
-            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("incorrect claim amount") => {}
+            Err(ValidationError::InvalidClaimEpochReward(msg))
+                if msg.contains("incorrect claim amount") => {}
             _ => panic!("Should reject wrong amount: {:?}", result),
         }
     }
@@ -4997,7 +4998,8 @@ mod tests {
         let claim_data =
             crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
         let signing_msg = claim_data.signing_message(calculation.reward_amount);
-        let wrong_signature = crypto::signature::sign_hash(&signing_msg, wrong_keypair.private_key());
+        let wrong_signature =
+            crypto::signature::sign_hash(&signing_msg, wrong_keypair.private_key());
 
         let tx = Transaction::new_claim_epoch_reward(
             0,
@@ -5011,7 +5013,8 @@ mod tests {
         let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
 
         match &result {
-            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("invalid signature") => {}
+            Err(ValidationError::InvalidClaimEpochReward(msg))
+                if msg.contains("invalid signature") => {}
             _ => panic!("Should reject invalid signature: {:?}", result),
         }
     }
@@ -5055,7 +5058,8 @@ mod tests {
         let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
 
         match &result {
-            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("not registered") => {}
+            Err(ValidationError::InvalidClaimEpochReward(msg))
+                if msg.contains("not registered") => {}
             _ => panic!("Should reject unregistered producer: {:?}", result),
         }
     }

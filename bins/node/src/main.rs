@@ -926,7 +926,9 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
     println!();
 
     if block_count == 0 {
-        return Err(anyhow!("No blocks found in BlockStore. Nothing to recover."));
+        return Err(anyhow!(
+            "No blocks found in BlockStore. Nothing to recover."
+        ));
     }
 
     println!();
@@ -961,7 +963,10 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
 
     // Confirm with user
     if !skip_confirm {
-        print!("Proceed with recovery? This will rebuild state from {} blocks. [y/N] ", block_count);
+        print!(
+            "Proceed with recovery? This will rebuild state from {} blocks. [y/N] ",
+            block_count
+        );
         std::io::Write::flush(&mut std::io::stdout()).ok();
 
         let mut input = String::new();
@@ -1056,7 +1061,10 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
         // Progress indicator
         if height % 500 == 0 || height == tip_height {
             let pct = (height as f64 / tip_height as f64) * 100.0;
-            print!("\r  Replayed {}/{} blocks ({:.1}%)...", height, tip_height, pct);
+            print!(
+                "\r  Replayed {}/{} blocks ({:.1}%)...",
+                height, tip_height, pct
+            );
             std::io::Write::flush(&mut std::io::stdout()).ok();
         }
     }
@@ -1067,13 +1075,19 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
     println!("Saving recovered state...");
 
     chain_state.save(&state_path)?;
-    println!("  Saved chain_state.bin (height={}, slot={})", chain_state.best_height, chain_state.best_slot);
+    println!(
+        "  Saved chain_state.bin (height={}, slot={})",
+        chain_state.best_height, chain_state.best_slot
+    );
 
     utxo_set.save(&utxo_path)?;
     println!("  Saved utxo/ ({} UTXOs)", utxo_set.len());
 
     producer_set.save(&producers_path)?;
-    println!("  Saved producers.bin ({} producers)", producer_set.active_count());
+    println!(
+        "  Saved producers.bin ({} producers)",
+        producer_set.active_count()
+    );
 
     println!();
     println!("=== Recovery Complete ===");

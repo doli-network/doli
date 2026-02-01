@@ -61,6 +61,18 @@ impl JsonRpcResponse {
 
 // ==================== Response Types ====================
 
+/// Presence commitment response (for block responses)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceResponse {
+    /// Number of present producers
+    pub present_count: usize,
+    /// Total weight of all present producers
+    pub total_weight: u64,
+    /// Merkle root of heartbeat data (hex)
+    pub merkle_root: String,
+}
+
 /// Block response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,10 +97,19 @@ pub struct BlockResponse {
     pub transactions: Vec<String>,
     /// Block size in bytes
     pub size: usize,
+    /// Presence commitment (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence: Option<PresenceResponse>,
 }
 
 impl From<&Block> for BlockResponse {
     fn from(block: &Block) -> Self {
+        let presence = block.presence.as_ref().map(|p| PresenceResponse {
+            present_count: p.present_count(),
+            total_weight: p.total_weight,
+            merkle_root: p.merkle_root.to_hex(),
+        });
+
         Self {
             hash: block.hash().to_hex(),
             prev_hash: block.header.prev_hash.to_hex(),
@@ -104,6 +125,7 @@ impl From<&Block> for BlockResponse {
                 .map(|tx| tx.hash().to_hex())
                 .collect(),
             size: block.size(),
+            presence,
         }
     }
 }

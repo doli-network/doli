@@ -239,8 +239,7 @@ impl ClaimRegistry {
 
     /// Get the number of unique producers who have made claims.
     pub fn unique_producers(&self) -> usize {
-        let unique: std::collections::HashSet<_> =
-            self.claims.keys().map(|k| k.producer).collect();
+        let unique: std::collections::HashSet<_> = self.claims.keys().map(|k| k.producer).collect();
         unique.len()
     }
 

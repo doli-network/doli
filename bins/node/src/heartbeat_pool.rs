@@ -183,7 +183,8 @@ impl HeartbeatPool {
         sorted_heartbeats.sort_by_key(|h| h.producer_index);
 
         // Build indices and weights in sorted order
-        let present_indices: Vec<usize> = sorted_heartbeats.iter().map(|h| h.producer_index).collect();
+        let present_indices: Vec<usize> =
+            sorted_heartbeats.iter().map(|h| h.producer_index).collect();
         let weights: Vec<Amount> = sorted_heartbeats.iter().map(|h| h.bond_weight).collect();
 
         // Compute merkle root of heartbeat data
@@ -451,7 +452,8 @@ mod tests {
             producer_index: 0,
         };
 
-        pool.heartbeats.insert(producer.public_key().clone(), validated);
+        pool.heartbeats
+            .insert(producer.public_key().clone(), validated);
 
         // Build presence twice
         let presence1 = pool.build_presence_commitment();
@@ -490,7 +492,8 @@ mod tests {
             producer_index: 0,
         };
 
-        pool.heartbeats.insert(producer.public_key().clone(), validated);
+        pool.heartbeats
+            .insert(producer.public_key().clone(), validated);
 
         assert!(pool.has_heartbeat(producer.public_key()));
     }

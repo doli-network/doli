@@ -162,11 +162,19 @@ impl std::fmt::Display for HeartbeatError {
                 write!(f, "insufficient witnesses: have {}, need {}", have, need)
             }
             Self::InvalidWitness(pk) => {
-                write!(f, "witness {} is not an active producer", hex::encode(&pk.as_bytes()[..8]))
+                write!(
+                    f,
+                    "witness {} is not an active producer",
+                    hex::encode(&pk.as_bytes()[..8])
+                )
             }
             Self::SelfWitness => write!(f, "producer cannot witness their own heartbeat"),
             Self::InvalidWitnessSignature(pk) => {
-                write!(f, "invalid witness signature from {}", hex::encode(&pk.as_bytes()[..8]))
+                write!(
+                    f,
+                    "invalid witness signature from {}",
+                    hex::encode(&pk.as_bytes()[..8])
+                )
             }
             Self::UnsupportedVersion(v) => write!(f, "unsupported heartbeat version: {}", v),
             Self::PrevHashMismatch => write!(f, "previous block hash mismatch"),
@@ -297,7 +305,9 @@ impl Heartbeat {
 
             // Verify the signature
             if !witness_sig.verify(&self.producer, self.slot, &self.vdf_output) {
-                return Err(HeartbeatError::InvalidWitnessSignature(witness_sig.witness.clone()));
+                return Err(HeartbeatError::InvalidWitnessSignature(
+                    witness_sig.witness.clone(),
+                ));
             }
         }
 
@@ -682,9 +692,15 @@ mod tests {
             assert_eq!(heartbeat_empty.version, deserialized.version);
             assert_eq!(heartbeat_empty.producer, deserialized.producer);
             assert_eq!(heartbeat_empty.slot, deserialized.slot);
-            assert_eq!(heartbeat_empty.prev_block_hash, deserialized.prev_block_hash);
+            assert_eq!(
+                heartbeat_empty.prev_block_hash,
+                deserialized.prev_block_hash
+            );
             assert_eq!(heartbeat_empty.vdf_output, deserialized.vdf_output);
-            assert_eq!(heartbeat_empty.witnesses.len(), deserialized.witnesses.len());
+            assert_eq!(
+                heartbeat_empty.witnesses.len(),
+                deserialized.witnesses.len()
+            );
         } else {
             // If deserialization fails, just check that serialize/size work
             // bincode may have issues with certain type combinations

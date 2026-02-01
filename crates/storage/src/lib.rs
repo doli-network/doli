@@ -91,8 +91,8 @@ pub mod producer;
 pub mod utxo;
 
 pub use block_store::BlockStore;
-pub use claim_registry::{ClaimKey, ClaimRecord, ClaimRegistry};
 pub use chain_state::ChainState;
+pub use claim_registry::{ClaimKey, ClaimRecord, ClaimRegistry};
 pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
     producer_weight_precise_for_network, total_weight, total_weight_for_network,

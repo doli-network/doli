@@ -143,9 +143,9 @@ pub use consensus::{
     PresenceScore,
     ProducerBonds,
     ProducerState,
-    BLOCK_REWARD_POOL,
     // Block-height based reward epochs
     BLOCKS_PER_REWARD_EPOCH,
+    BLOCK_REWARD_POOL,
     // Bond stacking system
     BOND_UNIT,
     ELIGIBLE_PRODUCER_POOL,
@@ -194,8 +194,8 @@ pub use rewards::{
 // Heartbeat VDF and witness system for presence proofs (consensus-affecting)
 // Note: Use `heartbeat::` prefix to access these types to avoid conflict with tpop telemetry
 pub use heartbeat::{
-    hash_chain_vdf, verify_hash_chain_vdf, Heartbeat, WitnessSignature,
-    HEARTBEAT_VERSION, MIN_WITNESS_SIGNATURES,
+    hash_chain_vdf, verify_hash_chain_vdf, Heartbeat, WitnessSignature, HEARTBEAT_VERSION,
+    MIN_WITNESS_SIGNATURES,
 };
 // HeartbeatError and HEARTBEAT_VDF_ITERATIONS are exported from tpop (telemetry)
 // For consensus heartbeat error, use heartbeat::HeartbeatError directly
@@ -207,6 +207,8 @@ pub use network::Network;
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
+    // Weighted presence reward claims
+    ClaimEpochRewardData,
     ClaimWithdrawalData,
     ExitData,
     Input,
@@ -216,8 +218,6 @@ pub use transaction::{
     Transaction,
     TxType,
     WithdrawalRequestData,
-    // Weighted presence reward claims
-    ClaimEpochRewardData,
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
