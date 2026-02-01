@@ -2530,11 +2530,25 @@ impl Node {
 
         if heartbeat_count > 0 {
             // Use heartbeats from the pool - this is the weighted presence system working!
-            let presence = self.heartbeat_pool.build_presence_commitment();
+            let mut presence = self.heartbeat_pool.build_presence_commitment();
+
+            // IMPORTANT: Ensure the block producer is always marked as present.
+            // The block producer's own heartbeat typically doesn't reach their own pool
+            // because libp2p gossip doesn't echo messages back to the sender.
+            // Since the block producer is definitionally present (they're producing the block),
+            // we must ensure they're included in the presence commitment.
+            if let Some(producer_index) = sorted_producers.iter().position(|p| p == our_pubkey) {
+                let weight = bond_weights.get(our_pubkey).copied().unwrap_or(0);
+                if weight > 0 {
+                    presence.ensure_present(producer_index, weight, sorted_producers.len());
+                }
+            }
+
             info!(
-                "Built presence from {} heartbeats (total_weight={}, slot={})",
+                "Built presence from {} heartbeats + block producer (total_weight={}, present={}, slot={})",
                 heartbeat_count,
                 presence.total_weight(),
+                presence.present_count(),
                 current_slot
             );
             return presence;
