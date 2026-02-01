@@ -211,6 +211,19 @@ Documentation drift is a protocol liability.
 
 **If you skip this gate, you are violating CLAUDE.md.**
 
+### Milestone Workflow
+
+When working on implementation milestones (e.g., from IMPLEMENTATION_CLAIM_REWARD.md):
+
+1. **Implement** - Write the code/tests for the milestone
+2. **Verify** - Run `cargo build`, `cargo clippy`, `cargo test` (all must pass)
+3. **Document** - Complete Pre-Commit Gate checklist above
+4. **Commit** - Using conventions (conventional commits, `--author`, HEREDOC format)
+5. **Push** - Push to remote
+6. **Stop** - Report completion, wait for next milestone
+
+A milestone is not complete until pushed. Do not stop between steps.
+
 ### For All Changes
 
 After tests pass:
