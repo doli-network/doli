@@ -722,12 +722,16 @@ async fn cmd_producer(
             // Get network-specific bond amount
             let chain_info = rpc.get_chain_info().await?;
             let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
-                "devnet" => (100_000_000, 1),    // 1 DOLI per bond on devnet
-                _ => (100_000_000_000, 1000),    // 1000 DOLI per bond on mainnet/testnet
+                "devnet" => (100_000_000, 1), // 1 DOLI per bond on devnet
+                _ => (100_000_000_000, 1000), // 1000 DOLI per bond on mainnet/testnet
             };
             let required_amount = bond_unit * bonds as u64;
 
-            println!("Registering with {} bond(s) = {} DOLI", bonds, bonds as u64 * bond_display);
+            println!(
+                "Registering with {} bond(s) = {} DOLI",
+                bonds,
+                bonds as u64 * bond_display
+            );
             println!();
 
             // Get spendable UTXOs
@@ -769,8 +773,8 @@ async fn cmd_producer(
             // Calculate lock_until based on network
             // Lock must be at least current_height + blocks_per_era
             let blocks_per_era: u64 = match chain_info.network.as_str() {
-                "devnet" => 576,        // ~10 minutes at 1s slots
-                _ => 12_614_400,        // ~4 years at 10s slots (mainnet/testnet)
+                "devnet" => 576, // ~10 minutes at 1s slots
+                _ => 12_614_400, // ~4 years at 10s slots (mainnet/testnet)
             };
             let lock_until = chain_info.best_height + blocks_per_era;
 
@@ -925,13 +929,17 @@ async fn cmd_producer(
             // Get network-specific bond amount
             let chain_info = rpc.get_chain_info().await?;
             let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
-                "devnet" => (100_000_000, 1),    // 1 DOLI per bond on devnet
-                _ => (100_000_000_000, 1000),    // 1000 DOLI per bond on mainnet/testnet
+                "devnet" => (100_000_000, 1), // 1 DOLI per bond on devnet
+                _ => (100_000_000_000, 1000), // 1000 DOLI per bond on mainnet/testnet
             };
             let required_amount = bond_unit * count as u64;
             let fee: u64 = 10000;
 
-            println!("Adding {} bond(s) = {} DOLI", count, count as u64 * bond_display);
+            println!(
+                "Adding {} bond(s) = {} DOLI",
+                count,
+                count as u64 * bond_display
+            );
             println!();
 
             // Get spendable UTXOs

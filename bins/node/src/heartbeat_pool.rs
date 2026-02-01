@@ -130,9 +130,7 @@ impl HeartbeatPool {
         }
 
         // Check prev_hash (skip for devnet testing mode)
-        if !self.skip_witness_verification
-            && heartbeat.prev_block_hash != self.expected_prev_hash
-        {
+        if !self.skip_witness_verification && heartbeat.prev_block_hash != self.expected_prev_hash {
             debug!("Heartbeat has wrong prev_hash");
             return Err(HeartbeatError::PrevHashMismatch);
         }
@@ -155,8 +153,11 @@ impl HeartbeatPool {
         };
 
         // Verify VDF using network-specific iterations
-        let vdf_input =
-            Heartbeat::compute_vdf_input(&heartbeat.producer, heartbeat.slot, &heartbeat.prev_block_hash);
+        let vdf_input = Heartbeat::compute_vdf_input(
+            &heartbeat.producer,
+            heartbeat.slot,
+            &heartbeat.prev_block_hash,
+        );
         let expected_output = hash_chain_vdf(&vdf_input, self.vdf_iterations);
         if heartbeat.vdf_output != expected_output {
             warn!(
