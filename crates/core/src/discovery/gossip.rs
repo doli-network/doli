@@ -138,7 +138,9 @@ impl AdaptiveGossip {
         // Update estimated network size (simple heuristic: max of peer_count and current)
         self.estimated_network_size = self.estimated_network_size.max(peer_count);
 
-        if result.added > 0 {
+        // Only speed up gossip when truly NEW producers are discovered
+        // Sequence updates (liveness proofs) should not reset the interval
+        if result.new_producers > 0 {
             // New producers discovered - speed up gossip
             self.interval = self.min_interval;
             self.rounds_without_change = 0;
@@ -408,5 +410,33 @@ mod tests {
             5,
         );
         assert_eq!(gossip.rounds_without_change(), 0);
+    }
+
+    #[test]
+    fn test_adaptive_sequence_updates_dont_speed_up() {
+        let mut gossip = AdaptiveGossip::new();
+
+        // Simulate stable network - should back off
+        for _ in 0..5 {
+            gossip.on_gossip_result(&MergeResult::default(), 10);
+        }
+        let backed_off = gossip.interval();
+        assert!(backed_off > Duration::from_secs(5));
+
+        // Sequence update (added=1 but new_producers=0) should NOT speed up
+        gossip.on_gossip_result(
+            &MergeResult {
+                added: 1,
+                new_producers: 0, // This is a sequence update, not a new producer
+                rejected: 0,
+                duplicates: 0,
+            },
+            10,
+        );
+        // Interval should continue backing off, not reset to minimum
+        assert!(
+            gossip.interval() >= backed_off,
+            "Sequence updates should not reset interval"
+        );
     }
 }

@@ -333,6 +333,18 @@ impl Node {
         if let Some(ref key) = self.producer_key {
             if self.config.network == Network::Testnet || self.config.network == Network::Devnet {
                 let our_pubkey = key.public_key().clone();
+
+                // Create initial announcement with sequence 0
+                let announcement = ProducerAnnouncement::new(key, self.config.network.id(), 0);
+
+                // Add to GSet (new format)
+                {
+                    let mut gset = self.producer_gset.write().await;
+                    let _ = gset.merge_one(announcement.clone());
+                }
+                *self.our_announcement.write().await = Some(announcement);
+
+                // Also add to legacy known_producers for compatibility during transition
                 let mut known = self.known_producers.write().await;
                 if !known.contains(&our_pubkey) {
                     known.push(our_pubkey.clone());
@@ -343,21 +355,23 @@ impl Node {
                         &pubkey_hash.to_hex()[..16],
                         known.len()
                     );
-                    // Mark producer list as changed for stability tracking
                     self.last_producer_list_change = Some(Instant::now());
                 }
-                let broadcast_list = known.clone();
                 drop(known);
 
-                // IMMEDIATE ANTI-ENTROPY: Broadcast our full view right away.
-                // This is state-based gossip - we send our entire known producer list,
-                // and receivers will merge it with their own list.
+                // IMMEDIATE ANTI-ENTROPY: Broadcast our announcement via new format
                 if let Some(ref network) = self.network {
-                    info!(
-                        "Broadcasting initial anti-entropy producer list ({} producers)",
-                        broadcast_list.len()
-                    );
-                    let _ = network.broadcast_producers(broadcast_list).await;
+                    let announcements = {
+                        let gset = self.producer_gset.read().await;
+                        gset.export()
+                    };
+                    if !announcements.is_empty() {
+                        info!(
+                            "Broadcasting initial producer announcements ({} producers)",
+                            announcements.len()
+                        );
+                        let _ = network.broadcast_producer_announcements(announcements).await;
+                    }
                 }
             }
         }
@@ -483,11 +497,12 @@ impl Node {
         };
         let mut production_timer = tokio::time::interval(production_interval);
 
-        // Gossip our producer identity every 10 seconds
+        // Gossip our producer identity using adaptive intervals
         // This ensures nodes that aren't directly connected (e.g., Node 2 -> Node 1 -> Node 3)
         // learn about each other through the GossipSub mesh relay
-        let gossip_interval = Duration::from_secs(10);
-        let mut gossip_timer = tokio::time::interval(gossip_interval);
+        // Phase 1: Use AdaptiveGossip for dynamic interval adjustment
+        let mut current_gossip_interval = self.adaptive_gossip.read().await.interval();
+        let mut gossip_timer = tokio::time::interval(current_gossip_interval);
 
         loop {
             // Check shutdown flag
@@ -520,75 +535,86 @@ impl Node {
                     }
                 }
 
-                // Gossip timer tick - ANTI-ENTROPY: broadcast our full producer view
+                // Gossip timer tick - ANTI-ENTROPY: broadcast producer view
+                // Phase 1: Uses adaptive intervals based on network activity
+                // Phase 2: Uses delta sync (bloom filter) for large networks
                 _ = gossip_timer.tick() => {
-                    // On Devnet/Testnet, periodically broadcast our full known producer list.
-                    // This is STATE-BASED gossip (not event-based) - we send our entire view,
-                    // and receivers merge with their view using CRDT union semantics.
-                    // This guarantees convergence: Union(Local, Remote) = eventual consistency.
                     if self.config.network == Network::Testnet || self.config.network == Network::Devnet {
                         if let Some(ref network) = self.network {
-                            // NEW FORMAT: Create/update our producer announcement and broadcast via GSet
+                            // Update our producer announcement if we're a producer
                             if let Some(ref key) = self.producer_key {
-                                // Increment sequence number
                                 let seq = self.announcement_sequence.fetch_add(1, Ordering::SeqCst);
-
-                                // Create new announcement
                                 let announcement = ProducerAnnouncement::new(key, self.config.network.id(), seq);
 
-                                // Merge our own announcement into the GSet
                                 {
                                     let mut gset = self.producer_gset.write().await;
                                     let _ = gset.merge_one(announcement.clone());
                                 }
 
-                                // Store as our current announcement
                                 *self.our_announcement.write().await = Some(announcement);
                             }
 
-                            // Export and broadcast all announcements (new format)
-                            let announcements = {
+                            // Get adaptive gossip settings and producer count
+                            let (use_delta, producer_count) = {
+                                let adaptive = self.adaptive_gossip.read().await;
                                 let gset = self.producer_gset.read().await;
-                                gset.export()
+                                (adaptive.use_delta_sync(), gset.len())
                             };
 
-                            if !announcements.is_empty() {
+                            // Phase 2: Choose sync strategy based on network size
+                            // Delta sync is more efficient for larger networks (>50 producers)
+                            if use_delta && producer_count > 50 {
+                                // DELTA SYNC: Send bloom filter, peers respond with missing announcements
+                                let bloom = {
+                                    let gset = self.producer_gset.read().await;
+                                    gset.to_bloom_filter()
+                                };
                                 debug!(
-                                    "Broadcasting {} signed producer announcements",
-                                    announcements.len()
+                                    "Delta sync: broadcasting bloom filter ({} bytes) for {} producers",
+                                    bloom.size_bytes(),
+                                    producer_count
                                 );
-                                let _ = network.broadcast_producer_announcements(announcements).await;
-                            }
+                                let _ = network.broadcast_producer_digest(bloom).await;
+                            } else {
+                                // FULL SYNC: Send all announcements (better for small networks)
+                                let announcements = {
+                                    let gset = self.producer_gset.read().await;
+                                    gset.export()
+                                };
 
-                            // LEGACY FORMAT: Also broadcast via old format for backwards compatibility
-                            let known = self.known_producers.read().await;
-                            let mut broadcast_list = known.clone();
-
-                            // Always include ourselves in the broadcast
-                            if let Some(ref key) = self.producer_key {
-                                let our_pubkey = key.public_key();
-                                if !broadcast_list.contains(our_pubkey) {
-                                    broadcast_list.push(our_pubkey.clone());
+                                if !announcements.is_empty() {
+                                    debug!(
+                                        "Full sync: broadcasting {} producer announcements",
+                                        announcements.len()
+                                    );
+                                    let _ = network.broadcast_producer_announcements(announcements).await;
                                 }
                             }
-                            drop(known);
 
-                            if !broadcast_list.is_empty() {
-                                // Sort for deterministic ordering before broadcast
-                                broadcast_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-                                // DIAGNOSTIC: Log producer schedule view for convergence debugging
-                                // All nodes should show identical lists once anti-entropy converges
-                                let hashes: Vec<String> = broadcast_list.iter()
+                            // Log producer schedule for debugging convergence
+                            let producer_list = {
+                                let gset = self.producer_gset.read().await;
+                                gset.sorted_producers()
+                            };
+                            if !producer_list.is_empty() {
+                                let hashes: Vec<String> = producer_list.iter()
                                     .map(|p| crypto_hash(p.as_bytes()).to_hex()[..8].to_string())
                                     .collect();
                                 info!(
                                     "Producer schedule view: {:?} (count={})",
-                                    hashes, broadcast_list.len()
+                                    hashes, producer_list.len()
                                 );
+                            }
 
-                                debug!("Running Anti-Entropy: Broadcasting {} producers via gossip (legacy)", broadcast_list.len());
-                                let _ = network.broadcast_producers(broadcast_list).await;
+                            // Phase 1: Update gossip interval if adaptive gossip changed it
+                            let new_interval = self.adaptive_gossip.read().await.interval();
+                            if new_interval != current_gossip_interval {
+                                debug!(
+                                    "Adaptive gossip: interval changed {:?} -> {:?}",
+                                    current_gossip_interval, new_interval
+                                );
+                                current_gossip_interval = new_interval;
+                                gossip_timer = tokio::time::interval(current_gossip_interval);
                             }
                         }
                     }
