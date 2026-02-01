@@ -2147,13 +2147,8 @@ impl Node {
                         // This handles the case where all nodes reset simultaneously - they would
                         // all see each other at height 0 and think they're "synced". By waiting,
                         // we give sync a chance to actually fetch blocks from peers.
-                        // Use shorter grace for devnet testing.
-                        let post_resync_grace_secs: u64 = if self.config.network == Network::Devnet
-                        {
-                            5 // Fast for devnet testing
-                        } else {
-                            30 // Production-like for testnet
-                        };
+                        // Use 30 seconds for all networks to ensure proper sync before production.
+                        let post_resync_grace_secs: u64 = 30;
                         if let Some(last_resync) = self.last_resync_time {
                             if last_resync.elapsed().as_secs() < post_resync_grace_secs {
                                 debug!(
@@ -2161,6 +2156,21 @@ impl Node {
                                     post_resync_grace_secs - last_resync.elapsed().as_secs()
                                 );
                                 return Ok(());
+                            }
+                            // Additional check: if we resynced recently and are still far behind
+                            // the network (height << current_slot), extend the grace period.
+                            // This catches cases where 30s wasn't enough to sync all blocks.
+                            if last_resync.elapsed().as_secs() < 120 {
+                                // Within 2 minutes of resync
+                                let slot_height_diff = current_slot.saturating_sub(height as u32);
+                                // If we're more than 20 slots behind, we're clearly not synced
+                                if slot_height_diff > 20 {
+                                    debug!(
+                                        "Post-resync: still far behind network (height={}, slot={}, diff={}), deferring production",
+                                        height, current_slot, slot_height_diff
+                                    );
+                                    return Ok(());
+                                }
                             }
                         }
                     }
