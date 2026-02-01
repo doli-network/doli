@@ -18,6 +18,13 @@ pub struct BlockHeader {
     pub prev_hash: Hash,
     /// Merkle root of transactions
     pub merkle_root: Hash,
+    /// Commitment to presence data (hash of PresenceCommitment, or ZERO for legacy blocks)
+    ///
+    /// This field ensures that presence data cannot be modified after block creation.
+    /// For blocks before PRESENCE_V2_ACTIVATION_HEIGHT, this should be Hash::ZERO.
+    /// For blocks after activation, this is the hash of the PresenceCommitment.
+    #[serde(default)]
+    pub presence_root: Hash,
     /// Block timestamp (Unix seconds)
     pub timestamp: u64,
     /// Slot number (derived from timestamp)
@@ -32,11 +39,15 @@ pub struct BlockHeader {
 
 impl BlockHeader {
     /// Compute the block hash
+    ///
+    /// Includes presence_root to ensure presence data cannot be modified
+    /// after block creation. This is critical for reward calculation integrity.
     pub fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
         hasher.update(&self.version.to_le_bytes());
         hasher.update(self.prev_hash.as_bytes());
         hasher.update(self.merkle_root.as_bytes());
+        hasher.update(self.presence_root.as_bytes()); // Commit to presence data
         hasher.update(&self.timestamp.to_le_bytes());
         hasher.update(&self.slot.to_le_bytes());
         hasher.update(self.producer.as_bytes());
@@ -67,7 +78,9 @@ impl BlockHeader {
     /// Get approximate size in bytes
     pub fn size(&self) -> usize {
         // Fixed fields + variable VDF data
-        4 + 32 + 32 + 8 + 4 + 32 + self.vdf_output.value.len() + self.vdf_proof.pi.len()
+        // version(4) + prev_hash(32) + merkle_root(32) + presence_root(32) +
+        // timestamp(8) + slot(4) + producer(32) + vdf_output + vdf_proof
+        4 + 32 + 32 + 32 + 8 + 4 + 32 + self.vdf_output.value.len() + self.vdf_proof.pi.len()
     }
 }
 
@@ -295,10 +308,18 @@ impl BlockBuilder {
 
         let merkle_root = compute_merkle_root(&self.transactions);
 
+        // Compute presence_root from presence commitment if available
+        let presence_root = self
+            .presence
+            .as_ref()
+            .map(|p| p.commitment_hash())
+            .unwrap_or(Hash::ZERO);
+
         Some(BlockHeader {
             version: 1,
             prev_hash: self.prev_hash,
             merkle_root,
+            presence_root,
             timestamp,
             slot,
             producer: self.producer,
@@ -342,6 +363,7 @@ mod tests {
             version: 1,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 1000,
             slot: 0,
             producer: PublicKey::from_bytes([0u8; 32]),
@@ -355,6 +377,31 @@ mod tests {
         let hash2 = header.hash();
 
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_block_hash_includes_presence_root() {
+        let header1 = BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            timestamp: 1000,
+            slot: 0,
+            producer: PublicKey::from_bytes([0u8; 32]),
+            vdf_output: VdfOutput {
+                value: vec![1, 2, 3],
+            },
+            vdf_proof: VdfProof::empty(),
+        };
+
+        // Different presence_root should produce different hash
+        let header2 = BlockHeader {
+            presence_root: crypto::hash::hash(b"different"),
+            ..header1.clone()
+        };
+
+        assert_ne!(header1.hash(), header2.hash(), "presence_root must affect block hash");
     }
 
     #[test]

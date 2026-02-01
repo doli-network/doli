@@ -413,6 +413,7 @@ mod tests {
             version: 1,
             prev_hash: hash1,
             merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
             timestamp: 0,
             slot: 1,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -443,6 +444,7 @@ mod tests {
             version: 1,
             prev_hash: hash1, // Fork from hash1, not hash2
             merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -519,6 +521,7 @@ mod tests {
             version: 1,
             prev_hash: hash1, // Fork from hash1
             merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -550,6 +553,7 @@ mod tests {
             version: 1,
             prev_hash: hash1, // Fork from hash1
             merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
