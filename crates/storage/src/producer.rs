@@ -348,23 +348,43 @@ fn default_bond_count() -> u32 {
     1
 }
 
-/// Bond unit constant: 1 bond = 1,000 DOLI = 100,000,000,000 base units
+/// Bond unit constant for mainnet/testnet: 1 bond = 1,000 DOLI = 100,000,000,000 base units
+/// Note: For devnet, use Network::initial_bond() which returns 100_000_000 (1 DOLI per bond)
 pub const BOND_UNIT: u64 = 100_000_000_000;
+
+/// Get the bond unit for a specific network
+/// - Mainnet/Testnet: 100_000_000_000 (1000 DOLI per bond)
+/// - Devnet: 100_000_000 (1 DOLI per bond)
+pub fn bond_unit_for_network(network: Network) -> u64 {
+    network.initial_bond()
+}
 
 /// Maximum bonds per producer (prevents whale dominance)
 pub const MAX_BONDS_PER_PRODUCER: u32 = 100;
 
 impl ProducerInfo {
     /// Create a new active producer with a single bond
+    ///
+    /// # Arguments
+    /// - `public_key`: The producer's public key
+    /// - `registered_at`: Block height at registration
+    /// - `bond_amount`: Total bond amount in base units
+    /// - `bond_outpoint`: UTXO reference for the bond
+    /// - `registration_era`: Era at registration
+    /// - `bond_unit`: Amount per bond (use `bond_unit_for_network(network)`)
     pub fn new(
         public_key: PublicKey,
         registered_at: u64,
         bond_amount: u64,
         bond_outpoint: (Hash, u32),
         registration_era: u32,
+        bond_unit: u64,
     ) -> Self {
-        // Calculate bond count from amount (1 bond = BOND_UNIT)
-        let bond_count = (bond_amount / BOND_UNIT).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
+        // Calculate bond count from amount using network-specific bond unit
+        // For devnet: bond_unit = 100_000_000 (1 DOLI per bond)
+        // For mainnet/testnet: bond_unit = 100_000_000_000 (1000 DOLI per bond)
+        let bond_unit = if bond_unit == 0 { BOND_UNIT } else { bond_unit };
+        let bond_count = (bond_amount / bond_unit).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
         let bond_count = bond_count.max(1); // Minimum 1 bond
 
         Self {
@@ -1600,6 +1620,7 @@ mod tests {
             100_000_000_000, // 1000 coins
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT, // Use mainnet/testnet bond unit for tests
         )
     }
 
@@ -1662,6 +1683,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         // Register
@@ -1692,6 +1714,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         set.register(info, 1000).unwrap();
@@ -1753,6 +1776,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         set.register(info, 1000).unwrap();
@@ -1851,6 +1875,7 @@ mod tests {
                 100_000_000_000,
                 (Hash::ZERO, i),
                 0,
+                BOND_UNIT,
             );
             set.register(info, current_height).unwrap();
         }
@@ -1876,6 +1901,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register(info1, 0).unwrap();
 
@@ -1887,6 +1913,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
+            BOND_UNIT,
         );
         set.register(info2, current_height).unwrap();
 
@@ -1928,6 +1955,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register(info1, 0).unwrap();
 
@@ -1939,6 +1967,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
+            BOND_UNIT,
         );
         set.register(info2, current_height).unwrap();
 
@@ -1972,6 +2001,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register(info, 0).unwrap();
 
@@ -2007,6 +2037,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         set.register(info, 0).unwrap();
@@ -2037,7 +2068,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // First registration
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
+        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info1, 0).unwrap();
 
         // Exit completely
@@ -2050,7 +2081,7 @@ mod tests {
         assert!(set.has_prior_exit(&pubkey, 50_000));
 
         // Re-register
-        let info2 = ProducerInfo::new(pubkey.clone(), 100_000, 100_000_000_000, (Hash::ZERO, 1), 0);
+        let info2 = ProducerInfo::new(pubkey.clone(), 100_000, 100_000_000_000, (Hash::ZERO, 1), 0, BOND_UNIT);
         set.register(info2, 100_000).unwrap();
 
         // Verify has_prior_exit flag is set
@@ -2069,7 +2100,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at genesis
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
+        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info1, 0).unwrap();
 
         // After 9 years, weight is 4 (max, with sqrt formula)
@@ -2089,6 +2120,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
+            BOND_UNIT,
         );
         set.register(info2, ten_years).unwrap();
 
@@ -2108,7 +2140,7 @@ mod tests {
         let keypair = KeyPair::generate();
         let pubkey = *keypair.public_key();
 
-        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
+        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info, 0).unwrap();
 
         // Slash the producer
@@ -2196,6 +2228,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         let devnet = Network::Devnet;
@@ -2222,6 +2255,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register_for_network(info1, 0, devnet).unwrap();
 
@@ -2233,6 +2267,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
+            BOND_UNIT,
         );
         set.register_for_network(info2, 540, devnet).unwrap();
 
@@ -2271,7 +2306,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at block 0
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
+        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register_for_network(info1, 0, devnet).unwrap();
 
         // Exit at block 576 (4 years on devnet: 144 blocks/year × 4)
@@ -2295,6 +2330,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         let devnet = Network::Devnet;
@@ -2329,6 +2365,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register_for_network(info1, 0, devnet).unwrap();
 
@@ -2340,6 +2377,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 1),
             0,
+            BOND_UNIT,
         );
         set.register_for_network(info2, 144, devnet).unwrap();
 
@@ -2360,13 +2398,13 @@ mod tests {
     }
 
     #[test]
-    fn test_10_minute_era_simulation() {
+    fn test_era_simulation() {
         let devnet = Network::Devnet;
 
-        // Verify the math: ~10 real minutes = 1 simulated era (4 years)
-        // Devnet: 1 second slots, 144 blocks = 1 year
+        // Verify the math for devnet era timing
+        // Devnet: 10 second slots, 144 blocks = 1 year
         // Era = 576 blocks = 4 years (576 / 144 = 4)
-        // Era duration = 576 seconds ≈ 9.6 minutes real time
+        // Era duration = 576 * 10 = 5760 seconds = 96 minutes real time
 
         let era_blocks = 576u64;
         let simulated_years = era_blocks / devnet.blocks_per_year();
@@ -2374,7 +2412,7 @@ mod tests {
         let real_minutes = real_seconds / 60;
 
         assert_eq!(simulated_years, 4);
-        assert_eq!(real_minutes, 9); // 576 seconds = 9.6 minutes, truncated to 9
+        assert_eq!(real_minutes, 96); // 5760 seconds = 96 minutes
 
         // Verify weight after 1 era (4 simulated years) = max (4)
         let weight_at_4_years = producer_weight_for_network(0, era_blocks, devnet);
@@ -2402,6 +2440,7 @@ mod tests {
                 100_000_000_000,
                 (Hash::ZERO, i as u32),
                 0,
+                BOND_UNIT,
             );
             set.register(info, 0).unwrap();
         }
@@ -2487,7 +2526,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register producer
-        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0);
+        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info, 0).unwrap();
 
         // Verify initially active
@@ -2553,6 +2592,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
         set.register(info, 0).unwrap();
 

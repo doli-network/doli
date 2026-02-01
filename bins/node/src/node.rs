@@ -1322,6 +1322,7 @@ impl Node {
                                         bond_output.amount,
                                         (tx_hash, bond_index as u32),
                                         era,
+                                        self.config.network.initial_bond(),
                                     );
 
                                     let _ = producers.register(producer_info, height);
@@ -1547,6 +1548,7 @@ impl Node {
                                 bond_output.amount,
                                 (tx_hash, bond_index as u32),
                                 era,
+                                self.config.network.initial_bond(),
                             );
 
                             if let Err(e) = producers.register(producer_info, height) {
