@@ -172,6 +172,7 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
             doli_core::TxType::EpochReward => "epoch_reward",
             doli_core::TxType::ClaimEpochReward => "claim_epoch_reward",
+            doli_core::TxType::ClaimEpochRewardV2 => "claim_epoch_reward_v2",
         };
 
         Self {
