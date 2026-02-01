@@ -441,6 +441,7 @@ impl Node {
             self.params.clone(),
         )
         .with_network(self.config.network.name().to_string())
+        .with_blocks_per_reward_epoch(self.config.network.blocks_per_reward_epoch())
         .with_producer_set(self.producer_set.clone())
         .with_claim_registry(self.claim_registry.clone())
         .with_sync_status(sync_status_fn);
@@ -1574,7 +1575,10 @@ impl Node {
                                 "Recorded epoch {} claim for producer {} ({} DOLI)",
                                 claim_data.epoch,
                                 &crypto_hash(claim_data.producer_pubkey.as_bytes()).to_hex()[..16],
-                                tx.outputs.first().map(|o| o.amount / UNITS_PER_COIN).unwrap_or(0)
+                                tx.outputs
+                                    .first()
+                                    .map(|o| o.amount / UNITS_PER_COIN)
+                                    .unwrap_or(0)
                             );
                         }
                     }
@@ -2242,7 +2246,9 @@ impl Node {
         // Currently, heartbeat gossip is not yet implemented, so we only mark the
         // block producer as present (they are definitionally present to produce).
         // Full heartbeat collection will be added when network gossip is integrated.
-        let presence = self.build_presence_commitment(&our_pubkey, current_slot, &prev_hash).await;
+        let presence = self
+            .build_presence_commitment(&our_pubkey, current_slot, &prev_hash)
+            .await;
 
         let block = Block {
             header: final_header,
@@ -2321,9 +2327,7 @@ impl Node {
         // from all producers during the slot.
 
         // Find producer index in sorted list
-        let producer_index = sorted_producers
-            .iter()
-            .position(|p| p == our_pubkey);
+        let producer_index = sorted_producers.iter().position(|p| p == our_pubkey);
 
         if let Some(idx) = producer_index {
             // Mark block producer as present with their bond weight
@@ -2351,9 +2355,7 @@ impl Node {
 
         // Fallback: If producer not found or has no weight, return empty presence
         // This shouldn't happen in normal operation
-        debug!(
-            "Building empty presence commitment (producer not in active set or no weight)"
-        );
+        debug!("Building empty presence commitment (producer not in active set or no weight)");
         doli_core::presence::PresenceCommitment::empty()
     }
 
