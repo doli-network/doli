@@ -2150,7 +2150,7 @@ impl Node {
         // transactions using the new weighted presence reward system.
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
-            mempool.select_for_block(100) // Up to 100 tx per block
+            mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
         };
         for tx in &mempool_txs {
             builder.add_transaction(tx.clone());
