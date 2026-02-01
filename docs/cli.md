@@ -172,11 +172,21 @@ doli balance --address a1b2c3d4e5f6...
 ```
 Balances:
 ------------------------------------------------------------
-a1b2c3d4e5f6...: 1,234.56789012 DOLI
-c7d8e9f0a1b2...: 567.89012345 DOLI
-------------------------------------------------------------
-Total: 1,802.45801357 DOLI
+a1b2c3d4e5f6... (primary)
+  Pubkey Hash: a1b2c3d4e5f6...
+  Confirmed:   100.00000000 DOLI
+  Unconfirmed: 0.00000000 DOLI
+  Immature:    50.00000000 DOLI
+  Total:       150.00000000 DOLI
 ```
+
+**Balance Types:**
+| Type | Description |
+|------|-------------|
+| Confirmed | Spendable balance (mature UTXOs) |
+| Unconfirmed | Pending transactions in mempool |
+| Immature | Coinbase/epoch rewards pending 100-block maturity |
+| Total | Sum of all balances |
 
 ---
 
