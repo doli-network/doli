@@ -1072,6 +1072,7 @@ pub fn validate_transaction(
         && !tx.is_coinbase()
         && !tx.is_exit()
         && !tx.is_claim_reward()
+        && !tx.is_claim_epoch_reward()
         && !tx.is_claim_bond()
         && !tx.is_slash_producer()
         && !tx.is_add_bond()
@@ -1290,7 +1291,7 @@ fn validate_registration_data(
 
     // Verify VDF proof for registration
     // (The actual VDF verification happens here)
-    validate_registration_vdf(&reg_data)?;
+    validate_registration_vdf(&reg_data, ctx.network)?;
 
     // Verify registration chain (anti-Sybil: prevents parallel registration)
     validate_registration_chain(&reg_data, ctx)?;
@@ -1331,7 +1332,18 @@ fn validate_registration_chain(
 }
 
 /// Validate the VDF proof in registration data.
-fn validate_registration_vdf(reg_data: &RegistrationData) -> Result<(), ValidationError> {
+///
+/// For devnet, VDF validation is skipped to allow quick testing.
+/// For mainnet/testnet, full VDF verification is required.
+fn validate_registration_vdf(
+    reg_data: &RegistrationData,
+    network: Network,
+) -> Result<(), ValidationError> {
+    // Skip VDF validation for devnet (allows CLI registration without VDF computation)
+    if network == Network::Devnet {
+        return Ok(());
+    }
+
     // Create VDF input using the standard function
     let input = vdf::registration_input(&reg_data.public_key, reg_data.epoch);
 
