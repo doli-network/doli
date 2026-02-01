@@ -350,6 +350,8 @@ async fn cmd_balance(
     println!("Balances:");
     println!("{:-<60}", "");
 
+    let mut total_immature: u64 = 0;
+
     // Use pubkey_hash (32-byte) for RPC queries instead of address (20-byte)
     if let Some(addr) = &address {
         // If user provided an address, use it directly (assume it's already a pubkey_hash)
@@ -358,11 +360,13 @@ async fn cmd_balance(
                 println!("{}", addr);
                 println!("  Confirmed:   {}", format_balance(balance.confirmed));
                 println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
+                println!("  Immature:    {}", format_balance(balance.immature));
                 println!("  Total:       {}", format_balance(balance.total));
                 println!();
 
                 total_confirmed += balance.confirmed;
                 total_unconfirmed += balance.unconfirmed;
+                total_immature += balance.immature;
             }
             Err(e) => {
                 println!("{}: Error - {}", addr, e);
@@ -393,11 +397,13 @@ async fn cmd_balance(
                     println!("  Pubkey Hash: {}", pubkey_hash);
                     println!("  Confirmed:   {}", format_balance(balance.confirmed));
                     println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
+                    println!("  Immature:    {}", format_balance(balance.immature));
                     println!("  Total:       {}", format_balance(balance.total));
                     println!();
 
                     total_confirmed += balance.confirmed;
                     total_unconfirmed += balance.unconfirmed;
+                    total_immature += balance.immature;
                 }
                 Err(e) => {
                     println!("{}: Error - {}", &pubkey_hash[..16], e);
@@ -410,9 +416,10 @@ async fn cmd_balance(
         println!("{:-<60}", "");
         println!("Total Confirmed:   {}", format_balance(total_confirmed));
         println!("Total Unconfirmed: {}", format_balance(total_unconfirmed));
+        println!("Total Immature:    {}", format_balance(total_immature));
         println!(
             "Total:             {}",
-            format_balance(total_confirmed + total_unconfirmed)
+            format_balance(total_confirmed + total_unconfirmed + total_immature)
         );
     }
 
