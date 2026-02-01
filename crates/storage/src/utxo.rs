@@ -210,6 +210,19 @@ impl UtxoSet {
             .sum()
     }
 
+    /// Get immature balance for a pubkey hash at a given height
+    /// Returns the sum of coinbase/epoch reward outputs that haven't matured yet
+    pub fn get_immature_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| {
+                // Only coinbase and epoch rewards have maturity requirements
+                (entry.is_coinbase || entry.is_epoch_reward) && !entry.is_spendable_at(height)
+            })
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
     /// Insert a UTXO entry directly (for testing and reorgs)
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
         self.utxos.insert(outpoint, entry);
