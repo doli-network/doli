@@ -454,3 +454,333 @@ pub struct PendingWithdrawalResponse {
     /// Whether this withdrawal can be claimed now
     pub claimable: bool,
 }
+
+// ==================== Reward/Claim Types ====================
+
+/// Parameters for getClaimableRewards
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetClaimableRewardsParams {
+    /// Producer public key (hex)
+    pub producer: String,
+}
+
+/// A single claimable epoch entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimableEpochEntry {
+    /// Epoch number
+    pub epoch: u64,
+    /// Number of blocks where producer was present
+    pub blocks_present: u64,
+    /// Total blocks in the epoch
+    pub total_blocks: u64,
+    /// Presence rate as percentage (0-100)
+    pub presence_rate: u8,
+    /// Estimated reward amount (in base units)
+    pub estimated_reward: u64,
+}
+
+/// Response for getClaimableRewards
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimableRewardsResponse {
+    /// Producer public key
+    pub producer: String,
+    /// Current block height
+    pub current_height: u64,
+    /// Current reward epoch
+    pub current_epoch: u64,
+    /// Total claimable epochs
+    pub claimable_count: usize,
+    /// Total estimated reward across all unclaimed epochs
+    pub total_estimated_reward: u64,
+    /// List of claimable epochs
+    pub epochs: Vec<ClaimableEpochEntry>,
+}
+
+/// Parameters for getClaimHistory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetClaimHistoryParams {
+    /// Producer public key (hex)
+    pub producer: String,
+    /// Maximum number of entries to return
+    #[serde(default = "default_claim_history_limit")]
+    pub limit: usize,
+}
+
+fn default_claim_history_limit() -> usize {
+    50
+}
+
+/// A single claim history entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimHistoryEntry {
+    /// Epoch that was claimed
+    pub epoch: u64,
+    /// Transaction hash that executed the claim
+    pub tx_hash: String,
+    /// Block height where claim was confirmed
+    pub height: u64,
+    /// Amount claimed (in base units)
+    pub amount: u64,
+    /// Timestamp when claimed
+    pub timestamp: u64,
+}
+
+/// Response for getClaimHistory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimHistoryResponse {
+    /// Producer public key
+    pub producer: String,
+    /// Total number of claims made
+    pub total_claims: usize,
+    /// Total amount claimed
+    pub total_claimed: u64,
+    /// List of claim entries (most recent first)
+    pub claims: Vec<ClaimHistoryEntry>,
+}
+
+/// Parameters for estimateEpochReward
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstimateEpochRewardParams {
+    /// Producer public key (hex)
+    pub producer: String,
+    /// Epoch number to estimate
+    pub epoch: u64,
+}
+
+/// Response for estimateEpochReward
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewardEstimateResponse {
+    /// Producer public key
+    pub producer: String,
+    /// Epoch number
+    pub epoch: u64,
+    /// Whether epoch is complete
+    pub is_complete: bool,
+    /// Whether epoch is already claimed
+    pub is_claimed: bool,
+    /// Number of blocks where producer was present
+    pub blocks_present: u64,
+    /// Total blocks in epoch
+    pub total_blocks: u64,
+    /// Presence rate as percentage
+    pub presence_rate: u8,
+    /// Block reward rate
+    pub block_reward: u64,
+    /// Estimated reward amount
+    pub estimated_reward: u64,
+    /// Average producer weight per block
+    pub average_weight: u64,
+}
+
+/// Parameters for buildClaimTx
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildClaimTxParams {
+    /// Producer public key (hex)
+    pub producer: String,
+    /// Epoch to claim
+    pub epoch: u64,
+    /// Recipient address (hex) - defaults to producer's address if not specified
+    pub recipient: Option<String>,
+}
+
+/// Response for buildClaimTx
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildClaimTxResponse {
+    /// Epoch being claimed
+    pub epoch: u64,
+    /// Calculated reward amount
+    pub amount: u64,
+    /// Recipient address hash
+    pub recipient: String,
+    /// Raw unsigned transaction (hex)
+    pub unsigned_tx: String,
+    /// Message to sign (hex)
+    pub signing_message: String,
+}
+
+/// Response for getEpochInfo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpochInfoResponse {
+    /// Current block height
+    pub current_height: u64,
+    /// Current reward epoch
+    pub current_epoch: u64,
+    /// Last complete epoch (if any)
+    pub last_complete_epoch: Option<u64>,
+    /// Blocks per reward epoch
+    pub blocks_per_epoch: u64,
+    /// Blocks remaining in current epoch
+    pub blocks_remaining: u64,
+    /// Current epoch start height
+    pub epoch_start_height: u64,
+    /// Current epoch end height (exclusive)
+    pub epoch_end_height: u64,
+    /// Current block reward rate
+    pub block_reward: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_claimable_rewards_response_serialization() {
+        let response = ClaimableRewardsResponse {
+            producer: "abc123".to_string(),
+            current_height: 1000,
+            current_epoch: 2,
+            claimable_count: 2,
+            total_estimated_reward: 100_000_000,
+            epochs: vec![
+                ClaimableEpochEntry {
+                    epoch: 0,
+                    blocks_present: 350,
+                    total_blocks: 360,
+                    presence_rate: 97,
+                    estimated_reward: 50_000_000,
+                },
+                ClaimableEpochEntry {
+                    epoch: 1,
+                    blocks_present: 360,
+                    total_blocks: 360,
+                    presence_rate: 100,
+                    estimated_reward: 50_000_000,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"currentHeight\":1000"));
+        assert!(json.contains("\"currentEpoch\":2"));
+        assert!(json.contains("\"claimableCount\":2"));
+        assert!(json.contains("\"presenceRate\":97"));
+
+        let parsed: ClaimableRewardsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.claimable_count, 2);
+        assert_eq!(parsed.epochs.len(), 2);
+    }
+
+    #[test]
+    fn test_claim_history_response_serialization() {
+        let response = ClaimHistoryResponse {
+            producer: "abc123".to_string(),
+            total_claims: 1,
+            total_claimed: 50_000_000,
+            claims: vec![ClaimHistoryEntry {
+                epoch: 5,
+                tx_hash: "deadbeef".to_string(),
+                height: 2200,
+                amount: 50_000_000,
+                timestamp: 1234567890,
+            }],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"totalClaims\":1"));
+        assert!(json.contains("\"txHash\":\"deadbeef\""));
+
+        let parsed: ClaimHistoryResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.claims.len(), 1);
+        assert_eq!(parsed.claims[0].epoch, 5);
+    }
+
+    #[test]
+    fn test_reward_estimate_response_serialization() {
+        let response = RewardEstimateResponse {
+            producer: "abc123".to_string(),
+            epoch: 10,
+            is_complete: true,
+            is_claimed: false,
+            blocks_present: 340,
+            total_blocks: 360,
+            presence_rate: 94,
+            block_reward: 5_000_000_000,
+            estimated_reward: 4_722_222_222,
+            average_weight: 1000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"isComplete\":true"));
+        assert!(json.contains("\"isClaimed\":false"));
+        assert!(json.contains("\"presenceRate\":94"));
+
+        let parsed: RewardEstimateResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.epoch, 10);
+        assert!(parsed.is_complete);
+        assert!(!parsed.is_claimed);
+    }
+
+    #[test]
+    fn test_build_claim_tx_response_serialization() {
+        let response = BuildClaimTxResponse {
+            epoch: 5,
+            amount: 50_000_000,
+            recipient: "abc123".to_string(),
+            unsigned_tx: "0102030405".to_string(),
+            signing_message: "deadbeef".to_string(),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"unsignedTx\":\"0102030405\""));
+        assert!(json.contains("\"signingMessage\":\"deadbeef\""));
+
+        let parsed: BuildClaimTxResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.epoch, 5);
+        assert_eq!(parsed.unsigned_tx, "0102030405");
+    }
+
+    #[test]
+    fn test_epoch_info_response_serialization() {
+        let response = EpochInfoResponse {
+            current_height: 1500,
+            current_epoch: 4,
+            last_complete_epoch: Some(3),
+            blocks_per_epoch: 360,
+            blocks_remaining: 60,
+            epoch_start_height: 1440,
+            epoch_end_height: 1800,
+            block_reward: 5_000_000_000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"blocksPerEpoch\":360"));
+        assert!(json.contains("\"lastCompleteEpoch\":3"));
+
+        let parsed: EpochInfoResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.current_epoch, 4);
+        assert_eq!(parsed.blocks_remaining, 60);
+    }
+
+    #[test]
+    fn test_get_claimable_rewards_params() {
+        let json = r#"{"producer": "abc123"}"#;
+        let params: GetClaimableRewardsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.producer, "abc123");
+    }
+
+    #[test]
+    fn test_build_claim_tx_params_optional_recipient() {
+        // Without recipient
+        let json = r#"{"producer": "abc123", "epoch": 5}"#;
+        let params: BuildClaimTxParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.producer, "abc123");
+        assert_eq!(params.epoch, 5);
+        assert!(params.recipient.is_none());
+
+        // With recipient
+        let json = r#"{"producer": "abc123", "epoch": 5, "recipient": "def456"}"#;
+        let params: BuildClaimTxParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.recipient, Some("def456".to_string()));
+    }
+}

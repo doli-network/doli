@@ -351,6 +351,29 @@ pub trait EpochBlockSource {
     fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, String>;
 }
 
+/// Trait for checking epoch reward claims.
+///
+/// Implement this trait to provide the validator with access to the claim
+/// registry for verifying that an epoch hasn't been claimed yet.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// struct MyClaimRegistry { /* ... */ }
+///
+/// impl ClaimChecker for MyClaimRegistry {
+///     fn is_claimed(&self, producer: &PublicKey, epoch: u64) -> bool {
+///         // Check in database
+///     }
+/// }
+/// ```
+pub trait ClaimChecker {
+    /// Check if a (producer, epoch) pair has already been claimed.
+    ///
+    /// Returns true if the producer has already claimed rewards for this epoch.
+    fn is_claimed(&self, producer: &PublicKey, epoch: u64) -> bool;
+}
+
 /// Registration chain state for anti-Sybil verification.
 ///
 /// Tracks the chained VDF registration state needed to validate
@@ -572,37 +595,12 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
         return Err(ValidationError::InvalidMerkleRoot);
     }
 
-    // 4. Validate rewards based on mode
-    match ctx.params.reward_mode {
-        RewardMode::DirectCoinbase => {
-            // Legacy mode: must have coinbase as first transaction
-            if block.transactions.is_empty() {
-                return Err(ValidationError::MissingCoinbase);
-            }
-
-            let coinbase = &block.transactions[0];
-            validate_coinbase(coinbase, ctx)?;
-
-            // Validate other transactions (no coinbases after first)
-            for (i, tx) in block.transactions.iter().skip(1).enumerate() {
-                if tx.is_coinbase() {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "transaction {} looks like coinbase",
-                        i + 1
-                    )));
-                }
-                validate_transaction(tx, ctx)?;
-            }
-        }
-        RewardMode::EpochPool => {
-            // Epoch pool mode: validate block rewards (coinbase/epoch_reward rules)
-            validate_block_rewards(block, ctx)?;
-
-            // Validate all transactions
-            for tx in &block.transactions {
-                validate_transaction(tx, ctx)?;
-            }
-        }
+    // 4. Validate all transactions
+    // Note: The old RewardMode-based validation is deprecated. The new weighted
+    // presence reward system uses on-demand ClaimEpochReward transactions.
+    // Blocks no longer require coinbase or automatic EpochReward transactions.
+    for tx in &block.transactions {
+        validate_transaction(tx, ctx)?;
     }
 
     // 5. Check for double spends within block
@@ -620,6 +618,10 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
 }
 
 /// Validate the coinbase transaction
+///
+/// Note: This function is no longer called from validate_block since the automatic
+/// reward distribution system was deprecated. It's kept for backward compatibility.
+#[allow(dead_code)]
 fn validate_coinbase(tx: &Transaction, ctx: &ValidationContext) -> Result<(), ValidationError> {
     // Must have no inputs
     if !tx.inputs.is_empty() {
@@ -649,6 +651,13 @@ fn validate_coinbase(tx: &Transaction, ctx: &ValidationContext) -> Result<(), Va
 
 /// Calculate expected epoch rewards for the given blocks.
 ///
+/// # Deprecated
+///
+/// This function is deprecated as part of Milestone 10 (Remove Old Reward System).
+/// The automatic epoch reward distribution system has been replaced with weighted
+/// presence rewards using ClaimEpochReward transactions. Use the new
+/// `crate::rewards::WeightedRewardCalculator` instead.
+///
 /// This is the deterministic reward calculation algorithm used by both
 /// block producers and validators to ensure consistency. Given the same
 /// blocks, any node will calculate exactly the same rewards.
@@ -662,8 +671,12 @@ fn validate_coinbase(tx: &Transaction, ctx: &ValidationContext) -> Result<(), Va
 /// # Returns
 /// Vector of (producer_pubkey, reward_amount) pairs, sorted by pubkey for determinism.
 /// Empty vector if no blocks were produced in the epoch.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use crate::rewards::WeightedRewardCalculator instead"
+)]
 pub fn calculate_expected_epoch_rewards(
-    epoch: u64,
+    _epoch: u64,
     blocks: &[Block],
     current_height: BlockHeight,
     params: &ConsensusParams,
@@ -727,6 +740,12 @@ pub fn calculate_expected_epoch_rewards(
 
 /// Determine which epoch (if any) needs reward distribution at the current slot.
 ///
+/// # Deprecated
+///
+/// This function is deprecated as part of Milestone 10 (Remove Old Reward System).
+/// The automatic epoch reward distribution system has been replaced with weighted
+/// presence rewards using ClaimEpochReward transactions.
+///
 /// Returns `Some(epoch)` if rewards for that epoch should be included in a block
 /// at the given slot, or `None` if no rewards are due.
 ///
@@ -737,6 +756,10 @@ pub fn calculate_expected_epoch_rewards(
 /// the case where nodes start running after the genesis timestamp, leaving
 /// earlier epochs empty. The function scans forward from `last_rewarded + 1`
 /// to find the first epoch that actually contains blocks.
+#[deprecated(
+    since = "0.1.0",
+    note = "Automatic epoch rewards replaced by ClaimEpochReward transactions"
+)]
 pub fn epoch_needing_rewards<S: EpochBlockSource>(
     current_slot: u32,
     params: &ConsensusParams,
@@ -780,11 +803,18 @@ pub fn epoch_needing_rewards<S: EpochBlockSource>(
 
 /// Validate block reward transactions for epoch distribution mode.
 ///
+/// # Deprecated
+///
+/// This function is deprecated as part of Milestone 10 (Remove Old Reward System).
+/// The automatic epoch reward distribution system has been replaced with weighted
+/// presence rewards using ClaimEpochReward transactions.
+///
 /// In EpochPool mode:
 /// - At epoch boundary: expect EpochReward txs, NO coinbase
 /// - Non-boundary: NO rewards at all (pool accumulates)
 ///
 /// In DirectCoinbase mode: this function does nothing (handled by validate_coinbase).
+#[allow(dead_code)]
 fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), ValidationError> {
     // Only applies to EpochPool mode
     if ctx.params.reward_mode != RewardMode::EpochPool {
@@ -856,6 +886,12 @@ fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), 
 
 /// Validate block rewards with exact distribution verification.
 ///
+/// # Deprecated
+///
+/// This function is deprecated as part of Milestone 10 (Remove Old Reward System).
+/// The automatic epoch reward distribution system has been replaced with weighted
+/// presence rewards using ClaimEpochReward transactions.
+///
 /// This is the strict validation mode that verifies each producer receives
 /// exactly their proportional share of rewards based on blocks produced.
 ///
@@ -878,6 +914,10 @@ fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), 
 ///
 /// At non-boundary:
 /// - Block MUST NOT contain any reward transactions
+#[deprecated(
+    since = "0.1.0",
+    note = "Automatic epoch rewards replaced by ClaimEpochReward transactions"
+)]
 pub fn validate_block_rewards_exact<S: EpochBlockSource>(
     block: &Block,
     ctx: &ValidationContext,
@@ -889,7 +929,7 @@ pub fn validate_block_rewards_exact<S: EpochBlockSource>(
     }
 
     let slot = block.header.slot;
-    let slots_per_epoch = ctx.params.slots_per_reward_epoch as u64;
+    let _slots_per_epoch = ctx.params.slots_per_reward_epoch as u64;
 
     // Determine if this block should include epoch rewards
     let epoch_to_reward = match epoch_needing_rewards(slot, &ctx.params, source) {
@@ -1687,41 +1727,22 @@ fn validate_claim_withdrawal_data(tx: &Transaction) -> Result<(), ValidationErro
 /// - Must have exactly one output
 /// - Output must be Normal type
 /// - Must have valid EpochRewardData
-fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
-    use crate::transaction::EpochRewardData;
-
-    // Must have no inputs (minted)
-    if !tx.inputs.is_empty() {
-        return Err(ValidationError::InvalidEpochReward(
-            "epoch reward must have no inputs".to_string(),
-        ));
-    }
-
-    // Must have exactly one output
-    if tx.outputs.len() != 1 {
-        return Err(ValidationError::InvalidEpochReward(
-            "epoch reward must have exactly one output".to_string(),
-        ));
-    }
-
-    // Output must be Normal type
-    if tx.outputs[0].output_type != OutputType::Normal {
-        return Err(ValidationError::InvalidEpochReward(
-            "epoch reward output must be Normal type".to_string(),
-        ));
-    }
-
-    // Must have valid EpochRewardData
-    let _epoch_data = EpochRewardData::from_bytes(&tx.extra_data).ok_or_else(|| {
-        ValidationError::InvalidEpochReward("invalid epoch reward data".to_string())
-    })?;
-
-    // Note: Block-level validation (in Milestone 4) will also verify:
-    // - Epoch number matches current epoch
-    // - Only valid at epoch boundaries
-    // - Total distributed equals expected pool
-
-    Ok(())
+///
+/// DEPRECATED: This transaction type is no longer accepted.
+/// The automatic epoch reward distribution system has been replaced with
+/// weighted presence rewards using ClaimEpochReward transactions.
+/// Producers should use ClaimEpochReward to claim their accumulated rewards.
+fn validate_epoch_reward_data(_tx: &Transaction) -> Result<(), ValidationError> {
+    // EpochReward transactions are deprecated as of Milestone 10.
+    // The old automatic distribution system has been removed in favor of
+    // the new weighted presence reward system where producers claim rewards
+    // on-demand via ClaimEpochReward transactions.
+    //
+    // This transaction type is kept for parsing old blocks only.
+    // New blocks containing EpochReward transactions are rejected.
+    Err(ValidationError::InvalidEpochReward(
+        "EpochReward transactions are deprecated - use ClaimEpochReward instead".to_string(),
+    ))
 }
 
 /// Validate ClaimEpochReward transaction structure.
@@ -1768,6 +1789,153 @@ fn validate_claim_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationEr
     if tx.extra_data.len() < 136 {
         return Err(ValidationError::InvalidClaimEpochReward(
             "claim epoch reward missing signature".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate a ClaimEpochReward transaction with full context.
+///
+/// This performs complete validation including:
+/// - All structural checks from `validate_claim_epoch_reward_data`
+/// - Epoch is complete (current height >= epoch end)
+/// - Epoch not already claimed (using ClaimChecker)
+/// - Producer was registered and present during the epoch
+/// - Claimed amount matches calculated weighted reward
+/// - Signature is valid
+///
+/// # Type Parameters
+///
+/// * `B` - Block source for accessing blocks by height
+/// * `C` - Claim checker for verifying epoch not already claimed
+///
+/// # Arguments
+///
+/// * `tx` - The ClaimEpochReward transaction to validate
+/// * `ctx` - Validation context with consensus params and current state
+/// * `block_source` - Source for accessing blocks by height
+/// * `claim_checker` - Checker for verifying claims
+///
+/// # Errors
+///
+/// Returns `ValidationError::InvalidClaimEpochReward` with specific message if:
+/// - Transaction structure is invalid
+/// - Epoch is not yet complete
+/// - Epoch was already claimed by this producer
+/// - Producer was not present during the epoch
+/// - Claimed amount doesn't match calculated reward
+/// - Signature verification fails
+pub fn validate_claim_epoch_reward<B, C>(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+    block_source: &B,
+    claim_checker: &C,
+) -> Result<(), ValidationError>
+where
+    B: crate::rewards::BlockSource,
+    C: ClaimChecker,
+{
+    use crate::consensus::reward_epoch;
+    use crate::rewards::WeightedRewardCalculator;
+    use crate::transaction::ClaimEpochRewardData;
+
+    // 1. STRUCTURAL VALIDATION
+    // (Already done by validate_transaction -> validate_claim_epoch_reward_data,
+    // but we re-check for standalone use)
+    if tx.tx_type != TxType::ClaimEpochReward {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "not a ClaimEpochReward transaction".to_string(),
+        ));
+    }
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim must have no inputs".to_string(),
+        ));
+    }
+    if tx.outputs.len() != 1 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim must have exactly one output".to_string(),
+        ));
+    }
+    if tx.extra_data.len() < 136 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim data too short".to_string(),
+        ));
+    }
+
+    // 2. PARSE CLAIM DATA
+    let claim_data = ClaimEpochRewardData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidClaimEpochReward("invalid claim data format".to_string())
+    })?;
+
+    // Parse signature (bytes 72-135)
+    let signature_bytes: [u8; 64] = tx.extra_data[72..136]
+        .try_into()
+        .map_err(|_| ValidationError::InvalidClaimEpochReward("invalid signature".to_string()))?;
+    let signature = crypto::Signature::from_bytes(signature_bytes);
+
+    // 3. VERIFY EPOCH IS COMPLETE
+    let current_epoch = reward_epoch::from_height(ctx.current_height);
+    if !reward_epoch::is_complete(claim_data.epoch, ctx.current_height) {
+        return Err(ValidationError::InvalidClaimEpochReward(format!(
+            "epoch {} is not complete (current epoch: {})",
+            claim_data.epoch, current_epoch
+        )));
+    }
+
+    // 4. VERIFY NOT ALREADY CLAIMED
+    if claim_checker.is_claimed(&claim_data.producer_pubkey, claim_data.epoch) {
+        return Err(ValidationError::InvalidClaimEpochReward(format!(
+            "epoch {} already claimed by this producer",
+            claim_data.epoch
+        )));
+    }
+
+    // 5. VERIFY PRODUCER IS REGISTERED
+    // Find producer index in the sorted producer set
+    let producer_index = ctx
+        .active_producers
+        .iter()
+        .position(|p| p == &claim_data.producer_pubkey)
+        .ok_or_else(|| {
+            ValidationError::InvalidClaimEpochReward("producer not registered".to_string())
+        })?;
+
+    // 6. CALCULATE EXPECTED REWARD
+    let calculator = WeightedRewardCalculator::new(block_source, &ctx.params);
+    let calculation = calculator
+        .calculate_producer_reward(&claim_data.producer_pubkey, producer_index, claim_data.epoch)
+        .map_err(|e| ValidationError::InvalidClaimEpochReward(format!("reward calculation failed: {}", e)))?;
+
+    // 7. VERIFY PRODUCER WAS PRESENT
+    if calculation.blocks_present == 0 {
+        return Err(ValidationError::InvalidClaimEpochReward(format!(
+            "producer had no presence in epoch {}",
+            claim_data.epoch
+        )));
+    }
+
+    // 8. VERIFY AMOUNT MATCHES
+    let claimed_amount = tx.outputs[0].amount;
+    if claimed_amount != calculation.reward_amount {
+        return Err(ValidationError::InvalidClaimEpochReward(format!(
+            "incorrect claim amount: claimed {} but calculated {}",
+            claimed_amount, calculation.reward_amount
+        )));
+    }
+
+    // 9. VERIFY SIGNATURE
+    let signing_message = claim_data.signing_message(claimed_amount);
+    crypto::signature::verify_hash(&signing_message, &signature, &claim_data.producer_pubkey)
+        .map_err(|_| {
+            ValidationError::InvalidClaimEpochReward("invalid signature".to_string())
+        })?;
+
+    // 10. VERIFY OUTPUT RECIPIENT
+    if tx.outputs[0].pubkey_hash != claim_data.recipient_hash {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "output recipient doesn't match claim data".to_string(),
         ));
     }
 
@@ -3276,6 +3444,8 @@ mod tests {
 
     #[test]
     fn test_validate_epoch_reward_valid() {
+        // Note: EpochReward transactions are deprecated as of Milestone 10.
+        // This test now verifies that they are rejected.
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
@@ -3283,12 +3453,19 @@ mod tests {
         let ctx = test_context();
         let result = validate_transaction(&tx, &ctx);
 
-        // Should pass basic validation (block-level validation is separate)
-        assert!(result.is_ok());
+        // EpochReward transactions are now rejected - use ClaimEpochReward instead
+        assert!(result.is_err());
+        if let Err(ValidationError::InvalidEpochReward(msg)) = result {
+            assert!(msg.contains("deprecated"));
+        } else {
+            panic!("Expected InvalidEpochReward error");
+        }
     }
 
     #[test]
     fn test_epoch_reward_skips_utxo_validation() {
+        // Note: EpochReward transactions are deprecated as of Milestone 10.
+        // This test now verifies that they are rejected.
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
@@ -3296,9 +3473,9 @@ mod tests {
         let ctx = test_context();
         let utxo_provider = MockUtxoProvider::new(); // Empty UTXO set
 
-        // Should pass even with no UTXOs (it's minted, like coinbase)
+        // EpochReward transactions are now rejected - use ClaimEpochReward instead
         let result = validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     // ==========================================================================
@@ -3855,6 +4032,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_missing_rewards() {
         let params = ConsensusParams::mainnet();
         let boundary_slot = params.slots_per_reward_epoch;
@@ -3932,6 +4110,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_wrong_amount() {
         let params = ConsensusParams::mainnet();
         let boundary_slot = params.slots_per_reward_epoch;
@@ -3976,6 +4155,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_wrong_recipient() {
         let params = ConsensusParams::mainnet();
         let boundary_slot = params.slots_per_reward_epoch;
@@ -4239,6 +4419,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_over_distribution() {
         // Test rejection of rewards that exceed expected amounts
         let params = ConsensusParams::mainnet();
@@ -4288,6 +4469,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_under_distribution() {
         // Test rejection of rewards that are less than expected
         let params = ConsensusParams::mainnet();
@@ -4337,6 +4519,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_partial_producer_list() {
         // Test rejection when some producers are missing from rewards
         let params = ConsensusParams::mainnet();
@@ -4395,6 +4578,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_extra_reward_tx() {
         // Test rejection when block has more reward transactions than expected
         let params = ConsensusParams::mainnet();
@@ -4447,5 +4631,432 @@ mod tests {
             "Should reject extra reward transaction: {:?}",
             result
         );
+    }
+
+    // =========================================================================
+    // CLAIM EPOCH REWARD VALIDATION TESTS
+    // =========================================================================
+
+    /// Mock block source for claim validation tests.
+    struct MockClaimBlockSource {
+        blocks: HashMap<u64, Block>,
+    }
+
+    impl MockClaimBlockSource {
+        fn new() -> Self {
+            Self {
+                blocks: HashMap::new(),
+            }
+        }
+
+        fn add_block(&mut self, height: u64, block: Block) {
+            self.blocks.insert(height, block);
+        }
+    }
+
+    impl crate::rewards::BlockSource for MockClaimBlockSource {
+        fn get_block_by_height(
+            &self,
+            height: u64,
+        ) -> Result<Option<Block>, crate::rewards::RewardError> {
+            Ok(self.blocks.get(&height).cloned())
+        }
+    }
+
+    /// Mock claim checker for testing.
+    struct MockClaimChecker {
+        claimed: std::collections::HashSet<(Vec<u8>, u64)>,
+    }
+
+    impl MockClaimChecker {
+        fn new() -> Self {
+            Self {
+                claimed: std::collections::HashSet::new(),
+            }
+        }
+
+        fn mark_claimed(&mut self, producer: &PublicKey, epoch: u64) {
+            self.claimed.insert((producer.as_bytes().to_vec(), epoch));
+        }
+    }
+
+    impl ClaimChecker for MockClaimChecker {
+        fn is_claimed(&self, producer: &PublicKey, epoch: u64) -> bool {
+            self.claimed.contains(&(producer.as_bytes().to_vec(), epoch))
+        }
+    }
+
+    /// Create a test block with presence commitment for claim tests.
+    fn create_claim_test_block(
+        producer_count: usize,
+        present_indices: &[usize],
+        weights: Vec<crate::Amount>,
+    ) -> Block {
+        use crate::presence::PresenceCommitment;
+        use vdf::{VdfOutput, VdfProof};
+
+        let header = crate::BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            timestamp: 0,
+            slot: 0,
+            producer: PublicKey::from_bytes([0u8; 32]),
+            vdf_output: VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: VdfProof { pi: vec![] },
+        };
+
+        let presence =
+            PresenceCommitment::new(producer_count, present_indices, weights, Hash::ZERO);
+
+        Block::new_with_presence(header, vec![], presence)
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_accepts_valid_claim() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        // Create blocks for epoch 0 with the producer present
+        let mut source = MockClaimBlockSource::new();
+        for height in 0..BLOCKS_PER_REWARD_EPOCH {
+            let block = create_claim_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        // Create context at height where epoch 0 is complete
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10, // Past epoch boundary
+        )
+        .with_producers(vec![producer.clone()]);
+
+        // Calculate expected reward
+        let calculator = crate::rewards::WeightedRewardCalculator::new(&source, &params);
+        let calculation = calculator
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+        let expected_amount = calculation.reward_amount;
+        assert!(expected_amount > 0);
+
+        // Create claim data and sign
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(expected_amount);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        // Create transaction
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            expected_amount,
+            recipient_hash,
+            signature,
+        );
+
+        // Validate
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        assert!(result.is_ok(), "Valid claim should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_incomplete_epoch() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        let source = MockClaimBlockSource::new();
+
+        // Create context where epoch 0 is NOT complete
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 1000,
+            BLOCKS_PER_REWARD_EPOCH - 10, // Before epoch boundary
+        )
+        .with_producers(vec![producer.clone()]);
+
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(1000);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("not complete") => {}
+            _ => panic!("Should reject incomplete epoch: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_double_claim() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        let mut source = MockClaimBlockSource::new();
+        for height in 0..BLOCKS_PER_REWARD_EPOCH {
+            let block = create_claim_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10,
+        )
+        .with_producers(vec![producer.clone()]);
+
+        // Mark as already claimed
+        let mut claim_checker = MockClaimChecker::new();
+        claim_checker.mark_claimed(&producer, 0);
+
+        let calculator = crate::rewards::WeightedRewardCalculator::new(&source, &params);
+        let calculation = calculator
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(calculation.reward_amount);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            calculation.reward_amount,
+            recipient_hash,
+            signature,
+        );
+
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("already claimed") => {}
+            _ => panic!("Should reject double claim: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_wrong_amount() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        let mut source = MockClaimBlockSource::new();
+        for height in 0..BLOCKS_PER_REWARD_EPOCH {
+            let block = create_claim_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10,
+        )
+        .with_producers(vec![producer.clone()]);
+
+        // Use wrong amount (too high)
+        let wrong_amount = 999_999_999_999u64;
+
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(wrong_amount);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            wrong_amount,
+            recipient_hash,
+            signature,
+        );
+
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("incorrect claim amount") => {}
+            _ => panic!("Should reject wrong amount: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_non_present_producer() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        // Create blocks where producer is NOT present (empty presence)
+        let mut source = MockClaimBlockSource::new();
+        for height in 0..BLOCKS_PER_REWARD_EPOCH {
+            let block = create_claim_test_block(1, &[], vec![]); // No one present
+            source.add_block(height, block);
+        }
+
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10,
+        )
+        .with_producers(vec![producer.clone()]);
+
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(1000);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("no presence") => {}
+            _ => panic!("Should reject non-present producer: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_invalid_signature() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        let mut source = MockClaimBlockSource::new();
+        for height in 0..BLOCKS_PER_REWARD_EPOCH {
+            let block = create_claim_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10,
+        )
+        .with_producers(vec![producer.clone()]);
+
+        let calculator = crate::rewards::WeightedRewardCalculator::new(&source, &params);
+        let calculation = calculator
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+
+        // Sign with wrong keypair
+        let wrong_keypair = crypto::KeyPair::generate();
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(calculation.reward_amount);
+        let wrong_signature = crypto::signature::sign_hash(&signing_msg, wrong_keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            calculation.reward_amount,
+            recipient_hash,
+            wrong_signature,
+        );
+
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("invalid signature") => {}
+            _ => panic!("Should reject invalid signature: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_validate_claim_epoch_reward_rejects_unregistered_producer() {
+        use crate::consensus::BLOCKS_PER_REWARD_EPOCH;
+
+        let keypair = crypto::KeyPair::generate();
+        let producer = keypair.public_key().clone();
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer.as_bytes());
+
+        let source = MockClaimBlockSource::new();
+
+        // Create context with different active producers (not including our producer)
+        let other_keypair = crypto::KeyPair::generate();
+        let params = ConsensusParams::mainnet();
+        let ctx = ValidationContext::new(
+            params.clone(),
+            Network::Mainnet,
+            GENESIS_TIME + 4000,
+            BLOCKS_PER_REWARD_EPOCH + 10,
+        )
+        .with_producers(vec![other_keypair.public_key().clone()]); // Producer not included
+
+        let claim_data =
+            crate::transaction::ClaimEpochRewardData::new(0, producer.clone(), recipient_hash);
+        let signing_msg = claim_data.signing_message(1000);
+        let signature = crypto::signature::sign_hash(&signing_msg, keypair.private_key());
+
+        let tx = Transaction::new_claim_epoch_reward(
+            0,
+            producer.clone(),
+            1000,
+            recipient_hash,
+            signature,
+        );
+
+        let claim_checker = MockClaimChecker::new();
+        let result = validate_claim_epoch_reward(&tx, &ctx, &source, &claim_checker);
+
+        match &result {
+            Err(ValidationError::InvalidClaimEpochReward(msg)) if msg.contains("not registered") => {}
+            _ => panic!("Should reject unregistered producer: {:?}", result),
+        }
     }
 }

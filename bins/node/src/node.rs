@@ -16,8 +16,7 @@ use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, construct_vdf_input, select_producer_for_slot, ConsensusParams, RewardMode,
-    UNBONDING_PERIOD,
+    self, construct_vdf_input, select_producer_for_slot, ConsensusParams, UNBONDING_PERIOD,
 };
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
@@ -32,13 +31,14 @@ use network::{
     ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
-use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
+use storage::{BlockStore, ChainState, ClaimRecord, ClaimRegistry, ProducerSet, UtxoSet};
 use updater::is_using_placeholder_keys;
 
 use crate::updater as node_updater;
 use vdf::{VdfOutput, VdfProof};
 
 use crate::config::NodeConfig;
+use crate::heartbeat_pool::HeartbeatPool;
 use crate::producer::SignedSlotsDb;
 
 /// The main node struct
@@ -95,6 +95,10 @@ pub struct Node {
     signed_slots_db: Option<SignedSlotsDb>,
     /// Blocks applied since last state save (for periodic persistence)
     blocks_since_save: u64,
+    /// Heartbeat pool for collecting presence proofs
+    heartbeat_pool: HeartbeatPool,
+    /// Claim registry for tracking epoch reward claims
+    claim_registry: Arc<RwLock<ClaimRegistry>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -194,6 +198,11 @@ impl Node {
             Arc::new(RwLock::new(set))
         };
 
+        // Load or create claim registry
+        let claims_path = config.data_dir.join("claims.bin");
+        let claim_registry = ClaimRegistry::load(&claims_path)?;
+        let claim_registry = Arc::new(RwLock::new(claim_registry));
+
         // Create mempool
         let mempool_policy = match config.network {
             Network::Mainnet => MempoolPolicy::mainnet(),
@@ -276,6 +285,8 @@ impl Node {
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
             blocks_since_save: 0,
+            heartbeat_pool: HeartbeatPool::new(),
+            claim_registry,
         })
     }
 
@@ -431,6 +442,7 @@ impl Node {
         )
         .with_network(self.config.network.name().to_string())
         .with_producer_set(self.producer_set.clone())
+        .with_claim_registry(self.claim_registry.clone())
         .with_sync_status(sync_status_fn);
 
         let server = RpcServer::new(rpc_config, context);
@@ -1267,6 +1279,34 @@ impl Node {
             }
         }
 
+        // Rebuild claim registry to match common ancestor state
+        {
+            let mut claim_registry = self.claim_registry.write().await;
+            // Create fresh registry and re-apply all claims from genesis to common ancestor
+            *claim_registry = ClaimRegistry::new();
+            for height in 1..=target_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    for tx in &block.transactions {
+                        if tx.tx_type == TxType::ClaimEpochReward {
+                            if let Some(claim_data) = tx.claim_epoch_reward_data() {
+                                let record = ClaimRecord::new(
+                                    tx.hash(),
+                                    height,
+                                    tx.outputs.first().map(|o| o.amount).unwrap_or(0),
+                                    block.header.timestamp,
+                                );
+                                let _ = claim_registry.mark_claimed(
+                                    &claim_data.producer_pubkey,
+                                    claim_data.epoch,
+                                    record,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Now apply the new blocks through normal path
         info!("Applying {} new blocks from fork", new_blocks.len());
         for block in new_blocks {
@@ -1427,6 +1467,7 @@ impl Node {
         {
             let mut utxo = self.utxo_set.write().await;
             let mut producers = self.producer_set.write().await;
+            let mut claim_registry = self.claim_registry.write().await;
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
                 // Apply UTXO changes
@@ -1504,6 +1545,40 @@ impl Node {
                         }
                     }
                 }
+
+                // Process epoch reward claim transactions
+                if tx.tx_type == TxType::ClaimEpochReward {
+                    if let Some(claim_data) = tx.claim_epoch_reward_data() {
+                        // Create claim record
+                        let record = ClaimRecord::new(
+                            tx.hash(),
+                            height,
+                            tx.outputs.first().map(|o| o.amount).unwrap_or(0),
+                            block.header.timestamp,
+                        );
+
+                        // Mark as claimed in registry
+                        if let Err(e) = claim_registry.mark_claimed(
+                            &claim_data.producer_pubkey,
+                            claim_data.epoch,
+                            record,
+                        ) {
+                            warn!(
+                                "Failed to record epoch claim for producer {} epoch {}: {}",
+                                crypto_hash(claim_data.producer_pubkey.as_bytes()),
+                                claim_data.epoch,
+                                e
+                            );
+                        } else {
+                            info!(
+                                "Recorded epoch {} claim for producer {} ({} DOLI)",
+                                claim_data.epoch,
+                                &crypto_hash(claim_data.producer_pubkey.as_bytes()).to_hex()[..16],
+                                tx.outputs.first().map(|o| o.amount / UNITS_PER_COIN).unwrap_or(0)
+                            );
+                        }
+                    }
+                }
             }
 
             // Process completed unbonding periods
@@ -1512,23 +1587,6 @@ impl Node {
                 info!(
                     "Producer {} completed unbonding, bond released",
                     crypto_hash(producer.public_key.as_bytes())
-                );
-            }
-        }
-
-        // Track known producers for round-robin scheduling
-        // (Epoch rewards will be calculated from BlockStore in Milestone 3)
-        if self.params.reward_mode == RewardMode::EpochPool {
-            let block_producer = block.header.producer.clone();
-            let mut known = self.known_producers.write().await;
-            if !known.contains(&block_producer) {
-                known.push(block_producer.clone());
-                // Keep sorted for deterministic ordering
-                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                info!(
-                    "New producer discovered: {} (now {} known)",
-                    &crypto_hash(block_producer.as_bytes()).to_hex()[..16],
-                    known.len()
                 );
             }
         }
@@ -2083,13 +2141,9 @@ impl Node {
         let mut builder = BlockBuilder::new(prev_hash, prev_slot, our_pubkey.clone())
             .with_params(self.params.clone());
 
-        // Add coinbase transaction only for DirectCoinbase mode
-        let pubkey_hash = crypto_hash(our_pubkey.as_bytes());
-        if self.params.reward_mode == RewardMode::DirectCoinbase {
-            builder.add_coinbase(height, pubkey_hash);
-        }
-
         // Add transactions from mempool
+        // Note: No coinbase transaction - rewards are claimed via ClaimEpochReward
+        // transactions using the new weighted presence reward system.
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(100) // Up to 100 tx per block
@@ -2174,49 +2228,26 @@ impl Node {
             vdf_proof,
         };
 
-        // Create the full block with transactions based on reward mode
-        let mut transactions = Vec::new();
+        // Collect transactions from mempool
+        // Note: No automatic coinbase or epoch reward transactions - the new weighted
+        // presence reward system uses on-demand ClaimEpochReward transactions that
+        // producers submit when they want to claim their accumulated rewards.
+        let transactions = mempool_txs;
 
-        match self.params.reward_mode {
-            RewardMode::DirectCoinbase => {
-                // Legacy mode: create coinbase directly
-                transactions.push(Transaction::new_coinbase(
-                    self.params.block_reward(height),
-                    pubkey_hash,
-                    height,
-                ));
-            }
-            RewardMode::EpochPool => {
-                // Pool-first mode: rewards calculated from BlockStore at epoch boundaries
-                // Check if we need to distribute rewards for a completed epoch
-                if let Some(epoch_to_reward) = self.should_include_epoch_rewards(current_slot) {
-                    match self.calculate_epoch_rewards(epoch_to_reward, height) {
-                        Ok(epoch_txs) => {
-                            info!(
-                                "Including {} epoch reward transactions for epoch {}",
-                                epoch_txs.len(),
-                                epoch_to_reward
-                            );
-                            transactions.extend(epoch_txs);
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to calculate epoch {} rewards: {:?}",
-                                epoch_to_reward, e
-                            );
-                            // Continue without rewards - validation will catch if this is wrong
-                        }
-                    }
-                }
-            }
-        }
-
-        transactions.extend(mempool_txs);
+        // Build presence commitment from collected heartbeats
+        //
+        // The presence commitment records which producers submitted valid heartbeat
+        // proofs during this slot. This data is used for weighted presence rewards.
+        //
+        // Currently, heartbeat gossip is not yet implemented, so we only mark the
+        // block producer as present (they are definitionally present to produce).
+        // Full heartbeat collection will be added when network gossip is integrated.
+        let presence = self.build_presence_commitment(&our_pubkey, current_slot, &prev_hash).await;
 
         let block = Block {
             header: final_header,
             transactions,
-            presence: None, // TODO: Add presence commitment from heartbeats (Milestone 8)
+            presence: Some(presence),
         };
 
         let block_hash = block.hash();
@@ -2236,6 +2267,94 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Build presence commitment for a block
+    ///
+    /// Collects valid heartbeats from the heartbeat pool and builds a presence
+    /// commitment that records which producers were present during this slot.
+    ///
+    /// Currently, this marks only the block producer as present since full
+    /// heartbeat gossip integration is pending. When heartbeat gossip is added,
+    /// this will include all producers with valid witnessed heartbeats.
+    async fn build_presence_commitment(
+        &mut self,
+        our_pubkey: &PublicKey,
+        current_slot: u32,
+        prev_hash: &Hash,
+    ) -> doli_core::presence::PresenceCommitment {
+        // Get active producers and their bond weights
+        let (active_producers, bond_weights) = {
+            let producers = self.producer_set.read().await;
+            let active: Vec<PublicKey> = producers
+                .active_producers()
+                .iter()
+                .map(|p| p.public_key.clone())
+                .collect();
+
+            let weights: std::collections::HashMap<PublicKey, u64> = producers
+                .active_producers()
+                .iter()
+                .map(|p| (p.public_key.clone(), p.bond_amount))
+                .collect();
+
+            (active, weights)
+        };
+
+        // Sort producers by pubkey for deterministic ordering
+        let mut sorted_producers = active_producers.clone();
+        sorted_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        // Reset heartbeat pool for current slot
+        self.heartbeat_pool.reset_for_slot(
+            current_slot,
+            *prev_hash,
+            sorted_producers.clone(),
+            bond_weights.clone(),
+        );
+
+        // Currently, heartbeat collection from the network is not implemented.
+        // For now, we mark the block producer as present (they must be present to produce).
+        // This ensures presence tracking works correctly even before heartbeat gossip is added.
+        //
+        // Future milestone: Add heartbeat gossip to network layer and collect heartbeats
+        // from all producers during the slot.
+
+        // Find producer index in sorted list
+        let producer_index = sorted_producers
+            .iter()
+            .position(|p| p == our_pubkey);
+
+        if let Some(idx) = producer_index {
+            // Mark block producer as present with their bond weight
+            let weight = bond_weights.get(our_pubkey).copied().unwrap_or(0);
+
+            if weight > 0 {
+                // Build presence with just the block producer
+                // The merkle root is zero since we don't have actual heartbeat data yet
+                let present_indices = vec![idx];
+                let weights = vec![weight];
+
+                debug!(
+                    "Building presence: producer at index {} with weight {} (slot {})",
+                    idx, weight, current_slot
+                );
+
+                return doli_core::presence::PresenceCommitment::new(
+                    sorted_producers.len(),
+                    &present_indices,
+                    weights,
+                    Hash::ZERO, // Placeholder merkle root until heartbeat gossip is added
+                );
+            }
+        }
+
+        // Fallback: If producer not found or has no weight, return empty presence
+        // This shouldn't happen in normal operation
+        debug!(
+            "Building empty presence commitment (producer not in active set or no weight)"
+        );
+        doli_core::presence::PresenceCommitment::empty()
     }
 
     /// Handle a detected equivocation (double signing)
@@ -2360,236 +2479,6 @@ impl Node {
         self.mempool.read().await.len()
     }
 
-    // =========================================================================
-    // Milestone 3: Deterministic Epoch Reward Calculation
-    // =========================================================================
-
-    /// Determine if epoch rewards should be included in the current block.
-    ///
-    /// Returns `Some(epoch)` if rewards for that epoch should be distributed,
-    /// or `None` if no rewards are due.
-    ///
-    /// This is fully deterministic - any node can independently verify which
-    /// epoch needs rewards by scanning the BlockStore.
-    ///
-    /// **Empty Epoch Handling**: Epochs with no blocks are skipped. This handles
-    /// the case where nodes start running after the genesis timestamp, leaving
-    /// earlier epochs empty. The function scans forward from `last_rewarded + 1`
-    /// to find the first epoch that actually contains blocks.
-    fn should_include_epoch_rewards(&self, current_slot: u32) -> Option<u64> {
-        let slots_per_epoch = self.params.slots_per_reward_epoch as u64;
-
-        // Skip epoch 0 boundary (slot 0 is genesis, can't distribute before epoch 0 ends)
-        if current_slot == 0 {
-            debug!("[REWARD_DEBUG] Skipping rewards: current_slot=0 (genesis)");
-            return None;
-        }
-
-        let current_epoch = current_slot as u64 / slots_per_epoch;
-
-        // Get the last epoch that received rewards from BlockStore
-        let last_rewarded = match self.block_store.get_last_rewarded_epoch() {
-            Ok(epoch) => epoch,
-            Err(e) => {
-                warn!("Failed to get last rewarded epoch: {:?}", e);
-                return None;
-            }
-        };
-
-        // Log reward check on every block production (use info! to ensure visibility)
-        info!(
-            "[REWARD_CHECK] slot={}, epoch={}, last_rewarded={}, slots_per_epoch={}",
-            current_slot, current_epoch, last_rewarded, slots_per_epoch
-        );
-
-        // Periodically log slot index diagnostics (every 60 slots = 10 minutes on testnet)
-        if current_slot % 60 == 0 {
-            if let Ok(count) = self.block_store.count_slot_index_entries() {
-                info!(
-                    "[REWARD_CHECK] Slot index: {} blocks indexed",
-                    count
-                );
-            }
-        }
-
-        // Only finished epochs (< current_epoch) are eligible for rewards
-        if current_epoch <= last_rewarded {
-            info!(
-                "[REWARD_CHECK] Skip: current_epoch({}) <= last_rewarded({})",
-                current_epoch, last_rewarded
-            );
-            return None;
-        }
-
-        // Find the first epoch after last_rewarded that has blocks
-        // This skips empty epochs (e.g., when chain starts after genesis timestamp)
-        let epochs_to_check = current_epoch.saturating_sub(last_rewarded + 1);
-        info!(
-            "[REWARD_CHECK] Scanning {} epochs for blocks (epochs {}..{})",
-            epochs_to_check,
-            last_rewarded + 1,
-            current_epoch
-        );
-
-        for epoch in (last_rewarded + 1)..current_epoch {
-            let start_slot = if epoch == 0 {
-                1u32 // Skip genesis slot
-            } else {
-                (epoch * slots_per_epoch) as u32
-            };
-            let end_slot = ((epoch + 1) * slots_per_epoch) as u32;
-
-            match self.block_store.has_any_block_in_slot_range(start_slot, end_slot) {
-                Ok(true) => {
-                    info!(
-                        "[REWARD_CHECK] FOUND blocks in epoch {}: slots [{}, {})",
-                        epoch, start_slot, end_slot
-                    );
-                    return Some(epoch);
-                }
-                Ok(false) => {
-                    // Log first empty epoch and every 10th
-                    if epoch % 10 == 0 || epoch == last_rewarded + 1 {
-                        info!(
-                            "[REWARD_CHECK] Epoch {} empty: slots [{}, {})",
-                            epoch, start_slot, end_slot
-                        );
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    warn!("Failed to check epoch {} for blocks: {:?}", epoch, e);
-                    return None;
-                }
-            }
-        }
-
-        // All epochs between last_rewarded and current are empty - no rewards needed
-        info!(
-            "[REWARD_CHECK] All {} epochs empty - no rewards (epochs {}..{})",
-            epochs_to_check,
-            last_rewarded + 1,
-            current_epoch
-        );
-        None
-    }
-
-    /// Calculate epoch rewards for the given epoch.
-    ///
-    /// Scans the BlockStore for all blocks in the epoch, counts blocks per producer,
-    /// and creates proportional reward transactions.
-    ///
-    /// This is fully deterministic - given the same BlockStore, any node will
-    /// calculate exactly the same rewards.
-    fn calculate_epoch_rewards(&self, epoch: u64, current_height: u64) -> Result<Vec<Transaction>> {
-        let slots_per_epoch = self.params.slots_per_reward_epoch;
-
-        // Calculate slot range for this epoch
-        // For epoch 0: start at slot 1 (skip genesis at slot 0)
-        // For epoch N: start at N * slots_per_epoch
-        let start_slot = if epoch == 0 {
-            1u32
-        } else {
-            epoch as u32 * slots_per_epoch
-        };
-        let end_slot = (epoch + 1) as u32 * slots_per_epoch;
-
-        debug!(
-            "Calculating epoch {} rewards: slots {}-{} (exclusive)",
-            epoch, start_slot, end_slot
-        );
-
-        // Get all blocks in this epoch from BlockStore
-        let blocks = self
-            .block_store
-            .get_blocks_in_slot_range(start_slot, end_slot)?;
-
-        // Count blocks per producer (by public key)
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            // Skip null producer (genesis block has zero pubkey)
-            if block.header.producer.as_bytes().iter().all(|&b| b == 0) {
-                continue;
-            }
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        let total_blocks = producer_blocks.values().sum::<u64>();
-        if total_blocks == 0 {
-            debug!("Epoch {} had no blocks - no rewards to distribute", epoch);
-            return Ok(Vec::new());
-        }
-
-        // Calculate block reward (with halving based on current height)
-        let block_reward = self.params.block_reward(current_height);
-
-        // Total pool = blocks_produced × block_reward
-        let total_pool = total_blocks.saturating_mul(block_reward);
-
-        debug!(
-            "Epoch {} pool: {} blocks × {} = {} total",
-            epoch, total_blocks, block_reward, total_pool
-        );
-
-        // Sort producers by public key for deterministic ordering
-        let mut sorted_producers: Vec<_> = producer_blocks.into_iter().collect();
-        sorted_producers.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-
-        // Calculate proportional rewards
-        let mut reward_transactions = Vec::new();
-        let mut distributed = 0u64;
-
-        for (i, (producer_pubkey, blocks_produced)) in sorted_producers.iter().enumerate() {
-            let is_last = i == sorted_producers.len() - 1;
-
-            // Calculate proportional share
-            let share = if is_last {
-                // Last producer gets remainder (rounding dust)
-                total_pool.saturating_sub(distributed)
-            } else {
-                // Proportional: (blocks_produced / total_blocks) * total_pool
-                // Use u128 to avoid overflow in intermediate calculation
-                let share =
-                    ((*blocks_produced as u128) * (total_pool as u128)) / (total_blocks as u128);
-                share as u64
-            };
-
-            if share > 0 {
-                // Use domain-separated hash for address to match wallet format
-                let recipient_hash =
-                    hash_with_domain(ADDRESS_DOMAIN, producer_pubkey.as_bytes());
-                let tx = Transaction::new_epoch_reward(
-                    epoch,
-                    producer_pubkey.clone(),
-                    share,
-                    recipient_hash,
-                );
-                reward_transactions.push(tx);
-                distributed += share;
-
-                debug!(
-                    "Epoch {} reward: producer {} gets {} ({} blocks)",
-                    epoch,
-                    &recipient_hash.to_hex()[..16],
-                    share,
-                    blocks_produced
-                );
-            }
-        }
-
-        info!(
-            "Epoch {} rewards: {} DOLI to {} producers ({} blocks)",
-            epoch,
-            total_pool / UNITS_PER_COIN,
-            reward_transactions.len(),
-            total_blocks
-        );
-
-        Ok(reward_transactions)
-    }
-
     /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
     ///
     /// This provides crash resilience by persisting state to disk without
@@ -2621,6 +2510,10 @@ impl Node {
         let producers_path = self.config.data_dir.join("producers.bin");
         self.producer_set.read().await.save(&producers_path)?;
 
+        // Save claim registry
+        let claims_path = self.config.data_dir.join("claims.bin");
+        self.claim_registry.read().await.save(&claims_path)?;
+
         debug!("Node state saved");
         Ok(())
     }
@@ -2640,889 +2533,7 @@ impl Node {
     }
 }
 
-// =============================================================================
-// Milestone 3: Unit Tests for Deterministic Epoch Reward Calculation
-// =============================================================================
-
-#[cfg(test)]
-mod epoch_reward_tests {
-    use super::*;
-    use crypto::{KeyPair, PublicKey};
-    use doli_core::consensus::ConsensusParams;
-    use doli_core::{Block, BlockHeader, Network};
-    use storage::BlockStore;
-    use tempfile::TempDir;
-    use vdf::{VdfOutput, VdfProof};
-
-    /// Test helper: Create a BlockStore in a temporary directory
-    fn create_test_store() -> (Arc<BlockStore>, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
-        let store = Arc::new(BlockStore::open(temp_dir.path()).unwrap());
-        (store, temp_dir)
-    }
-
-    /// Test helper: Create a test block header
-    fn create_test_header(slot: u32, producer: &PublicKey) -> BlockHeader {
-        BlockHeader {
-            version: 1,
-            prev_hash: Hash::ZERO,
-            merkle_root: Hash::ZERO,
-            timestamp: 1000 + slot as u64 * 10,
-            slot,
-            producer: producer.clone(),
-            vdf_output: VdfOutput { value: Vec::new() },
-            vdf_proof: VdfProof::empty(),
-        }
-    }
-
-    /// Test helper: Create a block with no transactions
-    fn create_test_block(slot: u32, producer: &PublicKey) -> Block {
-        Block::new(create_test_header(slot, producer), vec![])
-    }
-
-    /// Test helper: Create a block with an EpochReward transaction
-    fn create_epoch_reward_block(slot: u32, producer: &PublicKey, epoch: u64) -> Block {
-        let epoch_reward_tx = Transaction::new_epoch_reward(
-            epoch,
-            producer.clone(),
-            100_000_000,
-            hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes()),
-        );
-        Block::new(create_test_header(slot, producer), vec![epoch_reward_tx])
-    }
-
-    /// Test helper: Calculate expected share for proportional distribution
-    fn calculate_expected_share(blocks: u64, total_blocks: u64, total_pool: u64) -> u64 {
-        ((blocks as u128 * total_pool as u128) / total_blocks as u128) as u64
-    }
-
-    // =========================================================================
-    // should_include_epoch_rewards tests
-    // Using Devnet (30 slots/epoch) for faster tests
-    // =========================================================================
-
-    #[test]
-    fn test_should_include_rewards_slot_zero() {
-        // Slot 0 is genesis - never distribute rewards
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-
-        // Manually call the logic (without Node instance)
-        let current_slot = 0u32;
-        let slots_per_epoch = params.slots_per_reward_epoch as u64;
-        let current_epoch = current_slot as u64 / slots_per_epoch;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        // At slot 0, we're in epoch 0 and last_rewarded is 0
-        // current_epoch (0) is NOT > last_rewarded (0), so no rewards
-        assert_eq!(current_epoch, 0);
-        assert_eq!(last_rewarded, 0);
-        assert!(
-            !(current_epoch > last_rewarded),
-            "Slot 0 should not trigger rewards"
-        );
-    }
-
-    #[test]
-    fn test_should_include_rewards_first_epoch_boundary() {
-        // At first slot of epoch 1, we should distribute epoch 1 rewards
-        // Devnet: 30 slots/epoch, so slot 30 = epoch 1
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        let current_slot = slots_per_epoch; // First slot of epoch 1
-        let current_epoch = current_slot as u64 / slots_per_epoch as u64;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        // current_epoch = 30/30 = 1, last_rewarded = 0
-        // 1 > 0, so should distribute epoch 1 (last_rewarded + 1)
-        assert_eq!(current_epoch, 1);
-        assert_eq!(last_rewarded, 0);
-        assert!(current_epoch > last_rewarded);
-        let epoch_to_reward = last_rewarded + 1;
-        assert_eq!(epoch_to_reward, 1);
-    }
-
-    #[test]
-    fn test_should_include_rewards_already_rewarded() {
-        // After epoch 1 is rewarded, the next slot should not trigger more rewards
-        let (store, _dir) = create_test_store();
-        let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Store a block with epoch 1 reward at first slot of epoch 1
-        let block = create_epoch_reward_block(slots_per_epoch, &producer, 1);
-        store.put_block(&block, 1).unwrap();
-
-        let current_slot = slots_per_epoch + 1; // Second slot of epoch 1
-        let current_epoch = current_slot as u64 / slots_per_epoch as u64;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        // current_epoch = 31/30 = 1, last_rewarded = 1
-        // 1 is NOT > 1, so no rewards needed
-        assert_eq!(current_epoch, 1);
-        assert_eq!(last_rewarded, 1);
-        assert!(
-            !(current_epoch > last_rewarded),
-            "Already rewarded epoch should not trigger"
-        );
-    }
-
-    #[test]
-    fn test_should_include_rewards_multi_epoch_catchup() {
-        // If we're at epoch 3 but last rewarded was epoch 0,
-        // we should distribute epoch 1 first (oldest unrewarded)
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        let current_slot = slots_per_epoch * 3; // First slot of epoch 3 (slot 90)
-        let current_epoch = current_slot as u64 / slots_per_epoch as u64;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        // current_epoch = 90/30 = 3, last_rewarded = 0
-        // 3 > 0, should distribute epoch 1 (last_rewarded + 1)
-        assert_eq!(current_epoch, 3);
-        assert_eq!(last_rewarded, 0);
-        assert!(current_epoch > last_rewarded);
-        let epoch_to_reward = last_rewarded + 1;
-        assert_eq!(epoch_to_reward, 1);
-    }
-
-    // =========================================================================
-    // calculate_epoch_rewards tests (logic verification)
-    // =========================================================================
-
-    #[test]
-    fn test_epoch_rewards_empty_epoch() {
-        // An epoch with no blocks should produce no rewards
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Get blocks in epoch 0 range (slots 1 to slots_per_epoch)
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert!(blocks.is_empty());
-
-        // No blocks = no rewards
-        let total_blocks: u64 = 0;
-        assert_eq!(total_blocks, 0, "Empty epoch should have 0 blocks");
-    }
-
-    #[test]
-    fn test_epoch_rewards_single_producer() {
-        // One producer gets 100% of the pool
-        let (store, _dir) = create_test_store();
-        let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Store 10 blocks in epoch 0 (slots 1-10)
-        for slot in 1..=10u32 {
-            let block = create_test_block(slot, &producer);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-
-        // Get blocks in epoch 0
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(blocks.len(), 10);
-
-        // Count blocks per producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        // Single producer has all 10 blocks
-        assert_eq!(producer_blocks.len(), 1);
-        assert_eq!(*producer_blocks.get(&producer).unwrap(), 10);
-
-        // Calculate pool
-        let block_reward = params.block_reward(10);
-        let total_pool = 10u64 * block_reward;
-
-        // Single producer gets full pool
-        let share = total_pool;
-        assert_eq!(share, total_pool);
-    }
-
-    #[test]
-    fn test_epoch_rewards_multiple_producers_equal() {
-        // Two producers with equal blocks split evenly
-        let (store, _dir) = create_test_store();
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Store 5 blocks each
-        for slot in 1..=5u32 {
-            let block = create_test_block(slot, &producer1);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-        for slot in 6..=10u32 {
-            let block = create_test_block(slot, &producer2);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-
-        // Get blocks in epoch 0
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(blocks.len(), 10);
-
-        // Count blocks per producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        assert_eq!(producer_blocks.len(), 2);
-        assert_eq!(*producer_blocks.get(&producer1).unwrap(), 5);
-        assert_eq!(*producer_blocks.get(&producer2).unwrap(), 5);
-
-        // Calculate shares
-        let block_reward = params.block_reward(10);
-        let total_pool = 10u64 * block_reward;
-        let total_blocks = 10u64;
-
-        let share1 = calculate_expected_share(5, total_blocks, total_pool);
-        let share2 = calculate_expected_share(5, total_blocks, total_pool);
-
-        // Each gets 50%
-        assert_eq!(share1, total_pool / 2);
-        assert_eq!(share2, total_pool / 2);
-    }
-
-    #[test]
-    fn test_epoch_rewards_proportional_distribution() {
-        // Producer A: 7 blocks, Producer B: 3 blocks
-        // A should get 70%, B should get 30%
-        let (store, _dir) = create_test_store();
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-
-        // Store 7 blocks for producer1
-        for slot in 1..=7u32 {
-            let block = create_test_block(slot, &producer1);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-        // Store 3 blocks for producer2
-        for slot in 8..=10u32 {
-            let block = create_test_block(slot, &producer2);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-
-        let block_reward = params.block_reward(10);
-        let total_pool = 10u64 * block_reward;
-        let total_blocks = 10u64;
-
-        let share1 = calculate_expected_share(7, total_blocks, total_pool);
-        let share2 = calculate_expected_share(3, total_blocks, total_pool);
-
-        // Verify proportional distribution
-        // 7/10 * total = 70%
-        // 3/10 * total = 30%
-        assert_eq!(share1, (7 * total_pool) / 10);
-        assert_eq!(share2, (3 * total_pool) / 10);
-        assert_eq!(share1 + share2, total_pool); // No rounding loss with these numbers
-    }
-
-    #[test]
-    fn test_epoch_rewards_rounding_dust() {
-        // Test that rounding dust goes to last producer
-        // 3 producers with 1 block each, pool = 100 units
-        // Each gets 33, last gets 34 (the dust)
-        let total_pool = 100u64;
-        let total_blocks = 3u64;
-
-        let share1 = calculate_expected_share(1, total_blocks, total_pool);
-        let share2 = calculate_expected_share(1, total_blocks, total_pool);
-        // Last producer gets remainder
-        let distributed = share1 + share2;
-        let share3 = total_pool - distributed;
-
-        assert_eq!(share1, 33);
-        assert_eq!(share2, 33);
-        assert_eq!(share3, 34); // Dust
-        assert_eq!(share1 + share2 + share3, total_pool);
-    }
-
-    #[test]
-    fn test_epoch_rewards_deterministic_ordering() {
-        // Verify producers are sorted by pubkey for deterministic dust assignment
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let keypair3 = KeyPair::generate();
-
-        let mut producers = vec![
-            keypair1.public_key().clone(),
-            keypair2.public_key().clone(),
-            keypair3.public_key().clone(),
-        ];
-
-        // Sort by pubkey bytes
-        producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        // Verify the sorting is deterministic
-        let mut producers2 = vec![
-            keypair3.public_key().clone(),
-            keypair1.public_key().clone(),
-            keypair2.public_key().clone(),
-        ];
-        producers2.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        assert_eq!(producers, producers2, "Sorting should be deterministic");
-    }
-
-    #[test]
-    fn test_epoch_rewards_skip_null_producer() {
-        // Genesis block has null producer - should be excluded from rewards
-        let (store, _dir) = create_test_store();
-        let null_producer = PublicKey::from_bytes([0u8; 32]);
-        let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Store genesis block with null producer at slot 0
-        let genesis = create_test_block(0, &null_producer);
-        store.put_block(&genesis, 0).unwrap();
-
-        // Store regular block at slot 1
-        let block = create_test_block(1, &producer);
-        store.put_block(&block, 1).unwrap();
-
-        // Get blocks in epoch 0 (slots 1 to slots_per_epoch, skipping genesis)
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-
-        // Count blocks, skipping null producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            if block.header.producer.as_bytes().iter().all(|&b| b == 0) {
-                continue; // Skip null producer
-            }
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        // Only the real producer should be counted
-        assert_eq!(producer_blocks.len(), 1);
-        assert!(!producer_blocks.contains_key(&null_producer));
-        assert_eq!(*producer_blocks.get(&producer).unwrap(), 1);
-    }
-
-    #[test]
-    fn test_epoch_rewards_epoch_1_slot_range() {
-        // Epoch 1 should use slots [slots_per_epoch, 2*slots_per_epoch)
-        // For Devnet: slots 30-59
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        let epoch = 1u64;
-        let start_slot = epoch as u32 * slots_per_epoch;
-        let end_slot = (epoch + 1) as u32 * slots_per_epoch;
-
-        // Devnet: 30 slots/epoch
-        assert_eq!(slots_per_epoch, 30);
-        assert_eq!(start_slot, 30);
-        assert_eq!(end_slot, 60);
-    }
-
-    #[test]
-    fn test_epoch_rewards_transaction_structure() {
-        // Verify EpochReward transaction is created correctly
-        let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
-        let amount = 100_000_000u64;
-        let epoch = 5u64;
-        let recipient_hash = hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes());
-
-        let tx = Transaction::new_epoch_reward(epoch, producer.clone(), amount, recipient_hash);
-
-        assert!(tx.is_epoch_reward());
-        assert_eq!(tx.outputs.len(), 1);
-        assert_eq!(tx.outputs[0].amount, amount);
-
-        let epoch_data = tx.epoch_reward_data().unwrap();
-        assert_eq!(epoch_data.epoch, epoch);
-        assert_eq!(epoch_data.recipient, producer);
-    }
-
-    // =========================================================================
-    // Milestone 4: Producer Integration Tests
-    // =========================================================================
-
-    #[test]
-    fn test_epoch_rewards_positioned_before_user_txs() {
-        // Task 4.2: Verify that EpochReward transactions come before user transactions
-        // in a block that contains both types.
-        //
-        // The block production code (try_produce_block) builds transactions as:
-        // 1. Create empty Vec<Transaction>
-        // 2. Extend with epoch_txs (EpochReward transactions) if at boundary
-        // 3. Extend with mempool_txs (user transactions)
-        //
-        // This test verifies that ordering is correct.
-
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
-        let recipient_hash1 = hash_with_domain(ADDRESS_DOMAIN, producer1.as_bytes());
-        let recipient_hash2 = hash_with_domain(ADDRESS_DOMAIN, producer2.as_bytes());
-
-        // Create EpochReward transactions (as would be generated at epoch boundary)
-        let epoch_tx1 =
-            Transaction::new_epoch_reward(1, producer1.clone(), 50_000_000, recipient_hash1);
-        let epoch_tx2 =
-            Transaction::new_epoch_reward(1, producer2.clone(), 50_000_000, recipient_hash2);
-
-        // Create user transaction (simulating a transfer from mempool)
-        let user_output = doli_core::Output::normal(10_000_000, recipient_hash1);
-        let user_tx = Transaction::new_transfer(vec![], vec![user_output]);
-
-        // Simulate block assembly as done in try_produce_block():
-        // 1. Start with empty Vec
-        let mut transactions = Vec::new();
-
-        // 2. Add epoch rewards first (RewardMode::EpochPool branch)
-        let epoch_txs = vec![epoch_tx1, epoch_tx2];
-        transactions.extend(epoch_txs);
-
-        // 3. Add user transactions after (mempool_txs)
-        let mempool_txs = vec![user_tx];
-        transactions.extend(mempool_txs);
-
-        // Create block with these transactions
-        let header = create_test_header(30, &producer1); // Slot 30 = epoch boundary in devnet
-        let block = Block::new(header, transactions);
-
-        // VERIFY: All EpochReward transactions come before user transactions
-        let epoch_reward_count = block
-            .transactions
-            .iter()
-            .filter(|tx| tx.is_epoch_reward())
-            .count();
-        assert_eq!(
-            epoch_reward_count, 2,
-            "Should have 2 epoch reward transactions"
-        );
-
-        // Check that the first N transactions are all EpochReward
-        for i in 0..epoch_reward_count {
-            assert!(
-                block.transactions[i].is_epoch_reward(),
-                "Transaction at index {} should be EpochReward, got {:?}",
-                i,
-                block.transactions[i].tx_type
-            );
-        }
-
-        // Check that transactions after epoch rewards are NOT EpochReward
-        for i in epoch_reward_count..block.transactions.len() {
-            assert!(
-                !block.transactions[i].is_epoch_reward(),
-                "Transaction at index {} should NOT be EpochReward",
-                i
-            );
-        }
-
-        // Verify the last transaction is our user transaction
-        let last_tx = &block.transactions[block.transactions.len() - 1];
-        assert_eq!(last_tx.tx_type, doli_core::TxType::Transfer);
-    }
-
-    #[test]
-    fn test_block_production_at_epoch_boundary() {
-        // Task 4.3: Integration test for producing a block at epoch boundary
-        //
-        // This tests the full logic of epoch boundary detection and reward inclusion:
-        // 1. Build a chain through epoch 0 (slots 1-29 for devnet)
-        // 2. At slot 30 (first slot of epoch 1), epoch 0 rewards should be distributed
-        // 3. Verify the block contains correct EpochReward transactions
-
-        let (store, _dir) = create_test_store();
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Build epoch 0: Producer1 produces 15 blocks, Producer2 produces 14 blocks
-        // Total = 29 blocks (slots 1-29)
-        for slot in 1..=15u32 {
-            let block = create_test_block(slot, &producer1);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-        for slot in 16..=29u32 {
-            let block = create_test_block(slot, &producer2);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-
-        // Verify epoch 0 blocks are stored
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(blocks.len(), 29);
-
-        // At slot 30 (epoch boundary), we should include epoch rewards
-        let current_slot = slots_per_epoch; // 30 for devnet
-        let current_epoch = current_slot as u64 / slots_per_epoch as u64;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        // Verify we're at epoch boundary
-        assert_eq!(current_epoch, 1, "Slot 30 should be in epoch 1");
-        assert_eq!(last_rewarded, 0, "No rewards distributed yet");
-        assert!(
-            current_epoch > last_rewarded,
-            "Should trigger epoch 0 reward distribution"
-        );
-
-        // Calculate expected rewards
-        // Epoch 0 contains slots 1-29 (skip slot 0 genesis)
-        // But devnet epoch is 30 slots, so slots 1-29 = 29 blocks
-        let epoch_0_blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-
-        // Count blocks per producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &epoch_0_blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        // Producer1: 15 blocks, Producer2: 14 blocks
-        assert_eq!(*producer_blocks.get(&producer1).unwrap(), 15);
-        assert_eq!(*producer_blocks.get(&producer2).unwrap(), 14);
-
-        let total_blocks: u64 = producer_blocks.values().sum();
-        assert_eq!(total_blocks, 29);
-
-        // Calculate expected reward pool
-        let height = 30u64;
-        let block_reward = params.block_reward(height);
-        let total_pool = total_blocks * block_reward;
-
-        // Calculate proportional shares
-        let p1_share = ((15u128 * total_pool as u128) / total_blocks as u128) as u64;
-        let p2_share = total_pool - p1_share; // Last producer gets remainder
-
-        // Sort producers to determine who gets dust (deterministic)
-        let mut sorted_producers: Vec<_> = producer_blocks.keys().cloned().collect();
-        sorted_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        // The last producer in sorted order gets the dust
-        // We just verify the math is correct here
-        assert_eq!(
-            p1_share + p2_share,
-            total_pool,
-            "Total distribution should equal pool"
-        );
-
-        // Verify that proportional shares are correct
-        // P1: 15/29 * pool, P2: 14/29 * pool
-        let expected_p1 = ((15u128 * total_pool as u128) / 29u128) as u64;
-        let expected_p2 = ((14u128 * total_pool as u128) / 29u128) as u64;
-
-        // Due to integer division, there may be dust
-        let dust = total_pool - expected_p1 - expected_p2;
-        assert!(dust < 29, "Dust should be less than number of producers");
-
-        // Verify block count proportionality
-        // P1 has 15/29 ≈ 51.7% of blocks, P2 has 14/29 ≈ 48.3%
-        let p1_percentage = (15 * 100) / 29;
-        let p2_percentage = (14 * 100) / 29;
-        assert_eq!(p1_percentage, 51, "P1 should have ~51% of blocks");
-        assert_eq!(p2_percentage, 48, "P2 should have ~48% of blocks");
-    }
-
-    // =========================================================================
-    // Milestone 6: Additional Edge Case Tests
-    // =========================================================================
-
-    #[test]
-    fn test_epoch_rewards_full_epoch_all_slots_filled() {
-        // Test reward calculation when all slots in an epoch are filled
-        // Devnet: 30 slots per epoch, so fill all 29 slots (skip genesis slot 0)
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Create 5 producers
-        let keypairs: Vec<_> = (0..5).map(|_| KeyPair::generate()).collect();
-        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
-
-        // Fill ALL slots in epoch 0 (slots 1-29) with round-robin producers
-        for slot in 1..slots_per_epoch {
-            let producer_idx = (slot as usize - 1) % 5;
-            let block = create_test_block(slot, &producers[producer_idx]);
-            store.put_block(&block, slot as u64).unwrap();
-        }
-
-        // Verify all slots are filled
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(
-            blocks.len() as u32,
-            slots_per_epoch - 1,
-            "All {} slots should be filled",
-            slots_per_epoch - 1
-        );
-
-        // Count blocks per producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        // Each producer should have approximately equal blocks
-        // 29 slots / 5 producers = 5 or 6 blocks each
-        for (producer, count) in &producer_blocks {
-            assert!(
-                *count >= 5 && *count <= 6,
-                "Producer {:?} has {} blocks, expected 5-6",
-                producer.as_bytes()[0..4].to_vec(),
-                count
-            );
-        }
-
-        // Verify total pool calculation
-        let block_reward = params.block_reward(slots_per_epoch as u64);
-        let total_pool = (slots_per_epoch as u64 - 1) * block_reward;
-        assert!(total_pool > 0, "Total pool should be non-zero");
-
-        // Verify proportional shares add up to total
-        let total_blocks: u64 = producer_blocks.values().sum();
-        let mut total_distributed = 0u64;
-        let mut sorted_producers: Vec<_> = producer_blocks.keys().cloned().collect();
-        sorted_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        for (i, producer) in sorted_producers.iter().enumerate() {
-            let blocks = *producer_blocks.get(producer).unwrap();
-            let share = if i == sorted_producers.len() - 1 {
-                // Last producer gets remainder (dust)
-                total_pool - total_distributed
-            } else {
-                ((blocks as u128 * total_pool as u128) / total_blocks as u128) as u64
-            };
-            total_distributed += share;
-        }
-
-        assert_eq!(
-            total_distributed, total_pool,
-            "Total distributed should equal total pool"
-        );
-    }
-
-    #[test]
-    fn test_epoch_rewards_many_producers() {
-        // Test with 10 producers to verify scalability
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Create 10 producers
-        let keypairs: Vec<_> = (0..10).map(|_| KeyPair::generate()).collect();
-        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
-
-        // Each producer gets 2 blocks (20 blocks total)
-        for (i, producer) in producers.iter().enumerate() {
-            let slot1 = (i * 2 + 1) as u32;
-            let slot2 = (i * 2 + 2) as u32;
-            store
-                .put_block(&create_test_block(slot1, producer), slot1 as u64)
-                .unwrap();
-            store
-                .put_block(&create_test_block(slot2, producer), slot2 as u64)
-                .unwrap();
-        }
-
-        // Verify 20 blocks stored
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(blocks.len(), 20, "Should have 20 blocks");
-
-        // Count blocks per producer
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        // Verify all 10 producers are counted
-        assert_eq!(producer_blocks.len(), 10, "Should have 10 producers");
-
-        // Each producer should have exactly 2 blocks
-        for count in producer_blocks.values() {
-            assert_eq!(*count, 2, "Each producer should have 2 blocks");
-        }
-
-        // Calculate shares
-        let block_reward = params.block_reward(slots_per_epoch as u64);
-        let total_pool = 20u64 * block_reward;
-        let total_blocks = 20u64;
-
-        // Each producer should get 2/20 = 10% of pool
-        let expected_share = total_pool / 10;
-        for blocks in producer_blocks.values() {
-            let share = calculate_expected_share(*blocks, total_blocks, total_pool);
-            // Allow for minor rounding differences
-            assert!(
-                (share as i64 - expected_share as i64).abs() <= 1,
-                "Share {} should be close to expected {}",
-                share,
-                expected_share
-            );
-        }
-    }
-
-    #[test]
-    fn test_epoch_rewards_extreme_imbalance() {
-        // Test scenario: one producer has 90% of blocks, others have small amounts
-        // Verifies proportional distribution handles extreme cases
-        let (store, _dir) = create_test_store();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        let keypair1 = KeyPair::generate();
-        let keypair2 = KeyPair::generate();
-        let keypair3 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
-        let producer3 = keypair3.public_key().clone();
-
-        // Producer1: 18 blocks (90%), Producer2: 1 block (5%), Producer3: 1 block (5%)
-        for slot in 1..=18u32 {
-            store
-                .put_block(&create_test_block(slot, &producer1), slot as u64)
-                .unwrap();
-        }
-        store
-            .put_block(&create_test_block(19, &producer2), 19)
-            .unwrap();
-        store
-            .put_block(&create_test_block(20, &producer3), 20)
-            .unwrap();
-
-        let blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert_eq!(blocks.len(), 20);
-
-        // Count blocks
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        assert_eq!(*producer_blocks.get(&producer1).unwrap(), 18);
-        assert_eq!(*producer_blocks.get(&producer2).unwrap(), 1);
-        assert_eq!(*producer_blocks.get(&producer3).unwrap(), 1);
-
-        // Calculate shares
-        let block_reward = params.block_reward(slots_per_epoch as u64);
-        let total_pool = 20u64 * block_reward;
-        let total_blocks = 20u64;
-
-        let share1 = calculate_expected_share(18, total_blocks, total_pool);
-        let share2 = calculate_expected_share(1, total_blocks, total_pool);
-
-        // P1 should get ~90% of pool
-        let expected_p1 = (18 * total_pool) / 20;
-        assert_eq!(share1, expected_p1, "P1 should get 90% of pool");
-
-        // P2 and P3 should get ~5% each
-        let expected_small = total_pool / 20;
-        assert_eq!(share2, expected_small, "Small producers should get 5% each");
-
-        // Total should not exceed pool
-        // Last producer gets remainder, so calculate total
-        let distributed = share1 + share2;
-        let share3 = total_pool - distributed;
-        assert_eq!(
-            share1 + share2 + share3,
-            total_pool,
-            "Total should equal pool"
-        );
-    }
-
-    #[test]
-    fn test_epoch_rewards_empty_epoch_sequence() {
-        // Test: empty epoch followed by normal epoch
-        // When epoch 0 has no blocks, and epoch 1 has blocks,
-        // at epoch 2 boundary we should skip rewarding epoch 1 (empty)
-        // and move to epoch 2 rewards
-        let (store, _dir) = create_test_store();
-        let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
-        let params = ConsensusParams::for_network(Network::Devnet);
-        let slots_per_epoch = params.slots_per_reward_epoch;
-
-        // Epoch 0 (slots 1-29): NO blocks (empty)
-        // Epoch 1 (slots 30-59): Some blocks
-        for slot in 30..=40u32 {
-            store
-                .put_block(&create_test_block(slot, &producer), slot as u64)
-                .unwrap();
-        }
-
-        // Verify epoch 0 is empty
-        let epoch0_blocks = store.get_blocks_in_slot_range(1, slots_per_epoch).unwrap();
-        assert!(epoch0_blocks.is_empty(), "Epoch 0 should be empty");
-
-        // Verify epoch 1 has blocks
-        let epoch1_blocks = store
-            .get_blocks_in_slot_range(slots_per_epoch, slots_per_epoch * 2)
-            .unwrap();
-        assert_eq!(epoch1_blocks.len(), 11, "Epoch 1 should have 11 blocks");
-
-        // At slot 60 (epoch 2 boundary):
-        // current_epoch = 60/30 = 2
-        // last_rewarded = 0 (no rewards distributed yet)
-        // should_include_epoch_rewards returns epoch 1 (last_rewarded + 1)
-        let current_slot = slots_per_epoch * 2;
-        let current_epoch = current_slot as u64 / slots_per_epoch as u64;
-        let last_rewarded = store.get_last_rewarded_epoch().unwrap();
-
-        assert_eq!(current_epoch, 2);
-        assert_eq!(last_rewarded, 0);
-
-        // The next epoch to reward is 1 (last_rewarded + 1)
-        let epoch_to_reward = last_rewarded + 1;
-        assert_eq!(epoch_to_reward, 1);
-
-        // Calculate epoch 1 rewards
-        let epoch1_start = slots_per_epoch;
-        let epoch1_end = slots_per_epoch * 2;
-        let blocks_for_epoch1 = store
-            .get_blocks_in_slot_range(epoch1_start, epoch1_end)
-            .unwrap();
-
-        // All 11 blocks should be counted
-        let mut producer_blocks: HashMap<PublicKey, u64> = HashMap::new();
-        for block in &blocks_for_epoch1 {
-            *producer_blocks
-                .entry(block.header.producer.clone())
-                .or_insert(0) += 1;
-        }
-
-        assert_eq!(*producer_blocks.get(&producer).unwrap(), 11);
-
-        let block_reward = params.block_reward(current_slot as u64);
-        let total_pool = 11u64 * block_reward;
-        assert!(total_pool > 0, "Pool should be positive");
-    }
-}
+// Note: Old epoch reward tests removed as part of Milestone 10
+// (Remove Old Reward System). The new weighted presence reward
+// system uses ClaimEpochReward transactions with validation in
+// crates/core/src/validation.rs and tests in crates/core/src/rewards.rs.

@@ -120,6 +120,7 @@ pub mod genesis;
 pub mod heartbeat;
 pub mod network;
 pub mod presence;
+pub mod rewards;
 pub mod tpop;
 pub mod transaction;
 pub mod types;
@@ -183,6 +184,13 @@ pub use consensus::reward_epoch;
 // Presence commitment for weighted presence rewards
 pub use presence::PresenceCommitment;
 
+// Weighted presence reward calculation
+pub use rewards::{
+    complete_epoch_range, complete_epochs_at_height, epoch_boundaries, is_epoch_complete,
+    BlockSource, ClaimableSummary, RewardError, WeightedRewardCalculation,
+    WeightedRewardCalculator,
+};
+
 // Heartbeat VDF and witness system for presence proofs (consensus-affecting)
 // Note: Use `heartbeat::` prefix to access these types to avoid conflict with tpop telemetry
 pub use heartbeat::{
@@ -213,8 +221,9 @@ pub use transaction::{
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
-    validate_block, validate_header, validate_producer_eligibility, validate_transaction,
-    validate_transaction_with_utxos, UtxoInfo, UtxoProvider, ValidationContext, ValidationError,
+    validate_block, validate_claim_epoch_reward, validate_header, validate_producer_eligibility,
+    validate_transaction, validate_transaction_with_utxos, ClaimChecker, UtxoInfo, UtxoProvider,
+    ValidationContext, ValidationError,
 };
 
 // TPoP (Temporal Proof of Presence) exports - telemetry module, not consensus

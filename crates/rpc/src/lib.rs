@@ -22,6 +22,11 @@
 //! | `getMempoolInfo` | Get mempool statistics |
 //! | `getNetworkInfo` | Get network status |
 //! | `getChainInfo` | Get chain tip info |
+//! | `getClaimableRewards` | Get claimable epochs for a producer |
+//! | `getClaimHistory` | Get claim history for a producer |
+//! | `estimateEpochReward` | Estimate reward for a specific epoch |
+//! | `buildClaimTx` | Build unsigned claim transaction |
+//! | `getEpochInfo` | Get current reward epoch info |
 //!
 //! ## Example Request
 //!

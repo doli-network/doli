@@ -1,10 +1,4 @@
-What to do:
-
-    Study all specs and requirements.
-    
-    study specs/SPECS.md and docs/DOCS.md to learn about mapa-kms specifications and IMPLEMENTATION_STATUS.md to understand plan so far.
-
-        Open IMPLEMENTATION_STATUS.md to see what’s already done and what’s still missing.
+ Open IMPLEMENTATION_CLAIM_REWARD.md to see what’s already done and what’s still missing.
 
     Pick the single most important missing feature and implement it.
 
@@ -14,6 +8,8 @@ What to do:
 
         Run the appropriate static analyzers:
 
+            For Elixir/Erlang bits (if any), run Dialyzer to catch type/spec issues.
+
             For the Rust parts, run cargo build to ensure it compiles, then cargo clippy to clean up any lint errors.
 
     Verify everything still passes.
@@ -22,12 +18,15 @@ What to do:
 
         If Dialyzer or Clippy complain, fix those issues too.
 
-    Update IMPLEMENTATION_STATUS.md.
+    Update IMPLEMENTATION_CLAIM_REWARD.md.
+    
+2. Update specs/SPECS.md and docs/DOCS.md specs/* and docs/* relevant documentation immediately. 
+
 
         Mark the new feature as “implemented” (add date/test-pass note, etc.).
 
-    
-    *** IMPORTANT ***
-    If and only if all tests passed in the current milestone you are working on, update the documentation specs/ and docs/ only if necessary and commit the changes.
+    Commit and push your changes via Git.
 
-    
+        Commit the code, tests, and the updated IMPLEMENTATION_CLAIM_REWARD.md.
+
+        Push to the repo or create a pull request.

@@ -259,6 +259,20 @@ impl ClaimRegistry {
 }
 
 // =============================================================================
+// CLAIM CHECKER TRAIT IMPLEMENTATION
+// =============================================================================
+
+/// Implement ClaimChecker trait for ClaimRegistry.
+///
+/// This allows the ClaimRegistry to be used with `validate_claim_epoch_reward`
+/// in the core crate for full claim validation.
+impl doli_core::ClaimChecker for ClaimRegistry {
+    fn is_claimed(&self, producer: &PublicKey, epoch: u64) -> bool {
+        self.is_claimed(producer, epoch)
+    }
+}
+
+// =============================================================================
 // TESTS
 // =============================================================================
 
