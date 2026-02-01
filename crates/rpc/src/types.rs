@@ -315,7 +315,9 @@ pub struct BalanceResponse {
     pub confirmed: u64,
     /// Unconfirmed balance (in mempool)
     pub unconfirmed: u64,
-    /// Total balance
+    /// Immature balance (coinbase/rewards pending maturity)
+    pub immature: u64,
+    /// Total balance (confirmed + unconfirmed + immature)
     pub total: u64,
 }
 
