@@ -16,9 +16,11 @@ use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, construct_vdf_input, select_producer_for_slot, ConsensusParams, UNBONDING_PERIOD,
+    self, construct_vdf_input, reward_epoch, select_producer_for_slot, ConsensusParams,
+    UNBONDING_PERIOD,
 };
 use doli_core::heartbeat::{Heartbeat, HEARTBEAT_VDF_ITERATIONS};
+use doli_core::rewards::{BlockSource, WeightedRewardCalculator};
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
@@ -1232,9 +1234,9 @@ impl Node {
         for height in 1..=target_height {
             if let Some(block) = self.block_store.get_block_by_height(height)? {
                 for (tx_index, tx) in block.transactions.iter().enumerate() {
-                    let is_coinbase = tx_index == 0 && tx.is_coinbase();
-                    // For non-coinbase, spend inputs first
-                    if !is_coinbase {
+                    let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                    // For non-reward-minting txs, spend inputs first
+                    if !is_reward_tx {
                         if let Err(e) = new_utxo.spend_transaction(tx) {
                             error!(
                                 "Reorg UTXO rebuild failed at height {}: {} - aborting reorg",
@@ -1243,7 +1245,7 @@ impl Node {
                             return Err(anyhow::anyhow!("UTXO rebuild failed: {}", e));
                         }
                     }
-                    new_utxo.add_transaction(tx, height, is_coinbase);
+                    new_utxo.add_transaction(tx, height, is_reward_tx);
                 }
             }
         }
@@ -1253,8 +1255,8 @@ impl Node {
         for block in &new_blocks {
             temp_height += 1;
             for (tx_index, tx) in block.transactions.iter().enumerate() {
-                let is_coinbase = tx_index == 0 && tx.is_coinbase();
-                if !is_coinbase {
+                let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                if !is_reward_tx {
                     if let Err(e) = new_utxo.spend_transaction(tx) {
                         error!(
                             "Reorg validation failed for block {}: {} - aborting reorg",
@@ -1264,7 +1266,7 @@ impl Node {
                         return Err(anyhow::anyhow!("Reorg validation failed: {}", e));
                     }
                 }
-                new_utxo.add_transaction(tx, temp_height, is_coinbase);
+                new_utxo.add_transaction(tx, temp_height, is_reward_tx);
             }
         }
 
@@ -1287,11 +1289,11 @@ impl Node {
             for height in 1..=target_height {
                 if let Some(block) = self.block_store.get_block_by_height(height).ok().flatten() {
                     for (tx_index, tx) in block.transactions.iter().enumerate() {
-                        let is_coinbase = tx_index == 0 && tx.is_coinbase();
-                        if !is_coinbase {
+                        let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                        if !is_reward_tx {
                             let _ = utxo.spend_transaction(tx);
                         }
-                        utxo.add_transaction(tx, height, is_coinbase);
+                        utxo.add_transaction(tx, height, is_reward_tx);
                     }
                 }
             }
@@ -1526,9 +1528,10 @@ impl Node {
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
                 // Apply UTXO changes
-                let is_coinbase = tx_index == 0 && tx.is_coinbase();
-                let _ = utxo.spend_transaction(tx); // Ignore errors for coinbase
-                utxo.add_transaction(tx, height, is_coinbase);
+                // Check for both regular coinbase and epoch reward coinbase (both mint new coins)
+                let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                let _ = utxo.spend_transaction(tx); // Ignore errors for reward-minting txs
+                utxo.add_transaction(tx, height, is_reward_tx);
 
                 // Process registration transactions
                 if tx.tx_type == TxType::Registration {
@@ -1884,9 +1887,7 @@ impl Node {
         // Check if we're registered as a producer
         let is_registered = {
             let producers = self.producer_set.read().await;
-            producers
-                .get_by_pubkey(producer_key.public_key())
-                .is_some()
+            producers.get_by_pubkey(producer_key.public_key()).is_some()
         };
 
         if !is_registered {
@@ -2352,9 +2353,48 @@ impl Node {
         let mut builder = BlockBuilder::new(prev_hash, prev_slot, our_pubkey.clone())
             .with_params(self.params.clone());
 
+        // AUTOMATIC EPOCH REWARDS: At epoch boundaries, calculate and distribute
+        // rewards to all producers who were present in the completed epoch.
+        // Rewards are immediately available in producer wallets (no claim needed).
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        let epoch_coinbase: Option<Transaction> = if height > 0
+            && reward_epoch::is_epoch_start_with(height, blocks_per_epoch)
+        {
+            let completed_epoch = (height / blocks_per_epoch) - 1;
+            info!(
+                "Epoch {} completed at height {}, calculating automatic rewards...",
+                completed_epoch, height
+            );
+
+            // Calculate rewards for all present producers in the completed epoch
+            let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
+
+            if !epoch_outputs.is_empty() {
+                let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
+                info!(
+                    "Distributing {} total reward to {} producers for epoch {}",
+                    total_reward,
+                    epoch_outputs.len(),
+                    completed_epoch
+                );
+
+                // Create epoch reward coinbase transaction with all producer rewards
+                let coinbase =
+                    Transaction::new_epoch_reward_coinbase(epoch_outputs, height, completed_epoch);
+                builder.add_transaction(coinbase.clone());
+                Some(coinbase)
+            } else {
+                debug!(
+                    "No producers present in epoch {}, skipping reward distribution",
+                    completed_epoch
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         // Add transactions from mempool
-        // Note: No coinbase transaction - rewards are claimed via ClaimEpochReward
-        // transactions using the new weighted presence reward system.
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
@@ -2439,11 +2479,14 @@ impl Node {
             vdf_proof,
         };
 
-        // Collect transactions from mempool
-        // Note: No automatic coinbase or epoch reward transactions - the new weighted
-        // presence reward system uses on-demand ClaimEpochReward transactions that
-        // producers submit when they want to claim their accumulated rewards.
-        let transactions = mempool_txs;
+        // Collect all transactions for the block:
+        // 1. Epoch reward coinbase (if this is an epoch boundary)
+        // 2. Transactions from mempool
+        let mut transactions = Vec::new();
+        if let Some(coinbase) = epoch_coinbase {
+            transactions.push(coinbase);
+        }
+        transactions.extend(mempool_txs);
 
         // Build presence commitment from collected heartbeats
         //
@@ -2480,6 +2523,76 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Calculate epoch rewards for all present producers in the completed epoch.
+    ///
+    /// This method scans all blocks in the specified epoch and calculates the
+    /// weighted presence reward for each producer who was present.
+    ///
+    /// Returns a vector of (amount, pubkey_hash) tuples for creating the
+    /// epoch reward coinbase transaction.
+    async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+
+        // Get the list of producers and their indices (clone to release the lock)
+        let mut sorted_producers: Vec<storage::producer::ProducerInfo> = {
+            let producers = self.producer_set.read().await;
+            producers
+                .active_producers()
+                .iter()
+                .map(|p| (*p).clone())
+                .collect()
+        };
+
+        if sorted_producers.is_empty() {
+            return Vec::new();
+        }
+
+        // Sort producers by pubkey for deterministic ordering (same as presence commitment)
+        sorted_producers.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+
+        // Create reward calculator with network-specific epoch size
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            self.block_store.as_ref(),
+            &self.params,
+            blocks_per_epoch,
+        );
+
+        // Calculate rewards for each producer
+        let mut reward_outputs = Vec::new();
+
+        for (index, producer_info) in sorted_producers.iter().enumerate() {
+            match calculator.calculate_producer_reward(&producer_info.public_key, index, epoch) {
+                Ok(result) => {
+                    if result.has_reward() {
+                        // Convert pubkey to pubkey_hash for the output (using ADDRESS_DOMAIN)
+                        // Note: domain comes first, then data
+                        let pubkey_hash =
+                            hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
+
+                        info!(
+                            "Producer {} earned {} in epoch {} (present in {}/{} blocks)",
+                            producer_info.public_key,
+                            result.reward_amount,
+                            epoch,
+                            result.blocks_present,
+                            result.total_blocks
+                        );
+
+                        reward_outputs.push((result.reward_amount, pubkey_hash));
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to calculate reward for producer {} in epoch {}: {}",
+                        producer_info.public_key, epoch, e
+                    );
+                }
+            }
+        }
+
+        reward_outputs
     }
 
     /// Build presence commitment for a block
