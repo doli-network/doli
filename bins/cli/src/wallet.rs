@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use crypto::{hash::hash, signature, KeyPair, PrivateKey, PublicKey};
+use crypto::{hash::hash_with_domain, signature, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN};
 use serde::{Deserialize, Serialize};
 
 /// A wallet address with optional label
@@ -92,12 +92,13 @@ impl Wallet {
         &self.addresses[0].address
     }
 
-    /// Get the pubkey_hash for the primary address (32-byte BLAKE3 hash of public key)
+    /// Get the pubkey_hash for the primary address (32-byte domain-separated BLAKE3 hash of public key)
     /// This is what the RPC endpoints expect for balance/UTXO queries
+    /// Uses ADDRESS_DOMAIN for domain separation to match the rest of the system
     pub fn primary_pubkey_hash(&self) -> String {
         let pubkey_bytes =
             hex::decode(&self.addresses[0].public_key).expect("invalid public key in wallet");
-        let hash = hash(&pubkey_bytes);
+        let hash = hash_with_domain(ADDRESS_DOMAIN, &pubkey_bytes);
         hash.to_hex()
     }
 
@@ -212,9 +213,9 @@ mod tests {
         let pubkey_hash = wallet.primary_pubkey_hash();
         assert_eq!(pubkey_hash.len(), 64);
 
-        // Verify it's the BLAKE3 hash of the public key
+        // Verify it's the domain-separated BLAKE3 hash of the public key
         let pubkey_bytes = hex::decode(wallet.primary_public_key()).unwrap();
-        let expected_hash = hash(&pubkey_bytes);
+        let expected_hash = hash_with_domain(ADDRESS_DOMAIN, &pubkey_bytes);
         assert_eq!(pubkey_hash, expected_hash.to_hex());
     }
 

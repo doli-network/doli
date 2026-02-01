@@ -678,7 +678,13 @@ impl Transaction {
     /// Create a registration transaction
     ///
     /// This creates a transaction to register as a block producer.
-    /// Inputs must cover the bond amount. The bond is locked for 4 years.
+    /// Inputs must cover the bond amount. The bond is locked for the specified duration.
+    ///
+    /// # Arguments
+    /// - `inputs`: UTXOs to spend for the bond
+    /// - `public_key`: Producer's public key
+    /// - `bond_amount`: Total amount to lock as bond
+    /// - `lock_until`: Block height until which the bond is locked (must be >= current_height + blocks_per_era)
     ///
     /// Note: For simplicity, this creates a basic registration. For full
     /// registration with VDF proofs, use the node's registration flow.
@@ -686,7 +692,7 @@ impl Transaction {
         inputs: Vec<Input>,
         public_key: PublicKey,
         bond_amount: Amount,
-        _bond_count: u32,
+        lock_until: BlockHeight,
     ) -> Self {
         // Create registration data without VDF (for CLI use)
         // Full VDF registration happens through node's registration flow
@@ -701,9 +707,8 @@ impl Transaction {
         let extra_data = bincode::serialize(&reg_data).unwrap_or_default();
 
         // Create bond output (locked to producer's pubkey)
-        // Lock until is set to 0 here; actual lock calculation happens during validation
         let pubkey_hash = crypto::hash::hash(public_key.as_bytes());
-        let bond_output = Output::bond(bond_amount, pubkey_hash, 0);
+        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until);
 
         Self {
             version: 1,
