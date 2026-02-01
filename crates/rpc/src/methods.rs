@@ -43,6 +43,8 @@ pub struct RpcContext {
     pub params: ConsensusParams,
     /// Network name
     pub network: String,
+    /// Blocks per reward epoch (network-specific: mainnet/testnet=360, devnet=60)
+    pub blocks_per_reward_epoch: u64,
     /// Local peer ID
     pub peer_id: String,
     /// Peer count function
@@ -64,6 +66,7 @@ impl RpcContext {
         mempool: Arc<RwLock<Mempool>>,
         params: ConsensusParams,
     ) -> Self {
+        use doli_core::consensus::BLOCKS_PER_REWARD_EPOCH;
         Self {
             chain_state,
             block_store,
@@ -73,6 +76,7 @@ impl RpcContext {
             mempool,
             params,
             network: "mainnet".to_string(),
+            blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
@@ -96,6 +100,12 @@ impl RpcContext {
     /// Set network name
     pub fn with_network(mut self, network: String) -> Self {
         self.network = network;
+        self
+    }
+
+    /// Set blocks per reward epoch (network-specific)
+    pub fn with_blocks_per_reward_epoch(mut self, blocks: u64) -> Self {
+        self.blocks_per_reward_epoch = blocks;
         self
     }
 
@@ -675,21 +685,32 @@ impl RpcContext {
             .get_by_pubkey(&producer_pubkey)
             .ok_or_else(|| RpcError::producer_not_found())?;
 
-        // Find producer index in sorted list
+        // Find producer index in sorted list (must match block production ordering)
         let active_producers = producers.active_producers();
-        let producer_index = active_producers
+        let mut sorted_pubkeys: Vec<crypto::PublicKey> = active_producers
             .iter()
-            .position(|p| p.public_key == producer_pubkey)
+            .map(|p| p.public_key.clone())
+            .collect();
+        sorted_pubkeys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        let producer_index = sorted_pubkeys
+            .iter()
+            .position(|p| *p == producer_pubkey)
             .ok_or_else(|| RpcError::producer_not_found())?;
 
         let current_height = chain_state.best_height;
-        let current_epoch = reward_epoch::from_height(current_height);
+        let current_epoch =
+            reward_epoch::from_height_with(current_height, self.blocks_per_reward_epoch);
 
         // Get unclaimed epochs
         let unclaimed_epochs = registry.get_unclaimed_epochs(&producer_pubkey, 0, current_epoch);
 
         // Calculate rewards for each unclaimed epoch
-        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            &*self.block_store,
+            &self.params,
+            self.blocks_per_reward_epoch,
+        );
 
         let mut epochs = Vec::new();
         let mut total_estimated_reward: u64 = 0;
@@ -794,19 +815,33 @@ impl RpcContext {
         let registry = claim_registry.read().await;
         let chain_state = self.chain_state.read().await;
 
-        // Find producer index
+        // Find producer index in sorted list (must match block production ordering)
         let active_producers = producers.active_producers();
-        let producer_index = active_producers
+        let mut sorted_pubkeys: Vec<crypto::PublicKey> = active_producers
             .iter()
-            .position(|p| p.public_key == producer_pubkey)
+            .map(|p| p.public_key.clone())
+            .collect();
+        sorted_pubkeys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        let producer_index = sorted_pubkeys
+            .iter()
+            .position(|p| *p == producer_pubkey)
             .ok_or_else(|| RpcError::producer_not_found())?;
 
         let current_height = chain_state.best_height;
-        let is_complete = reward_epoch::is_complete(params.epoch, current_height);
+        let is_complete = reward_epoch::is_complete_with(
+            params.epoch,
+            current_height,
+            self.blocks_per_reward_epoch,
+        );
         let is_claimed = registry.is_claimed(&producer_pubkey, params.epoch);
 
         // Calculate reward
-        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            &*self.block_store,
+            &self.params,
+            self.blocks_per_reward_epoch,
+        );
         let calc = calculator
             .calculate_producer_reward(&producer_pubkey, producer_index, params.epoch)
             .map_err(|e| RpcError::internal_error(e.to_string()))?;
@@ -863,7 +898,11 @@ impl RpcContext {
 
         // Verify epoch is complete
         let current_height = chain_state.best_height;
-        if !reward_epoch::is_complete(params.epoch, current_height) {
+        if !reward_epoch::is_complete_with(
+            params.epoch,
+            current_height,
+            self.blocks_per_reward_epoch,
+        ) {
             return Err(RpcError::invalid_params(format!(
                 "Epoch {} is not yet complete",
                 params.epoch
@@ -878,21 +917,33 @@ impl RpcContext {
             )));
         }
 
-        // Find producer index
+        // Find producer index in sorted list (must match block production ordering)
         let active_producers = producers.active_producers();
-        let producer_index = active_producers
+        let mut sorted_pubkeys: Vec<crypto::PublicKey> = active_producers
             .iter()
-            .position(|p| p.public_key == producer_pubkey)
+            .map(|p| p.public_key.clone())
+            .collect();
+        sorted_pubkeys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        let producer_index = sorted_pubkeys
+            .iter()
+            .position(|p| *p == producer_pubkey)
             .ok_or_else(|| RpcError::producer_not_found())?;
 
         // Calculate reward
-        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            &*self.block_store,
+            &self.params,
+            self.blocks_per_reward_epoch,
+        );
         let calc = calculator
             .calculate_producer_reward(&producer_pubkey, producer_index, params.epoch)
             .map_err(|e| RpcError::internal_error(e.to_string()))?;
 
         if calc.reward_amount == 0 {
-            return Err(RpcError::invalid_params("No reward to claim for this epoch"));
+            return Err(RpcError::invalid_params(
+                "No reward to claim for this epoch",
+            ));
         }
 
         // Build claim data
@@ -910,7 +961,10 @@ impl RpcContext {
             version: 1,
             tx_type: doli_core::TxType::ClaimEpochReward,
             inputs: Vec::new(),
-            outputs: vec![doli_core::Output::normal(calc.reward_amount, recipient_hash)],
+            outputs: vec![doli_core::Output::normal(
+                calc.reward_amount,
+                recipient_hash,
+            )],
             extra_data,
         };
 
@@ -927,20 +981,20 @@ impl RpcContext {
 
     /// Get current reward epoch information
     async fn get_epoch_info(&self) -> Result<Value, RpcError> {
-        use doli_core::consensus::{reward_epoch, BLOCKS_PER_REWARD_EPOCH};
+        use doli_core::consensus::reward_epoch;
 
+        let blocks_per_epoch = self.blocks_per_reward_epoch;
         let chain_state = self.chain_state.read().await;
         let current_height = chain_state.best_height;
 
-        let current_epoch = reward_epoch::from_height(current_height);
-        let (epoch_start, epoch_end) = reward_epoch::boundaries(current_epoch);
+        // Use network-aware epoch functions
+        let current_epoch = reward_epoch::from_height_with(current_height, blocks_per_epoch);
+        let (epoch_start, epoch_end) =
+            reward_epoch::boundaries_with(current_epoch, blocks_per_epoch);
         let blocks_remaining = epoch_end.saturating_sub(current_height);
 
-        let last_complete_epoch = if current_epoch > 0 {
-            Some(current_epoch - 1)
-        } else {
-            None
-        };
+        let last_complete_epoch =
+            reward_epoch::last_complete_with(current_height, blocks_per_epoch);
 
         let block_reward = self.params.block_reward(current_height);
 
@@ -948,7 +1002,7 @@ impl RpcContext {
             current_height,
             current_epoch,
             last_complete_epoch,
-            blocks_per_epoch: BLOCKS_PER_REWARD_EPOCH,
+            blocks_per_epoch,
             blocks_remaining,
             epoch_start_height: epoch_start,
             epoch_end_height: epoch_end,

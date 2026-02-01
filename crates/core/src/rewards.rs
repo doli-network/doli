@@ -44,7 +44,10 @@ pub enum RewardError {
     /// Storage error while accessing blocks.
     StorageError(String),
     /// Epoch is not yet complete.
-    EpochNotComplete { epoch: u64, current_height: BlockHeight },
+    EpochNotComplete {
+        epoch: u64,
+        current_height: BlockHeight,
+    },
     /// Producer not found in producer set.
     ProducerNotFound { producer: PublicKey },
 }
@@ -58,7 +61,10 @@ impl std::fmt::Display for RewardError {
             Self::StorageError(msg) => {
                 write!(f, "storage error: {}", msg)
             }
-            Self::EpochNotComplete { epoch, current_height } => {
+            Self::EpochNotComplete {
+                epoch,
+                current_height,
+            } => {
                 write!(
                     f,
                     "epoch {} is not complete (current height: {})",
@@ -196,10 +202,12 @@ pub struct ClaimableSummary {
 pub struct WeightedRewardCalculator<'a, B: BlockSource> {
     block_source: &'a B,
     params: &'a ConsensusParams,
+    /// Blocks per reward epoch (network-specific: mainnet/testnet=360, devnet=60)
+    blocks_per_epoch: u64,
 }
 
 impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
-    /// Create a new reward calculator.
+    /// Create a new reward calculator with default blocks per epoch (360).
     ///
     /// # Arguments
     ///
@@ -209,6 +217,22 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
         Self {
             block_source,
             params,
+            blocks_per_epoch: reward_epoch::blocks_per_epoch(),
+        }
+    }
+
+    /// Create a new reward calculator with custom blocks per epoch.
+    ///
+    /// Use this for network-specific epoch sizes (e.g., devnet uses 60).
+    pub fn with_blocks_per_epoch(
+        block_source: &'a B,
+        params: &'a ConsensusParams,
+        blocks_per_epoch: u64,
+    ) -> Self {
+        Self {
+            block_source,
+            params,
+            blocks_per_epoch,
         }
     }
 
@@ -246,7 +270,8 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
         producer_index: usize,
         epoch: u64,
     ) -> Result<WeightedRewardCalculation, RewardError> {
-        let (start_height, end_height) = reward_epoch::boundaries(epoch);
+        let (start_height, end_height) =
+            reward_epoch::boundaries_with(epoch, self.blocks_per_epoch);
 
         let mut blocks_present: u64 = 0;
         let mut total_blocks: u64 = 0;
@@ -344,7 +369,8 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
         producer_index: usize,
         unclaimed_epochs: I,
     ) -> Result<Amount, RewardError> {
-        let calculations = self.calculate_multiple_epochs(producer, producer_index, unclaimed_epochs)?;
+        let calculations =
+            self.calculate_multiple_epochs(producer, producer_index, unclaimed_epochs)?;
         Ok(calculations.iter().map(|c| c.reward_amount).sum())
     }
 }
@@ -388,8 +414,8 @@ mod tests {
     use crate::presence::PresenceCommitment;
     use crate::BlockHeader;
     use crypto::Hash;
-    use vdf::{VdfOutput, VdfProof};
     use std::collections::HashMap;
+    use vdf::{VdfOutput, VdfProof};
 
     /// Mock block source for testing.
     struct MockBlockSource {
@@ -427,16 +453,14 @@ mod tests {
             timestamp: 0,
             slot: 0,
             producer: PublicKey::from_bytes([0u8; 32]),
-            vdf_output: VdfOutput { value: vec![0u8; 32] },
+            vdf_output: VdfOutput {
+                value: vec![0u8; 32],
+            },
             vdf_proof: VdfProof { pi: vec![] },
         };
 
-        let presence = PresenceCommitment::new(
-            producer_count,
-            present_indices,
-            weights,
-            Hash::ZERO,
-        );
+        let presence =
+            PresenceCommitment::new(producer_count, present_indices, weights, Hash::ZERO);
 
         Block::new_with_presence(header, vec![], presence)
     }
@@ -463,7 +487,9 @@ mod tests {
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
         let producer = test_producer(1);
-        let result = calculator.calculate_producer_reward(&producer, 0, 0).unwrap();
+        let result = calculator
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
 
         // Producer should get 100% of each block's reward
         let block_reward = params.block_reward(0);
@@ -491,7 +517,9 @@ mod tests {
         let calculator = WeightedRewardCalculator::new(&source, &params);
 
         // Check producer 0
-        let result0 = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
+        let result0 = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
         let block_reward = params.block_reward(0);
         let expected_each = (block_reward / 2) * blocks_per_epoch;
 
@@ -499,7 +527,9 @@ mod tests {
         assert_eq!(result0.reward_amount, expected_each);
 
         // Check producer 1
-        let result1 = calculator.calculate_producer_reward(&test_producer(2), 1, 0).unwrap();
+        let result1 = calculator
+            .calculate_producer_reward(&test_producer(2), 1, 0)
+            .unwrap();
         assert_eq!(result1.blocks_present, blocks_per_epoch);
         assert_eq!(result1.reward_amount, expected_each);
 
@@ -525,8 +555,12 @@ mod tests {
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
 
-        let result0 = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
-        let result1 = calculator.calculate_producer_reward(&test_producer(2), 1, 0).unwrap();
+        let result0 = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
+        let result1 = calculator
+            .calculate_producer_reward(&test_producer(2), 1, 0)
+            .unwrap();
 
         // Producer 0 should get roughly 2x what producer 1 gets
         // Due to integer division, check ratio is close to 2:1
@@ -534,7 +568,11 @@ mod tests {
 
         // More precise check: result0 / result1 should be ~2
         let ratio = result0.reward_amount as f64 / result1.reward_amount as f64;
-        assert!((ratio - 2.0).abs() < 0.01, "Ratio should be ~2.0, got {}", ratio);
+        assert!(
+            (ratio - 2.0).abs() < 0.01,
+            "Ratio should be ~2.0, got {}",
+            ratio
+        );
     }
 
     #[test]
@@ -557,7 +595,9 @@ mod tests {
         }
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
-        let result = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
+        let result = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
 
         // Present in half the blocks
         assert_eq!(result.blocks_present, blocks_per_epoch / 2);
@@ -586,7 +626,9 @@ mod tests {
                 timestamp: 0,
                 slot: 0,
                 producer: PublicKey::from_bytes([0u8; 32]),
-                vdf_output: VdfOutput { value: vec![0u8; 32] },
+                vdf_output: VdfOutput {
+                    value: vec![0u8; 32],
+                },
                 vdf_proof: VdfProof { pi: vec![] },
             };
             let block = Block::new(header, vec![]);
@@ -594,7 +636,9 @@ mod tests {
         }
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
-        let result = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
+        let result = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
 
         assert_eq!(result.blocks_present, 0);
         assert_eq!(result.reward_amount, 0);
@@ -616,9 +660,15 @@ mod tests {
         let calculator = WeightedRewardCalculator::new(&source, &params);
 
         // Calculate multiple times
-        let result1 = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
-        let result2 = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
-        let result3 = calculator.calculate_producer_reward(&test_producer(1), 0, 0).unwrap();
+        let result1 = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
+        let result2 = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
+        let result3 = calculator
+            .calculate_producer_reward(&test_producer(1), 0, 0)
+            .unwrap();
 
         assert_eq!(result1, result2);
         assert_eq!(result2, result3);
@@ -670,11 +720,9 @@ mod tests {
         }
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
-        let results = calculator.calculate_multiple_epochs(
-            &test_producer(1),
-            0,
-            0..3,
-        ).unwrap();
+        let results = calculator
+            .calculate_multiple_epochs(&test_producer(1), 0, 0..3)
+            .unwrap();
 
         assert_eq!(results.len(), 3);
 
@@ -702,11 +750,9 @@ mod tests {
         }
 
         let calculator = WeightedRewardCalculator::new(&source, &params);
-        let total = calculator.total_claimable_reward(
-            &test_producer(1),
-            0,
-            0..3,
-        ).unwrap();
+        let total = calculator
+            .total_claimable_reward(&test_producer(1), 0, 0..3)
+            .unwrap();
 
         let expected_per_epoch = params.block_reward(0) * blocks_per_epoch;
         assert_eq!(total, expected_per_epoch * 3);
@@ -760,7 +806,115 @@ mod tests {
         let err = RewardError::StorageError("disk full".to_string());
         assert_eq!(err.to_string(), "storage error: disk full");
 
-        let err = RewardError::EpochNotComplete { epoch: 5, current_height: 1000 };
-        assert_eq!(err.to_string(), "epoch 5 is not complete (current height: 1000)");
+        let err = RewardError::EpochNotComplete {
+            epoch: 5,
+            current_height: 1000,
+        };
+        assert_eq!(
+            err.to_string(),
+            "epoch 5 is not complete (current height: 1000)"
+        );
+    }
+
+    #[test]
+    fn test_devnet_epoch_boundaries() {
+        // Test that with_blocks_per_epoch correctly uses devnet's 60-block epochs
+        let mut source = MockBlockSource::new();
+        let params = ConsensusParams::mainnet();
+
+        const DEVNET_BLOCKS_PER_EPOCH: u64 = 60;
+
+        // Create blocks for devnet epoch 0 (heights 0-59)
+        for height in 0..DEVNET_BLOCKS_PER_EPOCH {
+            let block = create_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        // Use the devnet-specific epoch size
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            &source,
+            &params,
+            DEVNET_BLOCKS_PER_EPOCH,
+        );
+        let producer = test_producer(1);
+        let result = calculator
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+
+        // Should see all 60 blocks for devnet epoch 0
+        assert_eq!(result.total_blocks, DEVNET_BLOCKS_PER_EPOCH);
+        assert_eq!(result.blocks_present, DEVNET_BLOCKS_PER_EPOCH);
+
+        // Reward should be for 60 blocks, not 360
+        let block_reward = params.block_reward(0);
+        let expected_reward = block_reward * DEVNET_BLOCKS_PER_EPOCH;
+        assert_eq!(result.reward_amount, expected_reward);
+    }
+
+    #[test]
+    fn test_devnet_epoch_1_boundaries() {
+        // Test that devnet epoch 1 uses blocks 60-119
+        let mut source = MockBlockSource::new();
+        let params = ConsensusParams::mainnet();
+
+        const DEVNET_BLOCKS_PER_EPOCH: u64 = 60;
+
+        // Create blocks for devnet epoch 1 (heights 60-119)
+        for height in 60..120 {
+            let block = create_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
+            &source,
+            &params,
+            DEVNET_BLOCKS_PER_EPOCH,
+        );
+        let producer = test_producer(1);
+        let result = calculator
+            .calculate_producer_reward(&producer, 0, 1)
+            .unwrap();
+
+        // Should see all 60 blocks for devnet epoch 1
+        assert_eq!(result.total_blocks, DEVNET_BLOCKS_PER_EPOCH);
+        assert_eq!(result.blocks_present, DEVNET_BLOCKS_PER_EPOCH);
+
+        // Epoch 1 boundary check
+        assert_eq!(result.epoch, 1);
+    }
+
+    #[test]
+    fn test_mainnet_vs_devnet_epoch_isolation() {
+        // Verify that mainnet (360 blocks) and devnet (60 blocks) are properly isolated
+        let mut source = MockBlockSource::new();
+        let params = ConsensusParams::mainnet();
+
+        // Create blocks 0-59 (full devnet epoch 0, partial mainnet epoch 0)
+        for height in 0..60 {
+            let block = create_test_block(1, &[0], vec![1000]);
+            source.add_block(height, block);
+        }
+
+        let producer = test_producer(1);
+
+        // Devnet calculator should see all 60 blocks in epoch 0
+        let devnet_calc = WeightedRewardCalculator::with_blocks_per_epoch(&source, &params, 60);
+        let devnet_result = devnet_calc
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+        assert_eq!(devnet_result.total_blocks, 60);
+        assert_eq!(devnet_result.blocks_present, 60);
+
+        // Mainnet calculator should only see 60 blocks (out of 360 in epoch 0)
+        let mainnet_calc = WeightedRewardCalculator::with_blocks_per_epoch(&source, &params, 360);
+        let mainnet_result = mainnet_calc
+            .calculate_producer_reward(&producer, 0, 0)
+            .unwrap();
+        assert_eq!(mainnet_result.total_blocks, 60); // Only 60 blocks exist in storage
+        assert_eq!(mainnet_result.blocks_present, 60);
+
+        // Devnet epoch 0 reward should be 1/6 of mainnet epoch 0 potential reward
+        // (60 blocks vs 360 blocks at same block reward rate)
+        assert_eq!(devnet_result.reward_amount, mainnet_result.reward_amount);
     }
 }
