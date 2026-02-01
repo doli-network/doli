@@ -27,6 +27,7 @@ fn create_test_block(slot: u32, producer: &PublicKey, prev_hash: Hash, merkle_ro
         version: 1,
         prev_hash,
         merkle_root,
+        presence_root: Hash::ZERO,
         timestamp: slot as u64 * 10, // 10-second slots
         slot,
         producer: producer.clone(),
