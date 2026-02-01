@@ -18,6 +18,7 @@ use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, construct_vdf_input, select_producer_for_slot, ConsensusParams, UNBONDING_PERIOD,
 };
+use doli_core::heartbeat::{Heartbeat, HEARTBEAT_VDF_ITERATIONS};
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
@@ -67,6 +68,8 @@ pub struct Node {
     producer_key: Option<KeyPair>,
     /// Last slot we produced a block for (to avoid double-producing)
     last_produced_slot: u32,
+    /// Last slot we broadcast a heartbeat for (to avoid double-broadcasting)
+    last_heartbeat_slot: u32,
     /// Last time we checked for production opportunity
     last_production_check: Instant,
     /// All known producers (persists across epochs for round-robin)
@@ -258,6 +261,10 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
+        // Pre-compute heartbeat settings before moving config
+        let heartbeat_vdf_iterations = config.network.heartbeat_vdf_iterations();
+        let is_devnet = config.network == Network::Devnet;
+
         Ok(Self {
             config,
             params,
@@ -271,6 +278,7 @@ impl Node {
             shutdown,
             producer_key,
             last_produced_slot: 0,
+            last_heartbeat_slot: 0,
             last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
@@ -285,7 +293,15 @@ impl Node {
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
             blocks_since_save: 0,
-            heartbeat_pool: HeartbeatPool::new(),
+            heartbeat_pool: {
+                let mut pool = HeartbeatPool::new();
+                pool.set_vdf_iterations(heartbeat_vdf_iterations);
+                // Skip witness verification for devnet (witness signing protocol not implemented)
+                if is_devnet {
+                    pool.set_skip_witness_verification(true);
+                }
+                pool
+            },
             claim_registry,
         })
     }
@@ -457,8 +473,12 @@ impl Node {
     async fn run_event_loop(&mut self) -> Result<()> {
         info!("Entering main event loop");
 
-        // Check production opportunity every second
-        let production_interval = Duration::from_secs(1);
+        // Check production opportunity - faster for devnet to catch the 700ms heartbeat window
+        let production_interval = if self.config.network == Network::Devnet {
+            Duration::from_millis(200) // 5 checks per second for devnet
+        } else {
+            Duration::from_secs(1)
+        };
         let mut production_timer = tokio::time::interval(production_interval);
 
         // Gossip our producer identity every 10 seconds
@@ -477,6 +497,14 @@ impl Node {
             tokio::select! {
                 // Production timer tick
                 _ = production_timer.tick() => {
+                    // Broadcast heartbeat for presence tracking (weighted rewards)
+                    // This must happen before block production so heartbeats propagate
+                    if self.producer_key.is_some() {
+                        if let Err(e) = self.try_broadcast_heartbeat().await {
+                            debug!("Heartbeat broadcast error: {}", e);
+                        }
+                    }
+
                     // Check for block production opportunity
                     if self.producer_key.is_some() {
                         if let Err(e) = self.try_produce_block().await {
@@ -887,6 +915,31 @@ impl Node {
                 debug!("Received vote message ({} bytes)", vote_data.len());
                 // TODO: Forward to updater service via vote_tx channel
                 // This will be connected when the updater integration is complete
+            }
+
+            NetworkEvent::NewHeartbeat(heartbeat_data) => {
+                // Heartbeat received via gossip - add to heartbeat pool for presence tracking
+                if let Some(heartbeat) =
+                    doli_core::heartbeat::Heartbeat::deserialize(&heartbeat_data)
+                {
+                    info!(
+                        "Received heartbeat from producer {} for slot {}",
+                        hex::encode(&heartbeat.producer.as_bytes()[..8]),
+                        heartbeat.slot
+                    );
+
+                    // Add to heartbeat pool if valid
+                    if let Err(e) = self.heartbeat_pool.add_heartbeat(heartbeat) {
+                        info!("Heartbeat rejected: {}", e);
+                    } else {
+                        info!("Heartbeat accepted into pool");
+                    }
+                } else {
+                    debug!(
+                        "Failed to deserialize heartbeat ({} bytes)",
+                        heartbeat_data.len()
+                    );
+                }
             }
         }
 
@@ -1793,6 +1846,142 @@ impl Node {
         Ok(())
     }
 
+    /// Compute and broadcast a heartbeat to prove presence for weighted rewards
+    ///
+    /// All producers should broadcast heartbeats each slot (not just block producers).
+    /// This proves presence for the weighted reward calculation.
+    async fn try_broadcast_heartbeat(&mut self) -> Result<()> {
+        let producer_key = match &self.producer_key {
+            Some(k) => k,
+            None => return Ok(()), // Not a producer
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let current_slot = self.params.timestamp_to_slot(now);
+
+        // Don't broadcast heartbeat for the same slot twice
+        if current_slot <= self.last_heartbeat_slot {
+            return Ok(());
+        }
+
+        // Get chain state for prev_hash
+        let state = self.chain_state.read().await;
+        let prev_hash = state.best_hash;
+        let prev_slot = state.best_slot;
+        drop(state);
+
+        // Can't broadcast heartbeat if slot hasn't advanced
+        if current_slot <= prev_slot {
+            return Ok(());
+        }
+
+        // Check if we're registered as a producer
+        let is_registered = {
+            let producers = self.producer_set.read().await;
+            producers
+                .get_by_pubkey(producer_key.public_key())
+                .is_some()
+        };
+
+        if !is_registered {
+            // Not registered yet, skip heartbeat
+            return Ok(());
+        }
+
+        // Reset heartbeat pool ONLY if we're in a new slot that hasn't been initialized yet
+        // This prevents clearing heartbeats that were collected earlier in the same slot
+        let pool_current_slot = self.heartbeat_pool.current_slot();
+        if pool_current_slot != current_slot {
+            let (sorted_producers, bond_weights) = {
+                let producers = self.producer_set.read().await;
+                let active: Vec<PublicKey> = producers
+                    .active_producers()
+                    .iter()
+                    .map(|p| p.public_key.clone())
+                    .collect();
+                let weights: std::collections::HashMap<PublicKey, u64> = producers
+                    .active_producers()
+                    .iter()
+                    .map(|p| (p.public_key.clone(), p.bond_amount))
+                    .collect();
+
+                let mut sorted = active;
+                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                (sorted, weights)
+            };
+
+            self.heartbeat_pool.reset_for_slot(
+                current_slot,
+                prev_hash,
+                sorted_producers,
+                bond_weights,
+            );
+            info!("Reset heartbeat pool for slot {}", current_slot);
+        }
+
+        let our_pubkey = producer_key.public_key().clone();
+
+        info!(
+            "Computing heartbeat for slot {} (producer {})",
+            current_slot,
+            hex::encode(&our_pubkey.as_bytes()[..8])
+        );
+
+        // Compute VDF input
+        let vdf_input = Heartbeat::compute_vdf_input(&our_pubkey, current_slot, &prev_hash);
+
+        // Compute heartbeat VDF using network-specific iteration count
+        // - Mainnet/Testnet: 10M iterations (~700ms)
+        // - Devnet: 1M iterations (~70ms)
+        let iterations = self.config.network.heartbeat_vdf_iterations();
+
+        let vdf_input_clone = vdf_input;
+        let vdf_output =
+            tokio::task::spawn_blocking(move || hash_chain_vdf(&vdf_input_clone, iterations))
+                .await
+                .map_err(|e| anyhow::anyhow!("Heartbeat VDF task failed: {}", e))?;
+
+        // Sign the heartbeat
+        let signing_msg = Heartbeat::compute_signing_message(
+            doli_core::heartbeat::HEARTBEAT_VERSION,
+            &our_pubkey,
+            current_slot,
+            &prev_hash,
+            &vdf_output,
+        );
+        let signature = crypto::signature::sign_hash(&signing_msg, producer_key.private_key());
+
+        // Create heartbeat (without witnesses initially - other producers will add them)
+        let heartbeat = Heartbeat::new(
+            our_pubkey.clone(),
+            current_slot,
+            prev_hash,
+            vdf_output,
+            signature,
+        );
+
+        // Serialize and broadcast
+        let heartbeat_data = heartbeat.serialize();
+
+        if let Some(ref network) = self.network {
+            info!(
+                "Broadcasting heartbeat for slot {} ({} bytes)",
+                current_slot,
+                heartbeat_data.len()
+            );
+            let _ = network.broadcast_heartbeat(heartbeat_data).await;
+        }
+
+        // Mark that we broadcast for this slot
+        self.last_heartbeat_slot = current_slot;
+
+        Ok(())
+    }
+
     /// Try to produce a block if we're an eligible producer
     async fn try_produce_block(&mut self) -> Result<()> {
         let producer_key = match &self.producer_key {
@@ -2126,6 +2315,22 @@ impl Node {
             return Ok(());
         }
 
+        // For devnet, add a minimum delay to allow heartbeat collection
+        // This ensures heartbeats have time to propagate before block production
+        // Use millisecond precision since devnet has 1-second slots
+        if self.config.network == Network::Devnet {
+            let heartbeat_collection_ms = 700; // Wait 700ms for heartbeats
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let slot_start_ms = slot_start * 1000;
+            let offset_ms = now_ms.saturating_sub(slot_start_ms);
+            if offset_ms < heartbeat_collection_ms {
+                return Ok(()); // Too early, wait for heartbeats
+            }
+        }
+
         // We're eligible - produce a block!
         info!(
             "Producing block for slot {} at height {} (offset {}s)",
@@ -2280,9 +2485,9 @@ impl Node {
     /// Collects valid heartbeats from the heartbeat pool and builds a presence
     /// commitment that records which producers were present during this slot.
     ///
-    /// Currently, this marks only the block producer as present since full
-    /// heartbeat gossip integration is pending. When heartbeat gossip is added,
-    /// this will include all producers with valid witnessed heartbeats.
+    /// If the heartbeat pool has collected heartbeats from the network, those are
+    /// used to build the presence commitment. Otherwise, falls back to marking
+    /// just the block producer as present.
     async fn build_presence_commitment(
         &mut self,
         our_pubkey: &PublicKey,
@@ -2311,36 +2516,43 @@ impl Node {
         let mut sorted_producers = active_producers.clone();
         sorted_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-        // Reset heartbeat pool for current slot
-        self.heartbeat_pool.reset_for_slot(
-            current_slot,
-            *prev_hash,
-            sorted_producers.clone(),
-            bond_weights.clone(),
+        // NOTE: We don't reset the heartbeat pool here because heartbeats are collected
+        // throughout the slot. The pool is reset at the start of each slot in
+        // try_broadcast_heartbeat. We just need to update the producer list for validation.
+
+        // Check if we have heartbeats collected from the network
+        let heartbeat_count = self.heartbeat_pool.heartbeat_count();
+        let pool_slot = self.heartbeat_pool.current_slot();
+        info!(
+            "build_presence_commitment: slot={}, pool_slot={}, heartbeat_count={}",
+            current_slot, pool_slot, heartbeat_count
         );
 
-        // Currently, heartbeat collection from the network is not implemented.
-        // For now, we mark the block producer as present (they must be present to produce).
-        // This ensures presence tracking works correctly even before heartbeat gossip is added.
-        //
-        // Future milestone: Add heartbeat gossip to network layer and collect heartbeats
-        // from all producers during the slot.
+        if heartbeat_count > 0 {
+            // Use heartbeats from the pool - this is the weighted presence system working!
+            let presence = self.heartbeat_pool.build_presence_commitment();
+            info!(
+                "Built presence from {} heartbeats (total_weight={}, slot={})",
+                heartbeat_count,
+                presence.total_weight(),
+                current_slot
+            );
+            return presence;
+        }
 
-        // Find producer index in sorted list
+        // Fallback: No heartbeats collected, mark just the block producer as present
+        // This ensures the system works even when heartbeat gossip is not fully operational
         let producer_index = sorted_producers.iter().position(|p| p == our_pubkey);
 
         if let Some(idx) = producer_index {
-            // Mark block producer as present with their bond weight
             let weight = bond_weights.get(our_pubkey).copied().unwrap_or(0);
 
             if weight > 0 {
-                // Build presence with just the block producer
-                // The merkle root is zero since we don't have actual heartbeat data yet
                 let present_indices = vec![idx];
                 let weights = vec![weight];
 
                 debug!(
-                    "Building presence: producer at index {} with weight {} (slot {})",
+                    "Fallback presence: only block producer at index {} with weight {} (slot {})",
                     idx, weight, current_slot
                 );
 
@@ -2348,13 +2560,11 @@ impl Node {
                     sorted_producers.len(),
                     &present_indices,
                     weights,
-                    Hash::ZERO, // Placeholder merkle root until heartbeat gossip is added
+                    Hash::ZERO,
                 );
             }
         }
 
-        // Fallback: If producer not found or has no weight, return empty presence
-        // This shouldn't happen in normal operation
         debug!("Building empty presence commitment (producer not in active set or no weight)");
         doli_core::presence::PresenceCommitment::empty()
     }
