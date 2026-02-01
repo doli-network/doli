@@ -39,3 +39,7 @@ path = "bond_stacking.rs"
 [[test]]
 name = "equivocation_slashing"
 path = "equivocation_slashing.rs"
+
+[[test]]
+name = "presence_manipulation_test"
+path = "presence_manipulation_test.rs"
