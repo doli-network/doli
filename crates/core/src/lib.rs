@@ -118,6 +118,7 @@ pub mod consensus;
 pub mod discovery;
 pub mod genesis;
 pub mod heartbeat;
+pub mod merkle;
 pub mod network;
 pub mod presence;
 pub mod rewards;
@@ -184,6 +185,11 @@ pub use consensus::reward_epoch;
 // Presence commitment for weighted presence rewards
 pub use presence::PresenceCommitment;
 
+// Merkle tree utilities for presence proofs
+pub use merkle::{
+    build_merkle_tree_with_proofs, compute_merkle_root, HeartbeatMerkleProof, MerkleProof,
+};
+
 // Weighted presence reward calculation
 pub use rewards::{
     complete_epoch_range, complete_epochs_at_height, epoch_boundaries, is_epoch_complete,
@@ -194,8 +200,8 @@ pub use rewards::{
 // Heartbeat VDF and witness system for presence proofs (consensus-affecting)
 // Note: Use `heartbeat::` prefix to access these types to avoid conflict with tpop telemetry
 pub use heartbeat::{
-    hash_chain_vdf, verify_hash_chain_vdf, Heartbeat, WitnessSignature, HEARTBEAT_VERSION,
-    MIN_WITNESS_SIGNATURES,
+    hash_chain_vdf, verify_hash_chain_vdf, CompactHeartbeat, Heartbeat, WitnessSignature,
+    HEARTBEAT_VERSION, MIN_WITNESS_SIGNATURES,
 };
 // HeartbeatError and HEARTBEAT_VDF_ITERATIONS are exported from tpop (telemetry)
 // For consensus heartbeat error, use heartbeat::HeartbeatError directly
@@ -207,8 +213,10 @@ pub use network::Network;
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
-    // Weighted presence reward claims
+    // Weighted presence reward claims (V1 and V2)
+    BlockPresenceProof,
     ClaimEpochRewardData,
+    ClaimEpochRewardDataV2,
     ClaimWithdrawalData,
     ExitData,
     Input,

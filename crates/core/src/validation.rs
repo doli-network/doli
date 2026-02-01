@@ -1153,6 +1153,11 @@ pub fn validate_transaction(
             // is done in validate_claim_epoch_reward() in Milestone 7
             validate_claim_epoch_reward_data(tx)?;
         }
+        TxType::ClaimEpochRewardV2 => {
+            // Structural validation only for V2 claims (merkle-proof based)
+            // Full validation is done in validate_claim_epoch_reward_v2()
+            validate_claim_epoch_reward_data_v2(tx)?;
+        }
     }
 
     Ok(())
@@ -1802,6 +1807,73 @@ fn validate_claim_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationEr
         return Err(ValidationError::InvalidClaimEpochReward(
             "claim epoch reward missing signature".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+/// Structural validation for ClaimEpochRewardV2 transaction (merkle-proof based).
+///
+/// This performs basic structural checks:
+/// - No inputs (minted)
+/// - Exactly one output (Normal type)
+/// - Valid ClaimEpochRewardDataV2 in extra_data
+/// - Signature present
+///
+/// Note: Full validation (merkle proofs, amount calculation) is done in
+/// validate_claim_epoch_reward_v2() which requires block access.
+fn validate_claim_epoch_reward_data_v2(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::transaction::ClaimEpochRewardDataV2;
+
+    // Must have no inputs (minted)
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward V2 must have no inputs".to_string(),
+        ));
+    }
+
+    // Must have exactly one output
+    if tx.outputs.len() != 1 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward V2 must have exactly one output".to_string(),
+        ));
+    }
+
+    // Output must be Normal type
+    if tx.outputs[0].output_type != OutputType::Normal {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward V2 output must be Normal type".to_string(),
+        ));
+    }
+
+    // Must have valid ClaimEpochRewardDataV2 (signature is at the end)
+    if tx.extra_data.len() < 64 {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward V2 extra_data too short".to_string(),
+        ));
+    }
+
+    let data_bytes = &tx.extra_data[..tx.extra_data.len() - 64];
+    let claim_data = ClaimEpochRewardDataV2::from_bytes(data_bytes).ok_or_else(|| {
+        ValidationError::InvalidClaimEpochReward(
+            "invalid claim epoch reward V2 data".to_string(),
+        )
+    })?;
+
+    // Must have at least one presence proof
+    if claim_data.presence_proofs.is_empty() {
+        return Err(ValidationError::InvalidClaimEpochReward(
+            "claim epoch reward V2 must have at least one presence proof".to_string(),
+        ));
+    }
+
+    // All presence proofs must be for the same producer
+    for proof in &claim_data.presence_proofs {
+        if proof.heartbeat.producer != claim_data.producer_pubkey {
+            return Err(ValidationError::InvalidClaimEpochReward(
+                "presence proof producer mismatch".to_string(),
+            ));
+        }
     }
 
     Ok(())
