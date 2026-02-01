@@ -122,6 +122,12 @@ enum Commands {
         command: ProducerCommands,
     },
 
+    /// Rewards commands (epoch presence rewards)
+    Rewards {
+        #[command(subcommand)]
+        command: RewardsCommands,
+    },
+
     /// Show chain information
     Chain,
 }
@@ -193,6 +199,39 @@ enum ProducerCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum RewardsCommands {
+    /// List all claimable epochs with estimated rewards
+    List,
+
+    /// Claim rewards for a specific epoch
+    Claim {
+        /// Epoch number to claim
+        epoch: u64,
+
+        /// Recipient address (defaults to wallet address)
+        #[arg(short, long)]
+        recipient: Option<String>,
+    },
+
+    /// Claim all available rewards (one tx per epoch)
+    ClaimAll {
+        /// Recipient address (defaults to wallet address)
+        #[arg(short, long)]
+        recipient: Option<String>,
+    },
+
+    /// Show claim history
+    History {
+        /// Maximum number of entries to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Show current epoch info and BLOCKS_PER_REWARD_EPOCH
+    Info,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -237,6 +276,9 @@ async fn main() -> Result<()> {
         }
         Commands::Producer { command } => {
             cmd_producer(&cli.wallet, &cli.rpc, command).await?;
+        }
+        Commands::Rewards { command } => {
+            cmd_rewards(&cli.wallet, &cli.rpc, command).await?;
         }
         Commands::Chain => {
             cmd_chain(&cli.rpc).await?;
@@ -1251,6 +1293,341 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
             println!("Details: {}", e);
             println!();
             println!("Make sure a DOLI node is running and accessible.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_rewards(
+    wallet_path: &PathBuf,
+    rpc_endpoint: &str,
+    command: RewardsCommands,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    // Check connection
+    if !rpc.ping().await? {
+        println!("Error: Cannot connect to node at {}", rpc_endpoint);
+        return Ok(());
+    }
+
+    match command {
+        RewardsCommands::List => {
+            let wallet = Wallet::load(wallet_path)?;
+            let producer_pubkey = &wallet.addresses()[0].public_key;
+
+            println!("Claimable Epoch Rewards");
+            println!("{:-<70}", "");
+            println!();
+
+            match rpc.get_claimable_rewards(producer_pubkey).await {
+                Ok(info) => {
+                    println!(
+                        "Producer: {}...{}",
+                        &producer_pubkey[..16],
+                        &producer_pubkey[producer_pubkey.len() - 8..]
+                    );
+                    println!("Current Height: {}", info.current_height);
+                    println!("Current Epoch:  {}", info.current_epoch);
+                    println!();
+
+                    if info.epochs.is_empty() {
+                        println!("No claimable epochs found.");
+                        println!();
+                        println!("Note: Rewards accumulate each epoch (360 blocks).");
+                        println!("      Only complete epochs can be claimed.");
+                    } else {
+                        println!(
+                            "{:<8} {:<12} {:<12} {:<10} {:<18}",
+                            "Epoch", "Blocks", "Presence", "Rate", "Estimated Reward"
+                        );
+                        println!("{:-<60}", "");
+
+                        for entry in &info.epochs {
+                            println!(
+                                "{:<8} {:<12} {:<12} {:<10} {:<18}",
+                                entry.epoch,
+                                format!("{}/{}", entry.blocks_present, entry.total_blocks),
+                                format!("{}%", entry.presence_rate),
+                                "",
+                                format_balance(entry.estimated_reward)
+                            );
+                        }
+
+                        println!("{:-<60}", "");
+                        println!(
+                            "Claimable Epochs: {}   Total: {}",
+                            info.claimable_count,
+                            format_balance(info.total_estimated_reward)
+                        );
+                        println!();
+                        println!("Use 'doli rewards claim <epoch>' to claim a specific epoch.");
+                        println!("Use 'doli rewards claim-all' to claim all epochs.");
+                    }
+                }
+                Err(e) => {
+                    if e.to_string().contains("not found") {
+                        println!("Producer not found in the network.");
+                        println!("Use 'doli producer register' to become a producer first.");
+                    } else {
+                        println!("Error fetching claimable rewards: {}", e);
+                    }
+                }
+            }
+        }
+
+        RewardsCommands::Claim { epoch, recipient } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let keypair = wallet.primary_keypair()?;
+            let producer_pubkey = &wallet.addresses()[0].public_key;
+
+            println!("Claim Epoch Reward");
+            println!("{:-<60}", "");
+            println!();
+            println!("Epoch: {}", epoch);
+
+            // Build the claim transaction
+            match rpc
+                .build_claim_tx(producer_pubkey, epoch, recipient.as_deref())
+                .await
+            {
+                Ok(claim_info) => {
+                    println!("Amount: {}", format_balance(claim_info.amount));
+                    println!("Recipient: {}", claim_info.recipient);
+                    println!();
+
+                    // Sign the transaction
+                    let signing_message = Hash::from_hex(&claim_info.signing_message)
+                        .ok_or_else(|| anyhow::anyhow!("Invalid signing message"))?;
+
+                    let sig = signature::sign_hash(&signing_message, keypair.private_key());
+
+                    // Reconstruct the signed transaction
+                    // The unsigned_tx has a 64-byte zero placeholder for signature at the end of extra_data
+                    let mut tx_bytes = hex::decode(&claim_info.unsigned_tx)
+                        .map_err(|e| anyhow::anyhow!("Invalid unsigned tx hex: {}", e))?;
+
+                    // Replace the last 64 bytes with the actual signature
+                    let sig_bytes = sig.as_bytes();
+                    let tx_len = tx_bytes.len();
+                    tx_bytes[tx_len - 64..].copy_from_slice(sig_bytes);
+
+                    let tx_hex = hex::encode(&tx_bytes);
+
+                    println!("Submitting claim transaction...");
+
+                    match rpc.send_transaction(&tx_hex).await {
+                        Ok(hash) => {
+                            println!("Claim submitted successfully!");
+                            println!("TX Hash: {}", hash);
+                            println!();
+                            println!("Reward will be available after confirmation.");
+                        }
+                        Err(e) => {
+                            println!("Error submitting claim: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if e.to_string().contains("not yet complete") {
+                        println!("Error: Epoch {} is not yet complete.", epoch);
+                        println!("Wait for the epoch to end before claiming.");
+                    } else if e.to_string().contains("already claimed") {
+                        println!("Error: Epoch {} has already been claimed.", epoch);
+                    } else if e.to_string().contains("No reward") {
+                        println!("Error: No reward to claim for epoch {}.", epoch);
+                        println!("You may not have been present during this epoch.");
+                    } else {
+                        println!("Error building claim: {}", e);
+                    }
+                }
+            }
+        }
+
+        RewardsCommands::ClaimAll { recipient } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let keypair = wallet.primary_keypair()?;
+            let producer_pubkey = &wallet.addresses()[0].public_key;
+
+            println!("Claim All Epoch Rewards");
+            println!("{:-<60}", "");
+            println!();
+
+            // Get all claimable epochs
+            let claimable = match rpc.get_claimable_rewards(producer_pubkey).await {
+                Ok(info) => info,
+                Err(e) => {
+                    println!("Error fetching claimable rewards: {}", e);
+                    return Ok(());
+                }
+            };
+
+            if claimable.epochs.is_empty() {
+                println!("No claimable epochs found.");
+                return Ok(());
+            }
+
+            println!(
+                "Found {} claimable epoch(s), total: {}",
+                claimable.claimable_count,
+                format_balance(claimable.total_estimated_reward)
+            );
+            println!();
+
+            let mut claimed = 0;
+            let mut total_claimed: u64 = 0;
+
+            for entry in &claimable.epochs {
+                print!("Claiming epoch {}... ", entry.epoch);
+
+                match rpc
+                    .build_claim_tx(producer_pubkey, entry.epoch, recipient.as_deref())
+                    .await
+                {
+                    Ok(claim_info) => {
+                        // Sign the transaction
+                        let signing_message = match Hash::from_hex(&claim_info.signing_message) {
+                            Some(h) => h,
+                            None => {
+                                println!("FAILED (invalid signing message)");
+                                continue;
+                            }
+                        };
+
+                        let sig = signature::sign_hash(&signing_message, keypair.private_key());
+
+                        // Reconstruct the signed transaction
+                        let mut tx_bytes = match hex::decode(&claim_info.unsigned_tx) {
+                            Ok(b) => b,
+                            Err(_) => {
+                                println!("FAILED (invalid tx hex)");
+                                continue;
+                            }
+                        };
+
+                        // Replace the last 64 bytes with the signature
+                        let sig_bytes = sig.as_bytes();
+                        let tx_len = tx_bytes.len();
+                        tx_bytes[tx_len - 64..].copy_from_slice(sig_bytes);
+
+                        let tx_hex = hex::encode(&tx_bytes);
+
+                        match rpc.send_transaction(&tx_hex).await {
+                            Ok(hash) => {
+                                println!("OK ({})", &hash[..16]);
+                                claimed += 1;
+                                total_claimed += claim_info.amount;
+                            }
+                            Err(e) => {
+                                println!("FAILED ({})", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("FAILED ({})", e);
+                    }
+                }
+            }
+
+            println!();
+            println!("{:-<60}", "");
+            println!(
+                "Claimed {} of {} epochs, total: {}",
+                claimed,
+                claimable.claimable_count,
+                format_balance(total_claimed)
+            );
+        }
+
+        RewardsCommands::History { limit } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let producer_pubkey = &wallet.addresses()[0].public_key;
+
+            println!("Claim History");
+            println!("{:-<70}", "");
+            println!();
+
+            match rpc.get_claim_history(producer_pubkey, limit).await {
+                Ok(history) => {
+                    if history.claims.is_empty() {
+                        println!("No claim history found.");
+                        println!();
+                        println!("Use 'doli rewards list' to see claimable epochs.");
+                    } else {
+                        println!(
+                            "{:<8} {:<18} {:<10} {:<20}",
+                            "Epoch", "Amount", "Height", "TX Hash"
+                        );
+                        println!("{:-<60}", "");
+
+                        for entry in &history.claims {
+                            println!(
+                                "{:<8} {:<18} {:<10} {}...{}",
+                                entry.epoch,
+                                format_balance(entry.amount),
+                                entry.height,
+                                &entry.tx_hash[..8],
+                                &entry.tx_hash[entry.tx_hash.len() - 6..]
+                            );
+                        }
+
+                        println!();
+                        println!(
+                            "Total Claims: {}   Total Claimed: {}",
+                            history.total_claims,
+                            format_balance(history.total_claimed)
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("Error fetching claim history: {}", e);
+                }
+            }
+        }
+
+        RewardsCommands::Info => {
+            println!("Reward Epoch Information");
+            println!("{:-<60}", "");
+            println!();
+
+            match rpc.get_epoch_info().await {
+                Ok(info) => {
+                    println!("Current Height:      {}", info.current_height);
+                    println!("Current Epoch:       {}", info.current_epoch);
+                    println!(
+                        "Last Complete Epoch: {}",
+                        info.last_complete_epoch
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "None".to_string())
+                    );
+                    println!();
+                    println!("Blocks per Epoch:    {}", info.blocks_per_epoch);
+                    println!("Blocks Remaining:    {}", info.blocks_remaining);
+                    println!();
+                    println!(
+                        "Epoch {} Range:     {} - {} (exclusive)",
+                        info.current_epoch, info.epoch_start_height, info.epoch_end_height
+                    );
+                    println!("Block Reward:        {}", format_balance(info.block_reward));
+                    println!();
+                    println!(
+                        "Progress: [{}{}] {}%",
+                        "=".repeat(
+                            ((info.blocks_per_epoch - info.blocks_remaining) * 30
+                                / info.blocks_per_epoch) as usize
+                        ),
+                        " ".repeat((info.blocks_remaining * 30 / info.blocks_per_epoch) as usize),
+                        ((info.blocks_per_epoch - info.blocks_remaining) * 100
+                            / info.blocks_per_epoch)
+                    );
+                }
+                Err(e) => {
+                    println!("Error fetching epoch info: {}", e);
+                }
+            }
         }
     }
 
