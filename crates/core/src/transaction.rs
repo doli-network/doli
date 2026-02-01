@@ -1491,10 +1491,12 @@ mod tests {
 
         // Verify signature is valid
         let verify_msg = parsed_data.signing_message(amount);
-        assert!(
-            crypto::signature::verify_hash(&verify_msg, &parsed_sig, &parsed_data.producer_pubkey)
-                .is_ok()
-        );
+        assert!(crypto::signature::verify_hash(
+            &verify_msg,
+            &parsed_sig,
+            &parsed_data.producer_pubkey
+        )
+        .is_ok());
     }
 
     #[test]
