@@ -483,9 +483,133 @@ doli producer slash \
 
 ---
 
-## 5. Signing & Verification
+## 5. Rewards
 
-### 5.1. Sign a Message
+Commands for managing weighted presence rewards. All present producers earn proportionally
+based on their bond weight. Rewards accumulate per epoch and must be claimed.
+
+### 5.1. List Claimable Rewards
+
+Show all unclaimed epochs with estimated rewards.
+
+```bash
+doli rewards list
+```
+
+**Output:**
+```
+Claimable Rewards
+------------------------------------------------------------
+Epoch    Blocks Present    Estimated Reward
+------------------------------------------------------------
+5        358/360           47.50000000 DOLI
+6        360/360           48.00000000 DOLI
+7        355/360           46.25000000 DOLI
+------------------------------------------------------------
+Total:   3 epochs          141.75000000 DOLI
+```
+
+---
+
+### 5.2. Claim Specific Epoch
+
+Claim rewards for a specific epoch.
+
+```bash
+doli rewards claim <EPOCH> [OPTIONS]
+
+Arguments:
+  <EPOCH>    Epoch number to claim
+
+Options:
+  --recipient <ADDRESS>    Send rewards to a different address
+```
+
+**Example:**
+```bash
+# Claim epoch 5 to your address
+doli rewards claim 5
+
+# Claim to a different address
+doli rewards claim 5 --recipient a1b2c3d4...
+```
+
+---
+
+### 5.3. Claim All Epochs
+
+Claim all available epochs (one transaction per epoch).
+
+```bash
+doli rewards claim-all [OPTIONS]
+
+Options:
+  --recipient <ADDRESS>    Send all rewards to a different address
+```
+
+**Example:**
+```bash
+# Claim all unclaimed epochs
+doli rewards claim-all
+
+# Claim all to a specific address
+doli rewards claim-all --recipient a1b2c3d4...
+```
+
+---
+
+### 5.4. View Claim History
+
+Show previous reward claims.
+
+```bash
+doli rewards history [OPTIONS]
+
+Options:
+  -l, --limit <LIMIT>    Maximum entries to show [default: 10]
+```
+
+**Output:**
+```
+Claim History
+------------------------------------------------------------
+Epoch    Amount              Tx Hash              Height
+------------------------------------------------------------
+4        46.00000000 DOLI    a1b2c3d4...          1440
+3        45.50000000 DOLI    e5f6a7b8...          1080
+2        44.75000000 DOLI    c9d0e1f2...          720
+------------------------------------------------------------
+```
+
+---
+
+### 5.5. Show Epoch Info
+
+Display current epoch status and configuration.
+
+```bash
+doli rewards info
+```
+
+**Output:**
+```
+Epoch Information
+------------------------------------------------------------
+Current Epoch:          8
+Current Height:         2950
+Epoch Progress:         190/360 (52.8%)
+Blocks per Epoch:       360
+Next Epoch Starts At:   2880
+
+Last Complete Epoch:    7
+------------------------------------------------------------
+```
+
+---
+
+## 6. Signing & Verification
+
+### 6.1 Sign a Message
 
 Create a cryptographic signature for a message.
 
@@ -506,7 +630,7 @@ doli sign "Hello, world!" --address a1b2c3d4...
 
 ---
 
-### 5.2. Verify a Signature
+### 6.2 Verify a Signature
 
 Verify a message signature.
 
@@ -526,9 +650,9 @@ doli verify "Hello, world!" 3045... c455c65d3e17...
 
 ---
 
-## 6. Complete Workflow Examples
+## 7. Complete Workflow Examples
 
-### 6.1. New User Workflow
+### 7.1 New User Workflow
 
 ```bash
 # 1. Create wallet
@@ -544,7 +668,7 @@ doli addresses
 doli balance
 ```
 
-### 6.2. Becoming a Producer
+### 7.2 Becoming a Producer
 
 ```bash
 # 1. Ensure you have enough DOLI (1,000+ per bond)
@@ -560,7 +684,7 @@ doli producer status
 doli producer add-bond --count 4
 ```
 
-### 6.3. Exiting as a Producer
+### 7.3 Exiting as a Producer
 
 ```bash
 # 1. Check current status and pending withdrawals
@@ -579,7 +703,7 @@ doli producer claim-withdrawal
 doli producer exit
 ```
 
-### 6.4. Reporting Equivocation
+### 7.4 Reporting Equivocation
 
 If you observe double production (same producer, same slot, different blocks):
 
@@ -597,7 +721,7 @@ doli producer slash \
 
 ---
 
-## 7. WHITEPAPER Operations Mapping
+## 8. WHITEPAPER Operations Mapping
 
 | WHITEPAPER Section | CLI Command |
 |--------------------|-------------|
@@ -608,13 +732,13 @@ doli producer slash \
 | 6.3 Bond Stacking | `doli producer add-bond` |
 | 6.4 Bond Lifecycle | `doli producer exit`, `doli producer request-withdrawal`, `doli producer claim-withdrawal` |
 | 7. Producer Selection | `doli producer status`, `doli producer list` |
-| 9.1 Emission/Rewards | Auto-distributed at epoch boundaries |
+| 9.1 Emission/Rewards | `doli rewards list`, `doli rewards claim`, `doli rewards claim-all` |
 | 10.3 Double Production | `doli producer slash` |
 | 14. Privacy (new keys) | `doli address` |
 
 ---
 
-## 8. Environment Variables
+## 9. Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -623,7 +747,7 @@ doli producer slash \
 
 ---
 
-## 9. Exit Codes
+## 10. Exit Codes
 
 | Code | Meaning |
 |------|---------|
