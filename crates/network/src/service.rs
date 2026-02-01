@@ -26,8 +26,8 @@ use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::discovery::new_kademlia;
 use crate::gossip::{
-    new_gossipsub, subscribe_to_topics, BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC,
-    VOTES_TOPIC,
+    new_gossipsub, subscribe_to_topics, BLOCKS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC,
+    TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
@@ -90,6 +90,8 @@ pub enum NetworkEvent {
     },
     /// Vote message received for governance veto system
     NewVote(Vec<u8>),
+    /// Heartbeat received for weighted presence rewards
+    NewHeartbeat(Vec<u8>),
 }
 
 /// Commands to the network
@@ -138,6 +140,8 @@ pub enum NetworkCommand {
     },
     /// Broadcast a vote message (governance veto system)
     BroadcastVote(Vec<u8>),
+    /// Broadcast a heartbeat (weighted presence rewards)
+    BroadcastHeartbeat(Vec<u8>),
 }
 
 /// Network service handle
@@ -306,6 +310,15 @@ impl NetworkService {
     ) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::BroadcastProducerDigest(digest))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Broadcast a heartbeat to the network (for weighted presence rewards)
+    pub async fn broadcast_heartbeat(&self, heartbeat_data: Vec<u8>) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::BroadcastHeartbeat(heartbeat_data))
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -593,6 +606,17 @@ async fn handle_behaviour_event(
                         .send(NetworkEvent::NewVote(message.data.clone()))
                         .await;
                 }
+                HEARTBEATS_TOPIC => {
+                    // Forward raw heartbeat data for presence tracking
+                    debug!(
+                        "Received heartbeat ({} bytes) from {}",
+                        message.data.len(),
+                        propagation_source
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::NewHeartbeat(message.data.clone()))
+                        .await;
+                }
                 _ => {}
             }
         }
@@ -860,6 +884,19 @@ async fn handle_command(
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, vote_data) {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to broadcast vote: {}", e);
+                }
+            }
+        }
+
+        NetworkCommand::BroadcastHeartbeat(heartbeat_data) => {
+            let topic = IdentTopic::new(HEARTBEATS_TOPIC);
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic, heartbeat_data)
+            {
+                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                    warn!("Failed to broadcast heartbeat: {}", e);
                 }
             }
         }

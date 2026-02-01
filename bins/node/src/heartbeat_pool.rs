@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 
 use crypto::{Hash, Hasher, PublicKey};
-use doli_core::heartbeat::{Heartbeat, HeartbeatError, MIN_WITNESS_SIGNATURES};
+use doli_core::heartbeat::{Heartbeat, HeartbeatError};
 use doli_core::presence::PresenceCommitment;
+use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::types::{Amount, Slot};
 use tracing::{debug, warn};
 
@@ -42,6 +43,10 @@ pub struct HeartbeatPool {
     active_producers: Vec<PublicKey>,
     /// Bond weights for each active producer
     bond_weights: HashMap<PublicKey, Amount>,
+    /// VDF iterations for verification (network-specific)
+    vdf_iterations: u64,
+    /// Skip witness verification (for devnet testing)
+    skip_witness_verification: bool,
 }
 
 impl HeartbeatPool {
@@ -53,7 +58,19 @@ impl HeartbeatPool {
             heartbeats: HashMap::new(),
             active_producers: Vec::new(),
             bond_weights: HashMap::new(),
+            vdf_iterations: 10_000_000, // Default to mainnet iterations
+            skip_witness_verification: false,
         }
+    }
+
+    /// Set the VDF iterations for verification (network-specific)
+    pub fn set_vdf_iterations(&mut self, iterations: u64) {
+        self.vdf_iterations = iterations;
+    }
+
+    /// Skip witness verification (for devnet testing only)
+    pub fn set_skip_witness_verification(&mut self, skip: bool) {
+        self.skip_witness_verification = skip;
     }
 
     /// Reset the pool for a new slot
@@ -73,7 +90,21 @@ impl HeartbeatPool {
     ) {
         self.current_slot = slot;
         self.expected_prev_hash = prev_hash;
-        self.heartbeats.clear();
+
+        // Prune old heartbeats instead of clearing all.
+        // With fast slots (devnet 1s), heartbeats arrive late and we need to accumulate
+        // them across slot boundaries. Keep heartbeats from recent slots (within 3).
+        let max_slot_age = 3;
+        self.heartbeats.retain(|_, vh| {
+            let hb_slot = vh.heartbeat.slot;
+            let slot_diff = if hb_slot > slot {
+                hb_slot - slot
+            } else {
+                slot - hb_slot
+            };
+            slot_diff <= max_slot_age
+        });
+
         self.active_producers = active_producers;
         self.bond_weights = bond_weights;
     }
@@ -82,17 +113,26 @@ impl HeartbeatPool {
     ///
     /// Returns Ok(()) if the heartbeat was accepted, or an error if invalid.
     pub fn add_heartbeat(&mut self, heartbeat: Heartbeat) -> Result<(), HeartbeatError> {
-        // Check slot
-        if heartbeat.slot != self.current_slot {
+        // Check slot - allow heartbeats for current slot or recent slots (within 2)
+        // This handles timing differences between nodes
+        let slot_diff = if heartbeat.slot > self.current_slot {
+            heartbeat.slot - self.current_slot
+        } else {
+            self.current_slot - heartbeat.slot
+        };
+
+        if slot_diff > 2 {
             debug!(
-                "Heartbeat for wrong slot: got {}, expected {}",
-                heartbeat.slot, self.current_slot
+                "Heartbeat for wrong slot: got {}, expected {} (diff={})",
+                heartbeat.slot, self.current_slot, slot_diff
             );
             return Err(HeartbeatError::PrevHashMismatch);
         }
 
-        // Check prev_hash
-        if heartbeat.prev_block_hash != self.expected_prev_hash {
+        // Check prev_hash (skip for devnet testing mode)
+        if !self.skip_witness_verification
+            && heartbeat.prev_block_hash != self.expected_prev_hash
+        {
             debug!("Heartbeat has wrong prev_hash");
             return Err(HeartbeatError::PrevHashMismatch);
         }
@@ -114,11 +154,15 @@ impl HeartbeatPool {
             }
         };
 
-        // Verify VDF
-        if !heartbeat.verify_vdf() {
+        // Verify VDF using network-specific iterations
+        let vdf_input =
+            Heartbeat::compute_vdf_input(&heartbeat.producer, heartbeat.slot, &heartbeat.prev_block_hash);
+        let expected_output = hash_chain_vdf(&vdf_input, self.vdf_iterations);
+        if heartbeat.vdf_output != expected_output {
             warn!(
-                "Invalid VDF from producer {}",
-                hex::encode(&heartbeat.producer.as_bytes()[..8])
+                "Invalid VDF from producer {} (iterations={})",
+                hex::encode(&heartbeat.producer.as_bytes()[..8]),
+                self.vdf_iterations
             );
             return Err(HeartbeatError::InvalidVdf);
         }
@@ -132,8 +176,10 @@ impl HeartbeatPool {
             return Err(HeartbeatError::InvalidSignature);
         }
 
-        // Verify witnesses
-        heartbeat.verify_witnesses(&self.active_producers)?;
+        // Verify witnesses (can be skipped for devnet testing)
+        if !self.skip_witness_verification {
+            heartbeat.verify_witnesses(&self.active_producers)?;
+        }
 
         // Get bond weight
         let bond_weight = self
