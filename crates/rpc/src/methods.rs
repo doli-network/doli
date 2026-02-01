@@ -296,6 +296,7 @@ impl RpcContext {
         let mempool = self.mempool.read().await;
 
         let confirmed = utxo_set.get_balance(&pubkey_hash, chain_state.best_height);
+        let immature = utxo_set.get_immature_balance(&pubkey_hash, chain_state.best_height);
 
         // Calculate unconfirmed balance change from mempool
         // This gives the net change (incoming - outgoing) from pending transactions
@@ -304,20 +305,26 @@ impl RpcContext {
         // For the response, we show:
         // - confirmed: current spendable balance
         // - unconfirmed: incoming amounts in mempool (always positive, represents pending credits)
-        // - total: confirmed + unconfirmed incoming, but accounting for pending spends
+        // - immature: coinbase/epoch rewards pending maturity (100 blocks)
+        // - total: confirmed + unconfirmed + immature
         let (incoming, _outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
         let unconfirmed = incoming;
 
-        // Total is confirmed + net change from mempool (could be less than confirmed if spending)
+        // Total includes confirmed, unconfirmed mempool changes, and immature rewards
         let total = if unconfirmed_change >= 0 {
-            confirmed.saturating_add(unconfirmed_change as u64)
+            confirmed
+                .saturating_add(unconfirmed_change as u64)
+                .saturating_add(immature)
         } else {
-            confirmed.saturating_sub((-unconfirmed_change) as u64)
+            confirmed
+                .saturating_sub((-unconfirmed_change) as u64)
+                .saturating_add(immature)
         };
 
         let response = BalanceResponse {
             confirmed,
             unconfirmed,
+            immature,
             total,
         };
 

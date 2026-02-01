@@ -44,11 +44,14 @@ struct RpcError {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Balance {
-    /// Confirmed balance (in base units)
+    /// Confirmed balance (in base units) - spendable
     pub confirmed: u64,
-    /// Unconfirmed balance (in base units)
+    /// Unconfirmed balance (in base units) - in mempool
     pub unconfirmed: u64,
-    /// Total balance (confirmed + unconfirmed)
+    /// Immature balance (in base units) - coinbase/rewards pending maturity
+    #[serde(default)]
+    pub immature: u64,
+    /// Total balance (confirmed + unconfirmed + immature)
     pub total: u64,
 }
 
