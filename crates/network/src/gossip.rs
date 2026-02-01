@@ -23,6 +23,9 @@ pub const PRODUCERS_TOPIC: &str = "/doli/producers/1";
 /// GossipSub topic for update votes (governance veto system)
 pub const VOTES_TOPIC: &str = "/doli/votes/1";
 
+/// GossipSub topic for presence heartbeats (weighted rewards)
+pub const HEARTBEATS_TOPIC: &str = "/doli/heartbeats/1";
+
 /// Create a new GossipSub behaviour
 pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
     // Message ID function: hash of message data
@@ -61,12 +64,13 @@ pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
         .map_err(|e| GossipError::Init(e.to_string()))
 }
 
-/// Subscribe to block, transaction, producer, and vote topics
+/// Subscribe to block, transaction, producer, vote, and heartbeat topics
 pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError> {
     let blocks_topic = IdentTopic::new(BLOCKS_TOPIC);
     let txs_topic = IdentTopic::new(TRANSACTIONS_TOPIC);
     let producers_topic = IdentTopic::new(PRODUCERS_TOPIC);
     let votes_topic = IdentTopic::new(VOTES_TOPIC);
+    let heartbeats_topic = IdentTopic::new(HEARTBEATS_TOPIC);
 
     gossipsub
         .subscribe(&blocks_topic)
@@ -80,6 +84,9 @@ pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError>
     gossipsub
         .subscribe(&votes_topic)
         .map_err(|e| GossipError::Subscribe(format!("votes: {}", e)))?;
+    gossipsub
+        .subscribe(&heartbeats_topic)
+        .map_err(|e| GossipError::Subscribe(format!("heartbeats: {}", e)))?;
 
     Ok(())
 }
@@ -120,6 +127,18 @@ pub fn publish_vote(gossipsub: &mut Gossipsub, vote_data: Vec<u8>) -> Result<(),
     gossipsub
         .publish(topic, vote_data)
         .map_err(|e| GossipError::Publish(format!("vote: {}", e)))?;
+    Ok(())
+}
+
+/// Publish a heartbeat to the network (for weighted presence rewards)
+pub fn publish_heartbeat(
+    gossipsub: &mut Gossipsub,
+    heartbeat_data: Vec<u8>,
+) -> Result<(), GossipError> {
+    let topic = IdentTopic::new(HEARTBEATS_TOPIC);
+    gossipsub
+        .publish(topic, heartbeat_data)
+        .map_err(|e| GossipError::Publish(format!("heartbeat: {}", e)))?;
     Ok(())
 }
 
