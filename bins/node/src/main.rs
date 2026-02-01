@@ -1016,6 +1016,7 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
                             bond_output.amount,
                             (tx_hash, bond_index as u32),
                             era,
+                            network.initial_bond(),
                         );
 
                         if let Err(e) = producer_set.register(producer_info, height) {
