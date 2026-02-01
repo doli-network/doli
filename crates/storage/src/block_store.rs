@@ -13,6 +13,7 @@ const CF_HEADERS: &str = "headers";
 const CF_BODIES: &str = "bodies";
 const CF_HEIGHT_INDEX: &str = "height_index";
 const CF_SLOT_INDEX: &str = "slot_index";
+const CF_PRESENCE: &str = "presence";
 
 /// Block store
 pub struct BlockStore {
@@ -26,7 +27,13 @@ impl BlockStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        let cfs = vec![CF_HEADERS, CF_BODIES, CF_HEIGHT_INDEX, CF_SLOT_INDEX];
+        let cfs = vec![
+            CF_HEADERS,
+            CF_BODIES,
+            CF_HEIGHT_INDEX,
+            CF_SLOT_INDEX,
+            CF_PRESENCE,
+        ];
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
@@ -40,10 +47,7 @@ impl BlockStore {
         let slot = block.slot();
 
         // Log block storage with slot info (info level for visibility)
-        info!(
-            "[BLOCK_STORE] put_block: height={}, slot={}",
-            height, slot
-        );
+        info!("[BLOCK_STORE] put_block: height={}, slot={}", height, slot);
 
         // Store header
         let header_bytes = bincode::serialize(&block.header)
@@ -64,8 +68,15 @@ impl BlockStore {
 
         // Update slot index
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
-        self.db
-            .put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
+        self.db.put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
+
+        // Store presence commitment if present
+        if let Some(ref presence) = block.presence {
+            let presence_bytes = bincode::serialize(presence)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let cf_presence = self.db.cf_handle(CF_PRESENCE).unwrap();
+            self.db.put_cf(cf_presence, hash_bytes, &presence_bytes)?;
+        }
 
         Ok(())
     }
@@ -90,7 +101,16 @@ impl BlockStore {
         let transactions = bincode::deserialize(&body_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        Ok(Some(Block::new(header, transactions)))
+        // Try to load presence commitment (may not exist for older blocks)
+        let presence = {
+            let cf_presence = self.db.cf_handle(CF_PRESENCE).unwrap();
+            match self.db.get_cf(cf_presence, hash.as_bytes())? {
+                Some(bytes) => bincode::deserialize(&bytes).map(Some).unwrap_or(None),
+                None => None,
+            }
+        };
+
+        Ok(Some(Block::with_presence(header, transactions, presence)))
     }
 
     /// Get a header by hash

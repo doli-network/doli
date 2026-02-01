@@ -278,12 +278,12 @@ impl Network {
     ///
     /// - Mainnet: 360 blocks ≈ 1 hour at 10s blocks
     /// - Testnet: 360 blocks ≈ 1 hour at 10s blocks
-    /// - Devnet: 60 blocks ≈ 1 minute at 1s blocks
+    /// - Devnet: 20 blocks ≈ 3.3 minutes at 10s blocks
     pub fn blocks_per_reward_epoch(&self) -> u64 {
         match self {
             Network::Mainnet => 360, // ~1 hour (360 blocks × 10s)
             Network::Testnet => 360, // ~1 hour (360 blocks × 10s)
-            Network::Devnet => 60,   // ~1 minute (60 blocks × 1s)
+            Network::Devnet => 20,   // ~3.3 minutes (20 blocks × 10s)
         }
     }
 

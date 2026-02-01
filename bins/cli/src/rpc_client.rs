@@ -377,7 +377,8 @@ impl RpcClient {
             limit: usize,
         }
 
-        self.call("getClaimHistory", Params { producer, limit }).await
+        self.call("getClaimHistory", Params { producer, limit })
+            .await
     }
 
     /// Estimate reward for a specific epoch
