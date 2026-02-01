@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crypto::Hash;
-use doli_core::{Block, Transaction};
-use storage::{BlockStore, ChainState, Outpoint, ProducerSet, UtxoSet};
+use doli_core::Transaction;
+use storage::{BlockStore, ChainState, ClaimRegistry, ProducerSet, UtxoSet};
 
 use crate::error::RpcError;
 use crate::types::*;
@@ -35,6 +35,8 @@ pub struct RpcContext {
     pub chain_state: Arc<RwLock<ChainState>>,
     /// Producer set
     pub producer_set: Option<Arc<RwLock<ProducerSet>>>,
+    /// Claim registry
+    pub claim_registry: Option<Arc<RwLock<ClaimRegistry>>>,
     /// Mempool
     pub mempool: Arc<RwLock<Mempool>>,
     /// Consensus params
@@ -67,6 +69,7 @@ impl RpcContext {
             block_store,
             utxo_set,
             producer_set: None,
+            claim_registry: None,
             mempool,
             params,
             network: "mainnet".to_string(),
@@ -114,6 +117,12 @@ impl RpcContext {
         self
     }
 
+    /// Set claim registry
+    pub fn with_claim_registry(mut self, claim_registry: Arc<RwLock<ClaimRegistry>>) -> Self {
+        self.claim_registry = Some(claim_registry);
+        self
+    }
+
     /// Set broadcast vote callback (for governance veto system)
     pub fn with_broadcast_vote(mut self, f: impl Fn(Vec<u8>) + Send + Sync + 'static) -> Self {
         self.broadcast_vote = Arc::new(f);
@@ -142,6 +151,12 @@ impl RpcContext {
             "submitVote" => self.submit_vote(request.params).await,
             "getUpdateStatus" => self.get_update_status().await,
             "getNodeInfo" => self.get_node_info().await,
+            // Reward/claim methods
+            "getClaimableRewards" => self.get_claimable_rewards(request.params).await,
+            "getClaimHistory" => self.get_claim_history(request.params).await,
+            "estimateEpochReward" => self.estimate_epoch_reward(request.params).await,
+            "buildClaimTx" => self.build_claim_tx(request.params).await,
+            "getEpochInfo" => self.get_epoch_info().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -625,5 +640,321 @@ impl RpcContext {
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH
         }))
+    }
+
+    // ==================== Reward/Claim Methods ====================
+
+    /// Get claimable rewards for a producer
+    async fn get_claimable_rewards(&self, params: Value) -> Result<Value, RpcError> {
+        use doli_core::consensus::reward_epoch;
+        use doli_core::rewards::WeightedRewardCalculator;
+
+        let params: GetClaimableRewardsParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_pubkey = crypto::PublicKey::from_hex(&params.producer)
+            .map_err(|_| RpcError::invalid_params("Invalid producer public key format"))?;
+
+        // Get producer set to find producer index
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let claim_registry = self
+            .claim_registry
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Claim registry not available"))?;
+
+        let producers = producer_set.read().await;
+        let registry = claim_registry.read().await;
+        let chain_state = self.chain_state.read().await;
+
+        // Verify producer exists
+        let _ = producers
+            .get_by_pubkey(&producer_pubkey)
+            .ok_or_else(|| RpcError::producer_not_found())?;
+
+        // Find producer index in sorted list
+        let active_producers = producers.active_producers();
+        let producer_index = active_producers
+            .iter()
+            .position(|p| p.public_key == producer_pubkey)
+            .ok_or_else(|| RpcError::producer_not_found())?;
+
+        let current_height = chain_state.best_height;
+        let current_epoch = reward_epoch::from_height(current_height);
+
+        // Get unclaimed epochs
+        let unclaimed_epochs = registry.get_unclaimed_epochs(&producer_pubkey, 0, current_epoch);
+
+        // Calculate rewards for each unclaimed epoch
+        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+
+        let mut epochs = Vec::new();
+        let mut total_estimated_reward: u64 = 0;
+
+        for epoch in unclaimed_epochs {
+            match calculator.calculate_producer_reward(&producer_pubkey, producer_index, epoch) {
+                Ok(calc) if calc.reward_amount > 0 => {
+                    total_estimated_reward += calc.reward_amount;
+                    epochs.push(ClaimableEpochEntry {
+                        epoch,
+                        blocks_present: calc.blocks_present,
+                        total_blocks: calc.total_blocks,
+                        presence_rate: calc.presence_rate(),
+                        estimated_reward: calc.reward_amount,
+                    });
+                }
+                _ => continue,
+            }
+        }
+
+        let response = ClaimableRewardsResponse {
+            producer: params.producer,
+            current_height,
+            current_epoch,
+            claimable_count: epochs.len(),
+            total_estimated_reward,
+            epochs,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get claim history for a producer
+    async fn get_claim_history(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetClaimHistoryParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_pubkey = crypto::PublicKey::from_hex(&params.producer)
+            .map_err(|_| RpcError::invalid_params("Invalid producer public key format"))?;
+
+        let claim_registry = self
+            .claim_registry
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Claim registry not available"))?;
+
+        let registry = claim_registry.read().await;
+
+        let mut claims: Vec<(u64, &storage::ClaimRecord)> =
+            registry.get_producer_claims(&producer_pubkey);
+
+        // Sort by epoch descending (most recent first)
+        claims.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Apply limit
+        let claims: Vec<_> = claims.into_iter().take(params.limit).collect();
+
+        let total_claimed: u64 = claims.iter().map(|(_, r)| r.amount).sum();
+
+        let claim_entries: Vec<ClaimHistoryEntry> = claims
+            .iter()
+            .map(|(epoch, record)| ClaimHistoryEntry {
+                epoch: *epoch,
+                tx_hash: record.tx_hash.to_hex(),
+                height: record.height,
+                amount: record.amount,
+                timestamp: record.timestamp,
+            })
+            .collect();
+
+        let response = ClaimHistoryResponse {
+            producer: params.producer,
+            total_claims: claim_entries.len(),
+            total_claimed,
+            claims: claim_entries,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Estimate reward for a specific epoch
+    async fn estimate_epoch_reward(&self, params: Value) -> Result<Value, RpcError> {
+        use doli_core::consensus::reward_epoch;
+        use doli_core::rewards::WeightedRewardCalculator;
+
+        let params: EstimateEpochRewardParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_pubkey = crypto::PublicKey::from_hex(&params.producer)
+            .map_err(|_| RpcError::invalid_params("Invalid producer public key format"))?;
+
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let claim_registry = self
+            .claim_registry
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Claim registry not available"))?;
+
+        let producers = producer_set.read().await;
+        let registry = claim_registry.read().await;
+        let chain_state = self.chain_state.read().await;
+
+        // Find producer index
+        let active_producers = producers.active_producers();
+        let producer_index = active_producers
+            .iter()
+            .position(|p| p.public_key == producer_pubkey)
+            .ok_or_else(|| RpcError::producer_not_found())?;
+
+        let current_height = chain_state.best_height;
+        let is_complete = reward_epoch::is_complete(params.epoch, current_height);
+        let is_claimed = registry.is_claimed(&producer_pubkey, params.epoch);
+
+        // Calculate reward
+        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+        let calc = calculator
+            .calculate_producer_reward(&producer_pubkey, producer_index, params.epoch)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?;
+
+        let response = RewardEstimateResponse {
+            producer: params.producer,
+            epoch: params.epoch,
+            is_complete,
+            is_claimed,
+            blocks_present: calc.blocks_present,
+            total_blocks: calc.total_blocks,
+            presence_rate: calc.presence_rate(),
+            block_reward: calc.block_reward,
+            estimated_reward: calc.reward_amount,
+            average_weight: calc.average_weight(),
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Build an unsigned claim transaction
+    async fn build_claim_tx(&self, params: Value) -> Result<Value, RpcError> {
+        use doli_core::consensus::reward_epoch;
+        use doli_core::rewards::WeightedRewardCalculator;
+        use doli_core::ClaimEpochRewardData;
+
+        let params: BuildClaimTxParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_pubkey = crypto::PublicKey::from_hex(&params.producer)
+            .map_err(|_| RpcError::invalid_params("Invalid producer public key format"))?;
+
+        // Recipient defaults to producer's pubkey hash
+        let recipient_hash = if let Some(ref recipient) = params.recipient {
+            Hash::from_hex(recipient)
+                .ok_or_else(|| RpcError::invalid_params("Invalid recipient address format"))?
+        } else {
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes())
+        };
+
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let claim_registry = self
+            .claim_registry
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Claim registry not available"))?;
+
+        let producers = producer_set.read().await;
+        let registry = claim_registry.read().await;
+        let chain_state = self.chain_state.read().await;
+
+        // Verify epoch is complete
+        let current_height = chain_state.best_height;
+        if !reward_epoch::is_complete(params.epoch, current_height) {
+            return Err(RpcError::invalid_params(format!(
+                "Epoch {} is not yet complete",
+                params.epoch
+            )));
+        }
+
+        // Verify not already claimed
+        if registry.is_claimed(&producer_pubkey, params.epoch) {
+            return Err(RpcError::invalid_params(format!(
+                "Epoch {} already claimed",
+                params.epoch
+            )));
+        }
+
+        // Find producer index
+        let active_producers = producers.active_producers();
+        let producer_index = active_producers
+            .iter()
+            .position(|p| p.public_key == producer_pubkey)
+            .ok_or_else(|| RpcError::producer_not_found())?;
+
+        // Calculate reward
+        let calculator = WeightedRewardCalculator::new(&*self.block_store, &self.params);
+        let calc = calculator
+            .calculate_producer_reward(&producer_pubkey, producer_index, params.epoch)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?;
+
+        if calc.reward_amount == 0 {
+            return Err(RpcError::invalid_params("No reward to claim for this epoch"));
+        }
+
+        // Build claim data
+        let claim_data = ClaimEpochRewardData::new(params.epoch, producer_pubkey, recipient_hash);
+
+        // Create the signing message
+        let signing_message = claim_data.signing_message(calc.reward_amount);
+
+        // Build unsigned transaction (without signature)
+        // The extra_data will be: claim_data (72 bytes) + signature placeholder (64 bytes of zeros)
+        let mut extra_data = claim_data.to_bytes();
+        extra_data.extend_from_slice(&[0u8; 64]); // Placeholder for signature
+
+        let unsigned_tx = Transaction {
+            version: 1,
+            tx_type: doli_core::TxType::ClaimEpochReward,
+            inputs: Vec::new(),
+            outputs: vec![doli_core::Output::normal(calc.reward_amount, recipient_hash)],
+            extra_data,
+        };
+
+        let response = BuildClaimTxResponse {
+            epoch: params.epoch,
+            amount: calc.reward_amount,
+            recipient: recipient_hash.to_hex(),
+            unsigned_tx: hex::encode(unsigned_tx.serialize()),
+            signing_message: signing_message.to_hex(),
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get current reward epoch information
+    async fn get_epoch_info(&self) -> Result<Value, RpcError> {
+        use doli_core::consensus::{reward_epoch, BLOCKS_PER_REWARD_EPOCH};
+
+        let chain_state = self.chain_state.read().await;
+        let current_height = chain_state.best_height;
+
+        let current_epoch = reward_epoch::from_height(current_height);
+        let (epoch_start, epoch_end) = reward_epoch::boundaries(current_epoch);
+        let blocks_remaining = epoch_end.saturating_sub(current_height);
+
+        let last_complete_epoch = if current_epoch > 0 {
+            Some(current_epoch - 1)
+        } else {
+            None
+        };
+
+        let block_reward = self.params.block_reward(current_height);
+
+        let response = EpochInfoResponse {
+            current_height,
+            current_epoch,
+            last_complete_epoch,
+            blocks_per_epoch: BLOCKS_PER_REWARD_EPOCH,
+            blocks_remaining,
+            epoch_start_height: epoch_start,
+            epoch_end_height: epoch_end,
+            block_reward,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }

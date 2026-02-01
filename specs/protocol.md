@@ -122,7 +122,8 @@ transaction = {
     type:       uint32,          // 0 = transfer, 1 = registration, 2 = exit,
                                  // 3 = claim_reward, 4 = claim_bond, 5 = slash_producer,
                                  // 6 = coinbase, 7 = add_bond, 8 = request_withdrawal,
-                                 // 9 = claim_withdrawal, 10 = epoch_reward
+                                 // 9 = claim_withdrawal, 10 = epoch_reward (deprecated),
+                                 // 11 = claim_epoch_reward
     inputs:     input[],
     outputs:    output[],
     extra_data: bytes            // Type-specific data
@@ -490,6 +491,85 @@ claim_withdrawal_tx = {
 - Output must be exactly one Normal output
 - Amount equals net bond value after any penalties
 
+### 3.15 ClaimEpochReward Transaction
+
+Claims weighted presence rewards for a completed epoch. All producers who proved
+presence during blocks in the epoch receive a share proportional to their bond weight.
+
+```
+claim_epoch_reward_tx = {
+    version: 1,
+    type: 11,
+    inputs: [],                  // Minted, no inputs
+    outputs: [{
+        output_type: 0,          // Normal output
+        amount: calculated_reward,
+        pubkey_hash: recipient,
+        lock_until: 0
+    }],
+    extra_data: {
+        epoch: uint64,           // Epoch number being claimed
+        producer_pubkey: 32 bytes,
+        recipient_hash: 32 bytes,
+        signature: 64 bytes      // Producer signs claim data
+    }
+}
+```
+
+**Reward Calculation:**
+
+For each block in the epoch where the producer was present:
+
+```
+block_share = block_reward × producer_weight / total_present_weight
+total_reward = sum(block_share for all blocks where present)
+```
+
+**Epoch Boundaries:**
+
+Epochs are block-height based, not slot-based:
+
+```
+BLOCKS_PER_REWARD_EPOCH = 360
+
+epoch_number = height / BLOCKS_PER_REWARD_EPOCH
+start_height = epoch × BLOCKS_PER_REWARD_EPOCH
+end_height = start_height + BLOCKS_PER_REWARD_EPOCH
+```
+
+**Validation rules:**
+- Epoch must be complete: `current_height >= end_height`
+- Not already claimed: ClaimRegistry shows unclaimed for (producer, epoch)
+- Producer must be in active producer set
+- Producer must have been present in at least one block
+- Amount must exactly match calculated reward
+- Signature must be valid over claim data hash
+- Output recipient must match `recipient_hash` in claim data
+
+**Signing Message:**
+
+```
+signing_message = HASH("DOLI_CLAIM_SIGN_V1" || epoch || producer_pubkey || recipient_hash || amount)
+```
+
+**Presence Tracking:**
+
+Each block contains a `PresenceCommitment`:
+
+```
+presence_commitment = {
+    bitfield: bytes,         // 1 bit per producer (present/absent)
+    merkle_root: 32 bytes,   // Merkle root of heartbeat proofs
+    weights: uint64[],       // Bond weights of present producers
+    total_weight: uint64     // Sum of weights
+}
+```
+
+**Guarantees:**
+- Deterministic: Any node calculates identical rewards from the same blocks
+- No expiration: Producers can claim any historical epoch
+- Restart-safe: ClaimRegistry persisted to disk
+
 ---
 
 ## 4. Blocks
@@ -514,9 +594,31 @@ block_header = {
 ```
 block_body = {
     tx_count:      varint,
-    transactions:  transaction[]
+    transactions:  transaction[],
+    presence:      presence_commitment  // Optional, for weighted rewards
 }
 ```
+
+### 4.2.1 Presence Commitment
+
+Records which producers were present during the block's slot:
+
+```
+presence_commitment = {
+    bitfield:     bytes,         // 1 bit per registered producer
+    merkle_root:  32 bytes,      // Merkle root of heartbeat proofs
+    weights:      uint64[],      // Bond weights of present producers (in bitfield order)
+    total_weight: uint64         // Sum of weights (cached)
+}
+```
+
+**Bitfield encoding:**
+- Bit i = 1 means producer i (sorted by pubkey) was present
+- Size = ceil(producer_count / 8) bytes
+
+**Weights array:**
+- Contains only weights for producers with bit=1
+- Order matches bitfield scan order
 
 ### 4.3 Block Hash
 
