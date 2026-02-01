@@ -223,6 +223,7 @@ pub fn generate_genesis_block(config: &GenesisConfig) -> Block {
         version: 1,
         prev_hash: Hash::from_bytes(NULL_HASH),
         merkle_root,
+        presence_root: Hash::ZERO, // Genesis block has no presence commitment
         timestamp,
         slot: 0,
         producer: PublicKey::from_bytes(GENESIS_PUBKEY),

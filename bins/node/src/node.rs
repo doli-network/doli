@@ -2482,6 +2482,7 @@ impl Node {
             version: header.version,
             prev_hash: header.prev_hash,
             merkle_root: header.merkle_root,
+            presence_root: header.presence_root,
             timestamp: header.timestamp,
             slot: header.slot,
             producer: header.producer,

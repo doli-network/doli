@@ -201,6 +201,26 @@ impl PresenceCommitment {
         4 + self.bitfield.len() + 32 + (self.weights.len() * 8) + 8
     }
 
+    /// Compute a commitment hash for inclusion in the block header.
+    ///
+    /// This hash commits to all the presence data and ensures that
+    /// presence information cannot be modified after block creation.
+    pub fn commitment_hash(&self) -> crypto::Hash {
+        use crypto::Hasher;
+
+        let mut hasher = Hasher::new();
+        hasher.update(b"DOLI_PRESENCE_V1");
+        hasher.update(&(self.bitfield.len() as u32).to_le_bytes());
+        hasher.update(&self.bitfield);
+        hasher.update(self.merkle_root.as_bytes());
+        hasher.update(&(self.weights.len() as u32).to_le_bytes());
+        for w in &self.weights {
+            hasher.update(&w.to_le_bytes());
+        }
+        hasher.update(&self.total_weight.to_le_bytes());
+        hasher.finalize()
+    }
+
     /// Serialize the presence commitment.
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap_or_default()
@@ -276,6 +296,112 @@ impl PresenceCommitment {
         }
     }
 }
+
+// =============================================================================
+// PRESENCE COMMITMENT V2 (Compact - 40 bytes)
+// =============================================================================
+
+/// Compact presence commitment for V2 blocks (post-activation).
+///
+/// This is a much more compact representation that only stores:
+/// - Merkle root of all heartbeats (for proof verification)
+/// - Total weight of all present producers (for reward calculation)
+///
+/// Claims in V2 must provide merkle proofs to verify presence.
+///
+/// # Storage Overhead
+///
+/// | Component | Size |
+/// |-----------|------|
+/// | heartbeats_root | 32 bytes |
+/// | total_weight | 8 bytes |
+///
+/// Total: **40 bytes per block** (constant, regardless of producer count)
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceCommitmentV2 {
+    /// Merkle root of all valid heartbeats in this slot.
+    ///
+    /// Each leaf is computed from CompactHeartbeat::leaf_hash().
+    /// Sorted by producer pubkey for deterministic ordering.
+    pub heartbeats_root: Hash,
+
+    /// Total bond weight of all present producers.
+    ///
+    /// Sum of bond_amount for each producer who submitted a valid heartbeat.
+    pub total_weight: u64,
+}
+
+impl Default for PresenceCommitmentV2 {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl PresenceCommitmentV2 {
+    /// Size in bytes (constant).
+    pub const SIZE: usize = 32 + 8; // heartbeats_root + total_weight = 40 bytes
+
+    /// Create an empty V2 presence commitment.
+    pub fn empty() -> Self {
+        Self {
+            heartbeats_root: Hash::ZERO,
+            total_weight: 0,
+        }
+    }
+
+    /// Create a new V2 presence commitment.
+    pub fn new(heartbeats_root: Hash, total_weight: u64) -> Self {
+        Self {
+            heartbeats_root,
+            total_weight,
+        }
+    }
+
+    /// Check if no producers were present.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.total_weight == 0
+    }
+
+    /// Get the total weight of all present producers.
+    #[inline]
+    pub fn total_weight(&self) -> u64 {
+        self.total_weight
+    }
+
+    /// Compute the commitment hash for inclusion in block header.
+    ///
+    /// This is what goes into BlockHeader.presence_root for V2 blocks.
+    pub fn commitment_hash(&self) -> Hash {
+        use crypto::Hasher;
+
+        let mut hasher = Hasher::new();
+        hasher.update(b"DOLI_PRESENCE_V2");
+        hasher.update(self.heartbeats_root.as_bytes());
+        hasher.update(&self.total_weight.to_le_bytes());
+        hasher.finalize()
+    }
+
+    /// Serialize the V2 presence commitment.
+    pub fn serialize(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap_or_default()
+    }
+
+    /// Deserialize a V2 presence commitment.
+    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
+        bincode::deserialize(bytes).ok()
+    }
+
+    /// Get the size in bytes (always 40).
+    #[inline]
+    pub fn size(&self) -> usize {
+        Self::SIZE
+    }
+}
+
+// =============================================================================
+// PRESENCE ITERATOR
+// =============================================================================
 
 /// Iterator over present producers and their weights.
 struct PresenceIterator<'a> {
@@ -577,5 +703,96 @@ mod tests {
         assert_eq!(commitment.bitfield.len(), 2); // Now needs 16 bits = 2 bytes
         assert!(commitment.is_present(15));
         assert_eq!(commitment.get_weight(15), Some(500));
+    }
+
+    #[test]
+    fn test_commitment_hash_deterministic() {
+        let present = [1, 3, 5];
+        let weights = vec![100, 200, 300];
+        let merkle = Hash::from_bytes([42u8; 32]);
+        let commitment = PresenceCommitment::new(8, &present, weights, merkle);
+
+        let hash1 = commitment.commitment_hash();
+        let hash2 = commitment.commitment_hash();
+
+        assert_eq!(hash1, hash2);
+        assert!(!hash1.is_zero());
+    }
+
+    #[test]
+    fn test_commitment_hash_different_for_different_data() {
+        let present = [1, 3];
+        let weights = vec![100, 200];
+
+        let commitment1 = PresenceCommitment::new(8, &present, weights.clone(), Hash::ZERO);
+        let commitment2 = PresenceCommitment::new(8, &[1, 4], weights, Hash::ZERO); // Different indices
+
+        assert_ne!(commitment1.commitment_hash(), commitment2.commitment_hash());
+    }
+
+    // =========================================================================
+    // PresenceCommitmentV2 Tests
+    // =========================================================================
+
+    #[test]
+    fn test_v2_empty() {
+        let commitment = PresenceCommitmentV2::empty();
+
+        assert!(commitment.is_empty());
+        assert_eq!(commitment.total_weight(), 0);
+        assert_eq!(commitment.heartbeats_root, Hash::ZERO);
+    }
+
+    #[test]
+    fn test_v2_size_is_constant() {
+        let commitment1 = PresenceCommitmentV2::empty();
+        let commitment2 = PresenceCommitmentV2::new(Hash::from_bytes([42u8; 32]), 1_000_000_000);
+
+        assert_eq!(commitment1.size(), 40);
+        assert_eq!(commitment2.size(), 40);
+        assert_eq!(PresenceCommitmentV2::SIZE, 40);
+    }
+
+    #[test]
+    fn test_v2_commitment_hash_deterministic() {
+        let root = Hash::from_bytes([1u8; 32]);
+        let commitment = PresenceCommitmentV2::new(root, 5_000_000_000_000);
+
+        let hash1 = commitment.commitment_hash();
+        let hash2 = commitment.commitment_hash();
+
+        assert_eq!(hash1, hash2);
+        assert!(!hash1.is_zero());
+    }
+
+    #[test]
+    fn test_v2_commitment_hash_different_for_different_data() {
+        let root = Hash::from_bytes([1u8; 32]);
+
+        let commitment1 = PresenceCommitmentV2::new(root, 5_000_000_000_000);
+        let commitment2 = PresenceCommitmentV2::new(root, 5_000_000_000_001); // Different weight
+
+        assert_ne!(commitment1.commitment_hash(), commitment2.commitment_hash());
+
+        let commitment3 = PresenceCommitmentV2::new(Hash::from_bytes([2u8; 32]), 5_000_000_000_000);
+        assert_ne!(commitment1.commitment_hash(), commitment3.commitment_hash());
+    }
+
+    #[test]
+    fn test_v2_serialization_roundtrip() {
+        let root = Hash::from_bytes([42u8; 32]);
+        let commitment = PresenceCommitmentV2::new(root, 123_456_789_000);
+
+        let serialized = commitment.serialize();
+        let deserialized = PresenceCommitmentV2::deserialize(&serialized).unwrap();
+
+        assert_eq!(commitment, deserialized);
+    }
+
+    #[test]
+    fn test_v2_default() {
+        let commitment = PresenceCommitmentV2::default();
+        assert!(commitment.is_empty());
+        assert_eq!(commitment, PresenceCommitmentV2::empty());
     }
 }

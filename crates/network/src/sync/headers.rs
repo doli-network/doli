@@ -176,6 +176,7 @@ mod tests {
             version: 1,
             prev_hash,
             merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
             timestamp: now,
             slot,
             producer: PublicKey::from_bytes([0u8; 32]),

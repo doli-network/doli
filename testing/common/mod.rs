@@ -231,6 +231,7 @@ pub fn create_test_block(
         version: 1,
         prev_hash,
         merkle_root,
+        presence_root: crypto::Hash::ZERO,
         timestamp,
         slot,
         producer: producer.clone(),
