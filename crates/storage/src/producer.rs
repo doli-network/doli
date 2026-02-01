@@ -2068,7 +2068,14 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // First registration
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
+        let info1 = ProducerInfo::new(
+            pubkey.clone(),
+            0,
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
         set.register(info1, 0).unwrap();
 
         // Exit completely
@@ -2081,7 +2088,14 @@ mod tests {
         assert!(set.has_prior_exit(&pubkey, 50_000));
 
         // Re-register
-        let info2 = ProducerInfo::new(pubkey.clone(), 100_000, 100_000_000_000, (Hash::ZERO, 1), 0, BOND_UNIT);
+        let info2 = ProducerInfo::new(
+            pubkey.clone(),
+            100_000,
+            100_000_000_000,
+            (Hash::ZERO, 1),
+            0,
+            BOND_UNIT,
+        );
         set.register(info2, 100_000).unwrap();
 
         // Verify has_prior_exit flag is set
@@ -2100,7 +2114,14 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at genesis
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
+        let info1 = ProducerInfo::new(
+            pubkey.clone(),
+            0,
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
         set.register(info1, 0).unwrap();
 
         // After 9 years, weight is 4 (max, with sqrt formula)
@@ -2140,7 +2161,14 @@ mod tests {
         let keypair = KeyPair::generate();
         let pubkey = *keypair.public_key();
 
-        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
+        let info = ProducerInfo::new(
+            pubkey.clone(),
+            0,
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
         set.register(info, 0).unwrap();
 
         // Slash the producer
@@ -2306,7 +2334,14 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at block 0
-        let info1 = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
+        let info1 = ProducerInfo::new(
+            pubkey.clone(),
+            0,
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
         set.register_for_network(info1, 0, devnet).unwrap();
 
         // Exit at block 576 (4 years on devnet: 144 blocks/year × 4)
@@ -2526,7 +2561,14 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register producer
-        let info = ProducerInfo::new(pubkey.clone(), 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
+        let info = ProducerInfo::new(
+            pubkey.clone(),
+            0,
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
         set.register(info, 0).unwrap();
 
         // Verify initially active
