@@ -109,6 +109,19 @@ impl Block {
         }
     }
 
+    /// Create a new block with optional presence commitment (for storage recovery)
+    pub fn with_presence(
+        header: BlockHeader,
+        transactions: Vec<Transaction>,
+        presence: Option<PresenceCommitment>,
+    ) -> Self {
+        Self {
+            header,
+            transactions,
+            presence,
+        }
+    }
+
     /// Get the block hash
     pub fn hash(&self) -> Hash {
         self.header.hash()

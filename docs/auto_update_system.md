@@ -1,1296 +1,1217 @@
-# DOLI Auto-Update System - Complete Technical Documentation
+# DOLI Auto-Update System
 
-This document covers **every detail** of the DOLI blockchain auto-update mechanism, including governance, CLI commands, update application process, and operational considerations.
+## Complete Technical Specification v2.0
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#1-overview)
-2. [Maintainer Keys and Timing](#2-maintainer-keys-and-timing)
-3. [Release Creation Process](#3-release-creation-process)
-4. [Update Detection](#4-update-detection)
-5. [Governance and Veto System](#5-governance-and-veto-system)
-6. [Version Enforcement ("No Update = No Produce")](#6-version-enforcement)
-7. [CLI Commands](#7-cli-commands)
-8. [Update Application Process](#8-update-application-process)
-9. [Node Behavior During Updates](#9-node-behavior-during-updates)
-10. [Non-Updating Nodes](#10-non-updating-nodes)
-11. [Network Compatibility](#11-network-compatibility)
-12. [Configuration Options](#12-configuration-options)
-13. [Security Considerations](#13-security-considerations)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Test Scripts](#15-test-scripts)
+1. [Executive Summary](#1-executive-summary)
+2. [Governance and Voting System](#2-governance-and-voting-system)
+3. [Sybil Resistance Analysis](#3-sybil-resistance-analysis)
+4. [Complete Update Timeline](#4-complete-update-timeline)
+5. [Automatic Rollback System](#5-automatic-rollback-system)
+6. [Hard Fork Support](#6-hard-fork-support)
+7. [Security Model](#7-security-model)
+8. [CLI Command Reference](#8-cli-command-reference)
+9. [RPC Endpoints](#9-rpc-endpoints)
+10. [Implementation Reference](#10-implementation-reference)
+11. [Comparison with Other Blockchains](#11-comparison-with-other-blockchains)
+12. [Frequently Asked Questions](#12-frequently-asked-questions)
 
 ---
 
-## 1. Overview
+## 1. Executive Summary
 
-The DOLI auto-update system provides:
+The DOLI auto-update system is a decentralized, cryptographically secure mechanism for coordinating software updates across the network. It balances the need for rapid security patches with democratic governance, ensuring no single party can force malicious updates on the network.
 
-- **Transparent updates**: All releases publicly signed and verifiable
-- **Community veto power**: 40% of producers can block any update
-- **Automatic application**: Updates applied after veto period with no manual intervention
-- **Cryptographic verification**: 3/5 maintainer signatures required
-- **Rollback capability**: Automatic backup before update
+### 1.1 Key Features
 
-### Key Constants
+- **Transparent updates**: All releases publicly signed and verifiable on-chain
+- **Seniority-weighted voting**: 40% threshold to veto, weighted by producer tenure (max 4x at 4 years)
+- **Automatic application**: Updates applied after veto period with automatic rollback on failure
+- **Multi-signature releases**: 3/5 maintainer signatures required for any release
+- **Version enforcement**: Outdated producers paused from block production after grace period
+- **Hard fork support**: Optional upgrade-at-height mechanism for breaking protocol changes
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `VETO_PERIOD` | 7 days | Time for producers to vote on updates |
-| `GRACE_PERIOD` | 48 hours | Time after approval before enforcement |
-| `VETO_THRESHOLD_PERCENT` | 40% | Percentage of producers needed to reject |
-| `REQUIRED_SIGNATURES` | 3 of 5 | Maintainer signatures needed for release |
-| `CHECK_INTERVAL` | 6 hours | How often nodes check for updates |
+### 1.2 Key Constants
+
+```
+┌────────────────────────────┬───────────┬─────────────────────────────────────────┐
+│ Constant                   │ Value     │ Description                             │
+├────────────────────────────┼───────────┼─────────────────────────────────────────┤
+│ VETO_PERIOD                │ 7 days    │ Time for producers to vote on updates   │
+│ GRACE_PERIOD               │ 48 hours  │ Time after approval before enforcement  │
+│ VETO_THRESHOLD_PERCENT     │ 40%       │ Weighted percentage needed to reject    │
+│ REQUIRED_SIGNATURES        │ 3 of 5    │ Maintainer signatures needed            │
+│ CHECK_INTERVAL             │ 6 hours   │ How often nodes check for updates       │
+│ MAX_SENIORITY_MULTIPLIER   │ 4x        │ Maximum vote weight for seniors         │
+│ SENIORITY_MATURITY_YEARS   │ 4         │ Years to reach maximum seniority        │
+│ MIN_VOTING_AGE_DAYS        │ 30        │ Minimum days as producer to vote        │
+│ CRASH_THRESHOLD            │ 3         │ Consecutive crashes before rollback     │
+└────────────────────────────┴───────────┴─────────────────────────────────────────┘
+```
 
 ---
 
-## 2. Maintainer Keys and Timing
+## 2. Governance and Voting System
 
-### When to Create Maintainer Keys
+The governance model uses seniority-weighted voting to balance democratic participation with Sybil resistance. This ensures that established, long-term participants have proportionally more influence while still allowing newcomers to participate meaningfully.
 
-**CRITICAL: Maintainer keys MUST be created and configured BEFORE mainnet genesis.**
+### 2.1 Seniority-Weighted Voting
+
+Unlike simple count-based voting (1 producer = 1 vote), DOLI uses seniority weighting that rewards long-term commitment to the network.
+
+#### 2.1.1 Weight Calculation
 
 ```
-Timeline:
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Key Generation    Code Update     Build & Test    Genesis    Mainnet  │
-│       │                │                │             │           │    │
-│       ▼                ▼                ▼             ▼           ▼    │
-│   [Create 5       [Replace         [Verify        [Network    [First  │
-│    Ed25519        placeholder      keys are       launches]    block] │
-│    keypairs]      keys in          production-                        │
-│                   lib.rs]          ready]                             │
-└─────────────────────────────────────────────────────────────────────────┘
+vote_weight = 1.0 + min(years_as_producer, 4) * 0.75
+
+Examples:
+┌─────────────────────────┬────────────────────────────────┬─────────┐
+│ Producer Age            │ Calculation                    │ Weight  │
+├─────────────────────────┼────────────────────────────────┼─────────┤
+│ New producer (0 years)  │ 1.0 + 0 * 0.75                 │ 1.00x   │
+│ 1 year producer         │ 1.0 + 1 * 0.75                 │ 1.75x   │
+│ 2 year producer         │ 1.0 + 2 * 0.75                 │ 2.50x   │
+│ 3 year producer         │ 1.0 + 3 * 0.75                 │ 3.25x   │
+│ 4+ year producer        │ 1.0 + 4 * 0.75                 │ 4.00x   │
+└─────────────────────────┴────────────────────────────────┴─────────┘
 ```
 
-### Key Generation Process
+**Key insight**: After 4 years, all producers reach the same maximum weight. The seniority advantage is temporary, not permanent. This prevents oligarchy while still providing meaningful Sybil resistance during the network's growth phase.
 
-Each of the 5 designated maintainers must:
+#### 2.1.2 Minimum Voting Age
 
-1. **Generate offline**: Create Ed25519 keypair on air-gapped system
-2. **Secure storage**: Store private key in hardware wallet or secure offline storage
-3. **Submit public key**: Provide hex-encoded public key for inclusion in code
-4. **Never expose**: Private key must NEVER touch internet-connected device
+To prevent flash Sybil attacks, producers must be active for at least **30 days** before their votes count. This creates a significant cost barrier: an attacker would need to fund and maintain fake producers for a month before gaining any voting power.
 
-### Current Placeholder Keys
+#### 2.1.3 Veto Threshold Calculation
 
-**Location**: `crates/updater/src/lib.rs`
+```
+veto_weight  = sum(vote_weight for each veto vote)
+total_weight = sum(vote_weight for all eligible producers)
+veto_percent = (veto_weight * 100) / total_weight
+
+if veto_percent >= 40%: REJECTED
+if veto_percent <  40%: APPROVED
+```
+
+**Example with 10 producers (mixed seniority):**
+
+```
+┌────────────┬───────┬────────┬─────────┬──────────────┐
+│ Producer   │ Years │ Weight │ Vote    │ Contribution │
+├────────────┼───────┼────────┼─────────┼──────────────┤
+│ Producer A │ 5     │ 4.00x  │ VETO    │ 4.00         │
+│ Producer B │ 3     │ 3.25x  │ VETO    │ 3.25         │
+│ Producer C │ 2     │ 2.50x  │ APPROVE │ 0            │
+│ Producer D │ 2     │ 2.50x  │ APPROVE │ 0            │
+│ Producer E │ 1     │ 1.75x  │ VETO    │ 1.75         │
+│ Producer F │ 1     │ 1.75x  │ APPROVE │ 0            │
+│ Producer G │ 0.5   │ 1.375x │ APPROVE │ 0            │
+│ Producer H │ 0.5   │ 1.375x │ APPROVE │ 0            │
+│ Producer I │ 0.1   │ 1.075x │ VETO    │ 1.075        │
+│ Producer J │ 0.1   │ 1.075x │ APPROVE │ 0            │
+└────────────┴───────┴────────┴─────────┴──────────────┘
+
+Total weight: 20.625
+Veto weight:  10.075 (A + B + E + I)
+Veto percent: 10.075 / 20.625 * 100 = 48.8%
+
+Result: 48.8% >= 40% → REJECTED
+```
+
+### 2.2 Vote Lifecycle
+
+#### 2.2.1 Vote Submission
+
+Producers submit votes via RPC or CLI. Votes are cryptographically signed and broadcast via gossip to all nodes.
 
 ```rust
-pub const MAINTAINER_KEYS: [&str; 5] = [
-    // PLACEHOLDER KEYS - REPLACE BEFORE MAINNET
-    "0000000000000000000000000000000000000000000000000000000000000001",
-    "0000000000000000000000000000000000000000000000000000000000000002",
-    "0000000000000000000000000000000000000000000000000000000000000003",
-    "0000000000000000000000000000000000000000000000000000000000000004",
-    "0000000000000000000000000000000000000000000000000000000000000005",
-];
-```
-
-### Placeholder Detection
-
-The code includes safety checks:
-
-```rust
-// Returns true if ANY key starts with "00000000"
-pub fn is_using_placeholder_keys() -> bool
-
-// Panics if placeholder keys detected - call during mainnet startup
-pub fn assert_production_keys()
-```
-
-**Node startup on mainnet MUST call `assert_production_keys()` to prevent running with test keys.**
-
-### Test Keys for Development
-
-For devnet/testnet testing without real maintainer keys:
-
-```bash
-# Enable test keys (generates deterministic Ed25519 keypairs)
-DOLI_TEST_KEYS=1 doli-node run --network devnet
-```
-
-Test keys are generated in `crates/updater/src/test_keys.rs` using deterministic seeds.
-
----
-
-## 3. Release Creation Process
-
-### Step-by-Step Release Workflow
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        RELEASE CREATION WORKFLOW                          │
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  1. BUILD BINARIES                                                       │
-│     ├── cargo build --release (all platforms)                            │
-│     ├── linux-x64, linux-arm64                                           │
-│     └── macos-x64, macos-arm64                                           │
-│                                                                          │
-│  2. COMPUTE HASHES                                                       │
-│     └── sha256sum doli-node-linux-x64 → binary_sha256                    │
-│                                                                          │
-│  3. CREATE RELEASE METADATA                                              │
-│     └── version, binary_sha256, changelog, published_at                  │
-│                                                                          │
-│  4. COLLECT SIGNATURES (3 of 5 maintainers)                              │
-│     ├── Maintainer 1: signs "1.0.1:abc123..." offline                    │
-│     ├── Maintainer 2: signs "1.0.1:abc123..." offline                    │
-│     └── Maintainer 3: signs "1.0.1:abc123..." offline                    │
-│                                                                          │
-│  5. PUBLISH RELEASE                                                      │
-│     ├── Upload binaries to CDN                                           │
-│     ├── Create latest.json with signatures                               │
-│     └── Upload to all mirrors                                            │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-### Release JSON Format
-
-```json
-{
-    "version": "1.0.1",
-    "binary_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "binary_url_template": "https://github.com/e-weil/doli/releases/download/v1.0.1/doli-node-{platform}",
-    "changelog": "Security fix for VDF verification bypass",
-    "published_at": 1704067200,
-    "signatures": [
-        {
-            "public_key": "abc123...",
-            "signature": "def456..."
-        },
-        {
-            "public_key": "ghi789...",
-            "signature": "jkl012..."
-        },
-        {
-            "public_key": "mno345...",
-            "signature": "pqr678..."
-        }
-    ]
+pub struct VoteMessage {
+    pub version: String,           // "1.0.1"
+    pub vote: Vote,                // Approve or Veto
+    pub producer_pubkey: [u8; 32], // Producer's public key
+    pub timestamp: u64,            // Unix timestamp
+    pub signature: [u8; 64],       // Ed25519 signature
 }
-```
 
-### Signature Message Format
-
-Maintainers sign the string: `"version:binary_sha256"`
-
-Example: `"1.0.1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"`
-
-### Release Distribution
-
-**Primary source: GitHub Releases**
-
-```rust
-/// GitHub API URL for latest release
-pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
-
-/// GitHub releases download base URL
-pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/download";
-
-/// Fallback update server (if GitHub is unreachable)
-pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
-```
-
-**Why GitHub Releases:**
-
-| Advantage | Explanation |
-|-----------|-------------|
-| **Free** | No hosting costs |
-| **Global CDN** | Fast downloads worldwide |
-| **99.9%+ Uptime** | Microsoft infrastructure |
-| **Verifiable** | Public commit history |
-| **API** | `api.github.com/repos/.../releases/latest` |
-
-**Fallback behavior:**
-1. Check GitHub API for latest release tag
-2. Download `release.json` from that tag
-3. If GitHub fails, try `releases.doli.network/latest.json`
-
----
-
-## 4. Update Detection
-
-### Detection Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         UPDATE DETECTION FLOW                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Every 6 hours (configurable):                                          │
-│                                                                         │
-│  ┌─────────────┐                                                        │
-│  │ Check       │──────► GET api.github.com/repos/.../releases/latest   │
-│  │ GitHub API  │        (fallback: releases.doli.network/latest.json)  │
-│  └──────┬──────┘                                                        │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌─────────────┐     ┌──────────────────────────────────────────────┐  │
-│  │ Parse       │────►│ Version: 1.0.1                               │  │
-│  │ Release     │     │ Hash: e3b0c44298fc1c149...                   │  │
-│  └──────┬──────┘     │ Signatures: [sig1, sig2, sig3]               │  │
-│         │            └──────────────────────────────────────────────┘  │
-│         ▼                                                               │
-│  ┌─────────────┐                                                        │
-│  │ Compare     │     Current: 1.0.0                                     │
-│  │ Versions    │────► is_newer_version("1.0.1", "1.0.0") = true        │
-│  └──────┬──────┘                                                        │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌─────────────┐                                                        │
-│  │ Verify      │────► Check 3/5 valid Ed25519 signatures               │
-│  │ Signatures  │                                                        │
-│  └──────┬──────┘                                                        │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌─────────────┐                                                        │
-│  │ Start Veto  │────► VoteTracker created, 7-day countdown begins      │
-│  │ Period      │                                                        │
-│  └──────┬──────┘                                                        │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌─────────────┐                                                        │
-│  │ Display     │────► MANDATORY notification shown to node operator    │
-│  │ Notification│                                                        │
-│  └─────────────┘                                                        │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Mandatory Notification System
-
-When a new update is detected, **ALL nodes** display a prominent notification:
-
-```
-╔══════════════════════════════════════════════════════════════════╗
-║                    ⚠️  UPDATE PENDING                             ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Version: 0.1.0 -> 1.0.1                                         ║
-║  Veto period: 7 days, 0 hours remaining                          ║
-║  Current vetos: 0/100 (0%)                                       ║
-║  Threshold to reject: 40%                                        ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Review changelog and vote if you have objections:               ║
-║                                                                  ║
-║    doli-node update status         # See full details            ║
-║    doli-node update vote --veto --key <producer.json>            ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-```
-
-**Notification behavior:**
-- Shown immediately when update detected
-- Repeated every 6 hours as a reminder
-- Persisted across node restarts (saved to `pending_update.json`)
-- Contains countdown, veto count, and how to vote
-
-**Philosophy:** Instead of requiring producers to pay to vote, the system:
-- Publishes the update for all to see
-- Notifies all operators automatically
-- Gives 7 days for review
-- If no veto threshold reached → community trusts → update passes
-
-### Version Comparison
-
-Semantic versioning comparison (major.minor.patch):
-
-```rust
-pub fn is_newer_version(new: &str, current: &str) -> bool {
-    // "1.0.1" > "1.0.0" → true
-    // "2.0.0" > "1.9.9" → true
-    // "1.0.0" > "1.0.0" → false (not newer)
-    // "1.0.0" > "1.0.1" → false (older)
-}
-```
-
-**Important**: Downgrades are NOT supported. Only newer versions are considered.
-
----
-
-## 5. Governance and Veto System
-
-### Veto Period Timeline
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            VETO PERIOD (7 DAYS)                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Day 0          Day 1-6                              Day 7              │
-│    │               │                                   │                │
-│    ▼               ▼                                   ▼                │
-│  Release       Producers vote                      Deadline            │
-│  published     (veto or approve)                   reached             │
-│    │               │                                   │                │
-│    └───────────────┴───────────────────────────────────┤                │
-│                                                        │                │
-│                                                        ▼                │
-│                                              ┌─────────────────┐        │
-│                                              │ Count votes     │        │
-│                                              │ (weighted)      │        │
-│                                              └────────┬────────┘        │
-│                                                       │                 │
-│                                     ┌─────────────────┴────────────┐   │
-│                                     │                              │   │
-│                                     ▼                              ▼   │
-│                              Veto < 40%                     Veto ≥ 40% │
-│                                     │                              │   │
-│                                     ▼                              ▼   │
-│                              ┌───────────┐                ┌───────────┐│
-│                              │ APPROVED  │                │ REJECTED  ││
-│                              │ Apply     │                │ Discard   ││
-│                              │ update    │                │ update    ││
-│                              └───────────┘                └───────────┘│
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Vote Types
-
-```rust
 pub enum Vote {
     Approve,  // Allow the update (or abstain - same effect)
     Veto,     // Block the update
 }
 ```
 
-### Vote Message Structure
+#### 2.2.2 Vote Changing
 
-```rust
-pub struct VoteMessage {
-    pub version: String,      // "1.0.1"
-    pub vote: Vote,           // Approve or Veto
-    pub producer_id: String,  // Producer's public key (hex)
-    pub timestamp: u64,       // Unix timestamp
-    pub signature: String,    // Signature over "version:vote:timestamp"
-}
-```
+Unlike count-based systems, producers **CAN change their vote** during the veto period. This allows reaction to new information (e.g., discovery of a backdoor in the update).
 
-### Count-Based Voting
+- Each new vote from the same producer replaces their previous vote
+- Only the latest vote (by timestamp) counts at deadline
+- All vote history is preserved for transparency
 
-Voting uses simple count-based calculation (one vote per producer):
+#### 2.2.3 Vote Finalization
 
-```
-Veto percentage = (veto_count * 100) / total_active_producers
-
-If veto_percent >= 40%: REJECTED
-If veto_percent < 40%: APPROVED after 7-day veto period
-```
-
-**Note:** While producer seniority affects consensus weight (fork choice), the
-veto system uses count-based voting for simplicity. Each active producer gets
-exactly one vote, regardless of seniority or bond count.
-
-### Veto Threshold Calculation
-
-```rust
-// Count-based calculation
-pub fn calculate_veto_result(veto_count: usize, total_producers: usize) -> VoteResult {
-    let veto_percent = ((veto_count * 100) / total_producers) as u8;
-    if veto_percent >= 40 {  // VETO_THRESHOLD_PERCENT
-        VoteResult::Rejected
-    } else {
-        VoteResult::Approved
-    }
-}
-
-// Example with 10 producers:
-// - 3 vetoes = 30% → APPROVED
-// - 4 vetoes = 40% → REJECTED
-```
-
-### Vote Deduplication
-
-- Each producer can only vote **once** per version
-- Subsequent votes from same producer are **ignored**
-- No vote changing allowed after initial submission
+Votes are counted at the exact moment the veto period expires. The result is deterministic: any node can independently verify the outcome by replaying all votes received before the deadline.
 
 ---
 
-## 6. Version Enforcement ("No Update = No Produce")
+## 3. Sybil Resistance Analysis
 
-### The Principle
+The combination of bond requirements, seniority weighting, and minimum voting age creates strong Sybil resistance.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    "NO ACTUALIZAS = NO PRODUCES"                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  PRINCIPLE: If your node is a security hole for the network,           │
-│             you shouldn't be producing blocks.                          │
-│                                                                         │
-│  THIS IS NOT PUNISHMENT. It's network protection.                       │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Complete Update Timeline
+### 3.1 Attack Cost Analysis
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         COMPLETE UPDATE TIMELINE                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Day 0: UPDATE PUBLISHED                                                │
-│         ├── Release signed by 3/5 maintainers                          │
-│         ├── ALL nodes show notification:                                │
-│         │   "⚠️ Update v1.0.1 pending. Veto period: 7 days."           │
-│         └── Changelog displayed for review                              │
-│                                                                         │
-│  Day 0-7: VETO PERIOD                                                   │
-│         ├── Producers can vote to veto                                  │
-│         ├── Review changelog and code changes                           │
-│         └── If >= 40% veto: UPDATE REJECTED                            │
-│                                                                         │
-│  Day 7: VETO PERIOD ENDS                                                │
-│         ├── If < 40% veto: UPDATE APPROVED                             │
-│         └── Grace period begins                                         │
-│                                                                         │
-│  Day 7-9: GRACE PERIOD (48 hours)                                       │
-│         ├── Notification: "Update approved. 48h to update."             │
-│         ├── Run: doli-node update apply                                 │
-│         └── Outdated nodes can still produce (for now)                  │
-│                                                                         │
-│  Day 9+: ENFORCEMENT ACTIVE                                             │
-│         ├── Nodes < required version: PRODUCTION PAUSED                 │
-│         ├── Network rejects blocks from outdated producers              │
-│         └── Update to resume production                                 │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────┬──────────────────────┬───────────────────┬─────────────────────┐
+│ Attack Vector            │ Cost                 │ Effectiveness     │ Mitigation          │
+├──────────────────────────┼──────────────────────┼───────────────────┼─────────────────────┤
+│ Register many producers  │ N × bond amount      │ Low (1x weight)   │ Bond requirement    │
+│ Flash Sybil (same day)   │ N × bond             │ Zero              │ 30-day minimum age  │
+│ Sustained Sybil (1 mo)   │ N × bond × 30 days   │ Low (1.0x weight) │ Seniority weighting │
+│ Long-term Sybil (4 yrs)  │ N × bond × 4 years   │ Equal to veterans │ Time prohibitive    │
+└──────────────────────────┴──────────────────────┴───────────────────┴─────────────────────┘
 ```
 
-**Total notice before enforcement: 9 days**
+### 3.2 Why This Works
 
-### How Enforcement Works
+1. **Economic barrier**: Each fake producer requires a real bond deposit
+2. **Time barrier**: 30-day minimum before any voting power
+3. **Asymmetric power**: Veterans have 4x the voting power of newcomers
+4. **Convergence**: After 4 years, legitimate producers reach parity
 
-When enforcement is active:
+**Critical point**: To block a legitimate security update, an attacker would need 40% of the total weighted voting power. With seniority weighting, this requires either massive capital (many producers) or multi-year planning (few high-weight producers). Both are impractical for most attack scenarios.
 
-1. **Production Check**: Before producing a block, the node checks:
-   ```rust
-   if current_version < required_version {
-       log("PRODUCTION PAUSED: Node outdated");
-       return; // Skip block production
-   }
-   ```
+### 3.3 The 4-Year Convergence
 
-2. **Clear Notification**: Outdated nodes see:
-   ```
-   ╔══════════════════════════════════════════════════════════════════╗
-   ║                    ⚠️  PRODUCTION PAUSED                          ║
-   ╠══════════════════════════════════════════════════════════════════╣
-   ║                                                                  ║
-   ║  Your node (0.1.0) is outdated.                                  ║
-   ║  Required version: 1.0.1                                         ║
-   ║                                                                  ║
-   ║  Network security requires all producers to be updated.          ║
-   ║  Block production is paused until update is complete.            ║
-   ║                                                                  ║
-   ║  To update, run:                                                 ║
-   ║    doli-node update apply                                        ║
-   ║                                                                  ║
-   ║  After updating, production will resume automatically.           ║
-   ║                                                                  ║
-   ╚══════════════════════════════════════════════════════════════════╝
-   ```
+```
+Year 0   Year 1   Year 2   Year 3   Year 4   Year 5+
+  │        │        │        │        │        │
+  ▼        ▼        ▼        ▼        ▼        ▼
+ 1.0x    1.75x    2.50x    3.25x    4.00x    4.00x
+  │        │        │        │        │        │
+  └────────┴────────┴────────┴────────┴────────┘
+              Seniority advantage period
+                                       │
+                                       ▼
+                              All producers equal
+```
 
-3. **Automatic Resume**: After running `doli-node update apply`, production resumes immediately with no manual intervention.
+The "privilege" of early adopters has an expiration date. After 4 years, anyone who joined can match the voting power of the founders. This is NOT a permanent oligarchy.
 
-### Why This Is Fair
+---
+
+## 4. Complete Update Timeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          COMPLETE UPDATE TIMELINE                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  DAY 0: RELEASE PUBLISHED                                                       │
+│  ├── Maintainers build and test binaries for all platforms                      │
+│  ├── 3 of 5 maintainers sign the release offline                                │
+│  ├── Release published to GitHub and mirrors                                    │
+│  └── All nodes display mandatory notification                                   │
+│                                                                                 │
+│  DAYS 0-7: VETO PERIOD                                                          │
+│  ├── Producers review changelog and code changes                                │
+│  ├── Community discussion on forums/Discord                                     │
+│  ├── Producers submit votes (can change until deadline)                         │
+│  └── Real-time veto percentage displayed on all nodes                           │
+│                                                                                 │
+│  DAY 7: RESOLUTION                                                              │
+│  ├── Weighted votes tallied at exact deadline                                   │
+│  ├── If veto >= 40%: Update REJECTED, discarded                                 │
+│  └── If veto <  40%: Update APPROVED, grace period begins                       │
+│                                                                                 │
+│  DAYS 7-9: GRACE PERIOD (48 hours)                                              │
+│  ├── Approved update downloaded and verified                                    │
+│  ├── Operators can manually apply early: doli-node update apply                 │
+│  └── Outdated nodes can still produce blocks                                    │
+│                                                                                 │
+│  DAY 9+: ENFORCEMENT ACTIVE                                                     │
+│  ├── Nodes below required version: production PAUSED                            │
+│  ├── Outdated nodes can still sync, serve RPC, relay transactions               │
+│  └── Update and restart to resume production                                    │
+│                                                                                 │
+│  Total notice before enforcement: 9 DAYS                                        │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.1 Producer Notifications
+
+Producers receive automatic notifications through three channels:
+
+1. **Banner on ANY CLI command** while update is pending
+2. **`doli-node update status`** for full details
+3. **Periodic log messages** (every 6 hours)
+
+The notification content changes based on the current state:
+
+#### State 1: VOTING PERIOD (Days 0-7) - Not Yet Voted
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  ⚠️  UPDATE 1.0.1  |  5d left  |  doli-node update vote --veto --key <key.json>     ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                    ⚠️  UPDATE PENDING - VOTE NOW                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  VERSION                                                         ║
+║  Current: 1.0.0                                                  ║
+║  New:     1.0.1                                                  ║
+║                                                                  ║
+║  CHANGELOG                                                       ║
+║    - Security fix for VDF verification bypass                    ║
+║    - Performance improvement in block propagation                ║
+║    - Fix memory leak in peer connection handler                  ║
+║                                                                  ║
+║  VOTING                                                          ║
+║  Veto:        15.5% of 40% threshold                             ║
+║  Time left:   5 days, 12 hours                                   ║
+║  Projection:  WILL PASS                                          ║
+║                                                                  ║
+║  YOUR PRODUCER                                                   ║
+║  Your vote:   NOT VOTED YET                                      ║
+║  Your weight: 2.5x (2 years seniority)                           ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Details: doli-node update status                                ║
+║  To veto: doli-node update vote --veto --key <key.json>          ║
+║  Approve: doli-node update vote --approve --key <key.json>       ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 2: VOTING PERIOD (Days 0-7) - Already Voted
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  ⚠️  UPDATE 1.0.1  |  Veto: 15%/40%  |  5d left  |  You voted: VETO ✓               ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status shows:**
+```
+║  YOUR PRODUCER                                                   ║
+║  Your vote:   VETO ✓                                             ║
+║  Your weight: 2.5x (2 years seniority)                           ║
+║  Voted at:    2026-01-10 14:32 UTC                               ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  To change vote: doli-node update vote --approve --key <key>     ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 3: GRACE PERIOD (Days 7-9)
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  ✅  UPDATE 1.0.1 APPROVED  |  36h left  |  doli-node update apply                  ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                ✅  UPDATE APPROVED - UPDATE NOW                   ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  VERSION                                                         ║
+║  Current: 1.0.0                                                  ║
+║  New:     1.0.1 (approved with 18% veto)                         ║
+║                                                                  ║
+║  GRACE PERIOD                                                    ║
+║  Time left:   36 hours                                           ║
+║  Enforcement: 2026-01-17 10:00 UTC                               ║
+║                                                                  ║
+║  ⚠️  After enforcement, outdated nodes CANNOT produce blocks     ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  To update now: doli-node update apply                           ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 4: PRODUCTION PAUSED (Day 9+, not updated)
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  🚫  PRODUCTION PAUSED - outdated  |  doli-node update apply                        ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║            🚫  PRODUCTION PAUSED - UPDATE REQUIRED                ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  VERSION                                                         ║
+║  Your version:     1.0.0 ❌                                       ║
+║  Required version: 1.0.1                                         ║
+║                                                                  ║
+║  STATUS                                                          ║
+║  Block production: PAUSED                                        ║
+║  Sync:             ✓ Active (block 125,432)                      ║
+║  RPC:              ✓ Active                                      ║
+║  Rewards:          ❌ Not earning (not producing)                 ║
+║                                                                  ║
+║  You are missing approximately 2.5 DOLI per hour while paused.   ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  To resume production: doli-node update apply                    ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 5: UPDATE REJECTED
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  ❌  UPDATE 1.0.1 REJECTED by community  |  No action required                      ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                ❌  UPDATE 1.0.1 REJECTED                          ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  The community vetoed this update.                               ║
+║                                                                  ║
+║  Final veto: 45% (threshold: 40%)                                ║
+║  Your vote:  VETO ✓                                              ║
+║                                                                  ║
+║  No action required. Your node continues normally.               ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Current version: 1.0.0 ✓                                        ║
+║  Production:      Active ✓                                       ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 6: ROLLBACK OCCURRED
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  ⚠️  ROLLBACK: 1.0.1 failed, reverted to 1.0.0  |  doli-node update status          ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║            ⚠️  ROLLBACK OCCURRED - UPDATE FAILED                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  Update 1.0.1 crashed 3 times. Automatically reverted to 1.0.0.  ║
+║                                                                  ║
+║  Crash log: /var/log/doli/crash-1.0.1.log                        ║
+║                                                                  ║
+║  STATUS                                                          ║
+║  Current version: 1.0.0 (restored from backup)                   ║
+║  Production:      Active ✓                                       ║
+║                                                                  ║
+║  Please report this issue:                                       ║
+║  https://github.com/e-weil/doli/issues                           ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  To retry update: doli-node update apply --retry                 ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 7: HARD FORK PENDING
+
+**Banner (on any CLI command):**
+```
+╔═════════════════════════════════════════════════════════════════════════════════════╗
+║  🔴  HARD FORK 2.0.0  |  12d to activation  |  doli-node update apply               ║
+╚═════════════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║          🔴  HARD FORK 2.0.0 - UPDATE MANDATORY                   ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  VERSION                                                         ║
+║  Current: 1.0.1                                                  ║
+║  New:     2.0.0 (HARD FORK)                                      ║
+║                                                                  ║
+║  ACTIVATION                                                      ║
+║  Height:    1,000,000 (current: 950,000)                         ║
+║  Estimated: ~12 days (2026-01-27)                                ║
+║                                                                  ║
+║  ⚠️  CRITICAL: After activation height, nodes on 1.x.x will:     ║
+║     - Fork off the main chain                                    ║
+║     - Stop syncing new blocks                                    ║
+║     - Be unable to produce or validate                           ║
+║                                                                  ║
+║  CHANGELOG                                                       ║
+║    - New block format with extended headers                      ║
+║    - Updated VDF parameters                                      ║
+║    - State migration for new account structure                   ║
+║                                                                  ║
+╠══════════════════════════════════════════════════════════════════╣
+║  To update: doli-node update apply                               ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+#### State 8: UP TO DATE
+
+**Banner:** None (no banner shown when up to date)
+
+**Full status (`doli-node update status`):**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                    ✅  NODE UP TO DATE                            ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+║  Version:    1.0.1 ✓                                             ║
+║  Production: Active ✓                                            ║
+║                                                                  ║
+║  No pending updates.                                             ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+### 4.2 Log Messages
+
+Periodic log messages (every 6 hours while update pending):
+
+```
+[2026-01-15 10:00:00] INFO  Synced to block 125,432
+[2026-01-15 10:00:00] ⚠️  UPDATE 1.0.1 PENDING | Veto: 15%/40% | 5d left | doli-node update status
+[2026-01-15 10:00:05] INFO  Produced block 125,433
+```
+
+```
+[2026-01-17 10:00:00] INFO  Synced to block 126,000
+[2026-01-17 10:00:00] ✅  UPDATE 1.0.1 APPROVED | Grace: 36h left | doli-node update apply
+[2026-01-17 10:00:05] INFO  Produced block 126,001
+```
+
+```
+[2026-01-19 10:00:00] INFO  Synced to block 126,500
+[2026-01-19 10:00:00] 🚫  PRODUCTION PAUSED | Outdated 1.0.0 | Required 1.0.1 | doli-node update apply
+[2026-01-19 10:00:05] WARN  Skipped block production - node outdated
+```
+
+### 4.3 Version Enforcement: "No Update = No Produce"
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      "NO ACTUALIZAS = NO PRODUCES"                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  PRINCIPLE: If your node is a security hole for the network,                    │
+│             you shouldn't be producing blocks.                                  │
+│                                                                                 │
+│  THIS IS NOT PUNISHMENT. It's network protection.                               │
+│                                                                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  What outdated nodes CAN do:          What outdated nodes CANNOT do:            │
+│  ✅ Sync the chain                    ❌ Produce blocks                          │
+│  ✅ Serve RPC requests                                                          │
+│  ✅ Relay transactions                                                          │
+│  ✅ Validate blocks                                                             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.4 Why This Is Fair
 
 | Argument | Response |
 |----------|----------|
 | "I'm forced to update" | You had 7 days + 48h grace period to veto or object |
-| "I don't trust the update" | You had 40% threshold to block it |
+| "I don't trust the update" | You had 40% threshold to block it with weighted votes |
 | "I didn't have time" | 7 days + 48h = 9 days total notice |
 | "It's centralized" | No — the community voted, not the maintainers |
-
-### What Outdated Nodes Can Still Do
-
-Even with enforcement active, outdated nodes:
-
-- ✅ **Can sync the chain** (receive and validate blocks)
-- ✅ **Can serve RPC requests** (wallets still work)
-- ✅ **Can relay transactions** (mempool functions normally)
-- ❌ **Cannot produce blocks** (paused until updated)
-
-### Comparison with Other Blockchains
-
-| Blockchain | Forces updates? | How |
-|------------|-----------------|-----|
-| Bitcoin | ❌ No | Old nodes eventually on minority fork |
-| Ethereum | ⚠️ Partial | Hard fork heights, no active enforcement |
-| Solana | ✅ Yes | Foundation controls, validators follow |
-| **DOLI** | ✅ **Yes, democratically** | 40% can veto, but if approved, all update |
+| "Veterans control everything" | No — after 4 years everyone has equal weight |
 
 ---
 
-## 7. CLI Commands
+## 5. Automatic Rollback System
 
-### Update Management Commands
+A critical addition to ensure network stability: automatic rollback when updates cause node failures.
 
-#### Check for Updates
+### 5.1 Crash Detection Watchdog
 
-```bash
-doli-node update check
+The node process is monitored by a lightweight watchdog that detects repeated crashes after an update:
+
+```rust
+pub struct UpdateWatchdog {
+    last_update_version: Option<String>,
+    last_update_time: Option<Timestamp>,
+    crash_count: u32,
+    crash_window: Duration,  // 1 hour
+}
+
+impl UpdateWatchdog {
+    pub fn should_rollback(&self) -> bool {
+        self.crash_count >= CRASH_THRESHOLD  // 3
+            && self.within_crash_window()
+            && self.recently_updated()
+    }
+}
 ```
 
-**Output (update available):**
+### 5.2 Rollback Trigger Conditions
+
+1. Node crashes **3+ times** within 1 hour of update application
+2. Node fails to reach sync within 5 minutes of restart
+3. Node fails health checks (RPC unresponsive, peers disconnected)
+
+### 5.3 Rollback Process
+
 ```
-Update available: 1.0.0 -> 1.0.1
-Changelog: Security fix for VDF verification bypass
-Veto period: 7 days remaining
-```
-
-**Output (no update):**
-```
-Already on latest version (1.0.1)
-```
-
-#### Show Update Status
-
-```bash
-doli-node update status
-```
-
-**Output (pending update):**
-```
-Pending Update: v1.0.1
-Changelog: Security fix for VDF verification bypass
-
-Veto Status:
-  Vetos: 3 (30%)
-  Threshold: 40%
-  Time remaining: 5d 12h
-
-Status: ON TRACK TO PASS
-```
-
-**Output (no pending):**
-```
-No pending updates
-Current version: 1.0.0
-```
-
-#### Vote on Update (Producers Only)
-
-```bash
-# Vote to VETO (block) the update
-DOLI_VOTE_VERSION=1.0.1 doli-node update vote --veto --key /path/to/producer.json
-
-# Vote to APPROVE the update
-DOLI_VOTE_VERSION=1.0.1 doli-node update vote --approve --key /path/to/producer.json
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          AUTOMATIC ROLLBACK PROCESS                              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  [Crash detected]                                                               │
+│        │                                                                        │
+│        ▼                                                                        │
+│  crash_count++                                                                  │
+│        │                                                                        │
+│        ▼                                                                        │
+│  ┌─────────────────────┐                                                        │
+│  │ crash_count >= 3 && │──No──► [Restart normally]                              │
+│  │ within_window?      │                                                        │
+│  └──────────┬──────────┘                                                        │
+│             │ Yes                                                               │
+│             ▼                                                                   │
+│  ┌─────────────────────┐                                                        │
+│  │ 1. Stop node        │                                                        │
+│  │ 2. Copy backup      │  doli-node.backup → doli-node                          │
+│  │ 3. Clear state      │                                                        │
+│  │ 4. Log rollback     │  "ROLLBACK: Reverted to {version} due to {reason}"     │
+│  │ 5. Restart node     │                                                        │
+│  │ 6. Alert operator   │  Webhook notification (optional)                       │
+│  └─────────────────────┘                                                        │
+│             │                                                                   │
+│             ▼                                                                   │
+│  [Node running on previous version]                                             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Output:**
-```
-Vote created for version 1.0.1: VETO
-Producer: abc123def456...
-Timestamp: 1704067200
-Signature: 789xyz...
+### 5.4 Post-Rollback Behavior
 
-Submit via RPC:
-curl -X POST http://localhost:28545 \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"submitVote","params":{"vote":{...}},"id":1}'
-```
+- Node continues operating on previous version
+- Update marked as "failed locally" (not network-wide rejection)
+- Operator notified via logs and optional webhook
+- Manual intervention required to retry update
+- Node can still produce blocks (if previous version meets requirements)
 
-#### Apply Approved Update
+---
 
-```bash
-# Apply an approved update (after veto period ends)
-doli-node update apply
+## 6. Hard Fork Support
 
-# Force apply even if not explicitly approved (not recommended)
-# NOTE: --force only bypasses the approval check, NOT the veto period!
-# The 7-day veto period CANNOT be bypassed for security reasons.
-doli-node update apply --force
-```
+While most updates are backward-compatible, some protocol changes require coordinated hard forks. The system includes an optional upgrade-at-height mechanism.
 
-**Security: Veto Period Protection**
+### 6.1 When Hard Forks Are Needed
 
-The `apply_update` function enforces two security checks:
-1. **Veto period must be over** (7 days) - CANNOT be bypassed, even with `--force`
-2. **Update must be approved** - Can be bypassed with `--force` (not recommended)
+- Changes to block structure or validation rules
+- Changes to consensus algorithm parameters
+- State migration or database format changes
+- Cryptographic algorithm upgrades
 
-This design prevents producers from applying potentially malicious updates before the community has had time to review and veto. The `--force` flag exists for edge cases where approval tracking failed, but the veto period is always enforced.
+### 6.2 Upgrade-at-Height Mechanism
 
-**Output (success):**
-```
-╔══════════════════════════════════════════════════════════════════╗
-║                    Applying Update                               ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Current version: 1.0.0                                          ║
-║  Target version:  1.0.1                                          ║
-╚══════════════════════════════════════════════════════════════════╝
+Hard fork releases include an activation height in the release metadata:
 
-Downloading 1.0.1...
-
-╔══════════════════════════════════════════════════════════════════╗
-║                    ✅ UPDATE SUCCESSFUL                          ║
-╠══════════════════════════════════════════════════════════════════╣
-║                                                                  ║
-║  Version: 1.0.0 → 1.0.1                                          ║
-║  Status: Production enabled                                      ║
-║                                                                  ║
-║  Your node is now up to date.                                    ║
-║  Restarting node to apply changes...                             ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-```
-
-**Output (not approved):**
-```
-Update v1.0.1 is not yet approved.
-Veto period: 5 days remaining.
-
-Use --force to apply anyway (not recommended).
-```
-
-**Output (veto period still active):**
-```
-Cannot apply update v1.0.1: veto period still active (120h remaining)
-
-Update v1.0.1 is still in veto period. The community must have the
-opportunity to review and veto. Time remaining: 120 hours.
-
-This is a security feature and cannot be bypassed.
-```
-
-Note: This error appears even with `--force`. The veto period is a critical security measure.
-
-### Node Run Options
-
-```bash
-# Full options
-doli-node run \
-  --network mainnet \
-  --no-auto-update \           # Disable automatic updates
-  --update-notify-only \       # Check but don't apply
-  --producer \
-  --producer-key /path/to.json
-
-# Minimal (auto-updates enabled by default)
-doli-node run --network mainnet
-```
-
-### RPC Endpoints
-
-#### getNodeInfo
-
-```bash
-curl -X POST http://localhost:28545 \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"getNodeInfo","params":{},"id":1}'
-```
-
-**Response:**
 ```json
 {
-  "jsonrpc": "2.0",
-  "result": {
-    "version": "1.0.0",
-    "network": "mainnet",
-    "peerId": "12D3KooW...",
-    "peerCount": 42,
-    "platform": "linux",
-    "arch": "x86_64"
-  },
-  "id": 1
+    "version": "2.0.0",
+    "binary_sha256": "abc123...",
+    "hard_fork": true,
+    "activation_height": 1000000,
+    "min_version_at_height": "2.0.0",
+    "changelog": "Protocol upgrade: new block format",
+    "signatures": [...]
 }
 ```
 
-#### submitVote
-
-```bash
-curl -X POST http://localhost:28545 \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "jsonrpc":"2.0",
-    "method":"submitVote",
-    "params":{
-      "vote":{
-        "version":"1.0.1",
-        "vote":"veto",
-        "producerId":"abc123...",
-        "timestamp":1704067200,
-        "signature":"def456..."
-      }
-    },
-    "id":1
-  }'
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "status": "submitted",
-    "message": "Vote submitted and broadcast to network"
-  },
-  "id": 1
-}
-```
-
-#### getUpdateStatus
-
-```bash
-curl -X POST http://localhost:28545 \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}'
-```
-
----
-
-## 8. Update Application Process
-
-### Application Steps
+### 6.3 Hard Fork Timeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      UPDATE APPLICATION PROCESS                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  1. DOWNLOAD BINARY                                                     │
-│     ├── Detect platform (linux-x64, macos-arm64, etc.)                  │
-│     ├── Download from URL: .../doli-node-{platform}                     │
-│     ├── Timeout: 5 minutes                                              │
-│     └── Retry from mirrors on failure                                   │
-│                                                                         │
-│  2. VERIFY HASH                                                         │
-│     ├── Compute SHA-256 of downloaded bytes                             │
-│     ├── Compare with expected hash from release                         │
-│     └── FAIL if mismatch (abort update)                                 │
-│                                                                         │
-│  3. BACKUP CURRENT BINARY                                               │
-│     ├── Locate running executable                                       │
-│     ├── Copy to: doli-node.backup                                       │
-│     └── Preserve for rollback                                           │
-│                                                                         │
-│  4. INSTALL NEW BINARY                                                  │
-│     ├── Write to temporary: doli-node.new                               │
-│     ├── Set executable permissions (chmod 755)                          │
-│     └── Atomic rename to replace original                               │
-│                                                                         │
-│  5. RESTART NODE                                                        │
-│     ├── Unix: exec() replaces current process (same PID)                │
-│     ├── Windows: spawn new process, exit current                        │
-│     └── Node restarts with same arguments                               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            HARD FORK TIMELINE (~30 days)                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Day 0        Day 7              Day 9                          Day ~30         │
+│    │            │                  │                               │            │
+│    ▼            ▼                  ▼                               ▼            │
+│  Release     Veto period       Grace ends                    Activation        │
+│  published   ends              (if approved)                 height reached    │
+│    │            │                  │                               │            │
+│    │            │                  │                               │            │
+│    └────────────┴──────────────────┴───────────────────────────────┤            │
+│    │◄── 7 days ──►│◄── 48 hrs ──►│◄────── ~21 days ──────────────►│            │
+│    │   (veto)     │   (grace)    │         (update window)        │            │
+│                                                                   │            │
+│                                                     At activation_height:       │
+│                                                     ├── New rules take effect   │
+│                                                     └── Old nodes fork off      │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Is Compilation Required?
-
-**NO** - Updates are pre-compiled binaries:
-
-- Maintainers compile binaries for all platforms
-- Nodes download platform-specific binaries
-- No Rust toolchain required on node machines
-- No source code downloaded
-
-### Is It All At Once?
-
-**YES** - Binary replacement is atomic:
-
-```rust
-// Atomic rename - either succeeds completely or fails
-fs::rename(&temp_path, target).await?;
-```
-
-- No partial updates possible
-- Either old version or new version runs
-- Never a mix of old/new code
-
-### Restart Behavior
+### 6.4 Soft Update vs Hard Fork Comparison
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                     RESTART SEQUENCE                            │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  [Old Binary Running]                                          │
-│         │                                                      │
-│         ▼                                                      │
-│  apply_update() completes                                      │
-│         │                                                      │
-│         ▼                                                      │
-│  restart_node() called                                         │
-│         │                                                      │
-│         ▼                                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ Unix: exec(new_binary, args)                            │  │
-│  │   - Process image replaced in-place                     │  │
-│  │   - Same PID, same file descriptors closed              │  │
-│  │   - New binary starts immediately                       │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│         │                                                      │
-│         ▼                                                      │
-│  [New Binary Running]                                          │
-│         │                                                      │
-│         ▼                                                      │
-│  - Loads chain state from disk                                 │
-│  - Resumes normal operation                                    │
-│  - Reconnects to peers                                         │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Rollback
-
-If update fails or causes issues:
-
-```rust
-pub async fn rollback() -> Result<()> {
-    let current = current_binary_path()?;
-    let backup = backup_path()?;  // doli-node.backup
-
-    // Copy backup back to original location
-    fs::copy(&backup, &current).await?;
-}
-```
-
-Manual rollback:
-```bash
-# Stop node
-systemctl stop doli-node
-
-# Restore backup
-cp /usr/local/bin/doli-node.backup /usr/local/bin/doli-node
-
-# Restart
-systemctl start doli-node
+┌─────────────────────┬─────────────────────┬─────────────────────┐
+│ Aspect              │ Soft Update         │ Hard Fork           │
+├─────────────────────┼─────────────────────┼─────────────────────┤
+│ Backward compatible │ Yes                 │ No                  │
+│ Old nodes can sync  │ Yes                 │ No (fork off)       │
+│ Activation          │ Immediate (grace)   │ At specific height  │
+│ Veto period         │ 7 days              │ 7 days              │
+│ Total notice        │ 9 days              │ ~30 days            │
+│ Rollback possible   │ Yes (automatic)     │ No (chain diverged) │
+│ Network split risk  │ None                │ Yes (if not ready)  │
+└─────────────────────┴─────────────────────┴─────────────────────┘
 ```
 
 ---
 
-## 9. Node Behavior During Updates
+## 7. Security Model
 
-### Downtime Analysis
-
-| Phase | Duration | Node Status | Network Impact |
-|-------|----------|-------------|----------------|
-| Download | 1-60s | Running | None |
-| Verification | <1s | Running | None |
-| Backup | <1s | Running | None |
-| Install | <1s | Running | None |
-| Restart | 5-30s | **OFFLINE** | Peers timeout |
-| Recovery | 1-5s | Syncing | Catching up |
-
-**Total expected downtime: 5-30 seconds**
-
-### What Happens to In-Flight Operations
-
-#### Block Production
-
-- If restart happens during your slot → **slot missed**
-- Other producers continue normally
-- Next assigned slot will be produced
-- No slashing for missed slots due to updates
-
-#### Transactions in Mempool
-
-- Mempool is **in-memory only**
-- Transactions **lost** on restart
-- Users should resubmit if not confirmed
-- Consider: Implement mempool persistence (future enhancement)
-
-#### P2P Connections
-
-- All connections **dropped** on restart
-- Peers see connection timeout
-- Reconnection automatic on restart
-- DHT rediscovery takes 10-30 seconds
-
-#### RPC Clients
-
-- RPC server **stops** during restart
-- Clients get connection refused
-- Clients should retry with backoff
-- No persistent sessions
-
-### Notification/Messages
-
-The node logs update activity:
+### 7.1 Threat Analysis
 
 ```
-INFO  doli_node::updater: New update available: 1.0.0 -> 1.0.1 (veto period: 7 days)
-INFO  doli_node::updater: Changelog: Security fix for VDF verification bypass
-DEBUG doli_node::updater: Update 1.0.1 pending: 15% veto, 120h remaining
-INFO  doli_node::updater: Update 1.0.1 APPROVED (20% veto, threshold 40%)
-INFO  updater::apply: Applying update to version 1.0.1
-INFO  updater::apply: Downloading 1.0.1 for linux-x64
-INFO  updater::apply: Downloaded 45000000 bytes from primary
-INFO  updater::apply: Binary hash verified: e3b0c44298fc...
-INFO  updater::apply: Backing up current binary to /usr/local/bin/doli-node.backup
-INFO  updater::apply: Update to 1.0.1 applied successfully
-INFO  updater::apply: Node will restart to apply changes
+┌────────────────────┬─────────────────────────┬─────────────────────────┬──────────────┐
+│ Threat             │ Attack Vector           │ Mitigation              │ Risk Level   │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Malicious          │ Signs backdoored        │ Requires 3/5            │ Low          │
+│ maintainer         │ binary                  │ signatures              │ (collusion)  │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Key compromise     │ Attacker signs          │ Still need 2 more       │ None         │
+│ (1 key)            │ releases                │ keys                    │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Key compromise     │ Attacker signs          │ Still need 1 more       │ None         │
+│ (2 keys)           │ releases                │ key                     │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Key compromise     │ Attacker signs          │ Community can veto      │ Medium       │
+│ (3 keys)           │ releases                │ within 7 days           │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Sybil veto         │ Block legitimate        │ Seniority weighting     │ Low          │
+│ attack             │ updates                 │ + bond + 30-day min     │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Mirror             │ Serve malicious         │ SHA-256 hash            │ None         │
+│ compromise         │ binary                  │ verification            │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ MITM attack        │ Intercept download      │ Hash verification       │ None         │
+│                    │                         │ + HTTPS                 │              │
+├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
+│ Rollback attack    │ Force old vulnerable    │ Version comparison      │ None         │
+│                    │ version                 │ (no downgrades)         │              │
+└────────────────────┴─────────────────────────┴─────────────────────────┴──────────────┘
 ```
 
----
-
-## 10. Non-Updating Nodes
-
-### Scenarios
-
-#### A. Auto-Updates Disabled (`--no-auto-update`)
-
-```bash
-doli-node run --network mainnet --no-auto-update
-```
-
-Behavior:
-- Node **never checks** for updates
-- Runs current version indefinitely
-- Operator must update manually
-- **No automatic protection** from security fixes
-
-#### B. Notify-Only Mode (`--update-notify-only`)
-
-```bash
-doli-node run --network mainnet --update-notify-only
-```
-
-Behavior:
-- Checks for updates every 6 hours
-- Logs when update available
-- **Never applies** update automatically
-- Operator must update manually
-
-#### C. Simply Not Restarting
-
-If node is running during update application window:
-- Update applied, restart triggered
-- If systemd/supervisor restarts: new version runs
-- If no process manager: node stays down until manual start
-
-### Network Compatibility
-
-**Old and new versions CAN coexist:**
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    MIXED VERSION NETWORK                                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   Node A (v1.0.0)  ◄───────────────────────►  Node B (v1.0.1)          │
-│        │                                            │                   │
-│        │           Block Gossip                     │                   │
-│        │           (compatible)                     │                   │
-│        │                                            │                   │
-│        │           Transaction Relay                │                   │
-│        │           (compatible)                     │                   │
-│        │                                            │                   │
-│        ▼                                            ▼                   │
-│   ┌─────────┐                                  ┌─────────┐             │
-│   │ Produces│                                  │ Produces│             │
-│   │ blocks  │                                  │ blocks  │             │
-│   └─────────┘                                  └─────────┘             │
-│        │                                            │                   │
-│        └─────────── Same chain ─────────────────────┘                   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### What Old Nodes Experience
-
-| Aspect | Behavior |
-|--------|----------|
-| Block validation | Works normally |
-| Block production | Works normally |
-| Transaction processing | Works normally |
-| Peer connections | Compatible |
-| Consensus participation | Full participation |
-| Rewards | Received normally |
-| Security fixes | **NOT applied** |
-
-### Risks of Not Updating
-
-1. **Security vulnerabilities** - Unpatched exploits
-2. **Bug exposure** - Known issues not fixed
-3. **Performance issues** - Optimizations missed
-4. **Future incompatibility** - Eventually may diverge
-
-### No Forced Updates
-
-**IMPORTANT**: There is NO mechanism to force nodes to update.
-
-- No "upgrade height" that rejects old versions
-- No version field in blocks
-- No consensus rule requiring specific version
-- Operators have full control
-
----
-
-## 11. Network Compatibility
-
-### Version Compatibility Matrix
-
-| Old Version | New Version | Blocks Compatible | Transactions Compatible | State Compatible |
-|-------------|-------------|-------------------|------------------------|------------------|
-| 1.0.0 | 1.0.1 | YES | YES | YES |
-| 1.0.x | 1.1.x | YES | YES | YES |
-| 1.x.x | 2.x.x | YES* | YES* | YES* |
-
-*Unless major version introduces breaking changes (documented in changelog)
-
-### No Hard Fork Support
-
-Current design does **NOT** support hard forks:
-
-- No "upgrade at height X" mechanism
-- No version-gated consensus rules
-- No state migration framework
-
-**Breaking protocol changes require launching a new network.**
-
-### P2P Protocol
-
-- Same libp2p protocol across versions
-- Gossipsub topics unchanged
-- Block/transaction formats backward compatible
-- No protocol negotiation
-
----
-
-## 12. Configuration Options
-
-### UpdateConfig Structure
-
-```rust
-pub struct UpdateConfig {
-    pub enabled: bool,              // Default: true
-    pub notify_only: bool,          // Default: false
-    pub check_interval_secs: u64,   // Default: 21600 (6 hours)
-    pub custom_url: Option<String>, // Default: None (use mirrors)
-}
-```
-
-### Configuration via CLI
-
-```bash
-# Disable auto-updates entirely
-doli-node run --no-auto-update
-
-# Enable notifications only (no automatic application)
-doli-node run --update-notify-only
-
-# Both can be combined with other flags
-doli-node run \
-  --network mainnet \
-  --no-auto-update \
-  --producer \
-  --producer-key /path/to/key.json
-```
-
-### Environment Variables
-
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| `DOLI_TEST_KEYS` | Enable test maintainer keys | `DOLI_TEST_KEYS=1` |
-| `DOLI_VOTE_VERSION` | Version to vote on | `DOLI_VOTE_VERSION=1.0.1` |
-
-### Custom Update Server
-
-For private networks or air-gapped environments:
-
-```rust
-UpdateConfig {
-    custom_url: Some("https://internal.mycompany.com/doli-updates".to_string()),
-    ..Default::default()
-}
-```
-
-Server must host `latest.json` at the root path.
-
----
-
-## 13. Security Considerations
-
-### Key Security
+### 7.2 Key Security Requirements
 
 | Aspect | Requirement |
 |--------|-------------|
-| Key generation | Air-gapped system only |
+| Key generation | Air-gapped system, HSM recommended |
 | Key storage | Hardware wallet or encrypted offline |
-| Key usage | Sign releases offline, transfer signatures |
-| Key compromise | Requires 3/5 keys - single compromise not fatal |
+| Key usage | Sign releases offline, transfer only signatures |
+| Key rotation | Emergency procedures documented |
 
-### Release Verification
-
-- **SHA-256 hash** prevents binary tampering
-- **3/5 signatures** prevent unauthorized releases
-- **Mirror fallback** prevents single point of failure
-- **Version comparison** prevents downgrades
-
-### Attack Scenarios
-
-| Attack | Mitigation |
-|--------|------------|
-| Compromised mirror | Hash verification fails |
-| 1 key compromised | Need 3/5 signatures |
-| 2 keys compromised | Need 3/5 signatures (still safe) |
-| Sybil veto attack | Weighted voting by seniority |
-| Malicious update | 40% veto threshold |
-
-### Recommendations
-
-1. **Mainnet**: Enable auto-updates for security patches
-2. **Producers**: Review updates during veto period
-3. **Operators**: Monitor update announcements
-4. **Maintainers**: Secure key storage, offline signing
-
----
-
-## 14. Troubleshooting
-
-### Common Issues
-
-#### Update Not Detected
-
-```bash
-# Check connectivity to GitHub API
-curl -s https://api.github.com/repos/e-weil/doli/releases/latest | jq .tag_name
-
-# Check fallback mirror
-curl -v https://releases.doli.network/latest.json
-
-# Check node logs for update check errors
-grep "update" /var/log/doli-node.log
-```
-
-#### Signature Verification Failed
+### 7.3 Defense in Depth
 
 ```
-ERROR: Release 1.0.1 has invalid signatures: InsufficientSignatures { found: 2, required: 3 }
-```
-
-Cause: Release not properly signed by maintainers.
-Action: Contact maintainers or wait for proper release.
-
-#### Hash Mismatch
-
-```
-ERROR: Binary hash mismatch: expected abc123..., got def456...
-```
-
-Cause: Download corrupted or tampering detected.
-Action: Retry download, check network, report if persistent.
-
-#### Update Rejected
-
-```
-WARN: Update 1.0.1 REJECTED (45% veto >= 40% threshold)
-```
-
-Cause: Community vetoed the update.
-Action: No action needed - update discarded automatically.
-
-#### Rollback Needed
-
-```bash
-# If new version has issues
-systemctl stop doli-node
-cp /usr/local/bin/doli-node.backup /usr/local/bin/doli-node
-systemctl start doli-node
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              DEFENSE LAYERS                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Layer 1: CRYPTOGRAPHIC                                                         │
+│  ├── 3/5 multisig for releases                                                  │
+│  ├── SHA-256 binary verification                                                │
+│  └── Ed25519 signatures on all messages                                         │
+│                                                                                 │
+│  Layer 2: GOVERNANCE                                                            │
+│  ├── 40% weighted veto threshold                                                │
+│  ├── 7-day mandatory review period                                              │
+│  └── Vote changing allowed (react to new info)                                  │
+│                                                                                 │
+│  Layer 3: ECONOMIC                                                              │
+│  ├── Bond requirement for producers                                             │
+│  ├── Seniority weighting (max 4x)                                               │
+│  └── 30-day minimum voting age                                                  │
+│                                                                                 │
+│  Layer 4: OPERATIONAL                                                           │
+│  ├── Automatic rollback on failure                                              │
+│  ├── Backup preservation before update                                          │
+│  └── Health monitoring and alerting                                             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 15. Test Scripts
+## 8. CLI Command Reference
 
-### Available Test Scripts
-
-| Script | Purpose | Duration |
-|--------|---------|----------|
-| `scripts/test_governance_scenarios.sh` | All vote threshold scenarios | ~2 min |
-| `scripts/test_autoupdate_e2e.sh` | Complete E2E update flow | ~2 min |
-| `scripts/test_12node_governance.sh` | Multi-node era progression | ~20 min |
-
-### Running Tests
+### 8.1 Update Management
 
 ```bash
-# Test all governance scenarios
-./scripts/test_governance_scenarios.sh
+# Check for available updates
+doli-node update check
 
-# Test end-to-end auto-update flow
-./scripts/test_autoupdate_e2e.sh
+# Output (update available):
+# Update available: 1.0.0 -> 1.0.1
+# Changelog: Security fix for VDF verification bypass
+# Veto period: 5 days, 12 hours remaining
+# Veto status: 15.5% of 40% threshold
 
-# Test with custom test directory
-TEST_DIR=/tmp/my-test ./scripts/test_autoupdate_e2e.sh
+# Show detailed update status
+doli-node update status
+
+# Apply approved update (after veto period)
+doli-node update apply
+
+# Force apply (bypasses approval check, NOT veto period)
+doli-node update apply --force
+
+# Manual rollback to backup
+doli-node update rollback
 ```
 
-### Test Coverage
+### 8.2 Voting (Producers Only)
 
-| Functionality | Test Script | Status |
-|---------------|-------------|--------|
-| Version reporting | test_autoupdate_e2e.sh | TESTED |
-| Vote submission | test_governance_scenarios.sh | TESTED |
-| Approval flow (< 40%) | test_governance_scenarios.sh | TESTED |
-| Rejection flow (>= 40%) | test_governance_scenarios.sh | TESTED |
-| Vote propagation | test_autoupdate_e2e.sh | TESTED |
-| Node sync stability | test_autoupdate_e2e.sh | TESTED |
-| Signature verification | Unit tests | TESTED |
-| Hash verification | Unit tests | TESTED |
-| Binary download | Manual/integration | TESTED |
-| Binary installation | Not safe to test | DOCUMENTED |
-| Node restart | Not safe to test | DOCUMENTED |
-| Rollback | Manual testing only | DOCUMENTED |
+```bash
+# Vote to VETO (block) an update
+doli-node update vote --veto --version 1.0.1 --key /path/to/producer.json
+
+# Vote to APPROVE an update
+doli-node update vote --approve --version 1.0.1 --key /path/to/producer.json
+
+# Change your vote (replaces previous)
+doli-node update vote --approve --version 1.0.1 --key /path/to/producer.json
+
+# View current vote status for a version
+doli-node update votes --version 1.0.1
+
+# Output:
+# Version: 1.0.1
+# Total eligible weight: 125.50
+# Veto weight: 45.25 (36.1%)
+# Approve weight: 80.25 (63.9%)
+# Threshold: 40%
+# Status: ON TRACK TO PASS
+# Time remaining: 3 days, 8 hours
+```
+
+### 8.3 Node Run Options
+
+```bash
+# Run with auto-updates enabled (default)
+doli-node run --network mainnet
+
+# Disable auto-updates entirely
+doli-node run --network mainnet --no-auto-update
+
+# Notify only (check but don't apply)
+doli-node run --network mainnet --update-notify-only
+
+# Disable automatic rollback
+doli-node run --network mainnet --no-auto-rollback
+
+# Full production setup
+doli-node run \
+  --network mainnet \
+  --producer \
+  --producer-key /path/to/producer.json \
+  --rpc-bind 0.0.0.0:28545
+```
 
 ---
 
-## Appendix A: File Locations
+## 9. RPC Endpoints
 
-| Component | Path |
-|-----------|------|
-| Core updater library | `crates/updater/src/lib.rs` |
-| Vote tracking | `crates/updater/src/vote.rs` |
-| Binary download/verify | `crates/updater/src/download.rs` |
-| Update application | `crates/updater/src/apply.rs` |
-| Test keys | `crates/updater/src/test_keys.rs` |
-| Node integration | `bins/node/src/updater.rs` |
-| CLI entry point | `bins/node/src/main.rs` |
-| RPC methods | `crates/rpc/src/methods.rs` |
-| Gossip topics | `crates/network/src/gossip.rs` |
+### 9.1 getUpdateStatus
 
-## Appendix B: Constants Reference
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "method": "getUpdateStatus",
+  "params": {},
+  "id": 1
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "current_version": "1.0.0",
+    "pending_update": {
+      "version": "1.0.1",
+      "changelog": "Security fix for VDF verification",
+      "veto_percent": 15.5,
+      "veto_weight": 45.25,
+      "total_weight": 291.50,
+      "time_remaining_secs": 432000,
+      "status": "voting",
+      "hard_fork": false
+    }
+  },
+  "id": 1
+}
+```
+
+### 9.2 submitVote
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "method": "submitVote",
+  "params": {
+    "version": "1.0.1",
+    "vote": "veto",
+    "producer_pubkey": "abc123...",
+    "timestamp": 1704067200,
+    "signature": "def456..."
+  },
+  "id": 1
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "accepted",
+    "message": "Vote submitted and broadcast",
+    "your_weight": 3.25,
+    "replaces_previous": true
+  },
+  "id": 1
+}
+```
+
+### 9.3 getVoteHistory
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "method": "getVoteHistory",
+  "params": {
+    "version": "1.0.1"
+  },
+  "id": 1
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "version": "1.0.1",
+    "votes": [
+      {
+        "producer": "abc123...",
+        "vote": "veto",
+        "weight": 4.0,
+        "years_active": 5.2,
+        "timestamp": 1704067200
+      },
+      {
+        "producer": "def456...",
+        "vote": "approve",
+        "weight": 2.5,
+        "years_active": 2.1,
+        "timestamp": 1704067300
+      }
+    ],
+    "summary": {
+      "total_votes": 2,
+      "veto_weight": 4.0,
+      "approve_weight": 2.5,
+      "abstain_weight": 285.0
+    }
+  },
+  "id": 1
+}
+```
+
+### 9.4 getProducerSeniority
+
+```json
+// Request
+{
+  "jsonrpc": "2.0",
+  "method": "getProducerSeniority",
+  "params": {
+    "producer": "abc123..."
+  },
+  "id": 1
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "producer": "abc123...",
+    "registration_height": 50000,
+    "days_active": 1825,
+    "years_active": 5.0,
+    "vote_weight": 4.0,
+    "is_eligible_to_vote": true
+  },
+  "id": 1
+}
+```
+
+---
+
+## 10. Implementation Reference
+
+### 10.1 File Locations
+
+```
+┌─────────────────────────────────┬─────────────────────────────────────────────┐
+│ Component                       │ Path                                        │
+├─────────────────────────────────┼─────────────────────────────────────────────┤
+│ Core library                    │ crates/updater/src/lib.rs                   │
+│ Seniority voting                │ crates/updater/src/seniority.rs             │
+│ Vote tracking                   │ crates/updater/src/vote.rs                  │
+│ Watchdog (rollback)             │ crates/updater/src/watchdog.rs              │
+│ Hard fork logic                 │ crates/updater/src/hardfork.rs              │
+│ Binary download                 │ crates/updater/src/download.rs              │
+│ Binary verification             │ crates/updater/src/verify.rs                │
+│ Update application              │ crates/updater/src/apply.rs                 │
+│ Test keys                       │ crates/updater/src/test_keys.rs             │
+│ Node integration                │ bins/node/src/updater.rs                    │
+│ CLI commands                    │ bins/cli/src/update.rs                      │
+│ RPC methods                     │ crates/rpc/src/update.rs                    │
+│ Gossip topics                   │ crates/network/src/gossip.rs                │
+└─────────────────────────────────┴─────────────────────────────────────────────┘
+```
+
+### 10.2 Key Data Structures
+
+```rust
+/// Producer seniority information
+pub struct ProducerSeniority {
+    pub pubkey: PublicKey,
+    pub registration_height: u64,
+    pub years_active: f64,
+    pub vote_weight: f64,
+}
+
+impl ProducerSeniority {
+    pub fn calculate_weight(&self) -> f64 {
+        1.0 + f64::min(self.years_active, 4.0) * 0.75
+    }
+    
+    pub fn is_eligible_to_vote(&self, current_height: u64, blocks_per_day: u64) -> bool {
+        let days_active = (current_height - self.registration_height) / blocks_per_day;
+        days_active >= MIN_VOTING_AGE_DAYS  // 30
+    }
+}
+
+/// Release metadata
+pub struct Release {
+    pub version: String,
+    pub binary_sha256: [u8; 32],
+    pub binary_url_template: String,
+    pub changelog: String,
+    pub published_at: u64,
+    pub signatures: Vec<MaintainerSignature>,
+    pub hard_fork: Option<HardForkInfo>,
+}
+
+/// Hard fork activation info
+pub struct HardForkInfo {
+    pub activation_height: u64,
+    pub min_version: String,
+}
+
+/// Vote with seniority weight
+pub struct WeightedVote {
+    pub message: VoteMessage,
+    pub producer_seniority: ProducerSeniority,
+    pub effective_weight: f64,
+}
+
+/// Update watchdog state
+pub struct UpdateWatchdog {
+    pub last_update_version: Option<String>,
+    pub last_update_time: Option<u64>,
+    pub crash_count: u32,
+    pub crash_timestamps: Vec<u64>,
+}
+```
+
+### 10.3 Constants
 
 ```rust
 // Timing
-pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);  // 7 days
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);    // 6 hours
+pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);     // 7 days
+pub const GRACE_PERIOD: Duration = Duration::from_secs(48 * 3600);        // 48 hours
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);       // 6 hours
 
 // Thresholds
-pub const VETO_THRESHOLD_PERCENT: u8 = 40;    // 40% veto to reject
-pub const REQUIRED_SIGNATURES: usize = 3;     // 3 of 5 maintainers
+pub const VETO_THRESHOLD_PERCENT: u8 = 40;
+pub const REQUIRED_SIGNATURES: usize = 3;
 
-// GitHub (primary source)
-pub const GITHUB_REPO: &str = "e-weil/doli";
+// Seniority
+pub const MAX_SENIORITY_MULTIPLIER: f64 = 4.0;
+pub const SENIORITY_MATURITY_YEARS: f64 = 4.0;
+pub const MIN_VOTING_AGE_DAYS: u64 = 30;
+
+// Rollback
+pub const CRASH_THRESHOLD: u32 = 3;
+pub const CRASH_WINDOW: Duration = Duration::from_secs(3600);             // 1 hour
+
+// Distribution
 pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
-pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/download";
-
-// Fallback (if GitHub unreachable)
 pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 ```
 
-## Appendix C: Network Parameters
+---
 
-| Parameter | Mainnet | Testnet | Devnet |
-|-----------|---------|---------|--------|
-| Veto period | 7 days | 7 days | 7 days |
-| Slot duration | 10 seconds | 10 seconds | 1 second |
-| Check interval | 6 hours | 6 hours | Configurable |
-| Test keys | NO | NO | YES (`DOLI_TEST_KEYS=1`) |
+## 11. Comparison with Other Blockchains
 
-**Note:** Veto period is fixed at 7 days for all networks. This ensures consistent
-security properties across all environments.
+```
+┌─────────────────────┬────────────┬────────────┬────────────┬─────────────────┐
+│ Feature             │ Bitcoin    │ Ethereum   │ Solana     │ DOLI            │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Update mechanism    │ BIP        │ EIP +      │ Foundation │ Auto-update     │
+│                     │ process    │ hard fork  │ push       │ + veto          │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Voting system       │ Miner      │ None       │ None       │ Seniority-      │
+│                     │ signaling  │ (social)   │            │ weighted        │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Veto power          │ 95%        │ Social     │ None       │ 40% weighted    │
+│                     │ threshold  │ consensus  │            │                 │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Time to update      │ Months to  │ Weeks to   │ Hours      │ 9 days          │
+│                     │ years      │ months     │            │ minimum         │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Automatic apply     │ No         │ No         │ Yes        │ Yes             │
+│                     │            │            │            │ (with veto)     │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Automatic rollback  │ No         │ No         │ No         │ Yes             │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Hard fork support   │ Yes        │ Yes        │ Yes        │ Yes             │
+│                     │ (manual)   │ (manual)   │ (forced)   │ (at-height)     │
+├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
+│ Sybil resistance    │ Hashpower  │ Stake      │ Stake      │ Seniority +     │
+│                     │            │            │            │ bond + time     │
+└─────────────────────┴────────────┴────────────┴────────────┴─────────────────┘
+```
+
+**DOLI's advantage**: Combines the security review period of Bitcoin/Ethereum with the operational efficiency of Solana, while adding democratic governance that neither has. The seniority system prevents both plutocracy (unlike pure PoS) and Sybil attacks (unlike pure count-based voting).
 
 ---
 
-*Document last updated: January 2026*
-*DOLI Protocol Version: 0.1.0*
+## 12. Frequently Asked Questions
+
+### Q: Can maintainers force an update without community consent?
+
+**No.** Even with 3/5 maintainer signatures, the community has 7 days to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
+
+### Q: What if I disagree with an approved update?
+
+You have several options:
+1. Vote to veto during the period (organize other producers)
+2. Accept the democratic outcome and update
+3. Run with `--no-auto-update` and stay on old version (cannot produce blocks)
+4. Fork the network with like-minded participants
+
+### Q: What happens if my node crashes after an update?
+
+The watchdog automatically rolls back to the previous version after 3 crashes within 1 hour. You can also manually rollback with `doli-node update rollback`. Your backup is always preserved.
+
+### Q: Can I run an old version forever?
+
+- **Soft updates**: Yes, but you cannot produce blocks after the grace period. You can still sync, serve RPC, and relay transactions.
+- **Hard forks**: No. Your node will fork off and follow a dead chain. You must update before activation height.
+
+### Q: Why is the seniority cap at 4 years?
+
+Four years balances Sybil resistance with preventing permanent oligarchy:
+- **Long enough**: Creates meaningful barriers for attackers (must maintain fake producers for years)
+- **Short enough**: New participants can eventually reach parity with founders
+- **Fair**: Everyone who commits long-term gets equal voice
+
+### Q: What if 3+ maintainer keys are compromised?
+
+The community has 7 days to detect and veto any malicious release. Additionally:
+1. Key rotation procedures should be initiated immediately
+2. Community alert via all channels (Discord, Twitter, forums)
+3. In extreme cases, a new network may need to be launched with new keys
+
+### Q: How do I become a maintainer?
+
+Maintainer positions are determined by community governance. The initial 5 maintainers are selected before mainnet launch. Future changes require:
+1. Governance proposal submitted
+2. Community discussion period
+3. On-chain vote by producers
+4. Key ceremony for new maintainer
+
+### Q: What's the difference between "approve" and not voting?
+
+Functionally the same. The system uses **veto-based** governance:
+- Updates pass by default unless blocked
+- Only VETO votes count toward the 40% threshold
+- Abstaining = implicit approval
+
+This prevents "voter apathy" from blocking important security updates.
+
+### Q: Can I change my vote?
+
+**Yes.** Unlike the v1.0 system, you can change your vote at any time during the 7-day veto period. Only your latest vote (by timestamp) counts at the deadline. This allows reaction to new information discovered during review.
+
+### Q: How do I verify a release is legitimate?
+
+```bash
+# Check signatures
+doli-node update verify --version 1.0.1
+
+# Output shows:
+# - All 3+ maintainer signatures
+# - SHA-256 hash of binary
+# - Signature verification status
+# - Whether hash matches downloaded binary
+```
+
+---
+
+## Document Information
+
+- **Version**: 2.0
+- **Last Updated**: January 2026
+- **Status**: Production Specification
+
+### Changes from v1.0
+
+- ✅ Added seniority-weighted voting (replaces count-based)
+- ✅ Added 30-day minimum voting age requirement
+- ✅ Added vote changing capability during veto period
+- ✅ Added automatic rollback with crash detection watchdog
+- ✅ Added hard fork support with upgrade-at-height mechanism
+- ✅ Expanded security analysis and threat modeling
+- ✅ Added comprehensive FAQ section
+- ✅ Clarified the 4-year seniority convergence model
+
+---
+
+*DOLI Protocol - Decentralized, Democratic, Secure*

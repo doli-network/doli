@@ -2031,6 +2031,68 @@ pub mod reward_epoch {
             from_height(height)
         }
     }
+
+    // ========================================================================
+    // Network-aware versions (_with suffix)
+    // These functions accept blocks_per_epoch as a parameter to support
+    // different networks (mainnet=360, testnet=360, devnet=60).
+    // ========================================================================
+
+    /// Get reward epoch number from block height (network-aware version).
+    ///
+    /// Use this when you have access to `Network::blocks_per_reward_epoch()`.
+    #[inline]
+    pub fn from_height_with(height: BlockHeight, blocks_per_epoch: u64) -> u64 {
+        height / blocks_per_epoch
+    }
+
+    /// Get (start_height, end_height) for a reward epoch (network-aware version).
+    ///
+    /// Note: `end_height` is exclusive (the range is `start..end`).
+    #[inline]
+    pub fn boundaries_with(epoch: u64, blocks_per_epoch: u64) -> (BlockHeight, BlockHeight) {
+        let start = epoch * blocks_per_epoch;
+        let end = start + blocks_per_epoch;
+        (start, end)
+    }
+
+    /// Check if a reward epoch is complete (network-aware version).
+    #[inline]
+    pub fn is_complete_with(
+        epoch: u64,
+        current_height: BlockHeight,
+        blocks_per_epoch: u64,
+    ) -> bool {
+        let (_, end) = boundaries_with(epoch, blocks_per_epoch);
+        current_height >= end
+    }
+
+    /// Get last complete reward epoch (network-aware version).
+    #[inline]
+    pub fn last_complete_with(height: BlockHeight, blocks_per_epoch: u64) -> Option<u64> {
+        let current_epoch = from_height_with(height, blocks_per_epoch);
+        if current_epoch > 0 {
+            Some(current_epoch - 1)
+        } else {
+            None
+        }
+    }
+
+    /// Check if height is first block of a reward epoch (network-aware version).
+    #[inline]
+    pub fn is_epoch_start_with(height: BlockHeight, blocks_per_epoch: u64) -> bool {
+        height % blocks_per_epoch == 0
+    }
+
+    /// Calculate complete epochs up to height (network-aware version).
+    #[inline]
+    pub fn complete_epochs_with(height: BlockHeight, blocks_per_epoch: u64) -> u64 {
+        if height < blocks_per_epoch {
+            0
+        } else {
+            from_height_with(height, blocks_per_epoch)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3497,5 +3559,127 @@ mod tests {
     fn test_reward_epoch_blocks_per_epoch() {
         assert_eq!(reward_epoch::blocks_per_epoch(), BLOCKS_PER_REWARD_EPOCH);
         assert_eq!(reward_epoch::blocks_per_epoch(), 360);
+    }
+
+    // ========================================================================
+    // Tests for network-aware (_with) functions
+    // ========================================================================
+
+    #[test]
+    fn test_reward_epoch_from_height_with_devnet() {
+        // Devnet uses 60 blocks per epoch
+        let devnet_blocks = 60;
+
+        assert_eq!(reward_epoch::from_height_with(0, devnet_blocks), 0);
+        assert_eq!(reward_epoch::from_height_with(59, devnet_blocks), 0);
+        assert_eq!(reward_epoch::from_height_with(60, devnet_blocks), 1);
+        assert_eq!(reward_epoch::from_height_with(119, devnet_blocks), 1);
+        assert_eq!(reward_epoch::from_height_with(120, devnet_blocks), 2);
+    }
+
+    #[test]
+    fn test_reward_epoch_boundaries_with_devnet() {
+        let devnet_blocks = 60;
+
+        let (start, end) = reward_epoch::boundaries_with(0, devnet_blocks);
+        assert_eq!(start, 0);
+        assert_eq!(end, 60);
+
+        let (start, end) = reward_epoch::boundaries_with(1, devnet_blocks);
+        assert_eq!(start, 60);
+        assert_eq!(end, 120);
+
+        let (start, end) = reward_epoch::boundaries_with(5, devnet_blocks);
+        assert_eq!(start, 300);
+        assert_eq!(end, 360);
+    }
+
+    #[test]
+    fn test_reward_epoch_is_complete_with_devnet() {
+        let devnet_blocks = 60;
+
+        // Epoch 0 ends at block 60 for devnet
+        assert!(!reward_epoch::is_complete_with(0, 0, devnet_blocks));
+        assert!(!reward_epoch::is_complete_with(0, 59, devnet_blocks));
+        assert!(reward_epoch::is_complete_with(0, 60, devnet_blocks));
+        assert!(reward_epoch::is_complete_with(0, 100, devnet_blocks));
+
+        // Epoch 1 ends at block 120 for devnet
+        assert!(!reward_epoch::is_complete_with(1, 60, devnet_blocks));
+        assert!(!reward_epoch::is_complete_with(1, 119, devnet_blocks));
+        assert!(reward_epoch::is_complete_with(1, 120, devnet_blocks));
+    }
+
+    #[test]
+    fn test_reward_epoch_last_complete_with_devnet() {
+        let devnet_blocks = 60;
+
+        // No complete epochs yet
+        assert_eq!(reward_epoch::last_complete_with(0, devnet_blocks), None);
+        assert_eq!(reward_epoch::last_complete_with(59, devnet_blocks), None);
+
+        // First epoch just completed (at block 60)
+        assert_eq!(reward_epoch::last_complete_with(60, devnet_blocks), Some(0));
+        assert_eq!(
+            reward_epoch::last_complete_with(119, devnet_blocks),
+            Some(0)
+        );
+
+        // Two epochs completed (at block 120)
+        assert_eq!(
+            reward_epoch::last_complete_with(120, devnet_blocks),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_reward_epoch_is_epoch_start_with_devnet() {
+        let devnet_blocks = 60;
+
+        assert!(reward_epoch::is_epoch_start_with(0, devnet_blocks));
+        assert!(!reward_epoch::is_epoch_start_with(1, devnet_blocks));
+        assert!(!reward_epoch::is_epoch_start_with(59, devnet_blocks));
+        assert!(reward_epoch::is_epoch_start_with(60, devnet_blocks));
+        assert!(reward_epoch::is_epoch_start_with(120, devnet_blocks));
+    }
+
+    #[test]
+    fn test_reward_epoch_complete_epochs_with_devnet() {
+        let devnet_blocks = 60;
+
+        // Before first epoch completes
+        assert_eq!(reward_epoch::complete_epochs_with(0, devnet_blocks), 0);
+        assert_eq!(reward_epoch::complete_epochs_with(59, devnet_blocks), 0);
+
+        // After first epoch completes
+        assert_eq!(reward_epoch::complete_epochs_with(60, devnet_blocks), 1);
+        assert_eq!(reward_epoch::complete_epochs_with(119, devnet_blocks), 1);
+
+        // After second epoch completes
+        assert_eq!(reward_epoch::complete_epochs_with(120, devnet_blocks), 2);
+    }
+
+    #[test]
+    fn test_reward_epoch_with_mainnet_same_as_default() {
+        // Mainnet uses 360 blocks, same as the global constant
+        let mainnet_blocks = 360;
+
+        // These should match the non-_with versions
+        assert_eq!(
+            reward_epoch::from_height_with(1000, mainnet_blocks),
+            reward_epoch::from_height(1000)
+        );
+        assert_eq!(
+            reward_epoch::boundaries_with(5, mainnet_blocks),
+            reward_epoch::boundaries(5)
+        );
+        assert_eq!(
+            reward_epoch::is_complete_with(0, 360, mainnet_blocks),
+            reward_epoch::is_complete(0, 360)
+        );
+        assert_eq!(
+            reward_epoch::last_complete_with(720, mainnet_blocks),
+            reward_epoch::last_complete(720)
+        );
     }
 }

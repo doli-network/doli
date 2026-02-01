@@ -219,7 +219,11 @@ impl PresenceCommitment {
 
     /// Verify that the number of set bits in bitfield equals weights.len().
     pub fn verify_bitfield_weight_count(&self) -> bool {
-        let set_bits = self.bitfield.iter().map(|b| b.count_ones() as usize).sum::<usize>();
+        let set_bits = self
+            .bitfield
+            .iter()
+            .map(|b| b.count_ones() as usize)
+            .sum::<usize>();
         set_bits == self.weights.len()
     }
 
