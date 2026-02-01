@@ -106,7 +106,7 @@ impl Network {
         match self {
             Network::Mainnet => 100_000_000_000, // 1000 DOLI
             Network::Testnet => 100_000_000_000, // 1000 DOLI (same as mainnet)
-            Network::Devnet => 100_000_000_000,  // 1000 DOLI (same as mainnet)
+            Network::Devnet => 100_000_000,      // 1 DOLI (faster testing)
         }
     }
 

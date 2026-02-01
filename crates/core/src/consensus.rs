@@ -1347,7 +1347,7 @@ impl ConsensusParams {
             slots_per_reward_epoch: network.slots_per_reward_epoch(),
             attestation_interval: ATTESTATION_INTERVAL,
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: BLOCKS_PER_ERA,
+            blocks_per_era: network.blocks_per_era(),
             bootstrap_blocks: network.bootstrap_blocks(),
             initial_reward: network.initial_reward(),
             initial_bond: network.initial_bond(),

@@ -719,11 +719,15 @@ async fn cmd_producer(
                 return Ok(());
             }
 
-            // Each bond = 1,000 DOLI = 100,000,000,000 base units
-            let bond_unit: u64 = 100_000_000_000;
+            // Get network-specific bond amount
+            let chain_info = rpc.get_chain_info().await?;
+            let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
+                "devnet" => (100_000_000, 1),    // 1 DOLI per bond on devnet
+                _ => (100_000_000_000, 1000),    // 1000 DOLI per bond on mainnet/testnet
+            };
             let required_amount = bond_unit * bonds as u64;
 
-            println!("Registering with {} bond(s) = {} DOLI", bonds, bonds * 1000);
+            println!("Registering with {} bond(s) = {} DOLI", bonds, bonds as u64 * bond_display);
             println!();
 
             // Get spendable UTXOs
@@ -733,7 +737,7 @@ async fn cmd_producer(
 
             if total_available < required_amount + fee {
                 println!("Error: Insufficient balance for bond");
-                println!("  Required:  {} DOLI", bonds * 1000);
+                println!("  Required:  {} DOLI", bonds as u64 * bond_display);
                 println!("  Available: {}", format_balance(total_available));
                 return Ok(());
             }
@@ -762,9 +766,17 @@ async fn cmd_producer(
             let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
                 .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
+            // Calculate lock_until based on network
+            // Lock must be at least current_height + blocks_per_era
+            let blocks_per_era: u64 = match chain_info.network.as_str() {
+                "devnet" => 576,        // ~10 minutes at 1s slots
+                _ => 12_614_400,        // ~4 years at 10s slots (mainnet/testnet)
+            };
+            let lock_until = chain_info.best_height + blocks_per_era;
+
             // Create registration transaction with bonds
             let mut tx =
-                Transaction::new_registration(inputs, producer_pubkey, required_amount, bonds);
+                Transaction::new_registration(inputs, producer_pubkey, required_amount, lock_until);
 
             // Add change output if needed
             let change = total_input - required_amount - fee;
@@ -910,11 +922,16 @@ async fn cmd_producer(
                 return Ok(());
             }
 
-            let bond_unit: u64 = 100_000_000_000;
+            // Get network-specific bond amount
+            let chain_info = rpc.get_chain_info().await?;
+            let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
+                "devnet" => (100_000_000, 1),    // 1 DOLI per bond on devnet
+                _ => (100_000_000_000, 1000),    // 1000 DOLI per bond on mainnet/testnet
+            };
             let required_amount = bond_unit * count as u64;
             let fee: u64 = 10000;
 
-            println!("Adding {} bond(s) = {} DOLI", count, count * 1000);
+            println!("Adding {} bond(s) = {} DOLI", count, count as u64 * bond_display);
             println!();
 
             // Get spendable UTXOs
@@ -923,7 +940,7 @@ async fn cmd_producer(
 
             if total_available < required_amount + fee {
                 println!("Error: Insufficient balance");
-                println!("  Required:  {} DOLI", count * 1000);
+                println!("  Required:  {} DOLI", count as u64 * bond_display);
                 println!("  Available: {}", format_balance(total_available));
                 return Ok(());
             }
