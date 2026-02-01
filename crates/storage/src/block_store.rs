@@ -383,6 +383,7 @@ mod tests {
             version: 1,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 1000 + slot as u64 * 10,
             slot,
             producer: producer.clone(),
