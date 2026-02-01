@@ -113,9 +113,9 @@ impl Network {
     /// Get initial block reward for this network
     pub fn initial_reward(&self) -> u64 {
         match self {
-            Network::Mainnet => 100_000_000,   // 1 DOLI
-            Network::Testnet => 100_000_000,   // 1 DOLI
-            Network::Devnet => 2_000_000_000,  // 20 DOLI
+            Network::Mainnet => 100_000_000,  // 1 DOLI
+            Network::Testnet => 100_000_000,  // 1 DOLI
+            Network::Devnet => 2_000_000_000, // 20 DOLI
         }
     }
 
@@ -577,25 +577,25 @@ mod tests {
     fn test_devnet_time_acceleration() {
         let devnet = Network::Devnet;
 
-        // 144 blocks = 1 simulated year (with 1s slots)
+        // 144 blocks = 1 simulated year (accelerated time)
         assert_eq!(devnet.blocks_per_year(), 144);
 
-        // 576 blocks = 1 era (4 simulated years) ≈ 9.6 minutes
+        // 576 blocks = 1 era (4 simulated years) ≈ 96 minutes at 10s slots
         assert_eq!(devnet.blocks_per_era(), 576);
 
-        // 1 block = 1 second
-        assert_eq!(devnet.slot_duration(), 1);
+        // 1 block = 10 seconds (same as mainnet for realistic testing)
+        assert_eq!(devnet.slot_duration(), 10);
 
-        // 144 blocks × 1 second = 144 seconds = 2.4 minutes = 1 simulated year
-        assert_eq!(devnet.blocks_per_year() * devnet.slot_duration(), 144);
+        // 144 blocks × 10 seconds = 1440 seconds = 24 minutes = 1 simulated year
+        assert_eq!(devnet.blocks_per_year() * devnet.slot_duration(), 1440);
 
         // 1 month = 12 blocks
         assert_eq!(devnet.blocks_per_month(), 12);
 
-        // Commitment period = 4 years = 576 blocks ≈ 9.6 minutes
+        // Commitment period = 4 years = 576 blocks ≈ 96 minutes
         assert_eq!(devnet.commitment_period(), 576);
 
-        // Exit history retention = 8 years = 1152 blocks ≈ 19.2 minutes
+        // Exit history retention = 8 years = 1152 blocks ≈ 192 minutes
         assert_eq!(devnet.exit_history_retention(), 1152);
     }
 
@@ -681,24 +681,27 @@ mod tests {
     fn test_devnet_simulation_timing() {
         let devnet = Network::Devnet;
 
-        // Verify era duration: 576 blocks = 576 seconds ≈ 9.6 minutes
+        // Verify era duration: 576 blocks × 10s = 5760 seconds ≈ 96 minutes
         assert_eq!(devnet.blocks_per_era(), 576);
         assert_eq!(
             devnet.blocks_per_era() * devnet.slot_duration(),
-            576,
-            "1 era should = 576 seconds ≈ 9.6 minutes"
+            5760,
+            "1 era should = 5760 seconds ≈ 96 minutes (with 10s slots)"
         );
 
-        // Verify 1 hour ≈ 6.25 eras (25 simulated years)
+        // Verify 1 hour = 360 blocks (3600s / 10s), less than 1 era (576 blocks)
         let one_hour_blocks = 3600 / devnet.slot_duration();
+        assert_eq!(one_hour_blocks, 360);
         let eras = one_hour_blocks / devnet.blocks_per_era();
-        assert_eq!(eras, 6, "1 hour should ≈ 6 eras (6.25 rounded down)");
+        assert_eq!(eras, 0, "1 hour should < 1 era with 10s slots");
 
         // Verify inactivity threshold is quick for testing
-        assert_eq!(devnet.inactivity_threshold(), 30); // 30 seconds with 1s slots
+        // 30 blocks × 10s = 300 seconds = 5 minutes
+        assert_eq!(devnet.inactivity_threshold(), 30);
 
         // Verify unbonding is quick for testing
-        assert_eq!(devnet.unbonding_period(), 60); // 60 seconds with 1s slots
+        // 60 blocks × 10s = 600 seconds = 10 minutes
+        assert_eq!(devnet.unbonding_period(), 60);
     }
 
     #[test]
