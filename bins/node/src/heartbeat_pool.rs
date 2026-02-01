@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 
 use crypto::{Hash, Hasher, PublicKey};
-use doli_core::heartbeat::{Heartbeat, HeartbeatError};
-use doli_core::presence::PresenceCommitment;
+use doli_core::heartbeat::{CompactHeartbeat, Heartbeat, HeartbeatError};
+use doli_core::merkle::{build_merkle_tree_with_proofs, HeartbeatMerkleProof};
+use doli_core::presence::{PresenceCommitment, PresenceCommitmentV2};
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::types::{Amount, Slot};
 use tracing::{debug, warn};
@@ -29,6 +30,13 @@ pub struct ValidatedHeartbeat {
     pub bond_weight: Amount,
     /// Producer index in sorted list (for bitfield)
     pub producer_index: usize,
+}
+
+impl ValidatedHeartbeat {
+    /// Convert to compact heartbeat for V2 presence commitment
+    pub fn to_compact(&self) -> CompactHeartbeat {
+        CompactHeartbeat::from_heartbeat(&self.heartbeat, self.bond_weight)
+    }
 }
 
 /// Pool for collecting heartbeats during a slot
@@ -243,6 +251,50 @@ impl HeartbeatPool {
             weights,
             merkle_root,
         )
+    }
+
+    /// Build a V2 presence commitment with merkle proofs
+    ///
+    /// Returns the compact PresenceCommitmentV2 (40 bytes) and a vector of
+    /// (CompactHeartbeat, HeartbeatMerkleProof) pairs. Block producers should
+    /// store the proof for their own heartbeat to enable claiming later.
+    ///
+    /// # Returns
+    /// (PresenceCommitmentV2, Vec<(CompactHeartbeat, HeartbeatMerkleProof)>)
+    pub fn build_presence_commitment_v2(
+        &self,
+    ) -> (PresenceCommitmentV2, Vec<(CompactHeartbeat, HeartbeatMerkleProof)>) {
+        if self.heartbeats.is_empty() {
+            return (PresenceCommitmentV2::empty(), Vec::new());
+        }
+
+        // Collect validated heartbeats sorted by producer index for determinism
+        let mut sorted_heartbeats: Vec<&ValidatedHeartbeat> = self.heartbeats.values().collect();
+        sorted_heartbeats.sort_by_key(|h| h.producer_index);
+
+        // Convert to compact heartbeats
+        let compact_heartbeats: Vec<CompactHeartbeat> = sorted_heartbeats
+            .iter()
+            .map(|vh| vh.to_compact())
+            .collect();
+
+        // Compute total weight
+        let total_weight: u64 = compact_heartbeats.iter().map(|h| h.bond_weight).sum();
+
+        // Compute leaf hashes for merkle tree
+        let leaf_hashes: Vec<Hash> = compact_heartbeats.iter().map(|h| h.leaf_hash()).collect();
+
+        // Build merkle tree and get proofs
+        let (heartbeats_root, proofs) = build_merkle_tree_with_proofs(&leaf_hashes);
+
+        // Create the V2 commitment
+        let commitment = PresenceCommitmentV2::new(heartbeats_root, total_weight);
+
+        // Pair heartbeats with their proofs
+        let heartbeats_with_proofs: Vec<(CompactHeartbeat, HeartbeatMerkleProof)> =
+            compact_heartbeats.into_iter().zip(proofs).collect();
+
+        (commitment, heartbeats_with_proofs)
     }
 
     /// Compute merkle root of heartbeat data for fraud proofs
@@ -543,5 +595,178 @@ mod tests {
             .insert(producer.public_key().clone(), validated);
 
         assert!(pool.has_heartbeat(producer.public_key()));
+    }
+
+    // ========================================================================
+    // V2 Presence Commitment Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_presence_commitment_v2_empty() {
+        let pool = HeartbeatPool::new();
+        let (commitment, proofs) = pool.build_presence_commitment_v2();
+
+        assert_eq!(commitment.heartbeats_root, Hash::ZERO);
+        assert_eq!(commitment.total_weight, 0);
+        assert!(proofs.is_empty());
+    }
+
+    #[test]
+    fn test_build_presence_commitment_v2_single() {
+        let mut pool = HeartbeatPool::new();
+        let producer = KeyPair::generate();
+        let prev_hash = mock_hash(1);
+        let slot = 100;
+
+        pool.reset_for_slot(
+            slot,
+            prev_hash,
+            vec![producer.public_key().clone()],
+            [(producer.public_key().clone(), 5000)].into(),
+        );
+
+        let validated = ValidatedHeartbeat {
+            heartbeat: Heartbeat {
+                version: HEARTBEAT_VERSION,
+                producer: producer.public_key().clone(),
+                slot,
+                prev_block_hash: prev_hash,
+                vdf_output: [42u8; 32],
+                signature: crypto::Signature::default(),
+                witnesses: vec![],
+            },
+            bond_weight: 5000,
+            producer_index: 0,
+        };
+
+        pool.heartbeats
+            .insert(producer.public_key().clone(), validated);
+
+        let (commitment, proofs) = pool.build_presence_commitment_v2();
+
+        assert_eq!(commitment.total_weight, 5000);
+        assert_ne!(commitment.heartbeats_root, Hash::ZERO);
+        assert_eq!(proofs.len(), 1);
+
+        // Verify the proof
+        let (compact_hb, proof) = &proofs[0];
+        assert_eq!(compact_hb.producer, *producer.public_key());
+        assert_eq!(compact_hb.bond_weight, 5000);
+
+        // Merkle proof should verify
+        let leaf_hash = compact_hb.leaf_hash();
+        assert!(proof.verify(&leaf_hash, &commitment.heartbeats_root));
+    }
+
+    #[test]
+    fn test_build_presence_commitment_v2_multiple() {
+        let mut pool = HeartbeatPool::new();
+        let producer1 = KeyPair::generate();
+        let producer2 = KeyPair::generate();
+        let producer3 = KeyPair::generate();
+        let prev_hash = mock_hash(1);
+        let slot = 100;
+
+        let all_producers = vec![
+            producer1.public_key().clone(),
+            producer2.public_key().clone(),
+            producer3.public_key().clone(),
+        ];
+        let mut sorted = all_producers.clone();
+        sorted.sort_by_key(|p| p.as_bytes().to_vec());
+
+        let idx1 = sorted.iter().position(|p| p == producer1.public_key()).unwrap();
+        let idx2 = sorted.iter().position(|p| p == producer2.public_key()).unwrap();
+        let idx3 = sorted.iter().position(|p| p == producer3.public_key()).unwrap();
+
+        pool.reset_for_slot(
+            slot,
+            prev_hash,
+            sorted,
+            [
+                (producer1.public_key().clone(), 1000),
+                (producer2.public_key().clone(), 2000),
+                (producer3.public_key().clone(), 3000),
+            ]
+            .into(),
+        );
+
+        // Add all three heartbeats
+        for (producer, idx, weight) in [
+            (&producer1, idx1, 1000u64),
+            (&producer2, idx2, 2000u64),
+            (&producer3, idx3, 3000u64),
+        ] {
+            pool.heartbeats.insert(
+                producer.public_key().clone(),
+                ValidatedHeartbeat {
+                    heartbeat: Heartbeat {
+                        version: HEARTBEAT_VERSION,
+                        producer: producer.public_key().clone(),
+                        slot,
+                        prev_block_hash: prev_hash,
+                        vdf_output: [0u8; 32],
+                        signature: crypto::Signature::default(),
+                        witnesses: vec![],
+                    },
+                    bond_weight: weight,
+                    producer_index: idx,
+                },
+            );
+        }
+
+        let (commitment, proofs) = pool.build_presence_commitment_v2();
+
+        assert_eq!(commitment.total_weight, 6000);
+        assert_eq!(proofs.len(), 3);
+
+        // All proofs should verify against the same root
+        for (compact_hb, proof) in &proofs {
+            let leaf_hash = compact_hb.leaf_hash();
+            assert!(
+                proof.verify(&leaf_hash, &commitment.heartbeats_root),
+                "Proof for producer failed to verify"
+            );
+        }
+    }
+
+    #[test]
+    fn test_v2_commitment_hash_deterministic() {
+        let mut pool = HeartbeatPool::new();
+        let producer = KeyPair::generate();
+        let prev_hash = mock_hash(1);
+        let slot = 100;
+
+        pool.reset_for_slot(
+            slot,
+            prev_hash,
+            vec![producer.public_key().clone()],
+            [(producer.public_key().clone(), 1000)].into(),
+        );
+
+        pool.heartbeats.insert(
+            producer.public_key().clone(),
+            ValidatedHeartbeat {
+                heartbeat: Heartbeat {
+                    version: HEARTBEAT_VERSION,
+                    producer: producer.public_key().clone(),
+                    slot,
+                    prev_block_hash: prev_hash,
+                    vdf_output: [1u8; 32],
+                    signature: crypto::Signature::default(),
+                    witnesses: vec![],
+                },
+                bond_weight: 1000,
+                producer_index: 0,
+            },
+        );
+
+        let (commitment1, _) = pool.build_presence_commitment_v2();
+        let (commitment2, _) = pool.build_presence_commitment_v2();
+
+        // Same inputs should produce same commitment
+        assert_eq!(commitment1.heartbeats_root, commitment2.heartbeats_root);
+        assert_eq!(commitment1.total_weight, commitment2.total_weight);
+        assert_eq!(commitment1.commitment_hash(), commitment2.commitment_hash());
     }
 }
