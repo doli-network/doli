@@ -558,6 +558,39 @@ impl Transaction {
         }
     }
 
+    /// Create an epoch reward coinbase with multiple outputs.
+    ///
+    /// This is used at epoch boundaries to automatically distribute rewards
+    /// to all producers who were present during the completed epoch.
+    /// Each output pays the calculated reward to a producer's address.
+    ///
+    /// # Arguments
+    /// * `outputs` - Vector of (amount, pubkey_hash) pairs for each producer
+    /// * `height` - Block height (used as extra_data for uniqueness)
+    /// * `epoch` - The completed epoch number (stored in extra_data)
+    pub fn new_epoch_reward_coinbase(
+        outputs: Vec<(Amount, Hash)>,
+        height: BlockHeight,
+        epoch: u64,
+    ) -> Self {
+        let tx_outputs: Vec<Output> = outputs
+            .into_iter()
+            .map(|(amount, pubkey_hash)| Output::normal(amount, pubkey_hash))
+            .collect();
+
+        // Store both height and epoch in extra_data for auditability
+        let mut extra_data = height.to_le_bytes().to_vec();
+        extra_data.extend_from_slice(&epoch.to_le_bytes());
+
+        Self {
+            version: 1,
+            tx_type: TxType::EpochReward, // Use EpochReward type for automatic distribution
+            inputs: Vec::new(),
+            outputs: tx_outputs,
+            extra_data,
+        }
+    }
+
     /// Check if this is a coinbase transaction
     ///
     /// A coinbase is a Transfer transaction with no inputs and one output.
@@ -565,6 +598,24 @@ impl Transaction {
     /// but they have a different tx_type.
     pub fn is_coinbase(&self) -> bool {
         self.tx_type == TxType::Transfer && self.inputs.is_empty() && self.outputs.len() == 1
+    }
+
+    /// Check if this is an epoch reward coinbase (automatic distribution at epoch boundaries)
+    ///
+    /// Epoch reward coinbase transactions have:
+    /// - TxType::EpochReward
+    /// - No inputs (minted coins)
+    /// - One or more outputs (rewards distributed to present producers)
+    pub fn is_epoch_reward_coinbase(&self) -> bool {
+        self.tx_type == TxType::EpochReward && self.inputs.is_empty() && !self.outputs.is_empty()
+    }
+
+    /// Check if this is any type of reward-minting transaction (coinbase or epoch reward)
+    ///
+    /// Returns true for both regular single-output coinbase and epoch reward coinbase.
+    /// Use this when validating blocks to check for reward transactions.
+    pub fn is_reward_minting(&self) -> bool {
+        self.is_coinbase() || self.is_epoch_reward_coinbase()
     }
 
     /// Check if this is an exit transaction
