@@ -32,8 +32,10 @@ pub enum TxType {
     /// Epoch reward transaction (fair share distribution at epoch boundary)
     /// DEPRECATED: Use ClaimEpochReward instead
     EpochReward = 10,
-    /// Claim weighted presence rewards for a completed epoch
+    /// Claim weighted presence rewards for a completed epoch (V1 - bitfield based)
     ClaimEpochReward = 11,
+    /// Claim weighted presence rewards with merkle proofs (V2 - merkle-proof based)
+    ClaimEpochRewardV2 = 12,
 }
 
 impl TxType {
@@ -51,6 +53,7 @@ impl TxType {
             9 => Some(Self::ClaimWithdrawal),
             10 => Some(Self::EpochReward),
             11 => Some(Self::ClaimEpochReward),
+            12 => Some(Self::ClaimEpochRewardV2),
             _ => None,
         }
     }
@@ -501,6 +504,150 @@ impl ClaimEpochRewardData {
     }
 }
 
+// ==================== Claims V2 (Merkle Proof Based) ====================
+//
+// ClaimEpochRewardV2 replaces bitfield-based presence verification with
+// merkle proofs. Each producer includes proofs for each block where they
+// were present, allowing validators to verify against the presence_root
+// in block headers.
+
+use crate::heartbeat::CompactHeartbeat;
+use crate::merkle::HeartbeatMerkleProof;
+
+/// Proof of presence for a single block.
+///
+/// Contains the block hash, the compact heartbeat, and the merkle proof
+/// showing the heartbeat was included in the block's presence commitment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockPresenceProof {
+    /// Hash of the block this proof is for
+    pub block_hash: Hash,
+    /// The compact heartbeat proving presence
+    pub heartbeat: CompactHeartbeat,
+    /// Merkle proof showing heartbeat was included in presence_root
+    pub merkle_proof: HeartbeatMerkleProof,
+}
+
+impl BlockPresenceProof {
+    /// Create a new block presence proof.
+    pub fn new(
+        block_hash: Hash,
+        heartbeat: CompactHeartbeat,
+        merkle_proof: HeartbeatMerkleProof,
+    ) -> Self {
+        Self {
+            block_hash,
+            heartbeat,
+            merkle_proof,
+        }
+    }
+
+    /// Verify the merkle proof against a presence root.
+    ///
+    /// # Arguments
+    /// * `presence_root` - The presence_root from the block header
+    ///
+    /// # Returns
+    /// `true` if the heartbeat is proven to be in the presence commitment
+    pub fn verify_merkle(&self, presence_root: &Hash) -> bool {
+        let leaf_hash = self.heartbeat.leaf_hash();
+        self.merkle_proof.verify(&leaf_hash, presence_root)
+    }
+
+    /// Estimate size in bytes.
+    pub fn size(&self) -> usize {
+        // block_hash: 32, heartbeat: 172, merkle_proof: variable (~320 for 10 levels)
+        32 + self.heartbeat.size() + self.merkle_proof.size()
+    }
+}
+
+/// Data for ClaimEpochRewardV2 transaction (merkle-proof based).
+///
+/// This is the V2 claim system that uses merkle proofs instead of relying
+/// on bitfield-based presence data stored in blocks. Each claim includes
+/// proofs for every block where the producer was present.
+///
+/// ## Advantages over V1
+/// - Blocks are 16,000x smaller (40 bytes vs 652KB for presence)
+/// - Presence data cannot be manipulated post-hoc
+/// - Cryptographically verifiable against block headers
+///
+/// ## Trade-offs
+/// - Claims are larger (~270KB for 360 blocks vs ~200 bytes for V1)
+/// - But claims are one-time, blocks are stored forever
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimEpochRewardDataV2 {
+    /// Epoch number being claimed
+    pub epoch: u64,
+    /// Claiming producer's public key
+    pub producer_pubkey: PublicKey,
+    /// Recipient address (can differ from producer)
+    pub recipient_hash: Hash,
+    /// Presence proofs for each block in the epoch where producer was present
+    pub presence_proofs: Vec<BlockPresenceProof>,
+}
+
+impl ClaimEpochRewardDataV2 {
+    /// Create new claim epoch reward data V2.
+    pub fn new(
+        epoch: u64,
+        producer_pubkey: PublicKey,
+        recipient_hash: Hash,
+        presence_proofs: Vec<BlockPresenceProof>,
+    ) -> Self {
+        Self {
+            epoch,
+            producer_pubkey,
+            recipient_hash,
+            presence_proofs,
+        }
+    }
+
+    /// Serialize to bytes for storage in extra_data.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap_or_default()
+    }
+
+    /// Deserialize from bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bincode::deserialize(bytes).ok()
+    }
+
+    /// Compute the message to sign for this claim.
+    ///
+    /// Includes epoch, producer, recipient, and calculated amount.
+    pub fn signing_message(&self, amount: Amount) -> Hash {
+        crypto::hash::hash_concat(&[
+            b"DOLI_CLAIM_SIGN_V2",
+            &self.epoch.to_le_bytes(),
+            self.producer_pubkey.as_bytes(),
+            self.recipient_hash.as_bytes(),
+            &amount.to_le_bytes(),
+        ])
+    }
+
+    /// Calculate total bond weight from all presence proofs.
+    pub fn total_bond_weight(&self) -> u128 {
+        self.presence_proofs
+            .iter()
+            .map(|p| p.heartbeat.bond_weight as u128)
+            .sum()
+    }
+
+    /// Get the number of blocks where presence was proven.
+    pub fn presence_count(&self) -> usize {
+        self.presence_proofs.len()
+    }
+
+    /// Estimate size in bytes.
+    pub fn size(&self) -> usize {
+        // Fixed fields: epoch(8) + pubkey(32) + recipient(32) = 72
+        // Plus all presence proofs
+        let proofs_size: usize = self.presence_proofs.iter().map(|p| p.size()).sum();
+        72 + proofs_size
+    }
+}
+
 // ==================== Proof of Time ====================
 //
 // In Proof of Time, there are NO multi-signature attestations.
@@ -694,6 +841,69 @@ impl Transaction {
             return None;
         }
         let sig_bytes: [u8; 64] = self.extra_data[72..136].try_into().ok()?;
+        Some(Signature::from_bytes(sig_bytes))
+    }
+
+    // ==================== ClaimEpochRewardV2 Methods ====================
+
+    /// Check if this is a claim epoch reward V2 transaction (merkle-proof based)
+    pub fn is_claim_epoch_reward_v2(&self) -> bool {
+        self.tx_type == TxType::ClaimEpochRewardV2
+    }
+
+    /// Create a claim epoch reward V2 transaction (merkle-proof based)
+    ///
+    /// This is the V2 claim system using merkle proofs for presence verification.
+    /// Each presence proof shows the producer's heartbeat was included in a block's
+    /// presence commitment.
+    ///
+    /// # Arguments
+    /// * `claim_data` - The claim data with presence proofs
+    /// * `amount` - The calculated reward amount
+    /// * `signature` - Producer's signature over the claim data + amount
+    pub fn new_claim_epoch_reward_v2(
+        claim_data: ClaimEpochRewardDataV2,
+        amount: Amount,
+        signature: Signature,
+    ) -> Self {
+        let mut extra_data = claim_data.to_bytes();
+        // Append signature at the end
+        extra_data.extend_from_slice(signature.as_bytes());
+
+        Self {
+            version: 1,
+            tx_type: TxType::ClaimEpochRewardV2,
+            inputs: Vec::new(), // Minted - no inputs
+            outputs: vec![Output::normal(amount, claim_data.recipient_hash)],
+            extra_data,
+        }
+    }
+
+    /// Parse claim epoch reward V2 data from extra_data
+    ///
+    /// The extra_data format is: [serialized ClaimEpochRewardDataV2][64-byte signature]
+    pub fn claim_epoch_reward_data_v2(&self) -> Option<ClaimEpochRewardDataV2> {
+        if self.tx_type != TxType::ClaimEpochRewardV2 {
+            return None;
+        }
+        // Signature is at the end, so we need to exclude it
+        if self.extra_data.len() < 64 {
+            return None;
+        }
+        let data_bytes = &self.extra_data[..self.extra_data.len() - 64];
+        ClaimEpochRewardDataV2::from_bytes(data_bytes)
+    }
+
+    /// Get signature from claim epoch reward V2 transaction
+    pub fn claim_epoch_reward_v2_signature(&self) -> Option<Signature> {
+        if self.tx_type != TxType::ClaimEpochRewardV2 {
+            return None;
+        }
+        if self.extra_data.len() < 64 {
+            return None;
+        }
+        let sig_start = self.extra_data.len() - 64;
+        let sig_bytes: [u8; 64] = self.extra_data[sig_start..].try_into().ok()?;
         Some(Signature::from_bytes(sig_bytes))
     }
 
@@ -1105,7 +1315,8 @@ mod tests {
         assert_eq!(TxType::from_u32(9), Some(TxType::ClaimWithdrawal));
         assert_eq!(TxType::from_u32(10), Some(TxType::EpochReward));
         assert_eq!(TxType::from_u32(11), Some(TxType::ClaimEpochReward));
-        assert_eq!(TxType::from_u32(12), None);
+        assert_eq!(TxType::from_u32(12), Some(TxType::ClaimEpochRewardV2));
+        assert_eq!(TxType::from_u32(13), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
