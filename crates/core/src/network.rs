@@ -106,16 +106,16 @@ impl Network {
         match self {
             Network::Mainnet => 100_000_000_000, // 1000 DOLI
             Network::Testnet => 100_000_000_000, // 1000 DOLI (same as mainnet)
-            Network::Devnet => 100_000_000,      // 1 DOLI (faster testing)
+            Network::Devnet => 100_000_000,      // 1 DOLI
         }
     }
 
     /// Get initial block reward for this network
     pub fn initial_reward(&self) -> u64 {
         match self {
-            Network::Mainnet => 100_000_000, // 1 DOLI
-            Network::Testnet => 100_000_000, // 1 DOLI
-            Network::Devnet => 100_000_000,  // 1 DOLI
+            Network::Mainnet => 100_000_000,   // 1 DOLI
+            Network::Testnet => 100_000_000,   // 1 DOLI
+            Network::Devnet => 2_000_000_000,  // 20 DOLI
         }
     }
 
@@ -207,7 +207,7 @@ impl Network {
         match self {
             Network::Mainnet => 10, // 10 seconds
             Network::Testnet => 10, // 10 seconds
-            Network::Devnet => 1,   // 1 second (fast development)
+            Network::Devnet => 10,  // 10 seconds (same as mainnet for testing)
         }
     }
 
@@ -240,12 +240,12 @@ impl Network {
     /// - 10M iterations ≈ 700ms on modern hardware
     /// - 1M iterations ≈ 70ms on modern hardware
     ///
-    /// Devnet uses fewer iterations for faster block production.
+    /// All networks use 10M for production-like testing.
     pub fn heartbeat_vdf_iterations(&self) -> u64 {
         match self {
             Network::Mainnet => 10_000_000, // ~700ms
             Network::Testnet => 10_000_000, // Same as mainnet (~700ms)
-            Network::Devnet => 1_000_000,   // ~70ms (fast development)
+            Network::Devnet => 10_000_000,  // Same as mainnet (~700ms)
         }
     }
 
@@ -278,12 +278,12 @@ impl Network {
     ///
     /// - Mainnet: 360 blocks ≈ 1 hour at 10s blocks
     /// - Testnet: 360 blocks ≈ 1 hour at 10s blocks
-    /// - Devnet: 20 blocks ≈ 3.3 minutes at 10s blocks
+    /// - Devnet: 4 blocks ≈ 40 seconds at 10s blocks
     pub fn blocks_per_reward_epoch(&self) -> u64 {
         match self {
             Network::Mainnet => 360, // ~1 hour (360 blocks × 10s)
             Network::Testnet => 360, // ~1 hour (360 blocks × 10s)
-            Network::Devnet => 20,   // ~3.3 minutes (20 blocks × 10s)
+            Network::Devnet => 4,    // ~40 seconds (4 blocks × 10s)
         }
     }
 
