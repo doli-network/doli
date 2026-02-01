@@ -181,7 +181,8 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 | addBond | Add bonds to producer |
 | requestWithdrawal | Request bond withdrawal |
 | claimWithdrawal | Claim after withdrawal delay |
-| epochReward | Epoch reward distribution |
+| epochReward | Epoch reward distribution (deprecated) |
+| claimEpochReward | Claim weighted presence rewards |
 | slashProducer | Slash equivocating producer |
 
 **Example:**
@@ -555,7 +556,171 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-## 9. Error Codes
+## 9. Rewards Methods
+
+Methods for managing weighted presence rewards.
+
+### getClaimableRewards
+
+Returns unclaimed epoch rewards for a producer.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| producer_pubkey | string | Producer public key (hex) |
+
+**Response:**
+```json
+{
+    "epochs": [
+        {
+            "epoch": 5,
+            "blocks_present": 358,
+            "total_blocks": 360,
+            "estimated_reward": 4750000000,
+            "is_claimed": false
+        }
+    ],
+    "total_claimable": 14175000000
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getClaimableRewards","params":{"producer_pubkey":"0x..."},"id":1}'
+```
+
+---
+
+### getClaimHistory
+
+Returns claim history for a producer.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| producer_pubkey | string | Producer public key (hex) |
+| limit | number | Maximum entries to return (default: 10) |
+
+**Response:**
+```json
+{
+    "claims": [
+        {
+            "epoch": 4,
+            "amount": 4600000000,
+            "tx_hash": "0x...",
+            "height": 1440,
+            "timestamp": 1706500000
+        }
+    ],
+    "total_claimed": 13625000000
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getClaimHistory","params":{"producer_pubkey":"0x...","limit":20},"id":1}'
+```
+
+---
+
+### estimateEpochReward
+
+Estimates reward for a specific epoch before claiming.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| producer_pubkey | string | Producer public key (hex) |
+| epoch | number | Epoch number to estimate |
+
+**Response:**
+```json
+{
+    "epoch": 5,
+    "blocks_present": 358,
+    "total_blocks": 360,
+    "total_producer_weight": 358000,
+    "total_all_weights": 1790000,
+    "block_reward": 100000000,
+    "estimated_reward": 4750000000
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"estimateEpochReward","params":{"producer_pubkey":"0x...","epoch":5},"id":1}'
+```
+
+---
+
+### buildClaimTx
+
+Builds an unsigned claim transaction for signing.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| producer_pubkey | string | Producer public key (hex) |
+| epoch | number | Epoch to claim |
+| recipient | string | Optional recipient address (defaults to producer) |
+
+**Response:**
+```json
+{
+    "unsigned_tx": "0x...",
+    "signing_message": "0x...",
+    "epoch": 5,
+    "amount": 4750000000,
+    "recipient": "0x..."
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"buildClaimTx","params":{"producer_pubkey":"0x...","epoch":5},"id":1}'
+```
+
+---
+
+### getEpochInfo
+
+Returns current reward epoch information.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "current_epoch": 8,
+    "current_height": 2950,
+    "blocks_per_epoch": 360,
+    "epoch_start_height": 2880,
+    "epoch_end_height": 3240,
+    "epoch_progress": 70,
+    "last_complete_epoch": 7
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getEpochInfo","params":{},"id":1}'
+```
+
+---
+
+## 10. Error Codes
 
 | Code | Message | Description |
 |------|---------|-------------|
@@ -571,6 +736,9 @@ curl -X POST http://127.0.0.1:8545 \
 | -32004 | Mempool full | Mempool at capacity |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
 | -32006 | Producer not found | Producer not in registry |
+| -32007 | Epoch not complete | Epoch hasn't finished yet |
+| -32008 | Already claimed | Epoch already claimed by producer |
+| -32009 | No reward | Producer not present in epoch |
 
 **Error Response Format:**
 ```json
@@ -586,7 +754,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-## 10. Units and Formatting
+## 11. Units and Formatting
 
 ### Amount Units
 
@@ -606,7 +774,7 @@ All binary data is hex-encoded with `0x` prefix:
 
 ---
 
-## 11. Rate Limiting
+## 12. Rate Limiting
 
 Default rate limits (configurable):
 
@@ -619,7 +787,7 @@ Exceeded limits return HTTP 429 (Too Many Requests).
 
 ---
 
-## 12. Security Considerations
+## 13. Security Considerations
 
 ### Binding Address
 
@@ -644,7 +812,7 @@ Cross-origin requests disabled by default. Enable in config if needed for web ap
 
 ---
 
-## 13. WebSocket Support
+## 14. WebSocket Support
 
 WebSocket subscriptions are planned but not yet implemented.
 
