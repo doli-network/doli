@@ -227,6 +227,46 @@ impl PresenceCommitment {
         set_bits == self.weights.len()
     }
 
+    /// Ensure a producer is marked as present.
+    ///
+    /// If the producer is already present, this is a no-op.
+    /// If not present, adds them with the given weight.
+    ///
+    /// This is used to ensure the block producer is always marked as present,
+    /// even if their own heartbeat wasn't received via gossip (since gossip
+    /// typically doesn't echo messages back to the sender).
+    ///
+    /// # Arguments
+    ///
+    /// * `producer_index` - Index of the producer in the sorted producer list
+    /// * `weight` - Bond weight of the producer
+    /// * `producer_count` - Total number of producers (for bitfield sizing)
+    pub fn ensure_present(&mut self, producer_index: usize, weight: Amount, producer_count: usize) {
+        // Already present? No-op.
+        if self.is_present(producer_index) {
+            return;
+        }
+
+        // Ensure bitfield is large enough
+        let required_bytes = producer_count.div_ceil(8);
+        if self.bitfield.len() < required_bytes {
+            self.bitfield.resize(required_bytes, 0);
+        }
+
+        // Set the bit for this producer
+        let byte_idx = producer_index / 8;
+        let bit_idx = producer_index % 8;
+        if byte_idx < self.bitfield.len() {
+            self.bitfield[byte_idx] |= 1 << bit_idx;
+        }
+
+        // Insert weight at the correct position (maintaining sorted order by index)
+        // Count how many producers with lower indices are present
+        let insert_pos = self.count_present_before(producer_index);
+        self.weights.insert(insert_pos, weight);
+        self.total_weight += weight;
+    }
+
     /// Iterate over present producer indices and their weights.
     pub fn iter_present(&self) -> impl Iterator<Item = (usize, Amount)> + '_ {
         PresenceIterator {
@@ -428,5 +468,114 @@ mod tests {
         let commitment = PresenceCommitment::default();
         assert!(commitment.is_empty());
         assert_eq!(commitment, PresenceCommitment::empty());
+    }
+
+    #[test]
+    fn test_ensure_present_adds_missing_producer() {
+        // Start with producers 1 and 3 present
+        let present = [1, 3];
+        let weights = vec![100, 300];
+        let mut commitment = PresenceCommitment::new(5, &present, weights, Hash::ZERO);
+
+        assert_eq!(commitment.present_count(), 2);
+        assert_eq!(commitment.total_weight(), 400);
+        assert!(!commitment.is_present(2));
+
+        // Add producer 2 (missing)
+        commitment.ensure_present(2, 200, 5);
+
+        assert_eq!(commitment.present_count(), 3);
+        assert_eq!(commitment.total_weight(), 600);
+        assert!(commitment.is_present(1));
+        assert!(commitment.is_present(2));
+        assert!(commitment.is_present(3));
+
+        // Check weights are in correct order
+        assert_eq!(commitment.get_weight(1), Some(100));
+        assert_eq!(commitment.get_weight(2), Some(200));
+        assert_eq!(commitment.get_weight(3), Some(300));
+    }
+
+    #[test]
+    fn test_ensure_present_noop_if_already_present() {
+        let present = [0, 2, 4];
+        let weights = vec![100, 200, 300];
+        let mut commitment = PresenceCommitment::new(5, &present, weights, Hash::ZERO);
+
+        let original_count = commitment.present_count();
+        let original_weight = commitment.total_weight();
+
+        // Try to add producer 2 who is already present
+        commitment.ensure_present(2, 999, 5);
+
+        // Should be unchanged
+        assert_eq!(commitment.present_count(), original_count);
+        assert_eq!(commitment.total_weight(), original_weight);
+        assert_eq!(commitment.get_weight(2), Some(200)); // Original weight preserved
+    }
+
+    #[test]
+    fn test_ensure_present_at_beginning() {
+        // Start with producers 2, 3, 4 present
+        let present = [2, 3, 4];
+        let weights = vec![200, 300, 400];
+        let mut commitment = PresenceCommitment::new(5, &present, weights, Hash::ZERO);
+
+        // Add producer 0 (at the beginning)
+        commitment.ensure_present(0, 50, 5);
+
+        assert_eq!(commitment.present_count(), 4);
+        assert!(commitment.is_present(0));
+        assert_eq!(commitment.get_weight(0), Some(50));
+        assert_eq!(commitment.get_weight(2), Some(200));
+        assert_eq!(commitment.get_weight(3), Some(300));
+        assert_eq!(commitment.get_weight(4), Some(400));
+    }
+
+    #[test]
+    fn test_ensure_present_at_end() {
+        // Start with producers 0, 1, 2 present
+        let present = [0, 1, 2];
+        let weights = vec![100, 200, 300];
+        let mut commitment = PresenceCommitment::new(5, &present, weights, Hash::ZERO);
+
+        // Add producer 4 (at the end)
+        commitment.ensure_present(4, 500, 5);
+
+        assert_eq!(commitment.present_count(), 4);
+        assert!(commitment.is_present(4));
+        assert_eq!(commitment.get_weight(0), Some(100));
+        assert_eq!(commitment.get_weight(1), Some(200));
+        assert_eq!(commitment.get_weight(2), Some(300));
+        assert_eq!(commitment.get_weight(4), Some(500));
+    }
+
+    #[test]
+    fn test_ensure_present_on_empty() {
+        let mut commitment = PresenceCommitment::empty();
+
+        commitment.ensure_present(3, 1000, 5);
+
+        assert_eq!(commitment.present_count(), 1);
+        assert_eq!(commitment.total_weight(), 1000);
+        assert!(commitment.is_present(3));
+        assert_eq!(commitment.get_weight(3), Some(1000));
+    }
+
+    #[test]
+    fn test_ensure_present_expands_bitfield() {
+        // Start with small bitfield (8 producers)
+        let present = [0, 1];
+        let weights = vec![100, 200];
+        let mut commitment = PresenceCommitment::new(8, &present, weights, Hash::ZERO);
+
+        assert_eq!(commitment.bitfield.len(), 1); // 8 bits = 1 byte
+
+        // Add producer at index 15 (requires 2 bytes)
+        commitment.ensure_present(15, 500, 16);
+
+        assert_eq!(commitment.bitfield.len(), 2); // Now needs 16 bits = 2 bytes
+        assert!(commitment.is_present(15));
+        assert_eq!(commitment.get_weight(15), Some(500));
     }
 }
