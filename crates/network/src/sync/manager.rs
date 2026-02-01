@@ -470,17 +470,26 @@ impl SyncManager {
 
     /// Handle bodies response
     fn handle_bodies_response(&mut self, peer: PeerId, bodies: Vec<Block>) -> Vec<Block> {
+        // CRITICAL: Process through body_downloader first to:
+        // 1. Clear the active request for this peer (allows more requests to this peer)
+        // 2. Remove received hashes from in_flight set
+        // 3. Mark any missing hashes as failed for retry
         if bodies.is_empty() {
             debug!("Received empty bodies response from {}", peer);
+            // Still need to clear the active request even for empty response
+            self.body_downloader.process_response(peer, vec![]);
             return vec![];
         }
 
         info!("Received {} bodies from {}", bodies.len(), peer);
 
+        // Process through body_downloader to update its internal state
+        let processed_bodies = self.body_downloader.process_response(peer, bodies);
+
         // Remove these hashes from needed list and store blocks
         let mut blocks_to_apply = Vec::new();
 
-        for block in bodies {
+        for block in processed_bodies {
             let hash = block.hash();
             self.headers_needing_bodies.retain(|h| h != &hash);
 
@@ -497,10 +506,15 @@ impl SyncManager {
             };
             info!("All bodies downloaded, starting processing");
         } else if let SyncState::DownloadingBodies { total, .. } = &self.state {
+            let total_copy = *total; // Copy before reassigning self.state
             self.state = SyncState::DownloadingBodies {
                 pending: remaining,
-                total: *total,
+                total: total_copy,
             };
+            debug!(
+                "Body download progress: {} remaining of {} total",
+                remaining, total_copy
+            );
         }
 
         blocks_to_apply
@@ -577,6 +591,22 @@ impl SyncManager {
         self.blocks_applied = 0;
         self.state = SyncState::Idle;
         self.reorg_handler.clear();
+
+        // Clear all pending sync state to start fresh
+        self.pending_headers.clear();
+        self.pending_blocks.clear();
+        self.headers_needing_bodies.clear();
+        self.pending_requests.clear();
+
+        // Reset downloaders
+        self.header_downloader =
+            HeaderDownloader::new(self.config.max_headers_per_request, self.config.request_timeout);
+        self.body_downloader = BodyDownloader::new(
+            self.config.max_bodies_per_request,
+            self.config.max_concurrent_body_requests,
+            self.config.request_timeout,
+        );
+
         info!("Sync manager reset to genesis for forced resync");
 
         // Trigger sync if we have peers that are ahead (which we should after reset)
@@ -612,6 +642,10 @@ impl SyncManager {
     /// Clean up stale requests and peers
     pub fn cleanup(&mut self) {
         let now = Instant::now();
+
+        // Clean up timed out body download requests
+        // This moves timed-out hashes back to the failed queue for retry
+        self.body_downloader.cleanup_timeouts();
 
         // Remove timed out requests
         let timed_out: Vec<SyncRequestId> = self
