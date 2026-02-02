@@ -781,7 +781,11 @@ Documentation drift is a protocol liability.
 │         - scripts/README.md updated (if test script added)      │
 │         - Test coverage documented in relevant docs             │
 │                                                                 │
-│  [ ] 4. State which docs were checked/updated in commit message │
+│  [ ] 4. If documentation files added/removed/renamed:           │
+│         - docs/DOCS.md index updated                            │
+│         - specs/SPECS.md index updated (if specs changed)       │
+│                                                                 │
+│  [ ] 5. State which docs were checked/updated in commit message │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
