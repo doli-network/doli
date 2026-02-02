@@ -106,6 +106,11 @@ pub enum ProductionAuthorization {
         /// Reason for block
         reason: String,
     },
+    /// Production is blocked during bootstrap - waiting for fresh peer status
+    BlockedBootstrap {
+        /// Reason for bootstrap block
+        reason: String,
+    },
 }
 
 impl SyncState {
@@ -200,6 +205,23 @@ pub struct SyncManager {
     max_slots_behind: u32,
     /// Maximum heights behind peers before blocking production
     max_heights_behind: u64,
+
+    // === NETWORK TIP TRACKING (from gossip) ===
+    /// Best height seen via gossip (may not have a specific peer source)
+    /// This tracks the network's actual state from received blocks
+    network_tip_height: u64,
+    /// Best slot seen via gossip
+    network_tip_slot: u32,
+
+    // === BOOTSTRAP GATE FIELDS ===
+    /// Whether we have connected to any peer (set by node when first peer connects)
+    has_connected_to_peer: bool,
+    /// Time when we FIRST received a valid peer status response (for bootstrap grace period)
+    first_peer_status_received: Option<Instant>,
+    /// Time when we last received a valid peer status response (for freshness checks)
+    last_peer_status_received: Option<Instant>,
+    /// Bootstrap grace period (seconds) - time to wait at genesis for chain evidence
+    bootstrap_grace_period_secs: u64,
 }
 
 impl SyncManager {
@@ -238,6 +260,14 @@ impl SyncManager {
             resync_grace_period_secs: 30, // Default 30 seconds after resync
             max_slots_behind: 2,          // Spec: "within 2 slots of peers"
             max_heights_behind: 2,        // Conservative: also check heights
+            // Network tip tracking (from gossip)
+            network_tip_height: 0,
+            network_tip_slot: 0,
+            // Bootstrap gate defaults
+            has_connected_to_peer: false,
+            first_peer_status_received: None,
+            last_peer_status_received: None,
+            bootstrap_grace_period_secs: 10, // Wait 10s at genesis for chain evidence
         }
     }
 
@@ -319,6 +349,25 @@ impl SyncManager {
             },
         );
 
+        // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims
+        // This is critical for production gating - even if we haven't received the
+        // actual block via gossip yet, knowing that a peer claims a higher height
+        // tells us we shouldn't produce until we're caught up.
+        if height > self.network_tip_height {
+            debug!(
+                "Network tip height updated from peer status: {} -> {}",
+                self.network_tip_height, height
+            );
+            self.network_tip_height = height;
+        }
+        if slot > self.network_tip_slot {
+            debug!(
+                "Network tip slot updated from peer status: {} -> {}",
+                self.network_tip_slot, slot
+            );
+            self.network_tip_slot = slot;
+        }
+
         // Check if we should start syncing
         if self.state == SyncState::Idle && self.should_sync() {
             self.start_sync();
@@ -332,6 +381,14 @@ impl SyncManager {
             status.best_hash = hash;
             status.best_slot = slot;
             status.last_update = Instant::now();
+        }
+
+        // Also update network tip from peer status (same as add_peer)
+        if height > self.network_tip_height {
+            self.network_tip_height = height;
+        }
+        if slot > self.network_tip_slot {
+            self.network_tip_slot = slot;
         }
     }
 
@@ -370,20 +427,63 @@ impl SyncManager {
         self.peers.len()
     }
 
-    /// Get the best (highest) height among all connected peers
-    /// Returns 0 if no peers are connected
+    /// Get an iterator over all connected peer IDs
+    pub fn peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
+        self.peers.keys().copied()
+    }
+
+    /// Get the best (highest) height among all connected peers AND network gossip
+    /// This considers both individual peer statuses and blocks received via gossip
+    /// Returns 0 if no network data is available
     pub fn best_peer_height(&self) -> u64 {
-        self.peers
+        let peer_max = self
+            .peers
             .values()
             .map(|p| p.best_height)
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // Return the higher of peer data or network gossip tip
+        peer_max.max(self.network_tip_height)
     }
 
-    /// Get the best (highest) slot among all connected peers
-    /// Returns 0 if no peers are connected
+    /// Get the best (highest) slot among all connected peers AND network gossip
+    /// This considers both individual peer statuses and blocks received via gossip
+    /// Returns 0 if no network data is available
     pub fn best_peer_slot(&self) -> u32 {
-        self.peers.values().map(|p| p.best_slot).max().unwrap_or(0)
+        let peer_max = self.peers.values().map(|p| p.best_slot).max().unwrap_or(0);
+        // Return the higher of peer data or network gossip tip
+        peer_max.max(self.network_tip_slot)
+    }
+
+    /// Update the network tip slot from a received block via gossip
+    ///
+    /// This should be called when receiving blocks from gossip, before applying them.
+    /// Unlike `update_peer()`, this doesn't require knowing which peer sent the block.
+    /// It tracks "what slot the network has reached" based on blocks we've seen.
+    ///
+    /// Note: Height is updated through the normal block application path (update_local_tip),
+    /// since blocks don't directly contain their height - it's computed from chain position.
+    pub fn update_network_tip_slot(&mut self, slot: u32) {
+        if slot > self.network_tip_slot {
+            debug!(
+                "Network tip slot updated from gossip: {} -> {}",
+                self.network_tip_slot, slot
+            );
+            self.network_tip_slot = slot;
+        }
+    }
+
+    /// Update network tip height when we successfully apply a block
+    /// This is called after block application, not from gossip
+    pub fn update_network_tip_height(&mut self, height: u64) {
+        if height > self.network_tip_height {
+            self.network_tip_height = height;
+        }
+    }
+
+    /// Get current network tip (from gossip and applied blocks)
+    pub fn network_tip(&self) -> (u64, u32) {
+        (self.network_tip_height, self.network_tip_slot)
     }
 
     // =========================================================================
@@ -423,13 +523,66 @@ impl SyncManager {
             return ProductionAuthorization::BlockedSyncing;
         }
 
-        // Layer 4: Post-resync grace period
+        // Layer 4: Bootstrap gate - CRITICAL for preventing isolated forks
+        //
+        // During bootstrap, ALL nodes start at height 0. If late-joining nodes only
+        // connect to other late-joining nodes (also at height 0), they'll think
+        // they're caught up and produce at height 1 - creating isolated forks.
+        //
+        // The fix: Wait until we have CREDIBLE EVIDENCE the network has advanced:
+        // - Either a block arrived via gossip (network_tip_slot > 0)
+        // - Or a peer reported height > 0
+        // - Or we ARE at height 0 and can legitimately produce the first block
+        //
+        // This prevents the scenario where late nodes produce competing genesis chains.
+        if self.has_connected_to_peer && self.local_height == 0 {
+            // We're at genesis AND have connected to peers
+            // We need evidence the network is real before producing
+
+            // Check 1: Have we received any peer status at all?
+            if self.first_peer_status_received.is_none() {
+                return ProductionAuthorization::BlockedBootstrap {
+                    reason: "Waiting for peer status response".to_string(),
+                };
+            }
+
+            // Check 2: Have we seen any chain activity? (block via gossip OR peer with height > 0)
+            let has_chain_activity = self.network_tip_slot > 0
+                || self.network_tip_height > 0
+                || self.best_peer_height() > 0
+                || self.best_peer_slot() > 0;
+
+            if !has_chain_activity {
+                // All peers are at height 0 too - this could be:
+                // (A) True genesis - we're the first producer
+                // (B) Partition of late nodes - dangerous!
+                //
+                // To distinguish: Wait for the bootstrap grace period.
+                // If we're truly first, no harm in waiting a bit.
+                // If we're partitioned, waiting gives us time to connect to the real network.
+                if let Some(first_status) = self.first_peer_status_received {
+                    let elapsed = first_status.elapsed().as_secs();
+                    if elapsed < self.bootstrap_grace_period_secs {
+                        // Still in bootstrap window - wait longer for chain evidence
+                        return ProductionAuthorization::BlockedBootstrap {
+                            reason: format!(
+                                "All peers at height 0 - waiting for chain evidence ({}s/{}s)",
+                                elapsed, self.bootstrap_grace_period_secs
+                            ),
+                        };
+                    }
+                    // Grace period expired - if still no chain activity, we're probably first
+                    // Allow production
+                }
+            }
+        }
+
+        // Layer 5: Post-resync grace period
         if let Some(completed) = self.last_resync_completed {
             let elapsed = completed.elapsed().as_secs();
             // Exponential backoff: base grace * 2^(consecutive_resyncs - 1)
             let effective_grace = if self.consecutive_resync_count > 1 {
-                self.resync_grace_period_secs
-                    * (1 << (self.consecutive_resync_count - 1).min(4))
+                self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4))
             } else {
                 self.resync_grace_period_secs
             };
@@ -441,7 +594,7 @@ impl SyncManager {
             }
         }
 
-        // Layer 5: Peer synchronization check
+        // Layer 6: Peer synchronization check
         let best_peer_height = self.best_peer_height();
         let best_peer_slot = self.best_peer_slot();
 
@@ -466,7 +619,10 @@ impl SyncManager {
 
     /// Quick boolean check for production authorization
     pub fn is_production_safe(&self, current_slot: u32) -> bool {
-        matches!(self.can_produce(current_slot), ProductionAuthorization::Authorized)
+        matches!(
+            self.can_produce(current_slot),
+            ProductionAuthorization::Authorized
+        )
     }
 
     /// Explicitly block production (e.g., due to invariant violation)
@@ -495,8 +651,8 @@ impl SyncManager {
 
         // Log exponential backoff info
         if self.consecutive_resync_count > 1 {
-            let effective_grace = self.resync_grace_period_secs
-                * (1 << (self.consecutive_resync_count - 1).min(4));
+            let effective_grace =
+                self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4));
             warn!(
                 "Consecutive resync #{} - grace period extended to {}s",
                 self.consecutive_resync_count, effective_grace
@@ -532,6 +688,41 @@ impl SyncManager {
     /// Get the current consecutive resync count
     pub fn consecutive_resync_count(&self) -> u32 {
         self.consecutive_resync_count
+    }
+
+    /// Signal that we have connected to at least one peer
+    ///
+    /// This enables the bootstrap gate - production will be blocked until
+    /// we receive at least one peer status response.
+    pub fn set_peer_connected(&mut self) {
+        if !self.has_connected_to_peer {
+            debug!("First peer connection - enabling bootstrap gate");
+            self.has_connected_to_peer = true;
+        }
+    }
+
+    /// Signal that we received a valid peer status response
+    ///
+    /// This is called when a PeerStatus arrives. It updates the timestamps
+    /// used by the bootstrap gate to determine if we have peer info.
+    pub fn note_peer_status_received(&mut self) {
+        let now = Instant::now();
+        // Track FIRST status for grace period calculation
+        if self.first_peer_status_received.is_none() {
+            self.first_peer_status_received = Some(now);
+            debug!("First peer status received - starting bootstrap grace period");
+        }
+        self.last_peer_status_received = Some(now);
+    }
+
+    /// Check if bootstrap gate is satisfied (have peer status or grace period expired)
+    pub fn is_bootstrap_ready(&self) -> bool {
+        if !self.has_connected_to_peer {
+            // No peers connected yet - standalone mode, OK to produce
+            return true;
+        }
+        // Need at least one peer status
+        self.first_peer_status_received.is_some()
     }
 
     /// Configure the production gate settings
@@ -825,6 +1016,13 @@ impl SyncManager {
         self.local_hash = hash;
         self.local_slot = slot;
         self.blocks_applied += 1;
+
+        // Also update network tip - if we applied a block, the network has at least this height/slot
+        // This helps the "behind peers" check work correctly even when peer status is stale
+        self.update_network_tip_height(height);
+        if slot > self.network_tip_slot {
+            self.network_tip_slot = slot;
+        }
 
         // Log progress periodically
         if self.last_progress_log.elapsed() > Duration::from_secs(5) {
