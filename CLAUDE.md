@@ -42,7 +42,8 @@
      - Example: `REPORT.md` → `docs/legacy/bugs/REPORT_UTXO_ROCKSDB_CRASH.md`
 
 6. **Output Filtering**: Always filter verbose output:
-   `command 2>&1 | grep -iE "error|warn|fail|pass" | head -20`
+Apply always outour redirection to a /tmp/ folder to avoid polluting the console to later apply filters.
+  command > /tmp/cmd_output.log 2>&1 && grep -iE "error|warn|fail|pass" /tmp/cmd_output.log | head -20
 
 ## 🛠 Commands (Wrapped)
 

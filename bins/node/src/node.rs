@@ -218,9 +218,24 @@ impl Node {
             config.network,
         )));
 
-        // Create sync manager
+        // Create sync manager with network-appropriate settings
+        // For devnet/testnet, use stricter production gating to prevent propagation race forks
         let sync_config = SyncConfig::default();
-        let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
+        let sync_manager =
+            if config.network == Network::Devnet || config.network == Network::Testnet {
+                // Stricter settings: don't produce if behind by even 1 height
+                // This prevents race conditions where we produce before receiving recent blocks
+                Arc::new(RwLock::new(SyncManager::new_with_settings(
+                    sync_config,
+                    genesis_hash,
+                    15, // Shorter resync grace period for faster recovery
+                    1,  // max_slots_behind: only 1 slot tolerance
+                    1,  // max_heights_behind: only 1 height tolerance
+                )))
+            } else {
+                // Mainnet: standard settings (2 slots/heights tolerance)
+                Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)))
+            };
 
         if producer_key.is_some() {
             info!("Block production enabled");
@@ -497,7 +512,32 @@ impl Node {
             }
 
             // Use select! to handle network events, production timer, and gossip timer
+            // BIASED SELECT: Network events have priority over production
+            //
+            // This is critical for preventing propagation race forks. Without bias,
+            // tokio::select! can choose the production branch even when a NewBlock
+            // event is ready in the network queue. This causes nodes to produce
+            // blocks on stale chain tips, creating forks.
+            //
+            // With biased select, we always process pending network events first,
+            // ensuring the chain tip is up-to-date before attempting production.
             tokio::select! {
+                biased;
+
+                // Network event received (HIGHEST PRIORITY)
+                // Must be first to ensure blocks are processed before production
+                event = async {
+                    if let Some(ref mut network) = self.network {
+                        network.next_event().await
+                    } else {
+                        std::future::pending::<Option<NetworkEvent>>().await
+                    }
+                } => {
+                    if let Some(event) = event {
+                        self.handle_network_event(event).await?;
+                    }
+                }
+
                 // Production timer tick
                 _ = production_timer.tick() => {
                     // Check for block production opportunity
@@ -598,19 +638,6 @@ impl Node {
                     }
                 }
 
-                // Network event received
-                event = async {
-                    if let Some(ref mut network) = self.network {
-                        network.next_event().await
-                    } else {
-                        // If no network, just sleep forever
-                        std::future::pending::<Option<NetworkEvent>>().await
-                    }
-                } => {
-                    if let Some(event) = event {
-                        self.handle_network_event(event).await?;
-                    }
-                }
             }
         }
 
@@ -628,6 +655,10 @@ impl Node {
                     self.first_peer_connected = Some(Instant::now());
                     info!("First peer connected - starting discovery grace period");
                 }
+
+                // Enable bootstrap gate in SyncManager - production will be blocked
+                // until we receive at least one peer status response
+                self.sync_manager.write().await.set_peer_connected();
 
                 // Request status from the new peer to learn their chain state
                 // Include our producer pubkey so peers can discover us before blocks are exchanged
@@ -658,8 +689,16 @@ impl Node {
 
             NetworkEvent::NewBlock(block) => {
                 debug!("Received new block: {}", block.hash());
-                // Refresh peer timestamps when we see network activity via gossip
-                self.sync_manager.write().await.refresh_all_peers();
+                // Update network tip slot from gossip - this tells us what slot the network has reached
+                // even if we don't know which specific peer sent the block.
+                // This is critical for the "behind peers" production safety check.
+                //
+                // Note: Height is updated when blocks are successfully applied (in apply_block).
+                {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.refresh_all_peers();
+                    sync.update_network_tip_slot(block.header.slot);
+                }
                 self.handle_new_block(block).await?;
             }
 
@@ -673,12 +712,18 @@ impl Node {
                     "Peer {} status: height={}, slot={}",
                     peer_id, status.best_height, status.best_slot
                 );
-                self.sync_manager.write().await.add_peer(
-                    peer_id,
-                    status.best_height,
-                    status.best_hash,
-                    status.best_slot,
-                );
+                {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.add_peer(
+                        peer_id,
+                        status.best_height,
+                        status.best_hash,
+                        status.best_slot,
+                    );
+                    // CRITICAL: Notify SyncManager that we received a valid peer status.
+                    // This satisfies the bootstrap gate and allows production to proceed.
+                    sync.note_peer_status_received();
+                }
 
                 // BOOTSTRAP PRODUCER DISCOVERY: If the peer is a producer, add them to
                 // known_producers. This allows nodes to discover each other
@@ -1726,29 +1771,40 @@ impl Node {
             let mut state = self.chain_state.write().await;
             state.update(block_hash, height, block.header.slot);
 
-            // For devnet: set genesis_timestamp from first block's timestamp
-            // This ensures all nodes agree on genesis time after syncing the genesis block
+            // For devnet: set genesis_timestamp from first block if not already set from chainspec
+            // When chainspec has a fixed genesis time, we MUST use it (all nodes must agree)
+            // Only fall back to deriving from block timestamp if no chainspec genesis was provided
             if state.genesis_timestamp == 0 && height <= 1 {
-                let block_timestamp = block.header.timestamp;
-                // Use the block timestamp as genesis time (rounded to slot boundary)
-                let new_genesis_time =
-                    block_timestamp - (block_timestamp % self.params.slot_duration);
-                state.genesis_timestamp = new_genesis_time;
-
-                // Also update params.genesis_time for devnet so slot calculations use synced value
-                if self.config.network == Network::Devnet
-                    && self.params.genesis_time != new_genesis_time
-                {
+                // Check if we have a chainspec genesis time override
+                if let Some(override_time) = self.config.genesis_time_override {
+                    // Use the chainspec genesis time (already set in params)
+                    state.genesis_timestamp = override_time;
                     info!(
-                        "Devnet genesis time synced from block {}: {} (was {})",
-                        height, new_genesis_time, self.params.genesis_time
+                        "Genesis timestamp set from chainspec: {} (block {} received)",
+                        state.genesis_timestamp, height
                     );
-                    self.params.genesis_time = new_genesis_time;
                 } else {
-                    info!(
-                        "Genesis timestamp set from block {}: {}",
-                        height, state.genesis_timestamp
-                    );
+                    // No chainspec override - derive from block timestamp (legacy behavior)
+                    let block_timestamp = block.header.timestamp;
+                    let new_genesis_time =
+                        block_timestamp - (block_timestamp % self.params.slot_duration);
+                    state.genesis_timestamp = new_genesis_time;
+
+                    // Also update params.genesis_time for devnet so slot calculations use synced value
+                    if self.config.network == Network::Devnet
+                        && self.params.genesis_time != new_genesis_time
+                    {
+                        info!(
+                            "Devnet genesis time synced from block {}: {} (was {})",
+                            height, new_genesis_time, self.params.genesis_time
+                        );
+                        self.params.genesis_time = new_genesis_time;
+                    } else {
+                        info!(
+                            "Genesis timestamp set from block {}: {}",
+                            height, state.genesis_timestamp
+                        );
+                    }
                 }
             }
         }
@@ -2019,8 +2075,9 @@ impl Node {
         // 1. Explicit block check (invariant violations)
         // 2. Resync-in-progress check
         // 3. Active sync check (downloading headers/bodies)
-        // 4. Post-resync grace period with exponential backoff
-        // 5. Peer synchronization check (within N slots/heights)
+        // 4. Bootstrap gate (must have fresh peer status before producing)
+        // 5. Post-resync grace period with exponential backoff
+        // 6. Peer synchronization check (within N slots/heights)
         //
         // ALL checks must pass. This prevents the infinite resync loop bug where
         // nodes at height 0 would produce orphan blocks for far-ahead slots.
@@ -2035,7 +2092,9 @@ impl Node {
                     debug!("Production blocked: sync in progress");
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedResync { grace_remaining_secs } => {
+                ProductionAuthorization::BlockedResync {
+                    grace_remaining_secs,
+                } => {
                     debug!(
                         "Production blocked: post-resync grace period ({}s remaining)",
                         grace_remaining_secs
@@ -2055,6 +2114,10 @@ impl Node {
                 }
                 ProductionAuthorization::BlockedExplicit { reason } => {
                     warn!("Production explicitly blocked: {}", reason);
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedBootstrap { reason } => {
+                    debug!("Production blocked: bootstrap gate - {}", reason);
                     return Ok(());
                 }
             }
@@ -2119,32 +2182,51 @@ impl Node {
         //
         // This applies to ALL networks (mainnet, testnet, devnet) for defense-in-depth.
         // =========================================================================
-        // Height-slot gap check to prevent orphan block production.
-        // EXCEPTION: Height 0 (genesis) is exempt because:
-        // 1. No prior chain exists to sync with
-        // 2. Startup time varies, so slots may advance before discovery completes
-        // 3. The bootstrap mode logic handles genesis coordination properly
+        // PEER-AWARE GAP CHECK: Only block production when the network is ahead
         //
-        // For height > 0, we check the gap to prevent:
-        // - Producing blocks that extend an old chain tip (creating orphans)
-        // - Producing after a resync when the canonical chain has advanced
-        if height > 0 {
+        // Key insight: A large slot-height gap is only dangerous if the NETWORK
+        // has progressed beyond us. During startup, slots advance due to wall-clock
+        // time, but if no one has produced, there's no one to fork from.
+        //
+        // This replaces the previous wall-clock-based gap check that caused the
+        // "stuck at height 1" deadlock: once slots advanced past the gap threshold,
+        // no node could produce height 2, even though the network had only height 1.
+        //
+        // Algorithm:
+        // 1. Get the network tip slot (from peer status + gossip tracking)
+        // 2. Only apply gap check if there's evidence the network is ahead
+        // 3. If network tip <= our tip, allow production (we're not behind)
+        // =========================================================================
+        let (network_tip_slot, network_tip_height) = {
+            let sync = self.sync_manager.read().await;
+            (sync.best_peer_slot(), sync.best_peer_height())
+        };
+
+        // PEER-AWARE GAP CHECK: Only block production when the network HEIGHT is ahead
+        //
+        // Key insight: We only defer if peers have demonstrated a HIGHER HEIGHT than us.
+        // Slot differences alone don't indicate we're behind - slots advance with wall-clock.
+        // Height differences indicate actual chain progress we're missing.
+        //
+        // Without this check: After initial blocks, network_tip_slot stays at the last
+        // gossiped block's slot, causing perpetual gap check failures as slots advance.
+        //
+        // With this check: We only defer when there's concrete evidence (height) that
+        // we're missing blocks, not just that time has passed.
+        let network_height_ahead = network_tip_height > height.saturating_sub(1);
+
+        if height > 1 && network_height_ahead {
             let slot_height_gap = current_slot.saturating_sub(height as u32);
-            let max_gap = if height <= 1 {
-                3 // Very tight for height 1 - prevents orphan production right after genesis
-            } else if height < 10 {
+            let max_gap = if height < 10 {
                 5 // Moderate gap during early chain growth
             } else {
                 10 // Normal operation - allow for propagation delays
             };
 
             if slot_height_gap > max_gap {
-                // Just defer production - don't set permanent block flag
-                // The node should continue syncing via gossip and catch up
-                // Only use block_production() for TRUE invariant violations that require manual intervention
                 debug!(
-                    "Height-slot gap {} exceeds max {} at height {} - deferring production (will sync)",
-                    slot_height_gap, max_gap, height
+                    "Height-slot gap {} exceeds max {} at height {} (network ahead: tip_height={}) - deferring production",
+                    slot_height_gap, max_gap, height, network_tip_height
                 );
                 return Ok(());
             }
@@ -2188,14 +2270,15 @@ impl Node {
             error!(
                 "INVARIANT VIOLATION: height {} < 10 but {} active producers (total: {}) \
                  outside genesis phase. This indicates inconsistent state - blocking production.",
-                height, active_with_weights.len(), total_producers
+                height,
+                active_with_weights.len(),
+                total_producers
             );
-            self.sync_manager.write().await.block_production(
-                &format!(
-                    "invariant violation: height {} with {} active producers outside genesis",
-                    height, active_with_weights.len()
-                )
-            );
+            self.sync_manager.write().await.block_production(&format!(
+                "invariant violation: height {} with {} active producers outside genesis",
+                height,
+                active_with_weights.len()
+            ));
             return Ok(());
         }
 
@@ -2279,9 +2362,9 @@ impl Node {
 
                         let bootstrap_sync_grace_secs: u64 =
                             if self.config.network == Network::Devnet {
-                                10 // ~10 slots at 1s/slot
+                                15 // ~15 slots at 1s/slot for faster devnet testing
                             } else {
-                                90 // ~9 slots at 10s/slot
+                                90 // ~9 slots at 10s/slot for testnet/mainnet
                             };
 
                         let within_bootstrap_grace =
@@ -2291,18 +2374,49 @@ impl Node {
                                 true // No peers yet - handled above
                             };
 
-                        // Check 1: At height 0, wait for peers to establish chain
-                        if height == 0 && best_peer_height == 0 && within_bootstrap_grace {
+                        // BOOTSTRAP MIN HEIGHT: Joining nodes must wait for seed to establish
+                        // a canonical prefix before they can produce. This prevents race conditions
+                        // where multiple nodes produce competing blocks at height 1-2.
+                        //
+                        // The seed node (no bootstrap config) is exempt and can produce at any height.
+                        // After the seed establishes the first few blocks, joining nodes sync via
+                        // gossip and can then participate in production.
+                        //
+                        // NOTE: height = best_height + 1, so BOOTSTRAP_MIN_HEIGHT = 3 means
+                        // joining nodes must have best_height >= 2 (received 2 blocks from seed).
+                        const BOOTSTRAP_MIN_HEIGHT: u64 = 3;
+
+                        // BOOTSTRAP TIMEOUT: After waiting too long, allow production anyway.
+                        // This handles the case where the seed node failed or is very slow.
+                        // Devnet uses shorter timeout for faster iteration.
+                        let bootstrap_timeout_secs: u64 = if self.config.network == Network::Devnet
+                        {
+                            60 // 1 minute for devnet
+                        } else {
+                            180 // 3 minutes for testnet/mainnet
+                        };
+
+                        let past_bootstrap_timeout = self
+                            .first_peer_connected
+                            .map(|t| t.elapsed().as_secs() >= bootstrap_timeout_secs)
+                            .unwrap_or(false);
+
+                        if height < BOOTSTRAP_MIN_HEIGHT && !past_bootstrap_timeout {
                             debug!(
-                                "Joining node at genesis: waiting for peers to establish chain (peer_count={}, best_peer_height={}, grace_remaining={}s)",
-                                peer_count,
-                                best_peer_height,
-                                bootstrap_sync_grace_secs - self.first_peer_connected.map(|t| t.elapsed().as_secs()).unwrap_or(0)
+                                "Joining node at height {}: waiting for seed to establish chain (min_height={}, peer_count={}, best_peer_height={})",
+                                height, BOOTSTRAP_MIN_HEIGHT, peer_count, best_peer_height
                             );
                             return Ok(());
                         }
 
-                        // Check 2: During early bootstrap, ensure chain tip is fresh
+                        if height < BOOTSTRAP_MIN_HEIGHT && past_bootstrap_timeout {
+                            warn!(
+                                "Bootstrap timeout reached ({}s) - joining node proceeding to produce at height {} (seed may have failed)",
+                                bootstrap_timeout_secs, height
+                            );
+                        }
+
+                        // Check 2: During bootstrap grace, ensure chain tip is fresh
                         // If current_slot - chain_tip_slot > 1, we might be missing in-flight blocks
                         let chain_tip_slot = {
                             let state = self.chain_state.read().await;
@@ -2310,11 +2424,27 @@ impl Node {
                         };
                         let slot_gap = current_slot.saturating_sub(chain_tip_slot);
 
-                        // Only apply during early bootstrap (height < 10) and within grace period
-                        if height > 0 && height < 10 && within_bootstrap_grace && slot_gap > 1 {
+                        // During bootstrap grace period, require chain tip to be recent (gap <= 1)
+                        // Skip this check if we've passed the bootstrap timeout
+                        if height > 0
+                            && within_bootstrap_grace
+                            && slot_gap > 1
+                            && !past_bootstrap_timeout
+                        {
                             debug!(
-                                "Joining node early bootstrap: chain tip not fresh (height={}, chain_tip_slot={}, current_slot={}, gap={}), waiting for in-flight blocks",
+                                "Joining node bootstrap: chain tip not fresh (height={}, chain_tip_slot={}, current_slot={}, gap={}), waiting for in-flight blocks",
                                 height, chain_tip_slot, current_slot, slot_gap
+                            );
+                            return Ok(());
+                        }
+
+                        // Check 3: ALWAYS compare against best peer height before producing
+                        // This prevents nodes from producing orphan blocks even after grace period expires
+                        // If we're more than 2 blocks behind the best peer, defer production
+                        if best_peer_height > 0 && height + 2 < best_peer_height {
+                            debug!(
+                                "Behind peers: our height {} vs best peer height {} (diff={}) - deferring production",
+                                height, best_peer_height, best_peer_height - height
                             );
                             return Ok(());
                         }
@@ -2499,6 +2629,57 @@ impl Node {
             current_slot, height, slot_offset
         );
 
+        // =========================================================================
+        // PROPAGATION RACE MITIGATION: Yield before VDF to catch in-flight blocks
+        //
+        // Problem: During VDF computation (~700ms), the event loop is blocked and
+        // cannot process incoming gossip blocks. If another producer's block for
+        // slot S is in-flight while we start producing for slot S+1, we won't see
+        // it until after we've already broadcast our block, creating a fork.
+        //
+        // Solution: Before starting VDF computation, yield control briefly to allow
+        // any pending network events to be processed. This gives in-flight blocks
+        // a chance to arrive before we commit to production.
+        //
+        // We yield if:
+        // 1. Network tip slot suggests there might be a recent block we haven't seen
+        // 2. We're not too far into the slot (leave time for our own production)
+        //
+        // This is a lightweight "micro-sync" that doesn't require protocol changes.
+        // =========================================================================
+        {
+            let network_tip_slot = self.sync_manager.read().await.best_peer_slot();
+
+            // If network tip is at current_slot-1 or current_slot, there might be
+            // an in-flight block we should wait for before producing
+            if network_tip_slot >= prev_slot && current_slot > prev_slot + 1 {
+                // We're potentially missing a block - yield briefly
+                debug!(
+                    "Propagation race mitigation: yielding before VDF (prev_slot={}, network_tip={}, current={})",
+                    prev_slot, network_tip_slot, current_slot
+                );
+
+                // Yield for a short time to allow pending network events to be processed
+                // This is much shorter than a full slot - just enough for gossip propagation
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                // Re-check: did a block arrive for a more recent slot?
+                let new_state = self.chain_state.read().await;
+                let new_prev_slot = new_state.best_slot;
+                drop(new_state);
+
+                if new_prev_slot > prev_slot {
+                    debug!(
+                        "Block arrived during yield (prev_slot: {} -> {}) - restarting production check",
+                        prev_slot, new_prev_slot
+                    );
+                    // A block arrived - abort this production attempt
+                    // Next production tick will re-evaluate with updated chain state
+                    return Ok(());
+                }
+            }
+        }
+
         // SIGNED SLOTS PROTECTION: Check if we already signed this slot
         // This prevents double-signing if we restart quickly
         if let Some(ref signed_slots) = self.signed_slots_db {
@@ -2570,6 +2751,69 @@ impl Node {
                 return Ok(());
             }
         };
+
+        // =========================================================================
+        // DRAIN PENDING BLOCKS: Process all queued network events before VDF
+        //
+        // This is the key fix for the propagation race bug. The problem:
+        // - VDF computation takes ~550-700ms
+        // - During this time, the event loop is blocked (we await spawn_blocking)
+        // - Blocks from other producers may arrive in the network channel queue
+        // - Without draining, we don't see them until after we've already produced
+        //
+        // Solution: Non-blocking drain of all pending NewBlock events from the
+        // network channel BEFORE starting VDF. This ensures we have the latest
+        // chain state before committing to production.
+        //
+        // The try_next_event() method uses try_recv() which returns immediately
+        // if no events are queued, so this adds negligible latency.
+        // =========================================================================
+        {
+            // First, collect pending events (releases borrow of self.network quickly)
+            let pending_events: Vec<NetworkEvent> = {
+                if let Some(ref mut network) = self.network {
+                    let mut events = Vec::new();
+                    // Drain up to 10 pending events
+                    for _ in 0..10 {
+                        if let Some(event) = network.try_next_event() {
+                            events.push(event);
+                        } else {
+                            break;
+                        }
+                    }
+                    events
+                } else {
+                    Vec::new()
+                }
+            };
+
+            // Now process collected events (self.network borrow is released)
+            if !pending_events.is_empty() {
+                let mut block_count = 0;
+                for event in pending_events {
+                    if matches!(event, NetworkEvent::NewBlock(_)) {
+                        block_count += 1;
+                    }
+                    if let Err(e) = self.handle_network_event(event).await {
+                        warn!("Error handling drained event: {}", e);
+                    }
+                }
+
+                if block_count > 0 {
+                    debug!("Drained {} pending block events before VDF", block_count);
+
+                    // Check if chain advanced during drain
+                    let new_state = self.chain_state.read().await;
+                    if new_state.best_slot > prev_slot || new_state.best_height >= height {
+                        debug!(
+                            "Chain advanced during drain (new tip after prev_slot={}) - aborting production",
+                            prev_slot
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        }
 
         // Compute VDF using hash-chain with dynamically calibrated iterations
         // The VDF serves as anti-grinding protection, not timing enforcement
@@ -2862,6 +3106,58 @@ impl Node {
         if let Some((peer_id, request)) = self.sync_manager.write().await.next_request() {
             if let Some(ref network) = self.network {
                 let _ = network.request_sync(peer_id, request).await;
+            }
+        }
+
+        // PERIODIC STATUS REFRESH: Request status from peers to keep network tip updated
+        // This is critical for production gating - without fresh peer status, we can't
+        // know if other nodes have produced blocks we haven't received via gossip yet.
+        //
+        // We request status every ~10 seconds (controlled by production_timer which is 1s,
+        // so we use a modulo check based on current time).
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Request status every ~5 seconds for devnet/testnet, every ~30 seconds for mainnet
+        let status_interval =
+            if self.config.network == Network::Devnet || self.config.network == Network::Testnet {
+                5
+            } else {
+                30
+            };
+
+        if now_secs % status_interval == 0 {
+            if let Some(ref network) = self.network {
+                // Get a random peer to request status from
+                let peer_ids: Vec<_> = {
+                    let sync = self.sync_manager.read().await;
+                    sync.peer_ids().collect()
+                };
+
+                if !peer_ids.is_empty() {
+                    // Request status from one peer at a time to avoid flooding
+                    let peer_idx = (now_secs as usize) % peer_ids.len();
+                    let peer_id = peer_ids[peer_idx];
+
+                    let genesis_hash = self.chain_state.read().await.genesis_hash;
+                    let status_request = if let Some(ref key) = self.producer_key {
+                        network::protocols::StatusRequest::with_producer(
+                            self.config.network.id(),
+                            genesis_hash,
+                            key.public_key().clone(),
+                        )
+                    } else {
+                        network::protocols::StatusRequest::new(
+                            self.config.network.id(),
+                            genesis_hash,
+                        )
+                    };
+
+                    debug!("Periodic status request to peer {}", peer_id);
+                    let _ = network.request_status(peer_id, status_request).await;
+                }
             }
         }
 
