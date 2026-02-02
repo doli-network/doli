@@ -73,6 +73,10 @@ enum Commands {
         #[arg(long)]
         update_notify_only: bool,
 
+        /// Disable automatic rollback on update failures
+        #[arg(long)]
+        no_auto_rollback: bool,
+
         /// P2P listen port (overrides network default)
         #[arg(long)]
         p2p_port: Option<u16>,
@@ -142,6 +146,12 @@ enum Commands {
         action: UpdateCommands,
     },
 
+    /// Maintainer management commands
+    Maintainer {
+        #[command(subcommand)]
+        action: MaintainerCommands,
+    },
+
     /// Recover chain state from existing block data
     ///
     /// Use this if nodes fail to load after ungraceful shutdown.
@@ -176,11 +186,78 @@ enum UpdateCommands {
         key: PathBuf,
     },
 
+    /// View current vote status for an update
+    Votes {
+        /// Version to check votes for (optional, uses pending update if not specified)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
     /// Apply a pending approved update
     Apply {
         /// Force apply even if not in enforcement period
         #[arg(long)]
         force: bool,
+    },
+
+    /// Rollback to previous version backup
+    Rollback,
+
+    /// Verify release signatures
+    Verify {
+        /// Version to verify
+        #[arg(long)]
+        version: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MaintainerCommands {
+    /// List current maintainer set
+    List,
+
+    /// Propose removing a maintainer (requires 3/5 multisig)
+    Remove {
+        /// Public key of maintainer to remove
+        #[arg(long)]
+        target: String,
+
+        /// Path to maintainer key file for signing
+        #[arg(long)]
+        key: PathBuf,
+
+        /// Reason for removal (optional)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Propose adding a new maintainer (requires 3/5 multisig)
+    Add {
+        /// Public key of producer to add as maintainer
+        #[arg(long)]
+        target: String,
+
+        /// Path to maintainer key file for signing
+        #[arg(long)]
+        key: PathBuf,
+    },
+
+    /// Sign a pending maintainer change proposal
+    Sign {
+        /// Proposal ID to sign
+        #[arg(long)]
+        proposal_id: String,
+
+        /// Path to maintainer key file for signing
+        #[arg(long)]
+        key: PathBuf,
+    },
+
+    /// Verify if a public key is a maintainer
+    Verify {
+        /// Public key to check
+        #[arg(long)]
+        pubkey: String,
     },
 }
 
@@ -221,6 +298,7 @@ async fn main() -> Result<()> {
             producer_key,
             no_auto_update,
             update_notify_only,
+            no_auto_rollback,
             p2p_port,
             rpc_port,
             metrics_port,
@@ -232,6 +310,7 @@ async fn main() -> Result<()> {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
                 notify_only: update_notify_only,
+                auto_rollback: !no_auto_rollback,
                 ..Default::default()
             };
             run_node(
@@ -265,6 +344,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Update { action }) => {
             handle_update_command(action, &data_dir).await?;
+        }
+        Some(Commands::Maintainer { action }) => {
+            handle_maintainer_command(action, &data_dir, network).await?;
         }
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
@@ -795,7 +877,349 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
                 }
             }
         }
+        UpdateCommands::Votes { version } => {
+            // Get version from argument or pending update
+            let target_version = version
+                .or_else(|| updater::get_pending_version(data_dir));
+
+            let target_version = match target_version {
+                Some(v) => v,
+                None => {
+                    println!("No version specified and no pending update found.");
+                    println!("Use --version <ver> to check votes for a specific version.");
+                    return Ok(());
+                }
+            };
+
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    VOTE STATUS: v{}                              ║", target_version);
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Check for votes in pending update
+            if let Some(pending) = updater::get_pending_update(data_dir) {
+                if pending.release.version == target_version {
+                    let tracker = &pending.vote_tracker;
+                    let veto_count = tracker.veto_count();
+                    let approve_count = tracker.approval_count();
+                    let total = tracker.total_votes();
+                    println!("║                                                                  ║");
+                    println!("║  Veto votes:    {}                                               ║", veto_count);
+                    println!("║  Approve votes: {}                                               ║", approve_count);
+                    println!("║  Total votes:   {}                                               ║", total);
+                    println!("║  Threshold:     40% of weighted votes                            ║");
+                    println!("║                                                                  ║");
+                    if pending.approved {
+                        println!("║  Status: APPROVED                                                ║");
+                    } else {
+                        println!("║  Status: Voting in progress                                      ║");
+                    }
+                } else {
+                    println!("║                                                                  ║");
+                    println!("║  No votes found for this version.                                ║");
+                }
+            } else {
+                println!("║                                                                  ║");
+                println!("║  No pending update found.                                         ║");
+            }
+            println!("║                                                                  ║");
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+        UpdateCommands::Rollback => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    MANUAL ROLLBACK                               ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            match updater::rollback().await {
+                Ok(()) => {
+                    println!("║                                                                  ║");
+                    println!("║  ✅ Rollback successful                                          ║");
+                    println!("║                                                                  ║");
+                    println!("║  Backup restored. Restart the node to use the previous version. ║");
+                    println!("║                                                                  ║");
+                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                }
+                Err(e) => {
+                    println!("║                                                                  ║");
+                    println!("║  ❌ Rollback failed: {}                                          ║", e);
+                    println!("║                                                                  ║");
+                    println!("║  No backup found or backup is corrupted.                        ║");
+                    println!("║  You may need to reinstall manually.                            ║");
+                    println!("║                                                                  ║");
+                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                }
+            }
+        }
+        UpdateCommands::Verify { version } => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    VERIFY RELEASE                                ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // First check if we have a pending update matching the version
+            let release = if let Some(pending) = updater::get_pending_update(data_dir) {
+                if pending.release.version == version {
+                    Some(pending.release)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // If no pending update, try to fetch from network
+            let release = match release {
+                Some(r) => Some(r),
+                None => {
+                    info!("Fetching latest release to verify...");
+                    match updater::fetch_latest_release(None).await {
+                        Ok(Some(r)) if r.version == version => Some(r),
+                        Ok(Some(r)) => {
+                            println!("║                                                                  ║");
+                            println!("║  ❌ Requested version {} not found                               ║", version);
+                            println!("║     Latest available: {}                                         ║", r.version);
+                            println!("║                                                                  ║");
+                            println!("╚══════════════════════════════════════════════════════════════════╝");
+                            return Ok(());
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            println!("║                                                                  ║");
+                            println!("║  ❌ Failed to fetch release: {}                                  ║", e);
+                            println!("║                                                                  ║");
+                            println!("╚══════════════════════════════════════════════════════════════════╝");
+                            return Ok(());
+                        }
+                    }
+                }
+            };
+
+            match release {
+                Some(release) => {
+                    println!("║                                                                  ║");
+                    println!("║  Version: {}                                                     ║", release.version);
+                    if release.binary_sha256.len() >= 16 {
+                        println!("║  SHA256:  {}...                                                  ║", &release.binary_sha256[..16]);
+                    }
+                    println!("║                                                                  ║");
+                    println!("║  MAINTAINER SIGNATURES                                           ║");
+
+                    match updater::verify_release_signatures(&release) {
+                        Ok(()) => {
+                            for sig in &release.signatures {
+                                if sig.public_key.len() >= 16 {
+                                    println!("║  ✓ {}...                                              ║", &sig.public_key[..16]);
+                                }
+                            }
+                            println!("║                                                                  ║");
+                            println!("║  ✅ Release signatures verified (3/5 threshold met)             ║");
+                        }
+                        Err(e) => {
+                            println!("║  ❌ Verification failed: {}                                      ║", e);
+                        }
+                    }
+                    println!("║                                                                  ║");
+                }
+                None => {
+                    println!("║                                                                  ║");
+                    println!("║  ❌ Release v{} not found                                        ║", version);
+                    println!("║                                                                  ║");
+                }
+            }
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
     }
+    Ok(())
+}
+
+async fn handle_maintainer_command(
+    action: MaintainerCommands,
+    data_dir: &PathBuf,
+    network: Network,
+) -> Result<()> {
+    use doli_core::maintainer::{
+        derive_maintainer_set, MaintainerChangeData, MaintainerSet, MaintainerSignature,
+        INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
+    };
+
+    match action {
+        MaintainerCommands::List => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    MAINTAINER SET                                ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Load maintainer set from storage or derive from chain
+            // For now, show the expected structure
+            let producers_path = data_dir.join("producers.bin");
+            if producers_path.exists() {
+                // In a full implementation, we would derive the maintainer set
+                // from the blockchain by scanning registration transactions
+                println!("║                                                                  ║");
+                println!("║  Maintainer set derived from first {} registrations            ║", INITIAL_MAINTAINER_COUNT);
+                println!("║  Threshold: {} of {} signatures required                        ║", MAINTAINER_THRESHOLD, MAX_MAINTAINERS);
+                println!("║  Min maintainers: {}                                             ║", MIN_MAINTAINERS);
+                println!("║  Max maintainers: {}                                             ║", MAX_MAINTAINERS);
+                println!("║                                                                  ║");
+                println!("║  Note: Full maintainer list requires blockchain scan.           ║");
+                println!("║  Use RPC 'getMaintainerSet' for complete information.           ║");
+            } else {
+                println!("║                                                                  ║");
+                println!("║  No producer data found. Start the node to sync.                ║");
+            }
+            println!("║                                                                  ║");
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+
+        MaintainerCommands::Remove { target, key, reason } => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    PROPOSE MAINTAINER REMOVAL                    ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Load maintainer key
+            let keypair = load_producer_key(&key)?;
+            let signer_pubkey = keypair.public_key().clone();
+
+            // Parse target public key
+            let target_pubkey = match PublicKey::from_hex(&target) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    println!("║                                                                  ║");
+                    println!("║  ❌ Invalid target public key: {}                               ║", e);
+                    println!("║                                                                  ║");
+                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    return Ok(());
+                }
+            };
+
+            // Create the change data
+            let change_data = MaintainerChangeData::with_reason(
+                target_pubkey.clone(),
+                vec![], // Signatures will be collected separately
+                reason.unwrap_or_default(),
+            );
+
+            // Sign the proposal
+            let message = change_data.signing_message(false); // false = removal
+            let signature = crypto::signature::sign(&message, keypair.private_key());
+
+            let sig = MaintainerSignature {
+                pubkey: signer_pubkey.clone(),
+                signature,
+            };
+
+            println!("║                                                                  ║");
+            println!("║  Proposal created:                                               ║");
+            println!("║  Target:  {}...                                                  ║", &target[..16.min(target.len())]);
+            println!("║  Signer:  {}...                                                  ║", &signer_pubkey.to_hex()[..16]);
+            println!("║                                                                  ║");
+            println!("║  Signature: {}...                                                ║", &sig.signature.to_hex()[..16]);
+            println!("║                                                                  ║");
+            println!("║  Next steps:                                                     ║");
+            println!("║  1. Share proposal with other maintainers                        ║");
+            println!("║  2. Collect 3/5 signatures                                       ║");
+            println!("║  3. Submit via RPC 'submitMaintainerChange'                      ║");
+            println!("║                                                                  ║");
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+
+        MaintainerCommands::Add { target, key } => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    PROPOSE MAINTAINER ADDITION                   ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Load maintainer key
+            let keypair = load_producer_key(&key)?;
+            let signer_pubkey = keypair.public_key().clone();
+
+            // Parse target public key
+            let target_pubkey = match PublicKey::from_hex(&target) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    println!("║                                                                  ║");
+                    println!("║  ❌ Invalid target public key: {}                               ║", e);
+                    println!("║                                                                  ║");
+                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    return Ok(());
+                }
+            };
+
+            // Create the change data
+            let change_data = MaintainerChangeData::new(target_pubkey.clone(), vec![]);
+
+            // Sign the proposal
+            let message = change_data.signing_message(true); // true = addition
+            let signature = crypto::signature::sign(&message, keypair.private_key());
+
+            let sig = MaintainerSignature {
+                pubkey: signer_pubkey.clone(),
+                signature,
+            };
+
+            println!("║                                                                  ║");
+            println!("║  Proposal created:                                               ║");
+            println!("║  Target:  {}...                                                  ║", &target[..16.min(target.len())]);
+            println!("║  Signer:  {}...                                                  ║", &signer_pubkey.to_hex()[..16]);
+            println!("║                                                                  ║");
+            println!("║  Signature: {}...                                                ║", &sig.signature.to_hex()[..16]);
+            println!("║                                                                  ║");
+            println!("║  Next steps:                                                     ║");
+            println!("║  1. Share proposal with other maintainers                        ║");
+            println!("║  2. Collect 3/5 signatures                                       ║");
+            println!("║  3. Submit via RPC 'submitMaintainerChange'                      ║");
+            println!("║                                                                  ║");
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+
+        MaintainerCommands::Sign { proposal_id, key } => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    SIGN MAINTAINER PROPOSAL                      ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Load maintainer key
+            let keypair = load_producer_key(&key)?;
+            let signer_pubkey = keypair.public_key().clone();
+
+            println!("║                                                                  ║");
+            println!("║  Proposal ID: {}                                                 ║", proposal_id);
+            println!("║  Signer:      {}...                                              ║", &signer_pubkey.to_hex()[..16]);
+            println!("║                                                                  ║");
+            println!("║  Note: Proposal signing requires the full proposal data.         ║");
+            println!("║  Use RPC to fetch proposal and sign interactively.               ║");
+            println!("║                                                                  ║");
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+
+        MaintainerCommands::Verify { pubkey } => {
+            println!();
+            println!("╔══════════════════════════════════════════════════════════════════╗");
+            println!("║                    VERIFY MAINTAINER STATUS                      ║");
+            println!("╠══════════════════════════════════════════════════════════════════╣");
+
+            // Parse public key
+            match PublicKey::from_hex(&pubkey) {
+                Ok(pk) => {
+                    println!("║                                                                  ║");
+                    println!("║  Public key: {}...                                               ║", &pubkey[..16.min(pubkey.len())]);
+                    println!("║                                                                  ║");
+                    println!("║  Note: Full verification requires blockchain access.             ║");
+                    println!("║  Use RPC 'getMaintainerSet' to check current maintainers.        ║");
+                    println!("║                                                                  ║");
+                }
+                Err(e) => {
+                    println!("║                                                                  ║");
+                    println!("║  ❌ Invalid public key: {}                                       ║", e);
+                    println!("║                                                                  ║");
+                }
+            }
+            println!("╚══════════════════════════════════════════════════════════════════╝");
+        }
+    }
+
     Ok(())
 }
 

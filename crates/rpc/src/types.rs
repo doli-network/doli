@@ -168,6 +168,8 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::RequestWithdrawal => "request_withdrawal",
             doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
             doli_core::TxType::EpochReward => "epoch_reward",
+            doli_core::TxType::RemoveMaintainer => "remove_maintainer",
+            doli_core::TxType::AddMaintainer => "add_maintainer",
         };
 
         Self {

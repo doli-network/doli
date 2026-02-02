@@ -118,6 +118,7 @@ pub mod consensus;
 pub mod discovery;
 pub mod genesis;
 pub mod heartbeat;
+pub mod maintainer;
 pub mod network;
 pub mod presence;
 pub mod rewards;
@@ -211,6 +212,11 @@ pub use heartbeat::{
 
 pub use genesis::{
     generate_genesis_block, genesis_hash, verify_genesis_block, GenesisConfig, GenesisError,
+};
+pub use maintainer::{
+    derive_maintainer_set, BlockchainReader, MaintainerChange, MaintainerChangeData,
+    MaintainerError, MaintainerSet, MaintainerSignature, INITIAL_MAINTAINER_COUNT,
+    MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
 };
 pub use network::Network;
 pub use transaction::{

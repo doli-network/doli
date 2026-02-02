@@ -161,6 +161,8 @@ impl RpcContext {
             "getHistory" => self.get_history(request.params).await,
             "submitVote" => self.submit_vote(request.params).await,
             "getUpdateStatus" => self.get_update_status().await,
+            "getMaintainerSet" => self.get_maintainer_set().await,
+            "submitMaintainerChange" => self.submit_maintainer_change(request.params).await,
             "getNodeInfo" => self.get_node_info().await,
             "getEpochInfo" => self.get_epoch_info().await,
             _ => Err(RpcError::method_not_found(&request.method)),
@@ -592,6 +594,8 @@ impl RpcContext {
                     doli_core::TxType::RequestWithdrawal => "request_withdrawal",
                     doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
                     doli_core::TxType::EpochReward => "epoch_reward",
+                    doli_core::TxType::RemoveMaintainer => "remove_maintainer",
+                    doli_core::TxType::AddMaintainer => "add_maintainer",
                 };
 
                 history.push(HistoryEntryResponse {
@@ -688,5 +692,148 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get current maintainer set
+    ///
+    /// Returns the maintainer set derived from the blockchain.
+    /// First 5 registered producers become maintainers automatically.
+    async fn get_maintainer_set(&self) -> Result<Value, RpcError> {
+        use doli_core::maintainer::{
+            INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
+        };
+
+        // Get the producer set to find the first 5 registered producers
+        let producer_set = match &self.producer_set {
+            Some(ps) => ps,
+            None => {
+                return Ok(serde_json::json!({
+                    "maintainers": [],
+                    "threshold": 0,
+                    "member_count": 0,
+                    "error": "Producer set not available"
+                }));
+            }
+        };
+
+        let producers = producer_set.read().await;
+
+        // Sort by registration height to find the first 5
+        let mut sorted_producers = producers.all_producers();
+        sorted_producers.sort_by_key(|p| p.registered_at);
+
+        // Take first 5 as maintainers
+        let maintainers: Vec<_> = sorted_producers
+            .into_iter()
+            .take(INITIAL_MAINTAINER_COUNT)
+            .map(|p| {
+                serde_json::json!({
+                    "pubkey": p.public_key.to_hex(),
+                    "registered_at_block": p.registered_at,
+                    "is_active_producer": p.is_active()
+                })
+            })
+            .collect();
+
+        let member_count = maintainers.len();
+        let threshold = if member_count <= 2 {
+            member_count
+        } else if member_count <= 4 {
+            (member_count / 2) + 1
+        } else {
+            MAINTAINER_THRESHOLD
+        };
+
+        Ok(serde_json::json!({
+            "maintainers": maintainers,
+            "threshold": threshold,
+            "member_count": member_count,
+            "max_maintainers": MAX_MAINTAINERS,
+            "min_maintainers": MIN_MAINTAINERS,
+            "initial_maintainer_count": INITIAL_MAINTAINER_COUNT,
+            "last_change_block": 0  // Would need to track maintainer changes
+        }))
+    }
+
+    /// Submit a maintainer change (add or remove)
+    ///
+    /// Requires 3/5 signatures from current maintainers.
+    async fn submit_maintainer_change(&self, params: Value) -> Result<Value, RpcError> {
+        #[derive(serde::Deserialize)]
+        struct SubmitMaintainerChangeParams {
+            action: String,        // "add" or "remove"
+            target_pubkey: String, // Hex-encoded public key
+            signatures: Vec<SignatureEntry>,
+            reason: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SignatureEntry {
+            pubkey: String,
+            signature: String,
+        }
+
+        let params: SubmitMaintainerChangeParams = serde_json::from_value(params)
+            .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        // Validate action
+        if params.action != "add" && params.action != "remove" {
+            return Err(RpcError::invalid_params(
+                "action must be 'add' or 'remove'",
+            ));
+        }
+
+        // Parse target public key
+        let target = crypto::PublicKey::from_hex(&params.target_pubkey)
+            .map_err(|e| RpcError::invalid_params(format!("invalid target pubkey: {}", e)))?;
+
+        // Parse and validate signatures
+        let mut signatures = Vec::new();
+        for entry in params.signatures {
+            let pubkey = crypto::PublicKey::from_hex(&entry.pubkey)
+                .map_err(|e| RpcError::invalid_params(format!("invalid signer pubkey: {}", e)))?;
+            let signature = crypto::Signature::from_hex(&entry.signature)
+                .map_err(|e| RpcError::invalid_params(format!("invalid signature: {}", e)))?;
+            signatures.push(doli_core::maintainer::MaintainerSignature { pubkey, signature });
+        }
+
+        // Check signature count (need at least 3)
+        if signatures.len() < doli_core::maintainer::MAINTAINER_THRESHOLD {
+            return Err(RpcError::invalid_params(format!(
+                "insufficient signatures: need {}, got {}",
+                doli_core::maintainer::MAINTAINER_THRESHOLD,
+                signatures.len()
+            )));
+        }
+
+        // Create the transaction
+        let tx = if params.action == "add" {
+            doli_core::Transaction::new_add_maintainer(target, signatures)
+        } else {
+            doli_core::Transaction::new_remove_maintainer(target, signatures, params.reason)
+        };
+
+        let tx_hash = tx.hash();
+
+        // Get current height for mempool validation
+        let current_height = {
+            let chain_state = self.chain_state.read().await;
+            chain_state.best_height
+        };
+
+        // Get UTXO set reference
+        let utxo_set = self.utxo_set.read().await;
+
+        // Submit to mempool
+        let mut mempool = self.mempool.write().await;
+        mempool
+            .add_transaction(tx, &utxo_set, current_height)
+            .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
+
+        Ok(serde_json::json!({
+            "status": "accepted",
+            "tx_hash": tx_hash.to_hex(),
+            "message": format!("Maintainer {} transaction submitted", params.action)
+        }))
     }
 }
