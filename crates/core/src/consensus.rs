@@ -171,9 +171,12 @@ pub const COINBASE_MATURITY: BlockHeight = 100;
 // More bonds = more selection weight = more block production opportunities.
 // Each bond has its own vesting timer (4 years to full maturity).
 
-/// Bond unit: 1,000 DOLI = 1 bond
+/// Bond unit: 100 DOLI = 1 slot per cycle
 /// This is the atomic unit for staking. You can only stake in multiples of this.
-pub const BOND_UNIT: Amount = 100_000_000_000; // 1,000 DOLI in base units
+/// With 100 DOLI per bond unit:
+/// - Producer with 1,000 DOLI = 10 slots per cycle
+/// - Maximum 100 bonds = 10,000 DOLI maximum per producer
+pub const BOND_UNIT: Amount = 10_000_000_000; // 100 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
@@ -2129,16 +2132,16 @@ mod tests {
     fn test_bond_amount() {
         let params = ConsensusParams::mainnet();
 
-        // Era 0
-        assert_eq!(params.bond_amount(0), 100_000_000_000);
+        // Era 0: 100 DOLI = 10_000_000_000 base units
+        assert_eq!(params.bond_amount(0), 10_000_000_000);
 
-        // Era 1: 70%
+        // Era 1: 70% of initial
         let era1_bond = params.bond_amount(BLOCKS_PER_ERA);
-        assert!(era1_bond > 69_000_000_000 && era1_bond < 71_000_000_000);
+        assert!(era1_bond > 6_900_000_000 && era1_bond < 7_100_000_000);
 
-        // Era 2: 49%
+        // Era 2: 49% of initial
         let era2_bond = params.bond_amount(BLOCKS_PER_ERA * 2);
-        assert!(era2_bond > 48_000_000_000 && era2_bond < 50_000_000_000);
+        assert!(era2_bond > 4_800_000_000 && era2_bond < 5_000_000_000);
     }
 
     #[test]

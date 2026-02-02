@@ -315,12 +315,14 @@ impl NetworkService {
         Ok(())
     }
 
-    /// Broadcast a heartbeat to the network (for weighted presence rewards)
-    pub async fn broadcast_heartbeat(&self, heartbeat_data: Vec<u8>) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastHeartbeat(heartbeat_data))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
+    /// Broadcast a heartbeat to the network.
+    ///
+    /// NOTE: Deprecated in deterministic scheduler model. Heartbeats are no longer
+    /// used for presence tracking. Rewards go 100% to block producer via coinbase.
+    /// This function is kept for API compatibility but does nothing.
+    #[deprecated(note = "Heartbeats removed in deterministic scheduler model")]
+    pub async fn broadcast_heartbeat(&self, _heartbeat_data: Vec<u8>) -> Result<(), NetworkError> {
+        // No-op: heartbeats removed in deterministic scheduler model
         Ok(())
     }
 

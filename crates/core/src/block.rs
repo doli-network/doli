@@ -1,11 +1,16 @@
 //! Block types and operations
+//!
+//! # Deterministic Scheduler Model
+//!
+//! Blocks no longer contain presence commitments. The deterministic scheduler
+//! selects producers based on bond count, and 100% of the block reward goes
+//! to the producer who creates the block.
 
 use crypto::{Hash, Hasher, PublicKey};
 use serde::{Deserialize, Serialize};
 use vdf::{VdfOutput, VdfProof};
 
 use crate::consensus::ConsensusParams;
-use crate::presence::PresenceCommitment;
 use crate::transaction::Transaction;
 use crate::types::{BlockHeight, Slot};
 
@@ -18,11 +23,10 @@ pub struct BlockHeader {
     pub prev_hash: Hash,
     /// Merkle root of transactions
     pub merkle_root: Hash,
-    /// Commitment to presence data (hash of PresenceCommitment, or ZERO for legacy blocks)
+    /// Legacy presence root field (always Hash::ZERO in deterministic scheduler model)
     ///
-    /// This field ensures that presence data cannot be modified after block creation.
-    /// For blocks before PRESENCE_V2_ACTIVATION_HEIGHT, this should be Hash::ZERO.
-    /// For blocks after activation, this is the hash of the PresenceCommitment.
+    /// This field is retained for backward compatibility with block hash calculation.
+    /// In the deterministic scheduler model, presence commitments are no longer used.
     #[serde(default)]
     pub presence_root: Hash,
     /// Block timestamp (Unix seconds)
@@ -85,53 +89,23 @@ impl BlockHeader {
 }
 
 /// A complete block
+///
+/// In the deterministic scheduler model, blocks contain only the header and
+/// transactions. The producer receives 100% of the block reward via coinbase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     /// Block header
     pub header: BlockHeader,
     /// Block transactions
     pub transactions: Vec<Transaction>,
-    /// Presence commitment for weighted rewards (optional for backward compatibility)
-    ///
-    /// Records which producers submitted valid heartbeats during this slot
-    /// and their bond weights. Used for calculating weighted presence rewards.
-    #[serde(default)]
-    pub presence: Option<PresenceCommitment>,
 }
 
 impl Block {
-    /// Create a new block without presence commitment (legacy)
+    /// Create a new block
     pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
         Self {
             header,
             transactions,
-            presence: None,
-        }
-    }
-
-    /// Create a new block with presence commitment
-    pub fn new_with_presence(
-        header: BlockHeader,
-        transactions: Vec<Transaction>,
-        presence: PresenceCommitment,
-    ) -> Self {
-        Self {
-            header,
-            transactions,
-            presence: Some(presence),
-        }
-    }
-
-    /// Create a new block with optional presence commitment (for storage recovery)
-    pub fn with_presence(
-        header: BlockHeader,
-        transactions: Vec<Transaction>,
-        presence: Option<PresenceCommitment>,
-    ) -> Self {
-        Self {
-            header,
-            transactions,
-            presence,
         }
     }
 
@@ -186,21 +160,6 @@ impl Block {
         0
     }
 
-    /// Get the presence commitment if present
-    pub fn presence(&self) -> Option<&PresenceCommitment> {
-        self.presence.as_ref()
-    }
-
-    /// Check if this block has a presence commitment
-    pub fn has_presence(&self) -> bool {
-        self.presence.is_some()
-    }
-
-    /// Set the presence commitment
-    pub fn set_presence(&mut self, presence: PresenceCommitment) {
-        self.presence = Some(presence);
-    }
-
     /// Serialize the block
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap_or_default()
@@ -251,7 +210,6 @@ pub struct BlockBuilder {
     producer: PublicKey,
     transactions: Vec<Transaction>,
     params: ConsensusParams,
-    presence: Option<PresenceCommitment>,
 }
 
 impl BlockBuilder {
@@ -263,19 +221,12 @@ impl BlockBuilder {
             producer,
             transactions: Vec::new(),
             params: ConsensusParams::mainnet(),
-            presence: None,
         }
     }
 
     /// Set consensus params
     pub fn with_params(mut self, params: ConsensusParams) -> Self {
         self.params = params;
-        self
-    }
-
-    /// Set the presence commitment for this block
-    pub fn with_presence(mut self, presence: PresenceCommitment) -> Self {
-        self.presence = Some(presence);
         self
     }
 
@@ -308,18 +259,11 @@ impl BlockBuilder {
 
         let merkle_root = compute_merkle_root(&self.transactions);
 
-        // Compute presence_root from presence commitment if available
-        let presence_root = self
-            .presence
-            .as_ref()
-            .map(|p| p.commitment_hash())
-            .unwrap_or(Hash::ZERO);
-
         Some(BlockHeader {
             version: 1,
             prev_hash: self.prev_hash,
             merkle_root,
-            presence_root,
+            presence_root: Hash::ZERO, // Always ZERO in deterministic scheduler model
             timestamp,
             slot,
             producer: self.producer,
