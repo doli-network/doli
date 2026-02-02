@@ -731,8 +731,8 @@ async fn cmd_producer(
             // BOND_UNIT = 100_000_000 (1 DOLI) for devnet
             let chain_info = rpc.get_chain_info().await?;
             let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
-                "devnet" => (100_000_000, 1),     // 1 DOLI per bond on devnet
-                _ => (10_000_000_000, 100),       // 100 DOLI per bond on mainnet/testnet
+                "devnet" => (100_000_000, 1), // 1 DOLI per bond on devnet
+                _ => (10_000_000_000, 100),   // 100 DOLI per bond on mainnet/testnet
             };
             let required_amount = bond_unit * bonds as u64;
 
@@ -940,8 +940,8 @@ async fn cmd_producer(
             // BOND_UNIT = 100_000_000 (1 DOLI) for devnet
             let chain_info = rpc.get_chain_info().await?;
             let (bond_unit, bond_display): (u64, u64) = match chain_info.network.as_str() {
-                "devnet" => (100_000_000, 1),     // 1 DOLI per bond on devnet
-                _ => (10_000_000_000, 100),       // 100 DOLI per bond on mainnet/testnet
+                "devnet" => (100_000_000, 1), // 1 DOLI per bond on devnet
+                _ => (10_000_000_000, 100),   // 100 DOLI per bond on mainnet/testnet
             };
             let required_amount = bond_unit * count as u64;
             let fee: u64 = 10000;

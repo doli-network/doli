@@ -345,7 +345,11 @@ mod tests {
             ..header1.clone()
         };
 
-        assert_ne!(header1.hash(), header2.hash(), "presence_root must affect block hash");
+        assert_ne!(
+            header1.hash(),
+            header2.hash(),
+            "presence_root must affect block hash"
+        );
     }
 
     #[test]

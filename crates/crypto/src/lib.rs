@@ -56,7 +56,7 @@ pub mod keys;
 pub mod merkle;
 pub mod signature;
 
-pub use hash::{Hash, Hasher};
+pub use hash::{hash_with_domain, Hash, Hasher};
 pub use keys::{Address, KeyPair, PrivateKey, PublicKey};
 pub use signature::Signature;
 
