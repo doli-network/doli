@@ -1579,11 +1579,13 @@ fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
         ));
     }
 
-    // Must have no outputs (funds go into bond state)
-    if !tx.outputs.is_empty() {
-        return Err(ValidationError::InvalidAddBond(
-            "add bond transaction must have no outputs".to_string(),
-        ));
+    // May have Normal outputs for change, but no Bond outputs
+    for output in &tx.outputs {
+        if output.output_type != OutputType::Normal {
+            return Err(ValidationError::InvalidAddBond(
+                "add bond outputs must be Normal type (for change only)".to_string(),
+            ));
+        }
     }
 
     // Parse add bond data from extra_data
