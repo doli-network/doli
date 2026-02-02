@@ -940,8 +940,7 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
         }
         UpdateCommands::Votes { version } => {
             // Get version from argument or pending update
-            let target_version = version
-                .or_else(|| updater::get_pending_version(data_dir));
+            let target_version = version.or_else(|| updater::get_pending_version(data_dir));
 
             let target_version = match target_version {
                 Some(v) => v,
@@ -954,7 +953,10 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
 
             println!();
             println!("╔══════════════════════════════════════════════════════════════════╗");
-            println!("║                    VOTE STATUS: v{}                              ║", target_version);
+            println!(
+                "║                    VOTE STATUS: v{}                              ║",
+                target_version
+            );
             println!("╠══════════════════════════════════════════════════════════════════╣");
 
             // Check for votes in pending update
@@ -964,20 +966,43 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
                     let veto_count = tracker.veto_count();
                     let approve_count = tracker.approval_count();
                     let total = tracker.total_votes();
-                    println!("║                                                                  ║");
-                    println!("║  Veto votes:    {}                                               ║", veto_count);
-                    println!("║  Approve votes: {}                                               ║", approve_count);
-                    println!("║  Total votes:   {}                                               ║", total);
-                    println!("║  Threshold:     40% of weighted votes                            ║");
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Veto votes:    {}                                               ║",
+                        veto_count
+                    );
+                    println!(
+                        "║  Approve votes: {}                                               ║",
+                        approve_count
+                    );
+                    println!(
+                        "║  Total votes:   {}                                               ║",
+                        total
+                    );
+                    println!(
+                        "║  Threshold:     40% of weighted votes                            ║"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                     if pending.approved {
-                        println!("║  Status: APPROVED                                                ║");
+                        println!(
+                            "║  Status: APPROVED                                                ║"
+                        );
                     } else {
-                        println!("║  Status: Voting in progress                                      ║");
+                        println!(
+                            "║  Status: Voting in progress                                      ║"
+                        );
                     }
                 } else {
-                    println!("║                                                                  ║");
-                    println!("║  No votes found for this version.                                ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  No votes found for this version.                                ║"
+                    );
                 }
             } else {
                 println!("║                                                                  ║");
@@ -994,21 +1019,42 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
 
             match updater::rollback().await {
                 Ok(()) => {
-                    println!("║                                                                  ║");
-                    println!("║  ✅ Rollback successful                                          ║");
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ✅ Rollback successful                                          ║"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                     println!("║  Backup restored. Restart the node to use the previous version. ║");
-                    println!("║                                                                  ║");
-                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "╚══════════════════════════════════════════════════════════════════╝"
+                    );
                 }
                 Err(e) => {
-                    println!("║                                                                  ║");
-                    println!("║  ❌ Rollback failed: {}                                          ║", e);
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ❌ Rollback failed: {}                                          ║",
+                        e
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                     println!("║  No backup found or backup is corrupted.                        ║");
                     println!("║  You may need to reinstall manually.                            ║");
-                    println!("║                                                                  ║");
-                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "╚══════════════════════════════════════════════════════════════════╝"
+                    );
                 }
             }
         }
@@ -1058,19 +1104,34 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
 
             match release {
                 Some(release) => {
-                    println!("║                                                                  ║");
-                    println!("║  Version: {}                                                     ║", release.version);
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Version: {}                                                     ║",
+                        release.version
+                    );
                     if release.binary_sha256.len() >= 16 {
-                        println!("║  SHA256:  {}...                                                  ║", &release.binary_sha256[..16]);
+                        println!(
+                            "║  SHA256:  {}...                                                  ║",
+                            &release.binary_sha256[..16]
+                        );
                     }
-                    println!("║                                                                  ║");
-                    println!("║  MAINTAINER SIGNATURES                                           ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  MAINTAINER SIGNATURES                                           ║"
+                    );
 
                     match updater::verify_release_signatures(&release) {
                         Ok(()) => {
                             for sig in &release.signatures {
                                 if sig.public_key.len() >= 16 {
-                                    println!("║  ✓ {}...                                              ║", &sig.public_key[..16]);
+                                    println!(
+                                        "║  ✓ {}...                                              ║",
+                                        &sig.public_key[..16]
+                                    );
                                 }
                             }
                             println!("║                                                                  ║");
@@ -1080,12 +1141,21 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
                             println!("║  ❌ Verification failed: {}                                      ║", e);
                         }
                     }
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
                 }
                 None => {
-                    println!("║                                                                  ║");
-                    println!("║  ❌ Release v{} not found                                        ║", version);
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ❌ Release v{} not found                                        ║",
+                        version
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                 }
             }
             println!("╚══════════════════════════════════════════════════════════════════╝");
@@ -1118,10 +1188,22 @@ async fn handle_maintainer_command(
                 // In a full implementation, we would derive the maintainer set
                 // from the blockchain by scanning registration transactions
                 println!("║                                                                  ║");
-                println!("║  Maintainer set derived from first {} registrations            ║", INITIAL_MAINTAINER_COUNT);
-                println!("║  Threshold: {} of {} signatures required                        ║", MAINTAINER_THRESHOLD, MAX_MAINTAINERS);
-                println!("║  Min maintainers: {}                                             ║", MIN_MAINTAINERS);
-                println!("║  Max maintainers: {}                                             ║", MAX_MAINTAINERS);
+                println!(
+                    "║  Maintainer set derived from first {} registrations            ║",
+                    INITIAL_MAINTAINER_COUNT
+                );
+                println!(
+                    "║  Threshold: {} of {} signatures required                        ║",
+                    MAINTAINER_THRESHOLD, MAX_MAINTAINERS
+                );
+                println!(
+                    "║  Min maintainers: {}                                             ║",
+                    MIN_MAINTAINERS
+                );
+                println!(
+                    "║  Max maintainers: {}                                             ║",
+                    MAX_MAINTAINERS
+                );
                 println!("║                                                                  ║");
                 println!("║  Note: Full maintainer list requires blockchain scan.           ║");
                 println!("║  Use RPC 'getMaintainerSet' for complete information.           ║");
@@ -1133,7 +1215,11 @@ async fn handle_maintainer_command(
             println!("╚══════════════════════════════════════════════════════════════════╝");
         }
 
-        MaintainerCommands::Remove { target, key, reason } => {
+        MaintainerCommands::Remove {
+            target,
+            key,
+            reason,
+        } => {
             println!();
             println!("╔══════════════════════════════════════════════════════════════════╗");
             println!("║                    PROPOSE MAINTAINER REMOVAL                    ║");
@@ -1147,10 +1233,19 @@ async fn handle_maintainer_command(
             let target_pubkey = match PublicKey::from_hex(&target) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    println!("║                                                                  ║");
-                    println!("║  ❌ Invalid target public key: {}                               ║", e);
-                    println!("║                                                                  ║");
-                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ❌ Invalid target public key: {}                               ║",
+                        e
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "╚══════════════════════════════════════════════════════════════════╝"
+                    );
                     return Ok(());
                 }
             };
@@ -1173,10 +1268,19 @@ async fn handle_maintainer_command(
 
             println!("║                                                                  ║");
             println!("║  Proposal created:                                               ║");
-            println!("║  Target:  {}...                                                  ║", &target[..16.min(target.len())]);
-            println!("║  Signer:  {}...                                                  ║", &signer_pubkey.to_hex()[..16]);
+            println!(
+                "║  Target:  {}...                                                  ║",
+                &target[..16.min(target.len())]
+            );
+            println!(
+                "║  Signer:  {}...                                                  ║",
+                &signer_pubkey.to_hex()[..16]
+            );
             println!("║                                                                  ║");
-            println!("║  Signature: {}...                                                ║", &sig.signature.to_hex()[..16]);
+            println!(
+                "║  Signature: {}...                                                ║",
+                &sig.signature.to_hex()[..16]
+            );
             println!("║                                                                  ║");
             println!("║  Next steps:                                                     ║");
             println!("║  1. Share proposal with other maintainers                        ║");
@@ -1200,10 +1304,19 @@ async fn handle_maintainer_command(
             let target_pubkey = match PublicKey::from_hex(&target) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    println!("║                                                                  ║");
-                    println!("║  ❌ Invalid target public key: {}                               ║", e);
-                    println!("║                                                                  ║");
-                    println!("╚══════════════════════════════════════════════════════════════════╝");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ❌ Invalid target public key: {}                               ║",
+                        e
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "╚══════════════════════════════════════════════════════════════════╝"
+                    );
                     return Ok(());
                 }
             };
@@ -1222,10 +1335,19 @@ async fn handle_maintainer_command(
 
             println!("║                                                                  ║");
             println!("║  Proposal created:                                               ║");
-            println!("║  Target:  {}...                                                  ║", &target[..16.min(target.len())]);
-            println!("║  Signer:  {}...                                                  ║", &signer_pubkey.to_hex()[..16]);
+            println!(
+                "║  Target:  {}...                                                  ║",
+                &target[..16.min(target.len())]
+            );
+            println!(
+                "║  Signer:  {}...                                                  ║",
+                &signer_pubkey.to_hex()[..16]
+            );
             println!("║                                                                  ║");
-            println!("║  Signature: {}...                                                ║", &sig.signature.to_hex()[..16]);
+            println!(
+                "║  Signature: {}...                                                ║",
+                &sig.signature.to_hex()[..16]
+            );
             println!("║                                                                  ║");
             println!("║  Next steps:                                                     ║");
             println!("║  1. Share proposal with other maintainers                        ║");
@@ -1246,8 +1368,14 @@ async fn handle_maintainer_command(
             let signer_pubkey = keypair.public_key().clone();
 
             println!("║                                                                  ║");
-            println!("║  Proposal ID: {}                                                 ║", proposal_id);
-            println!("║  Signer:      {}...                                              ║", &signer_pubkey.to_hex()[..16]);
+            println!(
+                "║  Proposal ID: {}                                                 ║",
+                proposal_id
+            );
+            println!(
+                "║  Signer:      {}...                                              ║",
+                &signer_pubkey.to_hex()[..16]
+            );
             println!("║                                                                  ║");
             println!("║  Note: Proposal signing requires the full proposal data.         ║");
             println!("║  Use RPC to fetch proposal and sign interactively.               ║");
@@ -1264,17 +1392,37 @@ async fn handle_maintainer_command(
             // Parse public key
             match PublicKey::from_hex(&pubkey) {
                 Ok(pk) => {
-                    println!("║                                                                  ║");
-                    println!("║  Public key: {}...                                               ║", &pubkey[..16.min(pubkey.len())]);
-                    println!("║                                                                  ║");
-                    println!("║  Note: Full verification requires blockchain access.             ║");
-                    println!("║  Use RPC 'getMaintainerSet' to check current maintainers.        ║");
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Public key: {}...                                               ║",
+                        &pubkey[..16.min(pubkey.len())]
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  Note: Full verification requires blockchain access.             ║"
+                    );
+                    println!(
+                        "║  Use RPC 'getMaintainerSet' to check current maintainers.        ║"
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                 }
                 Err(e) => {
-                    println!("║                                                                  ║");
-                    println!("║  ❌ Invalid public key: {}                                       ║", e);
-                    println!("║                                                                  ║");
+                    println!(
+                        "║                                                                  ║"
+                    );
+                    println!(
+                        "║  ❌ Invalid public key: {}                                       ║",
+                        e
+                    );
+                    println!(
+                        "║                                                                  ║"
+                    );
                 }
             }
             println!("╚══════════════════════════════════════════════════════════════════╝");

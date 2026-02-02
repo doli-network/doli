@@ -169,10 +169,18 @@ mod tests {
         // Default params should pass validation
         let mainnet = NetworkParams::defaults(Network::Mainnet);
         let errors = validate_params(&mainnet, Network::Mainnet);
-        assert!(errors.is_empty(), "Mainnet defaults should be valid: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Mainnet defaults should be valid: {:?}",
+            errors
+        );
 
         let devnet = NetworkParams::defaults(Network::Devnet);
         let errors = validate_params(&devnet, Network::Devnet);
-        assert!(errors.is_empty(), "Devnet defaults should be valid: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Devnet defaults should be valid: {:?}",
+            errors
+        );
     }
 }
