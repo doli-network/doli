@@ -650,6 +650,40 @@ help-cli:
     @just nix-run "cargo run -p doli-cli -- --help"
 
 # ============================================================================
+# BACKEND DEVELOPMENT
+# ============================================================================
+
+# Build release binary (for devnet testing)
+backend-build:
+    @just nix-run "cargo build --release 2>&1" | grep -iE "(compiling|finished|error|warning)" | head -30
+
+# ============================================================================
+# DEVNET MANAGEMENT
+# ============================================================================
+
+# Initialize devnet with N nodes (cleans existing first)
+devnet-init nodes:
+    @just nix-run "./target/release/doli-node devnet stop 2>/dev/null || true"
+    @just nix-run "./target/release/doli-node devnet clean 2>/dev/null || true"
+    @just nix-run "./target/release/doli-node devnet init --nodes {{nodes}}"
+
+# Start all devnet nodes
+devnet-start:
+    @just nix-run "./target/release/doli-node devnet start 2>&1" | tail -15
+
+# Stop all devnet nodes
+devnet-stop:
+    @just nix-run "./target/release/doli-node devnet stop"
+
+# Check devnet status
+devnet-status:
+    @just nix-run "./target/release/doli-node devnet status 2>&1" | grep -E "^(Node|---|-|[0-9])" | head -30
+
+# Clean devnet data
+devnet-clean:
+    @just nix-run "./target/release/doli-node devnet clean"
+
+# ============================================================================
 # CONVENIENCE COMBOS
 # ============================================================================
 
