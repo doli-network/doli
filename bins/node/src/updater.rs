@@ -19,9 +19,9 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 pub use updater::{
     apply_update, calculate_veto_result, check_production_allowed, current_version,
-    fetch_latest_release, is_newer_version, restart_node, verify_release_signatures, veto_deadline,
-    veto_period_ended, ProductionBlocked, Release, UpdateConfig, UpdateError, VersionEnforcement,
-    Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
+    fetch_latest_release, is_newer_version, restart_node, rollback, verify_release_signatures,
+    veto_deadline, veto_period_ended, ProductionBlocked, Release, UpdateConfig, UpdateError,
+    VersionEnforcement, Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
