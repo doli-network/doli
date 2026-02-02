@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.3.0
+version: 2.4.0
 ---
 
 # DOLI Network Setup Skill
@@ -14,8 +14,8 @@ This skill guides you through setting up and running DOLI nodes and producers on
 |-----------|--------|---------|---------|
 | **Network ID** | 99 | 2 | 1 |
 | **Address Prefix** | `ddoli` | `tdoli` | `doli` |
-| **Slot Duration** | 1 second | 10 seconds | 10 seconds |
-| **Epoch Length** | 360 blocks | 360 blocks | 360 blocks |
+| **Slot Duration** | 10 seconds | 10 seconds | 10 seconds |
+| **Epoch Length** | 60 slots | 360 slots | 360 slots |
 | **P2P Port** | 50303 | 40303 | 30303 |
 | **RPC Port** | 28545 | 18545 | 8545 |
 | **Bootstrap** | None (local) | `testnet.doli.network` | `doli.network` |
@@ -25,7 +25,12 @@ This skill guides you through setting up and running DOLI nodes and producers on
 
 | Action | Command |
 |--------|---------|
-| Run node | `doli-node --network <NETWORK> run` |
+| **Local devnet (recommended)** | `doli-node devnet init --nodes 5` |
+| Start local devnet | `doli-node devnet start` |
+| Check devnet status | `doli-node devnet status` |
+| Stop local devnet | `doli-node devnet stop` |
+| Clean devnet data | `doli-node devnet clean [--keep-keys]` |
+| Run single node | `doli-node --network <NETWORK> run` |
 | Run as producer | `doli-node --network <NETWORK> run --producer --producer-key <wallet>` |
 | Create wallet | `doli -w <wallet-path> new` |
 | Check balance | `doli -w <wallet> balance` |
@@ -136,25 +141,53 @@ export DOLI_RPC=http://127.0.0.1:<RPC_PORT>  # 28545 (devnet), 18545 (testnet), 
 ./target/release/doli producer list
 ```
 
-## Scenario 2: Local Multi-Node Testnet
+## Scenario 2: Local Multi-Node Devnet
 
 For development and testing with multiple nodes on a single machine.
 
-### Option A: Quick 2-Node Launch
+### Option A: Built-in Devnet Commands (Recommended)
+
+The `doli-node devnet` subcommands provide the easiest way to manage a local multi-node network:
 
 ```bash
-# Use the built-in script
-./scripts/launch_testnet.sh
+# Initialize a 10-node devnet (generates keys, chainspec, directories)
+doli-node devnet init --nodes 10
+
+# Start all nodes (handles bootstrap, port allocation, --force-start)
+doli-node devnet start
+
+# Check status (shows running/stopped, height, slot, peers)
+doli-node devnet status
+
+# Stop all nodes gracefully
+doli-node devnet stop
+
+# Clean up devnet data (--keep-keys preserves wallet files)
+doli-node devnet clean
+doli-node devnet clean --keep-keys
 ```
 
-This script:
-- Creates 2 producer nodes with auto-generated keys
-- Sets up proper P2P bootstrapping
-- Provides status check and log viewing commands
+**Directory structure created at `~/.doli/devnet/`:**
+```
+~/.doli/devnet/
+├── devnet.toml          # Config (node_count, base ports)
+├── chainspec.json       # Genesis with all producers
+├── keys/producer_*.json # Wallet files (compatible with doli-cli)
+├── data/node*/          # Node data directories
+├── logs/node*.log       # Log files
+└── pids/node*.pid       # PID tracking
+```
 
-### Option B: Custom N-Node Testnet
+**Port allocation (automatic):**
+| Node | P2P Port | RPC Port | Metrics Port |
+|------|----------|----------|--------------|
+| 0 | 50303 | 28545 | 9090 |
+| 1 | 50304 | 28546 | 9091 |
+| N | 50303+N | 28545+N | 9090+N |
 
-For more control (e.g., 5 nodes with specific configuration):
+### Option B: Manual Multi-Node Setup
+
+For more control (e.g., custom ports, specific configuration):
 
 ```bash
 # Set up directories
@@ -261,9 +294,12 @@ This script:
 
 ### Available Test Scripts
 
+> **Note:** For general local development, prefer `doli-node devnet` commands over these scripts.
+> These scripts are for specific test scenarios.
+
 | Script | Description |
 |--------|-------------|
-| `scripts/launch_testnet.sh` | Quick 2-node devnet |
+| `scripts/launch_testnet.sh` | Quick 2-node devnet (legacy) |
 | `scripts/test_3node_proportional_rewards.sh` | 3-node reward testing |
 | `scripts/test_5node_epoch_rewards_consistency.sh` | 5-node epoch rewards |
 | `scripts/test_devnet_3node_rewards.sh` | 3-node devnet rewards |
