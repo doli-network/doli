@@ -301,9 +301,9 @@ The bond decays 30% per era while reward decays 50%. This makes joining as a pro
 Producers can increase their stake up to 100 times the base bond unit.
 
 ```
-BOND_UNIT = 1,000 DOLI
-MIN_STAKE = 1 × BOND_UNIT (1,000 DOLI)
-MAX_STAKE = 100 × BOND_UNIT (100,000 DOLI)
+BOND_UNIT = 100 DOLI
+MIN_STAKE = 1 × BOND_UNIT (100 DOLI)
+MAX_STAKE = 1000 × BOND_UNIT (100,000 DOLI)
 ```
 
 Selection uses deterministic round-robin, not probabilistic lottery. Each bond unit grants one ticket in the rotation:
@@ -311,25 +311,25 @@ Selection uses deterministic round-robin, not probabilistic lottery. Each bond u
 **Example (3 producers, 10 total bond units):**
 
 ```
-Alice: 1 bond unit  (1,000 DOLI)  → 1 block every 10 slots
-Bob:   5 bond units (5,000 DOLI)  → 5 blocks every 10 slots
-Carol: 4 bond units (4,000 DOLI)  → 4 blocks every 10 slots
+Alice: 1 bond unit  (100 DOLI)   → 1 block every 10 slots
+Bob:   5 bond units (500 DOLI)   → 5 blocks every 10 slots
+Carol: 4 bond units (400 DOLI)   → 4 blocks every 10 slots
 ```
 
 At 1 DOLI reward per block:
 
-- Alice earns 1 DOLI per 10 slots (0.1% ROI per cycle)
-- Bob earns 5 DOLI per 10 slots (0.1% ROI per cycle)
-- Carol earns 4 DOLI per 10 slots (0.1% ROI per cycle)
+- Alice earns 1 DOLI per 10 slots (1% ROI per cycle)
+- Bob earns 5 DOLI per 10 slots (1% ROI per cycle)
+- Carol earns 4 DOLI per 10 slots (1% ROI per cycle)
 
 **All producers earn identical ROI percentage regardless of stake size.**
 
-| Parameter             | Value                  |
-|-----------------------|------------------------|
-| Bond unit             | 1,000 DOLI             |
-| Min stake             | 1,000 DOLI (1 bond)    |
-| Max stake             | 100,000 DOLI (100 bonds)|
-| Block reward (Era 1)  | 1 DOLI                 |
+| Parameter             | Value                   |
+|-----------------------|-------------------------|
+| Bond unit             | 100 DOLI                |
+| Min stake             | 100 DOLI (1 bond)       |
+| Max stake             | 100,000 DOLI (1000 bonds)|
+| Block reward (Era 1)  | 1 DOLI                  |
 
 ### 6.4. Bond Lifecycle
 
@@ -380,11 +380,13 @@ To avoid empty slots when the primary producer is offline:
 
 | Time in slot | Eligible producer |
 |--------------|-------------------|
-| 0s - 3s      | rank 0 only       |
-| 3s - 6s      | rank 0 or 1       |
-| 6s - 10s     | rank 0, 1, or 2   |
+| 0s - 1s      | rank 0 only       |
+| 1s - 2s      | rank 0 or 1       |
+| 2s - 3s      | rank 0, 1, or 2   |
+| ...          | ...               |
+| 9s - 10s     | rank 0 through 9  |
 
-A block from rank *N* is valid only if `timestamp >= slot_start + (N × 3)`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
+A block from rank *N* is valid only if `timestamp >= slot_start + N`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
 
 ### 7.2. Deterministic Rewards
 
@@ -556,13 +558,13 @@ new_honest_blocks = d × T / T = d
 The only attack vector is controlling >50% of registered producers, which requires:
 
 1. **Time:** `T_registration` per identity (scales with demand, cannot be parallelized)
-2. **Capital:** Bond per identity (1,000+ DOLI each)
+2. **Capital:** Bond per identity (100+ DOLI each)
 3. **Risk:** 100% bond loss if detected double-producing
 
-For a network with 1,000 honest producers and 1,000,000 DOLI bonded, an attacker would need:
+For a network with 1,000 honest producers and 100,000 DOLI bonded, an attacker would need:
 
 - 1,001 identities minimum
-- 1,001,000 DOLI in bonds
+- 100,100 DOLI in bonds
 - 1,001 × `T_registration` in sequential time
 
 **The sequential time requirement cannot be bypassed.** An attacker with 1,000 machines still needs 1,001 × `T_registration` wall-clock time to register 1,001 identities.
