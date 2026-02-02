@@ -143,11 +143,20 @@ impl Node {
         };
         let genesis_hash = chain_state.genesis_hash;
 
-        // For devnet, handle dynamic genesis_time
-        // Use stored genesis_timestamp if available, otherwise set to current time
+        // For devnet, handle genesis_time from multiple sources (in priority order):
+        // 1. Chainspec override (config.genesis_time_override) - ensures all nodes use same time
+        // 2. Stored state (chain_state.genesis_timestamp) - for rejoining existing network
+        // 3. Dynamic (current time) - for new isolated networks
         if config.network == Network::Devnet && params.genesis_time == 0 {
             use std::time::{SystemTime, UNIX_EPOCH};
-            if chain_state.genesis_timestamp != 0 {
+            if let Some(override_time) = config.genesis_time_override {
+                // Use chainspec genesis time for coordinated startup
+                params.genesis_time = override_time;
+                info!(
+                    "Devnet genesis time from chainspec: {}",
+                    params.genesis_time
+                );
+            } else if chain_state.genesis_timestamp != 0 {
                 // Use stored genesis timestamp from previous run
                 params.genesis_time = chain_state.genesis_timestamp;
                 info!(
@@ -155,7 +164,7 @@ impl Node {
                     params.genesis_time
                 );
             } else {
-                // New devnet - set genesis time to current timestamp (rounded to slot)
+                // New devnet without chainspec - set genesis time to current timestamp (rounded to slot)
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards")
@@ -2110,10 +2119,19 @@ impl Node {
         //
         // This applies to ALL networks (mainnet, testnet, devnet) for defense-in-depth.
         // =========================================================================
-        {
+        // Height-slot gap check to prevent orphan block production.
+        // EXCEPTION: Height 0 (genesis) is exempt because:
+        // 1. No prior chain exists to sync with
+        // 2. Startup time varies, so slots may advance before discovery completes
+        // 3. The bootstrap mode logic handles genesis coordination properly
+        //
+        // For height > 0, we check the gap to prevent:
+        // - Producing blocks that extend an old chain tip (creating orphans)
+        // - Producing after a resync when the canonical chain has advanced
+        if height > 0 {
             let slot_height_gap = current_slot.saturating_sub(height as u32);
             let max_gap = if height <= 1 {
-                3 // Very tight for genesis - prevents orphan production at height 0-1
+                3 // Very tight for height 1 - prevents orphan production right after genesis
             } else if height < 10 {
                 5 // Moderate gap during early chain growth
             } else {
@@ -2228,6 +2246,7 @@ impl Node {
                     if has_bootstrap_nodes {
                         let sync_state = self.sync_manager.read().await;
                         let peer_count = sync_state.peer_count();
+                        let best_peer_height = sync_state.best_peer_height();
                         drop(sync_state);
 
                         if peer_count == 0 {
@@ -2235,6 +2254,67 @@ impl Node {
                             // Wait for connection before producing to avoid chain splits
                             debug!(
                                 "Bootstrap sync: waiting for peer status (bootstrap nodes configured but no peers yet)"
+                            );
+                            return Ok(());
+                        }
+
+                        // JOINING NODE BOOTSTRAP GUARD: Ensure chain tip is fresh before producing.
+                        //
+                        // Problem 1: Joining nodes at height 0 may produce before receiving blocks
+                        // from the network, creating an isolated fork with different genesis.
+                        //
+                        // Problem 2: Even at height > 0, joining nodes may produce before receiving
+                        // the latest blocks due to network propagation delay. For example:
+                        // - Node A produces block at slot 3, height 2
+                        // - Node B (at height 1) doesn't receive it before slot 4
+                        // - Node B produces at slot 4, height 2 (different parent!) → fork
+                        //
+                        // Solution: During early bootstrap (height < 10), joining nodes must ensure
+                        // their chain tip is recent (within 1 slot of current) before producing.
+                        // This gives time for in-flight blocks to arrive.
+                        //
+                        // The bootstrap_sync_grace_secs timeout allows production to proceed if:
+                        // - The network is genuinely starting fresh (no blocks to receive)
+                        // - Or this node happens to be the designated producer for early slots
+
+                        let bootstrap_sync_grace_secs: u64 =
+                            if self.config.network == Network::Devnet {
+                                10 // ~10 slots at 1s/slot
+                            } else {
+                                90 // ~9 slots at 10s/slot
+                            };
+
+                        let within_bootstrap_grace =
+                            if let Some(first_peer_time) = self.first_peer_connected {
+                                first_peer_time.elapsed().as_secs() < bootstrap_sync_grace_secs
+                            } else {
+                                true // No peers yet - handled above
+                            };
+
+                        // Check 1: At height 0, wait for peers to establish chain
+                        if height == 0 && best_peer_height == 0 && within_bootstrap_grace {
+                            debug!(
+                                "Joining node at genesis: waiting for peers to establish chain (peer_count={}, best_peer_height={}, grace_remaining={}s)",
+                                peer_count,
+                                best_peer_height,
+                                bootstrap_sync_grace_secs - self.first_peer_connected.map(|t| t.elapsed().as_secs()).unwrap_or(0)
+                            );
+                            return Ok(());
+                        }
+
+                        // Check 2: During early bootstrap, ensure chain tip is fresh
+                        // If current_slot - chain_tip_slot > 1, we might be missing in-flight blocks
+                        let chain_tip_slot = {
+                            let state = self.chain_state.read().await;
+                            state.best_slot
+                        };
+                        let slot_gap = current_slot.saturating_sub(chain_tip_slot);
+
+                        // Only apply during early bootstrap (height < 10) and within grace period
+                        if height > 0 && height < 10 && within_bootstrap_grace && slot_gap > 1 {
+                            debug!(
+                                "Joining node early bootstrap: chain tip not fresh (height={}, chain_tip_slot={}, current_slot={}, gap={}), waiting for in-flight blocks",
+                                height, chain_tip_slot, current_slot, slot_gap
                             );
                             return Ok(());
                         }

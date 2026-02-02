@@ -599,8 +599,18 @@ async fn run_node(
             }
         };
 
-        // Get genesis producers from chainspec or fall back to built-in (legacy)
-        if let Some(spec) = chainspec {
+        // Get genesis producers and genesis time from chainspec or fall back to built-in (legacy)
+        if let Some(ref spec) = chainspec {
+            // Set genesis time override if specified in chainspec (non-zero)
+            // This ensures all nodes use the same genesis time for coordinated startup
+            if spec.genesis.timestamp != 0 {
+                config.genesis_time_override = Some(spec.genesis.timestamp);
+                info!(
+                    "Genesis time from chainspec: {} (all nodes will use this time)",
+                    spec.genesis.timestamp
+                );
+            }
+
             let genesis_producers = spec.get_genesis_producers();
             if !genesis_producers.is_empty() {
                 info!(

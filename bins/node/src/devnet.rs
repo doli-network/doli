@@ -191,12 +191,31 @@ pub fn init(node_count: u32) -> Result<()> {
     // Build chainspec using NetworkParams (which reads from .env)
     // This allows customizing devnet parameters via ~/.doli/devnet/.env
     let params = Network::Devnet.params();
+
+    // CRITICAL: Set a fixed genesis time for ALL nodes to ensure they compute
+    // the same current_slot at the same wall-clock time. Without this, each node
+    // would use its own startup time as genesis, breaking round-robin consensus.
+    //
+    // Set genesis time a few seconds in the future to give nodes time to start
+    // and discover each other before production begins.
+    let genesis_delay_secs = 15; // 15 seconds from now
+    let genesis_time = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        // Round to slot boundary and add delay
+        (now / params.slot_duration + genesis_delay_secs / params.slot_duration + 1)
+            * params.slot_duration
+    };
+
     let chainspec = ChainSpec {
         name: "DOLI Local Devnet".into(),
         id: "local-devnet".into(),
         network: Network::Devnet,
         genesis: GenesisSpec {
-            timestamp: 0, // Dynamic - uses current time
+            timestamp: genesis_time, // Fixed time for all nodes
             message: "DOLI Local Devnet - Development and Testing".into(),
             initial_reward: params.initial_reward,
         },
