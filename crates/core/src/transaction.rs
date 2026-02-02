@@ -36,6 +36,17 @@ pub enum TxType {
     /// - reward = Σ(block_reward × producer_weight / total_present_weight)
     /// - No manual claim needed - rewards go directly to producer wallets
     EpochReward = 10,
+    /// Remove a maintainer from the auto-update system
+    ///
+    /// Requires 3/5 signatures from OTHER maintainers (target cannot sign own removal).
+    /// Cannot reduce maintainer count below MIN_MAINTAINERS (3).
+    RemoveMaintainer = 11,
+    /// Add a new maintainer to the auto-update system
+    ///
+    /// Requires 3/5 signatures from current maintainers.
+    /// Target must be a registered producer.
+    /// Cannot exceed MAX_MAINTAINERS (5).
+    AddMaintainer = 12,
 }
 
 impl TxType {
@@ -52,6 +63,8 @@ impl TxType {
             8 => Some(Self::RequestWithdrawal),
             9 => Some(Self::ClaimWithdrawal),
             10 => Some(Self::EpochReward),
+            11 => Some(Self::RemoveMaintainer),
+            12 => Some(Self::AddMaintainer),
             _ => None,
         }
     }
@@ -905,6 +918,84 @@ impl Transaction {
     pub fn size(&self) -> usize {
         self.serialize().len()
     }
+
+    // ==================== Maintainer Transactions ====================
+
+    /// Create a remove maintainer transaction
+    ///
+    /// This transaction removes a maintainer from the auto-update system.
+    /// Requires 3/5 signatures from OTHER maintainers (target cannot sign).
+    ///
+    /// # Arguments
+    /// * `target` - Public key of the maintainer to remove
+    /// * `signatures` - Signatures from at least 3 other maintainers
+    /// * `reason` - Optional reason for removal (for transparency)
+    pub fn new_remove_maintainer(
+        target: PublicKey,
+        signatures: Vec<crate::maintainer::MaintainerSignature>,
+        reason: Option<String>,
+    ) -> Self {
+        let data = if let Some(r) = reason {
+            crate::maintainer::MaintainerChangeData::with_reason(target, signatures, r)
+        } else {
+            crate::maintainer::MaintainerChangeData::new(target, signatures)
+        };
+
+        Self {
+            version: 1,
+            tx_type: TxType::RemoveMaintainer,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
+
+    /// Create an add maintainer transaction
+    ///
+    /// This transaction adds a new maintainer to the auto-update system.
+    /// Requires 3/5 signatures from current maintainers.
+    /// Target must be a registered producer.
+    ///
+    /// # Arguments
+    /// * `target` - Public key of the producer to add as maintainer
+    /// * `signatures` - Signatures from at least 3 current maintainers
+    pub fn new_add_maintainer(
+        target: PublicKey,
+        signatures: Vec<crate::maintainer::MaintainerSignature>,
+    ) -> Self {
+        let data = crate::maintainer::MaintainerChangeData::new(target, signatures);
+
+        Self {
+            version: 1,
+            tx_type: TxType::AddMaintainer,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
+
+    /// Check if this is a remove maintainer transaction
+    pub fn is_remove_maintainer(&self) -> bool {
+        self.tx_type == TxType::RemoveMaintainer
+    }
+
+    /// Check if this is an add maintainer transaction
+    pub fn is_add_maintainer(&self) -> bool {
+        self.tx_type == TxType::AddMaintainer
+    }
+
+    /// Check if this is any maintainer change transaction
+    pub fn is_maintainer_change(&self) -> bool {
+        self.is_remove_maintainer() || self.is_add_maintainer()
+    }
+
+    /// Parse maintainer change data from extra_data
+    pub fn maintainer_change_data(&self) -> Option<crate::maintainer::MaintainerChangeData> {
+        if !self.is_maintainer_change() {
+            return None;
+        }
+        crate::maintainer::MaintainerChangeData::from_bytes(&self.extra_data)
+    }
 }
 
 #[cfg(test)]
@@ -966,7 +1057,9 @@ mod tests {
         assert_eq!(TxType::from_u32(8), Some(TxType::RequestWithdrawal));
         assert_eq!(TxType::from_u32(9), Some(TxType::ClaimWithdrawal));
         assert_eq!(TxType::from_u32(10), Some(TxType::EpochReward));
-        assert_eq!(TxType::from_u32(11), None);
+        assert_eq!(TxType::from_u32(11), Some(TxType::RemoveMaintainer));
+        assert_eq!(TxType::from_u32(12), Some(TxType::AddMaintainer));
+        assert_eq!(TxType::from_u32(13), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
@@ -1319,6 +1412,83 @@ mod tests {
     fn test_epoch_reward_data_none_for_non_epoch_reward() {
         let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
         assert!(tx.epoch_reward_data().is_none());
+    }
+
+    // ==================== Maintainer Transaction Tests ====================
+
+    #[test]
+    fn test_remove_maintainer_transaction() {
+        let target = crypto::KeyPair::generate();
+
+        let tx = Transaction::new_remove_maintainer(
+            target.public_key().clone(),
+            vec![], // Empty sigs for test - real tx would have 3+ sigs
+            Some("Inactive for 6 months".to_string()),
+        );
+
+        assert!(tx.is_remove_maintainer());
+        assert!(tx.is_maintainer_change());
+        assert!(!tx.is_add_maintainer());
+        assert_eq!(tx.tx_type, TxType::RemoveMaintainer);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+
+        // Verify data can be parsed
+        let data = tx.maintainer_change_data().unwrap();
+        assert_eq!(data.target, *target.public_key());
+        assert_eq!(data.reason, Some("Inactive for 6 months".to_string()));
+    }
+
+    #[test]
+    fn test_add_maintainer_transaction() {
+        let target = crypto::KeyPair::generate();
+
+        let tx = Transaction::new_add_maintainer(
+            target.public_key().clone(),
+            vec![], // Empty sigs for test
+        );
+
+        assert!(tx.is_add_maintainer());
+        assert!(tx.is_maintainer_change());
+        assert!(!tx.is_remove_maintainer());
+        assert_eq!(tx.tx_type, TxType::AddMaintainer);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+
+        // Verify data can be parsed
+        let data = tx.maintainer_change_data().unwrap();
+        assert_eq!(data.target, *target.public_key());
+        assert!(data.reason.is_none());
+    }
+
+    #[test]
+    fn test_maintainer_tx_serialization_roundtrip() {
+        let target = crypto::KeyPair::generate();
+
+        let tx = Transaction::new_remove_maintainer(
+            target.public_key().clone(),
+            vec![],
+            Some("Test removal".to_string()),
+        );
+
+        let bytes = tx.serialize();
+        let recovered = Transaction::deserialize(&bytes).unwrap();
+
+        assert_eq!(tx.tx_type, recovered.tx_type);
+        assert_eq!(tx, recovered);
+
+        let recovered_data = recovered.maintainer_change_data().unwrap();
+        assert_eq!(recovered_data.target, *target.public_key());
+    }
+
+    #[test]
+    fn test_maintainer_change_data_none_for_other_tx_types() {
+        let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+        assert!(tx.maintainer_change_data().is_none());
+
+        let keypair = crypto::KeyPair::generate();
+        let tx = Transaction::new_exit(keypair.public_key().clone());
+        assert!(tx.maintainer_change_data().is_none());
     }
 
     // Property-based tests
