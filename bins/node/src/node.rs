@@ -446,6 +446,7 @@ impl Node {
         )
         .with_network(self.config.network.name().to_string())
         .with_blocks_per_reward_epoch(self.config.network.blocks_per_reward_epoch())
+        .with_coinbase_maturity(self.config.network.coinbase_maturity())
         .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
 
@@ -1590,6 +1591,60 @@ impl Node {
             }
         }
 
+        // GENESIS END: Auto-register producers when genesis phase completes
+        // This transition happens when we move from genesis_blocks to genesis_blocks + 1
+        let genesis_blocks = self.config.network.genesis_blocks();
+        if genesis_blocks > 0 && height == genesis_blocks + 1 {
+            info!(
+                "=== GENESIS PHASE COMPLETE at height {} ===",
+                height
+            );
+
+            // Get all known producers from the bootstrap phase
+            let known = self.known_producers.read().await;
+            let known_count = known.len();
+
+            if known_count > 0 {
+                info!(
+                    "Auto-registering {} genesis producers with 1 bond unit each...",
+                    known_count
+                );
+
+                // Register each known producer with 1 bond unit
+                let mut producers = self.producer_set.write().await;
+                for pubkey in known.iter() {
+                    match producers.register_genesis_producer(pubkey.clone(), 1) {
+                        Ok(()) => {
+                            info!(
+                                "  Registered genesis producer: {}",
+                                hex::encode(&pubkey.as_bytes()[..8])
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "  Failed to register producer {}: {} (may already be registered)",
+                                hex::encode(&pubkey.as_bytes()[..8]),
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Save producer set immediately
+                let producers_path = self.config.data_dir.join("producers.bin");
+                if let Err(e) = producers.save(&producers_path) {
+                    warn!("Failed to save producer set after genesis: {}", e);
+                }
+
+                info!(
+                    "Genesis complete: {} producers now active in scheduler",
+                    producers.active_producers().len()
+                );
+            } else {
+                warn!("Genesis ended with no known producers - network may not produce blocks!");
+            }
+        }
+
         // Remove transactions from mempool
         {
             let mut mempool = self.mempool.write().await;
@@ -1832,9 +1887,14 @@ impl Node {
             .collect();
         drop(producers);
 
-        // If no active producers and this is testnet/devnet, allow bootstrap production
+        // Check if we're in genesis phase (bond-free production)
+        let in_genesis = self.config.network.is_in_genesis(height);
+
+        // Use bootstrap mode if:
+        // 1. Still in genesis phase (no bond required), OR
+        // 2. No active producers registered (testnet/devnet only)
         let our_pubkey = producer_key.public_key().clone();
-        let (eligible, our_bootstrap_rank) = if active_with_weights.is_empty() {
+        let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
             match self.config.network {
                 Network::Testnet | Network::Devnet => {
                     // Bootstrap mode: deterministic rank-based leader election
@@ -2265,18 +2325,28 @@ impl Node {
         };
 
         // Collect all transactions for the block:
-        // 1. Epoch reward coinbase (if this is an epoch boundary)
-        // 2. Transactions from mempool
+        // 1. Block reward coinbase (100% to producer, like Bitcoin)
+        // 2. Epoch reward coinbase (if this is an epoch boundary)
+        // 3. Transactions from mempool
         let mut transactions = Vec::new();
+
+        // Create block reward coinbase - producer gets 100% of block reward
+        let block_reward = self.params.block_reward(height);
+        // Use domain-separated hash to match wallet address format
+        let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
+        let block_coinbase = Transaction::new_coinbase(block_reward, producer_pubkey_hash, height);
+        transactions.push(block_coinbase);
+        info!(
+            "Block coinbase: {} units to producer {}",
+            block_reward,
+            hex::encode(&producer_pubkey_hash.as_bytes()[..8])
+        );
+
+        // Add epoch reward coinbase if at epoch boundary
         if let Some(coinbase) = epoch_coinbase {
             transactions.push(coinbase);
         }
         transactions.extend(mempool_txs);
-
-        // Build presence commitment from collected heartbeats
-        // Deterministic scheduler model: 100% of block reward goes to producer via coinbase
-        // No presence commitment needed - the producer is rewarded by including their
-        // coinbase transaction in the block.
 
         let block = Block {
             header: final_header,

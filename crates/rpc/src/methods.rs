@@ -43,6 +43,8 @@ pub struct RpcContext {
     pub network: String,
     /// Blocks per reward epoch (network-specific: mainnet/testnet=360, devnet=60)
     pub blocks_per_reward_epoch: u64,
+    /// Coinbase maturity (network-specific: mainnet/testnet=100, devnet=10)
+    pub coinbase_maturity: u64,
     /// Local peer ID
     pub peer_id: String,
     /// Peer count function
@@ -65,6 +67,7 @@ impl RpcContext {
         params: ConsensusParams,
     ) -> Self {
         use doli_core::consensus::BLOCKS_PER_REWARD_EPOCH;
+        use storage::utxo::DEFAULT_REWARD_MATURITY;
         Self {
             chain_state,
             block_store,
@@ -74,6 +77,7 @@ impl RpcContext {
             params,
             network: "mainnet".to_string(),
             blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
+            coinbase_maturity: DEFAULT_REWARD_MATURITY,
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
@@ -103,6 +107,12 @@ impl RpcContext {
     /// Set blocks per reward epoch (network-specific)
     pub fn with_blocks_per_reward_epoch(mut self, blocks: u64) -> Self {
         self.blocks_per_reward_epoch = blocks;
+        self
+    }
+
+    /// Set coinbase maturity (network-specific)
+    pub fn with_coinbase_maturity(mut self, maturity: u64) -> Self {
+        self.coinbase_maturity = maturity;
         self
     }
 
@@ -281,8 +291,10 @@ impl RpcContext {
         let chain_state = self.chain_state.read().await;
         let mempool = self.mempool.read().await;
 
-        let confirmed = utxo_set.get_balance(&pubkey_hash, chain_state.best_height);
-        let immature = utxo_set.get_immature_balance(&pubkey_hash, chain_state.best_height);
+        // Use network-specific coinbase maturity
+        let maturity = self.coinbase_maturity;
+        let confirmed = utxo_set.get_balance_with_maturity(&pubkey_hash, chain_state.best_height, maturity);
+        let immature = utxo_set.get_immature_balance_with_maturity(&pubkey_hash, chain_state.best_height, maturity);
 
         // Calculate unconfirmed balance change from mempool
         // This gives the net change (incoming - outgoing) from pending transactions
@@ -291,7 +303,7 @@ impl RpcContext {
         // For the response, we show:
         // - confirmed: current spendable balance
         // - unconfirmed: incoming amounts in mempool (always positive, represents pending credits)
-        // - immature: coinbase/epoch rewards pending maturity (100 blocks)
+        // - immature: coinbase/epoch rewards pending maturity
         // - total: confirmed + unconfirmed + immature
         let (incoming, _outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
         let unconfirmed = incoming;
@@ -330,10 +342,11 @@ impl RpcContext {
         let current_height = chain_state.best_height;
 
         let utxos = utxo_set.get_by_pubkey_hash(&pubkey_hash);
+        let maturity = self.coinbase_maturity;
 
         let responses: Vec<UtxoResponse> = utxos
             .into_iter()
-            .filter(|(_, entry)| !params.spendable_only || entry.is_spendable_at(current_height))
+            .filter(|(_, entry)| !params.spendable_only || entry.is_spendable_at_with_maturity(current_height, maturity))
             .map(|(outpoint, entry)| {
                 let output_type = match entry.output.output_type {
                     doli_core::OutputType::Normal => "normal",
@@ -347,7 +360,7 @@ impl RpcContext {
                     output_type: output_type.to_string(),
                     lock_until: entry.output.lock_until,
                     height: entry.height,
-                    spendable: entry.is_spendable_at(current_height),
+                    spendable: entry.is_spendable_at_with_maturity(current_height, maturity),
                 }
             })
             .collect();

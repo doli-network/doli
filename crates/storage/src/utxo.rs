@@ -24,21 +24,26 @@ pub struct UtxoEntry {
     pub is_epoch_reward: bool,
 }
 
-/// Reward maturity constant (same as core::consensus::REWARD_MATURITY)
-const REWARD_MATURITY: BlockHeight = 100;
+/// Default reward maturity constant for mainnet/testnet
+pub const DEFAULT_REWARD_MATURITY: BlockHeight = 100;
 
 impl UtxoEntry {
-    /// Check if the UTXO is spendable at the given height
+    /// Check if the UTXO is spendable at the given height with default maturity (100 blocks)
     pub fn is_spendable_at(&self, height: BlockHeight) -> bool {
+        self.is_spendable_at_with_maturity(height, DEFAULT_REWARD_MATURITY)
+    }
+
+    /// Check if the UTXO is spendable at the given height with custom maturity
+    pub fn is_spendable_at_with_maturity(&self, height: BlockHeight, maturity: BlockHeight) -> bool {
         // Check time lock
         if !self.output.is_spendable_at(height) {
             return false;
         }
 
-        // Coinbase AND EpochReward require REWARD_MATURITY confirmations
+        // Coinbase AND EpochReward require maturity confirmations
         if self.is_coinbase || self.is_epoch_reward {
             let confirmations = height.saturating_sub(self.height);
-            return confirmations >= REWARD_MATURITY;
+            return confirmations >= maturity;
         }
 
         true
@@ -201,23 +206,33 @@ impl UtxoSet {
             .collect()
     }
 
-    /// Get spendable balance for a pubkey hash at a given height
+    /// Get spendable balance for a pubkey hash at a given height with default maturity
     pub fn get_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
+        self.get_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
+    }
+
+    /// Get spendable balance for a pubkey hash at a given height with custom maturity
+    pub fn get_balance_with_maturity(&self, pubkey_hash: &Hash, height: BlockHeight, maturity: BlockHeight) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
-            .filter(|(_, entry)| entry.is_spendable_at(height))
+            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
             .map(|(_, entry)| entry.output.amount)
             .sum()
     }
 
-    /// Get immature balance for a pubkey hash at a given height
+    /// Get immature balance for a pubkey hash at a given height with default maturity
     /// Returns the sum of coinbase/epoch reward outputs that haven't matured yet
     pub fn get_immature_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
+        self.get_immature_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
+    }
+
+    /// Get immature balance for a pubkey hash with custom maturity
+    pub fn get_immature_balance_with_maturity(&self, pubkey_hash: &Hash, height: BlockHeight, maturity: BlockHeight) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| {
                 // Only coinbase and epoch rewards have maturity requirements
-                (entry.is_coinbase || entry.is_epoch_reward) && !entry.is_spendable_at(height)
+                (entry.is_coinbase || entry.is_epoch_reward) && !entry.is_spendable_at_with_maturity(height, maturity)
             })
             .map(|(_, entry)| entry.output.amount)
             .sum()
