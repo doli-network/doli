@@ -268,6 +268,16 @@ impl ProducerGSet {
         self.producers.is_empty()
     }
 
+    /// Clear all producers and sequences from the set.
+    ///
+    /// This is used during a forced resync to genesis, where all chain-dependent
+    /// state must be cleared. The network_id and storage_path are preserved.
+    pub fn clear(&mut self) {
+        self.producers.clear();
+        self.sequences.clear();
+        self.last_modified = Instant::now();
+    }
+
     /// Check if a producer is in the set.
     ///
     /// # Arguments
