@@ -139,6 +139,43 @@ setup() {
     $CLI_BIN -w "$TEST_DIR/keys/non_producer.json" new -n "non_producer" 2>/dev/null
     log_info "  Non-producer key generated"
 
+    # Generate chainspec with genesis producers for fast block production
+    log_info "Generating chainspec with genesis producers..."
+    GENESIS_PRODUCERS_JSON=""
+    for i in $(seq 1 $NUM_NODES); do
+        local pubkey=$(jq -r '.addresses[0].public_key' "$TEST_DIR/keys/producer${i}.json")
+        if [ $i -gt 1 ]; then
+            GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON,"
+        fi
+        GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON
+    {
+      \"name\": \"producer_$i\",
+      \"public_key\": \"$pubkey\",
+      \"bond_count\": 1
+    }"
+    done
+
+    cat > "$TEST_DIR/chainspec.json" << EOF
+{
+  "name": "DOLI Devnet",
+  "id": "devnet",
+  "network": "Devnet",
+  "genesis": {
+    "timestamp": 0,
+    "message": "DOLI Governance Test",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 1,
+    "slots_per_epoch": 60,
+    "bond_amount": 100000000
+  },
+  "genesis_producers": [$GENESIS_PRODUCERS_JSON
+  ]
+}
+EOF
+    log_info "  Chainspec created: $TEST_DIR/chainspec.json"
+
     log_success "Setup complete"
 }
 
@@ -170,6 +207,7 @@ launch_nodes() {
                 --p2p-port $p2p_port \
                 --rpc-port $rpc_port \
                 --metrics-port $metrics_port \
+                --chainspec "$TEST_DIR/chainspec.json" \
                 --no-dht \
                 --no-auto-update \
                 > "$log_file" 2>&1 &
@@ -184,8 +222,9 @@ launch_nodes() {
                 --p2p-port $p2p_port \
                 --rpc-port $rpc_port \
                 --metrics-port $metrics_port \
-                --no-dht \
+                --chainspec "$TEST_DIR/chainspec.json" \
                 --bootstrap "/ip4/127.0.0.1/tcp/$BASE_P2P_PORT" \
+                --no-dht \
                 --no-auto-update \
                 > "$log_file" 2>&1 &
         fi

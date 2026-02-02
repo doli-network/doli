@@ -70,11 +70,50 @@ mkdir -p "$TEST_DIR"/{keys,logs,data}
 # Generate producer keys
 section "SETUP: Generating Producer Keys"
 
+NODE_PUBKEYS=()
 for i in {1..5}; do
     $CLI_BIN -w "$TEST_DIR/keys/producer${i}.json" new -n "producer${i}" > /dev/null 2>&1
-    PUBKEY=$(cat "$TEST_DIR/keys/producer${i}.json" | grep -o '"public_key":"[^"]*"' | cut -d'"' -f4)
+    PUBKEY=$(cat "$TEST_DIR/keys/producer${i}.json" | grep -o '"public_key": *"[^"]*' | sed 's/"public_key": *"//')
+    NODE_PUBKEYS[$i]="$PUBKEY"
     info "Producer $i: ${PUBKEY:0:16}..."
 done
+
+# Generate chainspec with first 3 genesis producers for fast block production
+info "Generating chainspec with genesis producers..."
+GENESIS_PRODUCERS_JSON=""
+for i in 1 2 3; do
+    pubkey="${NODE_PUBKEYS[$i]}"
+    if [ $i -gt 1 ]; then
+        GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON,"
+    fi
+    GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON
+    {
+      \"name\": \"producer_$i\",
+      \"public_key\": \"$pubkey\",
+      \"bond_count\": 1
+    }"
+done
+
+cat > "$TEST_DIR/chainspec.json" << EOF
+{
+  "name": "DOLI Devnet",
+  "id": "devnet",
+  "network": "Devnet",
+  "genesis": {
+    "timestamp": 0,
+    "message": "DOLI Critical Features Test",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 1,
+    "slots_per_epoch": 60,
+    "bond_amount": 100000000
+  },
+  "genesis_producers": [$GENESIS_PRODUCERS_JSON
+  ]
+}
+EOF
+info "Chainspec created: $TEST_DIR/chainspec.json"
 
 # ============================================================================
 # TEST 1: Basic Network Setup & Block Production
@@ -89,7 +128,10 @@ $NODE_BIN --data-dir "$TEST_DIR/data/node1" \
     run --network devnet \
     --p2p-port 50301 \
     --rpc-port 28501 \
+    --metrics-port 9301 \
+    --chainspec "$TEST_DIR/chainspec.json" \
     --no-dht \
+    --no-auto-update \
     --producer --producer-key "$PRODUCER1_KEY" \
     > "$TEST_DIR/logs/node1.log" 2>&1 &
 NODE1_PID=$!
@@ -103,7 +145,10 @@ $NODE_BIN --data-dir "$TEST_DIR/data/node2" \
     run --network devnet \
     --p2p-port 50302 \
     --rpc-port 28502 \
+    --metrics-port 9302 \
+    --chainspec "$TEST_DIR/chainspec.json" \
     --no-dht \
+    --no-auto-update \
     --bootstrap "/ip4/127.0.0.1/tcp/50301" \
     --producer --producer-key "$PRODUCER2_KEY" \
     > "$TEST_DIR/logs/node2.log" 2>&1 &
@@ -118,7 +163,10 @@ $NODE_BIN --data-dir "$TEST_DIR/data/node3" \
     run --network devnet \
     --p2p-port 50303 \
     --rpc-port 28503 \
+    --metrics-port 9303 \
+    --chainspec "$TEST_DIR/chainspec.json" \
     --no-dht \
+    --no-auto-update \
     --bootstrap "/ip4/127.0.0.1/tcp/50301" \
     --producer --producer-key "$PRODUCER3_KEY" \
     > "$TEST_DIR/logs/node3.log" 2>&1 &
@@ -135,7 +183,7 @@ check_height() {
     curl -s -X POST "http://localhost:$port" \
         -H 'Content-Type: application/json' \
         -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' 2>/dev/null | \
-        grep -o '"height":[0-9]*' | cut -d':' -f2
+        grep -o '"bestHeight":[0-9]*' | cut -d':' -f2
 }
 
 HEIGHT1=$(check_height 28501)
@@ -339,7 +387,10 @@ $NODE_BIN --data-dir "$TEST_DIR/data/node3" \
     run --network devnet \
     --p2p-port 50303 \
     --rpc-port 28503 \
+    --metrics-port 9303 \
+    --chainspec "$TEST_DIR/chainspec.json" \
     --no-dht \
+    --no-auto-update \
     --bootstrap "/ip4/127.0.0.1/tcp/50301" \
     --producer --producer-key "$PRODUCER3_KEY" \
     >> "$TEST_DIR/logs/node3.log" 2>&1 &
