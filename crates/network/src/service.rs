@@ -255,6 +255,15 @@ impl NetworkService {
         self.event_rx.recv().await
     }
 
+    /// Try to get a network event without blocking
+    ///
+    /// Returns None immediately if no event is available.
+    /// This is used to drain pending block events before production
+    /// to ensure the chain tip is up-to-date before starting VDF computation.
+    pub fn try_next_event(&mut self) -> Option<NetworkEvent> {
+        self.event_rx.try_recv().ok()
+    }
+
     /// Broadcast a block to the network
     pub async fn broadcast_block(&self, block: Block) -> Result<(), NetworkError> {
         self.command_tx
