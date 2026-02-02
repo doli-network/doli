@@ -264,6 +264,85 @@ impl Network {
         }
     }
 
+    /// Get grace period after update approval before enforcement (in seconds)
+    ///
+    /// After the veto period ends and an update is approved, producers have
+    /// this grace period to apply the update before version enforcement begins.
+    pub fn grace_period_secs(&self) -> u64 {
+        match self {
+            Network::Mainnet => 48 * 3600, // 48 hours
+            Network::Testnet => 48 * 3600, // Same as mainnet (48 hours)
+            Network::Devnet => 30,         // 30 seconds (fast testing)
+        }
+    }
+
+    /// Get minimum producer age before voting is allowed (in seconds)
+    ///
+    /// Producers must be registered for at least this long before they can
+    /// vote on updates. This prevents flash Sybil attacks where an attacker
+    /// registers many producers just before a vote.
+    pub fn min_voting_age_secs(&self) -> u64 {
+        match self {
+            Network::Mainnet => 30 * 24 * 3600, // 30 days
+            Network::Testnet => 30 * 24 * 3600, // Same as mainnet (30 days)
+            Network::Devnet => 60,              // 1 minute (fast testing)
+        }
+    }
+
+    /// Get minimum producer age for voting in blocks
+    ///
+    /// Converts min_voting_age_secs to blocks using slot_duration.
+    pub fn min_voting_age_blocks(&self) -> u64 {
+        self.min_voting_age_secs() / self.slot_duration()
+    }
+
+    /// Get interval between automatic update checks (in seconds)
+    pub fn update_check_interval_secs(&self) -> u64 {
+        match self {
+            Network::Mainnet => 6 * 3600, // 6 hours
+            Network::Testnet => 6 * 3600, // Same as mainnet (6 hours)
+            Network::Devnet => 10,        // 10 seconds (fast testing)
+        }
+    }
+
+    /// Get crash detection window for automatic rollback (in seconds)
+    ///
+    /// If the node crashes multiple times within this window after an update,
+    /// the watchdog will automatically rollback to the previous version.
+    pub fn crash_window_secs(&self) -> u64 {
+        match self {
+            Network::Mainnet => 3600, // 1 hour
+            Network::Testnet => 3600, // Same as mainnet (1 hour)
+            Network::Devnet => 60,    // 1 minute (fast testing)
+        }
+    }
+
+    /// Get number of crashes within crash_window that trigger automatic rollback
+    pub fn crash_threshold(&self) -> u32 {
+        // Same for all networks - 3 crashes triggers rollback
+        3
+    }
+
+    /// Get blocks needed to reach full seniority (maximum vote weight)
+    ///
+    /// After this many blocks as a producer, the vote weight reaches 4x.
+    /// Uses blocks_per_year * 4 for real time networks.
+    pub fn seniority_maturity_blocks(&self) -> u64 {
+        self.blocks_per_year() * 4 // 4 years in blocks
+    }
+
+    /// Get blocks per seniority step (for vote weight calculation)
+    ///
+    /// Each step increases vote weight by 0.75x, up to 4 steps (4x total).
+    /// - 0 steps (0-1 year): 1.00x
+    /// - 1 step  (1-2 year): 1.75x
+    /// - 2 steps (2-3 year): 2.50x
+    /// - 3 steps (3-4 year): 3.25x
+    /// - 4 steps (4+ years): 4.00x
+    pub fn seniority_step_blocks(&self) -> u64 {
+        self.blocks_per_year() // 1 year in blocks
+    }
+
     /// Get slot duration for this network (in seconds)
     pub fn slot_duration(&self) -> u64 {
         match self {
@@ -891,5 +970,151 @@ mod tests {
         let genesis_blocks = devnet.genesis_blocks();
         let total_rewards = genesis_blocks * block_reward_doli;
         assert_eq!(total_rewards, 800); // Enough for 4 producers × 200 DOLI each
+    }
+
+    // ==================== Auto-Update System Parameter Tests ====================
+
+    #[test]
+    fn test_veto_period_by_network() {
+        // Mainnet and Testnet: 7 days
+        assert_eq!(Network::Mainnet.veto_period_secs(), 7 * 24 * 3600);
+        assert_eq!(Network::Testnet.veto_period_secs(), 7 * 24 * 3600);
+        // Devnet: 1 minute for fast testing
+        assert_eq!(Network::Devnet.veto_period_secs(), 60);
+    }
+
+    #[test]
+    fn test_grace_period_by_network() {
+        // Mainnet and Testnet: 48 hours
+        assert_eq!(Network::Mainnet.grace_period_secs(), 48 * 3600);
+        assert_eq!(Network::Testnet.grace_period_secs(), 48 * 3600);
+        // Devnet: 30 seconds for fast testing
+        assert_eq!(Network::Devnet.grace_period_secs(), 30);
+    }
+
+    #[test]
+    fn test_min_voting_age_by_network() {
+        // Mainnet and Testnet: 30 days
+        assert_eq!(Network::Mainnet.min_voting_age_secs(), 30 * 24 * 3600);
+        assert_eq!(Network::Testnet.min_voting_age_secs(), 30 * 24 * 3600);
+        // Devnet: 1 minute for fast testing
+        assert_eq!(Network::Devnet.min_voting_age_secs(), 60);
+    }
+
+    #[test]
+    fn test_min_voting_age_blocks() {
+        // Mainnet: 30 days / 10s per slot = 259,200 blocks
+        assert_eq!(Network::Mainnet.min_voting_age_blocks(), 259_200);
+        // Testnet: same as mainnet
+        assert_eq!(Network::Testnet.min_voting_age_blocks(), 259_200);
+        // Devnet: 60s / 10s per slot = 6 blocks
+        assert_eq!(Network::Devnet.min_voting_age_blocks(), 6);
+    }
+
+    #[test]
+    fn test_update_check_interval_by_network() {
+        // Mainnet and Testnet: 6 hours
+        assert_eq!(Network::Mainnet.update_check_interval_secs(), 6 * 3600);
+        assert_eq!(Network::Testnet.update_check_interval_secs(), 6 * 3600);
+        // Devnet: 10 seconds for fast testing
+        assert_eq!(Network::Devnet.update_check_interval_secs(), 10);
+    }
+
+    #[test]
+    fn test_crash_window_by_network() {
+        // Mainnet and Testnet: 1 hour
+        assert_eq!(Network::Mainnet.crash_window_secs(), 3600);
+        assert_eq!(Network::Testnet.crash_window_secs(), 3600);
+        // Devnet: 1 minute for fast testing
+        assert_eq!(Network::Devnet.crash_window_secs(), 60);
+    }
+
+    #[test]
+    fn test_crash_threshold_same_for_all() {
+        // Crash threshold is 3 for all networks
+        assert_eq!(Network::Mainnet.crash_threshold(), 3);
+        assert_eq!(Network::Testnet.crash_threshold(), 3);
+        assert_eq!(Network::Devnet.crash_threshold(), 3);
+    }
+
+    #[test]
+    fn test_seniority_maturity_blocks() {
+        // Mainnet: 4 years × ~3.15M blocks/year = ~12.6M blocks
+        assert_eq!(
+            Network::Mainnet.seniority_maturity_blocks(),
+            Network::Mainnet.blocks_per_year() * 4
+        );
+        assert_eq!(Network::Mainnet.seniority_maturity_blocks(), 12_614_400);
+
+        // Testnet: same as mainnet
+        assert_eq!(
+            Network::Testnet.seniority_maturity_blocks(),
+            Network::Testnet.blocks_per_year() * 4
+        );
+
+        // Devnet: 4 × 144 blocks = 576 blocks (~96 minutes with 10s slots)
+        assert_eq!(Network::Devnet.seniority_maturity_blocks(), 576);
+    }
+
+    #[test]
+    fn test_seniority_step_blocks() {
+        // Mainnet: 1 year = ~3.15M blocks
+        assert_eq!(
+            Network::Mainnet.seniority_step_blocks(),
+            Network::Mainnet.blocks_per_year()
+        );
+        assert_eq!(Network::Mainnet.seniority_step_blocks(), 3_153_600);
+
+        // Devnet: 1 year = 144 blocks (~24 minutes with 10s slots)
+        assert_eq!(Network::Devnet.seniority_step_blocks(), 144);
+    }
+
+    #[test]
+    fn test_devnet_update_timing_acceleration() {
+        let devnet = Network::Devnet;
+
+        // Full update cycle in devnet:
+        // veto (60s) + grace (30s) = 90 seconds total
+        let full_cycle = devnet.veto_period_secs() + devnet.grace_period_secs();
+        assert_eq!(full_cycle, 90);
+
+        // Compare to mainnet:
+        // veto (7 days) + grace (48h) = 9 days total
+        let mainnet = Network::Mainnet;
+        let mainnet_cycle = mainnet.veto_period_secs() + mainnet.grace_period_secs();
+        assert_eq!(mainnet_cycle, 9 * 24 * 3600); // 9 days in seconds
+
+        // Devnet is ~8640x faster (9 days vs 90 seconds)
+        let acceleration = mainnet_cycle / full_cycle;
+        assert!(acceleration > 8000);
+    }
+
+    #[test]
+    fn test_seniority_weight_calculation_example() {
+        // Example: Calculate vote weight for producer at different ages
+        let devnet = Network::Devnet;
+        let step = devnet.seniority_step_blocks(); // 144 blocks
+
+        // weight = 1.0 + min(years, 4) * 0.75
+        // 0 years (0-143 blocks): 1.00x
+        // 1 year  (144-287 blocks): 1.75x
+        // 2 years (288-431 blocks): 2.50x
+        // 3 years (432-575 blocks): 3.25x
+        // 4 years (576+ blocks): 4.00x
+
+        // Helper to calculate weight
+        let calc_weight = |blocks_active: u64| -> f64 {
+            let years = blocks_active as f64 / step as f64;
+            let capped_years = years.min(4.0);
+            1.0 + capped_years * 0.75
+        };
+
+        // Test at various ages
+        assert!((calc_weight(0) - 1.00).abs() < 0.01);
+        assert!((calc_weight(step) - 1.75).abs() < 0.01);
+        assert!((calc_weight(step * 2) - 2.50).abs() < 0.01);
+        assert!((calc_weight(step * 3) - 3.25).abs() < 0.01);
+        assert!((calc_weight(step * 4) - 4.00).abs() < 0.01);
+        assert!((calc_weight(step * 10) - 4.00).abs() < 0.01); // Capped at 4x
     }
 }
