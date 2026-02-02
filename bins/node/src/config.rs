@@ -33,6 +33,11 @@ pub struct NodeConfig {
     /// Use this to isolate test networks from external peers
     #[serde(default)]
     pub no_dht: bool,
+
+    /// Override genesis time from chainspec (for coordinated devnet startup)
+    /// When set, this overrides the dynamic genesis time calculation.
+    #[serde(default)]
+    pub genesis_time_override: Option<u64>,
 }
 
 impl Default for NodeConfig {
@@ -62,6 +67,7 @@ impl NodeConfig {
             rpc: RpcConfig::for_network(network),
             producer: None,
             no_dht: false,
+            genesis_time_override: None,
         }
     }
 }
