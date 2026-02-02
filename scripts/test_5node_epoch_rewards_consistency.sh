@@ -86,8 +86,8 @@ done
 BASE_P2P=50500
 BASE_RPC=28700
 
-# PIDs for cleanup
-declare -a NODE_PIDS
+# PIDs for cleanup (indexed array - bash 3.x compatible)
+NODE_PIDS=()
 
 cleanup() {
     echo
@@ -230,9 +230,9 @@ echo -e "${BLUE}=== Phase 2: First Epoch Verification ===${NC}"
 echo -e "${YELLOW}Running for 1 epoch ($SLOTS_PER_EPOCH seconds)...${NC}"
 sleep $SLOTS_PER_EPOCH
 
-# Record heights and hashes
-declare -A HEIGHTS_BEFORE
-declare -A HASHES_BEFORE
+# Record heights and hashes (indexed arrays - bash 3.x compatible)
+HEIGHTS_BEFORE=()
+HASHES_BEFORE=()
 
 echo -e "${CYAN}Chain State Before Restart:${NC}"
 for i in $(seq 1 $NUM_NODES); do
@@ -331,10 +331,10 @@ echo
 echo
 echo -e "${BLUE}=== Phase 5: Final State Verification ===${NC}"
 
-# Collect final state from all nodes
-declare -A FINAL_HEIGHTS
-declare -A FINAL_HASHES
-declare -A FINAL_SLOTS
+# Collect final state from all nodes (indexed arrays - bash 3.x compatible)
+FINAL_HEIGHTS=()
+FINAL_HASHES=()
+FINAL_SLOTS=()
 
 echo -e "${CYAN}Final Chain State:${NC}"
 for i in $(seq 1 $NUM_NODES); do

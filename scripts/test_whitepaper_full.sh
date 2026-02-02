@@ -235,11 +235,11 @@ test_vdf() {
 
     # Test 2.1: VDF computation time
     log "Checking VDF computation time..."
-    VDF_TIME=$(grep "VDF computed in" "$TEST_DIR/logs/node1.log" 2>/dev/null | tail -1 | grep -oP '\d+\.\d+ms' || echo "0ms")
+    VDF_TIME=$(grep "VDF computed in" "$TEST_DIR/logs/node1.log" 2>/dev/null | tail -1 | grep -oE '[0-9]+\.[0-9]+ms' || echo "0ms")
 
     if [ -n "$VDF_TIME" ]; then
         # Extract numeric value
-        TIME_MS=$(echo "$VDF_TIME" | grep -oP '\d+' | head -1)
+        TIME_MS=$(echo "$VDF_TIME" | grep -oE '[0-9]+' | head -1)
         if [ "$TIME_MS" -lt 200 ]; then
             pass "VDF computation time: $VDF_TIME (devnet optimized)"
         else
@@ -349,7 +349,7 @@ test_selection() {
     if echo "$SCHEDULE" | grep -q "count=3"; then
         pass "3 producers in schedule"
     elif echo "$SCHEDULE" | grep -q "count="; then
-        COUNT=$(echo "$SCHEDULE" | grep -oP 'count=\d+' | grep -oP '\d+')
+        COUNT=$(echo "$SCHEDULE" | grep -oE 'count=[0-9]+' | grep -oE '[0-9]+')
         log "Producer count: $COUNT"
         pass "Producer schedule active"
     else
@@ -367,23 +367,24 @@ test_selection() {
         return
     fi
 
-    # Count blocks per producer
-    declare -A PRODUCER_COUNTS
+    # Count blocks per producer (bash 3.x compatible - use temp file)
+    PRODUCER_FILE="$TEST_DIR/producer_counts.txt"
+    > "$PRODUCER_FILE"
     for h in $(seq $START_HEIGHT $((START_HEIGHT + 9))); do
         PRODUCER=$(rpc 28601 getBlockByHeight "{\"height\":$h}" | jq -r '.result.producer // "unknown"')
         if [ "$PRODUCER" != "unknown" ] && [ "$PRODUCER" != "null" ]; then
             PRODUCER_SHORT="${PRODUCER:0:8}"
-            PRODUCER_COUNTS[$PRODUCER_SHORT]=$((${PRODUCER_COUNTS[$PRODUCER_SHORT]:-0} + 1))
+            echo "$PRODUCER_SHORT" >> "$PRODUCER_FILE"
         fi
     done
 
     log "Block distribution over 10 blocks:"
-    for p in "${!PRODUCER_COUNTS[@]}"; do
-        log "  Producer $p...: ${PRODUCER_COUNTS[$p]} blocks"
+    sort "$PRODUCER_FILE" | uniq -c | while read count producer; do
+        log "  Producer $producer...: $count blocks"
     done
 
     # Check that multiple producers are active
-    NUM_PRODUCERS=${#PRODUCER_COUNTS[@]}
+    NUM_PRODUCERS=$(sort "$PRODUCER_FILE" | uniq | wc -l | tr -d ' ')
     if [ "$NUM_PRODUCERS" -ge 2 ]; then
         pass "Multiple producers active ($NUM_PRODUCERS)"
     else
@@ -411,13 +412,14 @@ test_proportional_rewards() {
     START_H=$((CURRENT_HEIGHT - 60))
     [ "$START_H" -lt 1 ] && START_H=1
 
-    # Count blocks per producer
-    declare -A BLOCKS_PER_PRODUCER
+    # Count blocks per producer (bash 3.x compatible - use temp file)
+    BLOCKS_FILE="$TEST_DIR/blocks_per_producer.txt"
+    > "$BLOCKS_FILE"
     for h in $(seq $START_H $CURRENT_HEIGHT); do
         PRODUCER=$(rpc 28601 getBlockByHeight "{\"height\":$h}" | jq -r '.result.producer // ""')
         if [ -n "$PRODUCER" ] && [ "$PRODUCER" != "null" ]; then
             PRODUCER_SHORT="${PRODUCER:0:16}"
-            BLOCKS_PER_PRODUCER[$PRODUCER_SHORT]=$((${BLOCKS_PER_PRODUCER[$PRODUCER_SHORT]:-0} + 1))
+            echo "$PRODUCER_SHORT" >> "$BLOCKS_FILE"
         fi
     done
 
@@ -425,11 +427,9 @@ test_proportional_rewards() {
     log "Block Production Distribution:"
     log "────────────────────────────────────────"
 
-    TOTAL_BLOCKS=0
-    for p in "${!BLOCKS_PER_PRODUCER[@]}"; do
-        COUNT=${BLOCKS_PER_PRODUCER[$p]}
-        TOTAL_BLOCKS=$((TOTAL_BLOCKS + COUNT))
-        log "  Producer ${p}...: ${COUNT} blocks"
+    TOTAL_BLOCKS=$(wc -l < "$BLOCKS_FILE" | tr -d ' ')
+    sort "$BLOCKS_FILE" | uniq -c | while read count producer; do
+        log "  Producer ${producer}...: ${count} blocks"
     done
 
     log "────────────────────────────────────────"
@@ -437,7 +437,7 @@ test_proportional_rewards() {
     log ""
 
     # With 3 producers (1 bond each), expect ~33% each
-    NUM_PRODUCERS=${#BLOCKS_PER_PRODUCER[@]}
+    NUM_PRODUCERS=$(sort "$BLOCKS_FILE" | uniq | wc -l | tr -d ' ')
 
     if [ "$NUM_PRODUCERS" -eq 0 ]; then
         skip "No blocks to analyze"

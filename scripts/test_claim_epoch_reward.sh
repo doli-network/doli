@@ -1,19 +1,31 @@
 #!/bin/bash
 # DOLI Devnet - ClaimEpochReward E2E Test
 #
-# Test scenario:
+# =============================================================================
+# DEPRECATED - This script tests an obsolete feature
+# =============================================================================
+#
+# Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+# - Producer produces a block → gets coinbase reward immediately
+# - No claiming needed - rewards are automatic
+# - The epoch-based claiming system was deprecated and returns 0
+#
+# The weighted presence reward system was removed in favor of the simpler
+# Bitcoin-like model where 100% of block rewards go directly to producers
+# via coinbase transactions.
+#
+# See: crates/core/src/rewards.rs lines 269-276 for deprecation notice
+# See: bins/node/src/node.rs lines 2403-2408 for coinbase implementation
+#
+# This script is kept for historical reference only.
+# =============================================================================
+#
+# Original test scenario (no longer applicable):
 # - Start 3 producer nodes
 # - Wait for 2 epochs to complete
 # - Use CLI to list claimable rewards
 # - Claim rewards for epoch 0
 # - Verify claim succeeded (balance, history)
-#
-# This tests the full ClaimEpochReward flow from Milestone 5-12:
-# - ClaimEpochReward transaction type
-# - Weighted reward calculation
-# - Claim validation
-# - RPC endpoints
-# - CLI commands
 
 set -e
 
@@ -62,11 +74,13 @@ echo -e "${GREEN}Build complete.${NC}"
 
 # Generate keys
 echo -e "${YELLOW}Generating producer keys...${NC}"
+NODE_PUBKEYS=()
 for i in 1 2 3; do
     $CLI_BIN --wallet "$TEST_DIR/keys/node${i}.json" new -n "node${i}" >/dev/null 2>&1 || true
     if [ -f "$TEST_DIR/keys/node${i}.json" ]; then
-        pubkey=$(cat "$TEST_DIR/keys/node${i}.json" | grep -o '"public_key":"[^"]*' | cut -d'"' -f4 | head -1)
-        address=$(cat "$TEST_DIR/keys/node${i}.json" | grep -o '"address":"[^"]*' | cut -d'"' -f4 | head -1)
+        pubkey=$(cat "$TEST_DIR/keys/node${i}.json" | grep -o '"public_key": *"[^"]*' | sed 's/"public_key": *"//' | head -1)
+        address=$(cat "$TEST_DIR/keys/node${i}.json" | grep -o '"address": *"[^"]*' | sed 's/"address": *"//' | head -1)
+        NODE_PUBKEYS[$i]="$pubkey"
         echo -e "  Node $i: ${pubkey:0:16}... (${address:0:20}...)"
     else
         echo -e "  ${RED}Node $i: failed to generate key${NC}"
@@ -74,12 +88,49 @@ for i in 1 2 3; do
     fi
 done
 
+# Generate chainspec with genesis producers for fast block production
+echo -e "${YELLOW}Generating chainspec with genesis producers...${NC}"
+GENESIS_PRODUCERS_JSON=""
+for i in 1 2 3; do
+    pubkey="${NODE_PUBKEYS[$i]}"
+    if [ $i -gt 1 ]; then
+        GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON,"
+    fi
+    GENESIS_PRODUCERS_JSON="$GENESIS_PRODUCERS_JSON
+    {
+      \"name\": \"producer_$i\",
+      \"public_key\": \"$pubkey\",
+      \"bond_count\": 1
+    }"
+done
+
+cat > "$TEST_DIR/chainspec.json" << EOF
+{
+  "name": "DOLI Devnet",
+  "id": "devnet",
+  "network": "Devnet",
+  "genesis": {
+    "timestamp": 0,
+    "message": "DOLI ClaimEpochReward Test",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 1,
+    "slots_per_epoch": 60,
+    "bond_amount": 100000000
+  },
+  "genesis_producers": [$GENESIS_PRODUCERS_JSON
+  ]
+}
+EOF
+echo -e "  ${GREEN}Chainspec created${NC}"
+
 # Ports
 BASE_P2P=50500
 BASE_RPC=28700
 
-# PIDs for cleanup
-declare -a NODE_PIDS
+# PIDs for cleanup (indexed array - bash 3.x compatible)
+NODE_PIDS=()
 
 cleanup() {
     echo
@@ -122,6 +173,7 @@ start_node() {
         --p2p-port "$p2p_port" \
         --rpc-port "$rpc_port" \
         --metrics-port "$metrics_port" \
+        --chainspec "$TEST_DIR/chainspec.json" \
         $bootstrap_arg \
         --no-auto-update \
         > "$TEST_DIR/logs/node${node_num}.log" 2>&1 &

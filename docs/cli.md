@@ -495,101 +495,48 @@ doli producer slash \
 
 ## 5. Rewards
 
-Commands for managing weighted presence rewards. All present producers earn proportionally
-based on their bond weight. Rewards accumulate per epoch and must be claimed.
+Block rewards in DOLI work like Bitcoin: producers receive rewards automatically
+when they produce a block via the coinbase transaction. **No claiming is needed.**
 
-### 5.1. List Claimable Rewards
+Per WHITEPAPER.md Section 9.1:
+- Initial reward: 1 DOLI/block
+- Reward maturity: 100 confirmations (Section 9.2)
+- Halving interval: 12,614,400 blocks (~4 years)
 
-Show all unclaimed epochs with estimated rewards.
+### 5.1. How Rewards Work
 
-```bash
-doli rewards list
-```
+When a producer creates a block:
+1. A coinbase transaction is included as the first transaction
+2. The coinbase pays 1 DOLI (Era 1) directly to the producer
+3. The reward is spendable after 100 confirmations (maturity)
 
-**Output:**
-```
-Claimable Rewards
-------------------------------------------------------------
-Epoch    Blocks Present    Estimated Reward
-------------------------------------------------------------
-5        358/360           47.50000000 DOLI
-6        360/360           48.00000000 DOLI
-7        355/360           46.25000000 DOLI
-------------------------------------------------------------
-Total:   3 epochs          141.75000000 DOLI
-```
+This is identical to Bitcoin's reward model. There is no epoch-based claiming
+or presence tracking - rewards are deterministic and immediate.
 
----
+### 5.2. Checking Your Balance
 
-### 5.2. Claim Specific Epoch
-
-Claim rewards for a specific epoch.
+To see your accumulated rewards:
 
 ```bash
-doli rewards claim <EPOCH> [OPTIONS]
-
-Arguments:
-  <EPOCH>    Epoch number to claim
-
-Options:
-  --recipient <ADDRESS>    Send rewards to a different address
+doli wallet balance
 ```
 
-**Example:**
-```bash
-# Claim epoch 5 to your address
-doli rewards claim 5
+Rewards appear as "pending" until they reach 100 confirmations, then become
+"confirmed" and spendable.
 
-# Claim to a different address
-doli rewards claim 5 --recipient a1b2c3d4...
-```
+### 5.3. Deprecated Commands
 
----
+The following commands are deprecated and non-functional:
 
-### 5.3. Claim All Epochs
+| Command | Status |
+|---------|--------|
+| `doli rewards list` | Deprecated - returns empty |
+| `doli rewards claim` | Deprecated - nothing to claim |
+| `doli rewards claim-all` | Deprecated - nothing to claim |
+| `doli rewards history` | Deprecated - no claim history |
 
-Claim all available epochs (one transaction per epoch).
-
-```bash
-doli rewards claim-all [OPTIONS]
-
-Options:
-  --recipient <ADDRESS>    Send all rewards to a different address
-```
-
-**Example:**
-```bash
-# Claim all unclaimed epochs
-doli rewards claim-all
-
-# Claim all to a specific address
-doli rewards claim-all --recipient a1b2c3d4...
-```
-
----
-
-### 5.4. View Claim History
-
-Show previous reward claims.
-
-```bash
-doli rewards history [OPTIONS]
-
-Options:
-  -l, --limit <LIMIT>    Maximum entries to show [default: 10]
-```
-
-**Output:**
-```
-Claim History
-------------------------------------------------------------
-Epoch    Amount              Tx Hash              Height
-------------------------------------------------------------
-4        46.00000000 DOLI    a1b2c3d4...          1440
-3        45.50000000 DOLI    e5f6a7b8...          1080
-2        44.75000000 DOLI    c9d0e1f2...          720
-------------------------------------------------------------
-```
+These commands existed for a weighted presence reward system that was removed
+in favor of the simpler Bitcoin-like coinbase model.
 
 ---
 
@@ -742,7 +689,7 @@ doli producer slash \
 | 6.3 Bond Stacking | `doli producer add-bond` |
 | 6.4 Bond Lifecycle | `doli producer exit`, `doli producer request-withdrawal`, `doli producer claim-withdrawal` |
 | 7. Producer Selection | `doli producer status`, `doli producer list` |
-| 9.1 Emission/Rewards | `doli rewards list`, `doli rewards claim`, `doli rewards claim-all` |
+| 9.1 Emission/Rewards | `doli wallet balance` (rewards are automatic via coinbase) |
 | 10.3 Double Production | `doli producer slash` |
 | 14. Privacy (new keys) | `doli address` |
 
