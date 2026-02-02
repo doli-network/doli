@@ -766,6 +766,39 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_autoupdate_e2e.sh` | 5 | ~2 min | **E2E auto-update flow** |
 | `test_update_notification.sh` | 0 | ~10 sec | **Update notification CLI** |
 | `test_version_enforcement.sh` | 0 | ~10 sec | **Version enforcement system** |
+| `test_maintainer_bootstrap.sh` | 10 | ~2 min | **Maintainer bootstrap & CLI** |
+
+---
+
+### test_maintainer_bootstrap.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_maintainer_bootstrap.sh` |
+| **Purpose** | Test maintainer bootstrap system (first 5 producers become maintainers) |
+| **What it tests** | getMaintainerSet RPC, maintainer CLI commands, update CLI commands, 3/5 threshold |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Run time** | ~2 minutes |
+| **Output** | `/tmp/doli-maintainer-bootstrap-*/` (logs, reports) |
+
+**Usage:**
+```bash
+./scripts/test_maintainer_bootstrap.sh
+```
+
+**Test scenario:**
+- 5 genesis producers start as maintainers (via chainspec)
+- 5 additional producers join after genesis
+- Verify first 5 are maintainers, additional 5 are not
+- Test maintainer CLI: list, verify
+- Test update CLI: check, status, votes, verify
+
+**Key validations:**
+- getMaintainerSet RPC returns correct maintainer set
+- Maintainer count = 5 (first 5 producers)
+- Threshold = 3 of 5
+- Additional producers are NOT maintainers
+- CLI commands execute correctly
 
 ---
 
