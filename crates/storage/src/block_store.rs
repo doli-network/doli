@@ -70,13 +70,8 @@ impl BlockStore {
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
         self.db.put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
 
-        // Store presence commitment if present
-        if let Some(ref presence) = block.presence {
-            let presence_bytes = bincode::serialize(presence)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let cf_presence = self.db.cf_handle(CF_PRESENCE).unwrap();
-            self.db.put_cf(cf_presence, hash_bytes, &presence_bytes)?;
-        }
+        // NOTE: Presence storage removed - deterministic scheduler model
+        // uses coinbase rewards (100% to producer), not presence-based rewards
 
         Ok(())
     }
@@ -101,16 +96,10 @@ impl BlockStore {
         let transactions = bincode::deserialize(&body_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        // Try to load presence commitment (may not exist for older blocks)
-        let presence = {
-            let cf_presence = self.db.cf_handle(CF_PRESENCE).unwrap();
-            match self.db.get_cf(cf_presence, hash.as_bytes())? {
-                Some(bytes) => bincode::deserialize(&bytes).map(Some).unwrap_or(None),
-                None => None,
-            }
-        };
+        // NOTE: Presence loading removed - deterministic scheduler model
+        // uses coinbase rewards (100% to producer), not presence-based rewards
 
-        Ok(Some(Block::with_presence(header, transactions, presence)))
+        Ok(Some(Block::new(header, transactions)))
     }
 
     /// Get a header by hash

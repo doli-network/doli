@@ -102,11 +102,23 @@ impl Network {
     }
 
     /// Get initial bond amount for this network
+    ///
+    /// Initial bond = 1 bond unit = minimum to become a producer.
+    /// For mainnet/testnet: 100 DOLI (1 slot per cycle)
     pub fn initial_bond(&self) -> u64 {
+        self.bond_unit() // Initial bond equals 1 bond unit
+    }
+
+    /// Get bond unit size for slot allocation
+    ///
+    /// Each bond unit grants 1 consecutive slot per cycle.
+    /// - 100 DOLI = 1 bond unit = 1 slot per cycle
+    /// - 1,000 DOLI = 10 bond units = 10 slots per cycle
+    pub fn bond_unit(&self) -> u64 {
         match self {
-            Network::Mainnet => 100_000_000_000, // 1000 DOLI
-            Network::Testnet => 100_000_000_000, // 1000 DOLI (same as mainnet)
-            Network::Devnet => 100_000_000,      // 1 DOLI
+            Network::Mainnet => 10_000_000_000,  // 100 DOLI
+            Network::Testnet => 10_000_000_000,  // 100 DOLI (same as mainnet)
+            Network::Devnet => 100_000_000,      // 1 DOLI (testing)
         }
     }
 
