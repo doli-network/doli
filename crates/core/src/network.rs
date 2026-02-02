@@ -131,6 +131,56 @@ impl Network {
         }
     }
 
+    /// Get genesis phase duration in blocks
+    ///
+    /// During genesis, producers can produce blocks without a bond.
+    /// After genesis ends, each participating producer is automatically
+    /// registered with an automatic_genesis_bond().
+    ///
+    /// # Calculation for Devnet (4 producers)
+    /// - Block reward: 20 DOLI
+    /// - Target: 200 DOLI per producer (100 DOLI bond + 100 DOLI reserve)
+    /// - Blocks needed per producer: 200 / 20 = 10 blocks
+    /// - Total genesis blocks: 10 * 4 producers = 40 blocks
+    pub fn genesis_blocks(&self) -> u64 {
+        match self {
+            Network::Mainnet => 0, // No genesis phase on mainnet (pre-registered producers)
+            Network::Testnet => 0, // No genesis phase on testnet (pre-registered producers)
+            Network::Devnet => 40, // 40 blocks for 4 producers to earn 200 DOLI each
+        }
+    }
+
+    /// Check if the given height is within the genesis phase
+    pub fn is_in_genesis(&self, height: u64) -> bool {
+        let genesis_blocks = self.genesis_blocks();
+        genesis_blocks > 0 && height <= genesis_blocks
+    }
+
+    /// Get the automatic bond amount for genesis producers
+    ///
+    /// After genesis ends, each producer who participated gets this amount
+    /// automatically bonded (deducted from their earned rewards).
+    /// This equals 1 bond unit (100 DOLI on mainnet/testnet, 100 DOLI on devnet).
+    pub fn automatic_genesis_bond(&self) -> u64 {
+        match self {
+            Network::Mainnet => 10_000_000_000,  // 100 DOLI (1 bond unit)
+            Network::Testnet => 10_000_000_000,  // 100 DOLI (1 bond unit)
+            Network::Devnet => 10_000_000_000,   // 100 DOLI (1 bond unit) - same for consistency
+        }
+    }
+
+    /// Get coinbase maturity (blocks until coinbase rewards can be spent)
+    ///
+    /// Like Bitcoin, coinbase rewards must wait for confirmations before spending.
+    /// Devnet uses shorter maturity for faster testing.
+    pub fn coinbase_maturity(&self) -> u64 {
+        match self {
+            Network::Mainnet => 100, // 100 blocks (~17 minutes at 10s slots)
+            Network::Testnet => 100, // Same as mainnet
+            Network::Devnet => 10,   // 10 blocks (~100 seconds) for fast testing
+        }
+    }
+
     /// Check if VDF is enabled for this network
     ///
     /// All networks use VDF (hash-chain based) for Proof of Time.
@@ -785,5 +835,61 @@ mod tests {
         assert!(Network::Mainnet.vdf_enabled());
         assert!(Network::Testnet.vdf_enabled());
         assert!(Network::Devnet.vdf_enabled()); // Uses fast hash-chain VDF (~700ms)
+    }
+
+    // ==================== Genesis Phase Tests ====================
+
+    #[test]
+    fn test_genesis_blocks_devnet() {
+        let devnet = Network::Devnet;
+
+        // Devnet has 40 block genesis phase
+        assert_eq!(devnet.genesis_blocks(), 40);
+
+        // Heights 1-40 are in genesis
+        assert!(devnet.is_in_genesis(1));
+        assert!(devnet.is_in_genesis(20));
+        assert!(devnet.is_in_genesis(40));
+
+        // Height 41 and beyond are NOT in genesis
+        assert!(!devnet.is_in_genesis(41));
+        assert!(!devnet.is_in_genesis(100));
+    }
+
+    #[test]
+    fn test_genesis_blocks_mainnet_testnet() {
+        // Mainnet and testnet have no genesis phase (pre-registered producers)
+        assert_eq!(Network::Mainnet.genesis_blocks(), 0);
+        assert_eq!(Network::Testnet.genesis_blocks(), 0);
+
+        // No height is in genesis for these networks
+        assert!(!Network::Mainnet.is_in_genesis(0));
+        assert!(!Network::Mainnet.is_in_genesis(1));
+        assert!(!Network::Testnet.is_in_genesis(0));
+        assert!(!Network::Testnet.is_in_genesis(1));
+    }
+
+    #[test]
+    fn test_automatic_genesis_bond() {
+        // All networks use 100 DOLI (1 bond unit) for automatic genesis bonds
+        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 10_000_000_000);
+        assert_eq!(Network::Testnet.automatic_genesis_bond(), 10_000_000_000);
+        assert_eq!(Network::Devnet.automatic_genesis_bond(), 10_000_000_000);
+    }
+
+    #[test]
+    fn test_genesis_math_devnet() {
+        let devnet = Network::Devnet;
+
+        // Verify the genesis math works out:
+        // - Block reward: 20 DOLI per block
+        // - 4 producers need 200 DOLI each = 800 DOLI total
+        // - 800 DOLI / 20 DOLI per block = 40 blocks
+        let block_reward_doli = devnet.initial_reward() / 100_000_000; // Convert to DOLI
+        assert_eq!(block_reward_doli, 20);
+
+        let genesis_blocks = devnet.genesis_blocks();
+        let total_rewards = genesis_blocks * block_reward_doli;
+        assert_eq!(total_rewards, 800); // Enough for 4 producers × 200 DOLI each
     }
 }
