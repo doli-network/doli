@@ -120,10 +120,11 @@ VDF_verify(input, output, iterations) -> bool  // Recomputes the chain
 transaction = {
     version:    uint32,          // Currently 1
     type:       uint32,          // 0 = transfer, 1 = registration, 2 = exit,
-                                 // 3 = claim_reward, 4 = claim_bond, 5 = slash_producer,
-                                 // 6 = coinbase, 7 = add_bond, 8 = request_withdrawal,
-                                 // 9 = claim_withdrawal, 10 = epoch_reward (deprecated),
-                                 // 11 = claim_epoch_reward
+                                 // 3 = claim_reward (DEPRECATED), 4 = claim_bond,
+                                 // 5 = slash_producer, 6 = coinbase, 7 = add_bond,
+                                 // 8 = request_withdrawal, 9 = claim_withdrawal,
+                                 // 10 = epoch_reward (DEPRECATED),
+                                 // 11 = remove_maintainer, 12 = add_maintainer
     inputs:     input[],
     outputs:    output[],
     extra_data: bytes            // Type-specific data
@@ -215,7 +216,10 @@ exit_tx = {
 
 Initiates the 7-day unbonding period. Producer is removed from active set. Exit transactions must have no inputs or outputs - they simply identify the producer exiting. The bond is released after the unbonding period via ClaimBond transaction.
 
-### 3.8 Claim Reward Transaction
+### 3.8 Claim Reward Transaction (DEPRECATED)
+
+> **Note**: This transaction type is deprecated per whitepaper compliance.
+> Block rewards are now distributed directly via coinbase transactions.
 
 ```
 claim_reward_tx = {
@@ -281,7 +285,12 @@ evidence_data = {
 
 Burns 100% of producer's bond. This is the only slashable offense because it's the only one that cannot happen by accident.
 
-### 3.11 Epoch Reward Transaction
+### 3.11 Epoch Reward Transaction (DEPRECATED)
+
+> **Note**: This transaction type is deprecated per whitepaper compliance.
+> Block rewards are now distributed directly via coinbase transactions to block producers.
+
+The following documentation is kept for historical reference:
 
 Epoch rewards are distributed at epoch boundaries using a fully deterministic,
 BlockStore-derived model. All calculations derive from on-chain data with zero local state.
@@ -491,84 +500,72 @@ claim_withdrawal_tx = {
 - Output must be exactly one Normal output
 - Amount equals net bond value after any penalties
 
-### 3.15 ClaimEpochReward Transaction
+**Vesting Schedule (Early Withdrawal Penalties):**
 
-Claims weighted presence rewards for a completed epoch. All producers who proved
-presence during blocks in the epoch receive a share proportional to their bond weight.
+Bonds vest over 4 years. Early withdrawal incurs penalties (burned, not redistributed):
+
+| Bond Age | Penalty | Net Return |
+|----------|---------|------------|
+| Year 0-1 (0-365 days) | 75% burned | 25% returned |
+| Year 1-2 (365-730 days) | 50% burned | 50% returned |
+| Year 2-3 (730-1095 days) | 25% burned | 75% returned |
+| Year 3+ (1095+ days) | 0% (fully vested) | 100% returned |
+
+Penalty calculation uses FIFO order - oldest bonds are withdrawn first, ensuring
+bonds that have vested longer receive lower penalties.
+
+### 3.15 RemoveMaintainer Transaction
+
+Removes a maintainer from the auto-update system. Requires 3/5 multisig from OTHER maintainers
+(the target cannot sign their own removal).
 
 ```
-claim_epoch_reward_tx = {
+remove_maintainer_tx = {
     version: 1,
     type: 11,
-    inputs: [],                  // Minted, no inputs
-    outputs: [{
-        output_type: 0,          // Normal output
-        amount: calculated_reward,
-        pubkey_hash: recipient,
-        lock_until: 0
-    }],
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty
     extra_data: {
-        epoch: uint64,           // Epoch number being claimed
-        producer_pubkey: 32 bytes,
-        recipient_hash: 32 bytes,
-        signature: 64 bytes      // Producer signs claim data
+        target: 32 bytes,        // Public key of maintainer to remove
+        reason: string,          // Optional reason for removal
+        signatures: signature[]  // Signatures from at least 3 maintainers
     }
 }
 ```
 
-**Reward Calculation:**
-
-For each block in the epoch where the producer was present:
-
-```
-block_share = block_reward × producer_weight / total_present_weight
-total_reward = sum(block_share for all blocks where present)
-```
-
-**Epoch Boundaries:**
-
-Epochs are block-height based, not slot-based:
-
-```
-BLOCKS_PER_REWARD_EPOCH = 360
-
-epoch_number = height / BLOCKS_PER_REWARD_EPOCH
-start_height = epoch × BLOCKS_PER_REWARD_EPOCH
-end_height = start_height + BLOCKS_PER_REWARD_EPOCH
-```
-
 **Validation rules:**
-- Epoch must be complete: `current_height >= end_height`
-- Not already claimed: ClaimRegistry shows unclaimed for (producer, epoch)
-- Producer must be in active producer set
-- Producer must have been present in at least one block
-- Amount must exactly match calculated reward
-- Signature must be valid over claim data hash
-- Output recipient must match `recipient_hash` in claim data
+- Target must be a current maintainer
+- At least 3 valid signatures from OTHER current maintainers (target cannot sign)
+- Cannot reduce maintainer count below MIN_MAINTAINERS (3)
+- Slashed producers are automatically removed from maintainer set
 
-**Signing Message:**
+### 3.16 AddMaintainer Transaction
 
-```
-signing_message = HASH("DOLI_CLAIM_SIGN_V1" || epoch || producer_pubkey || recipient_hash || amount)
-```
-
-**Presence Tracking:**
-
-Each block contains a `PresenceCommitment`:
+Adds a new maintainer to the auto-update system. Requires 3/5 multisig from current maintainers.
 
 ```
-presence_commitment = {
-    bitfield: bytes,         // 1 bit per producer (present/absent)
-    merkle_root: 32 bytes,   // Merkle root of heartbeat proofs
-    weights: uint64[],       // Bond weights of present producers
-    total_weight: uint64     // Sum of weights
+add_maintainer_tx = {
+    version: 1,
+    type: 12,
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty
+    extra_data: {
+        target: 32 bytes,        // Public key of producer to add as maintainer
+        reason: string,          // Optional reason
+        signatures: signature[]  // Signatures from at least 3 maintainers
+    }
 }
 ```
 
-**Guarantees:**
-- Deterministic: Any node calculates identical rewards from the same blocks
-- No expiration: Producers can claim any historical epoch
-- Restart-safe: ClaimRegistry persisted to disk
+**Validation rules:**
+- Target must be a registered producer
+- Target must not already be a maintainer
+- At least 3 valid signatures from current maintainers
+- Cannot exceed MAX_MAINTAINERS (5)
+
+**Maintainer Bootstrap:**
+- The first 5 registered producers automatically become the initial maintainer set
+- After bootstrap, changes require 3/5 multisig via these transactions
 
 ---
 
@@ -668,7 +665,7 @@ vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || merkle_root || slot || prod
 
 ```
 GENESIS_TIME = 1769904000         // 2026-02-01T00:00:00Z
-SLOT_DURATION = 10                // seconds (mainnet/testnet), 1s devnet
+SLOT_DURATION = 10                // seconds (all networks)
 SLOTS_PER_EPOCH = 360             // 1 hour (360 × 10s)
 SLOTS_PER_ERA = 12_614_400        // ~4 years
 BOOTSTRAP_BLOCKS = 60_480         // ~1 week
@@ -684,7 +681,13 @@ The slot is NOT a free field; it must be derived from the timestamp.
 
 ### 5.3 Block Validity
 
-A block B is valid if ALL conditions hold:
+A block B is valid if ALL conditions hold.
+
+**Implementation Reference:** See `crates/core/src/validation.rs`:
+- `validate_header()` (line 480) - header validation
+- `validate_block()` (line 556) - full block validation
+- `validate_transaction()` (line 1036) - transaction validation
+- `validate_producer_eligibility()` (line 1971) - producer checks
 
 ```
 1. FORMAT:
@@ -713,7 +716,7 @@ A block B is valid if ALL conditions hold:
    B.merkle_root == merkle_tree([tx.hash for tx in B.transactions])
    All transactions are valid
    First transaction is valid coinbase
-   No double-spends within block
+   No double-spends within block (check_internal_double_spend, line 1909)
 ```
 
 ### 5.4 Producer Selection (Deterministic Round-Robin)
@@ -759,9 +762,12 @@ Producers can stake multiple bonds (1-100) to increase their block production sh
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| BOND_UNIT | 1,000 DOLI | 1 bond = 1,000 DOLI |
+| BOND_UNIT | 100 DOLI | 1 bond = 100 DOLI (10,000,000,000 base units) |
 | MIN_BONDS | 1 | Minimum to register |
-| MAX_BONDS | 100 | Anti-whale cap (100,000 DOLI max) |
+| MAX_BONDS | 100 | Anti-whale cap (10,000 DOLI max) |
+
+**FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
+This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
 
 **Example distribution:**
 ```
@@ -864,12 +870,12 @@ registration_tx = {
 ### 6.2 Bond Amount
 
 ```
-def bond_amount(height):
-    era = height // ERA_BLOCKS
-    return INITIAL_BOND * (0.7 ** era)
+def bond_amount(bond_count):
+    return bond_count * BOND_UNIT
 
-INITIAL_BOND = 100_000_000_000   // 1000 coins
-LOCK_DURATION = ERA_BLOCKS       // ~4 years
+BOND_UNIT = 10_000_000_000       // 100 DOLI per bond
+MAX_BONDS = 100                  // Maximum bonds per producer
+LOCK_DURATION = 4 * YEAR_IN_SLOTS  // ~4 years for full vesting
 ```
 
 ### 6.3 Registration VDF
@@ -1007,11 +1013,11 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 
 | Parameter | Mainnet | Testnet | Devnet |
 |-----------|---------|---------|--------|
-| Genesis Time | 2026-02-01T00:00:00Z | 2025-06-01T00:00:00Z | Dynamic |
-| Slot Duration | 10s | 10s | 1s |
+| Genesis Time | 2026-02-01T00:00:00Z | 2026-01-29T22:00:00Z | Dynamic |
+| Slot Duration | 10s | 10s | 10s |
 | P2P Port | 30303 | 40303 | 50303 |
 | RPC Port | 8545 | 18545 | 28545 |
-| Initial Bond | 1,000 DOLI | 1,000 DOLI | 1,000 DOLI |
+| Bond Unit | 100 DOLI | 100 DOLI | 1 DOLI |
 | Initial Reward | 1 DOLI | 1 DOLI | 1 DOLI |
 | VDF Target Time | ~700ms | ~700ms | ~700ms |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 |
@@ -1142,7 +1148,7 @@ Result:
 | Parameter          | Value                    |
 |--------------------|--------------------------|
 | GENESIS_TIME       | 1769904000               |
-| SLOT_DURATION      | 10 (mainnet/testnet), 1 (devnet) |
+| SLOT_DURATION      | 10 (all networks)      |
 | SLOTS_PER_EPOCH    | 360                      |
 | SLOTS_PER_ERA      | 12,614,400               |
 | BOOTSTRAP_BLOCKS   | 60,480                   |
@@ -1157,8 +1163,11 @@ Result:
 | R_TARGET           | 10                       |
 | R_CAP              | 100                      |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
-| INITIAL_BOND       | 100,000,000,000 (1,000 DOLI) |
-| COMMITMENT_PERIOD  | 12,614,400               |
+| BOND_UNIT          | 10,000,000,000 (100 DOLI) |
+| MAX_BONDS_PER_PRODUCER | 100                  |
+| WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
+| YEAR_IN_SLOTS      | 3,153,600                |
+| COMMITMENT_PERIOD  | 12,614,400 (~4 years)    |
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 100                      |
@@ -1171,6 +1180,17 @@ Result:
 | VETO_PERIOD        | 604,800 (7 days)         |
 | VETO_THRESHOLD     | 40%                      |
 | REQUIRED_SIGS      | 3 of 5                   |
+| MIN_MAINTAINERS    | 3                        |
+| MAX_MAINTAINERS    | 5                        |
+
+**Vesting Penalties:**
+
+| Bond Age | Penalty Rate |
+|----------|-------------|
+| Year 0-1 | 75%         |
+| Year 1-2 | 50%         |
+| Year 2-3 | 25%         |
+| Year 3+  | 0%          |
 
 ---
 
