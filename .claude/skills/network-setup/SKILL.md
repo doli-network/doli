@@ -39,7 +39,10 @@ Replace `<NETWORK>` with `devnet`, `testnet`, or `mainnet`.
 User wants to...
 │
 ├─ Local development/testing?
-│  └─ Use devnet (fast 1s blocks, no external dependencies)
+│  └─ Use `doli-node devnet` commands (multi-node local network)
+│     doli-node devnet init --nodes 5
+│     doli-node devnet start
+│     doli-node devnet status
 │
 ├─ Public testing with other operators?
 │  └─ Use testnet (mirrors mainnet timing)
@@ -87,7 +90,17 @@ mkdir -p ~/.doli/<NETWORK>
 
 ### Step 4: Run Producer Node
 
-**Devnet (local development):**
+**Devnet (local development) - Recommended: Use devnet subcommands:**
+```bash
+# Quick multi-node setup (handles keys, chainspec, ports automatically)
+doli-node devnet init --nodes 5
+doli-node devnet start
+doli-node devnet status
+doli-node devnet stop
+doli-node devnet clean
+```
+
+**Devnet (manual single node):**
 ```bash
 ./target/release/doli-node --network devnet run --producer --producer-key ~/.doli/devnet/producer.json
 ```
