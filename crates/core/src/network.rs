@@ -2,6 +2,14 @@
 //!
 //! Defines the different networks (mainnet, testnet, devnet) with their
 //! unique identifiers, parameters, and security boundaries.
+//!
+//! ## Environment Configuration
+//!
+//! Network parameters can be configured via environment variables or `.env` files
+//! in the data directory (`~/.doli/{network}/.env`). See [`crate::network_params`]
+//! for the full list of configurable parameters.
+//!
+//! Security-critical parameters (VDF, emission, timing) are locked for mainnet.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -9,6 +17,8 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use vdf::VdfParams;
+
+use crate::network_params::NetworkParams;
 
 /// Cached VDF parameters for each network (generated once, reused forever)
 static MAINNET_VDF_PARAMS: OnceLock<VdfParams> = OnceLock::new();
@@ -31,6 +41,14 @@ impl Network {
     /// Get the numeric network ID
     pub fn id(&self) -> u32 {
         *self as u32
+    }
+
+    /// Get the network parameters (loaded from environment)
+    ///
+    /// Parameters are loaded once from environment variables and cached.
+    /// For mainnet, security-critical parameters are locked to hardcoded values.
+    pub fn params(&self) -> &'static NetworkParams {
+        NetworkParams::load(*self)
     }
 
     /// Get the network name
@@ -63,21 +81,24 @@ impl Network {
     }
 
     /// Get default P2P port for this network
+    ///
+    /// Configurable via `DOLI_P2P_PORT` environment variable.
     pub fn default_p2p_port(&self) -> u16 {
-        match self {
-            Network::Mainnet => 30303,
-            Network::Testnet => 40303,
-            Network::Devnet => 50303,
-        }
+        self.params().default_p2p_port
     }
 
     /// Get default RPC port for this network
+    ///
+    /// Configurable via `DOLI_RPC_PORT` environment variable.
     pub fn default_rpc_port(&self) -> u16 {
-        match self {
-            Network::Mainnet => 8545,
-            Network::Testnet => 18545,
-            Network::Devnet => 28545,
-        }
+        self.params().default_rpc_port
+    }
+
+    /// Get default metrics port for this network
+    ///
+    /// Configurable via `DOLI_METRICS_PORT` environment variable.
+    pub fn default_metrics_port(&self) -> u16 {
+        self.params().default_metrics_port
     }
 
     /// Get default data directory suffix
@@ -90,15 +111,11 @@ impl Network {
     }
 
     /// Get genesis timestamp for this network
+    ///
+    /// Configurable via `DOLI_GENESIS_TIME` environment variable (devnet only).
+    /// Locked for mainnet/testnet to ensure consensus compatibility.
     pub fn genesis_time(&self) -> u64 {
-        match self {
-            // 2026-02-01T00:00:00Z
-            Network::Mainnet => 1769904000,
-            // 2026-01-29T22:00:00Z (testnet v2 launch) - must match genesis.rs
-            Network::Testnet => 1769738400,
-            // Dynamic - use current time (will be set at runtime)
-            Network::Devnet => 0,
-        }
+        self.params().genesis_time
     }
 
     /// Get initial bond amount for this network
@@ -114,21 +131,19 @@ impl Network {
     /// Each bond unit grants 1 consecutive slot per cycle.
     /// - 100 DOLI = 1 bond unit = 1 slot per cycle
     /// - 1,000 DOLI = 10 bond units = 10 slots per cycle
+    ///
+    /// Configurable via `DOLI_BOND_UNIT` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn bond_unit(&self) -> u64 {
-        match self {
-            Network::Mainnet => 10_000_000_000,  // 100 DOLI
-            Network::Testnet => 10_000_000_000,  // 100 DOLI (same as mainnet)
-            Network::Devnet => 100_000_000,      // 1 DOLI (testing)
-        }
+        self.params().bond_unit
     }
 
     /// Get initial block reward for this network
+    ///
+    /// Configurable via `DOLI_INITIAL_REWARD` environment variable (devnet only).
+    /// Locked for mainnet to ensure emission schedule compatibility.
     pub fn initial_reward(&self) -> u64 {
-        match self {
-            Network::Mainnet => 100_000_000,  // 1 DOLI
-            Network::Testnet => 100_000_000,  // 1 DOLI
-            Network::Devnet => 2_000_000_000, // 20 DOLI
-        }
+        self.params().initial_reward
     }
 
     /// Get genesis phase duration in blocks
@@ -137,17 +152,9 @@ impl Network {
     /// After genesis ends, each participating producer is automatically
     /// registered with an automatic_genesis_bond().
     ///
-    /// # Calculation for Devnet (4 producers)
-    /// - Block reward: 20 DOLI
-    /// - Target: 200 DOLI per producer (100 DOLI bond + 100 DOLI reserve)
-    /// - Blocks needed per producer: 200 / 20 = 10 blocks
-    /// - Total genesis blocks: 10 * 4 producers = 40 blocks
+    /// Configurable via `DOLI_GENESIS_BLOCKS` environment variable (devnet only).
     pub fn genesis_blocks(&self) -> u64 {
-        match self {
-            Network::Mainnet => 0, // No genesis phase on mainnet (pre-registered producers)
-            Network::Testnet => 0, // No genesis phase on testnet (pre-registered producers)
-            Network::Devnet => 40, // 40 blocks for 4 producers to earn 200 DOLI each
-        }
+        self.params().genesis_blocks
     }
 
     /// Check if the given height is within the genesis phase
@@ -161,24 +168,20 @@ impl Network {
     /// After genesis ends, each producer who participated gets this amount
     /// automatically bonded (deducted from their earned rewards).
     /// This equals 1 bond unit (100 DOLI on mainnet/testnet, 100 DOLI on devnet).
+    ///
+    /// Configurable via `DOLI_AUTOMATIC_GENESIS_BOND` environment variable (devnet only).
     pub fn automatic_genesis_bond(&self) -> u64 {
-        match self {
-            Network::Mainnet => 10_000_000_000,  // 100 DOLI (1 bond unit)
-            Network::Testnet => 10_000_000_000,  // 100 DOLI (1 bond unit)
-            Network::Devnet => 10_000_000_000,   // 100 DOLI (1 bond unit) - same for consistency
-        }
+        self.params().automatic_genesis_bond
     }
 
     /// Get coinbase maturity (blocks until coinbase rewards can be spent)
     ///
     /// Like Bitcoin, coinbase rewards must wait for confirmations before spending.
     /// Devnet uses shorter maturity for faster testing.
+    ///
+    /// Configurable via `DOLI_COINBASE_MATURITY` environment variable (devnet only).
     pub fn coinbase_maturity(&self) -> u64 {
-        match self {
-            Network::Mainnet => 100, // 100 blocks (~17 minutes at 10s slots)
-            Network::Testnet => 100, // Same as mainnet
-            Network::Devnet => 10,   // 10 blocks (~100 seconds) for fast testing
-        }
+        self.params().coinbase_maturity
     }
 
     /// Check if VDF is enabled for this network
@@ -199,12 +202,11 @@ impl Network {
     /// based on the network-specific discriminant size.
     ///
     /// Note: Check vdf_enabled() first - if false, VDF is skipped entirely.
+    ///
+    /// Configurable via `DOLI_VDF_ITERATIONS` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn vdf_iterations(&self) -> u64 {
-        match self {
-            Network::Mainnet => 100_000, // ~10-100 seconds with 2048-bit discriminant
-            Network::Testnet => 100_000, // Same as mainnet
-            Network::Devnet => 1,        // Single iteration for fast development
-        }
+        self.params().vdf_iterations
     }
 
     /// Get VDF discriminant size in bits for this network
@@ -256,24 +258,20 @@ impl Network {
     }
 
     /// Get veto period for software updates (in seconds)
+    ///
+    /// Configurable via `DOLI_VETO_PERIOD_SECS` environment variable.
     pub fn veto_period_secs(&self) -> u64 {
-        match self {
-            Network::Mainnet => 7 * 24 * 3600, // 7 days
-            Network::Testnet => 7 * 24 * 3600, // Same as mainnet (7 days)
-            Network::Devnet => 60,             // 1 minute
-        }
+        self.params().veto_period_secs
     }
 
     /// Get grace period after update approval before enforcement (in seconds)
     ///
     /// After the veto period ends and an update is approved, producers have
     /// this grace period to apply the update before version enforcement begins.
+    ///
+    /// Configurable via `DOLI_GRACE_PERIOD_SECS` environment variable.
     pub fn grace_period_secs(&self) -> u64 {
-        match self {
-            Network::Mainnet => 48 * 3600, // 48 hours
-            Network::Testnet => 48 * 3600, // Same as mainnet (48 hours)
-            Network::Devnet => 30,         // 30 seconds (fast testing)
-        }
+        self.params().grace_period_secs
     }
 
     /// Get minimum producer age before voting is allowed (in seconds)
@@ -281,40 +279,34 @@ impl Network {
     /// Producers must be registered for at least this long before they can
     /// vote on updates. This prevents flash Sybil attacks where an attacker
     /// registers many producers just before a vote.
+    ///
+    /// Configurable via `DOLI_MIN_VOTING_AGE_SECS` environment variable.
     pub fn min_voting_age_secs(&self) -> u64 {
-        match self {
-            Network::Mainnet => 30 * 24 * 3600, // 30 days
-            Network::Testnet => 30 * 24 * 3600, // Same as mainnet (30 days)
-            Network::Devnet => 60,              // 1 minute (fast testing)
-        }
+        self.params().min_voting_age_secs
     }
 
     /// Get minimum producer age for voting in blocks
     ///
     /// Converts min_voting_age_secs to blocks using slot_duration.
     pub fn min_voting_age_blocks(&self) -> u64 {
-        self.min_voting_age_secs() / self.slot_duration()
+        self.params().min_voting_age_blocks()
     }
 
     /// Get interval between automatic update checks (in seconds)
+    ///
+    /// Configurable via `DOLI_UPDATE_CHECK_INTERVAL_SECS` environment variable.
     pub fn update_check_interval_secs(&self) -> u64 {
-        match self {
-            Network::Mainnet => 6 * 3600, // 6 hours
-            Network::Testnet => 6 * 3600, // Same as mainnet (6 hours)
-            Network::Devnet => 10,        // 10 seconds (fast testing)
-        }
+        self.params().update_check_interval_secs
     }
 
     /// Get crash detection window for automatic rollback (in seconds)
     ///
     /// If the node crashes multiple times within this window after an update,
     /// the watchdog will automatically rollback to the previous version.
+    ///
+    /// Configurable via `DOLI_CRASH_WINDOW_SECS` environment variable.
     pub fn crash_window_secs(&self) -> u64 {
-        match self {
-            Network::Mainnet => 3600, // 1 hour
-            Network::Testnet => 3600, // Same as mainnet (1 hour)
-            Network::Devnet => 60,    // 1 minute (fast testing)
-        }
+        self.params().crash_window_secs
     }
 
     /// Get number of crashes within crash_window that trigger automatic rollback
@@ -328,7 +320,7 @@ impl Network {
     /// After this many blocks as a producer, the vote weight reaches 4x.
     /// Uses blocks_per_year * 4 for real time networks.
     pub fn seniority_maturity_blocks(&self) -> u64 {
-        self.blocks_per_year() * 4 // 4 years in blocks
+        self.params().seniority_maturity_blocks()
     }
 
     /// Get blocks per seniority step (for vote weight calculation)
@@ -340,16 +332,15 @@ impl Network {
     /// - 3 steps (3-4 year): 3.25x
     /// - 4 steps (4+ years): 4.00x
     pub fn seniority_step_blocks(&self) -> u64 {
-        self.blocks_per_year() // 1 year in blocks
+        self.params().seniority_step_blocks()
     }
 
     /// Get slot duration for this network (in seconds)
+    ///
+    /// Configurable via `DOLI_SLOT_DURATION` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn slot_duration(&self) -> u64 {
-        match self {
-            Network::Mainnet => 10, // 10 seconds
-            Network::Testnet => 10, // 10 seconds
-            Network::Devnet => 10,  // 10 seconds (same as mainnet for testing)
-        }
+        self.params().slot_duration
     }
 
     /// Get VDF target time for this network (in milliseconds)
@@ -381,32 +372,25 @@ impl Network {
     /// - 10M iterations ≈ 700ms on modern hardware
     /// - 1M iterations ≈ 70ms on modern hardware
     ///
-    /// All networks use 10M for production-like testing.
+    /// Configurable via `DOLI_HEARTBEAT_VDF_ITERATIONS` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn heartbeat_vdf_iterations(&self) -> u64 {
-        match self {
-            Network::Mainnet => 10_000_000, // ~700ms
-            Network::Testnet => 10_000_000, // Same as mainnet (~700ms)
-            Network::Devnet => 10_000_000,  // Same as mainnet (~700ms)
-        }
+        self.params().heartbeat_vdf_iterations
     }
 
     /// Get bootstrap blocks count
+    ///
+    /// Configurable via `DOLI_BOOTSTRAP_BLOCKS` environment variable (devnet only).
     pub fn bootstrap_blocks(&self) -> u64 {
-        match self {
-            Network::Mainnet => 60_480, // ~1 week at 10s slots
-            Network::Testnet => 60_480, // Same as mainnet (~1 week)
-            Network::Devnet => 60,      // ~1 minute at 1s slots
-        }
+        self.params().bootstrap_blocks
     }
 
     /// Get slots per reward epoch for this network
     /// Reward epochs determine when accumulated rewards are distributed equally
+    ///
+    /// Configurable via `DOLI_SLOTS_PER_REWARD_EPOCH` environment variable (devnet only).
     pub fn slots_per_reward_epoch(&self) -> u32 {
-        match self {
-            Network::Mainnet => 8_640, // 1 day (86,400 seconds / 10s slots)
-            Network::Testnet => 360,   // 1 hour (3,600 seconds / 10s slots) - shorter for testing
-            Network::Devnet => 30,     // 30 seconds at 1s slots (fast testing)
-        }
+        self.params().slots_per_reward_epoch
     }
 
     /// Get blocks per reward epoch for this network (block-height based epochs).
@@ -415,32 +399,17 @@ impl Network {
     /// Block-height based epochs are simpler than slot-based epochs because
     /// block heights are sequential with no gaps.
     ///
-    /// # Examples
-    ///
-    /// - Mainnet: 360 blocks ≈ 1 hour at 10s blocks
-    /// - Testnet: 360 blocks ≈ 1 hour at 10s blocks
-    /// - Devnet: 4 blocks ≈ 40 seconds at 10s blocks
+    /// Configurable via `DOLI_BLOCKS_PER_REWARD_EPOCH` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn blocks_per_reward_epoch(&self) -> u64 {
-        match self {
-            Network::Mainnet => 360, // ~1 hour (360 blocks × 10s)
-            Network::Testnet => 360, // ~1 hour (360 blocks × 10s)
-            Network::Devnet => 4,    // ~40 seconds (4 blocks × 10s)
-        }
+        self.params().blocks_per_reward_epoch
     }
 
     /// Get default bootstrap nodes for this network
-    pub fn bootstrap_nodes(&self) -> Vec<&'static str> {
-        match self {
-            Network::Mainnet => vec![
-                "/dns4/seed1.doli.network/tcp/30303",
-                "/dns4/seed2.doli.network/tcp/30303",
-            ],
-            Network::Testnet => vec![
-                "/dns4/bootstrap1.testnet.doli.network/tcp/40303",
-                "/dns4/bootstrap2.testnet.doli.network/tcp/40304",
-            ],
-            Network::Devnet => vec![], // No bootstrap for local devnet
-        }
+    ///
+    /// Configurable via `DOLI_BOOTSTRAP_NODES` environment variable (comma-separated).
+    pub fn bootstrap_nodes(&self) -> Vec<String> {
+        self.params().bootstrap_nodes.clone()
     }
 
     /// Check if this is a test network (testnet or devnet)
@@ -460,29 +429,28 @@ impl Network {
     /// - Mainnet: 3,153,600 blocks (~365.25 days at 6 blocks/minute)
     /// - Testnet: 3,153,600 blocks (same as mainnet)
     /// - Devnet:  144 blocks (2.4 minutes = 1 simulated year, era ≈ 10 minutes)
+    ///
+    /// Configurable via `DOLI_BLOCKS_PER_YEAR` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn blocks_per_year(&self) -> u64 {
-        match self {
-            Network::Mainnet => 3_153_600, // 365.25 days × 24h × 60min × 6 blocks/min
-            Network::Testnet => 3_153_600, // Same as mainnet
-            Network::Devnet => 144, // 144 blocks × 1s = 2.4 min/year, 576 blocks/era ≈ 10 min
-        }
+        self.params().blocks_per_year
     }
 
     /// Blocks per "month" (simulated)
     pub fn blocks_per_month(&self) -> u64 {
-        self.blocks_per_year() / 12
+        self.params().blocks_per_month()
     }
 
     /// Blocks per era (4 simulated "years")
     pub fn blocks_per_era(&self) -> u64 {
-        self.blocks_per_year() * 4
+        self.params().blocks_per_era()
     }
 
     /// Commitment period (4 years) in blocks
     ///
     /// Producers who complete this period get their full bond back.
     pub fn commitment_period(&self) -> u64 {
-        self.blocks_per_era()
+        self.params().commitment_period()
     }
 
     /// Exit history retention period (8 years) in blocks
@@ -490,82 +458,68 @@ impl Network {
     /// After this period, exit records expire and producers can re-register
     /// without the prior_exit penalty.
     pub fn exit_history_retention(&self) -> u64 {
-        self.blocks_per_era() * 2
+        self.params().exit_history_retention()
     }
 
     /// Inactivity threshold in blocks
     ///
     /// After this many blocks without activity, a producer incurs an
     /// activity gap penalty.
+    ///
+    /// Configurable via `DOLI_INACTIVITY_THRESHOLD` environment variable (devnet only).
     pub fn inactivity_threshold(&self) -> u64 {
-        match self {
-            Network::Mainnet => 60_480, // ~1 week at 10s slots
-            Network::Testnet => 60_480, // Same as mainnet (~1 week)
-            Network::Devnet => 30,      // 30 seconds with 1s slots
-        }
+        self.params().inactivity_threshold
     }
 
     /// Unbonding period in blocks
     ///
     /// After requesting exit, producers must wait this long before
     /// claiming their bond. (7 days)
+    ///
+    /// Configurable via `DOLI_UNBONDING_PERIOD` environment variable (devnet only).
+    /// Locked for mainnet to ensure consensus compatibility.
     pub fn unbonding_period(&self) -> u64 {
-        match self {
-            Network::Mainnet => 60_480, // 7 days at 10s slots
-            Network::Testnet => 60_480, // Same as mainnet (7 days)
-            Network::Devnet => 60,      // ~1 minute with 1s slots
-        }
+        self.params().unbonding_period
     }
 
     /// Veto period for software updates in blocks
     pub fn veto_period_blocks(&self) -> u64 {
-        match self {
-            Network::Mainnet => 60_480, // 7 days at 10s slots
-            Network::Testnet => 60_480, // Same as mainnet (7 days)
-            Network::Devnet => 60,      // ~1 minute with 1s slots
-        }
+        self.params().veto_period_blocks()
     }
 
     /// Maximum registrations allowed per block
     ///
     /// Limits registration throughput to prevent spam attacks.
+    ///
+    /// Configurable via `DOLI_MAX_REGISTRATIONS_PER_BLOCK` environment variable.
     pub fn max_registrations_per_block(&self) -> u32 {
-        match self {
-            Network::Mainnet => 5,
-            Network::Testnet => 5, // Same as mainnet
-            Network::Devnet => 20, // Higher for rapid testing
-        }
+        self.params().max_registrations_per_block
     }
 
     /// Base registration fee
     ///
     /// This is multiplied by 1.5^pending_count for anti-DoS escalation.
+    ///
+    /// Configurable via `DOLI_REGISTRATION_BASE_FEE` environment variable.
     pub fn registration_base_fee(&self) -> u64 {
-        match self {
-            Network::Mainnet => 100_000, // 0.001 DOLI
-            Network::Testnet => 100_000, // Same as mainnet (0.001 DOLI)
-            Network::Devnet => 1_000,    // 0.00001 DOLI (nearly free)
-        }
+        self.params().registration_base_fee
     }
 
     /// VDF iterations for registration proof
+    ///
+    /// Configurable via `DOLI_VDF_REGISTER_ITERATIONS` environment variable (devnet only).
+    /// Locked for mainnet to ensure anti-Sybil protection.
     pub fn vdf_register_iterations(&self) -> u64 {
-        match self {
-            Network::Mainnet => 600_000_000, // ~10 minutes
-            Network::Testnet => 600_000_000, // Same as mainnet (~10 minutes)
-            Network::Devnet => 5_000_000,    // ~5 seconds
-        }
+        self.params().vdf_register_iterations
     }
 
     /// Maximum registration fee cap
     ///
     /// Prevents fees from becoming unreasonable during congestion.
+    ///
+    /// Configurable via `DOLI_MAX_REGISTRATION_FEE` environment variable.
     pub fn max_registration_fee(&self) -> u64 {
-        match self {
-            Network::Mainnet => 1_000_000_000, // 10 DOLI
-            Network::Testnet => 1_000_000_000, // Same as mainnet (10 DOLI)
-            Network::Devnet => 10_000_000,     // 0.1 DOLI
-        }
+        self.params().max_registration_fee
     }
 
     /// Get all available networks
