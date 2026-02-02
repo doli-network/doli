@@ -1,30 +1,75 @@
 # CLAUDE.md - Project Brain
 
 ## 🚨 CRITICAL RULES
+
 1. **Environment**: All commands **MUST** run via Nix:
    `nix --extra-experimental-features "nix-command flakes" develop --command bash -c "<command>"`
+
 2. **Truth Hierarchy**: `WHITEPAPER.md` (Law) > `specs/` (Tech) > `docs/` (User) > Code.
-3. **Pre-Commit Gate**:
-   - Sync docs (`specs/` vs code).
-   - Update `CLAUDE.md` if arch/constants change.
-   - Verify: `build`, `clippy`, `test`.
-   - Use `/fix-bug` for bugs. **No masking symptoms.**
-4. **Filtering**: `command 2>&1 | grep -iE "error|warn|fail|pass" | head -20`
+   - Conflicts resolve top-down. Code must conform to specs, not the reverse.
+   - If code contradicts specs → code is wrong, fix the code.
+   - If specs contradict whitepaper → specs are wrong, fix the specs.
+
+3. **Pre-Commit Gate** (Execute in order, all steps mandatory):
+   
+   | Step | Action | Condition |
+   |------|--------|-----------|
+   | 1 | **Update `specs/`** | If technical behavior, API, constants, or protocol changed |
+   | 2 | **Update `docs/`** | If user-facing behavior, CLI, or configuration changed |
+   | 3 | **Update `CLAUDE.md`** | If architecture, crate structure, or constants changed |
+   | 4 | **Verify build** | `cargo build && cargo clippy -- -D warnings && cargo fmt --check` |
+   | 5 | **Verify tests** | `cargo test` |
+   | 6 | **Commit** | Only after steps 1-5 pass |
+
+   **Commit command** (only after all steps pass):
+```bash
+   git add -A && git commit -m "<type>(<scope>): <description>"
+```
+
+4. **Documentation Sync Rules**:
+   - `specs/` = Source of truth for implementation. Code divergence = bug.
+   - `docs/` = User-facing. Must reflect current CLI, config, and behavior.
+   - New feature without docs update = **incomplete implementation**.
+   - Modification without docs review = **potential regression**.
+   - When updating docs, check related files for consistency.
+
+5. **Bug Fixing**: Use `/fix-bug` workflow. **No masking symptoms.**
+   - Root cause analysis required before fix.
+   - If fix changes behavior → docs update required (Rule 3).
+   - If fix reveals spec inconsistency → update specs first.
+
+6. **Output Filtering**: Always filter verbose output:
+   `command 2>&1 | grep -iE "error|warn|fail|pass" | head -20`
 
 ## 🛠 Commands (Wrapped)
-| Action | Command (Implicitly wrapped in Nix) |
-|--------|-------------------------------------|
-| **Build** | `cargo build`, `cargo build --release`, `cargo clippy`, `cargo fmt` |
-| **Test** | `cargo test`, `cargo test -p core` |
+
+All commands implicitly wrapped in Nix develop shell.
+
+| Action | Command |
+|--------|---------|
+| **Build** | `cargo build` |
+| **Build Release** | `cargo build --release` |
+| **Lint** | `cargo clippy -- -D warnings` |
+| **Format Check** | `cargo fmt --check` |
+| **Format Fix** | `cargo fmt` |
+| **Test All** | `cargo test` |
+| **Test Crate** | `cargo test -p <crate>` (e.g., `cargo test -p core`) |
 | **Fuzz** | `cd testing/fuzz && cargo +nightly fuzz run <target>` |
-| **Run Node** | `cargo run -p doli-node -- (--network testnet) run` |
+| **Run Node** | `cargo run -p doli-node -- run` |
+| **Run Node (Testnet)** | `cargo run -p doli-node -- --network testnet run` |
 | **Run Wallet** | `cargo run -p doli-cli -- <command>` |
+| **Full Pre-Commit** | `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test` |
 
 ## 🧠 System Architecture
-**Type**: Proof of Time (PoT). **Resource**: Time (VDF). **Selection**: Deterministic bond-weighted round-robin.
-**Consensus**: Heaviest chain (Seniority-weighted). **Engine**: RocksDB + libp2p + Axum.
+
+**Type**: Proof of Time (PoT)
+**Resource**: Time (VDF)
+**Selection**: Deterministic bond-weighted round-robin
+**Consensus**: Heaviest chain (Seniority-weighted)
+**Engine**: RocksDB + libp2p + Axum
 
 ### Crates & Responsibilities
+
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `core` | Consensus, Types, Scheduler | `consensus.rs`, `scheduler.rs`, `validation.rs`, `discovery/` |
@@ -36,6 +81,7 @@
 | `updater` | 3/5 Multisig Auto-Update | `lib.rs`, `vote.rs` |
 
 ### ⚙️ Consensus Constants
+
 | Param | Mainnet | Devnet | Note |
 |-------|---------|--------|------|
 | **Slot** | 10s | 10s | `SLOT_DURATION` |
@@ -45,49 +91,139 @@
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 100 DOLI | 1 DOLI | `BOND_UNIT` |
 | **Unbond** | 7 days | 10m | `WITHDRAWAL_DELAY_SLOTS` |
-| **Selection**| `slot % bonds` | - | Primary window 0-3s |
+| **Selection** | `slot % bonds` | - | Primary window 0-3s |
 
 ### 🌐 Network & Ports
+
 | Net | ID | Port (P2P/RPC) | Magic | Prefix | Genesis |
 |-----|----|----------------|-------|--------|---------|
-| Main| 1 | 30303 / 8545 | `D0 11 00 01` | `doli` | 2026-02-01 |
-| Test| 2 | 40303 / 18545 | `D0 11 00 02` | `tdoli`| 2026-01-29 |
-| Dev | 99 | 50303 / 28545 | `D0 11 00 63` | `ddoli`| Dynamic |
+| Main | 1 | 30303 / 8545 | `D0 11 00 01` | `doli` | 2026-02-01 |
+| Test | 2 | 40303 / 18545 | `D0 11 00 02` | `tdoli` | 2026-01-29 |
+| Dev | 99 | 50303 / 28545 | `D0 11 00 63` | `ddoli` | Dynamic |
+
+### 🔧 Environment Configuration
+
+Network parameters configurable via `~/.doli/{network}/.env`:
+
+```bash
+# Networking (all networks)
+DOLI_P2P_PORT, DOLI_RPC_PORT, DOLI_METRICS_PORT, DOLI_BOOTSTRAP_NODES
+
+# Timing (devnet only - locked for mainnet)
+DOLI_SLOT_DURATION, DOLI_GENESIS_TIME, DOLI_UNBONDING_PERIOD
+
+# Economics (devnet only - locked for mainnet)
+DOLI_BOND_UNIT, DOLI_INITIAL_REWARD, DOLI_BLOCKS_PER_YEAR
+
+# VDF (devnet only - locked for mainnet)
+DOLI_VDF_ITERATIONS, DOLI_HEARTBEAT_VDF_ITERATIONS
+```
+
+**Locked for mainnet**: Slot duration, genesis time, bond unit, emission, VDF iterations, blocks/year.
+**Files**: `.env.example.{devnet,testnet,mainnet}` in repo root.
+**Code**: `crates/core/src/network_params.rs`, `crates/core/src/env_loader.rs`
 
 ## 💰 Economics (Deflationary)
-- **Supply**: ~25.2M DOLI. **Rewards**: 100% to producer. **Halving**: Every Era (~4y).
-- **Weights**: Year 0-1 (1x) → Year 3+ (4x). **Fork Choice**: Heaviest weight.
-- **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 4y), Reg Fees.
+
+- **Supply**: ~25.2M DOLI
+- **Rewards**: 100% to producer
+- **Halving**: Every Era (~4y)
+- **Weights**: Year 0-1 (1x) → Year 3+ (4x)
+- **Fork Choice**: Heaviest weight
+- **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 4y), Reg Fees
 
 ### Bond Vesting (Withdrawal Penalty)
+
 | Age | Penalty |
 |-----|---------|
-| <1y | 75% Burn|
-| 1-2y| 50% Burn|
-| 2-3y| 25% Burn|
+| <1y | 75% Burn |
+| 1-2y | 50% Burn |
+| 2-3y | 25% Burn |
 | 3y+ | 0% |
 
 ## 🛡 Validation & Security
-- **Block**: Ver=1, Time advances, Max size (1MB+), Merkle match, VDF valid.
-- **Tx**: Sig valid, Inputs exist, No double-spend. Malleability: Sig excluded from hash.
-- **Slashing**: Double-production = 100% BURN. Detection: Network + SignedSlotsDB.
-- **Governance**: 3/5 Maintainers. Veto: 40% stake (7d period).
+
+### Block Validation
+- Version = 1
+- Timestamp advances from parent
+- Max size: 1MB + header overhead
+- Merkle root matches transactions
+- VDF proof valid for slot
+
+### Transaction Validation
+- Signature valid (Ed25519)
+- Inputs exist and unspent
+- No double-spend within block
+- Malleability protection: Signature excluded from TxID hash
+
+### Slashing
+- **Trigger**: Double-production (same slot, different blocks)
+- **Penalty**: 100% bond BURN
+- **Detection**: Network gossip + SignedSlotsDB local tracking
+- **Proof**: `EquivocationProof` (two signed headers, same slot, same producer)
+
+### Governance
+- **Maintainers**: 3/5 multisig required for updates
+- **Veto**: 40% stake can block (7-day voting period)
 
 ## 📂 File Map
-### Core
-- `consensus.rs`: Constants, Bond logic.
-- `scheduler.rs`: Round-robin logic (`select_producer`).
-- `validation.rs`: 37 error types (`InvalidTimestamp`, `DoubleSpend`).
-- `discovery/`: Signed announcements, CRDT (`gset.rs`), Bloom filters.
 
-### Network (`sync/`)
-- `manager.rs`: Orch. `reorg.rs`: Fork choice (Depth=100).
-- `equivocation.rs`: Detect double-prop (`EquivocationProof`).
-- `headers.rs` / `bodies.rs`: Header-first download.
+### Core (`crates/core/src/`)
+| File | Purpose |
+|------|---------|
+| `consensus.rs` | Constants, Bond logic, Chain parameters |
+| `scheduler.rs` | Round-robin producer selection (`select_producer`) |
+| `validation.rs` | 37 error types (`InvalidTimestamp`, `DoubleSpend`, etc.) |
+| `discovery/` | Signed announcements, CRDT (`gset.rs`), Bloom filters |
 
-### Storage
-- CFs: `headers`, `bodies`, `height_index`, `slot_index`, `presence`.
-- `utxo.rs`: HashMap driven. `producer.rs`: Registry.
+### Network (`crates/network/src/sync/`)
+| File | Purpose |
+|------|---------|
+| `manager.rs` | Sync orchestration |
+| `reorg.rs` | Fork choice (Max depth = 100) |
+| `equivocation.rs` | Double-production detection (`EquivocationProof`) |
+| `headers.rs` | Header-first sync download |
+| `bodies.rs` | Body download after headers |
+
+### Storage (`crates/storage/src/`)
+| File | Purpose |
+|------|---------|
+| `block_store.rs` | RocksDB block storage |
+| `utxo.rs` | UTXO set (HashMap driven) |
+| `producer.rs` | Producer registry |
+
+**Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
 
 ### Transaction Types (`TxType`)
-0:Transfer, 1:Register, 2:Exit, 4:ClaimBond, 5:Slash, 6:Coinbase, 7:AddBond, 8/9:Withdrawal, 10:EpochReward, 11/12:Maintainer.
+
+| Value | Type | Description |
+|-------|------|-------------|
+| 0 | Transfer | Standard value transfer |
+| 1 | Register | Producer registration |
+| 2 | Exit | Producer exit request |
+| 4 | ClaimBond | Claim unbonded stake |
+| 5 | Slash | Slash equivocating producer |
+| 6 | Coinbase | Block reward |
+| 7 | AddBond | Add to existing bond |
+| 8 | WithdrawalRequest | Request early withdrawal |
+| 9 | WithdrawalClaim | Claim withdrawal |
+| 10 | EpochReward | Epoch-level rewards |
+| 11 | MaintainerAdd | Add maintainer (governance) |
+| 12 | MaintainerRemove | Remove maintainer (governance) |
+
+## 📋 Documentation Structure
+
+### `specs/` - Technical Specifications
+- Protocol details, message formats, algorithms
+- **Audience**: Developers, implementers
+- **Update when**: Code behavior, API, constants, or protocol changes
+
+### `docs/` - User Documentation
+- CLI usage, configuration, tutorials
+- **Audience**: Node operators, users
+- **Update when**: User-facing behavior, CLI, or configuration changes
+
+### `WHITEPAPER.md` - Protocol Law
+- Economic model, consensus philosophy, security model
+- **Audience**: Everyone
+- **Update when**: Fundamental protocol changes (rare, requires governance)
