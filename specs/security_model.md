@@ -10,6 +10,9 @@ This document describes the security model, threat analysis, cryptographic found
 4. [Economic Security](#4-economic-security)
 5. [Consensus Security](#5-consensus-security)
 6. [Implementation Security](#6-implementation-security)
+   - 6.1 [Network Layer Security](#61-network-layer-security) (Equivocation Detection, Peer Scoring, Rate Limiting, TX Malleability)
+   - 6.2 [Consensus Security Implementations](#62-consensus-security-implementations) (Anti-Sybil, Anti-Grinding)
+   - 6.3-6.7 [Code Security](#63-constant-time-operations) (Constant-Time, Overflow, Validation, Memory, Serialization)
 7. [Known Limitations](#7-known-limitations)
 8. [Audit Trail](#8-audit-trail)
 9. [Responsible Disclosure](#9-responsible-disclosure)
@@ -244,20 +247,38 @@ Era 3 (years 12-16):   343 coins
 
 ### 4.2 Slashing Conditions
 
-| Violation | Penalty | Proof |
-|-----------|---------|-------|
-| Double production | 100% bond burned | Two signed blocks for same slot |
-| Invalid block | None (slot lost) | Block rejected by network |
-| Repeated inactivity | Removal from set | Miss consecutive slots |
+| Violation | Penalty | Proof Required |
+|-----------|---------|----------------|
+| Double production | 100% bond burned | Two valid BlockHeaders for same slot |
+| Invalid block | None (slot lost) | N/A - Block rejected by network |
+| Inactivity | None | N/A - Natural consequence (missed rewards) |
 
-**Important**: Slashing is reserved ONLY for double production (equivocation). This is the only offense that cannot happen by accident.
+**Important**: Slashing is reserved ONLY for double production (equivocation). This is the only offense that cannot happen by accident - it requires intentionally signing two different blocks for the same slot.
 
-Invalid blocks are NOT slashed - the natural penalty (losing the slot and its reward) is sufficient. Following Bitcoin's philosophy: the network rejects bad blocks, you wasted your time, end of story.
+**Slashing Evidence Requirements**:
+```rust
+SlashingEvidence::DoubleProduction {
+    block_header_1: BlockHeader,  // Full header with VDF proof
+    block_header_2: BlockHeader,  // Full header with VDF proof
+}
+```
 
-Slashed bonds are **burned**, not redistributed, to prevent:
-- Incentivizing false accusations
-- Collusion between accusers and validators
-- Gaming the slashing mechanism
+Validators verify:
+1. Both headers have the same producer public key
+2. Both headers have the same slot number
+3. Both headers have different hashes
+4. Both headers have valid VDF outputs (proving actual computation)
+
+**Why 100% Burn?**
+- Invalid blocks are NOT slashed - the natural penalty (losing the slot and its reward) is sufficient
+- Following Bitcoin's philosophy: the network rejects bad blocks, you wasted your time, end of story
+- Double production is unambiguously intentional fraud
+
+**Why Burned, Not Redistributed?**
+- Prevents incentivizing false accusations
+- Eliminates collusion between accusers and validators
+- Removes gaming opportunities from slashing mechanism
+- Deflationary: reduces total supply
 
 ### 4.3 Economic Attack Costs
 
@@ -339,7 +360,210 @@ During bootstrap (first 10,080 blocks):
 
 ## 6. Implementation Security
 
-### 6.1 Constant-Time Operations
+### 6.1 Network Layer Security
+
+#### 6.1.1 Equivocation Detection
+
+The equivocation detector tracks block production to detect double-signing (the only slashable offense).
+
+**Implementation Details** (`crates/network/src/sync/equivocation.rs`):
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  EQUIVOCATION DETECTOR                                          │
+├─────────────────────────────────────────────────────────────────┤
+│  Storage: HashMap<(PublicKey, Slot), BlockHeader>               │
+│  LRU Cache: MAX_TRACKED_SLOTS = 1000                            │
+│  Data Stored: Full BlockHeader (not just hash)                  │
+│  Purpose: Enable VDF verification in slashing evidence          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why Full Headers?**
+- Block headers contain VDF output and proof
+- Validators must verify the producer actually computed valid VDFs for both blocks
+- Prevents fabricated evidence attacks (can't invent fake block hashes)
+- Evidence is cryptographically verifiable by any node
+
+**Detection Flow**:
+1. Block received → check if `(producer, slot)` exists in tracker
+2. If exists with different hash → **EQUIVOCATION DETECTED**
+3. Create `EquivocationProof` with both full `BlockHeader`s
+4. Convert to `SlashProducer` transaction with reporter signature
+5. Broadcast for inclusion in blockchain
+
+**Slashing Evidence Structure**:
+```rust
+SlashingEvidence::DoubleProduction {
+    block_header_1: BlockHeader,  // Full header with VDF
+    block_header_2: BlockHeader,  // Full header with VDF
+}
+```
+
+#### 6.1.2 Peer Scoring System
+
+The peer scorer tracks reputation to identify and penalize misbehaving nodes.
+
+**Implementation Details** (`crates/network/src/scoring.rs`):
+
+| Infraction | Penalty | Notes |
+|------------|---------|-------|
+| Invalid Block | -100 | Serious protocol violation |
+| Invalid Transaction | -20 | May be honest relay of bad tx |
+| Timeout | -5 × count | Escalating penalty (max -50) |
+| Spam | -50 | DoS attempt |
+| Duplicate Message | -5 | Mild, may be network issue |
+| Malformed Message | -30 | Cannot parse data |
+
+**Thresholds**:
+
+| Threshold | Value | Action |
+|-----------|-------|--------|
+| Disconnect | -200 | Close connection immediately |
+| Ban | -500 | Block peer for 1 hour |
+| Score Range | -1000 to +1000 | Clamped to prevent overflow |
+
+**Positive Scoring**:
+- Valid block received: +10 points
+- Valid transaction received: +1 point
+
+**Score Decay**:
+- Scores decay towards zero over time (1 point/minute by default)
+- Infractions older than 1 hour are pruned from history
+- Bans expire after 1 hour
+
+#### 6.1.3 Rate Limiting
+
+Token bucket rate limiting protects against DoS attacks at both per-peer and global levels.
+
+**Implementation Details** (`crates/network/src/rate_limit.rs`):
+
+| Resource | Per-Peer Limit | Global Limit |
+|----------|---------------|--------------|
+| Blocks | 10/minute | 100/minute |
+| Transactions | 50/second | 200/second |
+| Requests | 20/second | - |
+| Bandwidth | 1 MB/second | 10 MB/second |
+
+**Token Bucket Algorithm**:
+- Capacity: Burst allowance (e.g., 10 blocks for per-peer block limit)
+- Refill Rate: Tokens per second (e.g., 10/60 = 0.167 blocks/sec)
+- Check before accept: `can_consume(amount)` returns false if bucket empty
+- Record after accept: `try_consume(amount)` deducts tokens
+
+**Features**:
+- Per-peer tracking via `HashMap<PeerId, PeerLimits>`
+- Global limits prevent aggregate flooding
+- Stale peer cleanup (max 1000 tracked peers)
+- Can be disabled for testing via config
+
+#### 6.1.4 Transaction Malleability Prevention
+
+Transaction hashes exclude signatures to prevent third-party modification.
+
+**Implementation** (`crates/core/src/transaction.rs:869`):
+
+```rust
+pub fn hash(&self) -> Hash {
+    let mut hasher = Hasher::new();
+    hasher.update(&self.version.to_le_bytes());
+    hasher.update(&(self.tx_type as u32).to_le_bytes());
+
+    // Hash inputs (WITHOUT signatures)
+    hasher.update(&(self.inputs.len() as u32).to_le_bytes());
+    for input in &self.inputs {
+        hasher.update(input.prev_tx_hash.as_bytes());
+        hasher.update(&input.output_index.to_le_bytes());
+        // Signature is NOT included in tx hash
+    }
+
+    // Hash outputs and extra_data
+    // ...
+}
+```
+
+**What This Prevents**:
+- Third parties cannot modify a signed transaction's hash
+- Protects against transaction replacement attacks
+- Ensures txid stability for dependent transactions
+- Similar to Bitcoin's SegWit approach
+
+**What Is Hashed**:
+- Version, transaction type
+- Input outpoints (prev_tx_hash, output_index) - **NOT signatures**
+- All outputs (type, amount, pubkey_hash, lock_until)
+- Extra data (registration info, slash evidence, etc.)
+
+### 6.2 Consensus Security Implementations
+
+#### 6.2.1 Anti-Sybil Protection (Registration)
+
+Producer registration uses Wesolowski VDF over class groups for Sybil resistance.
+
+**Implementation Details**:
+
+| Parameter | Mainnet/Testnet | Devnet |
+|-----------|-----------------|--------|
+| Base Iterations (T_REGISTER_BASE) | 600,000,000 (~10 min) | 5,000,000 (~5s) |
+| Maximum (T_REGISTER_CAP) | 86,400,000,000 (~24 hrs) | - |
+| Discriminant Bits | 2048 | 256 |
+
+**Chained Hash System** (`RegistrationData` in `transaction.rs`):
+```rust
+pub struct RegistrationData {
+    pub public_key: PublicKey,
+    pub epoch: u32,
+    pub vdf_output: Vec<u8>,
+    pub vdf_proof: Vec<u8>,
+    pub prev_registration_hash: Hash,  // Chain to previous registration
+    pub sequence_number: u64,          // Monotonic counter
+}
+```
+
+**Anti-Parallel Attack**:
+- Each registration references previous registration's hash
+- Attacker cannot register multiple nodes simultaneously
+- Must wait for each registration to be confirmed before starting next
+- Sequence numbers prevent replay attacks
+
+#### 6.2.2 Anti-Grinding Protection (Block Production)
+
+Block VDF input construction prevents pre-computation attacks.
+
+**VDF Input Construction** (`crates/vdf/src/lib.rs:224`):
+```rust
+pub fn block_input(
+    prev_hash: &Hash,        // Unknown until previous block
+    merkle_root: &Hash,      // Block content commitment
+    slot: u32,               // Time ordering
+    producer: &PublicKey,    // Identity binding
+) -> Hash {
+    let mut hasher = Hasher::new();
+    hasher.update(b"DOLI_VDF_BLOCK_V1");
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(merkle_root.as_bytes());
+    hasher.update(&slot.to_le_bytes());
+    hasher.update(producer.as_bytes());
+    hasher.finalize()
+}
+```
+
+**Parameters**:
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| T_BLOCK | 10,000,000 iterations | ~700ms computation |
+| Slot Duration | 10 seconds | ~9.3 seconds for grinding |
+| Max Attempts | ~14 per slot | 9300ms / 700ms ≈ 13.3 |
+
+**Why Grinding Is Impractical**:
+1. **prev_hash Dependency**: Unknown until previous block is finalized
+2. **Limited Time**: Only ~9.3 seconds between prev_block and slot end
+3. **Sequential VDF**: Each attempt takes ~700ms, cannot parallelize
+4. **Max 14 Attempts**: Insufficient for meaningful statistical advantage
+5. **No Compounding**: Winning slot N provides no advantage for N+1
+
+### 6.3 Constant-Time Operations
 
 Critical operations use constant-time implementations to prevent timing attacks:
 
@@ -362,7 +586,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 - Hash comparison in validation
 - Private key operations
 
-### 6.2 Integer Overflow Protection
+### 6.4 Integer Overflow Protection
 
 All arithmetic operations use checked or saturating arithmetic:
 
@@ -386,7 +610,7 @@ pub fn bond_amount(&self, height: BlockHeight) -> Amount {
 }
 ```
 
-### 6.3 Input Validation
+### 6.5 Input Validation
 
 All external inputs are validated before processing:
 
@@ -427,14 +651,14 @@ pub fn validate_transaction(tx: &Transaction, ctx: &ValidationContext)
 }
 ```
 
-### 6.4 Memory Safety
+### 6.6 Memory Safety
 
 - Written in Rust, providing memory safety guarantees
 - No unsafe code in core cryptographic operations
 - Bounds checking on all array accesses
 - Automatic cleanup of sensitive data via Drop trait
 
-### 6.5 Serialization Security
+### 6.7 Serialization Security
 
 ```rust
 // Deserialization validates all fields
@@ -561,7 +785,15 @@ Track producer win rates. Statistically significant deviation from expected dist
 | Date | Scope | Reviewer | Status |
 |------|-------|----------|--------|
 | 2026-01-25 | VDF slashing evidence | Internal audit | Fixed (5863805) |
+| 2026-02-02 | Security documentation | Internal | Documented |
 | TBD | Full protocol | TBD | Pending |
+
+**2026-02-02 - Security Implementation Documentation**:
+- **Scope**: Documented network layer security implementations
+- **Items**: Equivocation detection (LRU cache, full headers), peer scoring system,
+  rate limiting (token bucket), transaction malleability prevention, anti-Sybil
+  (chained VDF), anti-grinding (prev_hash in VDF input)
+- **Status**: All implementations verified against codebase
 
 **2026-01-25 - VDF Slashing Evidence Fix**:
 - **Issue**: Slashing evidence only contained block hashes, not full headers
@@ -632,7 +864,7 @@ A bug bounty program will be established after mainnet launch. Categories:
 
 ---
 
-*Last updated: 2026-01-25*
+*Last updated: 2026-02-02*
 *DOLI Security Team*
 # DOLI Security Checklist
 
