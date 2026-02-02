@@ -37,6 +37,7 @@ dirs.workspace = true
 fs2 = "0.4"        # Cross-platform file locking for producer guard
 sled = "0.34"      # Embedded database for signed slots tracking
 thiserror.workspace = true
+reqwest = { version = "0.11", features = ["json"] }  # HTTP client for devnet RPC checks
 
 [dev-dependencies]
 tempfile.workspace = true

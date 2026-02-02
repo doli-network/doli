@@ -21,6 +21,7 @@ use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
+mod devnet;
 mod metrics;
 mod node;
 mod producer;
@@ -161,6 +162,12 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Local devnet management commands
+    Devnet {
+        #[command(subcommand)]
+        action: DevnetCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -261,6 +268,32 @@ enum MaintainerCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum DevnetCommands {
+    /// Initialize a local devnet with N producer nodes
+    Init {
+        /// Number of nodes to create (1-20)
+        #[arg(long, default_value = "3")]
+        nodes: u32,
+    },
+
+    /// Start all devnet nodes
+    Start,
+
+    /// Stop all devnet nodes
+    Stop,
+
+    /// Show devnet status
+    Status,
+
+    /// Remove devnet data
+    Clean {
+        /// Keep wallet keys when cleaning
+        #[arg(long)]
+        keep_keys: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -350,6 +383,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
+        }
+        Some(Commands::Devnet { action }) => {
+            handle_devnet_command(action).await?;
         }
         None => {
             // Default: run the node with auto-updates enabled
@@ -1220,6 +1256,27 @@ async fn handle_maintainer_command(
         }
     }
 
+    Ok(())
+}
+
+async fn handle_devnet_command(action: DevnetCommands) -> Result<()> {
+    match action {
+        DevnetCommands::Init { nodes } => {
+            devnet::init(nodes)?;
+        }
+        DevnetCommands::Start => {
+            devnet::start().await?;
+        }
+        DevnetCommands::Stop => {
+            devnet::stop().await?;
+        }
+        DevnetCommands::Status => {
+            devnet::status().await?;
+        }
+        DevnetCommands::Clean { keep_keys } => {
+            devnet::clean(keep_keys)?;
+        }
+    }
     Ok(())
 }
 
