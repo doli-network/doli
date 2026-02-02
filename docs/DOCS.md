@@ -24,7 +24,7 @@ Master index for all DOLI documentation.
 
 | File | Description |
 |------|-------------|
-| [rewards.md](./rewards.md) | Weighted presence rewards system - epoch claims, RPC, and CLI |
+| [rewards.md](./rewards.md) | Block rewards system - direct coinbase model, emission schedule, maturity rules |
 | [cli.md](./cli.md) | Complete CLI reference - all WHITEPAPER operations via command line |
 | [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
 | [running_a_node.md](./running_a_node.md) | Node setup and operation guide |
@@ -70,7 +70,7 @@ docs/
 ├── buy_doli.md               # Exchange system guide
 ├── cli.md                    # CLI reference
 ├── docker.md                 # Docker deployment
-├── rewards.md                # Weighted presence rewards
+├── rewards.md                # Block rewards (coinbase)
 ├── extreme_devnet_600.md     # Extreme testing results
 ├── genesis.md                # Genesis launch guide
 ├── manifesto.md              # Project philosophy
