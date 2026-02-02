@@ -322,14 +322,20 @@ fn start_node(
     // Open log file
     let log = fs::File::create(&log_file)?;
 
-    // Spawn the process
-    let child = Command::new(exe_path)
+    // Spawn the process with piped stdin for --force-start confirmation
+    let mut child = Command::new(exe_path)
         .args(&args)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to start node {}", node_index))?;
+
+    // Send "I UNDERSTAND" to confirm --force-start
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = writeln!(stdin, "I UNDERSTAND");
+    }
 
     Ok(child)
 }
