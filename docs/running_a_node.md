@@ -154,6 +154,33 @@ cargo build --release
 - **Same bond requirements:** 1000 DOLI required (same as mainnet/testnet)
 - **Faster epochs:** 60 slots per epoch (~1 minute with 1s slots)
 
+### 3.1. Local Multi-Node Devnet (Recommended for Development)
+
+For local development, use the built-in devnet management commands:
+
+```bash
+# Initialize a 5-node local devnet
+doli-node devnet init --nodes 5
+
+# Start all nodes
+doli-node devnet start
+
+# Check status
+doli-node devnet status
+
+# Stop all nodes
+doli-node devnet stop
+
+# Clean up (--keep-keys preserves wallet files)
+doli-node devnet clean
+```
+
+This creates a self-contained devnet at `~/.doli/devnet/` with:
+- Auto-generated producer wallets
+- Pre-configured chainspec with all producers
+- Automatic port allocation (P2P: 50303+, RPC: 28545+, Metrics: 9090+)
+- PID tracking for process management
+
 ---
 
 ## 4. Running a Node
