@@ -127,31 +127,23 @@ impl Mempool {
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 
         // Calculate fee by looking up inputs
-        // ClaimEpochReward transactions are mints with no inputs - skip balance/fee checks
-        let (total_input, ancestors, fee, fee_rate) = if tx.is_claim_epoch_reward() {
-            // Mint transaction: no inputs, no fee required
-            (0, HashSet::new(), 0, 0)
-        } else {
-            let (total_input, ancestors) = self.calculate_inputs(&tx, utxo_set, current_height)?;
-            let total_output = tx.total_output();
+        let (total_input, ancestors) = self.calculate_inputs(&tx, utxo_set, current_height)?;
+        let total_output = tx.total_output();
 
-            if total_input < total_output {
-                return Err(MempoolError::InvalidTransaction(format!(
-                    "insufficient funds: {} < {}",
-                    total_input, total_output
-                )));
-            }
+        if total_input < total_output {
+            return Err(MempoolError::InvalidTransaction(format!(
+                "insufficient funds: {} < {}",
+                total_input, total_output
+            )));
+        }
 
-            let fee = total_input - total_output;
-            let fee_rate = if tx_size > 0 { fee / tx_size as u64 } else { 0 };
+        let fee = total_input - total_output;
+        let fee_rate = if tx_size > 0 { fee / tx_size as u64 } else { 0 };
 
-            // Check minimum fee rate
-            if fee_rate < self.policy.min_fee_rate {
-                return Err(MempoolError::FeeTooLow(fee_rate, self.policy.min_fee_rate));
-            }
-
-            (total_input, ancestors, fee, fee_rate)
-        };
+        // Check minimum fee rate
+        if fee_rate < self.policy.min_fee_rate {
+            return Err(MempoolError::FeeTooLow(fee_rate, self.policy.min_fee_rate));
+        }
 
         // Check ancestor limits
         if ancestors.len() > self.policy.max_ancestors {

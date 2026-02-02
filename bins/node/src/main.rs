@@ -21,7 +21,6 @@ use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
-mod heartbeat_pool;
 mod metrics;
 mod node;
 mod producer;
