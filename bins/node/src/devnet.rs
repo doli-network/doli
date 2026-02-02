@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use crypto::KeyPair;
+use crypto::{hash_with_domain, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::chainspec::{ChainSpec, ConsensusSpec, GenesisProducer, GenesisSpec};
 use doli_core::Network;
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,17 @@ pub fn init(node_count: u32) -> Result<()> {
         ));
     }
 
-    info!("Initializing devnet with {} nodes at {:?}", node_count, root);
+    // Create root directory first so we can load .env
+    fs::create_dir_all(&root)?;
+
+    // Load environment variables from devnet root .env file if it exists
+    // This allows pre-configuring network parameters before init
+    doli_core::env_loader::load_env_for_network("devnet", &root);
+
+    info!(
+        "Initializing devnet with {} nodes at {:?}",
+        node_count, root
+    );
 
     // Create directory structure
     fs::create_dir_all(&root)?;
@@ -167,8 +177,9 @@ pub fn init(node_count: u32) -> Result<()> {
         fs::create_dir_all(root.join("data").join(format!("node{}", i)))?;
     }
 
-    // Build chainspec based on devnet defaults
-    let base_spec = ChainSpec::devnet();
+    // Build chainspec using NetworkParams (which reads from .env)
+    // This allows customizing devnet parameters via ~/.doli/devnet/.env
+    let params = Network::Devnet.params();
     let chainspec = ChainSpec {
         name: "DOLI Local Devnet".into(),
         id: "local-devnet".into(),
@@ -176,12 +187,12 @@ pub fn init(node_count: u32) -> Result<()> {
         genesis: GenesisSpec {
             timestamp: 0, // Dynamic - uses current time
             message: "DOLI Local Devnet - Development and Testing".into(),
-            initial_reward: base_spec.genesis.initial_reward,
+            initial_reward: params.initial_reward,
         },
         consensus: ConsensusSpec {
-            slot_duration: 10, // 10 second slots for devnet
-            slots_per_epoch: base_spec.consensus.slots_per_epoch,
-            bond_amount: base_spec.consensus.bond_amount,
+            slot_duration: params.slot_duration,
+            slots_per_epoch: params.slots_per_reward_epoch,
+            bond_amount: params.bond_unit,
         },
         genesis_producers,
     };
@@ -237,6 +248,36 @@ pub async fn start() -> Result<()> {
 
     info!("Starting {} devnet nodes...", config.node_count);
 
+    // Load environment variables from devnet root .env file
+    // This allows configuring network parameters via ~/.doli/devnet/.env
+    // Child processes inherit these env vars, so nodes will pick them up
+    doli_core::env_loader::load_env_for_network("devnet", &root);
+
+    // Clean data directories for fresh start (preserves keys and chainspec)
+    // This prevents issues with stale data, schema mismatches, or corrupted state
+    let data_dir = root.join("data");
+    if data_dir.exists() {
+        info!("Cleaning data directories for fresh start...");
+        for i in 0..config.node_count {
+            let node_data = data_dir.join(format!("node{}", i));
+            if node_data.exists() {
+                fs::remove_dir_all(&node_data)?;
+            }
+            fs::create_dir_all(&node_data)?;
+        }
+    }
+
+    // Clean logs directory
+    let logs_dir = root.join("logs");
+    if logs_dir.exists() {
+        for entry in fs::read_dir(&logs_dir)? {
+            let entry = entry?;
+            if entry.path().extension().map_or(false, |e| e == "log") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
     // Get current executable path
     let current_exe = std::env::current_exe()?;
 
@@ -244,6 +285,27 @@ pub async fn start() -> Result<()> {
     let node0_child = start_node(&config, &root, 0, &current_exe, None)?;
     save_pid(&root, 0, node0_child.id())?;
     info!("  Started node 0 (bootstrap) with PID {}", node0_child.id());
+
+    // Give node 0 a moment to initialize before checking RPC
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify node 0 is still running
+    if !is_process_running(node0_child.id()) {
+        // Check log for errors
+        let log_path = root.join("logs").join("node0.log");
+        if log_path.exists() {
+            let log_content = fs::read_to_string(&log_path).unwrap_or_default();
+            let last_lines: Vec<&str> = log_content.lines().rev().take(10).collect();
+            warn!("Node 0 exited unexpectedly. Last log lines:");
+            for line in last_lines.into_iter().rev() {
+                warn!("  {}", line);
+            }
+        }
+        return Err(anyhow!(
+            "Node 0 (PID {}) exited unexpectedly",
+            node0_child.id()
+        ));
+    }
 
     // Wait for node 0 RPC to be ready
     let node0_rpc = format!("127.0.0.1:{}", config.rpc_port(0));
@@ -288,7 +350,9 @@ fn start_node(
 ) -> Result<Child> {
     let data_dir = root.join("data").join(format!("node{}", node_index));
     let log_file = root.join("logs").join(format!("node{}.log", node_index));
-    let key_file = root.join("keys").join(format!("producer_{}.json", node_index));
+    let key_file = root
+        .join("keys")
+        .join(format!("producer_{}.json", node_index));
     let chainspec = root.join("chainspec.json");
 
     // Build command arguments
@@ -312,6 +376,7 @@ fn start_node(
         "--no-dht".to_string(),
         "--no-auto-update".to_string(),
         "--force-start".to_string(),
+        "--yes".to_string(), // Skip interactive confirmation for automation
     ];
 
     if let Some(addr) = bootstrap {
@@ -322,20 +387,14 @@ fn start_node(
     // Open log file
     let log = fs::File::create(&log_file)?;
 
-    // Spawn the process with piped stdin for --force-start confirmation
-    let mut child = Command::new(exe_path)
+    // Spawn the process with --yes flag (no stdin required)
+    let child = Command::new(exe_path)
         .args(&args)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null()) // No stdin needed with --yes flag
         .spawn()
         .with_context(|| format!("Failed to start node {}", node_index))?;
-
-    // Send "I UNDERSTAND" to confirm --force-start
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        let _ = writeln!(stdin, "I UNDERSTAND");
-    }
 
     Ok(child)
 }
@@ -492,6 +551,41 @@ pub async fn stop() -> Result<()> {
     Ok(())
 }
 
+/// Load producer pubkey_hash from wallet file (for balance queries)
+/// Returns the 32-byte hash used as UTXO key, not the 20-byte display address
+fn load_producer_pubkey_hash(root: &PathBuf, node_index: u32) -> Option<String> {
+    let wallet_path = root
+        .join("keys")
+        .join(format!("producer_{}.json", node_index));
+    if !wallet_path.exists() {
+        return None;
+    }
+    let contents = fs::read_to_string(&wallet_path).ok()?;
+    let wallet: Wallet = serde_json::from_str(&contents).ok()?;
+    let pubkey_hex = wallet.addresses.first()?.public_key.clone();
+
+    // Parse public key and compute the pubkey_hash used for UTXOs
+    let pubkey_bytes = hex::decode(&pubkey_hex).ok()?;
+    let pubkey = PublicKey::try_from_slice(&pubkey_bytes).ok()?;
+    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_ref());
+    Some(pubkey_hash.to_hex())
+}
+
+/// Format DOLI amount (raw units to display with 8 decimals)
+fn format_doli(raw: u64) -> String {
+    const DECIMALS: u64 = 100_000_000; // 8 decimal places
+    let whole = raw / DECIMALS;
+    let frac = raw % DECIMALS;
+    if frac == 0 {
+        format!("{}", whole)
+    } else {
+        // Format with decimals, trimming trailing zeros
+        let frac_str = format!("{:08}", frac);
+        let trimmed = frac_str.trim_end_matches('0');
+        format!("{}.{}", whole, trimmed)
+    }
+}
+
 /// Show devnet status
 pub async fn status() -> Result<()> {
     let config = match load_config() {
@@ -510,10 +604,10 @@ pub async fn status() -> Result<()> {
     println!("==================");
     println!();
     println!(
-        "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10}",
-        "Node", "Status", "PID", "Height", "Slot", "Peers"
+        "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10} {:<14}",
+        "Node", "Status", "PID", "Height", "Slot", "Peers", "DOLI"
     );
-    println!("{}", "-".repeat(60));
+    println!("{}", "-".repeat(74));
 
     for i in 0..config.node_count {
         let pid = load_pid(&root, i).ok().flatten();
@@ -521,19 +615,21 @@ pub async fn status() -> Result<()> {
         let status = if running { "Running" } else { "Stopped" };
         let pid_str = pid.map_or("-".to_string(), |p| p.to_string());
 
-        // Try to get chain info from RPC
-        let (height, slot, peers) = if running {
+        // Try to get chain info and balance from RPC
+        let (height, slot, peers, balance) = if running {
             let url = format!("http://127.0.0.1:{}", config.rpc_port(i));
-            let request = serde_json::json!({
+
+            // Get chain info
+            let chain_request = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "getChainInfo",
                 "params": {},
                 "id": 1
             });
 
-            match client
+            let (h, s, p) = match client
                 .post(&url)
-                .json(&request)
+                .json(&chain_request)
                 .timeout(Duration::from_secs(2))
                 .send()
                 .await
@@ -541,13 +637,13 @@ pub async fn status() -> Result<()> {
                 Ok(resp) => {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         let result = &json["result"];
-                        let h = result["best_height"]
+                        let h = result["bestHeight"]
                             .as_u64()
                             .map_or("-".to_string(), |v| v.to_string());
-                        let s = result["best_slot"]
+                        let s = result["bestSlot"]
                             .as_u64()
                             .map_or("-".to_string(), |v| v.to_string());
-                        let p = result["peer_count"]
+                        let p = result["peerCount"]
                             .as_u64()
                             .map_or("-".to_string(), |v| v.to_string());
                         (h, s, p)
@@ -556,14 +652,54 @@ pub async fn status() -> Result<()> {
                     }
                 }
                 Err(_) => ("-".to_string(), "-".to_string(), "-".to_string()),
-            }
+            };
+
+            // Get producer balance
+            let balance_str = if let Some(pubkey_hash) = load_producer_pubkey_hash(&root, i) {
+                let balance_request = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "getBalance",
+                    "params": { "address": pubkey_hash },
+                    "id": 2
+                });
+
+                match client
+                    .post(&url)
+                    .json(&balance_request)
+                    .timeout(Duration::from_secs(2))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            let result = &json["result"];
+                            // Use total balance (includes immature rewards)
+                            result["total"]
+                                .as_u64()
+                                .map_or("-".to_string(), |v| format_doli(v))
+                        } else {
+                            "-".to_string()
+                        }
+                    }
+                    Err(_) => "-".to_string(),
+                }
+            } else {
+                "-".to_string()
+            };
+
+            (h, s, p, balance_str)
         } else {
-            ("-".to_string(), "-".to_string(), "-".to_string())
+            (
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+            )
         };
 
         println!(
-            "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10}",
-            i, status, pid_str, height, slot, peers
+            "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10} {:<14}",
+            i, status, pid_str, height, slot, peers, balance
         );
     }
 
@@ -644,7 +780,10 @@ pub fn clean(keep_keys: bool) -> Result<()> {
         let _ = fs::remove_file(root.join("devnet.toml"));
         let _ = fs::remove_file(root.join("chainspec.json"));
 
-        println!("Cleaned devnet data (keys preserved at {:?})", root.join("keys"));
+        println!(
+            "Cleaned devnet data (keys preserved at {:?})",
+            root.join("keys")
+        );
     } else {
         // Delete everything
         info!("Removing devnet directory...");
