@@ -37,6 +37,9 @@
    - Root cause analysis required before fix.
    - If fix changes behavior → docs update required (Rule 3).
    - If fix reveals spec inconsistency → update specs first.
+   - **Bug Reports**: When investigating complex bugs, create `REPORT.md` in repo root.
+   - **On Resolution**: Move resolved bug reports to `docs/legacy/bugs/REPORT_<BUG_NAME>.md`
+     - Example: `REPORT.md` → `docs/legacy/bugs/REPORT_UTXO_ROCKSDB_CRASH.md`
 
 6. **Output Filtering**: Always filter verbose output:
    `command 2>&1 | grep -iE "error|warn|fail|pass" | head -20`
@@ -227,3 +230,8 @@ DOLI_VDF_ITERATIONS, DOLI_HEARTBEAT_VDF_ITERATIONS
 - Economic model, consensus philosophy, security model
 - **Audience**: Everyone
 - **Update when**: Fundamental protocol changes (rare, requires governance)
+
+### `docs/legacy/bugs/` - Resolved Bug Reports
+- Investigation reports for complex bugs (root cause, fix, test results)
+- **Naming**: `REPORT_<BUG_NAME>.md` (e.g., `REPORT_UTXO_ROCKSDB_CRASH.md`)
+- **Workflow**: Create `REPORT.md` at repo root during investigation → move here on resolution
