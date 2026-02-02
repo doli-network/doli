@@ -1783,7 +1783,9 @@ fn validate_maintainer_change_data(tx: &Transaction) -> Result<(), ValidationErr
 
     // Try to deserialize maintainer change data
     let _change_data = MaintainerChangeData::from_bytes(&tx.extra_data).ok_or_else(|| {
-        ValidationError::InvalidMaintainerChange("invalid maintainer change data format".to_string())
+        ValidationError::InvalidMaintainerChange(
+            "invalid maintainer change data format".to_string(),
+        )
     })?;
 
     // Note: The following validations are done at the node level:
@@ -2856,7 +2858,11 @@ mod tests {
 
         // Should pass structural validation (Normal outputs allowed for change)
         let result = validate_transaction(&tx, &ctx);
-        assert!(result.is_ok(), "AddBond with Normal outputs should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "AddBond with Normal outputs should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -3349,7 +3355,11 @@ mod tests {
 
         // EpochReward should pass even with empty UTXO set (no inputs needed)
         let result = validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
-        assert!(result.is_ok(), "EpochReward should skip UTXO validation: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "EpochReward should skip UTXO validation: {:?}",
+            result
+        );
     }
 
     // ==========================================================================
@@ -3392,7 +3402,10 @@ mod tests {
             vdf_proof: VdfProof::default(),
         };
 
-        Block { header, transactions }
+        Block {
+            header,
+            transactions,
+        }
     }
 
     #[test]

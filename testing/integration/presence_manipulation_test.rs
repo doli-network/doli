@@ -21,7 +21,9 @@ fn create_header_with_presence(slot: u32, presence_root: Hash) -> BlockHeader {
         timestamp: 1700000000 + (slot as u64 * 10),
         slot,
         producer: PublicKey::from_bytes([1u8; 32]),
-        vdf_output: VdfOutput { value: vec![0u8; 32] },
+        vdf_output: VdfOutput {
+            value: vec![0u8; 32],
+        },
         vdf_proof: VdfProof::empty(),
     }
 }
@@ -87,12 +89,13 @@ fn test_total_weight_manipulation_detected() {
     // Attacker tries to claim total_weight was lower to inflate their share
     let manipulated_commitment = PresenceCommitmentV2::new(
         crypto::hash::hash(b"heartbeats_slot_100"), // Same heartbeats root
-        4_000_000_000, // 4 DOLI total weight (manipulated!)
+        4_000_000_000,                              // 4 DOLI total weight (manipulated!)
     );
 
     // Create headers with each commitment
     let header_original = create_header_with_presence(100, original_commitment.commitment_hash());
-    let header_manipulated = create_header_with_presence(100, manipulated_commitment.commitment_hash());
+    let header_manipulated =
+        create_header_with_presence(100, manipulated_commitment.commitment_hash());
 
     // The hashes MUST be different - manipulation is detected!
     assert_ne!(
@@ -124,8 +127,16 @@ fn test_weighted_reward_calculation() {
 
     println!("Block reward: {} units", block_reward);
     println!("Total weight: {}", total_weight);
-    println!("1-bond producer reward: {} units ({:.2}%)", reward_1bond, (reward_1bond as f64 / block_reward as f64) * 100.0);
-    println!("10-bond producer reward: {} units ({:.2}%)", reward_10bonds, (reward_10bonds as f64 / block_reward as f64) * 100.0);
+    println!(
+        "1-bond producer reward: {} units ({:.2}%)",
+        reward_1bond,
+        (reward_1bond as f64 / block_reward as f64) * 100.0
+    );
+    println!(
+        "10-bond producer reward: {} units ({:.2}%)",
+        reward_10bonds,
+        (reward_10bonds as f64 / block_reward as f64) * 100.0
+    );
 
     // 10-bond producer should get ~10x more
     let ratio = reward_10bonds as f64 / reward_1bond as f64;
@@ -177,7 +188,8 @@ fn test_block_hash_includes_all_presence_components() {
     // Change only heartbeats_root
     let different_heartbeats = crypto::hash::hash(b"different_heartbeats");
     let commitment_diff_heartbeats = PresenceCommitmentV2::new(different_heartbeats, base_weight);
-    let header_diff_heartbeats = create_header_with_presence(100, commitment_diff_heartbeats.commitment_hash());
+    let header_diff_heartbeats =
+        create_header_with_presence(100, commitment_diff_heartbeats.commitment_hash());
 
     assert_ne!(
         hash_base,
@@ -188,7 +200,8 @@ fn test_block_hash_includes_all_presence_components() {
     // Change only total_weight
     let different_weight = 20_000_000_000u64;
     let commitment_diff_weight = PresenceCommitmentV2::new(base_heartbeats, different_weight);
-    let header_diff_weight = create_header_with_presence(100, commitment_diff_weight.commitment_hash());
+    let header_diff_weight =
+        create_header_with_presence(100, commitment_diff_weight.commitment_hash());
 
     assert_ne!(
         hash_base,
@@ -254,9 +267,18 @@ fn test_doli_network_bug_scenario() {
     let producer1_reward = (block_reward * 1) / total_weight as u128;
 
     println!("\nCorrect reward distribution:");
-    println!("  Producer 1-4 (1 bond): {:.4} DOLI each", producer1_reward as f64 / 100_000_000.0);
-    println!("  Producer 5 (10 bonds): {:.4} DOLI", producer5_reward as f64 / 100_000_000.0);
-    println!("  Ratio: {:.1}x", producer5_reward as f64 / producer1_reward as f64);
+    println!(
+        "  Producer 1-4 (1 bond): {:.4} DOLI each",
+        producer1_reward as f64 / 100_000_000.0
+    );
+    println!(
+        "  Producer 5 (10 bonds): {:.4} DOLI",
+        producer5_reward as f64 / 100_000_000.0
+    );
+    println!(
+        "  Ratio: {:.1}x",
+        producer5_reward as f64 / producer1_reward as f64
+    );
 
     println!("\n=== DOLI_NETWORK_BUG.md Fix Verified ===\n");
 }

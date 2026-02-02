@@ -34,7 +34,11 @@ impl UtxoEntry {
     }
 
     /// Check if the UTXO is spendable at the given height with custom maturity
-    pub fn is_spendable_at_with_maturity(&self, height: BlockHeight, maturity: BlockHeight) -> bool {
+    pub fn is_spendable_at_with_maturity(
+        &self,
+        height: BlockHeight,
+        maturity: BlockHeight,
+    ) -> bool {
         // Check time lock
         if !self.output.is_spendable_at(height) {
             return false;
@@ -84,6 +88,7 @@ impl Outpoint {
 }
 
 /// In-memory UTXO set
+#[derive(Serialize, Deserialize)]
 pub struct UtxoSet {
     /// UTXOs indexed by outpoint
     utxos: HashMap<Outpoint, UtxoEntry>,
@@ -104,34 +109,15 @@ impl UtxoSet {
 
     /// Load from disk
     pub fn load(path: &Path) -> Result<Self, StorageError> {
-        let db = crate::open_db(path)?;
-
-        let mut utxos = HashMap::new();
-
-        let iter = db.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (key, value) = item?;
-            if let Some(outpoint) = Outpoint::from_bytes(&key) {
-                if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
-                    utxos.insert(outpoint, entry);
-                }
-            }
-        }
-
-        Ok(Self { utxos })
+        let bytes = std::fs::read(path)?;
+        bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))
     }
 
     /// Save to disk
     pub fn save(&self, path: &Path) -> Result<(), StorageError> {
-        let db = crate::open_db(path)?;
-
-        for (outpoint, entry) in &self.utxos {
-            let key = outpoint.to_bytes();
-            let value = bincode::serialize(entry)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            db.put(&key, &value)?;
-        }
-
+        let bytes =
+            bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        std::fs::write(path, bytes)?;
         Ok(())
     }
 
@@ -212,7 +198,12 @@ impl UtxoSet {
     }
 
     /// Get spendable balance for a pubkey hash at a given height with custom maturity
-    pub fn get_balance_with_maturity(&self, pubkey_hash: &Hash, height: BlockHeight, maturity: BlockHeight) -> Amount {
+    pub fn get_balance_with_maturity(
+        &self,
+        pubkey_hash: &Hash,
+        height: BlockHeight,
+        maturity: BlockHeight,
+    ) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
@@ -227,12 +218,18 @@ impl UtxoSet {
     }
 
     /// Get immature balance for a pubkey hash with custom maturity
-    pub fn get_immature_balance_with_maturity(&self, pubkey_hash: &Hash, height: BlockHeight, maturity: BlockHeight) -> Amount {
+    pub fn get_immature_balance_with_maturity(
+        &self,
+        pubkey_hash: &Hash,
+        height: BlockHeight,
+        maturity: BlockHeight,
+    ) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| {
                 // Only coinbase and epoch rewards have maturity requirements
-                (entry.is_coinbase || entry.is_epoch_reward) && !entry.is_spendable_at_with_maturity(height, maturity)
+                (entry.is_coinbase || entry.is_epoch_reward)
+                    && !entry.is_spendable_at_with_maturity(height, maturity)
             })
             .map(|(_, entry)| entry.output.amount)
             .sum()

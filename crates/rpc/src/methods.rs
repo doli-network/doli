@@ -295,8 +295,13 @@ impl RpcContext {
 
         // Use network-specific coinbase maturity
         let maturity = self.coinbase_maturity;
-        let confirmed = utxo_set.get_balance_with_maturity(&pubkey_hash, chain_state.best_height, maturity);
-        let immature = utxo_set.get_immature_balance_with_maturity(&pubkey_hash, chain_state.best_height, maturity);
+        let confirmed =
+            utxo_set.get_balance_with_maturity(&pubkey_hash, chain_state.best_height, maturity);
+        let immature = utxo_set.get_immature_balance_with_maturity(
+            &pubkey_hash,
+            chain_state.best_height,
+            maturity,
+        );
 
         // Calculate unconfirmed balance change from mempool
         // This gives the net change (incoming - outgoing) from pending transactions
@@ -348,7 +353,10 @@ impl RpcContext {
 
         let responses: Vec<UtxoResponse> = utxos
             .into_iter()
-            .filter(|(_, entry)| !params.spendable_only || entry.is_spendable_at_with_maturity(current_height, maturity))
+            .filter(|(_, entry)| {
+                !params.spendable_only
+                    || entry.is_spendable_at_with_maturity(current_height, maturity)
+            })
             .map(|(outpoint, entry)| {
                 let output_type = match entry.output.output_type {
                     doli_core::OutputType::Normal => "normal",
@@ -773,14 +781,12 @@ impl RpcContext {
             signature: String,
         }
 
-        let params: SubmitMaintainerChangeParams = serde_json::from_value(params)
-            .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+        let params: SubmitMaintainerChangeParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
         // Validate action
         if params.action != "add" && params.action != "remove" {
-            return Err(RpcError::invalid_params(
-                "action must be 'add' or 'remove'",
-            ));
+            return Err(RpcError::invalid_params("action must be 'add' or 'remove'"));
         }
 
         // Parse target public key

@@ -1127,8 +1127,7 @@ impl ProducerSet {
         self.producers
             .values()
             .filter(|p| {
-                p.is_active()
-                    && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
+                p.is_active() && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
             })
             .collect()
     }

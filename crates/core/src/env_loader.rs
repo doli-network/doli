@@ -40,10 +40,7 @@ pub fn load_env_for_network(network_name: &str, data_dir: &Path) {
                 );
             }
             Err(e) => {
-                warn!(
-                    "Failed to load environment from {:?}: {}",
-                    env_path, e
-                );
+                warn!("Failed to load environment from {:?}: {}", env_path, e);
             }
         }
     } else {

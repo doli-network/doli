@@ -125,7 +125,7 @@ impl Node {
         let block_store = Arc::new(BlockStore::open(&blocks_path)?);
 
         // Load or create UTXO set
-        let utxo_path = config.data_dir.join("utxo");
+        let utxo_path = config.data_dir.join("utxo.bin");
         let utxo_set = if utxo_path.exists() {
             UtxoSet::load(&utxo_path)?
         } else {
@@ -184,7 +184,10 @@ impl Node {
                             "Initializing testnet with {} genesis producers",
                             genesis_producers.len()
                         );
-                        ProducerSet::with_genesis_producers(genesis_producers, config.network.bond_unit())
+                        ProducerSet::with_genesis_producers(
+                            genesis_producers,
+                            config.network.bond_unit(),
+                        )
                     } else {
                         ProducerSet::new()
                     }
@@ -342,7 +345,9 @@ impl Node {
                             "Broadcasting initial producer announcements ({} producers)",
                             announcements.len()
                         );
-                        let _ = network.broadcast_producer_announcements(announcements).await;
+                        let _ = network
+                            .broadcast_producer_announcements(announcements)
+                            .await;
                     }
                 }
             }
@@ -1556,16 +1561,14 @@ impl Node {
 
                         // Create synthetic outpoints for tracking (tx_hash, index)
                         // These are used for FIFO withdrawal ordering
-                        let bond_outpoints: Vec<(crypto::Hash, u32)> = (0..bond_count)
-                            .map(|i| (tx_hash, i))
-                            .collect();
+                        let bond_outpoints: Vec<(crypto::Hash, u32)> =
+                            (0..bond_count).map(|i| (tx_hash, i)).collect();
 
                         let bond_unit = self.config.network.bond_unit();
                         if let Some(producer_info) =
                             producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
                         {
-                            let added =
-                                producer_info.add_bonds(bond_outpoints, bond_unit);
+                            let added = producer_info.add_bonds(bond_outpoints, bond_unit);
                             if added > 0 {
                                 info!(
                                     "Added {} bonds to producer {} (total: {} bonds, {} DOLI)",
@@ -1583,7 +1586,6 @@ impl Node {
                         }
                     }
                 }
-
             }
 
             // Process completed unbonding periods
@@ -1633,10 +1635,7 @@ impl Node {
         // The blockchain is the source of truth - we scan block headers to find genesis producers
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks > 0 && height == genesis_blocks + 1 {
-            info!(
-                "=== GENESIS PHASE COMPLETE at height {} ===",
-                height
-            );
+            info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
             // Derive genesis producers from the blockchain (source of truth)
             // This works for both original nodes and syncing nodes
@@ -2683,21 +2682,18 @@ impl Node {
 
     /// Save all node state to disk
     async fn save_state(&self) -> Result<()> {
-        debug!("Saving node state to disk...");
-
         // Save chain state
         let state_path = self.config.data_dir.join("chain_state.bin");
         self.chain_state.read().await.save(&state_path)?;
 
         // Save UTXO set
-        let utxo_path = self.config.data_dir.join("utxo");
+        let utxo_path = self.config.data_dir.join("utxo.bin");
         self.utxo_set.read().await.save(&utxo_path)?;
 
         // Save producer set
         let producers_path = self.config.data_dir.join("producers.bin");
         self.producer_set.read().await.save(&producers_path)?;
 
-        debug!("Node state saved");
         Ok(())
     }
 

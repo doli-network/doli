@@ -359,18 +359,33 @@ impl std::fmt::Display for MaintainerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MaxMaintainersReached => {
-                write!(f, "Cannot add maintainer: maximum of {} reached", MAX_MAINTAINERS)
+                write!(
+                    f,
+                    "Cannot add maintainer: maximum of {} reached",
+                    MAX_MAINTAINERS
+                )
             }
             Self::MinMaintainersRequired => {
-                write!(f, "Cannot remove maintainer: minimum of {} required", MIN_MAINTAINERS)
+                write!(
+                    f,
+                    "Cannot remove maintainer: minimum of {} required",
+                    MIN_MAINTAINERS
+                )
             }
             Self::AlreadyMaintainer => write!(f, "Target is already a maintainer"),
             Self::NotMaintainer => write!(f, "Target is not a maintainer"),
             Self::InsufficientSignatures { found, required } => {
-                write!(f, "Insufficient signatures: {}/{} required", found, required)
+                write!(
+                    f,
+                    "Insufficient signatures: {}/{} required",
+                    found, required
+                )
             }
             Self::NotRegisteredProducer => {
-                write!(f, "Target must be a registered producer to become maintainer")
+                write!(
+                    f,
+                    "Target must be a registered producer to become maintainer"
+                )
             }
             Self::MaintainerSlashed => write!(f, "Maintainer was slashed for misbehavior"),
         }
@@ -439,8 +454,11 @@ pub fn derive_maintainer_set<R: BlockchainReader>(reader: &R) -> MaintainerSet {
             MaintainerChange::Remove(data) => {
                 // Verify signatures (excluding the target) before applying
                 let message = data.signing_message(false);
-                if maintainer_set.verify_multisig_excluding(&data.signatures, &message, &data.target)
-                {
+                if maintainer_set.verify_multisig_excluding(
+                    &data.signatures,
+                    &message,
+                    &data.target,
+                ) {
                     let _ = maintainer_set.remove_maintainer(&data.target, height);
                 }
             }
@@ -598,11 +616,8 @@ mod tests {
 
     #[test]
     fn test_maintainer_change_data_serialization() {
-        let data = MaintainerChangeData::with_reason(
-            test_pubkey(1),
-            vec![],
-            "Test reason".to_string(),
-        );
+        let data =
+            MaintainerChangeData::with_reason(test_pubkey(1), vec![], "Test reason".to_string());
 
         let bytes = data.to_bytes();
         let recovered = MaintainerChangeData::from_bytes(&bytes).unwrap();

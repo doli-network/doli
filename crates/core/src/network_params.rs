@@ -120,7 +120,10 @@ impl NetworkParams {
             default_p2p_port: env_parse("DOLI_P2P_PORT", defaults.default_p2p_port),
             default_rpc_port: env_parse("DOLI_RPC_PORT", defaults.default_rpc_port),
             default_metrics_port: env_parse("DOLI_METRICS_PORT", defaults.default_metrics_port),
-            bootstrap_nodes: env_parse_vec("DOLI_BOOTSTRAP_NODES", defaults.bootstrap_nodes.clone()),
+            bootstrap_nodes: env_parse_vec(
+                "DOLI_BOOTSTRAP_NODES",
+                defaults.bootstrap_nodes.clone(),
+            ),
 
             // Timing (some locked for mainnet)
             slot_duration: if is_mainnet {
@@ -157,12 +160,21 @@ impl NetworkParams {
             } else {
                 env_parse("DOLI_INITIAL_REWARD", defaults.initial_reward)
             },
-            registration_base_fee: env_parse("DOLI_REGISTRATION_BASE_FEE", defaults.registration_base_fee),
-            max_registration_fee: env_parse("DOLI_MAX_REGISTRATION_FEE", defaults.max_registration_fee),
+            registration_base_fee: env_parse(
+                "DOLI_REGISTRATION_BASE_FEE",
+                defaults.registration_base_fee,
+            ),
+            max_registration_fee: env_parse(
+                "DOLI_MAX_REGISTRATION_FEE",
+                defaults.max_registration_fee,
+            ),
             automatic_genesis_bond: if is_mainnet {
                 defaults.automatic_genesis_bond // LOCKED for mainnet
             } else {
-                env_parse("DOLI_AUTOMATIC_GENESIS_BOND", defaults.automatic_genesis_bond)
+                env_parse(
+                    "DOLI_AUTOMATIC_GENESIS_BOND",
+                    defaults.automatic_genesis_bond,
+                )
             },
             genesis_blocks: if is_mainnet {
                 defaults.genesis_blocks // LOCKED for mainnet
@@ -179,12 +191,18 @@ impl NetworkParams {
             heartbeat_vdf_iterations: if is_mainnet {
                 defaults.heartbeat_vdf_iterations // LOCKED for mainnet
             } else {
-                env_parse("DOLI_HEARTBEAT_VDF_ITERATIONS", defaults.heartbeat_vdf_iterations)
+                env_parse(
+                    "DOLI_HEARTBEAT_VDF_ITERATIONS",
+                    defaults.heartbeat_vdf_iterations,
+                )
             },
             vdf_register_iterations: if is_mainnet {
                 defaults.vdf_register_iterations // LOCKED for mainnet
             } else {
-                env_parse("DOLI_VDF_REGISTER_ITERATIONS", defaults.vdf_register_iterations)
+                env_parse(
+                    "DOLI_VDF_REGISTER_ITERATIONS",
+                    defaults.vdf_register_iterations,
+                )
             },
 
             // Time structure (some locked for mainnet)
@@ -196,7 +214,10 @@ impl NetworkParams {
             blocks_per_reward_epoch: if is_mainnet {
                 defaults.blocks_per_reward_epoch // LOCKED for mainnet
             } else {
-                env_parse("DOLI_BLOCKS_PER_REWARD_EPOCH", defaults.blocks_per_reward_epoch)
+                env_parse(
+                    "DOLI_BLOCKS_PER_REWARD_EPOCH",
+                    defaults.blocks_per_reward_epoch,
+                )
             },
             coinbase_maturity: if is_mainnet {
                 defaults.coinbase_maturity // LOCKED for mainnet
@@ -206,7 +227,10 @@ impl NetworkParams {
             slots_per_reward_epoch: if is_mainnet {
                 defaults.slots_per_reward_epoch // LOCKED for mainnet
             } else {
-                env_parse("DOLI_SLOTS_PER_REWARD_EPOCH", defaults.slots_per_reward_epoch)
+                env_parse(
+                    "DOLI_SLOTS_PER_REWARD_EPOCH",
+                    defaults.slots_per_reward_epoch,
+                )
             },
             bootstrap_blocks: if is_mainnet {
                 defaults.bootstrap_blocks
@@ -215,10 +239,19 @@ impl NetworkParams {
             },
 
             // Update system (configurable for all networks)
-            min_voting_age_secs: env_parse("DOLI_MIN_VOTING_AGE_SECS", defaults.min_voting_age_secs),
-            update_check_interval_secs: env_parse("DOLI_UPDATE_CHECK_INTERVAL_SECS", defaults.update_check_interval_secs),
+            min_voting_age_secs: env_parse(
+                "DOLI_MIN_VOTING_AGE_SECS",
+                defaults.min_voting_age_secs,
+            ),
+            update_check_interval_secs: env_parse(
+                "DOLI_UPDATE_CHECK_INTERVAL_SECS",
+                defaults.update_check_interval_secs,
+            ),
             crash_window_secs: env_parse("DOLI_CRASH_WINDOW_SECS", defaults.crash_window_secs),
-            max_registrations_per_block: env_parse("DOLI_MAX_REGISTRATIONS_PER_BLOCK", defaults.max_registrations_per_block),
+            max_registrations_per_block: env_parse(
+                "DOLI_MAX_REGISTRATIONS_PER_BLOCK",
+                defaults.max_registrations_per_block,
+            ),
         }
     }
 
@@ -239,19 +272,19 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: 10,
-                genesis_time: 1769904000, // 2026-02-01T00:00:00Z
+                genesis_time: 1769904000,        // 2026-02-01T00:00:00Z
                 veto_period_secs: 7 * 24 * 3600, // 7 days
-                grace_period_secs: 48 * 3600, // 48 hours
-                unbonding_period: 60_480, // 7 days at 10s slots
-                inactivity_threshold: 60_480, // ~1 week
+                grace_period_secs: 48 * 3600,    // 48 hours
+                unbonding_period: 60_480,        // 7 days at 10s slots
+                inactivity_threshold: 60_480,    // ~1 week
 
                 // Economics
-                bond_unit: 10_000_000_000, // 100 DOLI
-                initial_reward: 100_000_000, // 1 DOLI
-                registration_base_fee: 100_000, // 0.001 DOLI
-                max_registration_fee: 1_000_000_000, // 10 DOLI
+                bond_unit: 10_000_000_000,              // 100 DOLI
+                initial_reward: 100_000_000,            // 1 DOLI
+                registration_base_fee: 100_000,         // 0.001 DOLI
+                max_registration_fee: 1_000_000_000,    // 10 DOLI
                 automatic_genesis_bond: 10_000_000_000, // 100 DOLI
-                genesis_blocks: 0, // No genesis phase
+                genesis_blocks: 0,                      // No genesis phase
 
                 // VDF
                 vdf_iterations: 100_000,
@@ -266,9 +299,9 @@ impl NetworkParams {
                 bootstrap_blocks: 60_480,
 
                 // Update system
-                min_voting_age_secs: 30 * 24 * 3600, // 30 days
+                min_voting_age_secs: 30 * 24 * 3600,  // 30 days
                 update_check_interval_secs: 6 * 3600, // 6 hours
-                crash_window_secs: 3600, // 1 hour
+                crash_window_secs: 3600,              // 1 hour
                 max_registrations_per_block: 5,
             },
 
@@ -325,37 +358,37 @@ impl NetworkParams {
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
 
                 // Timing (accelerated for testing)
-                slot_duration: 10, // Same as mainnet for realistic testing
-                genesis_time: 0, // Dynamic
-                veto_period_secs: 60, // 1 minute
+                slot_duration: 10,     // Same as mainnet for realistic testing
+                genesis_time: 0,       // Dynamic
+                veto_period_secs: 60,  // 1 minute
                 grace_period_secs: 30, // 30 seconds
-                unbonding_period: 60, // ~10 minutes with 10s slots
+                unbonding_period: 60,  // ~10 minutes with 10s slots
                 inactivity_threshold: 30,
 
                 // Economics (lower values for testing)
-                bond_unit: 100_000_000, // 1 DOLI
-                initial_reward: 2_000_000_000, // 20 DOLI
-                registration_base_fee: 1_000, // 0.00001 DOLI
-                max_registration_fee: 10_000_000, // 0.1 DOLI
+                bond_unit: 100_000_000,                 // 1 DOLI
+                initial_reward: 2_000_000_000,          // 20 DOLI
+                registration_base_fee: 1_000,           // 0.00001 DOLI
+                max_registration_fee: 10_000_000,       // 0.1 DOLI
                 automatic_genesis_bond: 10_000_000_000, // 100 DOLI
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
-                vdf_iterations: 1, // Single iteration
+                vdf_iterations: 1,                    // Single iteration
                 heartbeat_vdf_iterations: 10_000_000, // Same as mainnet
-                vdf_register_iterations: 5_000_000, // ~5 seconds
+                vdf_register_iterations: 5_000_000,   // ~5 seconds
 
                 // Time structure (accelerated)
-                blocks_per_year: 144, // ~24 minutes
+                blocks_per_year: 144,       // ~24 minutes
                 blocks_per_reward_epoch: 4, // ~40 seconds
                 coinbase_maturity: 10,
                 slots_per_reward_epoch: 30, // 30 seconds
                 bootstrap_blocks: 60,
 
                 // Update system (fast for testing)
-                min_voting_age_secs: 60, // 1 minute
-                update_check_interval_secs: 10, // 10 seconds
-                crash_window_secs: 60, // 1 minute
+                min_voting_age_secs: 60,         // 1 minute
+                update_check_interval_secs: 10,  // 10 seconds
+                crash_window_secs: 60,           // 1 minute
                 max_registrations_per_block: 20, // Higher for rapid testing
             },
         }
@@ -452,7 +485,10 @@ mod tests {
         assert_eq!(mainnet.blocks_per_month(), mainnet.blocks_per_year / 12);
         assert_eq!(mainnet.blocks_per_era(), mainnet.blocks_per_year * 4);
         assert_eq!(mainnet.commitment_period(), mainnet.blocks_per_era());
-        assert_eq!(mainnet.exit_history_retention(), mainnet.blocks_per_era() * 2);
+        assert_eq!(
+            mainnet.exit_history_retention(),
+            mainnet.blocks_per_era() * 2
+        );
     }
 
     #[test]

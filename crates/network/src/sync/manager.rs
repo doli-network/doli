@@ -599,8 +599,10 @@ impl SyncManager {
         self.pending_requests.clear();
 
         // Reset downloaders
-        self.header_downloader =
-            HeaderDownloader::new(self.config.max_headers_per_request, self.config.request_timeout);
+        self.header_downloader = HeaderDownloader::new(
+            self.config.max_headers_per_request,
+            self.config.request_timeout,
+        );
         self.body_downloader = BodyDownloader::new(
             self.config.max_bodies_per_request,
             self.config.max_concurrent_body_requests,
