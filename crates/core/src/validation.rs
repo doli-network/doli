@@ -264,6 +264,10 @@ pub enum ValidationError {
         /// Description of what doesn't match.
         reason: String,
     },
+
+    /// Maintainer change transaction validation failed.
+    #[error("invalid maintainer change: {0}")]
+    InvalidMaintainerChange(String),
 }
 
 /// Information about an unspent transaction output.
@@ -1120,6 +1124,12 @@ pub fn validate_transaction(
         TxType::EpochReward => {
             validate_epoch_reward_data(tx)?;
         }
+        TxType::RemoveMaintainer => {
+            validate_maintainer_change_data(tx)?;
+        }
+        TxType::AddMaintainer => {
+            validate_maintainer_change_data(tx)?;
+        }
     }
 
     Ok(())
@@ -1732,6 +1742,56 @@ fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
             "epoch reward output must be Normal type".to_string(),
         ));
     }
+
+    Ok(())
+}
+
+// ==================== Maintainer Transaction Validation ====================
+
+/// Validate maintainer change transaction data (AddMaintainer/RemoveMaintainer).
+///
+/// Structural validation for maintainer change transactions:
+/// - Must have no inputs (state-only operation)
+/// - Must have no outputs (no funds transferred)
+/// - Must have valid MaintainerChangeData in extra_data
+///
+/// Note: Signature verification and maintainer set state checks are done
+/// at the node level where we have access to the current maintainer set.
+fn validate_maintainer_change_data(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::maintainer::MaintainerChangeData;
+
+    // Maintainer changes must have no inputs (state-only operation)
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidMaintainerChange(
+            "maintainer change transaction must have no inputs".to_string(),
+        ));
+    }
+
+    // Maintainer changes must have no outputs (no funds transferred)
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidMaintainerChange(
+            "maintainer change transaction must have no outputs".to_string(),
+        ));
+    }
+
+    // Must have valid MaintainerChangeData in extra_data
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidMaintainerChange(
+            "missing maintainer change data".to_string(),
+        ));
+    }
+
+    // Try to deserialize maintainer change data
+    let _change_data = MaintainerChangeData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidMaintainerChange("invalid maintainer change data format".to_string())
+    })?;
+
+    // Note: The following validations are done at the node level:
+    // - Current maintainer set exists and is valid
+    // - Sufficient signatures from current maintainers (threshold check)
+    // - Target is not already a maintainer (for Add) or is a maintainer (for Remove)
+    // - Adding won't exceed MAX_MAINTAINERS
+    // - Removing won't go below MIN_MAINTAINERS
 
     Ok(())
 }
@@ -2778,26 +2838,48 @@ mod tests {
     }
 
     #[test]
-    fn test_add_bond_has_outputs() {
+    fn test_add_bond_allows_normal_outputs_for_change() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
         let pubkey = keypair.public_key().clone();
         let pubkey_hash = crypto::hash::hash(b"test");
 
-        // Create AddBond with output (invalid)
+        // Create AddBond with Normal output (valid - for change)
         let bond_data = crate::transaction::AddBondData::new(pubkey, 5);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::AddBond,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
-            outputs: vec![Output::normal(100, pubkey_hash)], // Should have no outputs
+            outputs: vec![Output::normal(100, pubkey_hash)], // Normal outputs OK for change
+            extra_data: bond_data.to_bytes(),
+        };
+
+        // Should pass structural validation (Normal outputs allowed for change)
+        let result = validate_transaction(&tx, &ctx);
+        assert!(result.is_ok(), "AddBond with Normal outputs should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_add_bond_rejects_bond_outputs() {
+        let ctx = test_context();
+        let keypair = crypto::KeyPair::generate();
+        let pubkey = keypair.public_key().clone();
+        let pubkey_hash = crypto::hash::hash(b"test");
+
+        // Create AddBond with Bond output (invalid - only Normal allowed)
+        let bond_data = crate::transaction::AddBondData::new(pubkey.clone(), 5);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::AddBond,
+            inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
+            outputs: vec![Output::bond(100, pubkey_hash, 1000)], // Bond outputs NOT allowed
             extra_data: bond_data.to_bytes(),
         };
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
             result,
-            Err(ValidationError::InvalidAddBond(msg)) if msg.contains("must have no outputs")
+            Err(ValidationError::InvalidAddBond(msg)) if msg.contains("must be Normal type")
         ));
     }
 
