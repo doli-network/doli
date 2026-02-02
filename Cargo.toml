@@ -89,6 +89,7 @@ hex = "0.4"
 # Configuration
 toml = "0.8"
 dirs = "5.0"
+dotenvy = "0.15"
 
 # Testing
 proptest = "1.4"

@@ -41,6 +41,10 @@ Thumbs.db
 config.local.toml
 .env
 .env.local
+.env.*
+# Keep .env.example files as documentation
+!.env.example
+!.env.example.*
 
 # Data directories
 data/

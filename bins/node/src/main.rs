@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use crypto::{KeyPair, PrivateKey, PublicKey};
-use doli_core::Network;
+use doli_core::{env_loader, Network};
 use storage::ProducerSet;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn, Level};
@@ -104,6 +104,11 @@ enum Commands {
         /// Using this incorrectly WILL cause slashing (100% bond loss).
         #[arg(long)]
         force_start: bool,
+
+        /// Skip all interactive confirmations (for automation/scripts).
+        /// Implies acceptance of --force-start warning when used together.
+        #[arg(long)]
+        yes: bool,
 
         /// Path to chainspec JSON file (overrides built-in network config)
         /// Use scripts/generate_chainspec.sh to create from wallet files
@@ -317,11 +322,6 @@ async fn main() -> Result<()> {
     // Skip network logging for devnet subcommands (they manage their own environment)
     let is_devnet_command = matches!(cli.command, Some(Commands::Devnet { .. }));
 
-    info!("DOLI Node v{}", env!("CARGO_PKG_VERSION"));
-    if !is_devnet_command {
-        info!("Network: {} (id={})", network.name(), network.id());
-    }
-
     // Get data directory (use override or network default)
     let data_dir = cli.data_dir.clone().unwrap_or_else(|| {
         dirs::home_dir()
@@ -329,6 +329,17 @@ async fn main() -> Result<()> {
             .join(".doli")
             .join(network.data_dir_name())
     });
+
+    // Load environment variables from data directory BEFORE using network params
+    // This allows overriding network defaults via ~/.doli/{network}/.env
+    if !is_devnet_command {
+        env_loader::load_env_for_network(network.name(), &data_dir);
+    }
+
+    info!("DOLI Node v{}", env!("CARGO_PKG_VERSION"));
+    if !is_devnet_command {
+        info!("Network: {} (id={})", network.name(), network.id());
+    }
 
     match cli.command {
         Some(Commands::Run {
@@ -343,6 +354,7 @@ async fn main() -> Result<()> {
             bootstrap,
             no_dht,
             force_start,
+            yes,
             chainspec,
         }) => {
             let update_config = UpdateConfig {
@@ -363,6 +375,7 @@ async fn main() -> Result<()> {
                 bootstrap,
                 no_dht,
                 force_start,
+                yes,
                 chainspec,
             )
             .await?;
@@ -406,7 +419,8 @@ async fn main() -> Result<()> {
                 None,
                 false,
                 false,
-                None, // chainspec
+                false, // yes
+                None,  // chainspec
             )
             .await?;
         }
@@ -427,6 +441,7 @@ async fn run_node(
     bootstrap: Option<String>,
     no_dht: bool,
     force_start: bool,
+    yes: bool,
     chainspec_path: Option<PathBuf>,
 ) -> Result<()> {
     info!("Starting node with data directory: {:?}", data_dir);
@@ -463,12 +478,17 @@ async fn run_node(
         // 2. Preventing double-signing after restart (signed slots db)
         // 3. Detecting if another node is using this key (duplicate detection)
 
-        // If --force-start is specified, require interactive confirmation
+        // If --force-start is specified, require interactive confirmation (unless --yes)
         let force_start = if force_start {
-            if !producer::confirm_force_start() {
+            if yes {
+                // --yes flag bypasses interactive confirmation (for automation)
+                warn!("--yes specified: skipping force-start confirmation");
+                true
+            } else if !producer::confirm_force_start() {
                 return Err(anyhow!("Force start cancelled by user"));
+            } else {
+                true
             }
-            true
         } else {
             false
         };
