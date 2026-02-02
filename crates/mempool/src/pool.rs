@@ -474,10 +474,12 @@ impl Mempool {
 
             // Then check UTXO set
             if let Some(utxo) = utxo_set.get(&outpoint) {
-                if !utxo.is_spendable_at(current_height) {
+                // Use network-specific maturity for coinbase/epoch reward outputs
+                let maturity = self.network.coinbase_maturity();
+                if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
                     return Err(MempoolError::InvalidTransaction(format!(
                         "Output not spendable until height {}",
-                        utxo.output.lock_until
+                        utxo.height + maturity
                     )));
                 }
                 total += utxo.output.amount;
