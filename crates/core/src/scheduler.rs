@@ -256,10 +256,7 @@ impl DeterministicScheduler {
     /// Returns None if producer is not in the scheduler.
     pub fn slots_until_next(&self, current_slot: Slot, pubkey: &PublicKey) -> Option<u64> {
         // Find producer's ticket range
-        let producer_idx = self
-            .producers
-            .iter()
-            .position(|p| &p.pubkey == pubkey)?;
+        let producer_idx = self.producers.iter().position(|p| &p.pubkey == pubkey)?;
 
         // Calculate first ticket owned by this producer
         let first_ticket = if producer_idx == 0 {
@@ -367,9 +364,8 @@ mod tests {
     #[test]
     fn test_single_producer() {
         let pubkey = make_pubkey(1);
-        let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(pubkey.clone(), 5),
-        ]);
+        let scheduler =
+            DeterministicScheduler::new(vec![ScheduledProducer::new(pubkey.clone(), 5)]);
 
         assert_eq!(scheduler.producer_count(), 1);
         assert_eq!(scheduler.total_bonds(), 5);

@@ -163,6 +163,5 @@ pub fn open_db(path: &Path) -> Result<rocksdb::DB, StorageError> {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(true);
     opts.set_max_open_files(256);
-
     rocksdb::DB::open(&opts, path).map_err(StorageError::from)
 }
