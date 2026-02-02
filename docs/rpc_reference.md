@@ -4,6 +4,46 @@ This document describes the DOLI node JSON-RPC API.
 
 ---
 
+## Method Summary
+
+| Category | Method | Status |
+|----------|--------|--------|
+| **Chain** | `getChainInfo` | Implemented |
+| **Chain** | `getBlockByHash` | Implemented |
+| **Chain** | `getBlockByHeight` | Implemented |
+| **Transaction** | `sendTransaction` | Implemented |
+| **Transaction** | `getTransaction` | Implemented (mempool only) |
+| **Balance** | `getBalance` | Implemented |
+| **Balance** | `getUtxos` | Implemented |
+| **Balance** | `getHistory` | Implemented |
+| **Mempool** | `getMempoolInfo` | Implemented |
+| **Network** | `getNetworkInfo` | Implemented |
+| **Network** | `getNodeInfo` | Implemented |
+| **Producer** | `getProducer` | Implemented |
+| **Producer** | `getProducers` | Implemented |
+| **Governance** | `getUpdateStatus` | Implemented |
+| **Governance** | `submitVote` | Implemented |
+| **Governance** | `getMaintainerSet` | Implemented |
+| **Governance** | `submitMaintainerChange` | Implemented |
+| **Epoch** | `getEpochInfo` | Implemented |
+
+### Not Yet Implemented
+
+The following methods are **NOT YET IMPLEMENTED** and will return "Method not found" errors:
+
+| Method | Description |
+|--------|-------------|
+| `getBlockHeader` | Return header only (use `getBlockByHash` instead) |
+| `getTransactionReceipt` | Transaction receipt with logs |
+| `getUtxosByOutpoint` | Lookup specific UTXOs by outpoint |
+| `getSchedule` | Producer schedule for upcoming slots |
+| `getPeerInfo` | Detailed peer list (use `getNetworkInfo` instead) |
+| `getRawMempool` | List all mempool transaction hashes |
+| `validateAddress` | Validate address format |
+| `estimateFee` | Estimate transaction fee |
+
+---
+
 ## 1. Overview
 
 | Property | Value |
@@ -176,14 +216,15 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 | registration | Producer registration |
 | exit | Producer exit |
 | coinbase | Block reward |
-| claimReward | Claim epoch rewards |
-| claimBond | Claim bond after unbonding |
-| addBond | Add bonds to producer |
-| requestWithdrawal | Request bond withdrawal |
-| claimWithdrawal | Claim after withdrawal delay |
-| epochReward | Epoch reward distribution (deprecated) |
-| claimEpochReward | Claim weighted presence rewards |
-| slashProducer | Slash equivocating producer |
+| claim_reward | **DEPRECATED** - Claim epoch rewards |
+| claim_bond | Claim bond after unbonding |
+| add_bond | Add bonds to producer |
+| request_withdrawal | Request bond withdrawal |
+| claim_withdrawal | Claim after withdrawal delay |
+| epoch_reward | **DEPRECATED** - Epoch reward distribution |
+| slash_producer | Slash equivocating producer |
+| add_maintainer | Add maintainer (3/5 multisig) |
+| remove_maintainer | Remove maintainer (3/5 multisig) |
 
 **Example:**
 ```bash
@@ -233,9 +274,18 @@ Returns balance for an address.
 {
     "confirmed": 100000000000,
     "unconfirmed": 5000000,
-    "total": 100005000000
+    "immature": 100000000,
+    "total": 100105000000
 }
 ```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| confirmed | Spendable balance (mature, confirmed) |
+| unconfirmed | Pending credits from mempool |
+| immature | Coinbase/epoch rewards awaiting maturity (100 blocks) |
+| total | confirmed + unconfirmed + immature |
 
 **Note:** Amounts are in base units (1 DOLI = 100,000,000 units)
 
@@ -450,17 +500,32 @@ Returns transaction history for an address.
 [
     {
         "hash": "0x...",
-        "type": "Transfer",
+        "txType": "transfer",
+        "blockHash": "0x...",
         "height": 12345,
-        "status": "confirmed",
-        "received": 100000000,
-        "sent": 0,
-        "fee": 1000
+        "timestamp": 1706400000,
+        "amountReceived": 100000000,
+        "amountSent": 0,
+        "fee": 0,
+        "confirmations": 6
     }
 ]
 ```
 
-**Note:** Fee calculation may be incomplete for some transaction types.
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| hash | Transaction hash |
+| txType | Transaction type (transfer, coinbase, etc.) |
+| blockHash | Block containing this transaction |
+| height | Block height |
+| timestamp | Block timestamp |
+| amountReceived | Amount received by this address |
+| amountSent | Amount sent from this address |
+| fee | Transaction fee (may be 0 if not calculable) |
+| confirmations | Number of confirmations |
+
+**Note:** Fee calculation may be incomplete for some transaction types. History scans up to 1000 recent blocks.
 
 **Example:**
 ```bash
@@ -507,14 +572,15 @@ Returns the current auto-update status.
 **Response:**
 ```json
 {
-    "pendingUpdate": "0.2.0",
-    "vetoPeriodActive": true,
-    "vetoCount": 5,
-    "vetoPercent": 12
+    "pending_update": null,
+    "veto_period_active": false,
+    "veto_count": 0,
+    "veto_percent": 0,
+    "message": "Update status tracking not yet integrated with RPC"
 }
 ```
 
-Returns `null` for `pendingUpdate` if no update is pending.
+**Note:** This is currently a placeholder implementation. Full update status tracking is not yet integrated with the RPC layer. Returns `null` for `pending_update` if no update is pending.
 
 **Example:**
 ```bash
@@ -532,16 +598,22 @@ Submit a veto vote for a pending update.
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
+| vote | object | Vote message object (see below) |
+
+**Vote Message Object:**
+| Field | Type | Description |
+|-------|------|-------------|
 | version | string | Version to vote on |
-| vote | integer | 0 = APPROVE, 1 = VETO |
-| producer_id | string | Producer public key |
+| vote | string | "approve" or "veto" |
+| producerId | string | Producer public key (hex) |
 | timestamp | integer | Unix timestamp |
-| signature | string | Signature over vote message |
+| signature | string | Signature over "version:vote:timestamp" (hex) |
 
 **Response:**
 ```json
 {
-    "success": true
+    "status": "submitted",
+    "message": "Vote submitted and broadcast to network"
 }
 ```
 
@@ -551,7 +623,81 @@ Submit a veto vote for a pending update.
 ```bash
 curl -X POST http://127.0.0.1:8545 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"submitVote","params":{"version":"0.2.0","vote":1,"producer_id":"0x...","timestamp":1706400000,"signature":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"submitVote","params":{"vote":{"version":"0.2.0","vote":"veto","producerId":"0x...","timestamp":1706400000,"signature":"0x..."}},"id":1}'
+```
+
+---
+
+### getMaintainerSet
+
+Returns the current maintainer set (first 5 registered producers).
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "maintainers": [
+        {
+            "pubkey": "0x...",
+            "registered_at_block": 100,
+            "is_active_producer": true
+        }
+    ],
+    "threshold": 3,
+    "member_count": 5,
+    "max_maintainers": 5,
+    "min_maintainers": 3,
+    "initial_maintainer_count": 5,
+    "last_change_block": 0
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getMaintainerSet","params":{},"id":1}'
+```
+
+---
+
+### submitMaintainerChange
+
+Submit a maintainer add or remove transaction (requires 3/5 multisig).
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| action | string | "add" or "remove" |
+| target_pubkey | string | Public key to add/remove (hex) |
+| signatures | array | Array of signature entries |
+| reason | string | (Optional) Reason for removal |
+
+**Signature Entry:**
+```json
+{
+    "pubkey": "0x...",
+    "signature": "0x..."
+}
+```
+
+**Response:**
+```json
+{
+    "status": "accepted",
+    "tx_hash": "0x...",
+    "message": "Maintainer add transaction submitted"
+}
+```
+
+**Note:** Requires at least 3 valid signatures from current maintainers.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"submitMaintainerChange","params":{"action":"add","target_pubkey":"0x...","signatures":[{"pubkey":"0x...","signature":"0x..."}]},"id":1}'
 ```
 
 ---
@@ -592,15 +738,28 @@ Returns current reward epoch information.
 **Response:**
 ```json
 {
-    "current_epoch": 8,
-    "current_height": 2950,
-    "blocks_per_epoch": 360,
-    "epoch_start_height": 2880,
-    "epoch_end_height": 3240,
-    "epoch_progress": 70,
-    "last_complete_epoch": 7
+    "currentHeight": 2950,
+    "currentEpoch": 8,
+    "lastCompleteEpoch": 7,
+    "blocksPerEpoch": 360,
+    "blocksRemaining": 290,
+    "epochStartHeight": 2880,
+    "epochEndHeight": 3240,
+    "blockReward": 100000000
 }
 ```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| currentHeight | Current blockchain height |
+| currentEpoch | Current reward epoch number |
+| lastCompleteEpoch | Most recently completed epoch (null if epoch 0) |
+| blocksPerEpoch | Blocks per epoch (360 mainnet/testnet, 60 devnet) |
+| blocksRemaining | Blocks until current epoch ends |
+| epochStartHeight | First block height of current epoch |
+| epochEndHeight | Last block height of current epoch (exclusive) |
+| blockReward | Current block reward in base units |
 
 **Example:**
 ```bash

@@ -640,24 +640,130 @@ For devnet/testnet without registered producers:
 ```
 doli/
 ├── bins/
-│   ├── node/           # Full node binary (doli-node)
-│   └── cli/            # Wallet CLI (doli binary)
+│   ├── node/           # Full node binary (doli-node) (~6,000 lines)
+│   │   └── producer/   # Producer-specific logic (signed slots, guards)
+│   └── cli/            # Wallet CLI (doli-cli) (~2,500 lines)
 ├── crates/
-│   ├── core/           # Types, consensus, validation, chainspec
-│   │   └── tpop/       # Telemetry (heartbeat, presence - not consensus)
-│   ├── crypto/         # BLAKE3, Ed25519, key management
-│   ├── vdf/            # Hash-chain VDF for blocks, Wesolowski for registration
-│   ├── mempool/        # Transaction pool with fee policies
-│   ├── network/        # libp2p P2P networking (gossip, sync, DHT)
-│   ├── storage/        # RocksDB blocks, File I/O for UTXO/state
-│   ├── rpc/            # JSON-RPC API server (Axum)
-│   └── updater/        # Auto-update with community veto
+│   ├── core/           # Types, consensus, validation (~23,000 lines)
+│   │   ├── tpop/       # Telemetry (heartbeat, presence - NOT consensus)
+│   │   └── discovery/  # Producer discovery (bloom, gossip, gset)
+│   ├── crypto/         # BLAKE3, Ed25519, signatures, merkle (~2,500 lines)
+│   ├── vdf/            # Hash-chain VDF (blocks), Wesolowski (registration) (~2,200 lines)
+│   ├── mempool/        # Transaction pool with fee policies (~760 lines)
+│   ├── network/        # libp2p P2P networking (~5,900 lines)
+│   │   ├── sync/       # Sync manager, headers, bodies, equivocation, reorg
+│   │   └── protocols/  # Status and sync request/response protocols
+│   ├── storage/        # RocksDB blocks, File I/O for UTXO/state (~4,500 lines)
+│   ├── rpc/            # JSON-RPC API server (Axum) (~1,700 lines)
+│   └── updater/        # Auto-update with 3/5 multisig, 7-day veto (~1,750 lines)
 ├── docker/             # Docker configuration files
 ├── docs/               # Documentation
 ├── specs/              # Technical specifications
 ├── scripts/            # Test and utility scripts
 └── testing/            # Integration tests, benchmarks, fuzz tests
 ```
+
+---
+
+## Crate Responsibilities
+
+### Crate Dependency Flow
+
+```
+bins/node (doli-node)          bins/cli (doli-cli)
+    │                              │
+    ├─→ network ─┐                 │
+    ├─→ rpc ─────┤                 │
+    ├─→ mempool ─┤                 │
+    ├─→ storage ─┤                 │
+    ├─→ updater ─┤                 │
+    │            ▼                 │
+    └─────────→ core ←─────────────┘
+                 │
+                 ▼
+         ┌───────┴───────┐
+         ▼               ▼
+      crypto            vdf
+```
+
+### Crate Details
+
+| Crate | Lines | Purpose | Key Files |
+|-------|-------|---------|-----------|
+| `crypto` | ~2,500 | BLAKE3-256 hashing, Ed25519 signatures, merkle trees | `hash.rs` (591), `keys.rs` (764), `signature.rs` (552), `merkle.rs` (496) |
+| `vdf` | ~2,200 | Wesolowski VDF (registration), hash-chain VDF (blocks) | `vdf.rs` (619), `class_group.rs` (880), `proof.rs` (280) |
+| `core` | ~23,000 | Types, validation, consensus, scheduler, maintainer bootstrap | `validation.rs` (4,501), `consensus.rs` (3,688), `transaction.rs` (1,628), `network.rs` (1,120), `heartbeat.rs` (803), `maintainer.rs` (701), `scheduler.rs` (653), `block.rs` (383) |
+| `storage` | ~4,500 | RocksDB blocks, UTXO, chain state, producer registry | `producer.rs` (2,698), `block_store.rs` (846), `chain_state.rs` (406), `utxo.rs` (432) |
+| `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection | `service.rs` (1,081), `sync/manager.rs` (744), `sync/reorg.rs` (595), `sync/equivocation.rs` (359), `scoring.rs` (450) |
+| `mempool` | ~760 | Transaction pool with fee policies, double-spend detection | `pool.rs` (589), `policy.rs` (57) |
+| `rpc` | ~1,700 | JSON-RPC server (Axum) for wallet/explorer | `methods.rs` (839), `types.rs` (527), `server.rs` (121) |
+| `updater` | ~1,750 | Auto-update with 3/5 multisig, 7-day veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
+
+### Core Crate Submodules
+
+**tpop/** - Telemetry Proof of Presence (NOT consensus):
+| File | Lines | Purpose |
+|------|-------|---------|
+| `presence.rs` | 1,136 | Presence commitment tracking |
+| `producer.rs` | 724 | Producer telemetry state |
+| `mod.rs` | 625 | Module coordination |
+| `heartbeat.rs` | 612 | VDF heartbeat telemetry |
+| `calibration.rs` | 527 | VDF iteration calibration |
+
+**discovery/** - Producer Discovery:
+| File | Lines | Purpose |
+|------|-------|---------|
+| `gset.rs` | 1,434 | Grow-only set for producer tracking |
+| `gossip.rs` | 442 | Discovery gossip protocol |
+| `proto.rs` | 428 | Protocol buffer definitions |
+| `announcement.rs` | 376 | Producer announcements |
+| `bloom.rs` | 353 | Bloom filter for efficient queries |
+
+### Network Crate Submodules
+
+**sync/** - Block Synchronization:
+| File | Lines | Purpose |
+|------|-------|---------|
+| `manager.rs` | 744 | Sync orchestration |
+| `reorg.rs` | 595 | Chain reorganization handling |
+| `equivocation.rs` | 359 | Double-production detection and slashing |
+| `bodies.rs` | 340 | Block body download |
+| `headers.rs` | 221 | Header-first sync |
+
+**protocols/** - Request/Response Protocols:
+| File | Lines | Purpose |
+|------|-------|---------|
+| `status.rs` | 227 | Peer status exchange |
+| `sync.rs` | 198 | Sync request/response |
+
+### Maintainer Bootstrap System
+
+The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized governance from genesis:
+
+1. **Bootstrap**: First 5 registered producers become initial maintainers
+2. **Threshold**: 3/5 multisig required for maintainer changes
+3. **Operations**: AddMaintainer (tx type 12), RemoveMaintainer (tx type 11)
+4. **Slashing**: Producers removed from maintainer set automatically when slashed
+5. **Update Governance**: 7-day veto period, 40% veto threshold to block updates
+
+### Binary Crates
+
+**bins/node** (doli-node) - ~6,000 lines:
+| File | Lines | Purpose |
+|------|-------|---------|
+| `node.rs` | 2,721 | Main node logic, block production |
+| `main.rs` | 1,527 | CLI parsing, node startup |
+| `updater.rs` | 884 | Update management integration |
+| `metrics.rs` | 388 | Prometheus metrics |
+| `producer/signed_slots.rs` | 194 | Double-sign prevention |
+| `producer/guard.rs` | 112 | Lock file for single instance |
+
+**bins/cli** (doli-cli) - ~2,500 lines:
+| File | Lines | Purpose |
+|------|-------|---------|
+| `main.rs` | 1,667 | CLI commands (wallet, tx, producer) |
+| `rpc_client.rs` | 623 | JSON-RPC client |
+| `wallet.rs` | 232 | Wallet file management |
 
 ---
 

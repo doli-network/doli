@@ -10,7 +10,7 @@ Block producers in DOLI:
 - Create new blocks at their assigned slots
 - Compute VDF proofs (~700ms per block)
 - Earn block rewards (1 DOLI per block in Era 1)
-- Require a bond (1,000 DOLI minimum)
+- Require a bond (100 DOLI minimum per bond unit)
 
 **Key differences from other systems:**
 - **Deterministic selection** - You know exactly when your blocks will be produced
@@ -40,9 +40,10 @@ Block producers in DOLI:
 
 | Requirement | Amount | Lock Period |
 |-------------|--------|-------------|
-| Minimum bond | 1,000 DOLI | 4 years |
-| Maximum bond | 100,000 DOLI | 4 years |
-| Bond unit | 1,000 DOLI | - |
+| Bond unit | 100 DOLI | 4 years |
+| Maximum bonds | 100 bonds (10,000 DOLI) | 4 years |
+
+**Bond Stacking**: You can hold multiple bonds (up to 100), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
 
 ### 2.3. Time Commitment
 
@@ -79,17 +80,17 @@ Transfer the bond amount plus fees to your producer address:
 ./target/release/doli wallet balance
 
 # You need: bond amount + registration fee + operational buffer
-# Example: 1,000 DOLI bond + 0.01 fee + 1 DOLI buffer = 1,001.01 DOLI
+# Example: 100 DOLI bond + 0.01 fee + 1 DOLI buffer = 101.01 DOLI
 ```
 
 ### 3.3. Register as Producer
 
 ```bash
-# Register with minimum bond (1,000 DOLI)
+# Register with minimum bond (100 DOLI = 1 bond)
 ./target/release/doli producer register
 
 # Register with multiple bonds for more slots
-./target/release/doli producer register --bonds 5  # 5,000 DOLI
+./target/release/doli producer register --bonds 5  # 500 DOLI = 5 bonds
 ```
 
 **What happens during registration:**
@@ -111,32 +112,31 @@ Transfer the bond amount plus fees to your producer address:
 
 ## 4. Understanding Selection
 
-### 4.1. Deterministic Round-Robin
+### 4.1. Ticket-Based Round-Robin
 
 Selection is NOT a lottery. It's deterministic based on:
 - Slot number
-- Active producer set (frozen at epoch start)
-- Bond counts
+- Active producer set (sorted by pubkey)
+- Bond counts (each bond = 1 ticket)
+
+**How tickets work:**
+- Producers are sorted by public key (deterministic ordering)
+- Each producer gets consecutive tickets equal to their bond count
+- Primary producer: `slot % total_tickets` determines which ticket is selected
 
 ```
-Example with 3 producers (10 total bonds):
+Example with 2 producers (5 total bonds/tickets):
 
-Alice: 1 bond  → Produces 1 block per 10 slots
-Bob:   5 bonds → Produces 5 blocks per 10 slots
-Carol: 4 bonds → Produces 4 blocks per 10 slots
+Alice: 3 bonds → tickets 0, 1, 2
+Bob:   2 bonds → tickets 3, 4
 
-Selection pattern (repeating):
-Slot 0: Alice
-Slot 1: Bob
-Slot 2: Bob
-Slot 3: Bob
-Slot 4: Bob
-Slot 5: Bob
-Slot 6: Carol
-Slot 7: Carol
-Slot 8: Carol
-Slot 9: Carol
-Slot 10: Alice (cycle repeats)
+Selection pattern (repeating every 5 slots):
+Slot 0: 0 % 5 = 0 → ticket 0 (Alice)
+Slot 1: 1 % 5 = 1 → ticket 1 (Alice)
+Slot 2: 2 % 5 = 2 → ticket 2 (Alice)
+Slot 3: 3 % 5 = 3 → ticket 3 (Bob)
+Slot 4: 4 % 5 = 4 → ticket 4 (Bob)
+Slot 5: 5 % 5 = 0 → ticket 0 (Alice) [cycle repeats]
 ```
 
 ### 4.2. Calculating Your Slots
@@ -148,15 +148,21 @@ Your blocks per day = (your_bonds / total_bonds) × 8,640
 
 ### 4.3. Fallback Mechanism
 
-If the primary producer is offline:
+If the primary producer is offline, fallback producers become eligible in 1-second windows:
 
 | Time in slot | Eligible producers |
 |--------------|-------------------|
-| 0-3 seconds | Rank 0 only |
-| 3-6 seconds | Rank 0 or 1 |
-| 6-10 seconds | Rank 0, 1, or 2 |
+| 0-1 seconds | Rank 0 only (primary) |
+| 1-2 seconds | Rank 0-1 |
+| 2-3 seconds | Rank 0-2 |
+| 3-4 seconds | Rank 0-3 |
+| ... | ... |
+| 9-10 seconds | Rank 0-9 (all 10 ranks) |
 
-Lower rank always wins if multiple valid blocks exist.
+**Fallback calculation:** Fallback producers at ranks 1-9 are selected by offsetting the primary ticket:
+`offset = total_bonds * rank / 10`
+
+Lower rank always wins if multiple valid blocks exist. Producers verify block existence before and after VDF computation to prevent duplicates.
 
 ---
 
@@ -173,55 +179,46 @@ Lower rank always wins if multiple valid blocks exist.
 
 ### 5.2. Distribution Mechanism
 
-Rewards are distributed automatically at **epoch boundaries** (every 360 slots / 1 hour on mainnet):
+Rewards are distributed via **coinbase transactions** directly to the block producer:
 
 | Aspect | Behavior |
 |--------|----------|
-| Timing | Distributed at first block of new epoch |
-| Calculation | Proportional to blocks produced in the epoch |
-| Delivery | Direct to producer's UTXO via `EpochReward` transactions |
-| Empty slots | Reduce the reward pool (only actual blocks count) |
+| Timing | Immediate, included in each block |
+| Delivery | Coinbase transaction to producer's address |
+| Maturity | 100 blocks (~17 minutes) before spendable |
+| Empty slots | No reward generated for missed slots |
 
 **Key characteristics:**
 
-- **Deterministic**: Any node can independently verify rewards by reading the BlockStore
+- **Simple**: Each block contains a coinbase output to its producer
+- **Deterministic**: Reward amount based on era (halves every ~4 years)
 - **No claiming required**: Rewards appear directly in your UTXO set
-- **Proportional**: If you produce 10% of blocks in an epoch, you receive 10% of rewards
-- **Empty slot handling**: Missed slots mean fewer rewards for the pool (no phantom rewards)
+- **Maturity period**: Coinbase outputs require 100 confirmations before spending
 
-**Example epoch distribution:**
+**Example:**
 
 ```
-Epoch with 358 produced blocks (2 empty slots):
-
-Pool = 358 blocks × 1 DOLI = 358 DOLI
-
-Producer distribution:
-- Alice: 72 blocks → 72/358 × 358 = 72 DOLI
-- Bob:   71 blocks → 71/358 × 358 = 71 DOLI
-- Carol: 72 blocks → 72/358 × 358 = 72 DOLI
-- Dave:  71 blocks → 71/358 × 358 = 71 DOLI
-- Eve:   72 blocks → 72/358 × 358 = 72 DOLI
+Block produced by Alice at height 1000:
+- Coinbase reward: 1 DOLI to Alice
+- Spendable after: height 1100 (100 block maturity)
 ```
-
-For technical details, see [REWARDS.md](/REWARDS.md).
 
 ### 5.3. ROI Calculation
 
-**All producers earn identical ROI percentage:**
+**All producers earn identical ROI percentage per bond:**
 
 ```
-ROI per block = reward / bond_per_ticket
-ROI per block = 1 DOLI / 1,000 DOLI = 0.1%
+ROI per block = reward / bond_unit
+ROI per block = 1 DOLI / 100 DOLI = 1%
 
 Blocks per year (with 1 bond, 1000 total bonds):
 = 3,153,600 slots × (1/1000) = 3,153.6 blocks
 
 Annual return = 3,153.6 × 1 DOLI = 3,153.6 DOLI
-Annual ROI = 3,153.6 / 1,000 = 315.36%
+Annual ROI = 3,153.6 / 100 = 3,153.6%
 ```
 
-**Note:** ROI decreases as more producers join and rewards halve.
+**Note:** ROI decreases as more producers join and rewards halve. This example assumes 1000 total bonds across all producers.
 
 ### 5.4. Fee Income
 
@@ -231,67 +228,95 @@ Producers also earn transaction fees from included transactions.
 
 ## 6. Bond Management
 
-### 6.1. Adding Bonds
+### 6.1. Bond Stacking
 
-Increase your stake (up to 100 bonds / 100,000 DOLI):
+You can hold multiple bonds (up to 100), each with its own vesting schedule:
+- Each bond = 100 DOLI = 1 ticket per cycle
+- Maximum: 100 bonds = 10,000 DOLI
+- Bonds vest individually based on their creation time
+
+### 6.2. Adding Bonds
+
+Increase your stake (up to 100 bonds / 10,000 DOLI):
 
 ```bash
-# Add 2 more bonds (2,000 DOLI)
+# Add 2 more bonds (200 DOLI)
 ./target/release/doli producer add-bond --count 2
 ```
 
-### 6.2. Requesting Withdrawal
+### 6.3. Requesting Withdrawal
 
-Start the withdrawal process (7-day delay):
+Start the withdrawal process (7-day delay). **Withdrawals follow FIFO order** - oldest bonds are withdrawn first:
 
 ```bash
-# Request withdrawal of 1 bond (1,000 DOLI)
+# Request withdrawal of 1 bond (100 DOLI, oldest bond)
 ./target/release/doli producer request-withdrawal --count 1
 ```
 
-### 6.3. Claiming Withdrawal
+### 6.4. Claiming Withdrawal
 
-After 7-day delay:
+After 7-day delay (60,480 slots):
 
 ```bash
 ./target/release/doli producer claim-withdrawal
 ```
 
-### 6.4. Exiting
+### 6.5. Exiting
 
 Full exit from producer set:
 
 ```bash
-# Exit (starts 7-day unbonding)
+# Exit (starts 7-day unbonding for all bonds)
 ./target/release/doli producer exit
 
 # After 7 days, claim bond
 ./target/release/doli producer claim-bond
 ```
 
-**Warning:** Early exit (before 4 years) incurs penalty:
-```
-penalty_pct = (time_remaining × 100) / 4_years
-return = bond × (100 - penalty_pct) / 100
-```
+### 6.6. Vesting Schedule and Early Withdrawal Penalties
+
+**Each bond vests independently over 4 years:**
+
+| Bond Age | Penalty on Withdrawal |
+|----------|----------------------|
+| Year 0-1 | 75% burned |
+| Year 1-2 | 50% burned |
+| Year 2-3 | 25% burned |
+| Year 3+ | 0% (fully vested) |
+
+**Example:** If you have 3 bonds created at different times:
+- Bond 1 (created 3 years ago): 0% penalty, receive 100 DOLI
+- Bond 2 (created 18 months ago): 50% penalty, receive 50 DOLI
+- Bond 3 (created 6 months ago): 75% penalty, receive 25 DOLI
+
+FIFO withdrawal means oldest bonds (typically with lower penalties) are withdrawn first.
 
 ---
 
 ## 7. Producer Weight (Seniority)
 
-Your influence in fork choice and governance increases with time:
+Producer weight is based on discrete yearly tiers and increases with time:
 
 | Years Active | Weight |
 |--------------|--------|
-| 0-1 | 1 |
-| 1-2 | 2 |
-| 2-3 | 3 |
-| 3+ | 4 |
+| 0-1 years | 1x |
+| 1-2 years | 2x |
+| 2-3 years | 3x |
+| 3+ years | 4x (cap) |
 
-**Weight affects:**
-- Fork choice (chains with higher weight win)
-- Governance voting power
-- Veto threshold calculations
+**Weight affects fork choice only:**
+- Chains with higher accumulated weight win
+- Seniority rewards long-term commitment
+- Does NOT affect block production frequency (that's bond count)
+
+**Example fork choice:**
+```
+Chain A: blocks from producers with weights 1, 1, 2 = total weight 4
+Chain B: blocks from producers with weights 2, 3 = total weight 5
+→ Chain B wins (higher accumulated weight)
+```
+
+**Note:** Weight is also used for governance veto threshold calculations.
 
 ---
 
@@ -450,14 +475,16 @@ Updates have a 7-day veto period:
 
 | Metric | Value |
 |--------|-------|
-| Minimum bond | 1,000 DOLI |
-| Maximum bonds | 100 per producer |
+| Bond unit | 100 DOLI |
+| Maximum bonds | 100 per producer (10,000 DOLI) |
 | Block reward (Era 1) | 1 DOLI |
 | Blocks per year (1 bond, 1000 total) | ~3,154 |
 | Annual rewards (1 bond, 1000 total) | ~3,154 DOLI |
-| Lock period | 4 years |
-| Early exit penalty | Pro-rata based on time remaining |
+| Full vesting period | 4 years |
+| Withdrawal delay | 7 days (60,480 slots) |
+| Coinbase maturity | 100 blocks |
+| Early exit penalties | 75%/50%/25%/0% (years 0-1/1-2/2-3/3+) |
 
 ---
 
-*Last updated: January 2026*
+*Last updated: February 2026*

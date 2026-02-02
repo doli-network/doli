@@ -182,7 +182,7 @@ pub const BOND_UNIT: Amount = 10_000_000_000; // 100 DOLI in base units
 pub const INITIAL_BOND: Amount = BOND_UNIT;
 
 /// Maximum bonds per producer (prevents whale dominance)
-/// 100 bonds = 100,000 DOLI maximum stake per node
+/// 100 bonds = 10,000 DOLI maximum stake per node
 pub const MAX_BONDS_PER_PRODUCER: u32 = 100;
 
 /// Withdrawal delay in slots (7 days at 10s slots)
@@ -492,7 +492,7 @@ impl ProducerState {
 pub struct BondEntry {
     /// Slot when this bond was created
     pub creation_slot: Slot,
-    /// Amount staked (always BOND_UNIT = 1,000 DOLI)
+    /// Amount staked (always BOND_UNIT = 100 DOLI)
     pub amount: Amount,
 }
 
