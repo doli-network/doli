@@ -692,7 +692,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 |-------|-------|---------|-----------|
 | `crypto` | ~2,500 | BLAKE3-256 hashing, Ed25519 signatures, merkle trees | `hash.rs` (591), `keys.rs` (764), `signature.rs` (552), `merkle.rs` (496) |
 | `vdf` | ~2,200 | Wesolowski VDF (registration), hash-chain VDF (blocks) | `vdf.rs` (619), `class_group.rs` (880), `proof.rs` (280) |
-| `core` | ~23,000 | Types, validation, consensus, scheduler, maintainer bootstrap | `validation.rs` (4,501), `consensus.rs` (3,688), `transaction.rs` (1,628), `network.rs` (1,120), `heartbeat.rs` (803), `maintainer.rs` (701), `scheduler.rs` (653), `block.rs` (383) |
+| `core` | ~24,000 | Types, validation, consensus, scheduler, maintainer bootstrap, network params | `validation.rs` (4,501), `consensus.rs` (3,688), `transaction.rs` (1,628), `network.rs` (1,120), `network_params.rs` (~400), `env_loader.rs` (~100), `heartbeat.rs` (803), `maintainer.rs` (701), `scheduler.rs` (653), `block.rs` (383) |
 | `storage` | ~4,500 | RocksDB blocks, UTXO, chain state, producer registry | `producer.rs` (2,698), `block_store.rs` (846), `chain_state.rs` (406), `utxo.rs` (432) |
 | `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection | `service.rs` (1,081), `sync/manager.rs` (744), `sync/reorg.rs` (595), `sync/equivocation.rs` (359), `scoring.rs` (450) |
 | `mempool` | ~760 | Transaction pool with fee policies, double-spend detection | `pool.rs` (589), `policy.rs` (57) |
@@ -700,6 +700,25 @@ bins/node (doli-node)          bins/cli (doli-cli)
 | `updater` | ~1,750 | Auto-update with 3/5 multisig, 7-day veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
 
 ### Core Crate Submodules
+
+**Environment Configuration** (`network_params.rs`, `env_loader.rs`, `config_validation.rs`):
+
+Network parameters are configurable via environment variables loaded from `~/.doli/{network}/.env`:
+
+| File | Purpose |
+|------|---------|
+| `network_params.rs` | NetworkParams struct with all configurable parameters |
+| `env_loader.rs` | Loads .env files from data directory on startup |
+| `config_validation.rs` | Validates params and enforces mainnet locks |
+
+**Configurable parameters** (~25 total):
+- Networking: ports, bootstrap nodes
+- Timing: slot duration, veto periods, unbonding
+- Economics: bond unit, rewards, fees
+- VDF: iterations for blocks and registration
+- Time structure: blocks per year/epoch
+
+**Security**: Critical parameters (VDF, emission, timing) are **locked for mainnet** and cannot be overridden via environment. Attempting to override logs a warning and uses hardcoded values.
 
 **tpop/** - Telemetry Proof of Presence (NOT consensus):
 | File | Lines | Purpose |

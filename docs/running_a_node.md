@@ -227,7 +227,11 @@ This creates a self-contained devnet at `~/.doli/devnet/` with:
 
 ## 5. Configuration
 
-DOLI nodes are configured via CLI flags. All settings have sensible defaults.
+DOLI nodes can be configured via:
+1. **CLI flags** - Override settings per invocation
+2. **Environment variables** - Persistent configuration via `.env` files
+
+### 5.1. CLI Flags
 
 **Common flags:**
 ```bash
@@ -255,6 +259,77 @@ DOLI nodes are configured via CLI flags. All settings have sensible defaults.
 ```bash
 ./doli-node --network mainnet --data-dir /var/lib/doli --listen-addr 0.0.0.0:30303 --rpc-addr 127.0.0.1:8545 run
 ```
+
+### 5.2. Environment Variables (.env Files)
+
+Network parameters can be configured via `.env` files in the data directory:
+
+```
+~/.doli/mainnet/.env   # Mainnet configuration
+~/.doli/testnet/.env   # Testnet configuration
+~/.doli/devnet/.env    # Devnet configuration
+```
+
+**Quick setup:**
+```bash
+# Copy the example template
+cp .env.example.devnet ~/.doli/devnet/.env
+
+# Edit as needed
+nano ~/.doli/devnet/.env
+```
+
+**Example devnet .env:**
+```bash
+# Custom ports
+DOLI_P2P_PORT=51303
+DOLI_RPC_PORT=29545
+
+# Faster testing
+DOLI_BLOCKS_PER_REWARD_EPOCH=2
+DOLI_UNBONDING_PERIOD=30
+```
+
+### 5.3. Configurable Parameters
+
+| Variable | Default (Mainnet) | Configurable |
+|----------|-------------------|--------------|
+| `DOLI_P2P_PORT` | 30303 | All networks |
+| `DOLI_RPC_PORT` | 8545 | All networks |
+| `DOLI_METRICS_PORT` | 9090 | All networks |
+| `DOLI_BOOTSTRAP_NODES` | (seeds) | All networks |
+| `DOLI_SLOT_DURATION` | 10 | Devnet only |
+| `DOLI_GENESIS_TIME` | (fixed) | Devnet only |
+| `DOLI_VETO_PERIOD_SECS` | 604800 | All networks |
+| `DOLI_UNBONDING_PERIOD` | 60480 | Devnet only |
+| `DOLI_BOND_UNIT` | 10B | Devnet only |
+| `DOLI_INITIAL_REWARD` | 100M | Devnet only |
+| `DOLI_VDF_ITERATIONS` | 100000 | Devnet only |
+| `DOLI_BLOCKS_PER_YEAR` | 3153600 | Devnet only |
+| `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Devnet only |
+| `DOLI_COINBASE_MATURITY` | 100 | Devnet only |
+
+### 5.4. Mainnet Locked Parameters
+
+For security, the following parameters are **locked for mainnet** and cannot be overridden:
+
+- `DOLI_SLOT_DURATION` - Must be 10s
+- `DOLI_GENESIS_TIME` - Fixed launch time
+- `DOLI_BOND_UNIT` - 100 DOLI minimum
+- `DOLI_INITIAL_REWARD` - Emission schedule
+- `DOLI_VDF_ITERATIONS` - Consensus security
+- `DOLI_BLOCKS_PER_YEAR` - Era calculation
+- `DOLI_BLOCKS_PER_REWARD_EPOCH` - Reward distribution
+
+Attempting to override these on mainnet will log a warning and use hardcoded values.
+
+### 5.5. Configuration Precedence
+
+1. **CLI flags** (highest priority)
+2. **Environment variables** (from `.env` file)
+3. **Network defaults** (hardcoded)
+
+Example: `--rpc-port 9999` overrides `DOLI_RPC_PORT=8888` in `.env`.
 
 ---
 
@@ -524,11 +599,17 @@ doli-node export <file>           # Export blocks to file
 | Network ID | 1 | 2 | 99 |
 | P2P Port | 30303 | 40303 | 50303 |
 | RPC Port | 8545 | 18545 | 28545 |
-| Slot Duration | 10s | 10s | 1s |
-| Block Reward | 1 DOLI | 1 DOLI | 1 DOLI |
-| VDF Iterations | 10M (~700ms) | 10M (~700ms) | 1M (~70ms) |
+| Metrics Port | 9090 | 19090 | 29090 |
+| Slot Duration | 10s | 10s | 10s |
+| Block Reward | 1 DOLI | 1 DOLI | 20 DOLI |
+| Bond Unit | 100 DOLI | 100 DOLI | 1 DOLI |
+| VDF Iterations | 100K | 100K | 1 |
+| Heartbeat VDF | 10M (~700ms) | 10M (~700ms) | 10M (~700ms) |
+| Blocks/Year | 3,153,600 | 3,153,600 | 144 |
+| Reward Epoch | 360 blocks | 360 blocks | 4 blocks |
 | Address Prefix | `doli` | `tdoli` | `ddoli` |
+| Config File | `~/.doli/mainnet/.env` | `~/.doli/testnet/.env` | `~/.doli/devnet/.env` |
 
 ---
 
-*Last updated: January 2026*
+*Last updated: February 2026*
