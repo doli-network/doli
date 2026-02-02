@@ -376,35 +376,70 @@ print_subheader "Transferring DOLI to Additional Producers"
 
 TRANSFER_AMOUNT=200000000  # 2 DOLI (enough for 1 bond + fees)
 
+# Record height before transfers
+height_before=$(get_height 1)
+echo -e "  Current height before transfers: $height_before"
+
 for i in $(seq $((NUM_GENESIS_PRODUCERS + 1)) $TOTAL_PRODUCERS); do
     target_addr="${NODE_ADDRESSES[$i]}"
     echo -e "  Transferring 2 DOLI to Producer $i (${target_addr:0:16}...)..."
 
-    # Use doli CLI to send
+    # Use doli CLI to send (positional args: TO AMOUNT)
     transfer_output=$($CLI_BIN \
         --wallet "$TEST_DIR/keys/node1.json" \
         --rpc "$RPC_ENDPOINT" \
-        send \
-        --to "$target_addr" \
-        --amount "$TRANSFER_AMOUNT" \
+        send "$target_addr" "$TRANSFER_AMOUNT" \
         2>&1 || true)
 
-    if echo "$transfer_output" | grep -qiE "success|submitted|hash"; then
+    if echo "$transfer_output" | grep -qiE "success|submitted|hash|sent"; then
         echo -e "    ${GREEN}Transfer submitted${NC}"
     else
-        echo -e "    ${YELLOW}Transfer output: $(echo "$transfer_output" | head -1)${NC}"
+        echo -e "    ${YELLOW}Transfer output: $(echo "$transfer_output" | tail -2 | head -1)${NC}"
     fi
 
-    sleep 2  # Wait between transfers
+    sleep 1  # Small gap between transfers
 done
 
-# Wait for transfers to confirm
+# Wait for transfers to be included and confirmed
+# On devnet, transactions need to be in a block, then potentially wait for confirmation
 echo
-echo -e "${YELLOW}Waiting for transfers to confirm (10 blocks)...${NC}"
-sleep 15
+echo -e "${YELLOW}Waiting for transfers to confirm (need ~10 blocks after last transfer)...${NC}"
+
+# Wait for at least 15 blocks after the transfers started
+target_height=$((height_before + 15))
+while true; do
+    current_height=$(get_height 1)
+    if [ -n "$current_height" ] && [ "$current_height" -ge "$target_height" ]; then
+        echo
+        echo -e "  ${GREEN}Reached height $current_height - transfers should be confirmed${NC}"
+        break
+    fi
+    printf "\r  Height: %3s / %s target" "${current_height:-0}" "$target_height"
+    sleep 1
+done
 
 # Register additional producers
 print_subheader "Registering Additional Producers"
+
+# First, verify balances before attempting registration
+echo -e "  Checking balances before registration..."
+for i in $(seq $((NUM_GENESIS_PRODUCERS + 1)) $TOTAL_PRODUCERS); do
+    addr="${NODE_ADDRESSES[$i]}"
+    balance_output=$($CLI_BIN \
+        --wallet "$TEST_DIR/keys/node${i}.json" \
+        --rpc "$RPC_ENDPOINT" \
+        balance \
+        2>&1 || true)
+
+    # Extract balance (look for number after "Balance:" or just a number)
+    balance=$(echo "$balance_output" | grep -oE '[0-9]+' | head -1 || echo "0")
+    echo -e "    Producer $i balance: $balance (need $BOND_AMOUNT)"
+done
+
+# Record height before registrations
+height_before_reg=$(get_height 1)
+echo
+echo -e "  Current height before registrations: $height_before_reg"
 
 for i in $(seq $((NUM_GENESIS_PRODUCERS + 1)) $TOTAL_PRODUCERS); do
     echo -e "  Registering Producer $i..."
@@ -417,24 +452,31 @@ for i in $(seq $((NUM_GENESIS_PRODUCERS + 1)) $TOTAL_PRODUCERS); do
         --bonds 1 \
         2>&1 || true)
 
-    if echo "$register_output" | grep -qiE "success|submitted|hash"; then
+    if echo "$register_output" | grep -qiE "success|submitted|hash|registered"; then
         echo -e "    ${GREEN}Registration submitted${NC}"
     else
         echo -e "    ${YELLOW}Registration output: $(echo "$register_output" | tail -3 | head -1)${NC}"
     fi
 
-    sleep 3  # Wait between registrations
+    sleep 2  # Wait between registrations to avoid mempool issues
 done
 
-# Wait for registrations to be processed
+# Wait for registrations to be processed (need blocks for inclusion)
 echo
-echo -e "${YELLOW}Waiting for registrations to be processed (20 blocks)...${NC}"
-for t in $(seq 1 25); do
-    height=$(get_height 1)
-    printf "\r  Height: %3s | Time: %2ds / 25s" "${height:-0}" "$t"
+echo -e "${YELLOW}Waiting for registrations to be processed...${NC}"
+
+# Wait for at least 15 blocks after the registrations started
+target_reg_height=$((height_before_reg + 15))
+while true; do
+    current_height=$(get_height 1)
+    if [ -n "$current_height" ] && [ "$current_height" -ge "$target_reg_height" ]; then
+        echo
+        echo -e "  ${GREEN}Reached height $current_height - registrations should be processed${NC}"
+        break
+    fi
+    printf "\r  Height: %3s / %s target" "${current_height:-0}" "$target_reg_height"
     sleep 1
 done
-echo
 
 # Verify producer list
 print_subheader "Verifying Producer List"
