@@ -19,6 +19,9 @@ use doli_core::Network;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+/// Default devnet .env configuration (embedded at compile time)
+const DEVNET_ENV_EXAMPLE: &str = include_str!("../../../.env.example.devnet");
+
 /// Devnet configuration stored in devnet.toml
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DevnetConfig {
@@ -128,8 +131,16 @@ pub fn init(node_count: u32) -> Result<()> {
     // Create root directory first so we can load .env
     fs::create_dir_all(&root)?;
 
-    // Load environment variables from devnet root .env file if it exists
-    // This allows pre-configuring network parameters before init
+    // Create default .env file if it doesn't exist
+    let env_path = root.join(".env");
+    if !env_path.exists() {
+        fs::write(&env_path, DEVNET_ENV_EXAMPLE)
+            .with_context(|| format!("Failed to create {:?}", env_path))?;
+        info!("  Created default .env configuration: {:?}", env_path);
+    }
+
+    // Load environment variables from devnet root .env file
+    // This allows customizing network parameters before init
     doli_core::env_loader::load_env_for_network("devnet", &root);
 
     info!(
