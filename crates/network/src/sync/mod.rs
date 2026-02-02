@@ -15,5 +15,5 @@ mod reorg;
 pub use bodies::BodyDownloader;
 pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use headers::HeaderDownloader;
-pub use manager::{SyncConfig, SyncManager, SyncState};
+pub use manager::{ProductionAuthorization, SyncConfig, SyncManager, SyncState};
 pub use reorg::{ReorgHandler, ReorgResult};
