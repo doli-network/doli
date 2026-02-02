@@ -267,7 +267,7 @@ impl SyncManager {
             has_connected_to_peer: false,
             first_peer_status_received: None,
             last_peer_status_received: None,
-            bootstrap_grace_period_secs: 10, // Wait 10s at genesis for chain evidence
+            bootstrap_grace_period_secs: 15, // Wait 15s at genesis for chain evidence
         }
     }
 
