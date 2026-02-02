@@ -468,7 +468,7 @@ async fn run_node(
                 for (pk, bonds) in &genesis_producers {
                     info!("  - {} (bonds: {})", pk.to_hex(), bonds);
                 }
-                ProducerSet::with_genesis_producers(genesis_producers)
+                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
             } else {
                 info!("Chainspec has no genesis producers, using bootstrap mode");
                 ProducerSet::new()
@@ -491,7 +491,7 @@ async fn run_node(
                             "Initializing testnet with {} genesis producers (legacy mode)",
                             genesis_producers.len()
                         );
-                        ProducerSet::with_genesis_producers(genesis_producers)
+                        ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
                     } else {
                         ProducerSet::new()
                     }

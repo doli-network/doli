@@ -1026,6 +1026,7 @@ impl ProducerSet {
         &mut self,
         pubkey: PublicKey,
         bond_count: u32,
+        bond_unit: u64,
     ) -> Result<(), StorageError> {
         let key = crypto_hash(pubkey.as_bytes());
         if self.producers.contains_key(&key) {
@@ -1034,7 +1035,8 @@ impl ProducerSet {
             ));
         }
 
-        let bond_amount = (bond_count as u64) * BOND_UNIT;
+        // Use network-specific bond_unit instead of hardcoded BOND_UNIT
+        let bond_amount = (bond_count as u64) * bond_unit;
         let info = ProducerInfo {
             public_key: pubkey,
             registered_at: 0, // Genesis registration
@@ -1060,11 +1062,12 @@ impl ProducerSet {
     ///
     /// # Arguments
     /// - `producers`: Vec of (PublicKey, bond_count) tuples
-    pub fn with_genesis_producers(producers: Vec<(PublicKey, u32)>) -> Self {
+    /// - `bond_unit`: Network-specific bond unit (e.g., 1 DOLI for devnet)
+    pub fn with_genesis_producers(producers: Vec<(PublicKey, u32)>, bond_unit: u64) -> Self {
         let mut set = Self::new();
         for (pubkey, bond_count) in producers {
             // Ignore errors (shouldn't happen for fresh set)
-            let _ = set.register_genesis_producer(pubkey, bond_count);
+            let _ = set.register_genesis_producer(pubkey, bond_count, bond_unit);
         }
         set
     }
