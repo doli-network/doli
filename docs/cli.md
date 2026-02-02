@@ -2,6 +2,29 @@
 
 Complete reference for all DOLI CLI operations. Every operation described in the [WHITEPAPER.md](/WHITEPAPER.md) can be performed via CLI.
 
+DOLI provides two binaries:
+- **doli-cli** (`doli`): Wallet operations, transactions, producer management
+- **doli-node**: Node operations, updates, maintainer management
+
+---
+
+## Running Commands
+
+All commands must be run inside the Nix development environment:
+
+```bash
+# Enter the Nix shell first
+nix --extra-experimental-features "nix-command flakes" develop
+
+# Then run commands
+cargo run -p doli-cli -- <command>
+cargo run -p doli-node -- <command>
+
+# Or use the built binaries
+doli <command>
+doli-node <command>
+```
+
 ---
 
 ## Quick Start
@@ -277,17 +300,16 @@ Options:
   -b, --bonds <BONDS>    Number of bonds to stake (1-100) [default: 1]
 ```
 
-**Bond Requirements (Era 1):**
-- Each bond = 1,000 DOLI
-- Minimum stake = 1 bond (1,000 DOLI)
-- Maximum stake = 100 bonds (100,000 DOLI)
+**Bond Requirements:**
+- **Mainnet/Testnet**: Each bond = 100 DOLI (minimum 1 bond, maximum 100 bonds = 10,000 DOLI)
+- **Devnet**: Each bond = 1 DOLI (for testing)
 
 **Example:**
 ```bash
-# Register with 1 bond (1,000 DOLI)
+# Register with 1 bond (100 DOLI on mainnet/testnet, 1 DOLI on devnet)
 doli producer register
 
-# Register with 5 bonds (5,000 DOLI)
+# Register with 5 bonds (500 DOLI on mainnet/testnet)
 doli producer register --bonds 5
 ```
 
@@ -376,7 +398,7 @@ Options:
 
 **Example:**
 ```bash
-# Add 3 more bonds (3,000 DOLI)
+# Add 3 more bonds (300 DOLI on mainnet/testnet)
 doli producer add-bond --count 3
 ```
 
@@ -628,7 +650,7 @@ doli balance
 ### 7.2 Becoming a Producer
 
 ```bash
-# 1. Ensure you have enough DOLI (1,000+ per bond)
+# 1. Ensure you have enough DOLI (100+ per bond on mainnet/testnet)
 doli balance
 
 # 2. Register with 1 bond
@@ -678,7 +700,155 @@ doli producer slash \
 
 ---
 
-## 8. WHITEPAPER Operations Mapping
+## 8. Node Commands (doli-node)
+
+The `doli-node` binary provides node management, update voting, and maintainer operations.
+
+### 8.1 Running the Node
+
+```bash
+doli-node run [OPTIONS]
+
+Options:
+  --producer               Enable block production
+  --producer-key <PATH>    Path to producer key file (required with --producer)
+  --no-auto-update         Disable automatic updates
+  --update-notify-only     Only notify about updates, don't apply
+  --p2p-port <PORT>        P2P listen port
+  --rpc-port <PORT>        RPC listen port
+  --bootstrap <ADDR>       Bootstrap node multiaddr
+  --no-dht                 Disable DHT discovery
+  --chainspec <PATH>       Path to chainspec JSON file
+```
+
+**Example:**
+```bash
+# Run a non-producing node
+doli-node --network testnet run
+
+# Run a producing node
+doli-node --network testnet run --producer --producer-key wallet.json
+```
+
+### 8.2 Node Management
+
+```bash
+# Initialize data directory
+doli-node init --network mainnet
+
+# Show node status
+doli-node status
+
+# Import blocks from file
+doli-node import <path>
+
+# Export blocks to file
+doli-node export <path> --from 0 --to 1000
+
+# Recover chain state from blocks
+doli-node recover [--yes]
+```
+
+---
+
+## 9. Update Commands (doli-node update)
+
+The update system uses 3/5 maintainer multisig with a 7-day veto period and 40% threshold.
+
+### 9.1 Check for Updates
+
+```bash
+doli-node update check
+```
+
+### 9.2 View Update Status
+
+```bash
+doli-node update status
+```
+
+### 9.3 Vote on Updates
+
+Producers can vote to approve or veto pending updates.
+
+```bash
+doli-node update vote --approve --key <producer-key.json>
+doli-node update vote --veto --key <producer-key.json>
+```
+
+**WHITEPAPER Reference:** Section 15 (Governance) - 40% weighted veto threshold.
+
+### 9.4 View Vote Status
+
+```bash
+doli-node update votes [--version <VERSION>]
+```
+
+### 9.5 Apply Update
+
+```bash
+doli-node update apply [--force]
+```
+
+### 9.6 Rollback
+
+```bash
+doli-node update rollback
+```
+
+### 9.7 Verify Release
+
+```bash
+doli-node update verify --version <VERSION>
+```
+
+---
+
+## 10. Maintainer Commands (doli-node maintainer)
+
+Maintainers are the first 5 registered producers. Changes require 3/5 multisig.
+
+### 10.1 List Maintainers
+
+```bash
+doli-node maintainer list
+```
+
+### 10.2 Add Maintainer
+
+Propose adding a new maintainer (requires 3/5 signatures).
+
+```bash
+doli-node maintainer add --target <PUBKEY> --key <maintainer-key.json>
+```
+
+### 10.3 Remove Maintainer
+
+Propose removing a maintainer (requires 3/5 signatures).
+
+```bash
+doli-node maintainer remove --target <PUBKEY> --key <maintainer-key.json> [--reason "reason"]
+```
+
+### 10.4 Sign Proposal
+
+Sign a pending maintainer change proposal.
+
+```bash
+doli-node maintainer sign --proposal-id <ID> --key <maintainer-key.json>
+```
+
+### 10.5 Verify Maintainer Status
+
+```bash
+doli-node maintainer verify --pubkey <PUBKEY>
+```
+
+**WHITEPAPER Reference:** Section 15.1 (Maintainer Bootstrap) - First 5 producers become maintainers.
+
+---
+
+## 11. WHITEPAPER Operations Mapping
 
 | WHITEPAPER Section | CLI Command |
 |--------------------|-------------|
@@ -692,10 +862,11 @@ doli producer slash \
 | 9.1 Emission/Rewards | `doli wallet balance` (rewards are automatic via coinbase) |
 | 10.3 Double Production | `doli producer slash` |
 | 14. Privacy (new keys) | `doli address` |
+| 15. Governance | `doli-node update vote`, `doli-node maintainer` |
 
 ---
 
-## 9. Environment Variables
+## 12. Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -704,7 +875,7 @@ doli producer slash \
 
 ---
 
-## 10. Exit Codes
+## 13. Exit Codes
 
 | Code | Meaning |
 |------|---------|
@@ -725,4 +896,4 @@ doli producer slash \
 
 ---
 
-*Last updated: January 2026*
+*Last updated: February 2026*
