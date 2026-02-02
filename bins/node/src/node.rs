@@ -1547,6 +1547,47 @@ impl Node {
                     }
                 }
 
+                // Process AddBond transactions - add bonds to existing producer
+                if tx.tx_type == TxType::AddBond {
+                    if let Some(add_bond_data) = tx.add_bond_data() {
+                        // Find all bond outputs in this transaction
+                        let tx_hash = tx.hash();
+                        let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
+                            .outputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, o)| {
+                                o.output_type == doli_core::transaction::OutputType::Bond
+                            })
+                            .map(|(i, _)| (tx_hash, i as u32))
+                            .collect();
+
+                        if !bond_outpoints.is_empty() {
+                            let bond_unit = self.config.network.bond_unit();
+                            if let Some(producer_info) =
+                                producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
+                            {
+                                let added =
+                                    producer_info.add_bonds(bond_outpoints.clone(), bond_unit);
+                                if added > 0 {
+                                    info!(
+                                        "Added {} bonds to producer {} (total: {} bonds, {} DOLI)",
+                                        added,
+                                        crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
+                                        producer_info.bond_count,
+                                        producer_info.bond_amount / UNITS_PER_COIN
+                                    );
+                                }
+                            } else {
+                                warn!(
+                                    "AddBond for unknown producer: {}",
+                                    crypto_hash(add_bond_data.producer_pubkey.as_bytes())
+                                );
+                            }
+                        }
+                    }
+                }
+
             }
 
             // Process completed unbonding periods
