@@ -1591,8 +1591,9 @@ impl Node {
             }
         }
 
-        // GENESIS END: Auto-register producers when genesis phase completes
+        // GENESIS END: Derive and register producers from the blockchain
         // This transition happens when we move from genesis_blocks to genesis_blocks + 1
+        // The blockchain is the source of truth - we scan block headers to find genesis producers
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks > 0 && height == genesis_blocks + 1 {
             info!(
@@ -1600,21 +1601,22 @@ impl Node {
                 height
             );
 
-            // Get all known producers from the bootstrap phase
-            let known = self.known_producers.read().await;
-            let known_count = known.len();
+            // Derive genesis producers from the blockchain (source of truth)
+            // This works for both original nodes and syncing nodes
+            let genesis_producers = self.derive_genesis_producers_from_chain();
+            let producer_count = genesis_producers.len();
 
-            if known_count > 0 {
+            if producer_count > 0 {
                 info!(
-                    "Auto-registering {} genesis producers with 1 bond unit each...",
-                    known_count
+                    "Derived {} genesis producers from blockchain (blocks 1-{})...",
+                    producer_count, genesis_blocks
                 );
 
-                // Register each known producer with 1 bond unit
+                // Register each producer with 1 bond unit
                 let mut producers = self.producer_set.write().await;
-                for pubkey in known.iter() {
-                    // Use network-specific bond unit for proper proportional allocation
-                    let bond_unit = self.config.network.bond_unit();
+                let bond_unit = self.config.network.bond_unit();
+
+                for pubkey in genesis_producers {
                     match producers.register_genesis_producer(pubkey.clone(), 1, bond_unit) {
                         Ok(()) => {
                             info!(
@@ -1623,8 +1625,9 @@ impl Node {
                             );
                         }
                         Err(e) => {
-                            warn!(
-                                "  Failed to register producer {}: {} (may already be registered)",
+                            // Already registered is fine (shouldn't happen but safe)
+                            debug!(
+                                "  Producer {} already registered: {}",
                                 hex::encode(&pubkey.as_bytes()[..8]),
                                 e
                             );
@@ -1643,7 +1646,7 @@ impl Node {
                     producers.active_producers().len()
                 );
             } else {
-                warn!("Genesis ended with no known producers - network may not produce blocks!");
+                warn!("Genesis ended with no producers found in blockchain!");
             }
         }
 
@@ -2598,6 +2601,32 @@ impl Node {
     /// Get mempool size
     pub async fn mempool_size(&self) -> usize {
         self.mempool.read().await.len()
+    }
+
+    /// Derive genesis producers from the blockchain.
+    ///
+    /// Scans blocks 1 through genesis_blocks and extracts unique producers.
+    /// This is the source of truth for genesis producers - no gossip or
+    /// external configuration required. Any node can verify this by
+    /// examining the blockchain.
+    fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
+        let genesis_blocks = self.config.network.genesis_blocks();
+        if genesis_blocks == 0 {
+            return Vec::new();
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut producers = Vec::new();
+
+        for height in 1..=genesis_blocks {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
+                if seen.insert(block.header.producer.clone()) {
+                    producers.push(block.header.producer);
+                }
+            }
+        }
+
+        producers
     }
 
     /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
