@@ -67,6 +67,19 @@ pub const VETO_THRESHOLD_PERCENT: u64 = 40;
 /// 10 DOLI = 1_000_000_000 units (same as registration fee)
 pub const VETO_BOND_AMOUNT: u64 = 1_000_000_000;
 
+/// Activation delay in blocks before a new producer can participate in scheduling.
+///
+/// When a producer registers, they must wait this many blocks before they become
+/// eligible for block production. This ensures all nodes have time to see the
+/// registration transaction and update their producer sets, preventing scheduling
+/// conflicts where some nodes see the new producer and others don't.
+///
+/// With 10-second slots:
+/// - 10 blocks = ~100 seconds of propagation time
+/// - All nodes will have received and confirmed the registration block
+/// - ProducerSet becomes consistent across the network
+pub const ACTIVATION_DELAY: u64 = 10;
+
 /// Calculate producer weight based on seniority (discrete yearly steps)
 ///
 /// Weight is determined by years active:
@@ -1102,6 +1115,24 @@ impl ProducerSet {
         self.producers.values().filter(|p| p.is_active()).collect()
     }
 
+    /// Get active producers that are eligible for scheduling at the given height.
+    ///
+    /// A producer is eligible for scheduling if:
+    /// 1. They are in active status
+    /// 2. They have passed the ACTIVATION_DELAY since registration
+    ///
+    /// This ensures all nodes have the same view of the producer set for a given
+    /// height, preventing scheduling conflicts when new producers join.
+    pub fn active_producers_at_height(&self, current_height: u64) -> Vec<&ProducerInfo> {
+        self.producers
+            .values()
+            .filter(|p| {
+                p.is_active()
+                    && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
+            })
+            .collect()
+    }
+
     /// Get all producers (all states)
     pub fn all_producers(&self) -> Vec<&ProducerInfo> {
         self.producers.values().collect()
@@ -1110,6 +1141,11 @@ impl ProducerSet {
     /// Get count of active producers
     pub fn active_count(&self) -> usize {
         self.producers.values().filter(|p| p.is_active()).count()
+    }
+
+    /// Get count of active producers eligible for scheduling at the given height.
+    pub fn active_count_at_height(&self, current_height: u64) -> usize {
+        self.active_producers_at_height(current_height).len()
     }
 
     /// Get total producer count (all states)

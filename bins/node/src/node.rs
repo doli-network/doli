@@ -1894,9 +1894,12 @@ impl Node {
         // Get active producers with their effective weights for weighted selection (Option C)
         // This enables anti-grinding protection: top N by weight are eligible (deterministic),
         // then hash selects among them (limited grinding impact)
+        // Get active producers that are eligible for scheduling at this height.
+        // Use active_producers_at_height to ensure all nodes have the same view -
+        // new producers must wait ACTIVATION_DELAY blocks before entering the scheduler.
         let producers = self.producer_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = producers
-            .active_producers()
+            .active_producers_at_height(height)
             .iter()
             .map(|p| (p.public_key.clone(), p.effective_weight(height)))
             .collect();
@@ -2409,11 +2412,14 @@ impl Node {
     async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
 
-        // Get the list of producers and their indices (clone to release the lock)
+        // Calculate the height at the end of this epoch for producer eligibility
+        let epoch_end_height = (epoch + 1) * blocks_per_epoch;
+
+        // Get the list of producers eligible at epoch end (clone to release the lock)
         let mut sorted_producers: Vec<storage::producer::ProducerInfo> = {
             let producers = self.producer_set.read().await;
             producers
-                .active_producers()
+                .active_producers_at_height(epoch_end_height)
                 .iter()
                 .map(|p| (*p).clone())
                 .collect()
