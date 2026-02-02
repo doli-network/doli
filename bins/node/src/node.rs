@@ -3112,35 +3112,34 @@ impl Node {
         // PERIODIC STATUS REFRESH: Request status from peers to keep network tip updated
         // This is critical for production gating - without fresh peer status, we can't
         // know if other nodes have produced blocks we haven't received via gossip yet.
-        //
-        // We request status every ~10 seconds (controlled by production_timer which is 1s,
-        // so we use a modulo check based on current time).
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Request status every ~5 seconds for devnet/testnet, every ~30 seconds for mainnet
-        let status_interval =
-            if self.config.network == Network::Devnet || self.config.network == Network::Testnet {
-                5
-            } else {
-                30
-            };
+        // During bootstrap (height 0), be VERY aggressive about requesting status
+        // from ALL peers - we need to find at least one peer with height > 0
+        let local_height = self.chain_state.read().await.best_height;
+        let is_bootstrap = local_height == 0;
+
+        // Request status every ~2 seconds during bootstrap, ~5 seconds during normal ops
+        let status_interval = if is_bootstrap {
+            2 // Aggressive during bootstrap
+        } else if self.config.network == Network::Devnet || self.config.network == Network::Testnet
+        {
+            5
+        } else {
+            30
+        };
 
         if now_secs % status_interval == 0 {
             if let Some(ref network) = self.network {
-                // Get a random peer to request status from
                 let peer_ids: Vec<_> = {
                     let sync = self.sync_manager.read().await;
                     sync.peer_ids().collect()
                 };
 
                 if !peer_ids.is_empty() {
-                    // Request status from one peer at a time to avoid flooding
-                    let peer_idx = (now_secs as usize) % peer_ids.len();
-                    let peer_id = peer_ids[peer_idx];
-
                     let genesis_hash = self.chain_state.read().await.genesis_hash;
                     let status_request = if let Some(ref key) = self.producer_key {
                         network::protocols::StatusRequest::with_producer(
@@ -3155,8 +3154,22 @@ impl Node {
                         )
                     };
 
-                    debug!("Periodic status request to peer {}", peer_id);
-                    let _ = network.request_status(peer_id, status_request).await;
+                    if is_bootstrap {
+                        // During bootstrap, request from ALL peers to find any with height > 0
+                        for peer_id in peer_ids.iter().take(5) {
+                            // Limit to 5 to avoid flooding
+                            debug!("Bootstrap status request to peer {}", peer_id);
+                            let _ = network
+                                .request_status(*peer_id, status_request.clone())
+                                .await;
+                        }
+                    } else {
+                        // Normal operation - request from one peer at a time
+                        let peer_idx = (now_secs as usize) % peer_ids.len();
+                        let peer_id = peer_ids[peer_idx];
+                        debug!("Periodic status request to peer {}", peer_id);
+                        let _ = network.request_status(peer_id, status_request).await;
+                    }
                 }
             }
         }
