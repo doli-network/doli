@@ -785,7 +785,10 @@ Documentation drift is a protocol liability.
 │         - docs/DOCS.md index updated                            │
 │         - specs/SPECS.md index updated (if specs changed)       │
 │                                                                 │
-│  [ ] 5. State which docs were checked/updated in commit message │
+│  [ ] 5. If architecture/consensus/constants/crates change:      │
+│         - CLAUDE.md updated (project brain must stay current)   │
+│                                                                 │
+│  [ ] 6. State which docs were checked/updated in commit message │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
