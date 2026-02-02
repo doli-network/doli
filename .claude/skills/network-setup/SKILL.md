@@ -68,7 +68,7 @@ User wants to...
 
 ```bash
 # Enter Nix environment
-nix develop
+`nix --extra-experimental-features "nix-command flakes" develop --command bash -c "<command>"`
 
 # Build release binaries
 cargo build --release
