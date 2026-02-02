@@ -20,6 +20,8 @@ tokio.workspace = true
 tracing.workspace = true
 bitvec.workspace = true
 prost.workspace = true
+dotenvy.workspace = true
+dirs.workspace = true
 
 [build-dependencies]
 prost-build = "0.13"
