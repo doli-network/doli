@@ -311,11 +311,16 @@ async fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    // Parse network
+    // Parse network (not used for devnet subcommands)
     let network = Network::from_str(&cli.network).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    // Skip network logging for devnet subcommands (they manage their own environment)
+    let is_devnet_command = matches!(cli.command, Some(Commands::Devnet { .. }));
+
     info!("DOLI Node v{}", env!("CARGO_PKG_VERSION"));
-    info!("Network: {} (id={})", network.name(), network.id());
+    if !is_devnet_command {
+        info!("Network: {} (id={})", network.name(), network.id());
+    }
 
     // Get data directory (use override or network default)
     let data_dir = cli.data_dir.clone().unwrap_or_else(|| {
