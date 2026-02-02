@@ -27,7 +27,7 @@ Master index for all DOLI documentation.
 | [rewards.md](./rewards.md) | Block rewards system - direct coinbase model, emission schedule, maturity rules |
 | [cli.md](./cli.md) | Complete CLI reference - all WHITEPAPER operations via command line |
 | [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
-| [running_a_node.md](./running_a_node.md) | Node setup and operation guide |
+| [running_a_node.md](./running_a_node.md) | Node setup, operation, and **environment configuration** (.env files) |
 | [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |

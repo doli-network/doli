@@ -114,12 +114,15 @@
 
 pub mod block;
 pub mod chainspec;
+pub mod config_validation;
 pub mod consensus;
 pub mod discovery;
+pub mod env_loader;
 pub mod genesis;
 pub mod heartbeat;
 pub mod maintainer;
 pub mod network;
+pub mod network_params;
 pub mod presence;
 pub mod rewards;
 pub mod scheduler;
@@ -219,6 +222,7 @@ pub use maintainer::{
     MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
 };
 pub use network::Network;
+pub use network_params::NetworkParams;
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
