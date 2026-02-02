@@ -22,11 +22,25 @@
 //! | `getMempoolInfo` | Get mempool statistics |
 //! | `getNetworkInfo` | Get network status |
 //! | `getChainInfo` | Get chain tip info |
-//! | `getClaimableRewards` | Get claimable epochs for a producer |
-//! | `getClaimHistory` | Get claim history for a producer |
-//! | `estimateEpochReward` | Estimate reward for a specific epoch |
-//! | `buildClaimTx` | Build unsigned claim transaction |
 //! | `getEpochInfo` | Get current reward epoch info |
+//! | `getProducer` | Get producer info |
+//! | `getProducers` | Get all producers |
+//! | `getHistory` | Get transaction history for address |
+//! | `submitVote` | Submit governance vote |
+//! | `getUpdateStatus` | Get auto-update status |
+//! | `getMaintainerSet` | Get maintainer set |
+//! | `submitMaintainerChange` | Submit maintainer change transaction |
+//! | `getNodeInfo` | Get node version info |
+//!
+//! ## Deprecated Methods (Not Implemented)
+//!
+//! The following methods were documented for a weighted presence reward system
+//! that was deprecated. Rewards now work like Bitcoin - automatic via coinbase.
+//!
+//! - `getClaimableRewards` - Not implemented
+//! - `getClaimHistory` - Not implemented
+//! - `estimateEpochReward` - Not implemented
+//! - `buildClaimTx` - Not implemented
 //!
 //! ## Example Request
 //!
