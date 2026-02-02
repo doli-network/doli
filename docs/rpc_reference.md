@@ -558,137 +558,28 @@ curl -X POST http://127.0.0.1:8545 \
 
 ## 9. Rewards Methods
 
-Methods for managing weighted presence rewards.
+Block rewards in DOLI work like Bitcoin: producers receive rewards automatically
+when they produce a block via the coinbase transaction. **No claiming is needed.**
 
-### getClaimableRewards
+Per WHITEPAPER.md Section 9.1:
+- Initial reward: 1 DOLI/block
+- Reward maturity: 100 confirmations (Section 9.2)
+- Halving interval: 12,614,400 blocks (~4 years)
 
-Returns unclaimed epoch rewards for a producer.
+### Deprecated Methods
 
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| producer_pubkey | string | Producer public key (hex) |
+The following RPC methods are **NOT IMPLEMENTED** and will return errors:
 
-**Response:**
-```json
-{
-    "epochs": [
-        {
-            "epoch": 5,
-            "blocks_present": 358,
-            "total_blocks": 360,
-            "estimated_reward": 4750000000,
-            "is_claimed": false
-        }
-    ],
-    "total_claimable": 14175000000
-}
-```
+| Method | Status |
+|--------|--------|
+| `getClaimableRewards` | Not implemented - rewards are automatic |
+| `getClaimHistory` | Not implemented - no claiming |
+| `estimateEpochReward` | Not implemented - rewards are automatic |
+| `buildClaimTx` | Not implemented - no claim transactions |
 
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getClaimableRewards","params":{"producer_pubkey":"0x..."},"id":1}'
-```
-
----
-
-### getClaimHistory
-
-Returns claim history for a producer.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| producer_pubkey | string | Producer public key (hex) |
-| limit | number | Maximum entries to return (default: 10) |
-
-**Response:**
-```json
-{
-    "claims": [
-        {
-            "epoch": 4,
-            "amount": 4600000000,
-            "tx_hash": "0x...",
-            "height": 1440,
-            "timestamp": 1706500000
-        }
-    ],
-    "total_claimed": 13625000000
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getClaimHistory","params":{"producer_pubkey":"0x...","limit":20},"id":1}'
-```
-
----
-
-### estimateEpochReward
-
-Estimates reward for a specific epoch before claiming.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| producer_pubkey | string | Producer public key (hex) |
-| epoch | number | Epoch number to estimate |
-
-**Response:**
-```json
-{
-    "epoch": 5,
-    "blocks_present": 358,
-    "total_blocks": 360,
-    "total_producer_weight": 358000,
-    "total_all_weights": 1790000,
-    "block_reward": 100000000,
-    "estimated_reward": 4750000000
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"estimateEpochReward","params":{"producer_pubkey":"0x...","epoch":5},"id":1}'
-```
-
----
-
-### buildClaimTx
-
-Builds an unsigned claim transaction for signing.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| producer_pubkey | string | Producer public key (hex) |
-| epoch | number | Epoch to claim |
-| recipient | string | Optional recipient address (defaults to producer) |
-
-**Response:**
-```json
-{
-    "unsigned_tx": "0x...",
-    "signing_message": "0x...",
-    "epoch": 5,
-    "amount": 4750000000,
-    "recipient": "0x..."
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"buildClaimTx","params":{"producer_pubkey":"0x...","epoch":5},"id":1}'
-```
+These methods were documented for a weighted presence reward system that was
+deprecated in favor of the simpler Bitcoin-like coinbase model where 100% of
+block rewards go directly to producers.
 
 ---
 

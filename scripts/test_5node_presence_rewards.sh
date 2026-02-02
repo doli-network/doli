@@ -1,7 +1,26 @@
 #!/bin/bash
 # DOLI Devnet - 5-Node Presence Tracking E2E Test
 #
-# Test scenario:
+# =============================================================================
+# DEPRECATED - This script tests an obsolete feature
+# =============================================================================
+#
+# Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+# - Producer produces a block → gets coinbase reward immediately
+# - No claiming needed - rewards are automatic
+# - Presence tracking and claim validation were deprecated
+#
+# The weighted presence reward system was removed in favor of the simpler
+# Bitcoin-like model where 100% of block rewards go directly to producers
+# via coinbase transactions.
+#
+# See: crates/core/src/rewards.rs lines 269-276 for deprecation notice
+# See: bins/node/src/node.rs lines 2403-2408 for coinbase implementation
+#
+# This script is kept for historical reference only.
+# =============================================================================
+#
+# Original test scenario (no longer applicable):
 # - Start 5 producer nodes on devnet
 # - Wait for 2 epochs to complete (720 blocks)
 # - Verify all 5 nodes are producing blocks (round-robin)
@@ -9,15 +28,6 @@
 # - Test claiming rewards for multiple producers
 # - Verify no double-claims allowed
 # - Verify proportional distribution based on blocks produced
-#
-# This tests the full presence tracking and claim system at scale:
-# - Milestone 2: Presence commitment structure
-# - Milestone 6: Weighted reward calculation
-# - Milestone 7: Claim validation
-# - Milestone 8: Block production with presence
-# - Milestone 9: Block application with claims
-# - Milestone 11: RPC endpoints
-# - Milestone 12: CLI commands
 
 set -e
 

@@ -1,21 +1,31 @@
 #!/bin/bash
 # DOLI Devnet - Weighted Presence Rewards E2E Test
 #
-# Test scenario:
+# =============================================================================
+# DEPRECATED - This script tests an obsolete feature
+# =============================================================================
+#
+# Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+# - Producer produces a block → gets coinbase reward immediately
+# - No claiming needed - rewards are automatic
+# - Presence tracking and weighted distribution were deprecated
+#
+# The weighted presence reward system was removed in favor of the simpler
+# Bitcoin-like model where 100% of block rewards go directly to producers
+# via coinbase transactions.
+#
+# See: crates/core/src/rewards.rs lines 269-276 for deprecation notice
+# See: bins/node/src/node.rs lines 2403-2408 for coinbase implementation
+#
+# This script is kept for historical reference only.
+# =============================================================================
+#
+# Original test scenario (no longer applicable):
 # - Start 3 producer nodes on devnet
 # - Wait for epochs to complete with block production
 # - Verify presence commitments are recorded in blocks
 # - Verify rewards are proportional to blocks produced
 # - Test claiming and verify proportional distribution
-#
-# This tests the weighted presence reward system (Milestone 6):
-# - Presence commitment structure in blocks
-# - Weighted reward calculation
-# - Proportional distribution based on participation
-#
-# NOTE: Currently only block producers are marked as present.
-# Full weighted distribution (multiple producers present with different
-# weights) requires heartbeat gossip (future milestone).
 
 set -e
 

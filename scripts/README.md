@@ -372,34 +372,25 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | Property | Value |
 |----------|-------|
 | **Path** | `scripts/test_claim_epoch_reward.sh` |
-| **Purpose** | E2E test of ClaimEpochReward transaction flow |
-| **What it tests** | Presence commitment, reward calculation, claim validation, RPC endpoints, CLI commands |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
-| **Run time** | ~3 minutes |
-| **Output** | `/tmp/doli-claim-epoch-test/` (logs) |
+| **Purpose** | ~~E2E test of ClaimEpochReward transaction flow~~ **DEPRECATED** |
+| **Status** | **OBSOLETE** - Tests a deprecated feature |
 
-**Usage:**
-```bash
-./scripts/test_claim_epoch_reward.sh
-```
+**⚠️ DEPRECATED:**
 
-**Test scenario:**
-1. Start 3 producer nodes on devnet
-2. Wait for 2 epochs to complete (~120 blocks)
-3. Test `rewards info` - Show epoch information
-4. Test `rewards list` - List claimable epochs
-5. Test `rewards claim 0` - Claim epoch 0 rewards
-6. Test `rewards history` - Verify claim recorded
-7. Check wallet balance after claim
+Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+- Producer produces a block → gets coinbase reward immediately
+- No claiming needed - rewards are automatic
+- The epoch-based claiming system was deprecated and returns 0
 
-**Tests implemented features:**
-- Milestone 5: ClaimEpochReward transaction type
-- Milestone 6: Weighted reward calculation
-- Milestone 7: Claim validation
-- Milestone 8: Block production with presence
-- Milestone 9: Block application with claims
-- Milestone 11: RPC endpoints
-- Milestone 12: CLI commands
+The weighted presence reward system was removed in favor of the simpler
+Bitcoin-like model where 100% of block rewards go directly to producers
+via coinbase transactions.
+
+**See:**
+- `crates/core/src/rewards.rs:269-276` - deprecation notice
+- `bins/node/src/node.rs:2403-2408` - coinbase implementation
+
+This script is kept for historical reference only.
 
 ---
 
@@ -408,25 +399,17 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | Property | Value |
 |----------|-------|
 | **Path** | `scripts/test_weighted_presence_rewards.sh` |
-| **Purpose** | Test weighted presence reward infrastructure and proportional distribution |
-| **What it tests** | Round-robin block production, presence infrastructure, CLI reward commands, proportional distribution |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `python3` |
-| **Run time** | ~2 minutes |
-| **Output** | `/tmp/doli-weighted-presence-test/` (logs, reports) |
+| **Purpose** | ~~Test weighted presence reward infrastructure~~ **DEPRECATED** |
+| **Status** | **OBSOLETE** - Tests a deprecated feature |
 
-**Usage:**
-```bash
-./scripts/test_weighted_presence_rewards.sh
-```
+**⚠️ DEPRECATED:**
 
-**Test scenario:**
-1. Start 3 producer nodes on devnet
-2. Wait for 120 blocks (tests in-progress epoch)
-3. Verify round-robin block production (~33% each)
-4. Verify presence infrastructure through block production
-5. Test `rewards info` - Show epoch information
-6. Test `rewards list` - List claimable epochs (expected: none yet)
-7. Test `rewards claim` - Verify epoch completion check
+Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+- Producer produces a block → gets coinbase reward immediately
+- No claiming needed - rewards are automatic
+- The weighted presence reward system was deprecated
+
+This script is kept for historical reference only.
 8. Generate markdown report
 
 **Key validations:**
@@ -447,25 +430,17 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | Property | Value |
 |----------|-------|
 | **Path** | `scripts/test_5node_presence_rewards.sh` |
-| **Purpose** | E2E test of 5-node presence tracking and claim flow at scale |
-| **What it tests** | 5-node round-robin, presence tracking, multi-producer claims, double-claim prevention, chain sync |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `python3` |
-| **Run time** | ~12-15 minutes (2 epochs) |
-| **Output** | `/tmp/doli-5node-presence-test/` (logs, reports) |
+| **Purpose** | ~~E2E test of 5-node presence tracking and claim flow~~ **DEPRECATED** |
+| **Status** | **OBSOLETE** - Tests a deprecated feature |
 
-**Usage:**
-```bash
-./scripts/test_5node_presence_rewards.sh
-```
+**⚠️ DEPRECATED:**
 
-**Test phases:**
-1. Start 5 producer nodes on devnet
-2. Wait for 2 epochs to complete (720 blocks)
-3. Verify round-robin block distribution (~20% per node)
-4. Test getEpochInfo and getClaimableRewards RPC endpoints
-5. Test rewards CLI commands (info, list)
-6. Claim epoch 0 for Node 1 and Node 3
-7. Verify double-claim prevention (Node 1 second claim rejected)
+Per WHITEPAPER.md Section 9.1, rewards work like Bitcoin:
+- Producer produces a block → gets coinbase reward immediately
+- No claiming needed - rewards are automatic
+- Presence tracking and claim validation were deprecated
+
+This script is kept for historical reference only.
 8. Check claim history for claiming nodes
 9. Verify all nodes are synced (within 2 blocks)
 
@@ -756,9 +731,9 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_3node_proportional_rewards.sh` | 3 | ~6 min | Proportional rewards |
 | `test_5node_epoch_rewards_consistency.sh` | 5 | ~2 min | **Milestone 6: Deterministic rewards** |
 | `test_devnet_3node_rewards.sh` | 3 | ~5 min | Detailed epoch rewards |
-| `test_claim_epoch_reward.sh` | 3 | ~3 min | **ClaimEpochReward E2E test** |
-| `test_weighted_presence_rewards.sh` | 3 | ~2 min | **Weighted presence infrastructure** |
-| `test_5node_presence_rewards.sh` | 5 | ~12-15 min | **5-node presence tracking at scale** |
+| `test_claim_epoch_reward.sh` | 3 | ~3 min | ~~ClaimEpochReward E2E~~ **DEPRECATED** |
+| `test_weighted_presence_rewards.sh` | 3 | ~2 min | ~~Weighted presence~~ **DEPRECATED** |
+| `test_5node_presence_rewards.sh` | 5 | ~12-15 min | ~~5-node presence~~ **DEPRECATED** |
 | `test_whitepaper_full.sh` | 3 | ~5-10 min | **Complete WHITEPAPER verification** |
 | `test_critical_features.sh` | 3 | ~3-5 min | **Real devnet E2E validation** |
 | `test_12node_governance.sh` | 5 | ~20 min | Era progression & governance |
