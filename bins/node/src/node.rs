@@ -184,7 +184,7 @@ impl Node {
                             "Initializing testnet with {} genesis producers",
                             genesis_producers.len()
                         );
-                        ProducerSet::with_genesis_producers(genesis_producers)
+                        ProducerSet::with_genesis_producers(genesis_producers, config.network.bond_unit())
                     } else {
                         ProducerSet::new()
                     }
@@ -1613,7 +1613,9 @@ impl Node {
                 // Register each known producer with 1 bond unit
                 let mut producers = self.producer_set.write().await;
                 for pubkey in known.iter() {
-                    match producers.register_genesis_producer(pubkey.clone(), 1) {
+                    // Use network-specific bond unit for proper proportional allocation
+                    let bond_unit = self.config.network.bond_unit();
+                    match producers.register_genesis_producer(pubkey.clone(), 1, bond_unit) {
                         Ok(()) => {
                             info!(
                                 "  Registered genesis producer: {}",
