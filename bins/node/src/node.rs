@@ -1862,6 +1862,19 @@ impl Node {
             return Ok(());
         }
 
+        // EARLY BLOCK EXISTENCE CHECK (optimization)
+        // Check if a block already exists for this slot before spending time on eligibility
+        // checks and VDF computation. This is safe because:
+        // 1. If we see a block, another producer already succeeded
+        // 2. We'll check again after VDF to catch blocks that appeared during computation
+        if self.block_store.has_block_for_slot(current_slot as u64) {
+            debug!(
+                "Block already exists for slot {} - skipping production",
+                current_slot
+            );
+            return Ok(());
+        }
+
         // Get chain state
         let state = self.chain_state.read().await;
         let prev_hash = state.best_hash;
@@ -2312,6 +2325,18 @@ impl Node {
                 VdfProof::empty(),
             )
         };
+
+        // SAFETY CHECK: Verify no block appeared during VDF computation
+        // This is critical for the fast fallback system with 1-second windows.
+        // Without this check, we could produce a duplicate block if another
+        // producer's block propagated while we were computing the VDF (~700ms).
+        if self.block_store.has_block_for_slot(current_slot as u64) {
+            debug!(
+                "Block appeared during VDF computation for slot {} - aborting production",
+                current_slot
+            );
+            return Ok(());
+        }
 
         // Create final block header with VDF
         let final_header = BlockHeader {

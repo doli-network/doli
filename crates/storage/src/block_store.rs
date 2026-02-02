@@ -188,6 +188,25 @@ impl BlockStore {
         self.get_block(&hash)
     }
 
+    /// Check if a block exists for the given slot.
+    ///
+    /// This is a fast check used by block production to avoid producing
+    /// duplicate blocks. If a block already exists for this slot, the
+    /// producer should skip production to prevent forks.
+    ///
+    /// # Arguments
+    /// * `slot` - The slot to check (u64 for compatibility with slot calculations)
+    ///
+    /// # Returns
+    /// `true` if a block exists for this slot, `false` otherwise.
+    pub fn has_block_for_slot(&self, slot: u64) -> bool {
+        // Convert to u32 for the slot index lookup
+        let slot_u32 = slot as u32;
+        self.get_hash_by_slot(slot_u32)
+            .map(|opt| opt.is_some())
+            .unwrap_or(false)
+    }
+
     /// Get all blocks in a slot range (inclusive start, exclusive end)
     ///
     /// Returns blocks in slot order, skipping empty slots.
