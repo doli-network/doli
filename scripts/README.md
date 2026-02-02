@@ -164,6 +164,16 @@ done
 
 ## Network & Node Scripts
 
+> **Note:** For local multi-node devnet setup, prefer using the built-in CLI commands:
+> ```bash
+> doli-node devnet init --nodes 5  # Initialize
+> doli-node devnet start           # Start all nodes
+> doli-node devnet status          # Check status
+> doli-node devnet stop            # Stop all nodes
+> doli-node devnet clean           # Clean up
+> ```
+> The scripts below are for specific test scenarios and legacy setups.
+
 ### launch_testnet.sh
 
 | Property | Value |
