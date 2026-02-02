@@ -80,6 +80,34 @@ pub enum SyncState {
     Synchronized,
 }
 
+/// Production authorization result - the single source of truth for whether block production is safe
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProductionAuthorization {
+    /// Production is authorized - safe to produce blocks
+    Authorized,
+    /// Production is blocked during active sync
+    BlockedSyncing,
+    /// Production is blocked due to resync in progress
+    BlockedResync {
+        /// Seconds remaining in grace period
+        grace_remaining_secs: u64,
+    },
+    /// Production is blocked - we're too far behind peers
+    BlockedBehindPeers {
+        /// Our height
+        local_height: u64,
+        /// Best peer height
+        peer_height: u64,
+        /// Height difference
+        height_diff: u64,
+    },
+    /// Production is explicitly blocked (e.g., invariant violation)
+    BlockedExplicit {
+        /// Reason for block
+        reason: String,
+    },
+}
+
 impl SyncState {
     /// Check if we're actively syncing
     pub fn is_syncing(&self) -> bool {
@@ -154,6 +182,24 @@ pub struct SyncManager {
     blocks_applied: u64,
     /// Last progress log time
     last_progress_log: Instant,
+
+    // === PRODUCTION GATE FIELDS (Defense-in-depth) ===
+    /// Explicit production block flag - when true, production is forbidden
+    production_blocked: bool,
+    /// Reason for explicit production block
+    production_block_reason: Option<String>,
+    /// True when a forced resync is in progress
+    resync_in_progress: bool,
+    /// Timestamp when last resync completed (for grace period)
+    last_resync_completed: Option<Instant>,
+    /// Number of consecutive resyncs (for exponential backoff)
+    consecutive_resync_count: u32,
+    /// Grace period after resync before production is allowed (seconds)
+    resync_grace_period_secs: u64,
+    /// Maximum slots behind peers before blocking production
+    max_slots_behind: u32,
+    /// Maximum heights behind peers before blocking production
+    max_heights_behind: u64,
 }
 
 impl SyncManager {
@@ -183,7 +229,31 @@ impl SyncManager {
             next_request_id: 0,
             blocks_applied: 0,
             last_progress_log: Instant::now(),
+            // Production gate defaults
+            production_blocked: false,
+            production_block_reason: None,
+            resync_in_progress: false,
+            last_resync_completed: None,
+            consecutive_resync_count: 0,
+            resync_grace_period_secs: 30, // Default 30 seconds after resync
+            max_slots_behind: 2,          // Spec: "within 2 slots of peers"
+            max_heights_behind: 2,        // Conservative: also check heights
         }
+    }
+
+    /// Create a new sync manager with custom production gate settings
+    pub fn new_with_settings(
+        config: SyncConfig,
+        genesis_hash: Hash,
+        resync_grace_period_secs: u64,
+        max_slots_behind: u32,
+        max_heights_behind: u64,
+    ) -> Self {
+        let mut mgr = Self::new(config, genesis_hash);
+        mgr.resync_grace_period_secs = resync_grace_period_secs;
+        mgr.max_slots_behind = max_slots_behind;
+        mgr.max_heights_behind = max_heights_behind;
+        mgr
     }
 
     /// Get current sync state
@@ -206,8 +276,29 @@ impl SyncManager {
         if let Some(best_peer) = self.best_peer() {
             if let Some(status) = self.peers.get(&best_peer) {
                 if height >= status.best_height {
+                    let was_syncing = self.state.is_syncing();
                     self.state = SyncState::Synchronized;
                     info!("Chain synchronized at height {}", height);
+
+                    // If we were in a resync, complete it now
+                    if self.resync_in_progress {
+                        self.complete_resync();
+                        info!(
+                            "Resync complete at height {} - grace period started ({}s)",
+                            height, self.resync_grace_period_secs
+                        );
+                    }
+
+                    // If we've been stable for a while, reset the consecutive resync counter
+                    // This prevents exponential backoff from persisting after recovery
+                    if was_syncing && self.consecutive_resync_count > 0 {
+                        // We'll reset the counter after the grace period in can_produce()
+                        // For now, just note that sync completed successfully
+                        debug!(
+                            "Sync completed after {} consecutive resyncs",
+                            self.consecutive_resync_count
+                        );
+                    }
                 }
             }
         }
@@ -294,6 +385,170 @@ impl SyncManager {
     pub fn best_peer_slot(&self) -> u32 {
         self.peers.values().map(|p| p.best_slot).max().unwrap_or(0)
     }
+
+    // =========================================================================
+    // PRODUCTION GATE - Single source of truth for block production authorization
+    // =========================================================================
+
+    /// Check if block production is authorized - THE SINGLE SOURCE OF TRUTH
+    ///
+    /// This method implements defense-in-depth for production safety:
+    /// 1. Explicit block check (invariant violations, manual blocks)
+    /// 2. Resync-in-progress check
+    /// 3. Active sync check (downloading headers/bodies/processing)
+    /// 4. Post-resync grace period check
+    /// 5. Peer synchronization check (within N slots/heights)
+    ///
+    /// ALL checks must pass for production to be authorized.
+    pub fn can_produce(&self, current_slot: u32) -> ProductionAuthorization {
+        // Layer 1: Explicit production block
+        if self.production_blocked {
+            return ProductionAuthorization::BlockedExplicit {
+                reason: self
+                    .production_block_reason
+                    .clone()
+                    .unwrap_or_else(|| "Unknown reason".to_string()),
+            };
+        }
+
+        // Layer 2: Resync in progress
+        if self.resync_in_progress {
+            return ProductionAuthorization::BlockedResync {
+                grace_remaining_secs: self.resync_grace_period_secs,
+            };
+        }
+
+        // Layer 3: Active sync in progress
+        if self.state.is_syncing() {
+            return ProductionAuthorization::BlockedSyncing;
+        }
+
+        // Layer 4: Post-resync grace period
+        if let Some(completed) = self.last_resync_completed {
+            let elapsed = completed.elapsed().as_secs();
+            // Exponential backoff: base grace * 2^(consecutive_resyncs - 1)
+            let effective_grace = if self.consecutive_resync_count > 1 {
+                self.resync_grace_period_secs
+                    * (1 << (self.consecutive_resync_count - 1).min(4))
+            } else {
+                self.resync_grace_period_secs
+            };
+
+            if elapsed < effective_grace {
+                return ProductionAuthorization::BlockedResync {
+                    grace_remaining_secs: effective_grace - elapsed,
+                };
+            }
+        }
+
+        // Layer 5: Peer synchronization check
+        let best_peer_height = self.best_peer_height();
+        let best_peer_slot = self.best_peer_slot();
+
+        // Only check if we have peer data
+        if self.peers.len() > 0 && (best_peer_height > 0 || best_peer_slot > 0) {
+            let height_diff = best_peer_height.saturating_sub(self.local_height);
+            let slot_diff = best_peer_slot.saturating_sub(self.local_slot);
+
+            // Per spec: "within 2 slots of peers" - we check both slots AND heights
+            if height_diff > self.max_heights_behind || slot_diff > self.max_slots_behind {
+                return ProductionAuthorization::BlockedBehindPeers {
+                    local_height: self.local_height,
+                    peer_height: best_peer_height,
+                    height_diff,
+                };
+            }
+        }
+
+        // All checks passed - production is authorized
+        ProductionAuthorization::Authorized
+    }
+
+    /// Quick boolean check for production authorization
+    pub fn is_production_safe(&self, current_slot: u32) -> bool {
+        matches!(self.can_produce(current_slot), ProductionAuthorization::Authorized)
+    }
+
+    /// Explicitly block production (e.g., due to invariant violation)
+    pub fn block_production(&mut self, reason: &str) {
+        warn!("Production blocked: {}", reason);
+        self.production_blocked = true;
+        self.production_block_reason = Some(reason.to_string());
+    }
+
+    /// Clear explicit production block
+    pub fn unblock_production(&mut self) {
+        if self.production_blocked {
+            info!("Production unblocked");
+            self.production_blocked = false;
+            self.production_block_reason = None;
+        }
+    }
+
+    /// Signal that a forced resync is starting
+    ///
+    /// This blocks production until the resync completes and grace period expires.
+    pub fn start_resync(&mut self) {
+        info!("Resync started - production blocked");
+        self.resync_in_progress = true;
+        self.consecutive_resync_count += 1;
+
+        // Log exponential backoff info
+        if self.consecutive_resync_count > 1 {
+            let effective_grace = self.resync_grace_period_secs
+                * (1 << (self.consecutive_resync_count - 1).min(4));
+            warn!(
+                "Consecutive resync #{} - grace period extended to {}s",
+                self.consecutive_resync_count, effective_grace
+            );
+        }
+    }
+
+    /// Signal that a forced resync has completed
+    ///
+    /// Starts the grace period timer before production can resume.
+    pub fn complete_resync(&mut self) {
+        info!("Resync completed - starting grace period");
+        self.resync_in_progress = false;
+        self.last_resync_completed = Some(Instant::now());
+    }
+
+    /// Reset consecutive resync counter (call after stable operation)
+    pub fn reset_resync_counter(&mut self) {
+        if self.consecutive_resync_count > 0 {
+            debug!(
+                "Resetting consecutive resync counter (was {})",
+                self.consecutive_resync_count
+            );
+            self.consecutive_resync_count = 0;
+        }
+    }
+
+    /// Check if a resync is currently in progress
+    pub fn is_resync_in_progress(&self) -> bool {
+        self.resync_in_progress
+    }
+
+    /// Get the current consecutive resync count
+    pub fn consecutive_resync_count(&self) -> u32 {
+        self.consecutive_resync_count
+    }
+
+    /// Configure the production gate settings
+    pub fn configure_production_gate(
+        &mut self,
+        grace_period_secs: u64,
+        max_slots_behind: u32,
+        max_heights_behind: u64,
+    ) {
+        self.resync_grace_period_secs = grace_period_secs;
+        self.max_slots_behind = max_slots_behind;
+        self.max_heights_behind = max_heights_behind;
+    }
+
+    // =========================================================================
+    // END PRODUCTION GATE
+    // =========================================================================
 
     /// Check if we should start syncing
     fn should_sync(&self) -> bool {
@@ -584,7 +839,20 @@ impl SyncManager {
     }
 
     /// Reset local state to genesis (for forced resync)
+    ///
+    /// This method:
+    /// 1. Blocks production via the production gate
+    /// 2. Resets all sync state to genesis
+    /// 3. Triggers active sync from peers
+    ///
+    /// Production remains blocked until:
+    /// - Sync completes (complete_resync() is called)
+    /// - Grace period expires (configurable, default 30s)
     pub fn reset_local_state(&mut self, genesis_hash: Hash) {
+        // CRITICAL: Block production FIRST via the production gate
+        self.start_resync();
+
+        // Reset chain tip to genesis
         self.local_height = 0;
         self.local_hash = genesis_hash;
         self.local_slot = 0;
@@ -609,7 +877,10 @@ impl SyncManager {
             self.config.request_timeout,
         );
 
-        info!("Sync manager reset to genesis for forced resync");
+        info!(
+            "Sync manager reset to genesis for forced resync (consecutive #{}, production blocked)",
+            self.consecutive_resync_count
+        );
 
         // Trigger sync if we have peers that are ahead (which we should after reset)
         if self.should_sync() {

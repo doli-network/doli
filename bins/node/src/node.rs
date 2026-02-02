@@ -30,7 +30,7 @@ use doli_core::{
 };
 use network::{
     EquivocationDetector, EquivocationProof, NetworkConfig, NetworkEvent, NetworkService,
-    ReorgResult, SyncConfig, SyncManager,
+    ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
@@ -1009,7 +1009,41 @@ impl Node {
                 let our_height = self.chain_state.read().await.best_height;
 
                 // If we have many cached blocks from other chains, we're likely on a fork
-                let resync_cooldown = Duration::from_secs(120); // 2 minute cooldown
+                //
+                // DEFENSE-IN-DEPTH: Multiple conditions must be met before triggering resync:
+                // 1. Cache size exceeds threshold
+                // 2. Cooldown period passed (with exponential backoff)
+                // 3. Past discovery grace period
+                // 4. Have some chain progress (height > 0)
+                // 5. Not already syncing
+                // 6. Resync not already in progress
+                // 7. Devnet/Testnet only (mainnet never auto-resyncs)
+
+                // Get resync state from sync manager
+                let (is_syncing, resync_in_progress, consecutive_resyncs) = {
+                    let sync = self.sync_manager.read().await;
+                    (
+                        sync.state().is_syncing(),
+                        sync.is_resync_in_progress(),
+                        sync.consecutive_resync_count(),
+                    )
+                };
+
+                // Don't trigger resync if we're already syncing or resyncing
+                if is_syncing || resync_in_progress {
+                    debug!(
+                        "Fork detected but sync/resync in progress - waiting (cache_size={})",
+                        cache_size
+                    );
+                    return Ok(());
+                }
+
+                // Exponential backoff for cooldown: base * 2^(consecutive_resyncs)
+                // This prevents infinite resync loops by increasing the cooldown each time
+                let base_cooldown = 120u64; // 2 minutes base
+                let cooldown_secs = base_cooldown * (1 << consecutive_resyncs.min(4));
+                let resync_cooldown = Duration::from_secs(cooldown_secs);
+
                 let can_resync = match self.last_resync_time {
                     Some(last_time) => last_time.elapsed() > resync_cooldown,
                     None => true,
@@ -1022,12 +1056,15 @@ impl Node {
                 };
 
                 // Fork detection threshold: number of orphan blocks before triggering resync
-                // Higher threshold prevents false positives from external peers with different chains
-                // At 10s slots, 30 blocks = 5 minutes of chain history
+                // Higher thresholds prevent false positives from external peers with different chains
+                //
+                // INCREASED devnet threshold from 20 to 60 to allow more time for 20-node
+                // startup synchronization. The original 20 was too aggressive and triggered
+                // resyncs during normal multi-node discovery.
                 let fork_threshold = match self.config.network {
                     Network::Mainnet => 60, // 1 hour at 60s slots
-                    Network::Testnet => 30, // 5 minutes at 10s slots
-                    Network::Devnet => 20,  // ~2 minutes at 5s slots
+                    Network::Testnet => 40, // ~6-7 minutes at 10s slots
+                    Network::Devnet => 60,  // ~10 minutes at 10s slots (was 20 - too aggressive)
                 };
 
                 // Trigger resync if we have fork_threshold+ blocks from other chains that we can't apply
@@ -1040,6 +1077,14 @@ impl Node {
                     && (self.config.network == Network::Devnet
                         || self.config.network == Network::Testnet)
                 {
+                    // Log exponential backoff info if this is a repeated resync
+                    if consecutive_resyncs > 0 {
+                        warn!(
+                            "This is resync #{} - cooldown was {}s due to exponential backoff",
+                            consecutive_resyncs + 1,
+                            cooldown_secs
+                        );
+                    }
                     warn!(
                         "Detected fork: {} blocks cached (threshold={}) that don't build on our chain (height {}). Triggering forced resync.",
                         cache_size, fork_threshold, our_height
@@ -1413,47 +1458,116 @@ impl Node {
     /// Force resync from genesis (devnet/testnet recovery mechanism)
     ///
     /// This is an aggressive recovery mechanism for when a node gets stuck on a fork.
-    /// It resets the chain state to genesis and re-syncs from peers.
+    /// It performs a COMPLETE state reset to genesis and re-syncs from peers.
+    ///
+    /// ## Defense-in-Depth: Complete State Reset
+    ///
+    /// This function resets ALL chain-dependent state to ensure semantic completeness:
+    /// - chain_state: height, hash, slot → genesis
+    /// - utxo_set: cleared completely
+    /// - producer_set: cleared (keeping exit_history for anti-Sybil)
+    /// - known_producers: cleared
+    /// - fork_block_cache: cleared
+    /// - equivocation_detector: cleared
+    /// - producer_gset: cleared
+    /// - Production timing state: reset
+    ///
+    /// Production is blocked by the sync manager's ProductionGate until:
+    /// 1. Sync completes (caught up with peers)
+    /// 2. Grace period expires (default 30s, with exponential backoff)
     async fn force_resync_from_genesis(&mut self) -> Result<()> {
-        warn!("Force resync initiated - resetting to genesis");
+        warn!("Force resync initiated - performing COMPLETE state reset to genesis");
 
         // Get genesis hash before clearing state
         let genesis_hash = self.chain_state.read().await.genesis_hash;
 
-        // Reset chain state to genesis
+        // =========================================================================
+        // LAYER 1: Reset sync manager FIRST (blocks production via ProductionGate)
+        // =========================================================================
+        {
+            let mut sync = self.sync_manager.write().await;
+            // This calls start_resync() internally, blocking production
+            sync.reset_local_state(genesis_hash);
+        }
+
+        // =========================================================================
+        // LAYER 2: Reset chain state to genesis
+        // =========================================================================
         {
             let mut state = self.chain_state.write().await;
             state.best_height = 0;
             state.best_hash = genesis_hash;
             state.best_slot = 0;
+            // Note: genesis_timestamp preserved for consistency
         }
 
-        // Clear UTXO set
+        // =========================================================================
+        // LAYER 3: Clear UTXO set completely
+        // =========================================================================
         {
             let mut utxo = self.utxo_set.write().await;
             utxo.clear();
         }
 
-        // Clear fork block cache
+        // =========================================================================
+        // LAYER 4: Clear producer set (CRITICAL - this was the bug!)
+        //
+        // This forces the node into TRUE bootstrap mode where sync-before-produce
+        // checks are properly enforced. Without this, the node would take the
+        // "normal mode" path and skip sync checks.
+        // =========================================================================
+        {
+            let mut producers = self.producer_set.write().await;
+            producers.clear();
+            info!("Producer set cleared - will rebuild from synced blocks");
+        }
+
+        // =========================================================================
+        // LAYER 5: Clear known producers list
+        // =========================================================================
+        {
+            let mut known = self.known_producers.write().await;
+            known.clear();
+        }
+
+        // =========================================================================
+        // LAYER 6: Clear fork block cache
+        // =========================================================================
         {
             let mut cache = self.fork_block_cache.write().await;
             cache.clear();
         }
 
-        // Reset sync manager
+        // =========================================================================
+        // LAYER 7: Clear equivocation detector (signatures from old chain invalid)
+        // =========================================================================
         {
-            let mut sync = self.sync_manager.write().await;
-            sync.reset_local_state(genesis_hash);
+            let mut detector = self.equivocation_detector.write().await;
+            detector.clear();
         }
 
-        // Reset production state
+        // =========================================================================
+        // LAYER 8: Clear producer discovery CRDT
+        // =========================================================================
+        {
+            let mut gset = self.producer_gset.write().await;
+            gset.clear();
+        }
+
+        // =========================================================================
+        // LAYER 9: Reset all production timing state
+        // =========================================================================
         self.last_produced_slot = 0;
+        self.first_peer_connected = None;
+        self.last_producer_list_change = None;
+        // Note: last_resync_time is set by the caller before calling this function
+        // to implement the cooldown between resyncs
 
-        info!("Chain reset to genesis (height 0). Will re-sync from peers.");
-
-        // After resync, we need to request blocks from peers.
-        // The sync manager will handle this via the normal block request mechanism.
-        // For now, we'll rely on incoming blocks being cached and applied as they connect.
+        info!(
+            "Complete state reset to genesis (height 0). \
+             Production blocked until sync completes + grace period. \
+             Will actively request blocks from peers."
+        );
 
         Ok(())
     }
@@ -1888,6 +2002,55 @@ impl Node {
 
         let current_slot = self.params.timestamp_to_slot(now);
 
+        // =========================================================================
+        // PRODUCTION GATE CHECK - Single source of truth for production safety
+        //
+        // This is the FIRST and MOST CRITICAL check. The SyncManager's ProductionGate
+        // implements defense-in-depth with multiple layers:
+        // 1. Explicit block check (invariant violations)
+        // 2. Resync-in-progress check
+        // 3. Active sync check (downloading headers/bodies)
+        // 4. Post-resync grace period with exponential backoff
+        // 5. Peer synchronization check (within N slots/heights)
+        //
+        // ALL checks must pass. This prevents the infinite resync loop bug where
+        // nodes at height 0 would produce orphan blocks for far-ahead slots.
+        // =========================================================================
+        {
+            let sync_state = self.sync_manager.read().await;
+            match sync_state.can_produce(current_slot) {
+                ProductionAuthorization::Authorized => {
+                    // Production authorized - continue with other checks
+                }
+                ProductionAuthorization::BlockedSyncing => {
+                    debug!("Production blocked: sync in progress");
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedResync { grace_remaining_secs } => {
+                    debug!(
+                        "Production blocked: post-resync grace period ({}s remaining)",
+                        grace_remaining_secs
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedBehindPeers {
+                    local_height,
+                    peer_height,
+                    height_diff,
+                } => {
+                    debug!(
+                        "Production blocked: behind peers (local={}, peer={}, diff={})",
+                        local_height, peer_height, height_diff
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedExplicit { reason } => {
+                    warn!("Production explicitly blocked: {}", reason);
+                    return Ok(());
+                }
+            }
+        }
+
         // Log slot info periodically (every ~60 seconds)
         if current_slot % 60 == 0 && current_slot != self.last_produced_slot {
             info!(
@@ -1930,6 +2093,45 @@ impl Node {
             return Ok(());
         }
 
+        // =========================================================================
+        // DEFENSE-IN-DEPTH: Universal Height-Slot Gap Check
+        //
+        // This is a SECONDARY safety net in addition to the ProductionGate.
+        // Even if ProductionGate passes, we still check for dangerous height-slot gaps.
+        //
+        // The key insight from the infinite resync bug: a node at height 0 should NEVER
+        // produce a block for slot 92. The resulting block would be an orphan that
+        // can never join the canonical chain.
+        //
+        // Adaptive thresholds based on height:
+        // - Height 0-1: Allow max 3 slot gap (tight - genesis should be quick)
+        // - Height 2-9: Allow max 5 slot gap (some propagation time)
+        // - Height 10+: Allow max 10 slot gap (normal operation)
+        //
+        // This applies to ALL networks (mainnet, testnet, devnet) for defense-in-depth.
+        // =========================================================================
+        {
+            let slot_height_gap = current_slot.saturating_sub(height as u32);
+            let max_gap = if height <= 1 {
+                3 // Very tight for genesis - prevents orphan production at height 0-1
+            } else if height < 10 {
+                5 // Moderate gap during early chain growth
+            } else {
+                10 // Normal operation - allow for propagation delays
+            };
+
+            if slot_height_gap > max_gap {
+                // Just defer production - don't set permanent block flag
+                // The node should continue syncing via gossip and catch up
+                // Only use block_production() for TRUE invariant violations that require manual intervention
+                debug!(
+                    "Height-slot gap {} exceeds max {} at height {} - deferring production (will sync)",
+                    slot_height_gap, max_gap, height
+                );
+                return Ok(());
+            }
+        }
+
         // Get active producers with their effective weights for weighted selection (Option C)
         // This enables anti-grinding protection: top N by weight are eligible (deterministic),
         // then hash selects among them (limited grinding impact)
@@ -1942,10 +2144,42 @@ impl Node {
             .iter()
             .map(|p| (p.public_key.clone(), p.effective_weight(height)))
             .collect();
+        let total_producers = producers.total_count();
         drop(producers);
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
+
+        // =========================================================================
+        // INVARIANT CHECK: Detect inconsistent state after resync
+        //
+        // If we're at a very low height (< 10) but have many active producers with
+        // weights, AND we're not in genesis phase, this indicates an inconsistent
+        // state - possibly a failed or incomplete resync.
+        //
+        // After a proper resync via force_resync_from_genesis(), the producer_set
+        // should be cleared. If it's not, we're in a dangerous state where
+        // production could create orphan blocks.
+        //
+        // This check catches edge cases like:
+        // - Interrupted resync
+        // - State corruption
+        // - Race conditions in state updates
+        // =========================================================================
+        if height < 10 && !in_genesis && active_with_weights.len() > 5 {
+            error!(
+                "INVARIANT VIOLATION: height {} < 10 but {} active producers (total: {}) \
+                 outside genesis phase. This indicates inconsistent state - blocking production.",
+                height, active_with_weights.len(), total_producers
+            );
+            self.sync_manager.write().await.block_production(
+                &format!(
+                    "invariant violation: height {} with {} active producers outside genesis",
+                    height, active_with_weights.len()
+                )
+            );
+            return Ok(());
+        }
 
         // Use bootstrap mode if:
         // 1. Still in genesis phase (no bond required), OR
@@ -1986,85 +2220,26 @@ impl Node {
                         }
                     }
 
-                    // SYNC-BEFORE-PRODUCE: Check if we should defer to syncing
-                    // This replaces the old time-based warmup with a state-based check.
-                    //
-                    // Rules:
-                    // 1. If we have NO bootstrap nodes configured -> we're the seed node, produce immediately
-                    // 2. If we have bootstrap nodes but no peer status yet -> wait for connection
-                    // 3. If our chain is significantly behind peers -> wait for sync
-                    // 4. If we're synced (within 2 slots of best peer) -> produce
-                    //
-                    // This scales to thousands of nodes because:
-                    // - No arbitrary time delays
-                    // - Nodes naturally wait for sync before producing
-                    // - Seed nodes (no bootstrap config) can start immediately
-                    // - Joining nodes sync first, then produce
+                    // BOOTSTRAP NODE CONNECTION CHECK: Wait for peer status before producing
+                    // This is bootstrap-specific: seed nodes have no bootstrap config,
+                    // joining nodes have bootstrap config and must wait for connection.
+                    // (Sync-before-produce checks are handled globally above)
                     let has_bootstrap_nodes = !self.config.bootstrap_nodes.is_empty();
-                    let sync_state = self.sync_manager.read().await;
-                    let peer_count = sync_state.peer_count();
-                    let best_peer_height = sync_state.best_peer_height();
-                    let best_peer_slot = sync_state.best_peer_slot();
-                    drop(sync_state);
+                    if has_bootstrap_nodes {
+                        let sync_state = self.sync_manager.read().await;
+                        let peer_count = sync_state.peer_count();
+                        drop(sync_state);
 
-                    if has_bootstrap_nodes && peer_count == 0 {
-                        // We have bootstrap nodes configured but haven't received their status yet
-                        // Wait for connection before producing to avoid chain splits
-                        debug!(
-                            "Bootstrap sync: waiting for peer status (bootstrap nodes configured but no peers yet)"
-                        );
-                        return Ok(());
-                    }
-
-                    if peer_count > 0 {
-                        // We have peers - check if we're synced
-                        let our_height = height.saturating_sub(1); // height is next block
-                        let our_slot = prev_slot;
-
-                        // Consider synced if within 2 slots of best peer
-                        // This allows for natural network propagation delays
-                        let slot_diff = best_peer_slot.saturating_sub(our_slot);
-                        let height_diff = best_peer_height.saturating_sub(our_height);
-
-                        if slot_diff > 2 || height_diff > 2 {
+                        if peer_count == 0 {
+                            // We have bootstrap nodes configured but haven't received their status yet
+                            // Wait for connection before producing to avoid chain splits
                             debug!(
-                                "Bootstrap sync: deferring production (our slot={}, peer slot={}, diff={})",
-                                our_slot, best_peer_slot, slot_diff
+                                "Bootstrap sync: waiting for peer status (bootstrap nodes configured but no peers yet)"
                             );
                             return Ok(());
                         }
-
-                        // POST-RESYNC GRACE PERIOD: After a forced resync, wait before producing
-                        // This handles the case where all nodes reset simultaneously - they would
-                        // all see each other at height 0 and think they're "synced". By waiting,
-                        // we give sync a chance to actually fetch blocks from peers.
-                        // Use 30 seconds for all networks to ensure proper sync before production.
-                        let post_resync_grace_secs: u64 = 30;
-                        if let Some(last_resync) = self.last_resync_time {
-                            if last_resync.elapsed().as_secs() < post_resync_grace_secs {
-                                debug!(
-                                    "Post-resync grace: waiting {}s before producing (peers may have more blocks)",
-                                    post_resync_grace_secs - last_resync.elapsed().as_secs()
-                                );
-                                return Ok(());
-                            }
-                            // Additional check: if we resynced recently and are still far behind
-                            // the network (height << current_slot), extend the grace period.
-                            // This catches cases where 30s wasn't enough to sync all blocks.
-                            if last_resync.elapsed().as_secs() < 120 {
-                                // Within 2 minutes of resync
-                                let slot_height_diff = current_slot.saturating_sub(height as u32);
-                                // If we're more than 20 slots behind, we're clearly not synced
-                                if slot_height_diff > 20 {
-                                    debug!(
-                                        "Post-resync: still far behind network (height={}, slot={}, diff={}), deferring production",
-                                        height, current_slot, slot_height_diff
-                                    );
-                                    return Ok(());
-                                }
-                            }
-                        }
                     }
+
                     // DISCOVERY GRACE PERIOD for seed nodes ONLY
                     // If we're the seed node (no bootstrap config) and have peers but only know ourselves,
                     // wait for discovery. This prevents the seed node from monopolizing production
@@ -2075,6 +2250,9 @@ impl Node {
                     let known = self.known_producers.read().await;
                     let known_count = known.len();
                     drop(known);
+
+                    // Get peer count for discovery checks
+                    let peer_count = self.sync_manager.read().await.peer_count();
 
                     // Grace period only applies to seed nodes (no bootstrap config)
                     let is_seed_node = !has_bootstrap_nodes;

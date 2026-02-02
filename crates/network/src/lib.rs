@@ -86,7 +86,8 @@ pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};
 pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
 pub use sync::{
-    EquivocationDetector, EquivocationProof, ReorgResult, SyncConfig, SyncManager, SyncState,
+    EquivocationDetector, EquivocationProof, ProductionAuthorization, ReorgResult, SyncConfig,
+    SyncManager, SyncState,
 };
 
 // Re-export libp2p types that are part of our public API
