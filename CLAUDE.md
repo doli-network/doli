@@ -1,4 +1,6 @@
 # CLAUDE.md - Project Brain
+# FIRST PRINCIPLE: 
+Elon Musk says: The best engine part is the one you can remove. In other words, less is more! Let this be our approach, even for the most complex problems: Always opt for the simplest solution without compromising safety.
 
 ## 🚨 CRITICAL RULES
 
