@@ -88,6 +88,10 @@ pub struct NetworkParams {
     pub crash_window_secs: u64,
     /// Maximum registrations per block
     pub max_registrations_per_block: u32,
+
+    // === Presence (telemetry) ===
+    /// Presence window duration in milliseconds (for telemetry only, does not affect consensus)
+    pub presence_window_ms: u64,
 }
 
 impl NetworkParams {
@@ -252,6 +256,9 @@ impl NetworkParams {
                 "DOLI_MAX_REGISTRATIONS_PER_BLOCK",
                 defaults.max_registrations_per_block,
             ),
+
+            // Presence (telemetry - configurable for all networks)
+            presence_window_ms: env_parse("DOLI_PRESENCE_WINDOW_MS", defaults.presence_window_ms),
         }
     }
 
@@ -303,6 +310,9 @@ impl NetworkParams {
                 update_check_interval_secs: 6 * 3600, // 6 hours
                 crash_window_secs: 3600,              // 1 hour
                 max_registrations_per_block: 5,
+
+                // Presence (telemetry)
+                presence_window_ms: 1000, // 1 second
             },
 
             Network::Testnet => NetworkParams {
@@ -348,6 +358,9 @@ impl NetworkParams {
                 update_check_interval_secs: 6 * 3600,
                 crash_window_secs: 3600,
                 max_registrations_per_block: 5,
+
+                // Presence (telemetry)
+                presence_window_ms: 1000, // 1 second (same as mainnet)
             },
 
             Network::Devnet => NetworkParams {
@@ -390,6 +403,9 @@ impl NetworkParams {
                 update_check_interval_secs: 10,  // 10 seconds
                 crash_window_secs: 60,           // 1 minute
                 max_registrations_per_block: 20, // Higher for rapid testing
+
+                // Presence (telemetry)
+                presence_window_ms: 1000, // 1 second (same as mainnet)
             },
         }
     }

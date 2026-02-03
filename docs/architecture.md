@@ -142,7 +142,31 @@ crypto ──► bins/cli (wallet binary)
 10. EpochReward - Epoch distribution
 11. SlashProducer - Slash equivocator
 
-### 3.4. storage
+### 3.4. Configuration Hierarchy
+
+DOLI uses a strict 3-level configuration hierarchy:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 1: consensus.rs (RAW CONSTANTS - DNA)                    │
+│  Immutable protocol constants: BOND_UNIT, SLOTS_PER_EPOCH, etc. │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 2: network_params.rs (CONFIGURATION MANAGER)            │
+│  • Mainnet → LOCKED (cannot override critical params)           │
+│  • Devnet  → Allows .env overrides for testing                  │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 3: CONSUMERS (chainspec, scheduler, validation, etc.)   │
+│  ALL consumers request values from NetworkParams, never DNA     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key principle**: Consumer code never imports constants directly from `consensus.rs`. Instead, all configuration flows through `NetworkParams`, which enforces mainnet security while allowing devnet flexibility.
+
+### 3.5. storage
 
 **Purpose:** RocksDB-backed persistence.
 
@@ -169,7 +193,7 @@ crypto ──► bins/cli (wallet binary)
 - **ChainState** (File I/O): Single file persistence via bincode
 - **ProducerSet** (File I/O): Single file persistence via bincode
 
-### 3.5. network
+### 3.6. network
 
 **Purpose:** libp2p-based P2P networking.
 
@@ -187,7 +211,7 @@ crypto ──► bins/cli (wallet binary)
 - Kademlia for peer discovery
 - Request-response for sync
 
-### 3.6. mempool
+### 3.7. mempool
 
 **Purpose:** Pending transaction management with fee-based prioritization.
 
@@ -216,7 +240,7 @@ crypto ──► bins/cli (wallet binary)
 | Max ancestors | 25 |
 | Max age | 14 days |
 
-### 3.7. rpc
+### 3.8. rpc
 
 **Purpose:** JSON-RPC API server.
 
@@ -227,7 +251,7 @@ crypto ──► bins/cli (wallet binary)
 | `types.rs` | Request/response types |
 | `error.rs` | Error codes |
 
-### 3.8. updater
+### 3.9. updater
 
 **Purpose:** Auto-update with community veto.
 
