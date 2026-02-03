@@ -467,9 +467,12 @@ async fn run_node(
 
         info!("Loading producer key from {:?}", key_path);
         let key = load_producer_key(&key_path)?;
+        let pubkey_hex = key.public_key().to_hex();
         info!(
-            "Producer key loaded: {}",
-            crypto::hash::hash(key.public_key().as_bytes())
+            "Producer key loaded: {}...{} (hash: {})",
+            &pubkey_hex[..16],
+            &pubkey_hex[pubkey_hex.len() - 8..],
+            &crypto::hash::hash(key.public_key().as_bytes()).to_hex()[..16]
         );
 
         // PRODUCER SAFETY CHECKS
