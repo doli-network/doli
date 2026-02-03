@@ -117,7 +117,6 @@ pub mod chainspec;
 pub mod config_validation;
 pub mod consensus;
 pub mod discovery;
-pub mod env_loader;
 pub mod genesis;
 pub mod heartbeat;
 pub mod maintainer;

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use crypto::{KeyPair, PrivateKey, PublicKey};
-use doli_core::{env_loader, Network};
+use doli_core::{network_params, Network};
 use storage::ProducerSet;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn, Level};
@@ -333,7 +333,7 @@ async fn main() -> Result<()> {
     // Load environment variables from data directory BEFORE using network params
     // This allows overriding network defaults via ~/.doli/{network}/.env
     if !is_devnet_command {
-        env_loader::load_env_for_network(network.name(), &data_dir);
+        network_params::load_env_for_network(network.name(), &data_dir);
     }
 
     info!("DOLI Node v{}", env!("CARGO_PKG_VERSION"));
