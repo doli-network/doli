@@ -106,7 +106,7 @@ fn hash_internal(left: &Hash, right: &Hash) -> Hash {
 
 /// Combine a level of hashes into the next level up.
 fn combine_level(hashes: &[Hash]) -> Vec<Hash> {
-    let mut result = Vec::with_capacity((hashes.len() + 1) / 2);
+    let mut result = Vec::with_capacity(hashes.len().div_ceil(2));
 
     for chunk in hashes.chunks(2) {
         let left = &chunk[0];
@@ -129,7 +129,7 @@ pub struct MerkleProof {
     /// The total number of items in the tree.
     pub total: usize,
     /// Sibling hashes from leaf to root.
-    /// Each element is (hash, is_left) where is_left indicates
+    /// Each element is (hash, `is_left`) where `is_left` indicates
     /// if the sibling is on the left.
     pub siblings: Vec<(Hash, bool)>,
 }
@@ -149,7 +149,7 @@ impl MerkleProof {
 
     /// Verify this proof against a root hash and pre-computed item hash.
     ///
-    /// The item_hash should be a raw hash (e.g., transaction ID), not
+    /// The `item_hash` should be a raw hash (e.g., transaction ID), not
     /// already wrapped as a leaf.
     #[must_use]
     pub fn verify_hash(&self, root: &Hash, item_hash: &Hash) -> bool {
@@ -224,7 +224,7 @@ impl MerkleTree {
     fn from_leaves(leaves: Vec<Hash>, count: usize) -> Self {
         let mut levels = vec![leaves];
 
-        while levels.last().map_or(true, |l| l.len() > 1) {
+        while levels.last().is_none_or(|l| l.len() > 1) {
             let current = levels.last().expect("levels is not empty");
             levels.push(combine_level(current));
         }
@@ -272,7 +272,11 @@ impl MerkleTree {
         let mut idx = index;
 
         for level in &self.levels[..self.levels.len().saturating_sub(1)] {
-            let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+            let sibling_idx = if idx.is_multiple_of(2) {
+                idx + 1
+            } else {
+                idx - 1
+            };
             let is_left = idx % 2 == 1;
 
             // Handle odd-length levels (last element pairs with itself)
@@ -297,8 +301,7 @@ impl MerkleTree {
     #[must_use]
     pub fn verify(&self, index: usize, item: &[u8]) -> bool {
         self.proof(index)
-            .map(|proof| proof.verify(&self.root(), item))
-            .unwrap_or(false)
+            .is_some_and(|proof| proof.verify(&self.root(), item))
     }
 }
 
