@@ -703,7 +703,62 @@ bins/node (doli-node)          bins/cli (doli-cli)
 
 **Environment Configuration** (`network_params.rs`, `env_loader.rs`, `config_validation.rs`):
 
-Network parameters are configurable via environment variables loaded from `~/.doli/{network}/.env`:
+Network parameters are configurable via environment variables loaded from `~/.doli/{network}/.env`.
+
+#### Configuration Hierarchy
+
+DOLI uses a strict 3-level configuration hierarchy to prevent inconsistencies:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 1: consensus.rs (RAW CONSTANTS - DNA)                    │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  BOND_UNIT = 10_000_000_000                                 ││
+│  │  SLOTS_PER_EPOCH = 360                                      ││
+│  │  T_BLOCK = 10_000_000                                       ││
+│  │  (immutable protocol constants)                             ││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ defaults flow down
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 2: network_params.rs (CONFIGURATION MANAGER)            │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  IF Network == Mainnet → LOCKED (use consensus.rs values)   ││
+│  │  IF Network == Devnet  → Allow .env override                ││
+│  │                                                             ││
+│  │  NetworkParams::bond_unit() → returns appropriate value     ││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ values requested
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 3: CONSUMERS (ask Manager, NEVER access DNA directly)   │
+│  ┌──────────────┐ ┌──────────────┐ ┌────────────────────────┐  │
+│  │ chainspec.rs │ │ scheduler.rs │ │ storage/producer.rs    │  │
+│  └──────────────┘ └──────────────┘ └────────────────────────┘  │
+│  ┌──────────────┐ ┌──────────────┐ ┌────────────────────────┐  │
+│  │validation.rs │ │ heartbeat.rs │ │ tpop/presence.rs       │  │
+│  └──────────────┘ └──────────────┘ └────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Rule**: Consumers get values from `NetworkParams` ONLY, never directly from `consensus.rs`.
+
+**Why this matters:**
+- Mainnet security: Critical parameters (VDF iterations, bond amounts, timing) cannot be accidentally overridden
+- Devnet flexibility: Developers can test with faster epochs, lower bonds, etc.
+- Single source of truth: No duplicate constants scattered across crates
+
+**Example - Correct Usage:**
+```rust
+// ✓ CORRECT: Get bond_unit from NetworkParams
+let params = NetworkParams::for_network(Network::Mainnet);
+let bond_units = amount / params.bond_unit;
+
+// ✗ WRONG: Import directly from consensus.rs
+use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
+```
 
 | File | Purpose |
 |------|---------|

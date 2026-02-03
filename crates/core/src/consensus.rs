@@ -1271,6 +1271,7 @@ pub struct ConsensusParams {
 
 impl ConsensusParams {
     /// Create mainnet parameters
+    #[allow(deprecated)]
     pub fn mainnet() -> Self {
         Self {
             genesis_time: GENESIS_TIME,
@@ -1295,6 +1296,7 @@ impl ConsensusParams {
     ///
     /// Testnet uses EXACTLY the same parameters as mainnet to ensure
     /// realistic testing of the Proof of Time consensus with VDF.
+    #[allow(deprecated)]
     pub fn testnet() -> Self {
         Self {
             genesis_time: 0,                                // Will be set at testnet launch
@@ -1342,6 +1344,7 @@ impl ConsensusParams {
     }
 
     /// Create consensus parameters for a specific network
+    #[allow(deprecated)]
     pub fn for_network(network: Network) -> Self {
         Self {
             genesis_time: network.genesis_time(),

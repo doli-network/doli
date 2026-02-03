@@ -25,6 +25,7 @@
 //! ```
 
 use crate::network::Network;
+use crate::network_params::NetworkParams;
 use crypto::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -191,19 +192,20 @@ impl ChainSpec {
     ///
     /// Note: For production, load from external file instead!
     pub fn mainnet() -> Self {
+        let params = NetworkParams::defaults(Network::Mainnet);
         Self {
             name: "DOLI Mainnet".into(),
             id: "mainnet".into(),
             network: Network::Mainnet,
             genesis: GenesisSpec {
-                timestamp: 1769904000, // 2026-02-01T00:00:00Z
+                timestamp: params.genesis_time,
                 message: "Time is the only fair currency. 01/Feb/2026".into(),
-                initial_reward: 100_000_000, // 1 DOLI
+                initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
-                slot_duration: 10,
+                slot_duration: params.slot_duration,
                 slots_per_epoch: 360,
-                bond_amount: 100_000_000_000, // 1000 DOLI
+                bond_amount: params.bond_unit,
             },
             genesis_producers: vec![], // Load from chainspec file
         }
@@ -211,19 +213,20 @@ impl ChainSpec {
 
     /// Built-in testnet specification
     pub fn testnet() -> Self {
+        let params = NetworkParams::defaults(Network::Testnet);
         Self {
             name: "DOLI Testnet".into(),
             id: "testnet".into(),
             network: Network::Testnet,
             genesis: GenesisSpec {
-                timestamp: 1769738400, // 2026-01-29T22:00:00Z
+                timestamp: params.genesis_time,
                 message: "DOLI Testnet v2 Genesis - Time is the only fair currency".into(),
-                initial_reward: 100_000_000, // 1 DOLI
+                initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
-                slot_duration: 10,
+                slot_duration: params.slot_duration,
                 slots_per_epoch: 360,
-                bond_amount: 100_000_000_000, // 1000 DOLI
+                bond_amount: params.bond_unit,
             },
             genesis_producers: vec![], // Load from chainspec file
         }
@@ -231,19 +234,20 @@ impl ChainSpec {
 
     /// Built-in devnet specification (for local development)
     pub fn devnet() -> Self {
+        let params = NetworkParams::defaults(Network::Devnet);
         Self {
             name: "DOLI Devnet".into(),
             id: "devnet".into(),
             network: Network::Devnet,
             genesis: GenesisSpec {
-                timestamp: 0, // Dynamic - uses current time
+                timestamp: params.genesis_time, // 0 = Dynamic - uses current time
                 message: "DOLI Devnet - Development and Testing".into(),
-                initial_reward: 100_000_000, // 1 DOLI
+                initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
-                slot_duration: 1, // 1 second slots for fast testing
+                slot_duration: params.slot_duration,
                 slots_per_epoch: 60,
-                bond_amount: 100_000_000_000, // 1000 DOLI (same as mainnet/testnet)
+                bond_amount: params.bond_unit,
             },
             genesis_producers: vec![], // Uses bootstrap mode
         }
@@ -283,24 +287,30 @@ mod tests {
     #[test]
     fn test_mainnet_spec() {
         let spec = ChainSpec::mainnet();
+        let params = NetworkParams::defaults(Network::Mainnet);
         assert_eq!(spec.id, "mainnet");
-        assert_eq!(spec.genesis.initial_reward, 100_000_000);
-        assert_eq!(spec.consensus.slot_duration, 10);
+        assert_eq!(spec.genesis.initial_reward, params.initial_reward);
+        assert_eq!(spec.consensus.slot_duration, params.slot_duration);
+        assert_eq!(spec.consensus.bond_amount, params.bond_unit);
     }
 
     #[test]
     fn test_testnet_spec() {
         let spec = ChainSpec::testnet();
+        let params = NetworkParams::defaults(Network::Testnet);
         assert_eq!(spec.id, "testnet");
-        assert_eq!(spec.genesis.timestamp, 1769738400);
+        assert_eq!(spec.genesis.timestamp, params.genesis_time);
+        assert_eq!(spec.consensus.bond_amount, params.bond_unit);
     }
 
     #[test]
     fn test_devnet_spec() {
         let spec = ChainSpec::devnet();
+        let params = NetworkParams::defaults(Network::Devnet);
         assert_eq!(spec.id, "devnet");
         assert_eq!(spec.genesis.timestamp, 0); // Dynamic
-        assert_eq!(spec.consensus.slot_duration, 1); // 1 second slots
+        assert_eq!(spec.consensus.slot_duration, params.slot_duration);
+        assert_eq!(spec.consensus.bond_amount, params.bond_unit);
     }
 
     #[test]

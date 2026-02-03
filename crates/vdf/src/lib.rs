@@ -102,6 +102,17 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::similar_names)]
+// Math-heavy crate: allow short variable names and some stylistic choices
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::bool_to_int_with_if)]
+#![allow(clippy::assigning_clones)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::unnecessary_wraps)]
 
 pub mod class_group;
 pub mod proof;

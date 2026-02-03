@@ -110,8 +110,8 @@ impl Hash {
     #[must_use]
     pub fn xor(&self, other: &Self) -> Self {
         let mut result = [0u8; HASH_SIZE];
-        for i in 0..HASH_SIZE {
-            result[i] = self.0[i] ^ other.0[i];
+        for (i, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
+            result[i] = a ^ b;
         }
         Self(result)
     }
@@ -253,9 +253,10 @@ impl Hasher {
     /// This should be used when hashing for a specific purpose to prevent
     /// cross-protocol attacks.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn new_with_domain(domain: &[u8]) -> Self {
         let mut hasher = Self::new();
-        // Length-prefix the domain to prevent ambiguity
+        // Length-prefix the domain to prevent ambiguity (domain length is always small)
         hasher.update(&(domain.len() as u32).to_le_bytes());
         hasher.update(domain);
         hasher

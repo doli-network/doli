@@ -895,6 +895,7 @@ fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), 
     since = "0.1.0",
     note = "Automatic epoch rewards replaced by ClaimEpochReward transactions"
 )]
+#[allow(deprecated)]
 pub fn validate_block_rewards_exact<S: EpochBlockSource>(
     block: &Block,
     ctx: &ValidationContext,

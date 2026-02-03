@@ -133,7 +133,7 @@ impl PublicKey {
     }
 
     /// Get the internal verifying key for signature verification.
-    pub(crate) fn to_verifying_key(&self) -> Result<VerifyingKey, KeyError> {
+    pub(crate) fn to_verifying_key(self) -> Result<VerifyingKey, KeyError> {
         VerifyingKey::from_bytes(&self.0).map_err(|_| KeyError::InvalidKey)
     }
 }
@@ -486,7 +486,7 @@ impl Address {
         for (i, c) in hex_addr.chars().enumerate() {
             if c.is_ascii_alphabetic() {
                 // Use the hash nibble to determine case
-                let hash_nibble = u8::from_str_radix(&hash_hex[i..i + 1], 16).unwrap_or(0);
+                let hash_nibble = u8::from_str_radix(&hash_hex[i..=i], 16).unwrap_or(0);
                 if hash_nibble >= 8 {
                     result.push(c.to_ascii_uppercase());
                 } else {
