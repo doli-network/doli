@@ -361,9 +361,10 @@ fn default_bond_count() -> u32 {
     1
 }
 
-/// Bond unit constant for mainnet/testnet: 1 bond = 1,000 DOLI = 100,000,000,000 base units
+/// Bond unit constant for mainnet/testnet: 1 bond = 100 DOLI = 10,000,000,000 base units
 /// Note: For devnet, use Network::initial_bond() which returns 100_000_000 (1 DOLI per bond)
-pub const BOND_UNIT: u64 = 100_000_000_000;
+/// IMPORTANT: For production code, prefer using `NetworkParams::bond_unit()` instead.
+pub const BOND_UNIT: u64 = 10_000_000_000;
 
 /// Get the bond unit for a specific network
 /// - Mainnet/Testnet: 100_000_000_000 (1000 DOLI per bond)
@@ -451,14 +452,19 @@ impl ProducerInfo {
     ///
     /// Used when a producer who previously exited is re-registering.
     /// They start fresh with weight 1 (registered_at = current height).
+    ///
+    /// # Arguments
+    /// * `bond_unit` - Amount per bond (use `NetworkParams::bond_unit()` or `bond_unit_for_network()`)
     pub fn new_with_prior_exit(
         public_key: PublicKey,
         registered_at: u64,
         bond_amount: u64,
         bond_outpoint: (Hash, u32),
         registration_era: u32,
+        bond_unit: u64,
     ) -> Self {
-        let bond_count = (bond_amount / BOND_UNIT).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
+        let bond_unit = if bond_unit == 0 { BOND_UNIT } else { bond_unit };
+        let bond_count = (bond_amount / bond_unit).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
         let bond_count = bond_count.max(1);
 
         Self {
@@ -602,10 +608,11 @@ impl ProducerInfo {
     ///
     /// # Arguments
     /// * `count` - Number of bonds to remove
+    /// * `bond_unit` - Amount per bond (use `NetworkParams::bond_unit()` or `bond_unit_for_network()`)
     ///
     /// # Returns
     /// List of bond outpoints that were removed (for unlocking)
-    pub fn remove_bonds(&mut self, count: u32) -> Vec<(Hash, u32)> {
+    pub fn remove_bonds(&mut self, count: u32, bond_unit: u64) -> Vec<(Hash, u32)> {
         if count == 0 || !self.is_active() {
             return Vec::new();
         }
@@ -616,13 +623,14 @@ impl ProducerInfo {
             return Vec::new();
         }
 
+        let bond_unit = if bond_unit == 0 { BOND_UNIT } else { bond_unit };
         let mut removed = Vec::new();
 
         // Remove from additional_bonds first
         for _ in 0..removable {
             if let Some(outpoint) = self.additional_bonds.pop() {
                 removed.push(outpoint);
-                self.bond_amount = self.bond_amount.saturating_sub(BOND_UNIT);
+                self.bond_amount = self.bond_amount.saturating_sub(bond_unit);
             }
         }
 
@@ -2225,6 +2233,7 @@ mod tests {
             100_000_000_000,
             (Hash::ZERO, 0),
             0,
+            BOND_UNIT,
         );
 
         assert!(info.has_prior_exit);

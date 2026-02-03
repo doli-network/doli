@@ -51,10 +51,6 @@ use crypto::PublicKey;
 
 use crate::types::Slot;
 
-/// Bond unit: 100 DOLI = 1 slot per cycle
-/// In base units: 100 DOLI * 10^8 = 10,000,000,000
-pub const BOND_UNIT: u64 = 10_000_000_000;
-
 /// Maximum fallback producers (ranks 0-9, 10 total)
 ///
 /// With 1-second fallback windows and block existence verification,
@@ -78,8 +74,13 @@ impl ScheduledProducer {
     }
 
     /// Create a scheduled producer from total bond amount
-    pub fn from_bond_amount(pubkey: PublicKey, bond_amount: u64) -> Self {
-        let bond_units = (bond_amount / BOND_UNIT) as u32;
+    ///
+    /// # Arguments
+    /// * `pubkey` - Producer's public key
+    /// * `bond_amount` - Total bond amount in base units
+    /// * `bond_unit` - Bond unit size (use `NetworkParams::bond_unit()`)
+    pub fn from_bond_amount(pubkey: PublicKey, bond_amount: u64, bond_unit: u64) -> Self {
+        let bond_units = (bond_amount / bond_unit) as u32;
         Self { pubkey, bond_units }
     }
 }
@@ -579,17 +580,22 @@ mod tests {
     #[test]
     fn test_from_bond_amount() {
         let pubkey = make_pubkey(1);
+        // Use mainnet bond_unit: 100 DOLI = 10_000_000_000 base units
+        let bond_unit = 10_000_000_000u64;
 
         // 100 DOLI = 1 bond unit
-        let producer = ScheduledProducer::from_bond_amount(pubkey.clone(), 10_000_000_000);
+        let producer =
+            ScheduledProducer::from_bond_amount(pubkey.clone(), 10_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 1);
 
         // 1000 DOLI = 10 bond units
-        let producer = ScheduledProducer::from_bond_amount(pubkey.clone(), 100_000_000_000);
+        let producer =
+            ScheduledProducer::from_bond_amount(pubkey.clone(), 100_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 10);
 
         // Partial bonds round down
-        let producer = ScheduledProducer::from_bond_amount(pubkey.clone(), 15_000_000_000);
+        let producer =
+            ScheduledProducer::from_bond_amount(pubkey.clone(), 15_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 1); // 150 DOLI = 1 bond (rounds down)
     }
 

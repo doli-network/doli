@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use crypto::{hash::hash, Hash};
+use crypto::hash::hash;
 use vdf::{compute, verify, T_BLOCK, T_REGISTER_BASE};
 
 #[derive(Parser)]
@@ -314,6 +314,7 @@ fn print_system_info() {
 }
 
 /// Get system info as JSON-compatible structure
+#[allow(unused_mut)]
 fn get_system_info() -> serde_json::Value {
     use serde_json::json;
 
