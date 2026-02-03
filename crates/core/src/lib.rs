@@ -200,7 +200,7 @@ pub use rewards::{
 pub use scheduler::{
     allowed_producer_rank as scheduler_allowed_rank,
     allowed_producer_rank_ms as scheduler_allowed_rank_ms, DeterministicScheduler,
-    ScheduledProducer, SchedulerStats, BOND_UNIT as SCHEDULER_BOND_UNIT, MAX_FALLBACK_RANK,
+    ScheduledProducer, SchedulerStats, MAX_FALLBACK_RANK,
 };
 
 // Heartbeat VDF and witness system for presence proofs (consensus-affecting)

@@ -41,6 +41,30 @@
    - **On Resolution**: Move resolved bug reports to `docs/legacy/bugs/REPORT_<BUG_NAME>.md`
      - Example: `REPORT.md` → `docs/legacy/bugs/REPORT_UTXO_ROCKSDB_CRASH.md`
 
+     Add this as **Rule 5.1** (after the existing Bug Fixing rule), or append it to Rule 5:
+
+ **CLI Issue Tracking** (`CLI.md`):
+   - When using the CLI and encountering a **bug**, **missing sub-command**, or **constraint/limitation**, log it immediately in `CLI.md` at the repo root.
+   
+     ## CLI Issues
+
+     ### [DATE] - <Short Description>
+     - **Type**: Bug | Missing Command | Constraint
+     - **Command**: `doli-cli <subcommand>` (what was attempted)
+     - **Observed**: What happened (or didn't)
+     - **Expected**: What should happen
+     - **Priority**: Low | Medium | High
+     - **Status**: Open | In Progress | Resolved
+     ```
+   - **Rules**:
+     - One entry per issue, append-only (don't remove — mark as `Resolved` and reference the fixing commit).
+     - On resolution, keep the entry in `CLI.md` with updated status — do **not** move to `docs/legacy/bugs/` (that's for deep investigation reports only).
+     - Review `CLI.md` before any CLI-related PR to check for low-hanging fixes.
+   - **Examples**:
+     - Missing `doli-cli wallet export` sub-command → log it.
+     - `doli-cli bond status` returns wrong penalty tier → log it.
+     - `--format json` flag silently ignored → log it.
+
 6. **Output Filtering**: Always filter verbose output:
 Apply always outour redirection to a /tmp/ folder to avoid polluting the console to later apply filters.
   command > /tmp/cmd_output.log 2>&1 && grep -iE "error|warn|fail|pass" /tmp/cmd_output.log | head -20
