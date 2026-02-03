@@ -476,6 +476,7 @@ impl Node {
         .with_network(self.config.network.name().to_string())
         .with_blocks_per_reward_epoch(self.config.network.blocks_per_reward_epoch())
         .with_coinbase_maturity(self.config.network.coinbase_maturity())
+        .with_bond_unit(self.config.network.bond_unit())
         .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
 
@@ -1636,6 +1637,9 @@ impl Node {
         // Store the block
         self.block_store.put_block(&block, height)?;
 
+        // Track newly registered producers to add to known_producers after lock release
+        let mut new_registrations: Vec<PublicKey> = Vec::new();
+
         // Apply transactions to UTXO set and process special transactions
         {
             let mut utxo = self.utxo_set.write().await;
@@ -1677,6 +1681,8 @@ impl Node {
                                     crypto_hash(reg_data.public_key.as_bytes()),
                                     height
                                 );
+                                // Track for known_producers update after lock release
+                                new_registrations.push(reg_data.public_key.clone());
                             }
                         }
                     }
@@ -1764,6 +1770,27 @@ impl Node {
                     crypto_hash(producer.public_key.as_bytes())
                 );
             }
+        }
+
+        // Add newly registered producers to known_producers for bootstrap round-robin
+        // This ensures they can produce blocks immediately (without waiting for gossip discovery)
+        if !new_registrations.is_empty()
+            && (self.config.network == Network::Testnet || self.config.network == Network::Devnet)
+        {
+            let mut known = self.known_producers.write().await;
+            for pubkey in new_registrations {
+                if !known.contains(&pubkey) {
+                    known.push(pubkey.clone());
+                    let pubkey_hash = crypto_hash(pubkey.as_bytes());
+                    info!(
+                        "Added registered producer to known_producers: {} (now {} known)",
+                        &pubkey_hash.to_hex()[..16],
+                        known.len()
+                    );
+                }
+            }
+            // Sort for deterministic ordering (all nodes compute same order)
+            known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         }
 
         // Update chain state
