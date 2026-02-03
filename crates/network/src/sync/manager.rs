@@ -369,7 +369,9 @@ impl SyncManager {
         }
 
         // Check if we should start syncing
-        if self.state == SyncState::Idle && self.should_sync() {
+        // Note: Also check Synchronized state - after successful sync, state is Synchronized,
+        // and we need to re-sync if peers advance beyond us
+        if matches!(self.state, SyncState::Idle | SyncState::Synchronized) && self.should_sync() {
             self.start_sync();
         }
     }
@@ -393,7 +395,9 @@ impl SyncManager {
 
         // Check if we should start syncing (same as add_peer)
         // This ensures we re-sync when peers advance beyond our height
-        if self.state == SyncState::Idle && self.should_sync() {
+        // Note: Also check Synchronized state - after successful sync, state is Synchronized,
+        // and we need to re-sync if peers advance beyond us
+        if matches!(self.state, SyncState::Idle | SyncState::Synchronized) && self.should_sync() {
             self.start_sync();
         }
     }
