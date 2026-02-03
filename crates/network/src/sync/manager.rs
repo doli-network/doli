@@ -390,6 +390,12 @@ impl SyncManager {
         if slot > self.network_tip_slot {
             self.network_tip_slot = slot;
         }
+
+        // Check if we should start syncing (same as add_peer)
+        // This ensures we re-sync when peers advance beyond our height
+        if self.state == SyncState::Idle && self.should_sync() {
+            self.start_sync();
+        }
     }
 
     /// Refresh all peers' timestamps when activity is detected on the network
