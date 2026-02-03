@@ -160,7 +160,7 @@ pub fn init(node_count: u32) -> Result<()> {
 
     // Load environment variables from devnet root .env file
     // This allows customizing network parameters before init
-    doli_core::env_loader::load_env_for_network("devnet", &root);
+    doli_core::network_params::load_env_for_network("devnet", &root);
 
     info!(
         "Initializing devnet with {} nodes at {:?}",
@@ -300,7 +300,7 @@ pub async fn start() -> Result<()> {
     // Load environment variables from devnet root .env file
     // This allows configuring network parameters via ~/.doli/devnet/.env
     // Child processes inherit these env vars, so nodes will pick them up
-    doli_core::env_loader::load_env_for_network("devnet", &root);
+    doli_core::network_params::load_env_for_network("devnet", &root);
 
     // Clean data directories for fresh start (preserves keys and chainspec)
     // This prevents issues with stale data, schema mismatches, or corrupted state

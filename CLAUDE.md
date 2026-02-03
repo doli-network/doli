@@ -149,7 +149,7 @@ DOLI_VDF_ITERATIONS, DOLI_HEARTBEAT_VDF_ITERATIONS
 
 **Locked for mainnet**: Slot duration, genesis time, bond unit, emission, VDF iterations, blocks/year.
 **Files**: `.env.example.{devnet,testnet,mainnet}` in repo root.
-**Code**: `crates/core/src/network_params.rs`, `crates/core/src/env_loader.rs`
+**Code**: `crates/core/src/network_params.rs`
 
 ## 💰 Economics (Deflationary)
 
