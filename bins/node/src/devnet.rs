@@ -32,8 +32,8 @@ fn load_devnet_env_example() -> Result<String> {
         ));
     }
 
-    let contents = fs::read_to_string(&env_file)
-        .with_context(|| format!("Failed to read {:?}", env_file))?;
+    let contents =
+        fs::read_to_string(&env_file).with_context(|| format!("Failed to read {:?}", env_file))?;
 
     info!("Loaded .env.example.devnet from {:?}", env_file);
     Ok(contents)

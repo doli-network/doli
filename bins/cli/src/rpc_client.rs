@@ -91,6 +91,28 @@ pub struct ChainInfo {
     pub genesis_hash: String,
 }
 
+/// Network parameters (from getNetworkParams RPC)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkParams {
+    /// Network name (mainnet, testnet, devnet)
+    pub network: String,
+    /// Bond unit in base units (amount per bond)
+    pub bond_unit: u64,
+    /// Slot duration in seconds
+    pub slot_duration: u64,
+    /// Slots per epoch
+    pub slots_per_epoch: u32,
+    /// Blocks per reward epoch
+    pub blocks_per_reward_epoch: u64,
+    /// Coinbase maturity (blocks before spendable)
+    pub coinbase_maturity: u64,
+    /// Initial block reward
+    pub initial_reward: u64,
+    /// Genesis time
+    pub genesis_time: u64,
+}
+
 /// Transaction information
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +297,14 @@ impl RpcClient {
         struct Params {}
 
         self.call("getChainInfo", Params {}).await
+    }
+
+    /// Get network parameters (bond_unit, slot_duration, etc.)
+    pub async fn get_network_params(&self) -> Result<NetworkParams> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("getNetworkParams", Params {}).await
     }
 
     /// Get transaction by hash

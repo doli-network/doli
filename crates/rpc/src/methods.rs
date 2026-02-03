@@ -45,6 +45,8 @@ pub struct RpcContext {
     pub blocks_per_reward_epoch: u64,
     /// Coinbase maturity (network-specific: mainnet/testnet=100, devnet=10)
     pub coinbase_maturity: u64,
+    /// Bond unit in base units (network-specific: mainnet/testnet=10B, devnet=100M)
+    pub bond_unit: u64,
     /// Local peer ID
     pub peer_id: String,
     /// Peer count function
@@ -78,6 +80,7 @@ impl RpcContext {
             network: "mainnet".to_string(),
             blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
             coinbase_maturity: DEFAULT_REWARD_MATURITY,
+            bond_unit: 10_000_000_000, // 100 DOLI default (mainnet/testnet)
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
@@ -113,6 +116,12 @@ impl RpcContext {
     /// Set coinbase maturity (network-specific)
     pub fn with_coinbase_maturity(mut self, maturity: u64) -> Self {
         self.coinbase_maturity = maturity;
+        self
+    }
+
+    /// Set bond unit (network-specific)
+    pub fn with_bond_unit(mut self, bond_unit: u64) -> Self {
+        self.bond_unit = bond_unit;
         self
     }
 
@@ -165,6 +174,7 @@ impl RpcContext {
             "submitMaintainerChange" => self.submit_maintainer_change(request.params).await,
             "getNodeInfo" => self.get_node_info().await,
             "getEpochInfo" => self.get_epoch_info().await,
+            "getNetworkParams" => self.get_network_params().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -700,6 +710,23 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get network parameters
+    ///
+    /// Returns network-specific configuration parameters like bond_unit, slot_duration, etc.
+    /// CLI tools should use this to get the correct values instead of hardcoding.
+    async fn get_network_params(&self) -> Result<Value, RpcError> {
+        Ok(serde_json::json!({
+            "network": self.network,
+            "bondUnit": self.bond_unit,
+            "slotDuration": self.params.slot_duration,
+            "slotsPerEpoch": self.params.slots_per_epoch,
+            "blocksPerRewardEpoch": self.blocks_per_reward_epoch,
+            "coinbaseMaturity": self.coinbase_maturity,
+            "initialReward": self.params.initial_reward,
+            "genesisTime": self.params.genesis_time
+        }))
     }
 
     /// Get current maintainer set

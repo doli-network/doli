@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.4.0
+version: 2.5.0
 ---
 
 # DOLI Network Setup Skill
@@ -20,6 +20,8 @@ This skill guides you through setting up and running DOLI nodes and producers on
 | **RPC Port** | 28545 | 18545 | 8545 |
 | **Bootstrap** | None (local) | `testnet.doli.network` | `doli.network` |
 | **Block Reward** | 1 dDOLI | 1 tDOLI | 1 DOLI |
+| **Bond Unit** | 1 DOLI | 100 DOLI | 100 DOLI |
+| **ACTIVATION_DELAY** | 10 blocks (~100s) | 10 blocks (~100s) | 10 blocks (~100s) |
 
 ## Quick Reference
 
@@ -55,11 +57,14 @@ User wants to...
 ├─ Production deployment?
 │  └─ Use mainnet
 │
+├─ Add new producers to running network?
+│  └─ See Scenario 3 (Add New Producers)
+│
 ├─ Run as background service?
-│  └─ See Scenario 3 (Systemd Service)
+│  └─ See Scenario 4 (Systemd Service)
 │
 └─ Launch a brand new network?
-   └─ See Scenario 4 (Network Operators)
+   └─ See Scenario 5 (Network Operators)
 ```
 
 ## Scenario 1: Run a Producer Node
@@ -306,9 +311,123 @@ This script:
 
 ---
 
-## Scenario 3: Run as Systemd Service (Production)
+## Scenario 3: Add New Producers to Running Network
 
-For persistent production operation (testnet/mainnet):
+For adding multiple new producers to an existing devnet/testnet.
+
+### Step 1: Create Producer Wallets
+
+```bash
+# Create wallets for producers 15-29 (example: 15 new producers)
+for i in {15..29}; do
+  ./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json new -n "producer_$i"
+done
+```
+
+### Step 2: Get Pubkey Hashes (Required for Sending)
+
+**Important:** The `send` command requires a 64-character **Pubkey Hash**, not the 40-character address.
+
+```bash
+# Get pubkey hash for a wallet
+./target/release/doli -w ~/.doli/devnet/keys/producer_15.json info
+# Output shows:
+#   Address (20-byte):    cf98716522ee9e5c...
+#   Pubkey Hash (32-byte): cf98716522ee9e5c62f9f2d0cdd0c96f8222f3c6142b4c1d2e4f2190686eab84
+#   ^^^ Use this 64-char hash for sending
+```
+
+### Step 3: Fund New Producers
+
+**UTXO Reuse Warning:** Sending multiple transactions from the same wallet in quick succession causes "double spend with mempool transaction" errors because the UTXO set isn't refreshed.
+
+**Solution:** Use different source wallets for each send, or wait for confirmation between sends.
+
+```bash
+# Fund each new producer from a DIFFERENT source wallet
+for i in {15..29}; do
+  src=$((i - 15))  # producer_0 sends to 15, producer_1 sends to 16, etc.
+  pubkey=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
+  echo "Sending from producer_$src to producer_$i..."
+  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$src.json send "$pubkey" 2
+done
+```
+
+**Alternative (slower but uses single wallet):**
+```bash
+# Wait for confirmation between each send
+for i in {15..29}; do
+  pubkey=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
+  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_0.json send "$pubkey" 2
+  sleep 12  # Wait for next block
+done
+```
+
+### Step 4: Register as Producers
+
+**Bond requirements:**
+- Devnet: 1 DOLI per bond
+- Testnet/Mainnet: 100 DOLI per bond
+
+```bash
+# Register all new producers
+for i in {15..29}; do
+  echo "Registering producer_$i..."
+  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$i.json producer register -b 1
+done
+```
+
+### Step 5: Start Producer Nodes
+
+```bash
+# Start each new producer node
+for i in {15..29}; do
+  ./target/release/doli-node \
+    --network devnet \
+    --data-dir ~/.doli/devnet/data/node$i \
+    run \
+    --producer \
+    --producer-key ~/.doli/devnet/keys/producer_$i.json \
+    --p2p-port $((50303 + i)) \
+    --rpc-port $((28545 + i)) \
+    --bootstrap '/ip4/127.0.0.1/tcp/50303' \
+    --chainspec ~/.doli/devnet/chainspec.json \
+    --no-dht \
+    --yes &
+done
+```
+
+### Producer Activation Timeline
+
+After registration, producers go through two phases:
+
+1. **Bootstrap Mode (immediate):** New producers are added to `known_producers` on block application. They can be selected via round-robin immediately.
+
+2. **Normal Mode (after ACTIVATION_DELAY):** Requires 10 blocks (~100 seconds) before producer appears in `active_producers_at_height()`. This ensures all nodes have time to sync the registration transaction.
+
+### Verify Producer Status
+
+```bash
+# List all active producers
+./target/release/doli -r http://127.0.0.1:28545 producer list
+
+# Check specific producer status
+./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_15.json producer status
+
+# Check if new producers are producing blocks
+for i in {15..29}; do
+  RPC=$((28545 + i))
+  height=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.bestHeight')
+  echo "Node $i: Height $height"
+done
+```
+
+---
+
+## Scenario 4: Run as Systemd Service (Production)
+
+For persistent production operation (testnet/mainnet).
 
 ```bash
 sudo tee /etc/systemd/system/doli-<NETWORK>.service > /dev/null << 'EOF'
@@ -340,7 +459,7 @@ sudo systemctl start doli-<NETWORK>
 journalctl -u doli-<NETWORK> -f
 ```
 
-## Scenario 4: Launch New Network (Network Operators Only)
+## Scenario 5: Launch New Network (Network Operators Only)
 
 Only for launching a completely new network from scratch.
 
@@ -400,6 +519,42 @@ sudo ufw status
 3. Wait 15 seconds for producer discovery
 4. Check registration status: `doli producer status`
 5. **For local testnet**: Ensure you're using `--chainspec` with a chainspec generated from your producer wallets (see Scenario 2 Option B)
+6. **After registration**: Wait for ACTIVATION_DELAY (10 blocks, ~100 seconds) for normal mode scheduling
+7. **Bootstrap mode**: New producers are added to round-robin immediately on registration (as of commit TBD)
+
+### Double spend errors when sending multiple transactions
+
+**Symptom:** "RPC error -32603: double spend with mempool transaction"
+
+**Cause:** The wallet reuses the same UTXO when sending multiple transactions in quick succession because the local UTXO cache isn't refreshed.
+
+**Solutions:**
+1. **Use different source wallets** for each transaction
+2. **Wait for confirmation** (one block, ~10 seconds) between transactions from same wallet
+3. **Split funds first** into multiple UTXOs if you need to send many transactions quickly
+
+### Registration succeeds but producer not in list
+
+**Cause:** `ACTIVATION_DELAY` of 10 blocks before producer appears in scheduler.
+
+**Check:**
+```bash
+# View your registration
+./target/release/doli -r http://127.0.0.1:28545 producer list
+# Your producer should show "active" but may not produce until 10 blocks pass
+```
+
+### Insufficient balance for bond
+
+**Check bond requirements:**
+- Devnet: 1 DOLI per bond
+- Testnet/Mainnet: 100 DOLI per bond
+
+```bash
+# Check balance
+./target/release/doli -r http://127.0.0.1:28545 -w <wallet> balance
+# Need at least bond_unit + fees
+```
 
 ### Check node status
 
