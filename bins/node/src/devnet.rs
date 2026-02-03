@@ -19,15 +19,16 @@ use doli_core::Network;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-/// Read .env.example.devnet from the repo root directory at runtime.
-fn load_devnet_env_example() -> Result<String> {
-    // Read from .env.example.devnet in current working directory (repo root)
-    let env_file = std::env::current_dir()?.join(".env.example.devnet");
+/// Read .env.devnet from the repo root directory at runtime.
+fn load_devnet_env() -> Result<String> {
+    // Read from .env.devnet in current working directory (repo root)
+    let env_file = std::env::current_dir()?.join(".env.devnet");
 
     if !env_file.exists() {
         return Err(anyhow!(
-            "Missing .env.example.devnet in current directory: {:?}\n\
-             Run this command from the repository root.",
+            "Missing .env.devnet in current directory: {:?}\n\
+             Run this command from the repository root.\n\
+             You can copy .env.example.devnet to .env.devnet to get started.",
             std::env::current_dir().unwrap_or_default()
         ));
     }
@@ -35,7 +36,7 @@ fn load_devnet_env_example() -> Result<String> {
     let contents =
         fs::read_to_string(&env_file).with_context(|| format!("Failed to read {:?}", env_file))?;
 
-    info!("Loaded .env.example.devnet from {:?}", env_file);
+    info!("Loaded .env.devnet from {:?}", env_file);
     Ok(contents)
 }
 
@@ -148,10 +149,10 @@ pub fn init(node_count: u32) -> Result<()> {
     // Create root directory first so we can load .env
     fs::create_dir_all(&root)?;
 
-    // Create default .env file from .env.example.devnet in repo root
+    // Create default .env file from .env.devnet in repo root
     let env_path = root.join(".env");
     if !env_path.exists() {
-        let env_contents = load_devnet_env_example()?;
+        let env_contents = load_devnet_env()?;
         fs::write(&env_path, &env_contents)
             .with_context(|| format!("Failed to create {:?}", env_path))?;
         info!("  Created default .env configuration: {:?}", env_path);

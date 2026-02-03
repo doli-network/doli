@@ -272,7 +272,7 @@ Network parameters can be configured via `.env` files in the data directory:
 
 **Quick setup:**
 ```bash
-# For devnet: auto-created on init (reads .env.example.devnet at runtime)
+# For devnet: auto-created on init (reads .env.devnet at runtime)
 doli-node devnet init --nodes 3
 
 # For mainnet/testnet: manually copy the template
