@@ -525,6 +525,10 @@ impl SyncManager {
 
         // Layer 4: Bootstrap gate - CRITICAL for preventing isolated forks
         //
+        // Defense in depth: We use is_in_bootstrap_phase() which DERIVES the bootstrap
+        // state from actual conditions (height == 0, lost peers, etc.) rather than
+        // relying on stored flags. This makes invalid states impossible.
+        //
         // During bootstrap, ALL nodes start at height 0. If late-joining nodes only
         // connect to other late-joining nodes (also at height 0), they'll think
         // they're caught up and produce at height 1 - creating isolated forks.
@@ -535,8 +539,11 @@ impl SyncManager {
         // - Or we ARE at height 0 and can legitimately produce the first block
         //
         // This prevents the scenario where late nodes produce competing genesis chains.
-        if self.has_connected_to_peer && self.local_height == 0 {
-            // We're at genesis AND have connected to peers
+        if self.is_in_bootstrap_phase() && self.has_connected_to_peer {
+            // Bootstrap phase detected (derived from state):
+            // - height == 0: We're at genesis, need to verify network state
+            // - peers empty after connecting: Lost all peers, need to re-establish
+            //
             // We need evidence the network is real before producing
 
             // Check 1: Have we received any peer status at all?
@@ -546,7 +553,14 @@ impl SyncManager {
                 };
             }
 
-            // Check 2: Have we seen any chain activity? (block via gossip OR peer with height > 0)
+            // Check 2: If we lost all peers (height > 0 but peers empty), wait for reconnection
+            if self.local_height > 0 && self.peers.is_empty() {
+                return ProductionAuthorization::BlockedBootstrap {
+                    reason: "Lost all peers - waiting for reconnection".to_string(),
+                };
+            }
+
+            // Check 3: Have we seen any chain activity? (block via gossip OR peer with height > 0)
             let has_chain_activity = self.network_tip_slot > 0
                 || self.network_tip_height > 0
                 || self.best_peer_height() > 0
@@ -723,6 +737,30 @@ impl SyncManager {
         }
         // Need at least one peer status
         self.first_peer_status_received.is_some()
+    }
+
+    /// Check if we're in bootstrap phase - DERIVED FROM STATE, NOT STORED
+    ///
+    /// Defense in depth: This method computes bootstrap state from actual conditions
+    /// rather than relying on a stored flag. This makes invalid states impossible:
+    /// - If height == 0, we're definitionally in bootstrap (no matter how we got here)
+    /// - If we lost all peers after connecting, we need to re-bootstrap
+    ///
+    /// This is the "make invalid states unrepresentable" principle.
+    pub fn is_in_bootstrap_phase(&self) -> bool {
+        // Primary: at genesis height = ALWAYS bootstrap mode
+        // This is the key insight: height 0 means newbie, period.
+        if self.local_height == 0 {
+            return true;
+        }
+
+        // Secondary: connected to peers but lost them all
+        // This could indicate network partition or need to resync
+        if self.has_connected_to_peer && self.peers.is_empty() {
+            return true;
+        }
+
+        false
     }
 
     /// Configure the production gate settings
