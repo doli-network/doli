@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.7.0
+version: 2.8.0
 ---
 
 # DOLI Network Setup Skill
@@ -315,18 +315,73 @@ This script:
 
 For adding multiple new producers to an existing devnet/testnet.
 
-### ⚠️ CRITICAL: Complete 4-Step Workflow Required
+### ⚠️ CRITICAL: Port Cleanup Before Adding Nodes
 
-**All 4 steps must be completed for a producer to actually produce blocks:**
+**Why is this needed?** The `devnet stop/clean` commands only kill nodes tracked via PID files (started by `devnet start`). When you **manually start new producer nodes** (as in this scenario), they are NOT tracked by devnet and must be cleaned up manually.
+
+**When to run cleanup:**
+| Situation | Cleanup Needed? |
+|-----------|-----------------|
+| Fresh `devnet init --nodes N` | No - devnet handles it |
+| Adding nodes via Scenario 3 (manual) | **YES** |
+| Previous manual node attempt failed | **YES** |
+| Restarting after crash | **YES** |
+
+```bash
+# Step 0: Check and clean ports BEFORE starting new nodes
+
+# 1. Check what ports are in use (for nodes 5-9, check ports 9095-9099, 28550-28554, 50308-50312)
+lsof -i :9095-9099 2>/dev/null | grep LISTEN
+lsof -i :28550-28554 2>/dev/null | grep LISTEN
+lsof -i :50308-50312 2>/dev/null | grep LISTEN
+
+# 2. Kill any zombie processes on those ports
+for port in 9095 9096 9097 9098 9099; do
+  pid=$(lsof -ti :$port 2>/dev/null)
+  if [ -n "$pid" ]; then
+    kill $pid && echo "Killed process on metrics port $port (PID $pid)"
+  fi
+done
+
+# 3. Alternative: Kill by process pattern
+pkill -f "doli-node.*50308" 2>/dev/null  # Kill node on P2P port 50308
+pkill -f "doli-node.*50309" 2>/dev/null
+# ... etc
+
+# 4. Verify ports are free
+sleep 2
+lsof -i :9095-9099 2>/dev/null | grep LISTEN || echo "Metrics ports clear"
+```
+
+**Port allocation for dynamic nodes:**
+| Node | P2P Port | RPC Port | Metrics Port |
+|------|----------|----------|--------------|
+| 5 | 50308 | 28550 | 9095 |
+| 6 | 50309 | 28551 | 9096 |
+| 7 | 50310 | 28552 | 9097 |
+| N | 50303+N | 28545+N | 9090+N |
+
+**Common failure:** Node panics with `Failed to bind metrics server: Address already in use` because a previous node attempt left a zombie process on that port.
+
+> **Note:** If you want devnet to manage all 10 nodes from the start, use `devnet init --nodes 10` instead of adding producers dynamically.
+
+---
+
+### ⚠️ CRITICAL: Complete 5-Step Workflow Required
+
+**All 5 steps must be completed for a producer to actually produce blocks:**
 
 | Step | Action | Result if Skipped |
 |------|--------|-------------------|
+| 0. **Clean ports** | Kill zombie processes, verify ports free | **NODE PANIC on startup** |
 | 1. Create wallet | `doli wallet new` | No key exists |
 | 2. Fund wallet | Send DOLI to address | Cannot register (no bond) |
 | 3. Register | `doli producer register` | Not in producer set |
 | 4. **Start node** | `doli-node --producer --producer-key <wallet>` | **REGISTERED BUT NOT PRODUCING** |
 
-**Common Mistake:** Completing steps 1-3 but forgetting step 4. Registration puts the public key on the blockchain. The node with `--producer-key` uses the private key to sign blocks. **Without step 4, there's no process to produce blocks.**
+**Common Mistakes:**
+- **Skipping Step 0:** Node panics with "Address already in use" because zombie processes hold ports
+- **Skipping Step 4:** Registration puts the public key on the blockchain, but without a running node there's no process to produce blocks
 
 ### Step 1: Create Producer Wallets
 
@@ -409,25 +464,42 @@ done
 
 **⚠️ This step is REQUIRED. Without a running node, the registered producer cannot produce blocks.**
 
+**⚠️ IMPORTANT: Always specify `--metrics-port` explicitly to avoid port conflicts!**
+
 ```bash
-# Start each new producer node
+# Start each new producer node with UNIQUE ports for P2P, RPC, AND METRICS
 for i in {15..29}; do
+  P2P_PORT=$((50303 + i))
+  RPC_PORT=$((28545 + i))
+  METRICS_PORT=$((9090 + i))  # REQUIRED: unique metrics port per node
+
   ./target/release/doli-node \
     --network devnet \
     --data-dir ~/.doli/devnet/data/node$i \
     run \
     --producer \
     --producer-key ~/.doli/devnet/keys/producer_$i.json \
-    --p2p-port $((50303 + i)) \
-    --rpc-port $((28545 + i)) \
+    --p2p-port $P2P_PORT \
+    --rpc-port $RPC_PORT \
+    --metrics-port $METRICS_PORT \
     --bootstrap '/ip4/127.0.0.1/tcp/50303' \
     --chainspec ~/.doli/devnet/chainspec.json \
     --no-dht \
-    --yes &
+    --yes \
+    > ~/.doli/devnet/logs/node$i.log 2>&1 &
+
+  echo "Started node $i (P2P: $P2P_PORT, RPC: $RPC_PORT, Metrics: $METRICS_PORT)"
 done
 ```
 
-**Each new producer needs unique ports** (p2p, rpc, metrics).
+**Each new producer needs THREE unique ports:**
+| Port Type | Formula | Example (node 15) |
+|-----------|---------|-------------------|
+| P2P | 50303 + N | 50318 |
+| RPC | 28545 + N | 28560 |
+| **Metrics** | 9090 + N | 9105 |
+
+**Common failure:** Omitting `--metrics-port` causes nodes to use default port 9090, conflicting with node 0.
 
 ### Producer Activation Timeline
 
@@ -533,6 +605,32 @@ See [genesis.md](/docs/genesis.md) for complete network launch procedures.
 | `doli producer add-bond --count N` | Add N more bonds |
 
 ## Troubleshooting
+
+### Node panics on startup: "Address already in use"
+
+**Symptom:** Node crashes immediately with:
+```
+Failed to bind metrics server: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+```
+
+**Cause:** Another process (often a zombie from a previous failed attempt) is holding the metrics port.
+
+**Solution:**
+```bash
+# 1. Find what's using the port (e.g., metrics port 9095)
+lsof -i :9095
+
+# 2. Kill the process
+kill <PID>
+
+# 3. Or kill by pattern
+pkill -f "doli-node.*metrics.*9095"
+
+# 4. Always specify unique metrics port when starting nodes
+--metrics-port $((9090 + NODE_NUMBER))
+```
+
+**Prevention:** Always run port cleanup (Step 0 in Scenario 3) before starting new producer nodes.
 
 ### Node won't sync (testnet/mainnet)
 
