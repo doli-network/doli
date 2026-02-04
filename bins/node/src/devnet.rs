@@ -8,7 +8,7 @@
 //! - `devnet clean [--keep-keys]` - Remove devnet data
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -504,6 +504,84 @@ fn kill_process(pid: u32, _signal: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Scan pids directory and kill all node processes
+/// Returns (stopped_count, node_indices)
+fn scan_and_kill_all_pids(root: &Path, force: bool) -> (usize, Vec<usize>) {
+    let pids_dir = root.join("pids");
+    let mut stopped = 0;
+    let mut indices = Vec::new();
+
+    if !pids_dir.exists() {
+        return (0, indices);
+    }
+
+    // Scan for all node*.pid files
+    if let Ok(entries) = fs::read_dir(&pids_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                // Match node*.pid pattern
+                if filename.starts_with("node") && filename.ends_with(".pid") {
+                    // Extract node index
+                    if let Some(idx_str) = filename
+                        .strip_prefix("node")
+                        .and_then(|s| s.strip_suffix(".pid"))
+                    {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            indices.push(idx);
+
+                            // Read PID from file
+                            if let Ok(content) = fs::read_to_string(&path) {
+                                if let Ok(pid) = content.trim().parse::<u32>() {
+                                    if is_process_running(pid) {
+                                        info!("  Stopping node {} (PID {})...", idx, pid);
+
+                                        // Send SIGTERM first
+                                        #[cfg(unix)]
+                                        {
+                                            kill_process(pid, "-TERM");
+                                        }
+                                        #[cfg(not(unix))]
+                                        {
+                                            kill_process(pid, "");
+                                        }
+
+                                        // Brief wait
+                                        std::thread::sleep(Duration::from_millis(500));
+
+                                        // Force kill if still running
+                                        if force && is_process_running(pid) {
+                                            warn!(
+                                                "  Node {} did not stop gracefully, forcing...",
+                                                idx
+                                            );
+                                            #[cfg(unix)]
+                                            {
+                                                kill_process(pid, "-KILL");
+                                            }
+                                            #[cfg(not(unix))]
+                                            {
+                                                kill_process(pid, "");
+                                            }
+                                        }
+
+                                        stopped += 1;
+                                    }
+                                }
+                            }
+
+                            // Remove PID file
+                            let _ = fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (stopped, indices)
+}
+
 /// Wait for RPC to become available
 async fn wait_for_rpc(addr: &str, timeout: Duration) -> Result<()> {
     let start = std::time::Instant::now();
@@ -531,65 +609,17 @@ async fn wait_for_rpc(addr: &str, timeout: Duration) -> Result<()> {
 
 /// Stop all devnet nodes
 pub async fn stop() -> Result<()> {
-    let config = match load_config() {
-        Ok(c) => c,
-        Err(_) => {
-            println!("No devnet configuration found. Nothing to stop.");
-            return Ok(());
-        }
-    };
-
     let root = devnet_dir();
-    let mut stopped = 0;
 
-    info!("Stopping {} devnet nodes...", config.node_count);
-
-    for i in 0..config.node_count {
-        if let Ok(Some(pid)) = load_pid(&root, i) {
-            if is_process_running(pid) {
-                info!("  Stopping node {} (PID {})...", i, pid);
-
-                // Send SIGTERM first
-                #[cfg(unix)]
-                {
-                    kill_process(pid, "-TERM");
-                }
-                #[cfg(not(unix))]
-                {
-                    kill_process(pid, "");
-                }
-
-                // Wait up to 5 seconds for graceful shutdown
-                let mut terminated = false;
-                for _ in 0..50 {
-                    if !is_process_running(pid) {
-                        terminated = true;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-
-                // Force kill if still running
-                if !terminated {
-                    warn!("  Node {} did not stop gracefully, forcing...", i);
-                    #[cfg(unix)]
-                    {
-                        kill_process(pid, "-KILL");
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        kill_process(pid, "");
-                    }
-                }
-
-                stopped += 1;
-            }
-
-            // Remove PID file
-            let pid_file = root.join("pids").join(format!("node{}.pid", i));
-            let _ = fs::remove_file(pid_file);
-        }
+    if !root.exists() {
+        println!("No devnet directory found. Nothing to stop.");
+        return Ok(());
     }
+
+    info!("Stopping all devnet nodes...");
+
+    // Scan pids directory for ALL node PID files (not just 0..node_count)
+    let (stopped, _indices) = scan_and_kill_all_pids(&root, true);
 
     if stopped > 0 {
         println!("Stopped {} nodes.", stopped);
@@ -729,7 +759,10 @@ pub async fn status() -> Result<()> {
         chain_height, chain_slot
     );
     println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║  Active Producers ({})                                               ║", network_producers.len());
+    println!(
+        "║  Active Producers ({})                                               ║",
+        network_producers.len()
+    );
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!(
         "║  {:<4} {:<8} {:<20} {:<6} {:<6} {:>14}  ║",
@@ -897,37 +930,11 @@ pub fn clean(keep_keys: bool) -> Result<()> {
         return Ok(());
     }
 
-    // First stop any running nodes
+    // First stop any running nodes (scan ALL pid files, not just 0..node_count)
     info!("Stopping any running nodes...");
-
-    // Try to load config and stop nodes
-    if let Ok(config) = load_config() {
-        for i in 0..config.node_count {
-            if let Ok(Some(pid)) = load_pid(&root, i) {
-                if is_process_running(pid) {
-                    #[cfg(unix)]
-                    {
-                        kill_process(pid, "-TERM");
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        kill_process(pid, "");
-                    }
-                    // Brief wait
-                    std::thread::sleep(Duration::from_millis(500));
-                    if is_process_running(pid) {
-                        #[cfg(unix)]
-                        {
-                            kill_process(pid, "-KILL");
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            kill_process(pid, "");
-                        }
-                    }
-                }
-            }
-        }
+    let (stopped, _) = scan_and_kill_all_pids(&root, true);
+    if stopped > 0 {
+        info!("Stopped {} nodes.", stopped);
     }
 
     if keep_keys {
