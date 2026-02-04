@@ -162,6 +162,66 @@ done
 
 ---
 
+### deploy_producers.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/deploy_producers.sh` |
+| **Purpose** | Interactively deploy N new producer nodes to a running devnet |
+| **What it does** | Creates wallets, funds producers, registers with bonds, starts nodes |
+| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, running devnet |
+| **Run time** | Interactive (depends on N and wait time) |
+| **Output** | `~/.doli/devnet/` (keys, data, logs, pids) |
+
+**Usage:**
+```bash
+./scripts/deploy_producers.sh
+```
+
+**Interactive prompts:**
+1. How many producer nodes to deploy? (1-50)
+2. How much DOLI to fund each producer?
+3. How many bonds per producer?
+4. Seconds to wait between registrations? (default: 12)
+5. Select source wallet from genesis producers
+
+**Prerequisites:**
+- Running devnet: `doli-node devnet init --nodes 5 && doli-node devnet start`
+- Built binaries: `cargo build --release`
+- Genesis producer keys in `~/.doli/devnet/keys/`
+
+**Workflow:**
+1. Validates prerequisites (binaries, devnet running, sufficient funds)
+2. Cleans up any conflicting ports
+3. Creates wallets for new producers
+4. Funds each producer from selected genesis wallet
+5. Registers each producer with specified bonds
+6. Starts each producer node with unique ports
+7. Verifies deployment and shows status
+
+**Port allocation:**
+| Node N | P2P Port | RPC Port | Metrics Port |
+|--------|----------|----------|--------------|
+| N | 50303+N | 28545+N | 9090+N |
+
+**Example session:**
+```
+How many producer nodes to deploy? [1-50]: 5
+How much DOLI to fund each producer? [e.g., 10]: 10
+How many bonds per producer? [1-9]: 1
+Seconds to wait between registrations? [0-60, default=12]: 12
+Select source wallet [0-4]: 0
+Proceed with deployment? [y/N]: y
+```
+
+**Notes:**
+- Uses "Pubkey Hash (32-byte)" for sending (not "Public Key")
+- Waits between transactions to avoid double-spend errors
+- Each node gets unique P2P, RPC, and Metrics ports
+- PID files stored in `~/.doli/devnet/pids/` for management
+
+---
+
 ## Network & Node Scripts
 
 > **Note:** For local multi-node devnet setup, prefer using the built-in CLI commands:
@@ -734,6 +794,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
 | `generate_chainspec.sh` | 0 | Instant | **Generate chainspec from wallet files** |
+| `deploy_producers.sh` | N | Interactive | **Deploy N producers interactively** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |
 | `stress_test_600.sh` | 600 | Long | Scalability |
 | `test_staggered_validator_rewards.sh` | 10 | ~10 min | Staggered rewards |
