@@ -29,20 +29,42 @@ use std::path::Path;
 use crypto::hash::hash as crypto_hash;
 use crypto::{Hash, PublicKey};
 use doli_core::network::Network;
+use doli_core::network_params::NetworkParams;
 use serde::{Deserialize, Serialize};
 
 use crate::StorageError;
 
 // ==================== Seniority Weight System ====================
 
-/// Slots per year (from consensus parameters: 3,153,600 at 10s slots)
+/// Slots per year (mainnet default: 3,153,600 at 10s slots)
+///
+/// **Deprecated**: Use `NetworkParams::load(network).blocks_per_year` instead.
+/// Devnet uses 144 blocks/year for accelerated testing.
+#[deprecated(note = "Use NetworkParams::load(network).blocks_per_year for network-aware calculations")]
 pub const SLOTS_PER_YEAR: u64 = 3_153_600;
 
-/// Blocks per month - legacy alias
-pub const BLOCKS_PER_MONTH: u64 = SLOTS_PER_YEAR / 12;
+/// Blocks per month - legacy alias (mainnet default)
+///
+/// **Deprecated**: Use `NetworkParams::load(network).blocks_per_year / 12` instead.
+#[deprecated(note = "Use NetworkParams::load(network).blocks_per_year / 12 for network-aware calculations")]
+pub const BLOCKS_PER_MONTH: u64 = 3_153_600 / 12;
 
-/// Blocks per year - legacy alias
-pub const BLOCKS_PER_YEAR: u64 = SLOTS_PER_YEAR;
+/// Blocks per year - legacy alias (mainnet default)
+///
+/// **Deprecated**: Use `NetworkParams::load(network).blocks_per_year` instead.
+/// Devnet uses 144 blocks/year for accelerated testing.
+#[deprecated(note = "Use NetworkParams::load(network).blocks_per_year for network-aware calculations")]
+pub const BLOCKS_PER_YEAR: u64 = 3_153_600;
+
+/// Get blocks per year for a specific network
+pub fn blocks_per_year_for_network(network: Network) -> u64 {
+    NetworkParams::load(network).blocks_per_year
+}
+
+/// Get inactivity threshold for a specific network
+pub fn inactivity_threshold_for_network(network: Network) -> u64 {
+    NetworkParams::load(network).inactivity_threshold
+}
 
 /// Maximum weight a producer can achieve
 pub const MAX_WEIGHT: u64 = 4;
@@ -80,40 +102,22 @@ pub const VETO_BOND_AMOUNT: u64 = 1_000_000_000;
 /// - ProducerSet becomes consistent across the network
 pub const ACTIVATION_DELAY: u64 = 10;
 
-/// Calculate producer weight based on seniority (discrete yearly steps)
+/// Calculate producer weight based on seniority (mainnet defaults)
+///
+/// **Deprecated**: Use `producer_weight_for_network()` for network-aware calculations.
 ///
 /// Weight is determined by years active:
 /// - 0-1 years: weight 1
 /// - 1-2 years: weight 2
 /// - 2-3 years: weight 3
 /// - 3+ years: weight 4 (cap)
-///
-/// # Arguments
-/// - `registered_at`: Block/slot height when the producer registered
-/// - `current_height`: Current block/slot height
-///
-/// # Returns
-/// The producer's weight (1-4)
-///
-/// # Example
-/// ```rust
-/// use storage::producer::{producer_weight, SLOTS_PER_YEAR};
-///
-/// // New producer has weight 1
-/// assert_eq!(producer_weight(1000, 1000), 1);
-///
-/// // After 1 year, weight is 2
-/// assert_eq!(producer_weight(0, SLOTS_PER_YEAR), 2);
-///
-/// // After 2 years, weight is 3
-/// assert_eq!(producer_weight(0, 2 * SLOTS_PER_YEAR), 3);
-///
-/// // After 3+ years, weight is 4 (cap)
-/// assert_eq!(producer_weight(0, 3 * SLOTS_PER_YEAR), 4);
-/// ```
+#[deprecated(note = "Use producer_weight_for_network(registered_at, current_height, network) for network-aware calculations")]
 pub fn producer_weight(registered_at: u64, current_height: u64) -> u64 {
+    // Use mainnet default for backwards compatibility
+    #[allow(deprecated)]
+    let slots_per_year = SLOTS_PER_YEAR;
     let slots_active = current_height.saturating_sub(registered_at);
-    let years_active = slots_active / SLOTS_PER_YEAR;
+    let years_active = slots_active / slots_per_year;
 
     // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
     match years_active {
@@ -244,11 +248,15 @@ pub enum ProducerStatus {
     },
 }
 
-/// Inactivity threshold: ~1 week without producing triggers inactive status
+/// Inactivity threshold (mainnet default): ~1 week without producing triggers inactive status
 /// At 10s slots (6 blocks/minute): 7 days × 24 hours × 360 blocks/hour = 60,480 blocks
+///
+/// **Deprecated**: Use `inactivity_threshold_for_network(network)` for network-aware calculations.
+/// Devnet uses 30 blocks for faster testing.
+#[deprecated(note = "Use inactivity_threshold_for_network(network) for network-aware calculations")]
 pub const INACTIVITY_THRESHOLD: u64 = 60_480;
 
-/// Reactivation threshold: ~1 day of continuous activity to regain Active status
+/// Reactivation threshold (mainnet default): ~1 day of continuous activity to regain Active status
 /// At 10s slots (6 blocks/minute): 1 day × 24 hours × 360 blocks/hour = 8,640 blocks
 pub const REACTIVATION_THRESHOLD: u64 = 8_640;
 
@@ -771,9 +779,14 @@ impl ProducerInfo {
         self.last_activity = current_height;
     }
 
-    /// Check if producer has been inactive for too long
+    /// Check if producer has been inactive for too long (mainnet default)
+    ///
+    /// **Deprecated**: Use `is_inactive_for_network()` for network-aware calculations.
+    #[deprecated(note = "Use is_inactive_for_network(current_height, network) for network-aware calculations")]
     pub fn is_inactive(&self, current_height: u64) -> bool {
-        current_height.saturating_sub(self.last_activity) > INACTIVITY_THRESHOLD
+        #[allow(deprecated)]
+        let threshold = INACTIVITY_THRESHOLD;
+        current_height.saturating_sub(self.last_activity) > threshold
     }
 
     /// Check if producer has been inactive for a specific network
@@ -798,18 +811,24 @@ impl ProducerInfo {
 
     // ==================== Activity Status System ====================
 
-    /// Determine the producer's current activity status
+    /// Determine the producer's current activity status (mainnet default)
+    ///
+    /// **Deprecated**: Use `activity_status_for_network()` for network-aware calculations.
     ///
     /// Based on how long since last block production:
     /// - Active: < 1 week (INACTIVITY_THRESHOLD)
     /// - RecentlyInactive: 1-2 weeks (grace period)
     /// - Dormant: >= 2 weeks
+    #[deprecated(note = "Use activity_status_for_network(current_height, network) for network-aware calculations")]
     pub fn activity_status(&self, current_height: u64) -> ActivityStatus {
         let blocks_since_last = current_height.saturating_sub(self.last_activity);
 
-        if blocks_since_last < INACTIVITY_THRESHOLD {
+        #[allow(deprecated)]
+        let threshold = INACTIVITY_THRESHOLD;
+
+        if blocks_since_last < threshold {
             ActivityStatus::Active
-        } else if blocks_since_last < INACTIVITY_THRESHOLD * 2 {
+        } else if blocks_since_last < threshold * 2 {
             ActivityStatus::RecentlyInactive
         } else {
             ActivityStatus::Dormant

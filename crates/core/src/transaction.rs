@@ -280,10 +280,23 @@ impl AddBondData {
         }
     }
 
-    /// Calculate total amount required
+    /// Calculate total amount required for a specific network
+    ///
+    /// Uses NetworkParams to get the correct bond_unit for the network.
+    pub fn total_amount_for_network(&self, network: crate::Network) -> Amount {
+        let params = crate::network_params::NetworkParams::load(network);
+        self.bond_count as Amount * params.bond_unit
+    }
+
+    /// Calculate total amount required (mainnet default)
+    ///
+    /// **Deprecated**: Use `total_amount_for_network(network)` instead for
+    /// network-aware calculations.
+    #[deprecated(note = "Use total_amount_for_network(network) for network-aware bond calculation")]
     pub fn total_amount(&self) -> Amount {
-        use crate::consensus::BOND_UNIT;
-        self.bond_count as Amount * BOND_UNIT
+        // Fallback to mainnet bond_unit for backward compatibility
+        let params = crate::network_params::NetworkParams::load(crate::Network::Mainnet);
+        self.bond_count as Amount * params.bond_unit
     }
 
     /// Serialize to bytes for storage in extra_data
