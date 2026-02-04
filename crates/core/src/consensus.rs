@@ -1,5 +1,24 @@
 //! Consensus parameters and rules
 //!
+//! # Parameter Architecture
+//!
+//! This module contains **mainnet default constants** (the "DNA" of the protocol).
+//! These values serve as the base defaults used by [`crate::network_params::NetworkParams`].
+//!
+//! **For network-aware code, use `NetworkParams` instead of importing constants directly:**
+//!
+//! ```ignore
+//! // PREFERRED: Network-aware
+//! let params = NetworkParams::load(network);
+//! let bond_unit = params.bond_unit;  // 100 DOLI mainnet, 1 DOLI devnet
+//!
+//! // AVOID: Direct import (hardcoded mainnet values)
+//! use doli_core::consensus::BOND_UNIT;  // Always 100 DOLI
+//! ```
+//!
+//! Constants here are locked for mainnet but can be overridden via `.env` for devnet.
+//! See [`crate::network_params`] for the configuration manager.
+//!
 //! # Proof of Time (PoT)
 //!
 //! DOLI uses Proof of Time consensus with VDF-based anti-grinding. Unlike

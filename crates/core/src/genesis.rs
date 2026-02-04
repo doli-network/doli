@@ -8,6 +8,7 @@
 
 use crate::block::{Block, BlockHeader};
 use crate::network::Network;
+use crate::network_params::NetworkParams;
 use crate::transaction::{Output, Transaction, TxType};
 use crate::types::Amount;
 use crypto::{Hash, PublicKey};
@@ -32,10 +33,11 @@ impl GenesisConfig {
     /// Genesis time: 2026-02-01T00:00:00Z
     /// Message references the whitepaper philosophy
     pub fn mainnet() -> Self {
+        let params = NetworkParams::load(Network::Mainnet);
         Self {
             network: Network::Mainnet,
-            timestamp: 1769904000, // 2026-02-01T00:00:00Z
-            reward: 100_000_000,   // 1 DOLI (same as initial block reward)
+            timestamp: params.genesis_time,
+            reward: params.initial_reward,
             message: "Time is the only fair currency. 01/Feb/2026",
         }
     }
@@ -45,10 +47,11 @@ impl GenesisConfig {
     /// Genesis time: 2026-01-29T22:00:00Z
     /// Testnet v2 launched January 2026 (fresh genesis with mainnet parameters)
     pub fn testnet() -> Self {
+        let params = NetworkParams::load(Network::Testnet);
         Self {
             network: Network::Testnet,
-            timestamp: 1769738400, // 2026-01-29T22:00:00Z (testnet v2 launch)
-            reward: 100_000_000,   // 1 DOLI (matches mainnet exactly)
+            timestamp: params.genesis_time,
+            reward: params.initial_reward,
             message: "DOLI Testnet v2 Genesis - Time is the only fair currency",
         }
     }
@@ -58,10 +61,11 @@ impl GenesisConfig {
     /// Genesis time: dynamic (current time when created)
     /// For local development
     pub fn devnet() -> Self {
+        let params = NetworkParams::load(Network::Devnet);
         Self {
             network: Network::Devnet,
-            timestamp: 0,           // Set dynamically
-            reward: 50_000_000_000, // 500 DOLI (100x mainnet for rapid testing)
+            timestamp: params.genesis_time, // 0 = set dynamically at generation time
+            reward: params.initial_reward,
             message: "DOLI Devnet - Development and Testing",
         }
     }
@@ -439,13 +443,14 @@ mod tests {
 
     #[test]
     fn test_mainnet_genesis() {
+        let params = NetworkParams::load(Network::Mainnet);
         let config = GenesisConfig::mainnet();
         let genesis = generate_genesis_block(&config);
 
         assert_eq!(genesis.header.slot, 0);
-        assert_eq!(genesis.header.timestamp, 1769904000);
+        assert_eq!(genesis.header.timestamp, params.genesis_time);
         assert_eq!(genesis.transactions.len(), 1);
-        assert_eq!(genesis.transactions[0].outputs[0].amount, 100_000_000); // 1 DOLI
+        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
 
         // Verify it passes validation
         assert!(verify_genesis_block(&genesis, Network::Mainnet).is_ok());
@@ -453,24 +458,26 @@ mod tests {
 
     #[test]
     fn test_testnet_genesis() {
+        let params = NetworkParams::load(Network::Testnet);
         let config = GenesisConfig::testnet();
         let genesis = generate_genesis_block(&config);
 
         assert_eq!(genesis.header.slot, 0);
-        assert_eq!(genesis.header.timestamp, 1769738400); // Testnet v2 genesis
-        assert_eq!(genesis.transactions[0].outputs[0].amount, 100_000_000); // 1 DOLI (matches mainnet)
+        assert_eq!(genesis.header.timestamp, params.genesis_time);
+        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
 
         assert!(verify_genesis_block(&genesis, Network::Testnet).is_ok());
     }
 
     #[test]
     fn test_devnet_genesis() {
+        let params = NetworkParams::load(Network::Devnet);
         let config = GenesisConfig::devnet();
         let genesis = generate_genesis_block(&config);
 
         assert_eq!(genesis.header.slot, 0);
-        assert!(genesis.header.timestamp > 0); // Dynamic
-        assert_eq!(genesis.transactions[0].outputs[0].amount, 50_000_000_000);
+        assert!(genesis.header.timestamp > 0); // Dynamic (genesis_time=0 means use current time)
+        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
 
         assert!(verify_genesis_block(&genesis, Network::Devnet).is_ok());
     }

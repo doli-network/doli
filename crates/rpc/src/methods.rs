@@ -15,6 +15,8 @@ use crate::types::*;
 use mempool::{Mempool, MempoolError};
 
 use doli_core::consensus::ConsensusParams;
+use doli_core::network::Network;
+use doli_core::network_params::NetworkParams;
 
 /// Sync status information
 #[derive(Debug, Clone, Default)]
@@ -60,16 +62,19 @@ pub struct RpcContext {
 }
 
 impl RpcContext {
-    /// Create a new RPC context
-    pub fn new(
+    /// Create a new RPC context for a specific network (recommended)
+    ///
+    /// Uses NetworkParams to get network-specific values for blocks_per_reward_epoch,
+    /// coinbase_maturity, and bond_unit.
+    pub fn new_for_network(
         chain_state: Arc<RwLock<ChainState>>,
         block_store: Arc<BlockStore>,
         utxo_set: Arc<RwLock<UtxoSet>>,
         mempool: Arc<RwLock<Mempool>>,
         params: ConsensusParams,
+        network: Network,
     ) -> Self {
-        use doli_core::consensus::BLOCKS_PER_REWARD_EPOCH;
-        use storage::utxo::DEFAULT_REWARD_MATURITY;
+        let net_params = NetworkParams::load(network);
         Self {
             chain_state,
             block_store,
@@ -77,15 +82,50 @@ impl RpcContext {
             producer_set: None,
             mempool,
             params,
-            network: "mainnet".to_string(),
-            blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
-            coinbase_maturity: DEFAULT_REWARD_MATURITY,
-            bond_unit: 10_000_000_000, // 100 DOLI default (mainnet/testnet)
+            network: network.name().to_string(),
+            blocks_per_reward_epoch: net_params.blocks_per_reward_epoch,
+            coinbase_maturity: net_params.coinbase_maturity,
+            bond_unit: net_params.bond_unit,
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
             sync_status: Arc::new(|| SyncStatus::default()),
             broadcast_vote: Arc::new(|_| {}),
+        }
+    }
+
+    /// Create a new RPC context with mainnet defaults
+    ///
+    /// **Deprecated**: Use `new_for_network()` for network-aware initialization.
+    #[deprecated(note = "Use new_for_network(chain_state, block_store, utxo_set, mempool, params, network) for network-aware initialization")]
+    pub fn new(
+        chain_state: Arc<RwLock<ChainState>>,
+        block_store: Arc<BlockStore>,
+        utxo_set: Arc<RwLock<UtxoSet>>,
+        mempool: Arc<RwLock<Mempool>>,
+        params: ConsensusParams,
+    ) -> Self {
+        #[allow(deprecated)]
+        {
+            use doli_core::consensus::BLOCKS_PER_REWARD_EPOCH;
+            use storage::utxo::DEFAULT_REWARD_MATURITY;
+            Self {
+                chain_state,
+                block_store,
+                utxo_set,
+                producer_set: None,
+                mempool,
+                params,
+                network: "mainnet".to_string(),
+                blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
+                coinbase_maturity: DEFAULT_REWARD_MATURITY,
+                bond_unit: 10_000_000_000, // 100 DOLI default (mainnet/testnet)
+                peer_id: "unknown".to_string(),
+                peer_count: Arc::new(|| 0),
+                broadcast_tx: Arc::new(|_| {}),
+                sync_status: Arc::new(|| SyncStatus::default()),
+                broadcast_vote: Arc::new(|_| {}),
+            }
         }
     }
 
