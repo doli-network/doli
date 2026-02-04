@@ -19,16 +19,16 @@ use doli_core::Network;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-/// Read .env.devnet from the repo root directory at runtime.
+/// Read .env from the repo root directory at runtime.
 fn load_devnet_env() -> Result<String> {
-    // Read from .env.devnet in current working directory (repo root)
-    let env_file = std::env::current_dir()?.join(".env.devnet");
+    // Read from .env in current working directory (repo root)
+    let env_file = std::env::current_dir()?.join(".env");
 
     if !env_file.exists() {
         return Err(anyhow!(
-            "Missing .env.devnet in current directory: {:?}\n\
+            "Missing .env in current directory: {:?}\n\
              Run this command from the repository root.\n\
-             You can copy .env.example.devnet to .env.devnet to get started.",
+             You can copy .env.example to .env to get started.",
             std::env::current_dir().unwrap_or_default()
         ));
     }
@@ -36,7 +36,7 @@ fn load_devnet_env() -> Result<String> {
     let contents =
         fs::read_to_string(&env_file).with_context(|| format!("Failed to read {:?}", env_file))?;
 
-    info!("Loaded .env.devnet from {:?}", env_file);
+    info!("Loaded .env from {:?}", env_file);
     Ok(contents)
 }
 
