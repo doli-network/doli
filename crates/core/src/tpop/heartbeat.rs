@@ -46,7 +46,9 @@ use crate::types::Slot;
 /// 10,000,000 iterations ≈ 1 second on modern hardware
 ///
 /// **Deprecated**: Use `heartbeat_vdf_iterations_for_network(network)` for network-aware calculations.
-#[deprecated(note = "Use heartbeat_vdf_iterations_for_network(network) for network-aware calculations")]
+#[deprecated(
+    note = "Use heartbeat_vdf_iterations_for_network(network) for network-aware calculations"
+)]
 pub const HEARTBEAT_VDF_ITERATIONS: u64 = 10_000_000;
 
 /// Get heartbeat VDF iterations for a specific network
@@ -65,7 +67,9 @@ pub const HEARTBEAT_DEADLINE_SECS: u64 = 55;
 /// Heartbeats can arrive up to this many seconds after deadline
 ///
 /// **Deprecated**: Use `NetworkParams::load(network).grace_period_secs` for network-aware calculations.
-#[deprecated(note = "Use NetworkParams::load(network).grace_period_secs for network-aware calculations")]
+#[deprecated(
+    note = "Use NetworkParams::load(network).grace_period_secs for network-aware calculations"
+)]
 pub const HEARTBEAT_GRACE_PERIOD_SECS: u64 = 5;
 
 /// Get grace period for a specific network

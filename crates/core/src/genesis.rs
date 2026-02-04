@@ -450,7 +450,10 @@ mod tests {
         assert_eq!(genesis.header.slot, 0);
         assert_eq!(genesis.header.timestamp, params.genesis_time);
         assert_eq!(genesis.transactions.len(), 1);
-        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
+        assert_eq!(
+            genesis.transactions[0].outputs[0].amount,
+            params.initial_reward
+        );
 
         // Verify it passes validation
         assert!(verify_genesis_block(&genesis, Network::Mainnet).is_ok());
@@ -464,7 +467,10 @@ mod tests {
 
         assert_eq!(genesis.header.slot, 0);
         assert_eq!(genesis.header.timestamp, params.genesis_time);
-        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
+        assert_eq!(
+            genesis.transactions[0].outputs[0].amount,
+            params.initial_reward
+        );
 
         assert!(verify_genesis_block(&genesis, Network::Testnet).is_ok());
     }
@@ -477,7 +483,10 @@ mod tests {
 
         assert_eq!(genesis.header.slot, 0);
         assert!(genesis.header.timestamp > 0); // Dynamic (genesis_time=0 means use current time)
-        assert_eq!(genesis.transactions[0].outputs[0].amount, params.initial_reward);
+        assert_eq!(
+            genesis.transactions[0].outputs[0].amount,
+            params.initial_reward
+        );
 
         assert!(verify_genesis_block(&genesis, Network::Devnet).is_ok());
     }

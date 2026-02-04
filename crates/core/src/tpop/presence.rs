@@ -56,7 +56,9 @@ pub const MAX_CHAIN_LENGTH: usize = 120;
 /// Slots of inactivity before presence score starts decaying (mainnet default: 5)
 ///
 /// **Deprecated**: Use `presence_grace_period_for_network(network)` for network-aware calculations.
-#[deprecated(note = "Use presence_grace_period_for_network(network) for network-aware calculations")]
+#[deprecated(
+    note = "Use presence_grace_period_for_network(network) for network-aware calculations"
+)]
 pub const PRESENCE_GRACE_PERIOD: u64 = 5;
 
 /// Get presence grace period for a specific network

@@ -97,7 +97,9 @@ impl RpcContext {
     /// Create a new RPC context with mainnet defaults
     ///
     /// **Deprecated**: Use `new_for_network()` for network-aware initialization.
-    #[deprecated(note = "Use new_for_network(chain_state, block_store, utxo_set, mempool, params, network) for network-aware initialization")]
+    #[deprecated(
+        note = "Use new_for_network(chain_state, block_store, utxo_set, mempool, params, network) for network-aware initialization"
+    )]
     pub fn new(
         chain_state: Arc<RwLock<ChainState>>,
         block_store: Arc<BlockStore>,
