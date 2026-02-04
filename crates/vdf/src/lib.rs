@@ -126,7 +126,11 @@ pub use class_group::{ClassGroupElement, ClassGroupError};
 
 use crypto::Hash;
 
-/// VDF parameter for block production (~700ms on reference hardware).
+/// VDF parameter for block production - MAINNET DEFAULT (~700ms on reference hardware).
+///
+/// **Note**: This is the mainnet default value. For network-aware code, use
+/// `doli_core::network_params::NetworkParams::load(network).vdf_iterations` instead.
+/// Devnet uses 1 iteration for fast testing.
 ///
 /// # Time-Based Consensus Model
 ///
@@ -150,7 +154,11 @@ use crypto::Hash;
 /// Registration VDF (T_REGISTER_BASE) remains long for anti-Sybil protection.
 pub const T_BLOCK: u64 = 10_000_000;
 
-/// Base VDF parameter for producer registration (~10 minutes).
+/// Base VDF parameter for producer registration - MAINNET DEFAULT (~10 minutes).
+///
+/// **Note**: This is the mainnet default value. For network-aware code, use
+/// `doli_core::network_params::NetworkParams::load(network).vdf_register_iterations` instead.
+/// Devnet uses 5M iterations (~5 seconds) for fast testing.
 ///
 /// Registration VDF difficulty scales with the number of registered producers
 /// to maintain Sybil resistance as the network grows.
