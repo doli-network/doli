@@ -2140,6 +2140,27 @@ impl Node {
                 ProductionAuthorization::BlockedBehindPeers { .. } => {
                     return Ok(());
                 }
+                ProductionAuthorization::BlockedAheadOfPeers {
+                    local_height,
+                    peer_height,
+                    height_ahead,
+                } => {
+                    // FORK DETECTION: We're suspiciously ahead of the network
+                    // This likely means we're on a fork and should stop producing
+                    warn!(
+                        "FORK DETECTED: Local height {} is {} blocks ahead of peers (best: {}) - production blocked",
+                        local_height, height_ahead, peer_height
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedSyncFailures { failure_count } => {
+                    // FORK DETECTION: Repeated sync failures indicate chain divergence
+                    warn!(
+                        "FORK DETECTED: {} consecutive sync failures - production blocked",
+                        failure_count
+                    );
+                    return Ok(());
+                }
                 ProductionAuthorization::BlockedExplicit { reason } => {
                     warn!("Production blocked: {}", reason);
                     return Ok(());
@@ -2259,17 +2280,15 @@ impl Node {
             }
         }
 
-        // Get active producers with their effective weights for weighted selection (Option C)
-        // This enables anti-grinding protection: top N by weight are eligible (deterministic),
-        // then hash selects among them (limited grinding impact)
-        // Get active producers that are eligible for scheduling at this height.
+        // Get active producers with their bond counts for weighted round-robin selection.
+        // Per WHITEPAPER Section 7: each bond unit = one ticket in the rotation.
         // Use active_producers_at_height to ensure all nodes have the same view -
         // new producers must wait ACTIVATION_DELAY blocks before entering the scheduler.
         let producers = self.producer_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = producers
             .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key.clone(), p.effective_weight(height)))
+            .map(|p| (p.public_key.clone(), p.bond_count as u64))
             .collect();
         let total_producers = producers.total_count();
         drop(producers);
