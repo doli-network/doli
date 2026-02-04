@@ -58,6 +58,8 @@ pub struct NetworkParams {
     pub veto_period_secs: u64,
     /// Grace period after update approval in seconds
     pub grace_period_secs: u64,
+    /// Bootstrap grace period in seconds (wait at genesis for chain evidence)
+    pub bootstrap_grace_period_secs: u64,
     /// Unbonding period in blocks
     pub unbonding_period: u64,
     /// Inactivity threshold in blocks
@@ -160,6 +162,14 @@ impl NetworkParams {
             },
             veto_period_secs: env_parse("DOLI_VETO_PERIOD_SECS", defaults.veto_period_secs),
             grace_period_secs: env_parse("DOLI_GRACE_PERIOD_SECS", defaults.grace_period_secs),
+            bootstrap_grace_period_secs: if is_mainnet {
+                defaults.bootstrap_grace_period_secs // LOCKED for mainnet
+            } else {
+                env_parse(
+                    "DOLI_BOOTSTRAP_GRACE_PERIOD_SECS",
+                    defaults.bootstrap_grace_period_secs,
+                )
+            },
             unbonding_period: if is_mainnet {
                 defaults.unbonding_period // LOCKED for mainnet
             } else {
@@ -297,11 +307,12 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: 10,
-                genesis_time: 1769904000,        // 2026-02-01T00:00:00Z
-                veto_period_secs: 7 * 24 * 3600, // 7 days
-                grace_period_secs: 48 * 3600,    // 48 hours
-                unbonding_period: 60_480,        // 7 days at 10s slots
-                inactivity_threshold: 60_480,    // ~1 week
+                genesis_time: 1769904000,           // 2026-02-01T00:00:00Z
+                veto_period_secs: 7 * 24 * 3600,    // 7 days
+                grace_period_secs: 48 * 3600,       // 48 hours
+                bootstrap_grace_period_secs: 15,    // 15s wait at genesis for chain evidence
+                unbonding_period: 60_480,           // 7 days at 10s slots
+                inactivity_threshold: 60_480,       // ~1 week
 
                 // Economics
                 bond_unit: 10_000_000_000,              // 100 DOLI
@@ -348,6 +359,7 @@ impl NetworkParams {
                 genesis_time: 1769738400, // 2026-01-29T22:00:00Z
                 veto_period_secs: 7 * 24 * 3600,
                 grace_period_secs: 48 * 3600,
+                bootstrap_grace_period_secs: 15, // 15s wait at genesis for chain evidence
                 unbonding_period: 60_480,
                 inactivity_threshold: 60_480,
 
@@ -389,11 +401,12 @@ impl NetworkParams {
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
 
                 // Timing (accelerated for testing)
-                slot_duration: 10,     // Same as mainnet for realistic testing
-                genesis_time: 0,       // Dynamic
-                veto_period_secs: 60,  // 1 minute
-                grace_period_secs: 30, // 30 seconds
-                unbonding_period: 60,  // ~10 minutes with 10s slots
+                slot_duration: 10,              // Same as mainnet for realistic testing
+                genesis_time: 0,                // Dynamic
+                veto_period_secs: 60,           // 1 minute
+                grace_period_secs: 30,          // 30 seconds
+                bootstrap_grace_period_secs: 5, // 5s for fast devnet startup
+                unbonding_period: 60,           // ~10 minutes with 10s slots
                 inactivity_threshold: 30,
 
                 // Economics (lower values for testing)
