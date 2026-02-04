@@ -55,12 +55,14 @@ pub mod presence;
 pub mod producer;
 
 // Re-export calibration types (VDF tuning)
+#[allow(deprecated)]
 pub use calibration::{
     CalibrationStats, VdfCalibrator, DEFAULT_VDF_ITERATIONS, MAX_VDF_ITERATIONS,
     MIN_VDF_ITERATIONS, TARGET_VDF_TIME_MS,
 };
 
 // Re-export heartbeat types (primary API)
+#[allow(deprecated)]
 pub use heartbeat::{
     calculate_heartbeat_score, validate_heartbeat_timing, HeartbeatCollector, HeartbeatError,
     PresenceHeartbeat, HEARTBEAT_DEADLINE_SECS, HEARTBEAT_DISCRIMINANT_BITS,

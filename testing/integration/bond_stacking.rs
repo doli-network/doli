@@ -321,6 +321,7 @@ fn test_add_bond_data_serialization() {
 
     assert_eq!(decoded.producer_pubkey, *keypair.public_key());
     assert_eq!(decoded.bond_count, 5);
+    #[allow(deprecated)]
     assert_eq!(decoded.total_amount(), 5 * BOND_UNIT);
 }
 
