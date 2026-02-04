@@ -187,17 +187,29 @@ doli --wallet ~/.doli/devnet/keys/producer_NEW.json wallet new
 
 ### Step 2: Fund the Wallet
 
-From an existing producer with mature DOLI:
+From an existing producer with mature DOLI.
+
+**⚠️ CRITICAL: Use "Pubkey Hash", NOT "Public Key"**
 
 ```bash
-# Get new wallet's pubkey hash
-NEW_ADDR=$(doli --wallet ~/.doli/devnet/keys/producer_NEW.json wallet address | grep -o '[a-f0-9]\{64\}')
+doli --wallet ~/.doli/devnet/keys/producer_NEW.json info
+# Output shows THREE values - use the MIDDLE one:
+#   Address (20-byte):     5977da862f2647b7...              ❌ DON'T USE
+#   Pubkey Hash (32-byte): 5977da862f2647b7...97af8f20      ✅ USE THIS
+#   Public Key:            cc9a1710b8bffb38...22d7cb51      ❌ DON'T USE (wrong hash!)
+```
+
+```bash
+# Get new wallet's pubkey hash (CORRECT method)
+NEW_ADDR=$(doli --wallet ~/.doli/devnet/keys/producer_NEW.json info | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
 
 # Send from funded wallet (need 1+ DOLI for devnet bond)
 doli --wallet ~/.doli/devnet/keys/producer_0.json \
     --rpc http://127.0.0.1:28545 \
     send $NEW_ADDR 10
 ```
+
+**Common Mistake:** Using "Public Key" instead of "Pubkey Hash" - both are 64 characters but DIFFERENT values. Coins sent to wrong address are lost!
 
 ### Step 3: Register as Producer
 
