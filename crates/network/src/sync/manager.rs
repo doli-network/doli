@@ -371,7 +371,9 @@ impl SyncManager {
         // Check if we should start syncing
         // Note: Also check Synchronized state - after successful sync, state is Synchronized,
         // and we need to re-sync if peers advance beyond us
-        if matches!(self.state, SyncState::Idle | SyncState::Synchronized) && self.should_sync() {
+        // CHECKPOINT: Sync trigger check in add_peer
+        let state_ok = matches!(self.state, SyncState::Idle | SyncState::Synchronized);
+        if state_ok && self.should_sync() {
             self.start_sync();
         }
     }
@@ -397,7 +399,8 @@ impl SyncManager {
         // This ensures we re-sync when peers advance beyond our height
         // Note: Also check Synchronized state - after successful sync, state is Synchronized,
         // and we need to re-sync if peers advance beyond us
-        if matches!(self.state, SyncState::Idle | SyncState::Synchronized) && self.should_sync() {
+        let state_ok = matches!(self.state, SyncState::Idle | SyncState::Synchronized);
+        if state_ok && self.should_sync() {
             self.start_sync();
         }
     }
@@ -1081,6 +1084,32 @@ impl SyncManager {
             );
             self.blocks_applied = 0;
             self.last_progress_log = Instant::now();
+        }
+
+        // CHECK FOR SYNC COMPLETION: Transition from Processing/DownloadingBodies to Synchronized
+        // This is the CRITICAL fix for the "late joiner not producing" bug.
+        // Without this check, the sync state would get stuck in Processing forever,
+        // blocking production even after all blocks are synced via gossip.
+        //
+        // NOTE: We use network_tip_height instead of best_peer() because:
+        // - best_peer() filters for peers AHEAD of us (peer_height > local_height)
+        // - When we catch up, there are no peers "ahead", so best_peer() returns None
+        // - network_tip_height tracks the highest height seen from any peer
+        if self.state.is_syncing() && height >= self.network_tip_height {
+            info!(
+                "Sync complete: transitioning to Synchronized at height {} (network_tip={})",
+                height, self.network_tip_height
+            );
+            self.state = SyncState::Synchronized;
+
+            // If we were in a resync, complete it now
+            if self.resync_in_progress {
+                self.complete_resync();
+                info!(
+                    "Resync complete at height {} - grace period started ({}s)",
+                    height, self.resync_grace_period_secs
+                );
+            }
         }
     }
 

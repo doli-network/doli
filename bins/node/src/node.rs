@@ -2116,35 +2116,19 @@ impl Node {
                     // Production authorized - continue with other checks
                 }
                 ProductionAuthorization::BlockedSyncing => {
-                    debug!("Production blocked: sync in progress");
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedResync {
-                    grace_remaining_secs,
-                } => {
-                    debug!(
-                        "Production blocked: post-resync grace period ({}s remaining)",
-                        grace_remaining_secs
-                    );
+                ProductionAuthorization::BlockedResync { .. } => {
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedBehindPeers {
-                    local_height,
-                    peer_height,
-                    height_diff,
-                } => {
-                    debug!(
-                        "Production blocked: behind peers (local={}, peer={}, diff={})",
-                        local_height, peer_height, height_diff
-                    );
+                ProductionAuthorization::BlockedBehindPeers { .. } => {
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedExplicit { reason } => {
-                    warn!("Production explicitly blocked: {}", reason);
+                    warn!("Production blocked: {}", reason);
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedBootstrap { reason } => {
-                    debug!("Production blocked: bootstrap gate - {}", reason);
+                ProductionAuthorization::BlockedBootstrap { .. } => {
                     return Ok(());
                 }
             }
@@ -2276,6 +2260,9 @@ impl Node {
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
+
+        let our_pk = producer_key.public_key();
+        let we_are_active = active_with_weights.iter().any(|(pk, _)| pk == our_pk);
 
         // =========================================================================
         // INVARIANT CHECK: Detect inconsistent state after resync
