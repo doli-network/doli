@@ -31,4 +31,9 @@ specs/
 
 For user-facing documentation, operational guides, and implementation references, see [docs/DOCS.md](/docs/DOCS.md).
 
+Specific guides:
+- [running_a_node.md](/docs/running_a_node.md) - General Node Guide
+- [testnet.md](/docs/testnet.md) - Testnet Guide
+- [devnet.md](/docs/devnet.md) - Devnet & Bootstrap Guide
+
 **Note:** The `docs/` directory contains user-facing guides and operational documentation derived from these specifications. When implementing protocol features, refer to the specs in this directory. When operating nodes or using the CLI, refer to docs/.

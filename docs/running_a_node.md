@@ -150,6 +150,7 @@ cargo build --release
 
 **Devnet special features:**
 - **Dynamic genesis:** Genesis time is set automatically when the first node starts
+- **Bootstrapping:** "Sync-Before-Produce" logic prevents split-brain genesis (see [devnet.md](./devnet.md))
 - **Fast grace periods:** Reduced wait times for quicker testing
 - **Same bond requirements:** 1000 DOLI required (same as mainnet/testnet)
 - **Faster epochs:** 60 slots per epoch (~1 minute with 1s slots)
