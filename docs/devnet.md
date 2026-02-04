@@ -118,3 +118,12 @@ DOLI_VETO_PERIOD_SECS=60    # 1 minute upgrades
     *   `"Waiting for peers..."` -> It's looking for sync targets.
     *   `"No peers found, assuming authority..."` -> It decided to mine genesis.
     *   `"Syncing..."` -> It found a peer and is downloading.
+
+**"Why is Height < Slot? (e.g. Height 4 at Slot 8)"**
+
+This is a normal side-effect of the **Sync-Before-Produce** safety guards.
+1.  **Slots 0-2**: The seed node is the only active producer. Other nodes are in "Bootstrap Mode" waiting to confirm the seed's chain.
+2.  **Missed Turns**: If the round-robin schedule assigns Slot 1 to a node that is still waiting/syncing, that slot will be missed (empty).
+3.  **Result**: You might see `Slot 8` but only `Height 4` because 50% of the early slots were assigned to nodes that were still bootstrapping.
+
+This "Gap" is the price of preventing split-brain (forks) at startup.
