@@ -101,6 +101,20 @@ pub enum ProductionAuthorization {
         /// Height difference
         height_diff: u64,
     },
+    /// Production is blocked - we're suspiciously ahead of all peers (likely forked)
+    BlockedAheadOfPeers {
+        /// Our height
+        local_height: u64,
+        /// Best peer height
+        peer_height: u64,
+        /// How far ahead we are
+        height_ahead: u64,
+    },
+    /// Production is blocked - repeated sync failures indicate we're on a fork
+    BlockedSyncFailures {
+        /// Number of consecutive sync failures
+        failure_count: u32,
+    },
     /// Production is explicitly blocked (e.g., invariant violation)
     BlockedExplicit {
         /// Reason for block
@@ -205,6 +219,13 @@ pub struct SyncManager {
     max_slots_behind: u32,
     /// Maximum heights behind peers before blocking production
     max_heights_behind: u64,
+    /// Maximum heights AHEAD of peers before blocking production (fork detection)
+    /// If we're this many blocks ahead of all peers, we're likely on a fork
+    max_heights_ahead: u64,
+    /// Consecutive sync failures (empty headers = fork indicator)
+    consecutive_sync_failures: u32,
+    /// Maximum sync failures before blocking production (fork detection)
+    max_sync_failures_before_fork_detection: u32,
 
     // === NETWORK TIP TRACKING (from gossip) ===
     /// Best height seen via gossip (may not have a specific peer source)
@@ -260,6 +281,9 @@ impl SyncManager {
             resync_grace_period_secs: 30, // Default 30 seconds after resync
             max_slots_behind: 2,          // Spec: "within 2 slots of peers"
             max_heights_behind: 2,        // Conservative: also check heights
+            max_heights_ahead: 5,         // Fork detection: if >5 blocks ahead, suspicious
+            consecutive_sync_failures: 0,
+            max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
             // Network tip tracking (from gossip)
             network_tip_height: 0,
             network_tip_slot: 0,
@@ -621,7 +645,7 @@ impl SyncManager {
             }
         }
 
-        // Layer 6: Peer synchronization check
+        // Layer 6: Peer synchronization check - too far BEHIND
         let best_peer_height = self.best_peer_height();
         let best_peer_slot = self.best_peer_slot();
 
@@ -638,6 +662,49 @@ impl SyncManager {
                     height_diff,
                 };
             }
+        }
+
+        // Layer 7: "Ahead of network" detection (P0 #2) - FORK DETECTION
+        //
+        // If we're far AHEAD of all peers, we're likely on a fork:
+        // - Forked nodes keep producing blocks, so local_height > peer_height
+        // - The saturating_sub in Layer 6 makes them appear "not behind"
+        // - This check catches the opposite case: suspiciously ahead
+        //
+        // Example: Main chain at 910, forked node at 992
+        // Layer 6: 910 - 992 = 0 (saturating) → "not behind" ✗
+        // Layer 7: 992 - 910 = 82 > 5 → "ahead of peers" → BLOCKED ✓
+        if self.peers.len() > 0 && best_peer_height > 0 {
+            let height_ahead = self.local_height.saturating_sub(best_peer_height);
+            if height_ahead > self.max_heights_ahead {
+                warn!(
+                    "FORK DETECTION: Local height {} is {} blocks ahead of best peer height {} - blocking production",
+                    self.local_height, height_ahead, best_peer_height
+                );
+                return ProductionAuthorization::BlockedAheadOfPeers {
+                    local_height: self.local_height,
+                    peer_height: best_peer_height,
+                    height_ahead,
+                };
+            }
+        }
+
+        // Layer 8: Sync failure-based fork detection (P0 #4)
+        //
+        // When our chain has diverged from peers:
+        // - GetHeaders requests return empty (peer doesn't have our tip as ancestor)
+        // - This increments consecutive_sync_failures
+        // - After 3+ failures, we're likely on a fork
+        //
+        // This catches forks where height comparison is inconclusive.
+        if self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection {
+            warn!(
+                "FORK DETECTION: {} consecutive sync failures - blocking production",
+                self.consecutive_sync_failures
+            );
+            return ProductionAuthorization::BlockedSyncFailures {
+                failure_count: self.consecutive_sync_failures,
+            };
         }
 
         // All checks passed - production is authorized
@@ -796,6 +863,51 @@ impl SyncManager {
     /// - Network partition (we're isolated, dangerous to produce)
     pub fn set_bootstrap_grace_period_secs(&mut self, secs: u64) {
         self.bootstrap_grace_period_secs = secs;
+    }
+
+    /// Set the maximum heights ahead threshold for fork detection (P0 #2)
+    pub fn set_max_heights_ahead(&mut self, heights: u64) {
+        self.max_heights_ahead = heights;
+    }
+
+    /// Note a sync failure (empty headers or invalid chain linkage)
+    ///
+    /// This is called when sync detects we're on a different chain than peers:
+    /// - GetHeaders returns empty (peer doesn't have our tip)
+    /// - Header chain doesn't link (hash mismatch)
+    ///
+    /// After `max_sync_failures_before_fork_detection` consecutive failures,
+    /// production is blocked (Layer 8 in can_produce).
+    pub fn note_sync_failure(&mut self) {
+        self.consecutive_sync_failures += 1;
+        warn!(
+            "Sync failure #{} - chain may have diverged from peers",
+            self.consecutive_sync_failures
+        );
+    }
+
+    /// Clear sync failures after successful sync
+    ///
+    /// Called when we successfully receive and process headers from peers,
+    /// indicating our chain is compatible with the network.
+    pub fn clear_sync_failures(&mut self) {
+        if self.consecutive_sync_failures > 0 {
+            debug!(
+                "Clearing {} consecutive sync failures after successful sync",
+                self.consecutive_sync_failures
+            );
+            self.consecutive_sync_failures = 0;
+        }
+    }
+
+    /// Check if sync failures indicate we're on a fork
+    pub fn has_sync_failure_fork_indicator(&self) -> bool {
+        self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection
+    }
+
+    /// Get the current consecutive sync failure count
+    pub fn consecutive_sync_failure_count(&self) -> u32 {
+        self.consecutive_sync_failures
     }
 
     // =========================================================================
@@ -957,6 +1069,22 @@ impl SyncManager {
     fn handle_headers_response(&mut self, peer: PeerId, headers: Vec<BlockHeader>) {
         if headers.is_empty() {
             debug!("Received empty headers response from {}", peer);
+
+            // FORK DETECTION (P0 #4): Empty headers can mean two things:
+            // 1. We're caught up (good) - headers_needing_bodies has content
+            // 2. Peer doesn't have our chain (bad) - we're on a fork
+            //
+            // If we haven't downloaded any headers yet, empty response = fork indicator
+            if self.headers_needing_bodies.is_empty() && self.pending_headers.is_empty() {
+                // We requested headers starting from our tip, peer returned nothing
+                // This means peer doesn't have our tip as an ancestor = FORK
+                self.note_sync_failure();
+                warn!(
+                    "Empty headers from {} with no pending work - possible fork (failure #{})",
+                    peer, self.consecutive_sync_failures
+                );
+            }
+
             // No more headers, transition to body download
             if !self.headers_needing_bodies.is_empty() {
                 let total = self.headers_needing_bodies.len();
@@ -977,6 +1105,9 @@ impl SyncManager {
             .process_headers(&headers, self.local_hash);
 
         if valid_count > 0 {
+            // SUCCESS: Headers chain correctly from our tip - clear failure counter
+            self.clear_sync_failures();
+
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
                 self.headers_needing_bodies.push_back(header.hash());
@@ -997,7 +1128,13 @@ impl SyncManager {
                 };
             }
         } else {
-            warn!("No valid headers from peer {}", peer);
+            // FORK DETECTION (P0 #4): Received headers but none are valid
+            // This means "Header chain broken" - our chain diverged from peer's
+            self.note_sync_failure();
+            warn!(
+                "No valid headers from peer {} - header chain broken (failure #{})",
+                peer, self.consecutive_sync_failures
+            );
         }
     }
 
@@ -1344,5 +1481,200 @@ mod tests {
         let manager = SyncManager::new(SyncConfig::default(), Hash::zero());
         assert_eq!(*manager.state(), SyncState::Idle);
         assert_eq!(manager.local_tip(), (0, Hash::zero(), 0));
+    }
+
+    // =========================================================================
+    // P0 #2: "Ahead of network" detection tests
+    // =========================================================================
+
+    #[test]
+    fn test_fork_detection_blocks_production_when_ahead_of_peers() {
+        // Scenario: Forked node at height 992, peers report height 910
+        // The forked node should be BLOCKED because it's >5 blocks ahead
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Set local height to 992 (forked node)
+        manager.local_height = 992;
+        manager.local_slot = 992;
+
+        // Add a peer at height 910 (main chain)
+        let peer = PeerId::random();
+        manager.add_peer(peer, 910, Hash::zero(), 910);
+
+        // Verify: Should be blocked as "ahead of peers"
+        let result = manager.can_produce(993);
+        match result {
+            ProductionAuthorization::BlockedAheadOfPeers {
+                local_height,
+                peer_height,
+                height_ahead,
+            } => {
+                assert_eq!(local_height, 992);
+                assert_eq!(peer_height, 910);
+                assert_eq!(height_ahead, 82); // 992 - 910 = 82
+            }
+            other => panic!(
+                "Expected BlockedAheadOfPeers, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_production_allowed_when_within_range_of_peers() {
+        // Scenario: Node at height 912, peers at 910 (only 2 blocks ahead)
+        // Should be allowed to produce (within threshold)
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Set local height to 912
+        manager.local_height = 912;
+        manager.local_slot = 912;
+
+        // Add peer at height 910
+        let peer = PeerId::random();
+        manager.add_peer(peer, 910, Hash::zero(), 910);
+
+        // Need to clear bootstrap phase requirements
+        manager.has_connected_to_peer = true;
+        manager.first_peer_status_received = Some(std::time::Instant::now());
+
+        // Verify: Should be authorized (2 blocks ahead is within default threshold of 5)
+        let result = manager.can_produce(913);
+        assert_eq!(result, ProductionAuthorization::Authorized);
+    }
+
+    #[test]
+    fn test_max_heights_ahead_is_configurable() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Set a very strict threshold
+        manager.set_max_heights_ahead(2);
+
+        manager.local_height = 915;
+        manager.local_slot = 915;
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 910, Hash::zero(), 910);
+
+        // 5 blocks ahead should now be blocked with threshold of 2
+        let result = manager.can_produce(916);
+        assert!(matches!(
+            result,
+            ProductionAuthorization::BlockedAheadOfPeers { .. }
+        ));
+    }
+
+    // =========================================================================
+    // P0 #4: Sync failure-based fork detection tests
+    // =========================================================================
+
+    #[test]
+    fn test_sync_failures_block_production() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Simulate 3 sync failures (default threshold)
+        manager.note_sync_failure();
+        manager.note_sync_failure();
+        manager.note_sync_failure();
+
+        // Should now be blocked
+        let result = manager.can_produce(1);
+        match result {
+            ProductionAuthorization::BlockedSyncFailures { failure_count } => {
+                assert_eq!(failure_count, 3);
+            }
+            other => panic!("Expected BlockedSyncFailures, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sync_failures_under_threshold_allow_production() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Only 2 failures (under threshold of 3)
+        manager.note_sync_failure();
+        manager.note_sync_failure();
+
+        // Need to set up conditions for production
+        manager.local_height = 100;
+        manager.local_slot = 100;
+
+        // Should still be authorized
+        let result = manager.can_produce(101);
+        assert_eq!(result, ProductionAuthorization::Authorized);
+    }
+
+    #[test]
+    fn test_successful_sync_clears_failure_counter() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Accumulate failures
+        manager.note_sync_failure();
+        manager.note_sync_failure();
+        assert_eq!(manager.consecutive_sync_failure_count(), 2);
+
+        // Successful sync should clear
+        manager.clear_sync_failures();
+        assert_eq!(manager.consecutive_sync_failure_count(), 0);
+
+        // Production should be allowed
+        manager.local_height = 100;
+        manager.local_slot = 100;
+        let result = manager.can_produce(101);
+        assert_eq!(result, ProductionAuthorization::Authorized);
+    }
+
+    #[test]
+    fn test_has_sync_failure_fork_indicator() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        assert!(!manager.has_sync_failure_fork_indicator());
+
+        manager.note_sync_failure();
+        assert!(!manager.has_sync_failure_fork_indicator());
+
+        manager.note_sync_failure();
+        assert!(!manager.has_sync_failure_fork_indicator());
+
+        manager.note_sync_failure();
+        assert!(manager.has_sync_failure_fork_indicator()); // Now at threshold
+    }
+
+    // =========================================================================
+    // Combined scenario tests
+    // =========================================================================
+
+    #[test]
+    fn test_forked_node_scenario_from_report() {
+        // Reproduce the exact scenario from REPORT.md:
+        // - Main chain: height 910
+        // - Node15 (forked): height 992
+        // - The bug: saturating_sub(910, 992) = 0 → "not behind" → authorized
+        // - The fix: detect 992 - 910 = 82 > 5 → "ahead of peers" → blocked
+
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Forked node state
+        manager.local_height = 992;
+        manager.local_slot = 992;
+
+        // Add peer from main chain
+        let peer = PeerId::random();
+        manager.add_peer(peer, 910, Hash::zero(), 910);
+
+        // The OLD bug would return Authorized here because:
+        // height_diff = 910.saturating_sub(992) = 0
+        // 0 <= max_heights_behind (2) → not behind → authorized
+
+        // The FIX checks:
+        // height_ahead = 992.saturating_sub(910) = 82
+        // 82 > max_heights_ahead (5) → ahead of peers → BLOCKED
+
+        let result = manager.can_produce(993);
+        assert!(
+            matches!(result, ProductionAuthorization::BlockedAheadOfPeers { .. }),
+            "Forked node should be blocked, got: {:?}",
+            result
+        );
     }
 }
