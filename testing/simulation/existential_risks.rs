@@ -29,10 +29,12 @@ use crypto::{KeyPair, Hash};
 // ============================================================================
 
 /// Devnet: 1 block = 5 seconds, 12 blocks = 1 year
+/// Note: For production code, use NetworkParams::load(network).blocks_per_year
 const DEVNET_BLOCKS_PER_YEAR: u64 = 12;
 const DEVNET_BLOCKS_PER_MONTH: u64 = 1;
 
-/// Registration limits
+/// Registration limits (simulation value)
+/// Note: For production code, use NetworkParams::load(network).max_registrations_per_block
 const MAX_REGISTRATIONS_PER_BLOCK: usize = 5;
 
 /// Alert thresholds
