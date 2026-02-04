@@ -172,3 +172,77 @@ sequenceDiagram
 3.  **Slot 8**: Chain is stable (Height 3+). Node 1 finally joins in.
 
 **Result:** We reached **Slot 8**, but only have **4 Blocks** (Height 4). The missing blocks are the "safety tax" we pay to ensure Node 1 didn't accidentally fork the network at the start.
+
+---
+
+## 6. Adding New Producers to Running Devnet
+
+To add a new producer to an existing devnet, you must complete **all 4 steps**:
+
+### Step 1: Create New Wallet
+
+```bash
+doli --wallet ~/.doli/devnet/keys/producer_NEW.json wallet new
+```
+
+### Step 2: Fund the Wallet
+
+From an existing producer with mature DOLI:
+
+```bash
+# Get new wallet's pubkey hash
+NEW_ADDR=$(doli --wallet ~/.doli/devnet/keys/producer_NEW.json wallet address | grep -o '[a-f0-9]\{64\}')
+
+# Send from funded wallet (need 1+ DOLI for devnet bond)
+doli --wallet ~/.doli/devnet/keys/producer_0.json \
+    --rpc http://127.0.0.1:28545 \
+    send $NEW_ADDR 10
+```
+
+### Step 3: Register as Producer
+
+```bash
+doli --wallet ~/.doli/devnet/keys/producer_NEW.json \
+    --rpc http://127.0.0.1:28545 \
+    producer register
+```
+
+### Step 4: Start Node with New Key (CRITICAL)
+
+```bash
+doli-node run --network devnet \
+    --producer \
+    --producer-key ~/.doli/devnet/keys/producer_NEW.json \
+    --p2p-port 50309 \
+    --rpc-port 28551 \
+    --metrics-port 9096 \
+    --bootstrap /ip4/127.0.0.1/tcp/50303 \
+    --chainspec ~/.doli/devnet/chainspec.json \
+    --yes
+```
+
+**Each new producer needs unique ports** (p2p, rpc, metrics).
+
+### Common Mistake
+
+| What you did | Result |
+|--------------|--------|
+| Steps 1-3 only | Producer registered but **no blocks produced** |
+| Steps 1-4 | Producer registered **and producing blocks** |
+
+Registration puts the public key on the blockchain. The node with `--producer-key` uses the private key to sign blocks. Without step 4, there's no process to produce blocks when that producer is selected.
+
+### Verification
+
+```bash
+# Check producer is in active set
+doli --rpc http://127.0.0.1:28545 producer list
+
+# Watch new node's logs for production
+grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
+
+# Verify balance increasing (block rewards)
+doli --wallet ~/.doli/devnet/keys/producer_NEW.json \
+    --rpc http://127.0.0.1:28545 \
+    wallet balance
+```
