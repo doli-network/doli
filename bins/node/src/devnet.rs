@@ -841,9 +841,42 @@ pub async fn status() -> Result<()> {
         println!("║  (no producers found - is the network running?)                     ║");
     }
 
-    // Count running nodes first
-    let mut running_count = 0;
+    // Scan pids directory for ALL managed nodes (including manually added ones)
+    let pids_dir = root.join("pids");
+    let mut all_node_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
+    // Include configured nodes (0..node_count)
     for i in 0..config.node_count {
+        all_node_indices.insert(i);
+    }
+
+    // Also include any additional nodes found in pids directory (manually added)
+    if pids_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&pids_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                    if filename.starts_with("node") && filename.ends_with(".pid") {
+                        if let Some(idx_str) = filename
+                            .strip_prefix("node")
+                            .and_then(|s| s.strip_suffix(".pid"))
+                        {
+                            if let Ok(idx) = idx_str.parse::<u32>() {
+                                all_node_indices.insert(idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Convert to sorted vec
+    let all_node_indices: Vec<u32> = all_node_indices.into_iter().collect();
+
+    // Count running nodes
+    let mut running_count = 0;
+    for &i in &all_node_indices {
         if let Ok(Some(pid)) = load_pid(&root, i) {
             if is_process_running(pid) {
                 running_count += 1;
@@ -851,11 +884,13 @@ pub async fn status() -> Result<()> {
         }
     }
 
+    let total_nodes = all_node_indices.len();
+
     // Show managed nodes section
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!(
         "║  Managed Nodes ({}/{} running)                                        ║",
-        running_count, config.node_count
+        running_count, total_nodes
     );
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!(
@@ -863,7 +898,7 @@ pub async fn status() -> Result<()> {
         "Node", "Status", "PID", "P2P", "RPC", "Height"
     );
     println!("╟──────────────────────────────────────────────────────────────────────╢");
-    for i in 0..config.node_count {
+    for &i in &all_node_indices {
         let pid = load_pid(&root, i).ok().flatten();
         let running = pid.map_or(false, is_process_running);
         let status = if running { "Running" } else { "Stopped" };
