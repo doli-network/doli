@@ -58,55 +58,121 @@ Block producers in DOLI:
 
 ## 3. Registration Process
 
-### 3.1. Generate Producer Key
+### 3.1. Complete Deployment Workflow
+
+Deploying a new producer requires **4 steps**. Missing any step will result in a registered producer that cannot produce blocks.
+
+| Step | Action | Result |
+|------|--------|--------|
+| 1. Create wallet | `doli wallet new` | Private key created |
+| 2. Fund wallet | Send DOLI to new address | Balance for bond + fees |
+| 3. Register | `doli producer register` | Public key on blockchain |
+| 4. **Start node** | `doli-node run --producer --producer-key <wallet>` | **Blocks produced** |
+
+**Common Mistake:** Completing steps 1-3 but not step 4. Registration only puts the public key on the blockchain. To actually produce blocks, you **must** run a node with the corresponding private key.
+
+### 3.2. Generate Producer Key
 
 ```bash
-# Create a new producer keypair
-./target/release/doli wallet new --name producer
+# Create a new producer wallet/keypair
+doli --wallet ~/.doli/keys/my_producer.json wallet new
 
-# Display the public key
-./target/release/doli wallet address
+# Display the public key (for funding)
+doli --wallet ~/.doli/keys/my_producer.json wallet address
 
 # Backup the key securely!
-cp ~/.doli/wallet.json ~/secure-backup/producer-key.json
+cp ~/.doli/keys/my_producer.json ~/secure-backup/
 ```
 
-### 3.2. Fund the Producer Address
+### 3.3. Fund the Producer Address
 
 Transfer the bond amount plus fees to your producer address:
 
 ```bash
-# Check balance
-./target/release/doli wallet balance
+# From an existing funded wallet, send to new producer
+doli --wallet ~/.doli/keys/funded_wallet.json \
+    --rpc http://127.0.0.1:8545 \
+    send <new_producer_pubkey_hash> 110
+
+# Check balance on new wallet
+doli --wallet ~/.doli/keys/my_producer.json \
+    --rpc http://127.0.0.1:8545 \
+    wallet balance
 
 # You need: bond amount + registration fee + operational buffer
 # Example: 100 DOLI bond + 0.01 fee + 1 DOLI buffer = 101.01 DOLI
 ```
 
-### 3.3. Register as Producer
+### 3.4. Register as Producer
 
 ```bash
 # Register with minimum bond (100 DOLI = 1 bond)
-./target/release/doli producer register
+doli --wallet ~/.doli/keys/my_producer.json \
+    --rpc http://127.0.0.1:8545 \
+    producer register
 
 # Register with multiple bonds for more slots
-./target/release/doli producer register --bonds 5  # 500 DOLI = 5 bonds
+doli --wallet ~/.doli/keys/my_producer.json \
+    --rpc http://127.0.0.1:8545 \
+    producer register --bonds 5  # 500 DOLI = 5 bonds
 ```
 
 **What happens during registration:**
 1. Node computes registration VDF (~10 minutes base)
 2. Registration transaction submitted to network
 3. Bond locked for 4 years
-4. Producer added to active set at next epoch
+4. Producer added to active set after ACTIVATION_DELAY (10 blocks)
 
-### 3.4. Start Producing
+### 3.5. Start Producing (CRITICAL)
+
+**This step is required.** Without a running node, your registered producer cannot produce blocks.
 
 ```bash
 # Run node with producer mode enabled
-./target/release/doli-node run \
+doli-node run \
     --producer \
-    --producer-key ~/.doli/wallet.json
+    --producer-key ~/.doli/keys/my_producer.json \
+    --p2p-port 30303 \
+    --rpc-port 8545
 ```
+
+For networks with existing nodes, add bootstrap:
+
+```bash
+# Connect to existing network
+doli-node run \
+    --network mainnet \
+    --producer \
+    --producer-key ~/.doli/keys/my_producer.json \
+    --bootstrap /ip4/SEED_IP/tcp/30303
+```
+
+### 3.6. Verify Production
+
+After starting the node, verify it's producing:
+
+```bash
+# Check producer status
+doli --wallet ~/.doli/keys/my_producer.json \
+    --rpc http://127.0.0.1:8545 \
+    producer status
+
+# Watch for production in logs
+grep "Producing block" /var/log/doli-node.log
+
+# Check balance is increasing (rewards)
+doli --wallet ~/.doli/keys/my_producer.json \
+    --rpc http://127.0.0.1:8545 \
+    wallet balance
+```
+
+**Troubleshooting: Producer registered but not producing**
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| Balance stuck at initial amount | No node running with this key | Start node with `--producer-key` |
+| Node running but no blocks | Wrong key file | Verify `--producer-key` matches registered key |
+| "Producing block" in logs but no rewards | Blocks orphaned | Check sync status, peer connectivity |
 
 ---
 

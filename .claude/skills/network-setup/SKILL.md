@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.5.0
+version: 2.6.0
 ---
 
 # DOLI Network Setup Skill
@@ -315,6 +315,19 @@ This script:
 
 For adding multiple new producers to an existing devnet/testnet.
 
+### ⚠️ CRITICAL: Complete 4-Step Workflow Required
+
+**All 4 steps must be completed for a producer to actually produce blocks:**
+
+| Step | Action | Result if Skipped |
+|------|--------|-------------------|
+| 1. Create wallet | `doli wallet new` | No key exists |
+| 2. Fund wallet | Send DOLI to address | Cannot register (no bond) |
+| 3. Register | `doli producer register` | Not in producer set |
+| 4. **Start node** | `doli-node --producer --producer-key <wallet>` | **REGISTERED BUT NOT PRODUCING** |
+
+**Common Mistake:** Completing steps 1-3 but forgetting step 4. Registration puts the public key on the blockchain. The node with `--producer-key` uses the private key to sign blocks. **Without step 4, there's no process to produce blocks.**
+
 ### Step 1: Create Producer Wallets
 
 ```bash
@@ -377,7 +390,9 @@ for i in {15..29}; do
 done
 ```
 
-### Step 5: Start Producer Nodes
+### Step 5: Start Producer Nodes (CRITICAL)
+
+**⚠️ This step is REQUIRED. Without a running node, the registered producer cannot produce blocks.**
 
 ```bash
 # Start each new producer node
@@ -396,6 +411,8 @@ for i in {15..29}; do
     --yes &
 done
 ```
+
+**Each new producer needs unique ports** (p2p, rpc, metrics).
 
 ### Producer Activation Timeline
 
@@ -521,6 +538,38 @@ sudo ufw status
 5. **For local testnet**: Ensure you're using `--chainspec` with a chainspec generated from your producer wallets (see Scenario 2 Option B)
 6. **After registration**: Wait for ACTIVATION_DELAY (10 blocks, ~100 seconds) for normal mode scheduling
 7. **Bootstrap mode**: New producers are added to round-robin immediately on registration (as of commit TBD)
+
+### Producer registered but not producing (balance not increasing)
+
+**Symptom:** Producer shows in `producer list`, registration completed, but balance stuck at initial amount (no rewards).
+
+**Cause:** Node not running with the producer's private key.
+
+| What you did | Result |
+|--------------|--------|
+| Steps 1-3 only (wallet, fund, register) | Producer registered but **no blocks produced** |
+| Steps 1-4 (wallet, fund, register, **start node**) | Producer registered **and producing blocks** |
+
+**Solution:** Start a node with the producer key:
+```bash
+doli-node --network devnet run \
+    --producer \
+    --producer-key ~/.doli/devnet/keys/producer_NEW.json \
+    --p2p-port <UNIQUE_PORT> \
+    --rpc-port <UNIQUE_PORT> \
+    --bootstrap /ip4/127.0.0.1/tcp/50303 \
+    --chainspec ~/.doli/devnet/chainspec.json \
+    --yes
+```
+
+**Verification:**
+```bash
+# Watch for production in logs
+grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
+
+# Check balance is increasing (rewards)
+doli -w ~/.doli/devnet/keys/producer_NEW.json -r http://127.0.0.1:28545 wallet balance
+```
 
 ### Double spend errors when sending multiple transactions
 
