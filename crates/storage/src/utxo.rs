@@ -47,7 +47,9 @@ impl UtxoEntry {
     /// Check if the UTXO is spendable at the given height with mainnet default maturity (100 blocks)
     ///
     /// **Deprecated**: Use `is_spendable_at_for_network()` for network-aware calculations.
-    #[deprecated(note = "Use is_spendable_at_for_network(height, network) for network-aware calculations")]
+    #[deprecated(
+        note = "Use is_spendable_at_for_network(height, network) for network-aware calculations"
+    )]
     pub fn is_spendable_at(&self, height: BlockHeight) -> bool {
         #[allow(deprecated)]
         self.is_spendable_at_with_maturity(height, DEFAULT_REWARD_MATURITY)
