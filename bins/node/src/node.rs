@@ -2002,8 +2002,17 @@ impl Node {
                     match found_height {
                         Some(h) => h,
                         None => {
-                            // Unknown hash, return empty
-                            debug!("GetHeaders: unknown start_hash {}", start_hash);
+                            // Unknown hash - MUST still send response to avoid timeout on requester
+                            // This fixes the sync timeout bug where missing response caused infinite loops
+                            debug!(
+                                "GetHeaders: unknown start_hash {} (responding with empty)",
+                                start_hash
+                            );
+                            if let Some(ref network) = self.network {
+                                let _ = network
+                                    .send_sync_response(channel, SyncResponse::Headers(vec![]))
+                                    .await;
+                            }
                             return Ok(());
                         }
                     }

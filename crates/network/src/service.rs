@@ -752,7 +752,10 @@ async fn handle_behaviour_event(
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    debug!("Received sync request from {}", peer);
+                    info!(
+                        "[SYNC_DEBUG] Received sync request from peer={}, request={:?}",
+                        peer, request
+                    );
                     let _ = event_tx
                         .send(NetworkEvent::SyncRequest {
                             peer_id: peer,
@@ -762,7 +765,11 @@ async fn handle_behaviour_event(
                         .await;
                 }
                 request_response::Message::Response { response, .. } => {
-                    debug!("Received sync response from {}", peer);
+                    info!(
+                        "[SYNC_DEBUG] Received sync response from peer={}, response_type={}",
+                        peer,
+                        response.type_name()
+                    );
                     let _ = event_tx
                         .send(NetworkEvent::SyncResponse {
                             peer_id: peer,
@@ -805,6 +812,10 @@ async fn handle_command(
         }
 
         NetworkCommand::RequestSync { peer_id, request } => {
+            info!(
+                "[SYNC_DEBUG] Sending sync request to peer={}, request={:?}",
+                peer_id, request
+            );
             swarm.behaviour_mut().sync.send_request(&peer_id, request);
         }
 
@@ -816,6 +827,10 @@ async fn handle_command(
         }
 
         NetworkCommand::SendSyncResponse { channel, response } => {
+            info!(
+                "[SYNC_DEBUG] Sending sync response via channel, response_type={}",
+                response.type_name()
+            );
             let _ = swarm.behaviour_mut().sync.send_response(channel, response);
         }
 

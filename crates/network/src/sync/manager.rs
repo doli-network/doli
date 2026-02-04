@@ -878,6 +878,11 @@ impl SyncManager {
         let id = SyncRequestId::new(self.next_request_id);
         self.next_request_id += 1;
 
+        info!(
+            "[SYNC_DEBUG] Registering request id={}: peer={}, request={:?}, state={:?}",
+            id.0, peer, request, self.state
+        );
+
         self.pending_requests.insert(
             id,
             PendingRequest {
@@ -892,6 +897,13 @@ impl SyncManager {
 
     /// Handle a sync response
     pub fn handle_response(&mut self, peer: PeerId, response: SyncResponse) -> Vec<Block> {
+        info!(
+            "[SYNC_DEBUG] Processing response from peer={}, type={:?}, state={:?}",
+            peer,
+            std::mem::discriminant(&response),
+            self.state
+        );
+
         // Clear pending request for this peer
         if let Some(status) = self.peers.get_mut(&peer) {
             status.pending_request = None;
@@ -899,11 +911,25 @@ impl SyncManager {
 
         match response {
             SyncResponse::Headers(headers) => {
+                info!(
+                    "[SYNC_DEBUG] Handling headers response: count={}",
+                    headers.len()
+                );
                 self.handle_headers_response(peer, headers);
                 vec![]
             }
-            SyncResponse::Bodies(bodies) => self.handle_bodies_response(peer, bodies),
+            SyncResponse::Bodies(bodies) => {
+                info!(
+                    "[SYNC_DEBUG] Handling bodies response: count={}",
+                    bodies.len()
+                );
+                self.handle_bodies_response(peer, bodies)
+            }
             SyncResponse::Block(maybe_block) => {
+                info!(
+                    "[SYNC_DEBUG] Handling block response: has_block={}",
+                    maybe_block.is_some()
+                );
                 if let Some(block) = maybe_block {
                     vec![block]
                 } else {
@@ -911,7 +937,7 @@ impl SyncManager {
                 }
             }
             SyncResponse::Error(err) => {
-                warn!("Sync error from peer {}: {}", peer, err);
+                warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
                 vec![]
             }
         }
@@ -1191,6 +1217,20 @@ impl SyncManager {
     pub fn cleanup(&mut self) {
         let now = Instant::now();
 
+        // Log current state for debugging
+        let pending_count = self
+            .peers
+            .values()
+            .filter(|s| s.pending_request.is_some())
+            .count();
+        info!(
+            "[SYNC_DEBUG] Cleanup: state={:?}, peers={}, pending_peer_requests={}, pending_requests={}",
+            self.state,
+            self.peers.len(),
+            pending_count,
+            self.pending_requests.len()
+        );
+
         // Clean up timed out body download requests
         // This moves timed-out hashes back to the failed queue for retry
         self.body_downloader.cleanup_timeouts();
@@ -1205,7 +1245,13 @@ impl SyncManager {
 
         for id in timed_out {
             if let Some(req) = self.pending_requests.remove(&id) {
-                warn!("Request to {} timed out", req.peer);
+                warn!(
+                    "[SYNC_DEBUG] Request timeout: id={}, peer={}, elapsed={:?}, request={:?}",
+                    id.0,
+                    req.peer,
+                    now.duration_since(req.sent_at),
+                    req.request
+                );
                 if let Some(status) = self.peers.get_mut(&req.peer) {
                     status.pending_request = None;
                 }
