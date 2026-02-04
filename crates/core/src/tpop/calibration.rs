@@ -17,19 +17,30 @@
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::heartbeat::hash_chain_vdf;
+use crate::network::Network;
+use crate::network_params::NetworkParams;
 use crypto::hash::hash;
 
 /// Target VDF time in milliseconds (~700ms for heartbeat proof)
 /// With Epoch Lookahead selection, VDF only needs to prove presence, not prevent grinding.
 pub const TARGET_VDF_TIME_MS: u64 = 700;
 
-/// Default iterations for VDF (~700ms on reference hardware)
+/// Default iterations for VDF (mainnet default: ~700ms on reference hardware)
 /// Reference: ~14,285 iterations/ms on modern CPU
 /// 700ms * 14,285 = ~10M iterations
+///
+/// **Deprecated**: Use `vdf_iterations_for_network(network)` for network-aware calculations.
+/// The calibrator will adjust at runtime, but initial value should come from NetworkParams.
+#[deprecated(note = "Use vdf_iterations_for_network(network) for network-aware initial value")]
 pub const DEFAULT_VDF_ITERATIONS: u64 = 10_000_000;
+
+/// Get VDF iterations for a specific network (for initial calibration)
+pub fn vdf_iterations_for_network(network: Network) -> u64 {
+    NetworkParams::load(network).vdf_iterations
+}
 
 /// Minimum allowed iterations (safety floor)
 pub const MIN_VDF_ITERATIONS: u64 = 100_000;
@@ -86,6 +97,7 @@ pub struct VdfCalibrator {
 }
 
 impl Default for VdfCalibrator {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self::new(DEFAULT_VDF_ITERATIONS, TARGET_VDF_TIME_MS)
     }

@@ -321,6 +321,7 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
     ///
     /// A vector of calculations, one per epoch. Epochs with zero reward
     /// are included.
+    #[allow(deprecated)] // Uses deprecated calculate_producer_reward
     pub fn calculate_multiple_epochs<I: IntoIterator<Item = u64>>(
         &self,
         producer: &PublicKey,

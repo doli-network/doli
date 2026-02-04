@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crypto::Hash;
+use doli_core::network::Network;
+use doli_core::network_params::NetworkParams;
 use doli_core::transaction::{Output, Transaction};
 use doli_core::types::{Amount, BlockHeight};
 use serde::{Deserialize, Serialize};
@@ -24,12 +26,30 @@ pub struct UtxoEntry {
     pub is_epoch_reward: bool,
 }
 
-/// Default reward maturity constant for mainnet/testnet
+/// Default reward maturity constant (mainnet default: 100 blocks)
+///
+/// **Deprecated**: Use `reward_maturity_for_network(network)` for network-aware calculations.
+/// Devnet uses 10 blocks for faster testing.
+#[deprecated(note = "Use reward_maturity_for_network(network) for network-aware calculations")]
 pub const DEFAULT_REWARD_MATURITY: BlockHeight = 100;
 
+/// Get reward maturity for a specific network
+pub fn reward_maturity_for_network(network: Network) -> BlockHeight {
+    NetworkParams::load(network).coinbase_maturity
+}
+
 impl UtxoEntry {
-    /// Check if the UTXO is spendable at the given height with default maturity (100 blocks)
+    /// Check if the UTXO is spendable at the given height for a specific network
+    pub fn is_spendable_at_for_network(&self, height: BlockHeight, network: Network) -> bool {
+        self.is_spendable_at_with_maturity(height, reward_maturity_for_network(network))
+    }
+
+    /// Check if the UTXO is spendable at the given height with mainnet default maturity (100 blocks)
+    ///
+    /// **Deprecated**: Use `is_spendable_at_for_network()` for network-aware calculations.
+    #[deprecated(note = "Use is_spendable_at_for_network(height, network) for network-aware calculations")]
     pub fn is_spendable_at(&self, height: BlockHeight) -> bool {
+        #[allow(deprecated)]
         self.is_spendable_at_with_maturity(height, DEFAULT_REWARD_MATURITY)
     }
 

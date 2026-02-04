@@ -241,6 +241,8 @@ pub use validation::{
 };
 
 // TPoP (Temporal Proof of Presence) exports - telemetry module, not consensus
+// Some constants are deprecated - use NetworkParams for network-aware code
+#[allow(deprecated)]
 pub use tpop::{
     calculate_heartbeat_score,
     // Functions
@@ -275,6 +277,7 @@ pub use tpop::{
     VdfLink,
     HEARTBEAT_DEADLINE_SECS,
     HEARTBEAT_DISCRIMINANT_BITS,
+    // Deprecated constants - use NetworkParams instead for network-aware code
     HEARTBEAT_GRACE_PERIOD_SECS,
     HEARTBEAT_VDF_ITERATIONS,
 };

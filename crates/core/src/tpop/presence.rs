@@ -30,6 +30,8 @@ use std::collections::HashMap;
 use crypto::{hash::hash_concat, Hash, Hasher, PublicKey};
 use vdf::{VdfOutput, VdfProof};
 
+use crate::network::Network;
+use crate::network_params::NetworkParams;
 use crate::types::{Amount, BlockHeight, Slot};
 
 // =============================================================================
@@ -38,6 +40,9 @@ use crate::types::{Amount, BlockHeight, Slot};
 
 /// VDF iterations for presence proof (~55 seconds on reference hardware)
 /// This is calibrated to fit within a 60-second slot with margin for propagation
+///
+/// Note: This is TELEMETRY ONLY and does not affect consensus.
+/// Not yet configurable via NetworkParams since it's informational.
 pub const PRESENCE_VDF_ITERATIONS: u64 = 55_000_000;
 
 /// Checkpoint interval in slots (1 hour)
@@ -48,8 +53,18 @@ pub const CHECKPOINT_INTERVAL: u64 = 60;
 /// Prevents unbounded growth of presence proofs
 pub const MAX_CHAIN_LENGTH: usize = 120;
 
-/// Slots of inactivity before presence score starts decaying
+/// Slots of inactivity before presence score starts decaying (mainnet default: 5)
+///
+/// **Deprecated**: Use `presence_grace_period_for_network(network)` for network-aware calculations.
+#[deprecated(note = "Use presence_grace_period_for_network(network) for network-aware calculations")]
 pub const PRESENCE_GRACE_PERIOD: u64 = 5;
+
+/// Get presence grace period for a specific network
+pub fn presence_grace_period_for_network(network: Network) -> u64 {
+    // Use the general grace_period_secs from NetworkParams
+    // For presence-specific behavior, this can be customized
+    NetworkParams::load(network).grace_period_secs
+}
 
 /// Decay rate for presence score during inactivity (per slot, in basis points)
 /// 10 = 0.1% decay per missed slot

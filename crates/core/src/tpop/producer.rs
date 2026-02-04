@@ -21,6 +21,7 @@ use crate::block::Block;
 use crate::consensus::ConsensusParams;
 use crate::types::{BlockHeight, Slot};
 
+#[allow(deprecated)] // HEARTBEAT_VDF_ITERATIONS - telemetry only
 use super::heartbeat::{hash_chain_vdf, HEARTBEAT_VDF_ITERATIONS};
 use super::presence::{
     can_produce_at_time, producer_eligibility_offset, rank_producers_by_presence,
@@ -275,6 +276,7 @@ impl PresenceProducer {
     }
 
     /// Handle a new slot starting
+    #[allow(deprecated)] // Uses HEARTBEAT_VDF_ITERATIONS - telemetry only
     async fn on_new_slot(
         &self,
         slot: Slot,

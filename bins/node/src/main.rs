@@ -86,7 +86,8 @@ enum Commands {
         #[arg(long)]
         rpc_port: Option<u16>,
 
-        /// Metrics server port (default: 9090)
+        /// Metrics server port (mainnet default: 9090, testnet: 19090, devnet: 29090)
+        /// Note: Override with network-specific port if needed
         #[arg(long, default_value = "9090")]
         metrics_port: u16,
 

@@ -28,13 +28,15 @@ use serde::{Deserialize, Serialize};
 use vdf::VdfProof;
 
 use crate::consensus::ConsensusParams;
+use crate::network::Network;
+use crate::network_params::NetworkParams;
 use crate::types::Slot;
 
 // =============================================================================
 // MICRO-VDF CONSTANTS
 // =============================================================================
 
-/// Iterations for micro-VDF (~1 second on reference hardware)
+/// Iterations for micro-VDF (mainnet default: ~1 second on reference hardware)
 ///
 /// We use a hash-chain VDF instead of class-group VDF because:
 /// - Hash chains run at ~10M iterations/second
@@ -42,7 +44,15 @@ use crate::types::Slot;
 /// - For timing proofs, hash chains are sufficient
 ///
 /// 10,000,000 iterations ≈ 1 second on modern hardware
+///
+/// **Deprecated**: Use `heartbeat_vdf_iterations_for_network(network)` for network-aware calculations.
+#[deprecated(note = "Use heartbeat_vdf_iterations_for_network(network) for network-aware calculations")]
 pub const HEARTBEAT_VDF_ITERATIONS: u64 = 10_000_000;
+
+/// Get heartbeat VDF iterations for a specific network
+pub fn heartbeat_vdf_iterations_for_network(network: Network) -> u64 {
+    NetworkParams::load(network).heartbeat_vdf_iterations
+}
 
 /// Legacy constant for compatibility (not used with hash-chain VDF)
 pub const HEARTBEAT_DISCRIMINANT_BITS: usize = 1024;
@@ -51,9 +61,17 @@ pub const HEARTBEAT_DISCRIMINANT_BITS: usize = 1024;
 /// Heartbeats arriving after this are considered late
 pub const HEARTBEAT_DEADLINE_SECS: u64 = 55;
 
-/// Grace period for network delays (seconds)
+/// Grace period for network delays (mainnet default: 5 seconds)
 /// Heartbeats can arrive up to this many seconds after deadline
+///
+/// **Deprecated**: Use `NetworkParams::load(network).grace_period_secs` for network-aware calculations.
+#[deprecated(note = "Use NetworkParams::load(network).grace_period_secs for network-aware calculations")]
 pub const HEARTBEAT_GRACE_PERIOD_SECS: u64 = 5;
+
+/// Get grace period for a specific network
+pub fn grace_period_for_network(network: Network) -> u64 {
+    NetworkParams::load(network).grace_period_secs
+}
 
 /// Maximum heartbeats to store per slot (memory limit)
 pub const MAX_HEARTBEATS_PER_SLOT: usize = 1000;
@@ -138,6 +156,7 @@ impl PresenceHeartbeat {
     pub const VERSION: u8 = 1;
 
     /// Create a new heartbeat (computes VDF and signs)
+    #[allow(deprecated)] // Uses HEARTBEAT_VDF_ITERATIONS - telemetry only
     pub fn create(
         keypair: &KeyPair,
         slot: Slot,
@@ -200,6 +219,7 @@ impl PresenceHeartbeat {
     /// 1. VDF output is correct (hash chain)
     /// 2. Signature is valid
     /// 3. Version is supported
+    #[allow(deprecated)] // Uses HEARTBEAT_VDF_ITERATIONS - telemetry only
     pub fn verify(&self, expected_prev_hash: &Hash) -> Result<(), HeartbeatError> {
         // Check version
         if self.version != Self::VERSION {
@@ -312,6 +332,7 @@ impl std::error::Error for HeartbeatError {}
 // =============================================================================
 
 /// Validate that a heartbeat arrived within the acceptable time window
+#[allow(deprecated)] // Uses HEARTBEAT_GRACE_PERIOD_SECS - telemetry only
 pub fn validate_heartbeat_timing(
     heartbeat: &PresenceHeartbeat,
     current_slot: Slot,
