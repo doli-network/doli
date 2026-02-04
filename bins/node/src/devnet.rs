@@ -648,24 +648,196 @@ pub async fn status() -> Result<()> {
     let root = devnet_dir();
     let client = reqwest::Client::new();
 
-    println!();
-    println!("DOLI Devnet Status");
-    println!("==================");
-    println!();
-    println!(
-        "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10} {:<14}",
-        "Node", "Status", "PID", "Height", "Slot", "Peers", "DOLI"
-    );
-    println!("{}", "-".repeat(74));
+    // Find the first running node's RPC for network queries
+    let mut network_rpc_url: Option<String> = None;
+    for i in 0..config.node_count {
+        if let Ok(Some(pid)) = load_pid(&root, i) {
+            if is_process_running(pid) {
+                network_rpc_url = Some(format!("http://127.0.0.1:{}", config.rpc_port(i)));
+                break;
+            }
+        }
+    }
 
+    // Get chain info from first running node
+    let (chain_height, chain_slot) = if let Some(ref url) = network_rpc_url {
+        let chain_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getChainInfo",
+            "params": {},
+            "id": 1
+        });
+
+        match client
+            .post(url)
+            .json(&chain_request)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let result = &json["result"];
+                    (
+                        result["bestHeight"].as_u64().unwrap_or(0),
+                        result["bestSlot"].as_u64().unwrap_or(0),
+                    )
+                } else {
+                    (0, 0)
+                }
+            }
+            Err(_) => (0, 0),
+        }
+    } else {
+        (0, 0)
+    };
+
+    // Query network producers from any running node
+    let network_producers = if let Some(ref url) = network_rpc_url {
+        let producers_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getProducers",
+            "params": { "activeOnly": true },
+            "id": 1
+        });
+
+        match client
+            .post(url)
+            .json(&producers_request)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    json["result"].as_array().cloned().unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Print header
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════════╗");
+    println!(
+        "║  DOLI Devnet Status              Height: {:<8} Slot: {:<8}    ║",
+        chain_height, chain_slot
+    );
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!("║  Active Producers ({})                                               ║", network_producers.len());
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║  {:<4} {:<8} {:<20} {:<6} {:<6} {:>14}  ║",
+        "#", "Status", "Public Key", "Bonds", "Era", "DOLI"
+    );
+    println!("╟──────────────────────────────────────────────────────────────────────╢");
+
+    for (idx, producer) in network_producers.iter().enumerate() {
+        let pubkey = producer["publicKey"]
+            .as_str()
+            .unwrap_or("-")
+            .chars()
+            .take(16)
+            .collect::<String>()
+            + "...";
+        let status = producer["status"].as_str().unwrap_or("-");
+        let bonds = producer["bondCount"]
+            .as_u64()
+            .map_or("-".to_string(), |v| v.to_string());
+        let era = producer["era"]
+            .as_u64()
+            .map_or("-".to_string(), |v| v.to_string());
+
+        // Get balance for this producer
+        let balance_str = if let Some(ref url) = network_rpc_url {
+            if let Some(full_pubkey) = producer["publicKey"].as_str() {
+                // Compute pubkey_hash from public key for balance query
+                if let Ok(pubkey_bytes) = hex::decode(full_pubkey) {
+                    if let Ok(pubkey) = PublicKey::try_from_slice(&pubkey_bytes) {
+                        let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_ref());
+                        let balance_request = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "getBalance",
+                            "params": { "address": pubkey_hash.to_hex() },
+                            "id": 2
+                        });
+
+                        match client
+                            .post(url)
+                            .json(&balance_request)
+                            .timeout(Duration::from_secs(2))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    json["result"]["total"]
+                                        .as_u64()
+                                        .map_or("-".to_string(), |v| format_doli(v))
+                                } else {
+                                    "-".to_string()
+                                }
+                            }
+                            Err(_) => "-".to_string(),
+                        }
+                    } else {
+                        "-".to_string()
+                    }
+                } else {
+                    "-".to_string()
+                }
+            } else {
+                "-".to_string()
+            }
+        } else {
+            "-".to_string()
+        };
+
+        println!(
+            "║  {:<4} {:<8} {:<20} {:<6} {:<6} {:>14}  ║",
+            idx, status, pubkey, bonds, era, balance_str
+        );
+    }
+
+    if network_producers.is_empty() {
+        println!("║  (no producers found - is the network running?)                     ║");
+    }
+
+    // Count running nodes first
+    let mut running_count = 0;
+    for i in 0..config.node_count {
+        if let Ok(Some(pid)) = load_pid(&root, i) {
+            if is_process_running(pid) {
+                running_count += 1;
+            }
+        }
+    }
+
+    // Show managed nodes section
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║  Managed Nodes ({}/{} running)                                        ║",
+        running_count, config.node_count
+    );
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║  {:<4} {:<8} {:<8} {:<12} {:<10} {:>14}  ║",
+        "Node", "Status", "PID", "P2P", "RPC", "Height"
+    );
+    println!("╟──────────────────────────────────────────────────────────────────────╢");
     for i in 0..config.node_count {
         let pid = load_pid(&root, i).ok().flatten();
         let running = pid.map_or(false, is_process_running);
         let status = if running { "Running" } else { "Stopped" };
         let pid_str = pid.map_or("-".to_string(), |p| p.to_string());
 
-        // Try to get chain info and balance from RPC
-        let (height, slot, peers, balance) = if running {
+        // Try to get chain info from RPC
+        let height = if running {
             let url = format!("http://127.0.0.1:{}", config.rpc_port(i));
 
             // Get chain info
@@ -676,7 +848,7 @@ pub async fn status() -> Result<()> {
                 "id": 1
             });
 
-            let (h, s, p) = match client
+            match client
                 .post(&url)
                 .json(&chain_request)
                 .timeout(Duration::from_secs(2))
@@ -686,83 +858,31 @@ pub async fn status() -> Result<()> {
                 Ok(resp) => {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         let result = &json["result"];
-                        let h = result["bestHeight"]
+                        result["bestHeight"]
                             .as_u64()
-                            .map_or("-".to_string(), |v| v.to_string());
-                        let s = result["bestSlot"]
-                            .as_u64()
-                            .map_or("-".to_string(), |v| v.to_string());
-                        let p = result["peerCount"]
-                            .as_u64()
-                            .map_or("-".to_string(), |v| v.to_string());
-                        (h, s, p)
+                            .map_or("-".to_string(), |v| v.to_string())
                     } else {
-                        ("-".to_string(), "-".to_string(), "-".to_string())
+                        "-".to_string()
                     }
                 }
-                Err(_) => ("-".to_string(), "-".to_string(), "-".to_string()),
-            };
-
-            // Get producer balance
-            let balance_str = if let Some(pubkey_hash) = load_producer_pubkey_hash(&root, i) {
-                let balance_request = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "getBalance",
-                    "params": { "address": pubkey_hash },
-                    "id": 2
-                });
-
-                match client
-                    .post(&url)
-                    .json(&balance_request)
-                    .timeout(Duration::from_secs(2))
-                    .send()
-                    .await
-                {
-                    Ok(resp) => {
-                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                            let result = &json["result"];
-                            // Use total balance (includes immature rewards)
-                            result["total"]
-                                .as_u64()
-                                .map_or("-".to_string(), |v| format_doli(v))
-                        } else {
-                            "-".to_string()
-                        }
-                    }
-                    Err(_) => "-".to_string(),
-                }
-            } else {
-                "-".to_string()
-            };
-
-            (h, s, p, balance_str)
+                Err(_) => "-".to_string(),
+            }
         } else {
-            (
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-            )
+            "-".to_string()
         };
 
         println!(
-            "{:<6} {:<8} {:<12} {:<10} {:<10} {:<10} {:<14}",
-            i, status, pid_str, height, slot, peers, balance
+            "║  {:<4} {:<8} {:<8} {:<12} {:<10} {:>14}  ║",
+            i,
+            status,
+            pid_str,
+            config.p2p_port(i),
+            config.rpc_port(i),
+            height
         );
     }
 
-    println!();
-    println!("Ports:");
-    for i in 0..config.node_count {
-        println!(
-            "  Node {}: P2P={}, RPC={}, Metrics={}",
-            i,
-            config.p2p_port(i),
-            config.rpc_port(i),
-            config.metrics_port(i)
-        );
-    }
+    println!("╚══════════════════════════════════════════════════════════════════════╝");
     println!();
 
     Ok(())
