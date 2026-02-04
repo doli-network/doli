@@ -677,7 +677,7 @@ devnet-stop:
 
 # Check devnet status
 devnet-status:
-    @just nix-run "./target/release/doli-node devnet status 2>&1" | grep -E "^(Node|---|-|[0-9])" | head -30
+    @just nix-run "./target/release/doli-node devnet status 2>&1" | grep -E "^[║╔╠╟╚]"
 
 # Clean devnet data
 devnet-clean:
