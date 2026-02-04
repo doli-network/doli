@@ -121,9 +121,54 @@ DOLI_VETO_PERIOD_SECS=60    # 1 minute upgrades
 
 **"Why is Height < Slot? (e.g. Height 4 at Slot 8)"**
 
-This is a normal side-effect of the **Sync-Before-Produce** safety guards.
-1.  **Slots 0-2**: The seed node is the only active producer. Other nodes are in "Bootstrap Mode" waiting to confirm the seed's chain.
-2.  **Missed Turns**: If the round-robin schedule assigns Slot 1 to a node that is still waiting/syncing, that slot will be missed (empty).
-3.  **Result**: You might see `Slot 8` but only `Height 4` because 50% of the early slots were assigned to nodes that were still bootstrapping.
+This "Gap" is the normal cost of safety. It happens because joining nodes **deliberately skip their turns** until they are sure they are on the right chain.
 
-This "Gap" is the price of preventing split-brain (forks) at startup.
+#### The "Gap" Visualization
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Time as Time (Slot)
+    participant Seed as Node 0 (Seed)
+    participant Joiner as Node 1 (Joiner)
+    participant Chain as Chain Height
+
+    Note over Seed, Joiner: STARTUP (t=0)
+    Seed->>Seed: No peers? Mines Genesis (H=0)
+    Joiner->>Joiner: Bootstrapping... (Paused)
+
+    Note over Time, Chain: SLOT 1 (Turn: Node 1)
+    Time->>Joiner: It's your turn!
+    Joiner->>Joiner: 🛑 BLOCKED (Safe Mode)
+    Note right of Joiner: SKIPPED (Gap Created)
+    Chain-->>Chain: Height stays 0
+
+    Note over Time, Chain: SLOT 2 (Turn: Node 0)
+    Time->>Seed: It's your turn!
+    Seed->>Chain: Mines Block (Slot 2, H=1)
+    
+    Note over Time, Chain: SLOT 3 (Turn: Node 1)
+    Time->>Joiner: It's your turn!
+    Joiner->>Joiner: 🛑 BLOCKED (Height 1 < 3)
+    Note right of Joiner: SKIPPED (Gap Widens)
+    Chain-->>Chain: Height stays 1
+
+    Note over Time, Chain: SLOT 4 (Turn: Node 0)
+    Time->>Seed: It's your turn!
+    Seed->>Chain: Mines Block (Slot 4, H=2)
+
+    Note over Time, Chain: ...syncing...
+
+    Note over Time, Chain: SLOT 8 (Turn: Node 1)
+    Seed->>Chain: (Previous blocks mined...)
+    Note right of Chain: Chain reaches Height 3
+    Joiner->>Joiner: ✅ SAFE! (Height >= 3)
+    Joiner->>Chain: Mines Block (Slot 8, H=4)
+```
+
+#### What happened here?
+1.  **Slot 1**: Assigned to Node 1, but Node 1 was in "Safe Mode". **Result:** Empty slot.
+2.  **Slot 3**: Assigned to Node 1, but chain was too short to trust (Height 1). **Result:** Empty slot.
+3.  **Slot 8**: Chain is stable (Height 3+). Node 1 finally joins in.
+
+**Result:** We reached **Slot 8**, but only have **4 Blocks** (Height 4). The missing blocks are the "safety tax" we pay to ensure Node 1 didn't accidentally fork the network at the start.
