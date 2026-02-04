@@ -84,6 +84,31 @@ impl SyncRequest {
     }
 }
 
+impl SyncResponse {
+    /// Returns a human-readable name for the response type (for logging)
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            SyncResponse::Headers(h) => {
+                if h.is_empty() {
+                    "Headers(empty)"
+                } else {
+                    "Headers"
+                }
+            }
+            SyncResponse::Bodies(b) => {
+                if b.is_empty() {
+                    "Bodies(empty)"
+                } else {
+                    "Bodies"
+                }
+            }
+            SyncResponse::Block(Some(_)) => "Block(Some)",
+            SyncResponse::Block(None) => "Block(None)",
+            SyncResponse::Error(_) => "Error",
+        }
+    }
+}
+
 /// Sync protocol definition
 #[derive(Clone, Debug)]
 pub struct SyncProtocol;
