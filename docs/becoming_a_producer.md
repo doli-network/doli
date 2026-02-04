@@ -86,18 +86,38 @@ cp ~/.doli/keys/my_producer.json ~/secure-backup/
 
 ### 3.3. Fund the Producer Address
 
-Transfer the bond amount plus fees to your producer address:
+Transfer the bond amount plus fees to your producer address.
+
+**⚠️ CRITICAL: Use "Pubkey Hash", NOT "Public Key"**
+
+The `doli info` command shows three values. You MUST use the **Pubkey Hash (32-byte)** for sending:
 
 ```bash
+doli --wallet ~/.doli/keys/my_producer.json info
+# Output:
+#   Address (20-byte):     cf98716522ee9e5c...              ❌ DON'T USE
+#   Pubkey Hash (32-byte): cf98716522ee9e5c62f9...686eab84  ✅ USE THIS
+#   Public Key:            cc9a1710b8bffb38...22d7cb51      ❌ DON'T USE
+```
+
+| Field | Use For |
+|-------|---------|
+| **Pubkey Hash (32-byte)** | **Sending coins, RPC queries** |
+| Public Key | Verification only (different hash!) |
+
+```bash
+# Get the CORRECT address (Pubkey Hash)
+NEW_ADDR=$(doli --wallet ~/.doli/keys/my_producer.json info | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
+
 # From an existing funded wallet, send to new producer
 doli --wallet ~/.doli/keys/funded_wallet.json \
     --rpc http://127.0.0.1:8545 \
-    send <new_producer_pubkey_hash> 110
+    send $NEW_ADDR 110
 
 # Check balance on new wallet
 doli --wallet ~/.doli/keys/my_producer.json \
     --rpc http://127.0.0.1:8545 \
-    wallet balance
+    balance
 
 # You need: bond amount + registration fee + operational buffer
 # Example: 100 DOLI bond + 0.01 fee + 1 DOLI buffer = 101.01 DOLI

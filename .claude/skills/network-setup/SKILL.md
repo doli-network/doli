@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.6.0
+version: 2.7.0
 ---
 
 # DOLI Network Setup Skill
@@ -339,15 +339,30 @@ done
 
 ### Step 2: Get Pubkey Hashes (Required for Sending)
 
-**Important:** The `send` command requires a 64-character **Pubkey Hash**, not the 40-character address.
+**⚠️ CRITICAL: Use "Pubkey Hash", NOT "Public Key"**
+
+The `doli info` command shows THREE different values. You MUST use the **Pubkey Hash (32-byte)** for sending:
 
 ```bash
-# Get pubkey hash for a wallet
 ./target/release/doli -w ~/.doli/devnet/keys/producer_15.json info
-# Output shows:
-#   Address (20-byte):    cf98716522ee9e5c...
-#   Pubkey Hash (32-byte): cf98716522ee9e5c62f9f2d0cdd0c96f8222f3c6142b4c1d2e4f2190686eab84
-#   ^^^ Use this 64-char hash for sending
+# Output:
+#   Address (20-byte):     cf98716522ee9e5c...              ❌ DON'T USE (too short)
+#   Pubkey Hash (32-byte): cf98716522ee9e5c62f9...686eab84  ✅ USE THIS FOR SENDING
+#   Public Key:            cc9a1710b8bffb38...22d7cb51      ❌ DON'T USE (wrong hash)
+```
+
+| Field | Length | Use For |
+|-------|--------|---------|
+| Address (20-byte) | 40 chars | Display only |
+| **Pubkey Hash (32-byte)** | **64 chars** | **Sending coins, RPC queries** |
+| Public Key | 64 chars | Verification only |
+
+**Common Mistake:** Using "Public Key" instead of "Pubkey Hash" - both are 64 characters but they are DIFFERENT values. The send will succeed but coins go to wrong address!
+
+**Extract Pubkey Hash in scripts:**
+```bash
+# Correct way to get pubkey hash for sending
+pubkey_hash=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
 ```
 
 ### Step 3: Fund New Producers
@@ -570,6 +585,23 @@ grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
 # Check balance is increasing (rewards)
 doli -w ~/.doli/devnet/keys/producer_NEW.json -r http://127.0.0.1:28545 wallet balance
 ```
+
+### Sent funds but recipient balance is 0
+
+**Symptom:** Transaction succeeds but recipient wallet shows 0 balance.
+
+**Cause:** Used "Public Key" instead of "Pubkey Hash (32-byte)" as recipient address. Both are 64 characters but are DIFFERENT values - coins went to wrong address.
+
+**Prevention:**
+```bash
+# WRONG - using Public Key field
+pubkey=$(doli -w wallet.json info | grep "Public Key" | awk '{print $3}')
+
+# CORRECT - using Pubkey Hash field
+pubkey_hash=$(doli -w wallet.json info | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
+```
+
+**Recovery:** Funds sent to wrong address are lost unless you control that address.
 
 ### Double spend errors when sending multiple transactions
 
