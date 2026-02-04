@@ -237,6 +237,13 @@ impl Node {
                 Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)))
             };
 
+        // Configure bootstrap grace period from network params
+        // This is the wait time at genesis before allowing production (chain evidence collection)
+        {
+            let mut sm = sync_manager.write().await;
+            sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
+        }
+
         if producer_key.is_some() {
             info!("Block production enabled");
         }

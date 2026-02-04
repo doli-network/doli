@@ -385,6 +385,15 @@ impl Network {
         self.params().bootstrap_blocks
     }
 
+    /// Get bootstrap grace period in seconds
+    ///
+    /// This is the wait time at genesis before allowing block production.
+    /// Configurable via `DOLI_BOOTSTRAP_GRACE_PERIOD_SECS` environment variable (devnet only).
+    /// Locked for mainnet (15 seconds).
+    pub fn bootstrap_grace_period_secs(&self) -> u64 {
+        self.params().bootstrap_grace_period_secs
+    }
+
     /// Get slots per reward epoch for this network
     /// Reward epochs determine when accumulated rewards are distributed equally
     ///

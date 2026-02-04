@@ -788,6 +788,16 @@ impl SyncManager {
         self.max_heights_behind = max_heights_behind;
     }
 
+    /// Set the bootstrap grace period (wait time at genesis for chain evidence)
+    ///
+    /// At genesis, when all peers are at height 0, the node waits this duration
+    /// before allowing block production. This helps distinguish between:
+    /// - True genesis (we're first producer, safe to start)
+    /// - Network partition (we're isolated, dangerous to produce)
+    pub fn set_bootstrap_grace_period_secs(&mut self, secs: u64) {
+        self.bootstrap_grace_period_secs = secs;
+    }
+
     // =========================================================================
     // END PRODUCTION GATE
     // =========================================================================
