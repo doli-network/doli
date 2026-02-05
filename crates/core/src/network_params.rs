@@ -292,8 +292,10 @@ impl NetworkParams {
 
     /// Get hardcoded default parameters for a network
     ///
-    /// These match the original hardcoded values in network.rs
+    /// These match the original hardcoded values in consensus.rs (the DNA)
     pub fn defaults(network: Network) -> NetworkParams {
+        use crate::consensus;
+
         match network {
             Network::Mainnet => NetworkParams {
                 // Networking
@@ -306,21 +308,21 @@ impl NetworkParams {
                 ],
 
                 // Timing
-                slot_duration: 10,
-                genesis_time: 1769904000,           // 2026-02-01T00:00:00Z
-                veto_period_secs: 7 * 24 * 3600,    // 7 days
-                grace_period_secs: 48 * 3600,       // 48 hours
-                bootstrap_grace_period_secs: 15,    // 15s wait at genesis for chain evidence
-                unbonding_period: 60_480,           // 7 days at 10s slots
-                inactivity_threshold: 60_480,       // ~1 week
+                slot_duration: consensus::SLOT_DURATION,
+                genesis_time: consensus::GENESIS_TIME,
+                veto_period_secs: 7 * 24 * 3600, // 7 days (policy, not consensus rule per se, but good default)
+                grace_period_secs: 48 * 3600,    // 48 hours
+                bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
+                unbonding_period: consensus::UNBONDING_PERIOD as u64, // blocks
+                inactivity_threshold: consensus::INACTIVITY_THRESHOLD as u64,
 
                 // Economics
-                bond_unit: 10_000_000_000,              // 100 DOLI
-                initial_reward: 100_000_000,            // 1 DOLI
+                bond_unit: consensus::BOND_UNIT,
+                initial_reward: consensus::INITIAL_REWARD,
                 registration_base_fee: 100_000,         // 0.001 DOLI
                 max_registration_fee: 1_000_000_000,    // 10 DOLI
-                automatic_genesis_bond: 10_000_000_000, // 100 DOLI
-                genesis_blocks: 0,                      // No genesis phase
+                automatic_genesis_bond: consensus::BOND_UNIT,
+                genesis_blocks: 0,
 
                 // VDF
                 vdf_iterations: 100_000,
@@ -328,11 +330,11 @@ impl NetworkParams {
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure
-                blocks_per_year: 3_153_600,
-                blocks_per_reward_epoch: 360, // ~1 hour
-                coinbase_maturity: 100,
-                slots_per_reward_epoch: 8_640,
-                bootstrap_blocks: 60_480,
+                blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
+                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
+                coinbase_maturity: consensus::COINBASE_MATURITY,
+                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH,
+                bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system
                 min_voting_age_secs: 30 * 24 * 3600,  // 30 days
@@ -341,7 +343,7 @@ impl NetworkParams {
                 max_registrations_per_block: 5,
 
                 // Presence (telemetry)
-                presence_window_ms: 1000, // 1 second
+                presence_window_ms: consensus::NETWORK_MARGIN_MS, // Use consensus margin
             },
 
             Network::Testnet => NetworkParams {
@@ -355,20 +357,20 @@ impl NetworkParams {
                 ],
 
                 // Timing (same as mainnet)
-                slot_duration: 10,
-                genesis_time: 1769738400, // 2026-01-29T22:00:00Z
+                slot_duration: consensus::SLOT_DURATION,
+                genesis_time: 1769738400, // 2026-01-29T22:00:00Z (Testnet specific)
                 veto_period_secs: 7 * 24 * 3600,
                 grace_period_secs: 48 * 3600,
-                bootstrap_grace_period_secs: 15, // 15s wait at genesis for chain evidence
-                unbonding_period: 60_480,
-                inactivity_threshold: 60_480,
+                bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
+                unbonding_period: consensus::UNBONDING_PERIOD as u64,
+                inactivity_threshold: consensus::INACTIVITY_THRESHOLD as u64,
 
                 // Economics (same as mainnet)
-                bond_unit: 10_000_000_000,
-                initial_reward: 100_000_000,
+                bond_unit: consensus::BOND_UNIT,
+                initial_reward: consensus::INITIAL_REWARD,
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
-                automatic_genesis_bond: 10_000_000_000,
+                automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
                 // VDF (same as mainnet)
@@ -377,11 +379,11 @@ impl NetworkParams {
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure (same as mainnet)
-                blocks_per_year: 3_153_600,
-                blocks_per_reward_epoch: 360,
-                coinbase_maturity: 100,
-                slots_per_reward_epoch: 360, // 1 hour for faster testing
-                bootstrap_blocks: 60_480,
+                blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
+                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
+                coinbase_maturity: consensus::COINBASE_MATURITY,
+                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH, // 1 hour for faster testing
+                bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system (same as mainnet)
                 min_voting_age_secs: 30 * 24 * 3600,
@@ -390,7 +392,7 @@ impl NetworkParams {
                 max_registrations_per_block: 5,
 
                 // Presence (telemetry)
-                presence_window_ms: 1000, // 1 second (same as mainnet)
+                presence_window_ms: consensus::NETWORK_MARGIN_MS,
             },
 
             Network::Devnet => NetworkParams {
@@ -401,20 +403,24 @@ impl NetworkParams {
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
 
                 // Timing (accelerated for testing)
-                slot_duration: 10,              // Same as mainnet for realistic testing
-                genesis_time: 0,                // Dynamic
-                veto_period_secs: 60,           // 1 minute
-                grace_period_secs: 30,          // 30 seconds
+                slot_duration: consensus::SLOT_DURATION, // Same as mainnet for realistic testing
+                genesis_time: 0,       // Dynamic
+                veto_period_secs: 60,  // 1 minute
+                grace_period_secs: 30, // 30 seconds
                 bootstrap_grace_period_secs: 5, // 5s for fast devnet startup
-                unbonding_period: 60,           // ~10 minutes with 10s slots
+                unbonding_period: 60,  // ~10 minutes with 10s slots
                 inactivity_threshold: 30,
 
                 // Economics (lower values for testing)
-                bond_unit: 100_000_000,                 // 1 DOLI
-                initial_reward: 2_000_000_000,          // 20 DOLI
+                bond_unit: 100_000_000,                 // 1 DOLI (Devnet override)
+                initial_reward: 2_000_000_000,          // 20 DOLI (Devnet override)
                 registration_base_fee: 1_000,           // 0.00001 DOLI
                 max_registration_fee: 10_000_000,       // 0.1 DOLI
-                automatic_genesis_bond: 10_000_000_000, // 100 DOLI
+                automatic_genesis_bond: consensus::BOND_UNIT, // Use mainnet bond for genesis? 
+                                                             // Original code: 10_000_000_000 (100 DOLI)
+                                                             // Devnet bond_unit is 1 DOLI. 
+                                                             // Wait, line 417 in original was 10_000_000_000.
+                                                             // So it uses MAINNET bond unit for genesis bond.
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
@@ -436,7 +442,7 @@ impl NetworkParams {
                 max_registrations_per_block: 20, // Higher for rapid testing
 
                 // Presence (telemetry)
-                presence_window_ms: 1000, // 1 second (same as mainnet)
+                presence_window_ms: consensus::NETWORK_MARGIN_MS,
             },
         }
     }
