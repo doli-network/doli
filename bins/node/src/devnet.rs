@@ -841,7 +841,10 @@ pub async fn status() -> Result<()> {
         println!("║  (no producers found - is the network running?)                     ║");
     }
 
-    // Scan pids directory for ALL managed nodes (including manually added ones)
+    // Determine how many node slots to check based on:
+    // 1. Initial node_count from config
+    // 2. PID files in pids directory (manually added nodes)
+    // 3. Number of active producers (dynamically added producers need nodes)
     let pids_dir = root.join("pids");
     let mut all_node_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
@@ -871,20 +874,72 @@ pub async fn status() -> Result<()> {
         }
     }
 
+    // Include slots for all active producers (dynamically registered producers need nodes too)
+    // This ensures we show node status for producers added after genesis
+    let producer_count = network_producers.len() as u32;
+    for i in 0..producer_count {
+        all_node_indices.insert(i);
+    }
+
     // Convert to sorted vec
     let all_node_indices: Vec<u32> = all_node_indices.into_iter().collect();
 
-    // Count running nodes
-    let mut running_count = 0;
-    for &i in &all_node_indices {
-        if let Ok(Some(pid)) = load_pid(&root, i) {
-            if is_process_running(pid) {
-                running_count += 1;
-            }
-        }
+    // Collect node status (probe RPC for each node)
+    struct NodeStatus {
+        index: u32,
+        pid: Option<u32>,
+        running: bool,
+        height: String,
     }
 
-    let total_nodes = all_node_indices.len();
+    let mut node_statuses = Vec::new();
+    for &i in &all_node_indices {
+        let pid = load_pid(&root, i).ok().flatten();
+        let pid_running = pid.map_or(false, is_process_running);
+
+        // Try to get chain info from RPC (also detects running nodes without PID files)
+        let url = format!("http://127.0.0.1:{}", config.rpc_port(i));
+        let chain_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getChainInfo",
+            "params": {},
+            "id": 1
+        });
+
+        let (rpc_running, height) = match client
+            .post(&url)
+            .json(&chain_request)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let result = &json["result"];
+                    let h = result["bestHeight"]
+                        .as_u64()
+                        .map_or("-".to_string(), |v| v.to_string());
+                    (true, h)
+                } else {
+                    (false, "-".to_string())
+                }
+            }
+            Err(_) => (false, "-".to_string()),
+        };
+
+        // Node is running if either PID check or RPC check succeeds
+        let running = pid_running || rpc_running;
+        node_statuses.push(NodeStatus {
+            index: i,
+            pid,
+            running,
+            height,
+        });
+    }
+
+    // Count running nodes
+    let running_count = node_statuses.iter().filter(|n| n.running).count();
+    let total_nodes = node_statuses.len();
 
     // Show managed nodes section
     println!("╠══════════════════════════════════════════════════════════════════════╣");
@@ -898,55 +953,18 @@ pub async fn status() -> Result<()> {
         "Node", "Status", "PID", "P2P", "RPC", "Height"
     );
     println!("╟──────────────────────────────────────────────────────────────────────╢");
-    for &i in &all_node_indices {
-        let pid = load_pid(&root, i).ok().flatten();
-        let running = pid.map_or(false, is_process_running);
-        let status = if running { "Running" } else { "Stopped" };
-        let pid_str = pid.map_or("-".to_string(), |p| p.to_string());
-
-        // Try to get chain info from RPC
-        let height = if running {
-            let url = format!("http://127.0.0.1:{}", config.rpc_port(i));
-
-            // Get chain info
-            let chain_request = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "getChainInfo",
-                "params": {},
-                "id": 1
-            });
-
-            match client
-                .post(&url)
-                .json(&chain_request)
-                .timeout(Duration::from_secs(2))
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        let result = &json["result"];
-                        result["bestHeight"]
-                            .as_u64()
-                            .map_or("-".to_string(), |v| v.to_string())
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                Err(_) => "-".to_string(),
-            }
-        } else {
-            "-".to_string()
-        };
+    for ns in &node_statuses {
+        let status = if ns.running { "Running" } else { "Stopped" };
+        let pid_str = ns.pid.map_or("-".to_string(), |p| p.to_string());
 
         println!(
             "║  {:<4} {:<8} {:<8} {:<12} {:<10} {:>14}  ║",
-            i,
+            ns.index,
             status,
             pid_str,
-            config.p2p_port(i),
-            config.rpc_port(i),
-            height
+            config.p2p_port(ns.index),
+            config.rpc_port(ns.index),
+            ns.height
         );
     }
 
