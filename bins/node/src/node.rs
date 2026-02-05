@@ -242,6 +242,21 @@ impl Node {
         {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
+
+            // Configure min peers for production based on network
+            // Devnet: 1 peer (--no-dht limits peer discovery, only bootstrap visible)
+            // Testnet/Mainnet: 2 peers (proper peer discovery, echo chamber prevention)
+            let min_peers = match config.network {
+                Network::Devnet => 1, // Allow single-peer production in limited discovery environment
+                Network::Testnet | Network::Mainnet => 2, // Require multiple peers for safety
+            };
+            sm.set_min_peers_for_production(min_peers);
+            
+            // Configure gossip timeout based on slot duration (P0 #3)
+            // 18 slots = ~3 minutes on Mainnet (10s slots)
+            // Scales down for Devnet/Testnet with faster slots
+            let gossip_timeout = 18 * params.slot_duration;
+            sm.set_gossip_activity_timeout_secs(gossip_timeout);
         }
 
         if producer_key.is_some() {
@@ -828,6 +843,9 @@ impl Node {
 
             NetworkEvent::SyncResponse { peer_id, response } => {
                 debug!("Sync response from {}", peer_id);
+                // P1 #5: Note that this peer is sending data (active), not just reachable
+                self.sync_manager.write().await.note_block_received_from_peer(peer_id);
+
                 let blocks = self
                     .sync_manager
                     .write()
@@ -2127,17 +2145,26 @@ impl Node {
         // =========================================================================
         {
             let sync_state = self.sync_manager.read().await;
-            match sync_state.can_produce(current_slot) {
+            let auth_result = sync_state.can_produce(current_slot);
+            info!(
+                "[NODE_PRODUCE] slot={} can_produce result: {:?}",
+                current_slot, auth_result
+            );
+            match auth_result {
                 ProductionAuthorization::Authorized => {
                     // Production authorized - continue with other checks
+                    info!("[NODE_PRODUCE] slot={} AUTHORIZED - proceeding", current_slot);
                 }
                 ProductionAuthorization::BlockedSyncing => {
+                    info!("[NODE_PRODUCE] slot={} BLOCKED: Syncing", current_slot);
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedResync { .. } => {
+                    info!("[NODE_PRODUCE] slot={} BLOCKED: Resync", current_slot);
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedBehindPeers { .. } => {
+                    info!("[NODE_PRODUCE] slot={} BLOCKED: BehindPeers", current_slot);
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedAheadOfPeers {
@@ -2148,24 +2175,63 @@ impl Node {
                     // FORK DETECTION: We're suspiciously ahead of the network
                     // This likely means we're on a fork and should stop producing
                     warn!(
-                        "FORK DETECTED: Local height {} is {} blocks ahead of peers (best: {}) - production blocked",
-                        local_height, height_ahead, peer_height
+                        "[NODE_PRODUCE] FORK DETECTED via AheadOfPeers: slot={} local_h={} peer_h={} ahead={}",
+                        current_slot, local_height, peer_height, height_ahead
                     );
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedSyncFailures { failure_count } => {
                     // FORK DETECTION: Repeated sync failures indicate chain divergence
                     warn!(
-                        "FORK DETECTED: {} consecutive sync failures - production blocked",
-                        failure_count
+                        "[NODE_PRODUCE] FORK DETECTED via SyncFailures: slot={} failures={}",
+                        current_slot, failure_count
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedInsufficientPeers {
+                    peer_count,
+                    min_required,
+                } => {
+                    // FORK PREVENTION: Not enough peers to safely produce
+                    // This prevents echo chambers where isolated nodes agree on the wrong chain
+                    warn!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: InsufficientPeers - only {} peers (need {})",
+                        current_slot, peer_count, min_required
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedChainMismatch {
+                    peer_id,
+                    local_hash,
+                    peer_hash,
+                    local_height,
+                } => {
+                    // CRITICAL FORK DETECTION (P0 #1)
+                    // We are at the same height as a peer but have different hashes.
+                    error!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: Chain mismatch with peer {} at height {} (local={}, peer={}). We are on a fork!",
+                        current_slot, peer_id, local_height, local_hash, peer_hash
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedNoGossipActivity {
+                    seconds_since_gossip,
+                    peer_count,
+                } => {
+                    // CRITICAL FORK DETECTION (P0 #3)
+                    // We have peers but receive no gossip. We are likely partitioned/shadow-banned.
+                    error!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers. Network isolation detected.",
+                        current_slot, seconds_since_gossip, peer_count
                     );
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedExplicit { reason } => {
-                    warn!("Production blocked: {}", reason);
+                    info!("[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}", current_slot, reason);
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedBootstrap { .. } => {
+                ProductionAuthorization::BlockedBootstrap { reason } => {
+                    info!("[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}", current_slot, reason);
                     return Ok(());
                 }
             }
@@ -2974,7 +3040,10 @@ impl Node {
         };
 
         let block_hash = block.hash();
-        info!("Block {} produced at height {}", block_hash, height);
+        info!(
+            "[BLOCK_PRODUCED] hash={} height={} slot={} parent={}",
+            block_hash, height, current_slot, block.header.prev_hash
+        );
 
         // Apply the block locally
         self.apply_block(block.clone()).await?;
