@@ -1338,8 +1338,8 @@ impl ConsensusParams {
             slots_per_reward_epoch: SLOTS_PER_REWARD_EPOCH, // Same as mainnet
             attestation_interval: ATTESTATION_INTERVAL,
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: BLOCKS_PER_ERA,                         // Same as mainnet (~4 years)
-            bootstrap_blocks: BOOTSTRAP_BLOCKS,                     // Same as mainnet (~1 week)
+            blocks_per_era: BLOCKS_PER_ERA, // Same as mainnet (~4 years)
+            bootstrap_blocks: BOOTSTRAP_BLOCKS, // Same as mainnet (~1 week)
             bootstrap_grace_period_secs: BOOTSTRAP_GRACE_PERIOD_SECS, // Same as mainnet (15s)
             initial_reward: INITIAL_REWARD,
             initial_bond: INITIAL_BOND, // Same as mainnet (1000 DOLI)
@@ -1367,11 +1367,11 @@ impl ConsensusParams {
             slots_per_reward_epoch: 30, // 30 seconds per reward epoch
             attestation_interval: 1,    // Every block (presence signatures)
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: 576,                // ≈10 minutes per era (576 blocks × 1s = 9.6 min)
-            bootstrap_blocks: 60,               // ~1 minute bootstrap
-            bootstrap_grace_period_secs: 5,     // 5s for fast devnet startup
-            initial_reward: INITIAL_REWARD,     // 1 DOLI per block (same as mainnet)
-            initial_bond: 100_000_000,          // 1 DOLI
+            blocks_per_era: 576, // ≈10 minutes per era (576 blocks × 1s = 9.6 min)
+            bootstrap_blocks: 60, // ~1 minute bootstrap
+            bootstrap_grace_period_secs: 5, // 5s for fast devnet startup
+            initial_reward: INITIAL_REWARD, // 1 DOLI per block (same as mainnet)
+            initial_bond: 100_000_000, // 1 DOLI
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
@@ -1705,9 +1705,9 @@ impl ConsensusParams {
             slots_per_reward_epoch: 60, // Short reward epoch for stress tests
             attestation_interval: 5,    // Frequent attestations for stress tests
             min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: 10_000,             // Faster era transitions for testing
-            bootstrap_blocks: 10,               // Very short bootstrap for stress tests
-            bootstrap_grace_period_secs: 2,     // Minimal grace for stress tests
+            blocks_per_era: 10_000, // Faster era transitions for testing
+            bootstrap_blocks: 10,   // Very short bootstrap for stress tests
+            bootstrap_grace_period_secs: 2, // Minimal grace for stress tests
             initial_reward: stress.block_reward,
             initial_bond: stress.bond_per_producer,
             base_block_size: BASE_BLOCK_SIZE,

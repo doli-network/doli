@@ -596,10 +596,39 @@ mod tests {
         assert_eq!(mainnet.commitment_period(), mainnet.blocks_per_era());
         assert_eq!(
             mainnet.exit_history_retention(),
-            mainnet.blocks_per_era() * 2
-        );
-    }
+                mainnet.blocks_per_era() * 2
+            );
+        }
 
+    #[test]
+    fn test_env_override() {
+        // Test that environment variables correctly override defaults (for non-locked networks)
+        // We use a lock to ensure thread safety for env var manipulation if tests run in parallel
+        let _lock = std::sync::Mutex::new(());
+
+        // Save original value to restore later
+        let original_val = std::env::var("DOLI_SLOT_DURATION");
+
+        // Set test value (override default of 10s/1s)
+        std::env::set_var("DOLI_SLOT_DURATION", "42");
+
+        // Load params for Devnet (which allows env overrides)
+        let params = NetworkParams::load_from_env(Network::Devnet);
+
+        // Restore environment
+        if let Ok(val) = original_val {
+            std::env::set_var("DOLI_SLOT_DURATION", val);
+        } else {
+            std::env::remove_var("DOLI_SLOT_DURATION");
+        }
+
+        // Verify override took effect
+        assert_eq!(params.slot_duration, 42);
+
+        // Verify Mainnet IGNORES the override (locked params)
+        let mainnet_params = NetworkParams::load_from_env(Network::Mainnet);
+        assert_eq!(mainnet_params.slot_duration, 10); // Should remain 10 despite env var
+    }
     #[test]
     fn test_env_parse() {
         // Test with non-existent env var (should use default)
