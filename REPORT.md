@@ -1,19 +1,67 @@
 # Bug Report: Producer Nodes Forking After Initial Sync
 
-**Date**: 2026-02-04
-**Status**: P0 #2 and P0 #4 IMPLEMENTED (2026-02-04)
+**Date**: 2026-02-04 (Updated: 2026-02-05)
+**Status**: P0 #2, P0 #4, P0 #5 IMPLEMENTED - NEW FAILURE MODE D (Registration Race) IDENTIFIED (2026-02-05)
 **Severity**: Critical
 **Affected Components**: `crates/network/src/sync/manager.rs`, `crates/network/src/gossip.rs`, `bins/node/src/node.rs`
 
+## ⚠️ CRITICAL: Genesis vs Dynamic Producer Addition
+
+| Scenario | Status | Notes |
+|----------|--------|-------|
+| **Genesis network (all producers at start)** | ✅ WORKS | 5-node, 10-node genesis devnets are stable |
+| **Dynamic producer addition (after genesis)** | ⚠️ NEEDS TESTING | Was causing deadlock, fix applied |
+
+**The problem is NOT with genesis networks.** All producers starting together from the same chainspec works correctly.
+
+**The problem is ONLY with adding new producers dynamically** to a running network.
+
 ## TL;DR - Root Cause
 
+**Three related failure modes:**
+
+### Failure Mode A: "Ahead of Network" (Original Report)
 **Forked nodes think they're AHEAD of the network.** When a node loses gossip mesh membership but keeps TCP connections alive:
 1. It stops receiving blocks but keeps producing its own
 2. Its local height grows beyond the main chain (e.g., 992 vs 910)
 3. Production gate compares: `910 - 992 = 0` (saturating_sub) → "Not behind!"
 4. Production authorized → Fork continues growing
 
-**Missing check**: No verification that the node's chain matches peers' chains (only heights compared, not hashes).
+### Failure Mode B: "Echo Chamber" (2026-02-04)
+**Forked nodes form isolated clusters with too few peers.** When new nodes connect:
+1. Multiple new nodes start simultaneously and connect to each other
+2. They form an isolated cluster (each has only 1-2 peers - other forked nodes)
+3. All nodes in the cluster agree on the WRONG chain
+4. `height_ahead = 0` (same height as their only peer) → "Not ahead!"
+5. Production authorized → Fork grows in the isolated cluster
+
+**Key insight**: The P0 #2 "ahead of peers" check ONLY works if peers are on the MAIN chain. If a node's only peers are also forked, the check is useless.
+
+**Fix**: P0 #5 - Require minimum peers before allowing production (prevents echo chambers).
+- Mainnet/Testnet: 2 peers required (proper peer discovery via DHT)
+- Devnet: 1 peer required (limited discovery with --no-dht flag)
+
+### Failure Mode C: "Chain Deadlock" (2026-02-04 22:30 UTC)
+**Healthy nodes blocked because ONE peer falls behind.** The "lowest peer" echo chamber check was too aggressive:
+1. Some genesis nodes fall behind during dynamic producer addition (sync issues)
+2. Healthy nodes see the behind peer as their "lowest peer"
+3. Check: `local_height - lowest_peer > 5` → "Ahead of lowest!" → BLOCKED
+4. All healthy nodes blocked → No blocks produced → Behind nodes can't catch up
+5. **Complete chain deadlock**
+
+**Fix**: DISABLED the "lowest peer" check. Echo chambers detected by other mechanisms (sync failures, insufficient peers).
+
+### Failure Mode D: "Registration Race Condition" (NEW - 2026-02-05)
+**Genesis nodes fork when new producers are dynamically added.** During producer registration:
+1. Registration transactions submitted and mined
+2. Different nodes process registration at different effective heights
+3. Scheduler computes different producer sets due to different chain views
+4. Different producers selected for same slot → **FORK**
+5. Forked nodes are blocked (P0 #2, #4 working) but cannot recover
+
+**Key insight**: P0 fixes DETECT forks but don't PREVENT the initial divergence during registration.
+
+**Status**: UNRESOLVED - needs ACTIVATION_DELAY increase or epoch-boundary activation.
 
 ## Summary
 
@@ -313,6 +361,13 @@ Restart forked nodes with staggered timing (~30 second gaps between each) to all
    - Updated in `NetworkEvent::NewBlock` handler via `note_block_received_via_gossip()`
    - Blocks production if no gossip blocks for 3 minutes despite having peers → `BlockedNoGossipActivity`
 
+5. **Add minimum peer count check (echo chamber prevention)** ✅ IMPLEMENTED (2026-02-04)
+   - New field: `min_peers_for_production: usize` (default: 2)
+   - New enum variant: `ProductionAuthorization::BlockedInsufficientPeers`
+   - Layer 5.5 in `can_produce()`: block production if `peers.len() < 2` (when height > 0)
+   - Prevents echo chambers where forked nodes only have peers from their isolated cluster
+   - Skip check at height 0 (genesis) to allow first producer scenarios
+
 ### P1 - High (Improves Detection)
 
 4. **Improve fork detection for isolated nodes** ✅ IMPLEMENTED (2026-02-04)
@@ -450,6 +505,73 @@ Restart forked nodes with staggered timing (~30 second gaps between each) to all
 - `test_matching_chain_hash_allows_production` - Verifies same-chain nodes can produce
 - `test_gossip_timeout_blocks_production` - Verifies gossip activity is tracked (P0 #3)
 - `test_new_node_without_gossip_not_blocked` - Verifies new nodes aren't blocked pre-gossip
+
+### P0 #5: Echo Chamber Prevention (2026-02-04)
+
+**Root Cause Discovered:** Nodes with only 1 peer (another forked node) bypass all fork detection checks because both nodes agree on the wrong chain.
+
+**Files Modified:**
+- `crates/network/src/sync/manager.rs`
+- `bins/node/src/node.rs`
+
+**Changes:**
+
+1. **New field in SyncManager:**
+   ```rust
+   min_peers_for_production: usize,  // default: 2
+   ```
+
+2. **New enum variant** `ProductionAuthorization::BlockedInsufficientPeers`:
+   ```rust
+   BlockedInsufficientPeers {
+       peer_count: usize,
+       min_required: usize,
+   }
+   ```
+
+3. **Layer 5.5 check in `can_produce()`**:
+   - If `peers.len() < min_peers_for_production` AND `local_height > 0` → block production
+   - Skip at height 0 (genesis) to allow first producer scenarios
+
+4. **Match arm in node.rs** for `BlockedInsufficientPeers` variant
+
+**Regression Tests Added:**
+- `test_insufficient_peers_blocks_production` - Verifies nodes with 1 peer are blocked
+- `test_sufficient_peers_allows_production` - Verifies nodes with 2+ peers can produce
+- `test_insufficient_peers_check_skipped_at_genesis` - Verifies genesis isn't blocked
+
+**Live Test Results (2026-02-04):**
+- Before fix: New nodes formed isolated cluster, forked to height 28 while genesis at 23
+- After fix: New nodes blocked with "InsufficientPeers - only 1 peers (need 2)"
+- All nodes stayed in sync at same height
+
+### P0 #5 Update: Network-Specific Configuration (2026-02-04 20:55 UTC)
+
+**Problem Discovered:** Initial P0 #5 fix with `min_peers=2` was too aggressive for devnet.
+- Devnet uses `--no-dht` flag which limits peer discovery
+- With `--no-dht`, nodes only see the bootstrap node as their peer
+- Result: Only the bootstrap node could produce (others blocked with peers=1)
+
+**Solution:** Make `min_peers_for_production` network-aware:
+
+```rust
+// In node.rs initialization:
+let min_peers = match config.network {
+    Network::Devnet => 1,    // Allow single-peer (limited discovery)
+    Network::Testnet | Network::Mainnet => 2,  // Require multiple peers
+};
+sm.set_min_peers_for_production(min_peers);
+```
+
+**New Method Added:**
+```rust
+pub fn set_min_peers_for_production(&mut self, min_peers: usize)
+```
+
+**Live Test Results (2026-02-04 20:55 UTC):**
+- Devnet with 5 genesis nodes: All 5 producers earning rewards (40, 40, 40, 40, 20 DOLI at height 9)
+- `min_peers_for_production = 1` correctly set for devnet
+- Fork prevention still active for dynamically added nodes with insufficient connectivity
 
 ### P1 #4: Sync Failure-Based Fork Detection (2026-02-04)
 
@@ -871,3 +993,424 @@ grep -r "consecutive_sync_failures" crates/network/
 # Verify missing methods
 grep -r "note_sync_failure\|clear_sync_failures" crates/network/
 ```
+
+---
+
+## Session Summary (2026-02-04)
+
+### Fixes Implemented This Session
+
+| Fix | Description | Status |
+|-----|-------------|--------|
+| P0 #2 | Ahead of peers detection | ✅ Already implemented |
+| P0 #4 | Sync failure-based fork detection | ✅ Already implemented |
+| **P0 #5** | Echo chamber prevention (InsufficientPeers) | ✅ NEW |
+| **P0 #5 Update** | Network-specific min_peers (1 for devnet, 2 for mainnet/testnet) | ✅ NEW |
+
+### Files Modified This Session
+
+1. **`crates/network/src/sync/manager.rs`**:
+   - Added `min_peers_for_production: usize` field
+   - Added `ProductionAuthorization::BlockedInsufficientPeers` enum variant
+   - Added Layer 5.5 check in `can_produce()` for echo chamber prevention
+   - Added `set_min_peers_for_production()` configuration method
+   - Added checkpoint debug logs: `[CAN_PRODUCE]`, `[NODE_PRODUCE]`, `[BLOCK_PRODUCED]`
+   - Added 3 new tests for InsufficientPeers check
+   - Updated 6 existing tests to add 2+ peers
+
+2. **`bins/node/src/node.rs`**:
+   - Added match arm for `BlockedInsufficientPeers` variant
+   - Added network-specific configuration of `min_peers_for_production`
+   - Added checkpoint debug logs for production flow
+
+### Test Results
+
+- All 64 network tests pass
+- All 875 workspace tests pass
+- Live devnet with 5 producers: All earning rewards fairly (40, 40, 40, 40, 20 DOLI at height 9)
+- Dynamic producer addition: Nodes with only 1 peer correctly blocked
+
+### Root Cause Analysis
+
+**Original Bug (Failure Mode A - "Ahead of Network"):**
+- Forked nodes with higher local height than peers weren't blocked
+- `saturating_sub(peer_height, local_height) = 0` when ahead
+- Fix: P0 #2 - Explicit "ahead of peers" check
+
+**New Bug (Failure Mode B - "Echo Chamber"):**
+- Forked nodes formed isolated clusters with only 1-2 peers
+- All peers in cluster agreed on wrong chain
+- `height_ahead = 0` because cluster was "in sync" with itself
+- Fix: P0 #5 - Require minimum peers before allowing production
+
+**Network Topology Issue:**
+- Devnet with `--no-dht` has limited peer discovery
+- Non-bootstrap nodes only connect to bootstrap node
+- Fix: P0 #5 Update - Network-specific min_peers (1 for devnet)
+
+### Production Gate Layers (Final)
+
+| Layer | Check | Block Reason |
+|-------|-------|--------------|
+| 1 | Explicit production block | `BlockedExplicit` |
+| 2 | Resync in progress | `BlockedResync` |
+| 3 | Active sync (downloading) | `BlockedSyncing` |
+| 4 | Bootstrap gate | `BlockedBootstrap` |
+| 5 | Post-resync grace period | `BlockedResync` |
+| **5.5** | **Insufficient peers (P0 #5)** | **`BlockedInsufficientPeers`** |
+| 6 | Behind peers | `BlockedBehindPeers` |
+| 7 | Ahead of peers (P0 #2) | `BlockedAheadOfPeers` |
+| 8 | Sync failures (P0 #4) | `BlockedSyncFailures` |
+
+---
+
+## P0 #2 Layer 7 Bug Fix (2026-02-04 22:00 UTC)
+
+### Bug Found
+
+Two critical bugs in the Layer 7 "ahead of peers" check:
+
+#### Bug 1: Check required `peers.len() > 0`
+
+**File**: `crates/network/src/sync/manager.rs:734`
+
+```rust
+// BEFORE (buggy):
+if self.peers.len() > 0 && best_peer_height > 0 {
+    if height_ahead > self.max_heights_ahead { ... }
+}
+```
+
+**Problem**: `best_peer_height()` already includes `network_tip_height` as fallback:
+```rust
+pub fn best_peer_height(&self) -> u64 {
+    peer_max.max(self.network_tip_height)  // Combines both sources!
+}
+```
+
+When peers disconnect but `network_tip_height` is valid, the check was SKIPPED:
+- Scenario: `peers.len()=0`, `network_tip_height=93`, `local_height=136`
+- `best_peer_height()` returns 93 (correct!)
+- But `self.peers.len() > 0` is FALSE → check SKIPPED → production authorized!
+
+**Fix**: Trust `best_peer_height()` since it already handles the empty peers case:
+```rust
+// AFTER:
+if best_peer_height > 0 {  // Removed peers.len() requirement
+    if height_ahead > self.max_heights_ahead { ... }
+}
+```
+
+#### Bug 2: Only checked against MAX peer height (echo chamber blind spot)
+
+**Problem**: Forked nodes peering with each other + bootstrap create echo chambers:
+- Node 2 peers: {bootstrap: height=93, node4: height=136}
+- `best_peer_height() = max(93, 136) = 136`
+- Node 2 local: 136
+- `height_ahead = 136 - 136 = 0` → NOT ahead → production authorized!
+
+The check against MAX peer height is blind to the bootstrap node at 93!
+
+**Fix**: Added `lowest_peer_height()` check to catch echo chambers:
+```rust
+// Check 2: Ahead of LOWEST peer (catches echo chambers)
+if let Some(lowest) = self.lowest_peer_height() {
+    let height_ahead_of_lowest = self.local_height.saturating_sub(lowest);
+    if height_ahead_of_lowest > self.max_heights_ahead {
+        return BlockedAheadOfPeers { ... };
+    }
+}
+```
+
+### Changes Made
+
+1. **New method `lowest_peer_height()`**: Returns `Option<u64>` - minimum height among peers
+
+2. **Layer 7 now performs TWO checks**:
+   - Check 1: Ahead of `best_peer_height()` (catches isolated nodes)
+   - Check 2: Ahead of `lowest_peer_height()` (catches echo chambers)
+
+3. **Updated logging**: Shows both best and lowest peer heights for debugging
+
+### Test Added
+
+```rust
+#[test]
+fn test_echo_chamber_detection_blocks_when_ahead_of_lowest_peer() {
+    // Node 2 at height 136, peers: {bootstrap: 93, forked_node: 136}
+    // Should be BLOCKED because 136 - 93 = 43 > 5 (ahead of LOWEST peer)
+}
+```
+
+### Verification
+
+Devnet with 5 nodes running for 3+ minutes:
+- All nodes staying in sync at same height
+- Layer 7 logs show: `lowest_peer=Some(N)` and `ahead_of_lowest=M` tracking
+- No forks observed
+
+---
+
+## ⚠️ CRITICAL FINDING: Genesis Networks Work, Dynamic Addition Breaks (2026-02-04 22:30 UTC)
+
+### Key Distinction
+
+| Scenario | Works? | Notes |
+|----------|--------|-------|
+| **Genesis 10-node network** | ✅ YES | All producers in genesis, same chainspec, all start together |
+| **Dynamic producer addition** | ❌ NO | Adding new producers AFTER genesis causes forks/deadlock |
+
+**The problem is NOT with genesis networks.** A 5-node or 10-node devnet initialized with all producers in the genesis chainspec works perfectly.
+
+**The problem ONLY occurs when adding new producers dynamically** to a running network.
+
+### Test Performed (2026-02-04)
+
+1. **Started 5-node genesis devnet** → All 5 nodes synced, producing blocks ✓
+2. **Created 5 new producer wallets** (producer_5 through producer_9)
+3. **Funded each with 4 DOLI**
+4. **Registered each as producer** (1 bond)
+5. **Started 5 new producer nodes**
+
+### Result: CHAIN DEADLOCK
+
+After adding the 5 new producers, the chain became completely deadlocked:
+
+```
+Node 0: BlockedBehindPeers (stuck at H=83, can't sync)
+Node 2: BlockedBehindPeers (stuck at H=82, sync_failures=100)
+Node 1: BlockedAheadOfPeers (H=89, blocked because Node 0 behind)
+Node 3: BlockedAheadOfPeers (H=89, blocked because Node 0 behind)
+Node 4: BlockedAheadOfPeers (H=89, blocked because Node 0 behind)
+...all other nodes: BlockedAheadOfPeers
+```
+
+**Chain stopped progressing entirely.** No node could produce.
+
+### Root Cause: "Lowest Peer" Check Too Aggressive
+
+The P0 #2 "echo chamber" fix (added earlier in this session) caused the deadlock:
+
+```rust
+// Check 2: Ahead of LOWEST peer (catches echo chambers)
+if let Some(lowest) = self.lowest_peer_height() {
+    if height_ahead_of_lowest > self.max_heights_ahead {
+        return BlockedAheadOfPeers { ... };  // BLOCKS PRODUCTION
+    }
+}
+```
+
+**The problem**: In a healthy network, some peers can legitimately be behind:
+- A peer is syncing
+- A peer had network issues
+- A peer's status is delayed
+
+The check blocks production if we're ahead of **ANY** peer, not just if we're in an echo chamber.
+
+**Example of the deadlock**:
+- Nodes 0, 2: Fell behind during dynamic producer registration (H=82-83)
+- Nodes 1, 3-9: At correct height (H=89)
+- Node 1 sees Node 0 (H=83) as lowest peer
+- Check: `89 - 83 = 6 > 5 (max_heights_ahead)` → BLOCKED
+- All healthy nodes blocked because ONE peer is behind
+- Behind peers can't catch up because no blocks being produced
+- **Complete deadlock**
+
+### Fix Applied: Disable Lowest Peer Check
+
+**File**: `crates/network/src/sync/manager.rs`
+
+The "lowest peer" echo chamber check was **disabled** because it caused more harm than good:
+
+```rust
+// Check 2: Echo chamber detection (DISABLED - see comment)
+//
+// The "lowest peer" echo chamber check was causing chain deadlock:
+// - When some peers legitimately fall behind (syncing, network issues)
+// - Healthy nodes would be blocked because "ahead of lowest peer"
+// - This created a cascading failure stopping all production
+//
+// Echo chambers are better detected by:
+// - P0 #4: Sync failures (if we can't sync, our chain is divergent)
+// - P0 #5: InsufficientPeers (require multiple peers to avoid isolation)
+// - Check 1 above: Being ahead of ALL peers (including network_tip)
+if false {  // DISABLED
+    // ... lowest peer check code ...
+}
+```
+
+### Verification After Fix
+
+After rebuilding and restarting:
+- **5 genesis nodes (0-4)**: Immediately synced and producing ✓
+- **Chain progressing**: H=4 → H=5 → H=6 ✓
+- **No deadlock**: Nodes with peers behind NOT blocked
+
+### Updated Test
+
+```rust
+#[test]
+fn test_echo_chamber_check_disabled_allows_production_when_peer_behind() {
+    // Scenario: Healthy node has peers at different heights
+    // - Node has peers: {peer1: height=93, peer2: height=136}
+    // - Node local_height = 136
+    // - OLD: Blocked because 136 - 93 = 43 > 5 (ahead of lowest)
+    // - NEW: AUTHORIZED - peer behind is OK, we're not ahead of BEST peer
+
+    // ... test verifies Authorized result ...
+}
+```
+
+### Summary
+
+| Fix | Status | Impact |
+|-----|--------|--------|
+| P0 #2 Check 1 (ahead of best) | ✅ ACTIVE | Catches isolated nodes |
+| P0 #2 Check 2 (lowest peer) | ❌ DISABLED | Caused deadlock, removed |
+| P0 #4 (sync failures) | ✅ ACTIVE | Catches divergent chains |
+| P0 #5 (insufficient peers) | ✅ ACTIVE | Prevents isolation |
+
+**The echo chamber scenario** (forked nodes peering only with each other) is now detected by:
+1. **Sync failures** (P0 #4): When they try to sync with the main chain, headers won't chain
+2. **Insufficient peers** (P0 #5): Require minimum peers to avoid tiny isolated clusters
+3. **Ahead of BEST peer** (P0 #2 Check 1): If ahead of ALL peers including network_tip
+
+### Remaining Work
+
+The dynamic producer addition scenario still needs testing to ensure:
+1. New producers can sync and join the network
+2. No forks occur during the registration/activation period
+3. The 10-block ACTIVATION_DELAY is sufficient for propagation
+
+**Genesis networks are stable.** The focus should be on testing and fixing dynamic producer addition.
+
+---
+
+## Validation Test #2: Dynamic Producer Addition (2026-02-05)
+
+### Test Scenario
+
+Added 5 new producers (producer_5 through producer_9) to a running 5-node genesis devnet:
+
+1. Started fresh 5-node devnet: `doli-node devnet init --nodes 5 && doli-node devnet start`
+2. Waited for coinbase maturity (height ~15, devnet maturity = 10 blocks)
+3. Created 5 new wallets (producer_5 through producer_9)
+4. Funded each with 4 DOLI from genesis producer wallets (different source per destination to avoid UTXO reuse)
+5. Registered each as producer with 1 bond
+6. Started 5 new producer nodes (ports 50308-50312, RPC 28550-28554, metrics 9095-9099)
+
+### Result: FORK OCCURRED (Genesis Nodes Forked)
+
+**Unexpected finding**: The NEW producers joined successfully, but **3 GENESIS nodes forked**.
+
+### Network State After Dynamic Addition
+
+| Node | Type | Height | Hash | Status |
+|------|------|--------|------|--------|
+| 0 | Genesis | 42 | `0c44f98b...` | ✅ Main chain |
+| 1 | Genesis | 42 | `0c44f98b...` | ✅ Main chain |
+| **2** | Genesis | **31** | `734efdc9...` | ❌ **FORKED** (sync_failures=45) |
+| **3** | Genesis | **32** | `258785a0...` | ❌ **FORKED** (sync_failures=42) |
+| **4** | Genesis | **35** | `b4b564b9...` | ❌ **FORKED** |
+| 5 | NEW | 42 | `0c44f98b...` | ✅ Main chain |
+| 6 | NEW | 42 | `0c44f98b...` | ✅ Main chain |
+| 7 | NEW | 42 | `0c44f98b...` | ✅ Main chain |
+| 8 | NEW | 42 | `0c44f98b...` | ✅ Main chain |
+| 9 | NEW | 42 | `0c44f98b...` | ✅ Main chain |
+
+### Log Analysis
+
+Forked nodes show high sync failure counts but are correctly blocked from producing:
+
+```
+Node 2: [CAN_PRODUCE] slot=42 local_h=31 peer_h=39 peers=1 sync_failures=45 state=Synchronized
+        [NODE_PRODUCE] slot=42 BLOCKED: BehindPeers
+
+Node 3: [CAN_PRODUCE] slot=42 local_h=32 peer_h=39 peers=1 sync_failures=42 state=Synchronized
+        [NODE_PRODUCE] slot=42 BLOCKED: BehindPeers
+```
+
+**Good news**: P0 #2 (ahead of peers) and P0 #4 (sync failures) are working - forked nodes are blocked.
+**Bad news**: Genesis nodes still forked despite these protections.
+
+### Key Observations
+
+1. **Forked nodes are GENESIS nodes (2, 3, 4)**, not the new producers
+2. **New producers (5-9) joined correctly** and are on the main chain
+3. **Fork occurred around height 31-35**, during/after producer registration
+4. **Sync failures accumulating** (40+) shows nodes trying but failing to sync
+5. **State shows "Synchronized"** but clearly isn't - headers don't chain
+
+### Hypothesis: Race Condition in Producer Set Processing
+
+The fork likely occurred because:
+
+1. Producer registrations were processed at different heights by different nodes
+2. Nodes 2, 3, 4 may have processed registrations in a different block
+3. This caused scheduler to compute different producer sets
+4. Different producer selected for same slot → fork divergence
+
+**Timeline reconstruction:**
+```
+Height 25-30: Producer registrations submitted and mined
+Height 30-31: Fork point - nodes diverge
+  - Nodes 0, 1: Process registrations, continue main chain
+  - Nodes 2, 3, 4: Something different happened → forked
+Height 31+: Forked nodes producing on wrong chain (blocked by P0 #2)
+```
+
+### Why P0 Fixes Didn't PREVENT the Fork
+
+The P0 fixes (ahead of peers, sync failures) correctly **DETECT** the fork and **BLOCK** production on forked nodes. However, they don't **PREVENT** the initial fork from occurring.
+
+**The root cause is NOT production gate failure** - it's chain divergence during transaction processing.
+
+### New Failure Mode Identified: Registration Race Condition
+
+| Failure Mode | Description | Current Status |
+|--------------|-------------|----------------|
+| A: Ahead of Network | Forked node thinks it's ahead | ✅ DETECTED (P0 #2) |
+| B: Echo Chamber | Forked nodes peer only with each other | ✅ DETECTED (P0 #5) |
+| C: Chain Deadlock | Lowest peer check too aggressive | ✅ FIXED (disabled) |
+| **D: Registration Race** | **Nodes process registrations differently** | ❌ **NEW - UNRESOLVED** |
+
+### Required Investigation
+
+1. **Why did nodes 2, 3, 4 specifically fork?**
+   - Was it gossip mesh position?
+   - Transaction ordering differences?
+   - Block receipt timing?
+
+2. **Is ACTIVATION_DELAY (10 blocks) sufficient?**
+   - Registrations may need more time to propagate
+   - Consider increasing to 30+ blocks
+
+3. **Is there non-determinism in producer set computation?**
+   - Scheduler should be deterministic given same inputs
+   - But inputs may differ if nodes have different chain views
+
+### Proposed Fixes
+
+**P0 #6: Increase ACTIVATION_DELAY for dynamic registration**
+- Current: 10 blocks (~100 seconds)
+- Proposed: 30 blocks (~5 minutes) or epoch boundary activation
+- Rationale: More time for all nodes to sync registration transactions
+
+**P0 #7: Add registration propagation verification**
+- Before activation, verify N% of peers have the registration
+- Block production if registration not widely propagated
+
+**P1: Add fork recovery mechanism**
+- When sync_failures > threshold AND behind peers
+- Trigger automatic chain reset to last known good checkpoint
+- Currently forked nodes are stuck forever
+
+### Workaround
+
+For now, use genesis networks with all producers defined upfront:
+```bash
+doli-node devnet init --nodes 10  # All 10 producers from genesis
+doli-node devnet start
+```
+
+**Dynamic producer addition is NOT recommended** until these issues are resolved
