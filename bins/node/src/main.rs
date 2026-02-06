@@ -615,6 +615,16 @@ async fn run_node(
                 );
             }
 
+            // Set slot duration from chainspec (consensus-critical)
+            // This ensures all nodes compute the same slot numbers regardless of local .env
+            if spec.consensus.slot_duration > 0 {
+                config.slot_duration_override = Some(spec.consensus.slot_duration);
+                info!(
+                    "Slot duration from chainspec: {}s (overrides local config)",
+                    spec.consensus.slot_duration
+                );
+            }
+
             let genesis_producers = spec.get_genesis_producers();
             if !genesis_producers.is_empty() {
                 info!(

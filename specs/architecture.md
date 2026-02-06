@@ -772,6 +772,8 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 - VDF: iterations for blocks and registration
 - Time structure: blocks per year/epoch
 
+**Chainspec overrides**: When a chainspec file is provided (`--chainspec`), consensus-critical parameters (`genesis_time`, `slot_duration`) are read from the chainspec rather than from `.env`. This ensures all nodes on the same network use identical timing parameters regardless of local configuration.
+
 **Security**: Critical parameters (VDF, emission, timing) are **locked for mainnet** and cannot be overridden via environment. Attempting to override logs a warning and uses hardcoded values.
 
 **tpop/** - Telemetry Proof of Presence (NOT consensus):

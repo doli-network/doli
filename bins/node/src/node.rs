@@ -143,6 +143,13 @@ impl Node {
         };
         let genesis_hash = chain_state.genesis_hash;
 
+        // Apply slot_duration from chainspec if available (consensus-critical)
+        // This ensures all nodes compute the same slot numbers regardless of local .env
+        if let Some(slot_duration) = config.slot_duration_override {
+            params.slot_duration = slot_duration;
+            info!("Slot duration from chainspec: {}s", slot_duration);
+        }
+
         // For devnet, handle genesis_time from multiple sources (in priority order):
         // 1. Chainspec override (config.genesis_time_override) - ensures all nodes use same time
         // 2. Stored state (chain_state.genesis_timestamp) - for rejoining existing network
