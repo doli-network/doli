@@ -146,8 +146,8 @@ pub const BOOTSTRAP_GRACE_PERIOD_SECS: u64 = 15;
 
 /// Maximum clock drift allowed (seconds).
 /// Nodes with clocks drifting more than this are considered out of sync.
-/// With 10-second slots, this is 1 slot worth of drift.
-pub const MAX_DRIFT: u64 = 10;
+/// Tightened from 10s to 1s for 55ms VDF + 1.3s sequential fallback windows.
+pub const MAX_DRIFT: u64 = 1;
 
 /// Network margin for block timing (milliseconds).
 /// Time reserved for presence signature collection.
@@ -842,9 +842,10 @@ pub const TOTAL_SUPPLY: Amount = 2_522_880_000_000_000;
 /// Must be large enough for cryptographic security.
 pub const VDF_DISCRIMINANT_BITS: u32 = 1024;
 
-/// Block VDF iterations (10,000,000 iterations ~= 700ms on reference hardware)
+/// Block VDF iterations (800,000 iterations ~= 55ms on reference hardware)
 /// This is the fixed T parameter for block production VDF.
-pub const T_BLOCK: u64 = 10_000_000;
+/// Reduced from 10M (~700ms) to enable 1.3s sequential fallback windows.
+pub const T_BLOCK: u64 = 800_000;
 
 /// Legacy alias for T_BLOCK
 pub const T_BLOCK_BASE: u64 = T_BLOCK;
@@ -852,11 +853,11 @@ pub const T_BLOCK_BASE: u64 = T_BLOCK;
 /// Maximum T value for blocks - same as T_BLOCK (fixed)
 pub const T_BLOCK_CAP: u64 = T_BLOCK;
 
-/// VDF target duration in milliseconds (~700ms heartbeat)
-pub const VDF_TARGET_MS: u64 = 700;
+/// VDF target duration in milliseconds (~55ms heartbeat)
+pub const VDF_TARGET_MS: u64 = 55;
 
-/// VDF deadline in milliseconds (must complete within slot)
-pub const VDF_DEADLINE_MS: u64 = 10_000;
+/// VDF deadline in milliseconds (must complete within fallback window)
+pub const VDF_DEADLINE_MS: u64 = 1_300;
 
 /// Get T parameter for block VDF (fixed at T_BLOCK).
 ///
@@ -1235,29 +1236,33 @@ impl RegistrationQueue {
 // The producer with highest presence_score builds the block.
 // If they don't submit in time, fallbacks can step in.
 
-/// Primary producer window in milliseconds (0-3000ms).
-/// Only the primary producer (rank 0) can submit.
+/// Primary producer window in milliseconds - DEPRECATED.
+/// Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows instead.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const PRIMARY_WINDOW_MS: u64 = 3_000;
 
-/// Secondary producer window in milliseconds (0-6000ms).
-/// Primary or secondary (rank 0-1) can submit.
+/// Secondary producer window in milliseconds - DEPRECATED.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const SECONDARY_WINDOW_MS: u64 = 6_000;
 
-/// Tertiary producer window in milliseconds (0-10000ms).
-/// Any of the top 3 producers (rank 0-2) can submit.
+/// Tertiary producer window in milliseconds - DEPRECATED.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const TERTIARY_WINDOW_MS: u64 = 10_000;
 
 /// Signature collection window - deprecated with 10s slots.
 /// Block propagation happens within the slot window.
 pub const SIGNATURE_WINDOW_MS: u64 = 0;
 
-/// Primary producer window in seconds (0-3s).
+/// Primary producer window in seconds - DEPRECATED.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const PRIMARY_WINDOW_SECS: u64 = 3;
 
-/// Secondary producer window in seconds (0-6s).
+/// Secondary producer window in seconds - DEPRECATED.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const SECONDARY_WINDOW_SECS: u64 = 6;
 
-/// Tertiary producer window in seconds (0-10s = full slot).
+/// Tertiary producer window in seconds - DEPRECATED.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub const TERTIARY_WINDOW_SECS: u64 = 10;
 
 /// Fast block threshold - reserved for future VDF timing optimizations
@@ -1265,9 +1270,49 @@ pub const FAST_THRESHOLD_MS: u64 = 0;
 pub const FAST_THRESHOLD: u64 = 0;
 
 /// Maximum number of fallback producers per slot.
-/// If the primary producer doesn't submit within their window,
-/// secondary and tertiary producers can step in.
-pub const MAX_FALLBACK_PRODUCERS: usize = 3;
+/// With sequential 1.3s windows: 7 ranks (0-6) each get exclusive 1.3s,
+/// plus an emergency window (9.1-10s) where all ranks are eligible.
+pub const MAX_FALLBACK_PRODUCERS: usize = 7;
+
+/// Sequential fallback timeout in milliseconds.
+/// Each rank gets an exclusive 1.3s window before the next rank takes over.
+/// 55ms VDF + ~600ms propagation = 655ms, leaving 645ms margin per window.
+pub const FALLBACK_TIMEOUT_MS: u64 = 1_300;
+
+/// Maximum fallback ranks (0-6 = 7 ranks, each with exclusive 1.3s window).
+pub const MAX_FALLBACK_RANKS: usize = 7;
+
+/// Emergency window start in milliseconds.
+/// After all 7 sequential windows (7 * 1300 = 9100ms), an emergency window
+/// opens where ALL ranks are eligible until slot end (10000ms).
+pub const EMERGENCY_WINDOW_START_MS: u64 = 9_100;
+
+/// Maximum clock drift in milliseconds for fine-grained NTP validation.
+/// Nodes with drift > 200ms should enable NTP synchronization.
+pub const MAX_DRIFT_MS: u64 = 200;
+
+// ==================== Tiered Architecture Constants ====================
+
+/// Maximum Tier 1 validator count. Top N producers by effective_weight.
+/// 500 nodes: O(log 500) = ~9 comparisons, 2-hop gossip in ~120ms.
+pub const TIER1_MAX_VALIDATORS: usize = 500;
+
+/// Maximum Tier 2 attestor count. Validate blocks and produce attestations.
+pub const TIER2_MAX_ATTESTORS: usize = 15_000;
+
+/// Number of gossip regions for Tier 2 sharding.
+/// Each region has ~1,000 attestors with its own mesh.
+pub const NUM_REGIONS: u32 = 15;
+
+/// Percentage of block reward kept by the delegate (Tier 1/2 node).
+pub const DELEGATE_REWARD_PCT: u32 = 10;
+
+/// Percentage of block reward distributed to stakers (Tier 3 delegators).
+pub const STAKER_REWARD_PCT: u32 = 90;
+
+/// Unbonding period for delegation revocation (in slots).
+/// Same as WITHDRAWAL_DELAY_SLOTS for consistency.
+pub const DELEGATION_UNBONDING_SLOTS: u64 = 60_480; // ~7 days
 
 /// Size of the eligible producer pool for weighted selection.
 ///
@@ -1717,24 +1762,21 @@ impl ConsensusParams {
     }
 }
 
-/// Calculate scaled fallback windows for non-mainnet slot durations
-///
-/// Mainnet uses 60s slots with windows at 30s, 45s, 60s.
-/// This scales proportionally for other slot durations.
-///
-/// Returns (primary_window, secondary_window, tertiary_window) in seconds
+/// Calculate scaled fallback windows for non-mainnet slot durations - DEPRECATED.
+/// Use sequential 1.3s windows (FALLBACK_TIMEOUT_MS) instead.
+#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 1.3s windows")]
 pub fn scaled_fallback_windows(slot_duration_secs: u64) -> (u64, u64, u64) {
-    // Mainnet ratios: 30/60 = 0.5, 45/60 = 0.75, 60/60 = 1.0
-    let primary = slot_duration_secs / 2; // 50% of slot
-    let secondary = (slot_duration_secs * 3) / 4; // 75% of slot
-    let tertiary = slot_duration_secs; // 100% of slot
+    let primary = slot_duration_secs / 2;
+    let secondary = (slot_duration_secs * 3) / 4;
+    let tertiary = slot_duration_secs;
     (primary.max(1), secondary.max(1), tertiary)
 }
 
-/// Determine allowed producer rank for non-mainnet networks
-///
-/// Uses scaled windows based on slot duration
+/// Determine allowed producer rank for non-mainnet networks - DEPRECATED.
+/// Use eligible_rank_at_ms() instead.
+#[deprecated(note = "Use eligible_rank_at_ms() for sequential 1.3s windows")]
 pub fn allowed_producer_rank_scaled(slot_offset_secs: u64, slot_duration_secs: u64) -> usize {
+    #[allow(deprecated)]
     let (primary, secondary, _) = scaled_fallback_windows(slot_duration_secs);
 
     if slot_offset_secs < primary {
@@ -1746,7 +1788,7 @@ pub fn allowed_producer_rank_scaled(slot_offset_secs: u64, slot_duration_secs: u
     }
 }
 
-/// Select the producer for a slot using consecutive tickets.
+/// Select the producer for a slot using evenly-distributed ticket offsets.
 ///
 /// This is the primary selection function. It uses a deterministic round-robin
 /// based on bond count (consecutive tickets). Selection is independent of
@@ -1756,7 +1798,8 @@ pub fn allowed_producer_rank_scaled(slot_offset_secs: u64, slot_duration_secs: u
 /// 1. Calculate total tickets = sum of all producer bond counts
 /// 2. ticket_index = slot % total_tickets
 /// 3. Find producer whose consecutive ticket range contains ticket_index
-/// 4. Return up to MAX_FALLBACK_PRODUCERS for fallback (offset by 33% and 50%)
+/// 4. Return up to MAX_FALLBACK_PRODUCERS using evenly-distributed offsets:
+///    rank_offset = (total_tickets * rank) / MAX_FALLBACK_RANKS
 ///
 /// # Arguments
 /// * `slot` - The slot number
@@ -1789,7 +1832,7 @@ pub fn select_producer_for_slot(
         for (pk, bonds) in &sorted {
             let tickets = (*bonds).max(1);
             if ticket_idx < cumulative + tickets {
-                return Some(pk.clone());
+                return Some(*pk);
             }
             cumulative += tickets;
         }
@@ -1804,20 +1847,14 @@ pub fn select_producer_for_slot(
         result.push(pk);
     }
 
-    // Secondary fallback: consecutive ticket (base + 1)
-    if result.len() < MAX_FALLBACK_PRODUCERS {
-        let secondary_ticket = (primary_ticket + 1) % total_tickets;
-        if let Some(pk) = find_producer(secondary_ticket) {
-            if !result.contains(&pk) {
-                result.push(pk);
-            }
+    // Fallback producers: evenly-distributed offsets across ticket space
+    for rank in 1..MAX_FALLBACK_RANKS {
+        if result.len() >= MAX_FALLBACK_PRODUCERS {
+            break;
         }
-    }
-
-    // Tertiary fallback: consecutive ticket (base + 2)
-    if result.len() < MAX_FALLBACK_PRODUCERS {
-        let tertiary_ticket = (primary_ticket + 2) % total_tickets;
-        if let Some(pk) = find_producer(tertiary_ticket) {
+        let offset = (total_tickets * rank as u64) / MAX_FALLBACK_RANKS as u64;
+        let ticket = (primary_ticket + offset) % total_tickets;
+        if let Some(pk) = find_producer(ticket) {
             if !result.contains(&pk) {
                 result.push(pk);
             }
@@ -1827,82 +1864,100 @@ pub fn select_producer_for_slot(
     result
 }
 
+/// Determine the exclusively eligible rank at a given millisecond offset.
+///
+/// # Sequential 1.3s Fallback Windows
+///
+/// Each rank gets an exclusive 1.3s window. Only ONE rank is eligible at a time:
+/// - 0-1299ms: rank 0 (primary)
+/// - 1300-2599ms: rank 1
+/// - 2600-3899ms: rank 2
+/// - 3900-5199ms: rank 3
+/// - 5200-6499ms: rank 4
+/// - 6500-7799ms: rank 5
+/// - 7800-9099ms: rank 6
+/// - 9100-10000ms: emergency (all ranks eligible, returns None)
+///
+/// Returns Some(rank) for the exclusively eligible rank, or None for emergency window.
+pub const fn eligible_rank_at_ms(offset_ms: u64) -> Option<usize> {
+    if offset_ms >= EMERGENCY_WINDOW_START_MS {
+        None // Emergency window: all ranks eligible
+    } else {
+        Some((offset_ms / FALLBACK_TIMEOUT_MS) as usize)
+    }
+}
+
+/// Check if a specific rank is eligible at a given millisecond offset.
+///
+/// Uses exclusive semantics: only the current rank (or emergency window) is eligible.
+pub const fn is_rank_eligible_at_ms(rank: usize, offset_ms: u64) -> bool {
+    match eligible_rank_at_ms(offset_ms) {
+        None => rank < MAX_FALLBACK_RANKS, // Emergency: all ranks eligible
+        Some(current_rank) => rank == current_rank,
+    }
+}
+
+/// Check if a producer is eligible for a slot at the given time (ms precision).
+///
+/// Uses sequential 1.3s exclusive windows. Only the producer whose rank matches
+/// the current window is eligible (exclusive, not cumulative).
+pub fn is_producer_eligible_ms(
+    producer: &crypto::PublicKey,
+    eligible_producers: &[crypto::PublicKey],
+    slot_offset_ms: u64,
+) -> bool {
+    if let Some(rank) = eligible_producers.iter().position(|p| p == producer) {
+        is_rank_eligible_at_ms(rank, slot_offset_ms)
+    } else {
+        false
+    }
+}
+
 /// Determine the allowed producer rank based on slot offset (in seconds).
 ///
-/// # Proof of Time Windows
+/// Delegates to eligible_rank_at_ms() with seconds-to-ms conversion.
+/// For exclusive sequential semantics, use eligible_rank_at_ms() directly.
 ///
-/// With 10-second slots, windows are:
-/// - 0-3s: Only rank 0 (primary)
-/// - 3-6s: Rank 0 or 1 (primary or secondary)
-/// - 6-10s: Rank 0, 1, or 2 (any of the top 3)
+/// # Sequential 1.3s Fallback Windows
+/// - 0s: rank 0
+/// - 1s: rank 0 (still in 0-1299ms window)
+/// - 2s: rank 1 (in 1300-2599ms window, but at second boundary returns 1)
+/// - etc.
 pub fn allowed_producer_rank(slot_offset_secs: u64) -> usize {
-    if slot_offset_secs < PRIMARY_WINDOW_SECS {
-        0
-    } else if slot_offset_secs < SECONDARY_WINDOW_SECS {
-        1
-    } else {
-        2
+    let offset_ms = slot_offset_secs * 1000;
+    match eligible_rank_at_ms(offset_ms) {
+        Some(rank) => rank,
+        None => MAX_FALLBACK_RANKS - 1, // Emergency: return max rank
     }
 }
 
 /// Determine the allowed producer rank based on slot offset (in milliseconds).
 ///
-/// # Proof of Time Windows
-///
-/// With 10-second slots, windows are:
-/// - 0-3000ms: Only rank 0 (primary)
-/// - 3000-6000ms: Rank 0 or 1 (primary or secondary)
-/// - 6000-10000ms: Rank 0, 1, or 2 (any of the top 3)
-///
-/// This is the preferred function for precise producer eligibility timing.
+/// Delegates to eligible_rank_at_ms(). Returns the exclusively eligible rank.
 pub fn allowed_producer_rank_ms(slot_offset_ms: u64) -> usize {
-    if slot_offset_ms < PRIMARY_WINDOW_MS {
-        0
-    } else if slot_offset_ms < SECONDARY_WINDOW_MS {
-        1
-    } else {
-        2
+    match eligible_rank_at_ms(slot_offset_ms) {
+        Some(rank) => rank,
+        None => MAX_FALLBACK_RANKS - 1, // Emergency: return max rank
     }
 }
 
 /// Check if a producer rank is eligible at a given time offset.
 ///
-/// # Fallback Windows
-/// - 0-3s: Only rank 0 is eligible
-/// - 3-6s: Ranks 0-1 are eligible
-/// - 6-10s: Ranks 0-2 are eligible
-///
-/// # Arguments
-/// * `rank` - The producer's rank (0 = primary, 1 = secondary, 2 = tertiary)
-/// * `offset_ms` - Time offset within the slot in milliseconds
-///
-/// # Returns
-/// true if the rank is eligible at the given offset
+/// # Sequential Fallback Windows (exclusive)
+/// Each rank gets an exclusive 1.3s window. Emergency window (9.1-10s) allows all.
 pub fn is_rank_eligible_at_offset(rank: usize, offset_ms: u64) -> bool {
-    let max_rank = allowed_producer_rank_ms(offset_ms);
-    rank <= max_rank
+    is_rank_eligible_at_ms(rank, offset_ms)
 }
 
 /// Check if a producer is eligible for a slot at the given time.
 ///
-/// Returns true if the producer is in the list of eligible producers
-/// and the current time allows their rank.
+/// Uses sequential 1.3s exclusive windows via is_producer_eligible_ms().
 pub fn is_producer_eligible(
     producer: &crypto::PublicKey,
     eligible_producers: &[crypto::PublicKey],
     slot_offset_secs: u64,
 ) -> bool {
-    let max_rank = allowed_producer_rank(slot_offset_secs);
-
-    for (rank, eligible) in eligible_producers.iter().enumerate() {
-        if rank > max_rank {
-            break;
-        }
-        if eligible == producer {
-            return true;
-        }
-    }
-    false
+    is_producer_eligible_ms(producer, eligible_producers, slot_offset_secs * 1000)
 }
 
 /// Get the rank of a producer for a slot.
@@ -1914,6 +1969,73 @@ pub fn get_producer_rank(
     eligible_producers: &[crypto::PublicKey],
 ) -> Option<usize> {
     eligible_producers.iter().position(|p| p == producer)
+}
+
+// =============================================================================
+// TIERED ARCHITECTURE FUNCTIONS
+// =============================================================================
+
+/// Compute the Tier 1 validator set: top N producers by effective_weight.
+///
+/// Selection is deterministic — all nodes compute the same set for the same input.
+/// Tiebreaker: lexicographic ordering of pubkey bytes (ensures determinism).
+///
+/// # Arguments
+/// * `producers_with_weights` - All active producers with their effective weights
+///
+/// # Returns
+/// Vec of public keys for Tier 1 validators, capped at TIER1_MAX_VALIDATORS.
+pub fn compute_tier1_set(
+    producers_with_weights: &[(crypto::PublicKey, u64)],
+) -> Vec<crypto::PublicKey> {
+    let mut sorted = producers_with_weights.to_vec();
+    // Sort by weight descending, then by pubkey bytes ascending for deterministic tiebreak
+    sorted.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+    });
+    sorted.truncate(TIER1_MAX_VALIDATORS);
+    sorted.into_iter().map(|(pk, _)| pk).collect()
+}
+
+/// Compute a producer's region (deterministic from pubkey hash).
+///
+/// Uses BLAKE3 hash of the public key bytes, taking the first 4 bytes as a u32
+/// and modding by NUM_REGIONS. This gives uniform distribution across regions.
+pub fn producer_region(pubkey: &crypto::PublicKey) -> u32 {
+    let h = crypto::hash::hash(pubkey.as_bytes());
+    let bytes: [u8; 4] = h.as_bytes()[0..4].try_into().unwrap();
+    u32::from_le_bytes(bytes) % NUM_REGIONS
+}
+
+/// Determine a producer's tier.
+///
+/// - Tier 1: In the tier1_set (top validators by weight)
+/// - Tier 2: Not in tier1, but within tier2_count (attestors)
+/// - Tier 3: Everyone else (stakers, header-only validation)
+///
+/// # Arguments
+/// * `pubkey` - Producer to check
+/// * `tier1_set` - Pre-computed Tier 1 validator set
+/// * `all_producers_sorted` - All producers sorted by weight desc (same ordering as compute_tier1_set)
+///
+/// # Returns
+/// 1, 2, or 3
+pub fn producer_tier(
+    pubkey: &crypto::PublicKey,
+    tier1_set: &[crypto::PublicKey],
+    all_producers_sorted: &[crypto::PublicKey],
+) -> u8 {
+    if tier1_set.contains(pubkey) {
+        return 1;
+    }
+    // Find position in the sorted list (after tier1)
+    if let Some(pos) = all_producers_sorted.iter().position(|p| p == pubkey) {
+        if pos < TIER1_MAX_VALIDATORS + TIER2_MAX_ATTESTORS {
+            return 2;
+        }
+    }
+    3
 }
 
 // =============================================================================
@@ -2273,53 +2395,72 @@ mod tests {
         );
     }
 
-    // Note: Block VDF (T_BLOCK = 10M iterations) provides anti-grinding protection.
+    // Note: Block VDF (T_BLOCK = 800K iterations) provides anti-grinding protection.
     // VDF is mandatory for mainnet blocks; registration VDF is separate (anti-Sybil).
 
     #[test]
     fn test_allowed_producer_rank() {
-        // Proof of Time with 10-second slots
-        // Windows: 0-3s (rank 0), 3-6s (rank 1), 6-10s (rank 2)
-        assert_eq!(allowed_producer_rank(0), 0); // Primary only
-        assert_eq!(allowed_producer_rank(1), 0);
-        assert_eq!(allowed_producer_rank(2), 0);
-        assert_eq!(allowed_producer_rank(3), 1); // Primary + Secondary
-        assert_eq!(allowed_producer_rank(4), 1);
-        assert_eq!(allowed_producer_rank(5), 1);
-        assert_eq!(allowed_producer_rank(6), 2); // All eligible
-        assert_eq!(allowed_producer_rank(9), 2);
-        assert_eq!(allowed_producer_rank(100), 2);
+        // Sequential 1.3s windows (seconds precision):
+        // 0s = 0ms → rank 0, 1s = 1000ms → rank 0
+        // 2s = 2000ms → rank 1, 3s = 3000ms → rank 2
+        // 4s = 4000ms → rank 3, 5s = 5000ms → rank 3
+        // 6s = 6000ms → rank 4, 7s = 7000ms → rank 5
+        // 8s = 8000ms → rank 6, 9s = 9000ms → rank 6
+        // 10s = 10000ms → rank 6 (emergency, returns max rank)
+        assert_eq!(allowed_producer_rank(0), 0);
+        assert_eq!(allowed_producer_rank(1), 0); // 1000ms still in rank 0 window
+        assert_eq!(allowed_producer_rank(2), 1); // 2000ms in rank 1 window (1300-2599)
+        assert_eq!(allowed_producer_rank(3), 2); // 3000ms in rank 2 window (2600-3899)
+        assert_eq!(allowed_producer_rank(4), 3); // 4000ms in rank 3 window (3900-5199)
+        assert_eq!(allowed_producer_rank(5), 3); // 5000ms still in rank 3 window
+        assert_eq!(allowed_producer_rank(6), 4); // 6000ms in rank 4 window (5200-6499)
+        assert_eq!(allowed_producer_rank(7), 5); // 7000ms in rank 5 window (6500-7799)
+        assert_eq!(allowed_producer_rank(8), 6); // 8000ms in rank 6 window (7800-9099)
+        assert_eq!(allowed_producer_rank(9), 6); // 9000ms still in rank 6 window
+        assert_eq!(allowed_producer_rank(10), 6); // emergency, returns max rank
     }
 
     #[test]
     fn test_allowed_producer_rank_ms() {
-        // Proof of Time windows with millisecond precision (10-second slots)
+        // Sequential 1.3s exclusive windows with millisecond precision
         //
         // Windows:
-        // - 0-3000ms: Primary (rank 0)
-        // - 3000-6000ms: Secondary (rank 1)
-        // - 6000-10000ms: Tertiary (rank 2)
+        // - 0-1299ms: rank 0 (primary)
+        // - 1300-2599ms: rank 1
+        // - 2600-3899ms: rank 2
+        // - 3900-5199ms: rank 3
+        // - 5200-6499ms: rank 4
+        // - 6500-7799ms: rank 5
+        // - 7800-9099ms: rank 6
+        // - 9100+ms: emergency (max rank)
 
-        // Primary window: 0-3000ms
+        // Rank 0 window: 0-1299ms
         assert_eq!(allowed_producer_rank_ms(0), 0);
-        assert_eq!(allowed_producer_rank_ms(1500), 0);
-        assert_eq!(allowed_producer_rank_ms(2999), 0);
+        assert_eq!(allowed_producer_rank_ms(650), 0);
+        assert_eq!(allowed_producer_rank_ms(1299), 0);
 
-        // Secondary window: 3000-6000ms
-        assert_eq!(allowed_producer_rank_ms(3000), 1);
-        assert_eq!(allowed_producer_rank_ms(4500), 1);
-        assert_eq!(allowed_producer_rank_ms(5999), 1);
+        // Rank 1 window: 1300-2599ms
+        assert_eq!(allowed_producer_rank_ms(1300), 1);
+        assert_eq!(allowed_producer_rank_ms(1950), 1);
+        assert_eq!(allowed_producer_rank_ms(2599), 1);
 
-        // Tertiary window: 6000ms+
-        assert_eq!(allowed_producer_rank_ms(6000), 2);
-        assert_eq!(allowed_producer_rank_ms(8000), 2);
-        assert_eq!(allowed_producer_rank_ms(10000), 2);
-        assert_eq!(allowed_producer_rank_ms(15000), 2); // Beyond slot is still tertiary
+        // Rank 2 window: 2600-3899ms
+        assert_eq!(allowed_producer_rank_ms(2600), 2);
+        assert_eq!(allowed_producer_rank_ms(3899), 2);
+
+        // Rank 6 window: 7800-9099ms
+        assert_eq!(allowed_producer_rank_ms(7800), 6);
+        assert_eq!(allowed_producer_rank_ms(9099), 6);
+
+        // Emergency window: 9100+ms (returns max rank = 6)
+        assert_eq!(allowed_producer_rank_ms(9100), 6);
+        assert_eq!(allowed_producer_rank_ms(10000), 6);
+        assert_eq!(allowed_producer_rank_ms(15000), 6);
     }
 
     #[test]
     fn test_is_producer_eligible() {
-        let producers: Vec<crypto::PublicKey> = (0..3)
+        let producers: Vec<crypto::PublicKey> = (0..7)
             .map(|i| {
                 let mut bytes = [0u8; 32];
                 bytes[0] = i;
@@ -2327,23 +2468,103 @@ mod tests {
             })
             .collect();
 
-        // Proof of Time with 10-second slots:
-        // Windows: 0-3s (rank 0), 3-6s (rank 1), 6-10s (rank 2)
-
-        // At second 0: only primary (rank 0) is eligible
+        // Sequential exclusive windows:
+        // At second 0 (0ms): only rank 0 is eligible
         assert!(is_producer_eligible(&producers[0], &producers, 0));
         assert!(!is_producer_eligible(&producers[1], &producers, 0));
         assert!(!is_producer_eligible(&producers[2], &producers, 0));
 
-        // At second 3: primary + secondary (rank 0-1) are eligible
-        assert!(is_producer_eligible(&producers[0], &producers, 3));
-        assert!(is_producer_eligible(&producers[1], &producers, 3));
-        assert!(!is_producer_eligible(&producers[2], &producers, 3));
+        // At second 2 (2000ms): only rank 1 is eligible (exclusive, not cumulative)
+        assert!(!is_producer_eligible(&producers[0], &producers, 2));
+        assert!(is_producer_eligible(&producers[1], &producers, 2));
+        assert!(!is_producer_eligible(&producers[2], &producers, 2));
 
-        // At second 6+: all are eligible
-        assert!(is_producer_eligible(&producers[0], &producers, 6));
-        assert!(is_producer_eligible(&producers[1], &producers, 6));
-        assert!(is_producer_eligible(&producers[2], &producers, 6));
+        // At second 3 (3000ms): only rank 2 is eligible
+        assert!(!is_producer_eligible(&producers[0], &producers, 3));
+        assert!(!is_producer_eligible(&producers[1], &producers, 3));
+        assert!(is_producer_eligible(&producers[2], &producers, 3));
+    }
+
+    #[test]
+    fn test_sequential_windows() {
+        // Verify exactly one rank per 1300ms window
+        for offset_ms in (0..EMERGENCY_WINDOW_START_MS).step_by(100) {
+            let rank = eligible_rank_at_ms(offset_ms);
+            assert!(rank.is_some(), "Should have a rank at {}ms", offset_ms);
+            let r = rank.unwrap();
+            assert!(
+                r < MAX_FALLBACK_RANKS,
+                "Rank {} out of bounds at {}ms",
+                r,
+                offset_ms
+            );
+            assert_eq!(r, (offset_ms / FALLBACK_TIMEOUT_MS) as usize);
+        }
+    }
+
+    #[test]
+    fn test_emergency_window() {
+        // Emergency window (9100-10000ms): all ranks eligible
+        assert!(eligible_rank_at_ms(9100).is_none());
+        assert!(eligible_rank_at_ms(9500).is_none());
+        assert!(eligible_rank_at_ms(10000).is_none());
+
+        // All ranks should be eligible in emergency window
+        for rank in 0..MAX_FALLBACK_RANKS {
+            assert!(is_rank_eligible_at_ms(rank, 9100));
+            assert!(is_rank_eligible_at_ms(rank, 9500));
+        }
+        // Ranks beyond MAX_FALLBACK_RANKS are not eligible
+        assert!(!is_rank_eligible_at_ms(MAX_FALLBACK_RANKS, 9100));
+    }
+
+    #[test]
+    fn test_eligible_rank_boundaries() {
+        // Test exact boundaries between windows
+        // 0ms: rank 0
+        assert_eq!(eligible_rank_at_ms(0), Some(0));
+        // 1299ms: still rank 0
+        assert_eq!(eligible_rank_at_ms(1299), Some(0));
+        // 1300ms: rank 1
+        assert_eq!(eligible_rank_at_ms(1300), Some(1));
+        // 2599ms: still rank 1
+        assert_eq!(eligible_rank_at_ms(2599), Some(1));
+        // 2600ms: rank 2
+        assert_eq!(eligible_rank_at_ms(2600), Some(2));
+        // 9099ms: rank 6
+        assert_eq!(eligible_rank_at_ms(9099), Some(6));
+        // 9100ms: emergency (None)
+        assert_eq!(eligible_rank_at_ms(9100), None);
+    }
+
+    #[test]
+    fn test_is_producer_eligible_ms() {
+        let producers: Vec<crypto::PublicKey> = (0..7)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = i;
+                crypto::PublicKey::from_bytes(bytes)
+            })
+            .collect();
+
+        // At 0ms: only rank 0 eligible
+        assert!(is_producer_eligible_ms(&producers[0], &producers, 0));
+        assert!(!is_producer_eligible_ms(&producers[1], &producers, 0));
+
+        // At 1300ms: only rank 1 eligible (exclusive)
+        assert!(!is_producer_eligible_ms(&producers[0], &producers, 1300));
+        assert!(is_producer_eligible_ms(&producers[1], &producers, 1300));
+        assert!(!is_producer_eligible_ms(&producers[2], &producers, 1300));
+
+        // At 9100ms (emergency): all eligible
+        for i in 0..7 {
+            assert!(is_producer_eligible_ms(&producers[i], &producers, 9100));
+        }
+
+        // Unknown producer is never eligible
+        let unknown = crypto::PublicKey::from_bytes([99u8; 32]);
+        assert!(!is_producer_eligible_ms(&unknown, &producers, 0));
+        assert!(!is_producer_eligible_ms(&unknown, &producers, 9100));
     }
 
     #[test]
@@ -2651,30 +2872,55 @@ mod tests {
             prop_assert!(result.len() <= producers.len());
         }
 
-        /// Allowed producer rank follows time windows (seconds)
+        /// Allowed producer rank follows sequential 1.3s windows (seconds)
         #[test]
-        fn prop_allowed_rank_time_windows(offset: u64) {
+        fn prop_allowed_rank_time_windows(offset in 0u64..20) {
             let rank = allowed_producer_rank(offset);
-            if offset < PRIMARY_WINDOW_SECS {
-                prop_assert_eq!(rank, 0);
-            } else if offset < SECONDARY_WINDOW_SECS {
-                prop_assert_eq!(rank, 1);
-            } else {
-                prop_assert_eq!(rank, 2);
+            let offset_ms = offset * 1000;
+            let expected = match eligible_rank_at_ms(offset_ms) {
+                Some(r) => r,
+                None => MAX_FALLBACK_RANKS - 1,
+            };
+            prop_assert_eq!(rank, expected);
+        }
+
+        /// Allowed producer rank follows sequential 1.3s windows (milliseconds)
+        #[test]
+        fn prop_allowed_rank_time_windows_ms(offset_ms in 0u64..15000) {
+            let rank = allowed_producer_rank_ms(offset_ms);
+            let expected = match eligible_rank_at_ms(offset_ms) {
+                Some(r) => r,
+                None => MAX_FALLBACK_RANKS - 1,
+            };
+            prop_assert_eq!(rank, expected);
+        }
+
+        /// Sequential windows: exactly one rank per FALLBACK_TIMEOUT_MS
+        #[test]
+        fn prop_sequential_exclusive(offset_ms in 0u64..EMERGENCY_WINDOW_START_MS) {
+            let rank = eligible_rank_at_ms(offset_ms);
+            prop_assert!(rank.is_some());
+            let r = rank.unwrap();
+            prop_assert!(r < MAX_FALLBACK_RANKS);
+            // Only this rank should be eligible
+            for other in 0..MAX_FALLBACK_RANKS {
+                if other == r {
+                    prop_assert!(is_rank_eligible_at_ms(other, offset_ms));
+                } else {
+                    prop_assert!(!is_rank_eligible_at_ms(other, offset_ms));
+                }
             }
         }
 
-        /// Allowed producer rank follows time windows (milliseconds)
+        /// Emergency window: all ranks eligible
         #[test]
-        fn prop_allowed_rank_time_windows_ms(offset_ms: u64) {
-            let rank = allowed_producer_rank_ms(offset_ms);
-            if offset_ms < PRIMARY_WINDOW_MS {
-                prop_assert_eq!(rank, 0);
-            } else if offset_ms < SECONDARY_WINDOW_MS {
-                prop_assert_eq!(rank, 1);
-            } else {
-                prop_assert_eq!(rank, 2);
+        fn prop_emergency_all_eligible(offset_ms in EMERGENCY_WINDOW_START_MS..20000u64) {
+            prop_assert!(eligible_rank_at_ms(offset_ms).is_none());
+            for rank in 0..MAX_FALLBACK_RANKS {
+                prop_assert!(is_rank_eligible_at_ms(rank, offset_ms));
             }
+            // Beyond MAX_FALLBACK_RANKS is not eligible
+            prop_assert!(!is_rank_eligible_at_ms(MAX_FALLBACK_RANKS, offset_ms));
         }
 
         /// Bootstrap phase is exactly first BOOTSTRAP_BLOCKS
@@ -2765,58 +3011,44 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_scaled_fallback_windows_example_3s() {
-        // Example with 3-second slots (for testing scaling behavior)
         let (primary, secondary, tertiary) = scaled_fallback_windows(3);
-
-        assert_eq!(primary, 1); // 50% of 3s, rounded down but min 1
-        assert_eq!(secondary, 2); // 75% of 3s
-        assert_eq!(tertiary, 3); // 100%
+        assert_eq!(primary, 1);
+        assert_eq!(secondary, 2);
+        assert_eq!(tertiary, 3);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_scaled_fallback_windows_longer() {
-        // Test with longer slots for non-standard networks
         let (primary, secondary, tertiary) = scaled_fallback_windows(10);
-
-        assert_eq!(primary, 5); // 50% of 10s
-        assert_eq!(secondary, 7); // 75% of 10s
-        assert_eq!(tertiary, 10); // 100%
+        assert_eq!(primary, 5);
+        assert_eq!(secondary, 7);
+        assert_eq!(tertiary, 10);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_scaled_fallback_windows_stress() {
         let (primary, secondary, tertiary) = scaled_fallback_windows(1);
-
-        // With 1s slots, all windows compress to minimum values
         assert!(primary >= 1);
         assert!(secondary >= 1);
         assert_eq!(tertiary, 1);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_allowed_producer_rank_scaled() {
-        // Example with 3 second slots (testing scaling behavior)
-        // Windows: primary=1, secondary=2, tertiary=3
-        assert_eq!(allowed_producer_rank_scaled(0, 3), 0); // Primary: 0 < 1
-        assert_eq!(allowed_producer_rank_scaled(1, 3), 1); // Secondary: 1 >= 1, 1 < 2
-        assert_eq!(allowed_producer_rank_scaled(2, 3), 2); // Tertiary: 2 >= 2
-        assert_eq!(allowed_producer_rank_scaled(3, 3), 2); // Tertiary: beyond slot
-
-        // 10 second slots (custom network)
-        // Windows: primary=5, secondary=7, tertiary=10
-        assert_eq!(allowed_producer_rank_scaled(0, 10), 0); // Primary
-        assert_eq!(allowed_producer_rank_scaled(4, 10), 0); // Primary
-        assert_eq!(allowed_producer_rank_scaled(5, 10), 1); // Secondary
-        assert_eq!(allowed_producer_rank_scaled(6, 10), 1); // Secondary
-        assert_eq!(allowed_producer_rank_scaled(7, 10), 2); // Tertiary
-        assert_eq!(allowed_producer_rank_scaled(9, 10), 2); // Tertiary
-
-        // 1 second slots (extreme stress)
-        // Windows: primary=1 (min), secondary=1 (min), tertiary=1
-        // All compressed to minimum
-        assert_eq!(allowed_producer_rank_scaled(0, 1), 0); // Primary: 0 < 1
-        assert_eq!(allowed_producer_rank_scaled(1, 1), 2); // Tertiary: 1 >= 1
+        assert_eq!(allowed_producer_rank_scaled(0, 3), 0);
+        assert_eq!(allowed_producer_rank_scaled(1, 3), 1);
+        assert_eq!(allowed_producer_rank_scaled(2, 3), 2);
+        assert_eq!(allowed_producer_rank_scaled(3, 3), 2);
+        assert_eq!(allowed_producer_rank_scaled(0, 10), 0);
+        assert_eq!(allowed_producer_rank_scaled(5, 10), 1);
+        assert_eq!(allowed_producer_rank_scaled(7, 10), 2);
+        assert_eq!(allowed_producer_rank_scaled(0, 1), 0);
+        assert_eq!(allowed_producer_rank_scaled(1, 1), 2);
     }
 
     #[test]
@@ -3250,13 +3482,14 @@ mod tests {
         // Initial block reward: 100,000,000 sats (1 DOLI)
         assert_eq!(INITIAL_BLOCK_REWARD, 100_000_000);
 
-        // VDF iterations: 10 million per block
-        assert_eq!(T_BLOCK, 10_000_000);
+        // VDF iterations: 800K per block (~55ms)
+        assert_eq!(T_BLOCK, 800_000);
 
-        // Window timings: 3s/6s/10s (30%/60%/100% of slot)
-        assert_eq!(PRIMARY_WINDOW_MS, 3000);
-        assert_eq!(SECONDARY_WINDOW_MS, 6000);
-        assert_eq!(TERTIARY_WINDOW_MS, 10000);
+        // Sequential fallback windows: 1.3s per rank, 7 ranks
+        assert_eq!(FALLBACK_TIMEOUT_MS, 1_300);
+        assert_eq!(MAX_FALLBACK_RANKS, 7);
+        assert_eq!(EMERGENCY_WINDOW_START_MS, 9_100); // 7 * 1300
+        assert_eq!(MAX_FALLBACK_PRODUCERS, 7);
 
         // Unbonding period: 7 days = 60,480 slots
         assert_eq!(UNBONDING_PERIOD, 60_480);
@@ -3293,19 +3526,16 @@ mod tests {
         // (This is enforced by the function signature itself)
     }
 
-    /// Test: selection_uses_consecutive_tickets
-    /// Selection must use consecutive ticket ranges based on bond count
-    /// Fallbacks use consecutive tickets: (base + 1) % total, (base + 2) % total
+    /// Test: selection_uses_evenly_distributed_offsets
+    /// Selection uses evenly-distributed offsets across ticket space for fallbacks.
+    /// offset = (total_tickets * rank) / MAX_FALLBACK_RANKS
     #[test]
-    fn test_selection_uses_consecutive_tickets() {
-        // Create producers with known bond counts
+    fn test_selection_uses_evenly_distributed_offsets() {
         let producer_a = crypto::PublicKey::from_bytes([1u8; 32]);
         let producer_b = crypto::PublicKey::from_bytes([2u8; 32]);
         let producer_c = crypto::PublicKey::from_bytes([3u8; 32]);
 
-        // Sort order is by pubkey bytes, so:
-        // [1,1,1...] < [2,2,2...] < [3,3,3...]
-        // producer_a, producer_b, producer_c
+        // Sort order by pubkey: producer_a, producer_b, producer_c
         let producers = vec![
             (producer_a.clone(), 3), // 3 bonds -> tickets 0, 1, 2
             (producer_b.clone(), 2), // 2 bonds -> tickets 3, 4
@@ -3313,118 +3543,76 @@ mod tests {
         ];
         // Total tickets = 6
 
-        // Test consecutive ticket assignment:
-        // slot 0 -> ticket 0 -> producer_a
-        // slot 1 -> ticket 1 -> producer_a
-        // slot 2 -> ticket 2 -> producer_a
-        // slot 3 -> ticket 3 -> producer_b
-        // slot 4 -> ticket 4 -> producer_b
-        // slot 5 -> ticket 5 -> producer_c
-        // slot 6 -> ticket 0 (wraps) -> producer_a
+        // Primary selection (slot % total_tickets) is unchanged:
+        assert_eq!(select_producer_for_slot(0, &producers)[0], producer_a);
+        assert_eq!(select_producer_for_slot(3, &producers)[0], producer_b);
+        assert_eq!(select_producer_for_slot(5, &producers)[0], producer_c);
+        assert_eq!(select_producer_for_slot(6, &producers)[0], producer_a); // wraps
 
-        let selection_0 = select_producer_for_slot(0, &producers);
-        let selection_1 = select_producer_for_slot(1, &producers);
-        let selection_2 = select_producer_for_slot(2, &producers);
-        let selection_3 = select_producer_for_slot(3, &producers);
-        let selection_4 = select_producer_for_slot(4, &producers);
-        let selection_5 = select_producer_for_slot(5, &producers);
-        let selection_6 = select_producer_for_slot(6, &producers);
+        // Evenly-distributed fallbacks for slot 4 (base ticket = 4):
+        // rank 0: ticket 4 → producer_b
+        // rank 1: offset (6*1)/7=0, ticket (4+0)%6=4 → producer_b (dup, skip)
+        // rank 2: offset (6*2)/7=1, ticket (4+1)%6=5 → producer_c
+        // rank 3: offset (6*3)/7=2, ticket (4+2)%6=0 → producer_a
+        // rank 4: offset (6*4)/7=3, ticket (4+3)%6=1 → producer_a (dup, skip)
+        // rank 5: offset (6*5)/7=4, ticket (4+4)%6=2 → producer_a (dup, skip)
+        // rank 6: offset (6*6)/7=5, ticket (4+5)%6=3 → producer_b (dup, skip)
+        let sel4 = select_producer_for_slot(4, &producers);
+        assert_eq!(sel4.len(), 3); // all 3 producers represented
+        assert_eq!(sel4[0], producer_b);
+        assert_eq!(sel4[1], producer_c);
+        assert_eq!(sel4[2], producer_a);
 
-        // producer_a should be primary for slots 0, 1, 2
-        assert_eq!(selection_0[0], producer_a);
-        assert_eq!(selection_1[0], producer_a);
-        assert_eq!(selection_2[0], producer_a);
-
-        // producer_b should be primary for slots 3, 4
-        assert_eq!(selection_3[0], producer_b);
-        assert_eq!(selection_4[0], producer_b);
-
-        // producer_c should be primary for slot 5
-        assert_eq!(selection_5[0], producer_c);
-
-        // Slot 6 wraps back to producer_a
-        assert_eq!(selection_6[0], producer_a);
-
-        // Test consecutive fallback selection (anti-grinding)
-        // For slot 0: base ticket = 0
-        //   - Primary (rank 0): ticket 0 -> producer_a
-        //   - Secondary (rank 1): ticket 1 -> producer_a (same producer, not added)
-        //   - Tertiary (rank 2): ticket 2 -> producer_a (same producer, not added)
-        // Result: only producer_a (consecutive tickets land on same producer)
-        assert!(selection_0.len() >= 1);
-        assert_eq!(selection_0[0], producer_a);
-
-        // For slot 2: base ticket = 2
-        //   - Primary (rank 0): ticket 2 -> producer_a
-        //   - Secondary (rank 1): ticket 3 -> producer_b
-        //   - Tertiary (rank 2): ticket 4 -> producer_b (same as secondary, not added)
-        assert_eq!(selection_2.len(), 2);
-        assert_eq!(selection_2[0], producer_a);
-        assert_eq!(selection_2[1], producer_b);
-
-        // For slot 3: base ticket = 3
-        //   - Primary (rank 0): ticket 3 -> producer_b
-        //   - Secondary (rank 1): ticket 4 -> producer_b (same, not added)
-        //   - Tertiary (rank 2): ticket 5 -> producer_c
-        assert_eq!(selection_3.len(), 2);
-        assert_eq!(selection_3[0], producer_b);
-        assert_eq!(selection_3[1], producer_c);
-
-        // For slot 4: base ticket = 4
-        //   - Primary (rank 0): ticket 4 -> producer_b
-        //   - Secondary (rank 1): ticket 5 -> producer_c
-        //   - Tertiary (rank 2): ticket 0 (wraps) -> producer_a
-        assert_eq!(selection_4.len(), 3);
-        assert_eq!(selection_4[0], producer_b);
-        assert_eq!(selection_4[1], producer_c);
-        assert_eq!(selection_4[2], producer_a);
+        // With enough producers and bonds, fallbacks spread across the set
+        // Verify determinism
+        assert_eq!(
+            select_producer_for_slot(42, &producers),
+            select_producer_for_slot(42, &producers)
+        );
     }
 
     /// Test: fallback_windows
-    /// Verify fallback window timing (mainnet uses 3s/6s/10s = 30%/60%/100%)
+    /// Verify sequential 1.3s fallback window timing
     #[test]
     fn test_fallback_windows() {
-        // Verify mainnet constants in milliseconds
-        assert_eq!(PRIMARY_WINDOW_MS, 3000);
-        assert_eq!(SECONDARY_WINDOW_MS, 6000);
-        assert_eq!(TERTIARY_WINDOW_MS, 10000);
+        // Verify sequential window constants
+        assert_eq!(FALLBACK_TIMEOUT_MS, 1_300);
+        assert_eq!(MAX_FALLBACK_RANKS, 7);
+        assert_eq!(EMERGENCY_WINDOW_START_MS, 9_100);
+        assert_eq!(MAX_FALLBACK_PRODUCERS, 7);
 
-        // Verify mainnet constants in seconds
-        assert_eq!(PRIMARY_WINDOW_SECS, 3);
-        assert_eq!(SECONDARY_WINDOW_SECS, 6);
+        // Create 7 producers for sequential window testing
+        let producers: Vec<crypto::PublicKey> = (0..7)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = i;
+                crypto::PublicKey::from_bytes(bytes)
+            })
+            .collect();
 
-        // Test eligibility function with mainnet windows
-        // NOTE: is_producer_eligible takes SECONDS, not milliseconds
-        let producer_a = crypto::PublicKey::from_bytes([1u8; 32]);
-        let producer_b = crypto::PublicKey::from_bytes([2u8; 32]);
-        let producer_c = crypto::PublicKey::from_bytes([3u8; 32]);
+        // Rank 0 is eligible in 0-1299ms window (seconds: 0s, 1s)
+        assert!(is_producer_eligible_ms(&producers[0], &producers, 0));
+        assert!(is_producer_eligible_ms(&producers[0], &producers, 1299));
+        assert!(!is_producer_eligible_ms(&producers[0], &producers, 1300));
 
-        let eligible = vec![producer_a.clone(), producer_b.clone(), producer_c.clone()];
+        // Rank 1 is eligible in 1300-2599ms window
+        assert!(!is_producer_eligible_ms(&producers[1], &producers, 1299));
+        assert!(is_producer_eligible_ms(&producers[1], &producers, 1300));
+        assert!(is_producer_eligible_ms(&producers[1], &producers, 2599));
+        assert!(!is_producer_eligible_ms(&producers[1], &producers, 2600));
 
-        // Primary (rank 0) is eligible immediately (0-2 seconds)
-        assert!(is_producer_eligible(&producer_a, &eligible, 0));
-        assert!(is_producer_eligible(&producer_a, &eligible, 2));
+        // Emergency window (9100+): all eligible
+        for i in 0..7 {
+            assert!(is_producer_eligible_ms(&producers[i], &producers, 9100));
+        }
 
-        // Secondary (rank 1) is eligible after primary window (3+ seconds)
-        assert!(!is_producer_eligible(&producer_b, &eligible, 2));
-        assert!(is_producer_eligible(&producer_b, &eligible, 3));
-
-        // Tertiary (rank 2) is eligible after secondary window (6+ seconds)
-        assert!(!is_producer_eligible(&producer_c, &eligible, 5));
-        assert!(is_producer_eligible(&producer_c, &eligible, 6));
-
-        // Test millisecond function for precise timing
-        assert_eq!(allowed_producer_rank_ms(2999), 0);
-        assert_eq!(allowed_producer_rank_ms(3000), 1);
-        assert_eq!(allowed_producer_rank_ms(5999), 1);
-        assert_eq!(allowed_producer_rank_ms(6000), 2);
-
-        // Test scaled_fallback_windows (used for non-mainnet networks)
-        // Uses 50%/75%/100% ratios
-        let (primary, secondary, tertiary) = scaled_fallback_windows(10);
-        assert_eq!(primary, 5); // 50% of 10
-        assert_eq!(secondary, 7); // 75% of 10
-        assert_eq!(tertiary, 10); // 100% of 10
+        // Test ms precision at boundaries
+        assert_eq!(allowed_producer_rank_ms(0), 0);
+        assert_eq!(allowed_producer_rank_ms(1299), 0);
+        assert_eq!(allowed_producer_rank_ms(1300), 1);
+        assert_eq!(allowed_producer_rank_ms(2600), 2);
+        assert_eq!(allowed_producer_rank_ms(9099), 6);
+        assert_eq!(allowed_producer_rank_ms(9100), 6); // emergency returns max rank
     }
 
     /// Test: seniority_uses_years
@@ -3724,5 +3912,133 @@ mod tests {
             reward_epoch::last_complete_with(720, mainnet_blocks),
             reward_epoch::last_complete(720)
         );
+    }
+
+    // ==================== Tier Computation Tests ====================
+
+    #[test]
+    fn test_tier1_deterministic() {
+        let producers: Vec<(crypto::PublicKey, u64)> = (0..10u8)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = i;
+                (crypto::PublicKey::from_bytes(bytes), (10 - i) as u64)
+            })
+            .collect();
+
+        let set1 = compute_tier1_set(&producers);
+        let set2 = compute_tier1_set(&producers);
+        assert_eq!(set1, set2, "Tier 1 set must be deterministic");
+
+        // Reversed input should give same result
+        let mut reversed = producers.clone();
+        reversed.reverse();
+        let set3 = compute_tier1_set(&reversed);
+        assert_eq!(set1, set3, "Tier 1 set must be order-independent");
+    }
+
+    #[test]
+    fn test_tier1_capped_at_500() {
+        let producers: Vec<(crypto::PublicKey, u64)> = (0..600u32)
+            .map(|i| {
+                let bytes = i.to_le_bytes();
+                let mut key_bytes = [0u8; 32];
+                key_bytes[..4].copy_from_slice(&bytes);
+                (crypto::PublicKey::from_bytes(key_bytes), 100)
+            })
+            .collect();
+
+        let set = compute_tier1_set(&producers);
+        assert_eq!(set.len(), TIER1_MAX_VALIDATORS);
+    }
+
+    #[test]
+    fn test_tier1_small_set() {
+        // Fewer producers than TIER1_MAX_VALIDATORS
+        let producers: Vec<(crypto::PublicKey, u64)> = (0..10u8)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = i;
+                (crypto::PublicKey::from_bytes(bytes), 100)
+            })
+            .collect();
+
+        let set = compute_tier1_set(&producers);
+        assert_eq!(set.len(), 10);
+    }
+
+    #[test]
+    fn test_tier1_weight_ordering() {
+        let mut bytes_high = [0u8; 32];
+        bytes_high[0] = 1;
+        let mut bytes_low = [0u8; 32];
+        bytes_low[0] = 2;
+
+        let high = crypto::PublicKey::from_bytes(bytes_high);
+        let low = crypto::PublicKey::from_bytes(bytes_low);
+
+        let producers = vec![(low, 10), (high, 100)];
+        let set = compute_tier1_set(&producers);
+
+        // Higher weight should be first
+        assert_eq!(set[0], high);
+        assert_eq!(set[1], low);
+    }
+
+    #[test]
+    fn test_region_distribution() {
+        // Check that regions are reasonably distributed
+        let mut region_counts = vec![0u32; NUM_REGIONS as usize];
+
+        for i in 0..1500u32 {
+            let bytes = i.to_le_bytes();
+            let mut key_bytes = [0u8; 32];
+            key_bytes[..4].copy_from_slice(&bytes);
+            let pk = crypto::PublicKey::from_bytes(key_bytes);
+            let region = producer_region(&pk);
+            assert!(region < NUM_REGIONS);
+            region_counts[region as usize] += 1;
+        }
+
+        // Each region should get at least some producers (rough distribution check)
+        for (i, &count) in region_counts.iter().enumerate() {
+            assert!(
+                count > 50,
+                "Region {} only got {} producers (expected ~100)",
+                i,
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn test_tier_assignment() {
+        let producers: Vec<(crypto::PublicKey, u64)> = (0..600u32)
+            .map(|i| {
+                let bytes = i.to_le_bytes();
+                let mut key_bytes = [0u8; 32];
+                key_bytes[..4].copy_from_slice(&bytes);
+                (crypto::PublicKey::from_bytes(key_bytes), (600 - i) as u64)
+            })
+            .collect();
+
+        let tier1_set = compute_tier1_set(&producers);
+        let all_sorted: Vec<crypto::PublicKey> = {
+            let mut sorted = producers.clone();
+            sorted.sort_by(|a, b| {
+                b.1.cmp(&a.1)
+                    .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+            });
+            sorted.into_iter().map(|(pk, _)| pk).collect()
+        };
+
+        // First producer (highest weight) should be Tier 1
+        assert_eq!(producer_tier(&all_sorted[0], &tier1_set, &all_sorted), 1);
+
+        // Producer at index 500 (just past tier1) should be Tier 2
+        assert_eq!(producer_tier(&all_sorted[500], &tier1_set, &all_sorted), 2);
+
+        // Producer at index 499 (last in tier1) should be Tier 1
+        assert_eq!(producer_tier(&all_sorted[499], &tier1_set, &all_sorted), 1);
     }
 }
