@@ -1521,17 +1521,19 @@ impl SyncManager {
                 );
             }
         } else if matches!(self.state, SyncState::Processing { .. })
-            && self.pending_headers.is_empty()
-            && self.pending_blocks.is_empty()
+            && self.pending_requests.is_empty()
         {
-            // All downloaded blocks have been applied but we haven't caught up
-            // to the network tip (it advanced during processing via gossip).
-            // Transition to Idle so a new sync round can start — without this,
-            // Processing returns None from next_request() and we're stuck forever.
+            // No active network requests in Processing state. Either:
+            // - All blocks applied but network moved ahead, OR
+            // - Blocks downloaded but unchainable (hash mismatch)
+            // Either way, nothing will change — clear stale data and restart.
             info!(
-                "Processing complete but network moved ahead (local h={} s={}, tip h={} s={}) — starting new sync round",
+                "Processing complete (headers={}, blocks={}, local h={} s={}, tip h={} s={}) — starting new sync round",
+                self.pending_headers.len(), self.pending_blocks.len(),
                 height, slot, self.network_tip_height, self.network_tip_slot
             );
+            self.pending_headers.clear();
+            self.pending_blocks.clear();
             self.state = SyncState::Idle;
             if self.should_sync() {
                 self.start_sync();
@@ -1695,18 +1697,22 @@ impl SyncManager {
             }
         }
 
-        // Stall recovery: Processing state with no pending work.
-        // This catches the case where all downloaded blocks were applied but
-        // the network tip advanced during processing (via gossip), so the
-        // completion check in block_applied_with_weight() never fired.
-        if matches!(self.state, SyncState::Processing { .. })
-            && self.pending_headers.is_empty()
-            && self.pending_blocks.is_empty()
-        {
+        // Stall recovery: Processing state with no active network requests.
+        //
+        // Two cases:
+        // 1. All blocks applied but network tip advanced — pending_headers/blocks empty
+        // 2. Blocks downloaded but unchainable (local_hash mismatch) — pending_blocks
+        //    NOT empty, but pending_requests is 0 so nothing will ever arrive to fix it
+        //
+        // In both cases, no pending_requests means nothing will change. Clear and restart.
+        if matches!(self.state, SyncState::Processing { .. }) && self.pending_requests.is_empty() {
             warn!(
-                "Stall detected: Processing with no pending work (local h={} s={}, tip h={} s={}). Resetting to Idle.",
+                "Stall detected: Processing with no active requests (headers={}, blocks={}, local h={} s={}, tip h={} s={}). Resetting to Idle.",
+                self.pending_headers.len(), self.pending_blocks.len(),
                 self.local_height, self.local_slot, self.network_tip_height, self.network_tip_slot
             );
+            self.pending_headers.clear();
+            self.pending_blocks.clear();
             self.state = SyncState::Idle;
             if self.should_sync() {
                 self.start_sync();
