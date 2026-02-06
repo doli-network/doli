@@ -562,7 +562,7 @@ impl Mempool {
         }
 
         for hash in to_remove {
-            info!("Removing invalid transaction {} after reorg", hash);
+            info!("Removing invalidated transaction {}", hash);
             self.remove_transaction(&hash);
         }
     }
