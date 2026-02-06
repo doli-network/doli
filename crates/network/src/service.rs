@@ -188,8 +188,14 @@ impl NetworkService {
         let transport = build_transport(&keypair)
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
-        // Build gossipsub
-        let mut gossipsub = new_gossipsub(&keypair)
+        // Build gossipsub with mesh params from NetworkParams
+        let mesh = crate::gossip::MeshConfig {
+            mesh_n: config.mesh_n,
+            mesh_n_low: config.mesh_n_low,
+            mesh_n_high: config.mesh_n_high,
+            gossip_lazy: config.gossip_lazy,
+        };
+        let mut gossipsub = new_gossipsub(&keypair, &mesh)
             .map_err(|e| NetworkError::Other(format!("GossipSub error: {}", e)))?;
         subscribe_to_topics(&mut gossipsub)
             .map_err(|e| NetworkError::Other(format!("Subscribe error: {}", e)))?;
