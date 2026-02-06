@@ -1580,6 +1580,18 @@ impl Node {
             return;
         }
 
+        // Don't resync at height 0 — there's nothing to resync from.
+        // At genesis, fork signals (NoGossipActivity, etc.) are normal startup noise.
+        let local_height = {
+            let cs = self.chain_state.read().await;
+            cs.best_height
+        };
+        if local_height == 0 {
+            debug!("Fork recovery: skipping resync at height 0 (genesis)");
+            self.consecutive_fork_blocks = 0;
+            return;
+        }
+
         // Respect cooldown (reuse existing exponential backoff logic)
         let (resync_in_progress, consecutive_resyncs) = {
             let sync = self.sync_manager.read().await;
