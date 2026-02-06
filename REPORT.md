@@ -1414,3 +1414,101 @@ doli-node devnet start
 ```
 
 **Dynamic producer addition is NOT recommended** until these issues are resolved
+
+---
+
+## Fix: Chainspec Consensus Parameters Must Be Authoritative (2026-02-06)
+
+### Status: IMPLEMENTED
+
+### Problem Description
+
+Two bugs cause manually-started nodes to ignore chainspec consensus parameters, leading to parameter mismatches that contribute to fork conditions.
+
+### Bug 1: `.env` Lookup Fails With Custom `--data-dir`
+
+**File**: `crates/core/src/network_params.rs:528`
+
+`load_env_for_network("devnet", data_dir)` only checks `data_dir/.env`. When a node is started with `--data-dir ~/.doli/devnet/data/node5`, it looks in the node subdirectory — the `.env` at `~/.doli/devnet/.env` is never found.
+
+**Impact**: Manually-started nodes (e.g., a 6th node added to a 5-node devnet) don't pick up the `.env` configuration that the devnet init created. They fall back to hardcoded defaults, potentially using different parameters than the rest of the network.
+
+### Bug 2: Chainspec `ConsensusSpec` Is Phantom (Never Read)
+
+**File**: `bins/node/src/main.rs`
+
+The `NetworkParams` OnceLock is triggered by `NodeConfig::for_network(network)` (main.rs line 521) which calls `network.default_p2p_port()` → `self.params()` → `NetworkParams::load()`. The chainspec isn't loaded until main.rs line 572 — **too late**. The OnceLock is already frozen.
+
+The chainspec's `consensus.slot_duration`, `consensus.bond_amount`, and `consensus.slots_per_epoch` are stored in JSON but never applied to the process environment before the OnceLock triggers.
+
+**Impact**: Even when a chainspec is provided with `--chainspec`, its consensus parameters are ignored. Nodes use hardcoded defaults instead of the values specified in the chainspec.
+
+### Priority Hierarchy (After Fix)
+
+```
+Parent ENV > .env file > Chainspec > consensus.rs defaults
+Mainnet: LOCKED to consensus.rs (all overrides ignored)
+```
+
+### Changes Made
+
+#### File 1: `crates/core/src/network_params.rs`
+
+**1a. Fixed `load_env_for_network` — Added fallback to `~/.doli/{network}/.env`:**
+
+When `data_dir/.env` doesn't exist, the function now falls back to `get_default_data_dir(network_name)/.env`. This handles the case where `--data-dir` points to a subdirectory of the network root.
+
+**1b. Added `apply_chainspec_defaults` function:**
+
+Reads a chainspec JSON file and sets environment variables for consensus parameters that are not already set. This makes the chainspec the lowest priority source (below parent env and .env file) but above hardcoded defaults.
+
+Mapped fields:
+- `consensus.slot_duration` → `DOLI_SLOT_DURATION`
+- `consensus.bond_amount` → `DOLI_BOND_UNIT`
+- `consensus.slots_per_epoch` → `DOLI_SLOTS_PER_REWARD_EPOCH`
+- `genesis.initial_reward` → `DOLI_INITIAL_REWARD`
+- `genesis.timestamp` (if non-zero) → `DOLI_GENESIS_TIME`
+
+Defense-in-depth: skipped entirely for mainnet chainspecs.
+
+**1c. Added `set_env_if_absent` helper:**
+
+Sets an environment variable only if it is not already set. Returns whether the variable was set.
+
+**1d. Added 5 unit tests:**
+- `test_load_env_fallback_to_network_root` — Verifies no panic on subdirs without .env
+- `test_apply_chainspec_defaults_sets_vars` — Verifies all 5 vars are set from chainspec
+- `test_apply_chainspec_defaults_no_override` — Verifies pre-set vars are NOT overridden
+- `test_apply_chainspec_defaults_mainnet_skipped` — Verifies mainnet chainspec is ignored
+- `test_apply_chainspec_defaults_malformed_file` — Verifies graceful handling of bad JSON
+
+All env-modifying tests use a static `ENV_MUTEX` to prevent parallel test interference.
+
+#### File 2: `bins/node/src/main.rs`
+
+Inserted `apply_chainspec_defaults` call between `load_env_for_network` (line 337) and the first code that could trigger the `NetworkParams` OnceLock. The insertion:
+
+1. Extracts the chainspec path from CLI args (explicit `--chainspec` or default `data_dir/chainspec.json`)
+2. Calls `network_params::apply_chainspec_defaults(path)` if a chainspec exists
+3. Only runs for non-devnet commands (devnet manages its own environment)
+
+### Verification
+
+| Step | Result |
+|------|--------|
+| `cargo build` | Pass (no new warnings) |
+| `cargo clippy -- -D warnings` | Pre-existing errors only (validation.rs, network.rs) |
+| `cargo fmt --check` | Clean for changed files (pre-existing issues in node.rs, manager.rs) |
+| `cargo test` | All pass (13 network_params tests, full suite green) |
+
+### Relationship to Fork Issues
+
+This fix addresses a contributing factor to Failure Mode D (Registration Race Condition). When manually-started nodes use different consensus parameters (e.g., different `slot_duration` or `bond_unit`) than the genesis nodes, they compute different scheduler states, leading to different producer selections for the same slot.
+
+With this fix, all nodes that share the same chainspec will use the same consensus parameters, regardless of whether they're started via `devnet start` or manually with `--data-dir` and `--chainspec`.
+
+### Not Changed
+
+- `bins/node/src/node.rs` — The `genesis_time_override` logic becomes a harmless redundant fallback
+- `crates/core/src/chainspec.rs` — No structural changes needed
+- Specs/docs — Bug fix restoring intended behavior, no new user-facing changes
