@@ -47,6 +47,14 @@ pub enum TxType {
     /// Target must be a registered producer.
     /// Cannot exceed MAX_MAINTAINERS (5).
     AddMaintainer = 12,
+    /// Delegate bond weight to a Tier 1/2 validator.
+    ///
+    /// The delegate receives the staker's weight for selection purposes.
+    /// Rewards are split: delegate keeps DELEGATE_REWARD_PCT (10%),
+    /// stakers receive STAKER_REWARD_PCT (90%).
+    DelegateBond = 13,
+    /// Revoke delegation (DELEGATION_UNBONDING_SLOTS delay applies).
+    RevokeDelegation = 14,
 }
 
 impl TxType {
@@ -65,6 +73,8 @@ impl TxType {
             10 => Some(Self::EpochReward),
             11 => Some(Self::RemoveMaintainer),
             12 => Some(Self::AddMaintainer),
+            13 => Some(Self::DelegateBond),
+            14 => Some(Self::RevokeDelegation),
             _ => None,
         }
     }
@@ -324,6 +334,81 @@ impl AddBondData {
         Some(Self {
             producer_pubkey: PublicKey::from_bytes(pubkey_bytes),
             bond_count,
+        })
+    }
+}
+
+// ==================== Bond Delegation (Tier 3 → Tier 1/2) ====================
+
+/// Delegate bond weight to a Tier 1/2 validator.
+///
+/// Stored in Transaction.extra_data. The delegator's bond weight is added
+/// to the delegate's effective_weight for producer selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegateBondData {
+    /// Public key of the delegate (Tier 1/2 validator receiving weight)
+    pub delegate: PublicKey,
+    /// Number of bonds to delegate
+    pub bond_count: u32,
+}
+
+impl DelegateBondData {
+    pub fn new(delegate: PublicKey, bond_count: u32) -> Self {
+        Self {
+            delegate,
+            bond_count,
+        }
+    }
+
+    /// Serialize to bytes for storage in extra_data
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(self.delegate.as_bytes());
+        bytes.extend_from_slice(&self.bond_count.to_le_bytes());
+        bytes
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 36 {
+            return None;
+        }
+        let pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        let bond_count = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
+        Some(Self {
+            delegate: PublicKey::from_bytes(pubkey_bytes),
+            bond_count,
+        })
+    }
+}
+
+/// Revoke a previously delegated bond.
+///
+/// DELEGATION_UNBONDING_SLOTS delay applies before weight is removed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeDelegationData {
+    /// Public key of the delegate to revoke from
+    pub delegate: PublicKey,
+}
+
+impl RevokeDelegationData {
+    pub fn new(delegate: PublicKey) -> Self {
+        Self { delegate }
+    }
+
+    /// Serialize to bytes for storage in extra_data
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.delegate.as_bytes().to_vec()
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 32 {
+            return None;
+        }
+        let pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        Some(Self {
+            delegate: PublicKey::from_bytes(pubkey_bytes),
         })
     }
 }
@@ -1018,6 +1103,54 @@ impl Transaction {
         }
         crate::maintainer::MaintainerChangeData::from_bytes(&self.extra_data)
     }
+
+    /// Check if this is a delegate bond transaction
+    pub fn is_delegate_bond(&self) -> bool {
+        self.tx_type == TxType::DelegateBond
+    }
+
+    /// Check if this is a revoke delegation transaction
+    pub fn is_revoke_delegation(&self) -> bool {
+        self.tx_type == TxType::RevokeDelegation
+    }
+
+    /// Parse delegate bond data from extra_data
+    pub fn delegate_bond_data(&self) -> Option<DelegateBondData> {
+        if !self.is_delegate_bond() {
+            return None;
+        }
+        DelegateBondData::from_bytes(&self.extra_data)
+    }
+
+    /// Parse revoke delegation data from extra_data
+    pub fn revoke_delegation_data(&self) -> Option<RevokeDelegationData> {
+        if !self.is_revoke_delegation() {
+            return None;
+        }
+        RevokeDelegationData::from_bytes(&self.extra_data)
+    }
+
+    /// Create a new delegate bond transaction
+    pub fn new_delegate_bond(data: DelegateBondData) -> Self {
+        Self {
+            version: 1,
+            tx_type: TxType::DelegateBond,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
+
+    /// Create a new revoke delegation transaction
+    pub fn new_revoke_delegation(data: RevokeDelegationData) -> Self {
+        Self {
+            version: 1,
+            tx_type: TxType::RevokeDelegation,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1081,7 +1214,9 @@ mod tests {
         assert_eq!(TxType::from_u32(10), Some(TxType::EpochReward));
         assert_eq!(TxType::from_u32(11), Some(TxType::RemoveMaintainer));
         assert_eq!(TxType::from_u32(12), Some(TxType::AddMaintainer));
-        assert_eq!(TxType::from_u32(13), None);
+        assert_eq!(TxType::from_u32(13), Some(TxType::DelegateBond));
+        assert_eq!(TxType::from_u32(14), Some(TxType::RevokeDelegation));
+        assert_eq!(TxType::from_u32(15), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
@@ -1511,6 +1646,63 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let tx = Transaction::new_exit(keypair.public_key().clone());
         assert!(tx.maintainer_change_data().is_none());
+    }
+
+    #[test]
+    fn test_delegate_bond_transaction() {
+        let delegate = crypto::KeyPair::generate();
+        let data = DelegateBondData::new(delegate.public_key().clone(), 5);
+        let tx = Transaction::new_delegate_bond(data);
+
+        assert!(tx.is_delegate_bond());
+        assert!(!tx.is_revoke_delegation());
+        assert_eq!(tx.tx_type, TxType::DelegateBond);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+
+        let parsed = tx.delegate_bond_data().unwrap();
+        assert_eq!(parsed.delegate, *delegate.public_key());
+        assert_eq!(parsed.bond_count, 5);
+    }
+
+    #[test]
+    fn test_revoke_delegation_transaction() {
+        let delegate = crypto::KeyPair::generate();
+        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let tx = Transaction::new_revoke_delegation(data);
+
+        assert!(tx.is_revoke_delegation());
+        assert!(!tx.is_delegate_bond());
+        assert_eq!(tx.tx_type, TxType::RevokeDelegation);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+
+        let parsed = tx.revoke_delegation_data().unwrap();
+        assert_eq!(parsed.delegate, *delegate.public_key());
+    }
+
+    #[test]
+    fn test_delegate_bond_data_serialization() {
+        let delegate = crypto::KeyPair::generate();
+        let data = DelegateBondData::new(delegate.public_key().clone(), 42);
+        let bytes = data.to_bytes();
+        let recovered = DelegateBondData::from_bytes(&bytes).unwrap();
+        assert_eq!(data, recovered);
+    }
+
+    #[test]
+    fn test_delegate_bond_data_too_short() {
+        assert!(DelegateBondData::from_bytes(&[0u8; 35]).is_none());
+        assert!(DelegateBondData::from_bytes(&[]).is_none());
+    }
+
+    #[test]
+    fn test_revoke_delegation_data_serialization() {
+        let delegate = crypto::KeyPair::generate();
+        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let bytes = data.to_bytes();
+        let recovered = RevokeDelegationData::from_bytes(&bytes).unwrap();
+        assert_eq!(data, recovered);
     }
 
     // Property-based tests
