@@ -64,9 +64,7 @@ impl NetworkConfig {
 
     /// Create a config for local development
     pub fn devnet(genesis_hash: Hash) -> Self {
-        let mut config = Self::for_network(Network::Devnet, genesis_hash);
-        config.max_peers = 10;
-        config
+        Self::for_network(Network::Devnet, genesis_hash)
     }
 
     /// Create a config for local development (alias for devnet)
