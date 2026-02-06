@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 3.0.0
+version: 3.1.0
 ---
 
 # DOLI Network Setup Skill
@@ -41,34 +41,99 @@ This skill guides you through setting up and running DOLI nodes and producers on
 
 Replace `<NETWORK>` with `devnet`, `testnet`, or `mainnet`.
 
+## Mandatory Rule: Kill Zombies Before Deploy
+
+**This rule applies to ALL scenarios below.** Before starting ANY node process, verify the target port range is free of zombie processes. Skipping this causes `Address already in use` panics.
+
+**When to run:**
+| Situation | Cleanup Needed? |
+|-----------|-----------------|
+| Fresh `devnet init --nodes N` | **YES** — previous devnet may have left zombies |
+| `devnet start` (restart) | **YES** — previous `devnet stop` may have missed processes |
+| `devnet add-producer` | **YES** — previous attempts may have left zombies |
+| Manual node startup (any scenario) | **YES** |
+| After crash or forced kill | **YES** |
+
+**Procedure (run BEFORE any node launch):**
+
+```bash
+# 1. Determine port range for your deployment
+#    Formula: P2P=50303+N, RPC=28545+N, Metrics=9090+N (devnet)
+#    For N nodes (0 to N-1), check all three port types
+
+# 2. Scan for zombie processes on target ports
+echo "=== Checking for zombie doli-node processes ==="
+ZOMBIES=$(pgrep -f "doli-node" 2>/dev/null)
+if [ -n "$ZOMBIES" ]; then
+  echo "Found doli-node processes: $ZOMBIES"
+  ps -p $(echo "$ZOMBIES" | tr '\n' ',') -o pid,ppid,state,start,command 2>/dev/null
+fi
+
+# 3. Check specific port ranges (adjust for your node count)
+#    Example: 10-node devnet uses ports 9090-9099, 28545-28554, 50303-50312
+for port_range in "9090-9099" "28545-28554" "50303-50312"; do
+  occupied=$(lsof -i :$port_range 2>/dev/null | grep LISTEN)
+  if [ -n "$occupied" ]; then
+    echo "⚠️  OCCUPIED in range $port_range:"
+    echo "$occupied"
+  fi
+done
+
+# 4. Kill zombies (choose one method)
+# Method A: Kill ALL doli-node processes (use when doing fresh deploy)
+pkill -f "doli-node" 2>/dev/null && echo "Killed all doli-node processes" || echo "No doli-node processes found"
+
+# Method B: Kill specific port (surgical, for adding nodes to running network)
+# pid=$(lsof -ti :9095 2>/dev/null); [ -n "$pid" ] && kill $pid
+
+# 5. Wait and verify
+sleep 2
+remaining=$(pgrep -f "doli-node" 2>/dev/null)
+if [ -n "$remaining" ]; then
+  echo "❌ Still running: $remaining — use kill -9 if needed"
+else
+  echo "✅ All ports clear — safe to deploy"
+fi
+```
+
+**Port ranges by network:**
+| Network | P2P Range | RPC Range | Metrics Range |
+|---------|-----------|-----------|---------------|
+| Devnet (N nodes) | 50303–50303+N | 28545–28545+N | 9090–9090+N |
+| Testnet (N nodes) | 40303–40303+N | 18545–18545+N | 9090–9090+N |
+| Mainnet | 30303 | 8545 | 9090 |
+
 ## Decision Tree
 
 ```
 User wants to...
 │
+├─ ALWAYS FIRST: Kill zombies on target port range
+│  └─ See "Mandatory Rule: Kill Zombies Before Deploy" above
+│
 ├─ Local development/testing?
-│  └─ Use `doli-node devnet` commands (multi-node local network)
+│  └─ Kill zombies → `doli-node devnet` commands
 │     doli-node devnet init --nodes 5
 │     doli-node devnet start
 │     doli-node devnet status
 │
 ├─ Public testing with other operators?
-│  └─ Use testnet (mirrors mainnet timing)
+│  └─ Kill zombies → Use testnet (mirrors mainnet timing)
 │
 ├─ Production deployment?
-│  └─ Use mainnet
+│  └─ Kill zombies → Use mainnet
 │
 ├─ Add new producers to running devnet?
-│  └─ Use `doli-node devnet add-producer --count N` (one command)
+│  └─ Kill zombies on NEW port range → `doli-node devnet add-producer --count N`
 │
 ├─ Add new producers to testnet/mainnet?
-│  └─ See Scenario 3 (Manual Add New Producers)
+│  └─ Kill zombies on NEW port range → See Scenario 3 (Manual)
 │
 ├─ Run as background service?
-│  └─ See Scenario 4 (Systemd Service)
+│  └─ Kill zombies → See Scenario 4 (Systemd Service)
 │
 └─ Launch a brand new network?
-   └─ See Scenario 5 (Network Operators)
+   └─ Kill zombies → See Scenario 5 (Network Operators)
 ```
 
 ## Scenario 1: Run a Producer Node
@@ -104,21 +169,9 @@ mkdir -p ~/.doli/<NETWORK>
 
 ### Step 4: Run Producer Node
 
-**Devnet (local development) - Recommended: Use devnet subcommands:**
-```bash
-# Quick multi-node setup (handles keys, chainspec, ports automatically)
-doli-node devnet init --nodes 5
-doli-node devnet start
-doli-node devnet status
-doli-node devnet add-producer          # Add more producers dynamically
-doli-node devnet stop
-doli-node devnet clean
-```
+**⚠️ FIRST: Run zombie cleanup (see "Mandatory Rule" above) before starting any node.**
 
-**Devnet (manual single node):**
-```bash
-./target/release/doli-node --network devnet run --producer --producer-key ~/.doli/devnet/producer.json
-```
+**Devnet (recommended):** Use the devnet subcommands — see **Scenario 2 Option A**. They handle keys, chainspec, ports, and PID tracking automatically. Do NOT manually start devnet nodes unless you have a specific reason.
 
 **Testnet:**
 ```bash
@@ -158,6 +211,8 @@ For development and testing with multiple nodes on a single machine.
 ### Option A: Built-in Devnet Commands (Recommended)
 
 The `doli-node devnet` subcommands provide the easiest way to manage a local multi-node network:
+
+**⚠️ FIRST: Run zombie cleanup (see "Mandatory Rule" above) before `init` or `start`.**
 
 ```bash
 # Initialize a 10-node devnet (generates keys, chainspec, directories)
@@ -321,7 +376,9 @@ This script:
 
 ## Scenario 3: Add New Producers to Running Network
 
-### Option A: Automated (Devnet Only — Recommended)
+> **Routing:** On devnet? Use **Option A** (`devnet add-producer`) — it handles wallet creation, funding, registration, node startup, and PID tracking in one command. Only use **Option B** (manual) for testnet/mainnet or when you need non-standard configuration.
+
+### Option A: Automated (Devnet Only — Always Prefer This)
 
 One command to create a wallet, fund it, register as producer, and start the node:
 
@@ -351,44 +408,9 @@ doli-node devnet add-producer --count 3
 
 For adding producers to testnet/mainnet, or when you need full control over the process.
 
-#### ⚠️ CRITICAL: Port Cleanup Before Adding Nodes
+#### ⚠️ FIRST: Run zombie cleanup
 
-**Why is this needed?** When you **manually start new producer nodes**, they are NOT tracked by devnet PID management and must be cleaned up manually.
-
-**When to run cleanup:**
-| Situation | Cleanup Needed? |
-|-----------|-----------------|
-| Fresh `devnet init --nodes N` | No - devnet handles it |
-| `devnet add-producer` | No - tracked via PID files |
-| Adding nodes manually (Option B) | **YES** |
-| Previous manual node attempt failed | **YES** |
-| Restarting after crash | **YES** |
-
-```bash
-# Step 0: Check and clean ports BEFORE starting new nodes
-
-# 1. Check what ports are in use (for nodes 5-9, check ports 9095-9099, 28550-28554, 50308-50312)
-lsof -i :9095-9099 2>/dev/null | grep LISTEN
-lsof -i :28550-28554 2>/dev/null | grep LISTEN
-lsof -i :50308-50312 2>/dev/null | grep LISTEN
-
-# 2. Kill any zombie processes on those ports
-for port in 9095 9096 9097 9098 9099; do
-  pid=$(lsof -ti :$port 2>/dev/null)
-  if [ -n "$pid" ]; then
-    kill $pid && echo "Killed process on metrics port $port (PID $pid)"
-  fi
-done
-
-# 3. Alternative: Kill by process pattern
-pkill -f "doli-node.*50308" 2>/dev/null  # Kill node on P2P port 50308
-pkill -f "doli-node.*50309" 2>/dev/null
-# ... etc
-
-# 4. Verify ports are free
-sleep 2
-lsof -i :9095-9099 2>/dev/null | grep LISTEN || echo "Metrics ports clear"
-```
+**Run the "Mandatory Rule: Kill Zombies Before Deploy" procedure above**, targeting the port range for the new nodes you're adding. For manually started nodes, use Method B (surgical kill on specific ports) to avoid killing the running devnet nodes.
 
 **Port allocation for dynamic nodes:**
 | Node | P2P Port | RPC Port | Metrics Port |
@@ -398,13 +420,13 @@ lsof -i :9095-9099 2>/dev/null | grep LISTEN || echo "Metrics ports clear"
 | 7 | 50310 | 28552 | 9097 |
 | N | 50303+N | 28545+N | 9090+N |
 
-**Common failure:** Node panics with `Failed to bind metrics server: Address already in use` because a previous node attempt left a zombie process on that port.
-
 > **Note:** If you want devnet to manage all 10 nodes from the start, use `devnet init --nodes 10` instead of adding producers dynamically.
 
 ---
 
-### ⚠️ CRITICAL: Complete 5-Step Workflow Required
+### ⚠️ CRITICAL: Complete 5-Step Workflow Required (Option B Only)
+
+> **Using Option A (`devnet add-producer`)?** Skip this — it automates all 5 steps. This workflow is ONLY for manual producer setup (testnet/mainnet/custom).
 
 **All 5 steps must be completed for a producer to actually produce blocks:**
 
@@ -707,7 +729,7 @@ pkill -f "doli-node.*metrics.*9095"
 --metrics-port $((9090 + NODE_NUMBER))
 ```
 
-**Prevention:** Always run port cleanup (Step 0 in Scenario 3) before starting new producer nodes.
+**Prevention:** Always run the "Mandatory Rule: Kill Zombies Before Deploy" procedure before starting new producer nodes.
 
 ### Node won't sync (testnet/mainnet)
 
