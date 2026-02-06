@@ -95,9 +95,9 @@ pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
     producer_weight_precise_for_network, total_weight, total_weight_for_network,
     weighted_veto_threshold, weighted_veto_threshold_for_network, ActivityStatus, ProducerInfo,
-    ProducerSet, ProducerStatus, BLOCKS_PER_MONTH, BLOCKS_PER_YEAR, EXIT_HISTORY_RETENTION,
-    INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD, VETO_BOND_AMOUNT,
-    VETO_THRESHOLD_PERCENT,
+    ProducerSet, ProducerStatus, ACTIVATION_DELAY, BLOCKS_PER_MONTH, BLOCKS_PER_YEAR,
+    EXIT_HISTORY_RETENTION, INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD,
+    VETO_BOND_AMOUNT, VETO_THRESHOLD_PERCENT,
 };
 pub use utxo::{Outpoint, UtxoEntry, UtxoSet};
 

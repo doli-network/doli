@@ -1815,9 +1815,11 @@ impl Node {
             && (self.config.network == Network::Testnet || self.config.network == Network::Devnet)
         {
             let mut known = self.known_producers.write().await;
+            let mut added_any = false;
             for pubkey in new_registrations {
                 if !known.contains(&pubkey) {
                     known.push(pubkey.clone());
+                    added_any = true;
                     let pubkey_hash = crypto_hash(pubkey.as_bytes());
                     info!(
                         "Added registered producer to known_producers: {} (now {} known)",
@@ -1828,6 +1830,11 @@ impl Node {
             }
             // Sort for deterministic ordering (all nodes compute same order)
             known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+            // Trigger stability check so round-robin waits for convergence
+            if added_any {
+                self.last_producer_list_change = Some(std::time::Instant::now());
+            }
         }
 
         // Update chain state
@@ -2668,9 +2675,31 @@ impl Node {
                     // Always include ourselves
                     if !known_producers.iter().any(|p| p == &our_pubkey) {
                         known_producers.push(our_pubkey.clone());
-                        // Sort for deterministic ordering (all nodes compute same order)
-                        known_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                     }
+
+                    // Filter out producers who are registered but haven't passed
+                    // ACTIVATION_DELAY yet. Without this, a registration changes the
+                    // round-robin denominator (slot % N) before all nodes agree on N,
+                    // causing forks during genesis phase.
+                    {
+                        let producers = self.producer_set.read().await;
+                        known_producers.retain(|pk| {
+                            match producers.get_by_pubkey(pk) {
+                                Some(info) => {
+                                    // Registered: only include if past activation delay
+                                    info.is_active()
+                                        && height >= info.registered_at + storage::ACTIVATION_DELAY
+                                }
+                                None => {
+                                    // Not registered (gossip-discovered): include in bootstrap
+                                    true
+                                }
+                            }
+                        });
+                    }
+
+                    // Sort for deterministic ordering (all nodes compute same order)
+                    known_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                     let num_producers = known_producers.len();
                     let leader_index = (current_slot as usize) % num_producers;
@@ -2744,10 +2773,11 @@ impl Node {
         }
 
         // For devnet, add a minimum delay to allow heartbeat collection
-        // This ensures heartbeats have time to propagate before block production
-        // Use millisecond precision since devnet has 1-second slots
+        // Scale delay to 20% of slot duration (capped at 700ms for long slots)
+        // This prevents the delay from consuming too much of short slots
         if self.config.network == Network::Devnet {
-            let heartbeat_collection_ms = 700; // Wait 700ms for heartbeats
+            let slot_duration_ms = self.params.slot_duration * 1000;
+            let heartbeat_collection_ms = std::cmp::min(slot_duration_ms / 5, 700);
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -2909,8 +2939,9 @@ impl Node {
             let pending_events: Vec<NetworkEvent> = {
                 if let Some(ref mut network) = self.network {
                     let mut events = Vec::new();
-                    // Drain up to 10 pending events
-                    for _ in 0..10 {
+                    // Drain ALL pending events (not just 10)
+                    // With 20+ nodes, limiting to 10 can leave blocks unprocessed
+                    loop {
                         if let Some(event) = network.try_next_event() {
                             events.push(event);
                         } else {
@@ -3006,16 +3037,32 @@ impl Node {
             )
         };
 
-        // SAFETY CHECK: Verify no block appeared during VDF computation
-        // This is critical for the fast fallback system with 1-second windows.
-        // Without this check, we could produce a duplicate block if another
-        // producer's block propagated while we were computing the VDF (~700ms).
+        // SAFETY CHECK: Verify chain state hasn't changed during VDF computation
+        //
+        // The VDF takes ~700ms during which the event loop is blocked. Other
+        // producers' blocks may have arrived and been queued. We must check:
+        // 1. No block exists for our current slot (same-slot duplicate)
+        // 2. Chain tip hasn't advanced (stale parent detection)
+        //
+        // Without check #2, we'd build on a stale parent and create a fork.
         if self.block_store.has_block_for_slot(current_slot as u64) {
             debug!(
                 "Block appeared during VDF computation for slot {} - aborting production",
                 current_slot
             );
             return Ok(());
+        }
+
+        // Check if chain tip advanced during VDF (stale parent detection)
+        {
+            let post_vdf_state = self.chain_state.read().await;
+            if post_vdf_state.best_height >= height || post_vdf_state.best_hash != prev_hash {
+                info!(
+                    "Chain advanced during VDF computation (tip moved from height {} to {}) - aborting to avoid fork",
+                    height - 1, post_vdf_state.best_height
+                );
+                return Ok(());
+            }
         }
 
         // Create final block header with VDF
