@@ -28,6 +28,7 @@ use std::path::Path;
 
 use crypto::hash::hash as crypto_hash;
 use crypto::{Hash, PublicKey};
+use doli_core::consensus::MAX_BONDS_PER_PRODUCER;
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
 use serde::{Deserialize, Serialize};
@@ -388,9 +389,6 @@ pub const BOND_UNIT: u64 = 10_000_000_000;
 pub fn bond_unit_for_network(network: Network) -> u64 {
     network.initial_bond()
 }
-
-/// Maximum bonds per producer (prevents whale dominance)
-pub const MAX_BONDS_PER_PRODUCER: u32 = 100;
 
 impl ProducerInfo {
     /// Create a new active producer with a single bond
