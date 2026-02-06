@@ -74,6 +74,16 @@ impl Attestation {
         msg.extend_from_slice(&slot.to_be_bytes());
         msg
     }
+
+    /// Serialize for gossip transmission.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap_or_default()
+    }
+
+    /// Deserialize from gossip bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bincode::deserialize(bytes).ok()
+    }
 }
 
 /// Aggregated attestations from a single region.

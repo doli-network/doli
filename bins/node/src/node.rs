@@ -16,7 +16,8 @@ use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, construct_vdf_input, reward_epoch, ConsensusParams, MAX_FALLBACK_RANKS, UNBONDING_PERIOD,
+    self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
+    DELEGATE_REWARD_PCT, MAX_FALLBACK_RANKS, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
 };
 use doli_core::rewards::{BlockSource, WeightedRewardCalculator};
 use doli_core::tpop::calibration::VdfCalibrator;
@@ -24,8 +25,8 @@ use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::{
-    AdaptiveGossip, Block, BlockHeader, MergeResult, Network, ProducerAnnouncement, ProducerGSet,
-    Transaction,
+    AdaptiveGossip, Attestation, Block, BlockHeader, MergeResult, Network, ProducerAnnouncement,
+    ProducerGSet, Transaction,
 };
 use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::{
@@ -96,8 +97,13 @@ pub struct Node {
     signed_slots_db: Option<SignedSlotsDb>,
     /// Blocks applied since last state save (for periodic persistence)
     blocks_since_save: u64,
-    /// Cached DeterministicScheduler (epoch_number, scheduler) — rebuilt per epoch
-    cached_scheduler: Option<(u64, DeterministicScheduler)>,
+    /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
+    /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
+    cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
+    /// Our computed tier (1, 2, or 3). Recomputed at each epoch boundary.
+    our_tier: u8,
+    /// Last epoch for which we computed our tier (to detect epoch boundaries).
+    last_tier_epoch: Option<u64>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -239,9 +245,11 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
-            // Configure min peers for production based on network
+            // Configure initial min peers for production based on network.
             // Devnet: 1 peer (--no-dht limits peer discovery, only bootstrap visible)
             // Testnet/Mainnet: 2 peers (proper peer discovery, echo chamber prevention)
+            // After first epoch boundary, recompute_tier() overrides this with
+            // tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
             let min_peers = match config.network {
                 Network::Devnet => 1,
                 Network::Testnet | Network::Mainnet => 2,
@@ -317,6 +325,8 @@ impl Node {
             signed_slots_db,
             blocks_since_save: 0,
             cached_scheduler: None,
+            our_tier: 0, // Computed on first block application
+            last_tier_epoch: None,
         })
     }
 
@@ -498,6 +508,94 @@ impl Node {
         server.spawn();
 
         Ok(())
+    }
+
+    /// Recompute our tier classification from the active producer set.
+    /// Called once per epoch boundary (when `height / SLOTS_PER_EPOCH` changes).
+    async fn recompute_tier(&mut self, height: u64) {
+        let current_epoch = height / SLOTS_PER_EPOCH as u64;
+        if self.last_tier_epoch == Some(current_epoch) {
+            return; // Already computed for this epoch
+        }
+
+        let our_pubkey = match &self.producer_key {
+            Some(kp) => kp.public_key().clone(),
+            None => {
+                self.our_tier = 0; // Non-producer
+                self.last_tier_epoch = Some(current_epoch);
+                return;
+            }
+        };
+
+        let producers = self.producer_set.read().await;
+        let active = producers.active_producers_at_height(height);
+        let producers_with_weights: Vec<(PublicKey, u64)> = active
+            .iter()
+            .map(|p| (p.public_key.clone(), p.selection_weight()))
+            .collect();
+        drop(producers);
+
+        let tier1_set = compute_tier1_set(&producers_with_weights);
+        // Build sorted-by-weight list for producer_tier()
+        let mut all_sorted = producers_with_weights.clone();
+        all_sorted.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+        });
+        let all_sorted_pks: Vec<PublicKey> = all_sorted.into_iter().map(|(pk, _)| pk).collect();
+
+        let new_tier = producer_tier(&our_pubkey, &tier1_set, &all_sorted_pks);
+
+        if self.our_tier != new_tier {
+            info!(
+                "Tier classification changed: {} -> {} (epoch {})",
+                self.our_tier, new_tier, current_epoch
+            );
+            // Update min peers for production based on new tier.
+            // Skip on devnet — peer discovery is limited by --no-dht,
+            // so we keep the lower network-level default (1 peer).
+            if self.config.network != Network::Devnet {
+                let mut sync = self.sync_manager.write().await;
+                sync.set_tier(new_tier);
+            }
+        }
+
+        self.our_tier = new_tier;
+        self.last_tier_epoch = Some(current_epoch);
+    }
+
+    /// Create an attestation for a block and broadcast it to the network.
+    async fn create_and_broadcast_attestation(&self, block_hash: Hash, slot: u32, height: u64) {
+        let (private_key, public_key, weight) = match &self.producer_key {
+            Some(kp) => {
+                let pk = kp.public_key().clone();
+                let producers = self.producer_set.read().await;
+                let w = producers
+                    .get_by_pubkey(&pk)
+                    .map(|p| p.selection_weight())
+                    .unwrap_or(0);
+                (kp.private_key().clone(), pk, w)
+            }
+            None => return, // Non-producer can't attest
+        };
+
+        if weight == 0 {
+            return; // Not active, skip attestation
+        }
+
+        let attestation =
+            Attestation::new(block_hash, slot, height, weight, &private_key, public_key);
+
+        // Add our own weight to finality tracker
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.add_attestation_weight(&block_hash, weight);
+        }
+
+        // Broadcast to network
+        if let Some(ref network) = self.network {
+            let _ = network.broadcast_attestation(attestation.to_bytes()).await;
+        }
     }
 
     /// Main event loop
@@ -846,7 +944,11 @@ impl Node {
                     .await
                     .handle_response(peer_id, response);
                 for block in blocks {
-                    self.apply_block(block).await?;
+                    // Route through handle_new_block for orphan/fork detection.
+                    // For normal sync blocks that build on tip, this falls through
+                    // to apply_block unchanged. For orphan blocks (e.g., peer's tip
+                    // when we're on a fork), they get cached and trigger fork recovery.
+                    self.handle_new_block(block).await?;
                 }
             }
 
@@ -993,6 +1095,20 @@ impl Node {
             NetworkEvent::NewHeartbeat(_) => {
                 // Ignored - deterministic scheduler model doesn't use heartbeats
             }
+            NetworkEvent::NewAttestation(data) => {
+                // Decode and apply attestation for finality gadget
+                if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
+                    if attestation.verify().is_ok() {
+                        let mut sync = self.sync_manager.write().await;
+                        sync.add_attestation_weight(
+                            &attestation.block_hash,
+                            attestation.attester_weight,
+                        );
+                    } else {
+                        debug!("Received invalid attestation signature");
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -1077,10 +1193,39 @@ impl Node {
                     error!("Failed to execute reorg: {}", e);
                 }
             } else {
-                // Reorg detection failed (parent not in our recent blocks)
-                // Check if we're likely on a fork by looking at cache size
-                let cache_size = self.fork_block_cache.read().await.len();
+                // Reorg detection failed (parent not in our recent blocks).
+                // Try active fork recovery: walk backward through parent chain
+                // from this orphan block until we connect to our chain.
+                let can_start = self.sync_manager.read().await.can_start_fork_recovery();
+                if can_start {
+                    let peer = self.sync_manager.read().await.best_peer_for_recovery();
+                    if let Some(peer) = peer {
+                        let started = self
+                            .sync_manager
+                            .write()
+                            .await
+                            .start_fork_recovery(block.clone(), peer);
+                        if started {
+                            info!(
+                                "Fork recovery started: walking parents from block {}",
+                                block_hash
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
+                // Fallback: Check if we're likely on a fork by looking at RECENT orphan blocks.
+                // Only blocks near our current slot count as fork evidence.
+                // Old blocks from syncing peers are NOT fork evidence.
+                let our_slot = self.chain_state.read().await.best_slot;
                 let our_height = self.chain_state.read().await.best_height;
+                let cache_size = {
+                    let cache = self.fork_block_cache.read().await;
+                    let slot_window = 30u32; // only count blocks within last 30 slots (~5 min)
+                    let min_slot = our_slot.saturating_sub(slot_window);
+                    cache.values().filter(|b| b.header.slot >= min_slot).count()
+                };
 
                 // If we have many cached blocks from other chains, we're likely on a fork
                 //
@@ -1129,17 +1274,21 @@ impl Node {
                     None => false,
                 };
 
-                // Fork detection threshold: number of orphan blocks before triggering resync
-                // Higher thresholds prevent false positives from external peers with different chains
-                //
-                // INCREASED devnet threshold from 20 to 60 to allow more time for 20-node
-                // startup synchronization. The original 20 was too aggressive and triggered
-                // resyncs during normal multi-node discovery.
-                let fork_threshold = match self.config.network {
-                    Network::Mainnet => 60, // 10 minutes at 10s slots
-                    Network::Testnet => 40, // ~6-7 minutes at 10s slots
-                    Network::Devnet => 20,  // ~1 minute at 3s slots (strong fork evidence)
+                // Fork detection threshold: number of orphan blocks before triggering resync.
+                // Must scale with peer count: with N peers, each sending blocks from a
+                // slightly different chain tip, we expect ~N orphans during normal operation.
+                // Only trigger resync when orphans vastly exceed what peers can explain.
+                let peer_count = {
+                    let sync = self.sync_manager.read().await;
+                    sync.peer_count().max(1)
                 };
+                let base_threshold = match self.config.network {
+                    Network::Mainnet | Network::Testnet => 60, // 10 minutes at 10s slots
+                    Network::Devnet => 30, // lower base for faster devnet iteration (10s slots, higher rewards)
+                };
+                // Scale with peers: at least base_threshold or 3× peer count, whichever is higher.
+                // This prevents false fork detection when many peers join simultaneously.
+                let fork_threshold = base_threshold.max(peer_count * 3);
 
                 // Trigger resync if we have fork_threshold+ blocks from other chains that we can't apply
                 // AND we're past the grace period AND we have some chain progress
@@ -1461,6 +1610,108 @@ impl Node {
         Ok(())
     }
 
+    /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
+    ///
+    /// Called when the parent chain walk connects to a block in our block_store.
+    /// Records weights, moves blocks to fork_block_cache, plans reorg, executes if heavier.
+    async fn handle_completed_fork_recovery(
+        &mut self,
+        recovery: network::sync::CompletedRecovery,
+    ) -> Result<()> {
+        let fork_len = recovery.blocks.len();
+        info!(
+            "Fork recovery complete: {} blocks connected at {}",
+            fork_len,
+            &recovery.connection_point.to_string()[..16]
+        );
+
+        let current_height = self.chain_state.read().await.best_height;
+        let current_tip = self.chain_state.read().await.best_hash;
+
+        // 1. Record fork blocks in reorg_handler with weights (forward order for correct accumulation)
+        {
+            let producers = self.producer_set.read().await;
+            let mut sync = self.sync_manager.write().await;
+            for block in &recovery.blocks {
+                let weight = producers
+                    .get_by_pubkey(&block.header.producer)
+                    .map(|p| p.effective_weight(current_height + 1))
+                    .unwrap_or(1);
+                sync.record_fork_block_weight(block.hash(), block.header.prev_hash, weight);
+            }
+        }
+
+        // 2. Move fork blocks to fork_block_cache (execute_reorg reads from here)
+        {
+            let mut cache = self.fork_block_cache.write().await;
+            for block in &recovery.blocks {
+                cache.insert(block.hash(), block.clone());
+            }
+        }
+
+        // 3. Plan reorg: find common ancestor, build rollback list, compare weights
+        let fork_tip_hash = recovery.blocks.last().unwrap().hash();
+        let reorg_result = {
+            let sync = self.sync_manager.read().await;
+            let store = &self.block_store;
+            sync.reorg_handler()
+                .plan_reorg(current_tip, fork_tip_hash, |hash| {
+                    store.get_header(hash).ok().flatten().map(|h| h.prev_hash)
+                })
+        };
+
+        // 4. Execute reorg if fork is heavier
+        match reorg_result {
+            Some(result) if result.weight_delta > 0 => {
+                info!(
+                    "Fork is heavier (+{}) — executing reorg: rollback={}, new={}",
+                    result.weight_delta,
+                    result.rollback.len(),
+                    result.new_blocks.len()
+                );
+                let trigger = recovery.blocks.last().unwrap().clone();
+                self.execute_reorg(result, trigger).await?;
+            }
+            Some(result) => {
+                info!(
+                    "Fork is lighter ({}) — keeping current chain",
+                    result.weight_delta
+                );
+            }
+            None => {
+                warn!("Could not plan reorg from recovered fork — common ancestor not found");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Try to start fork recovery from cached orphan blocks.
+    /// Called from production gate when fork is detected (ChainMismatch, AheadOfPeers).
+    async fn try_trigger_fork_recovery(&mut self) {
+        let can_start = self.sync_manager.read().await.can_start_fork_recovery();
+        if !can_start {
+            return;
+        }
+        let orphan = {
+            let cache = self.fork_block_cache.read().await;
+            cache.values().next().cloned()
+        };
+        if let Some(orphan) = orphan {
+            let peer = self.sync_manager.read().await.best_peer_for_recovery();
+            if let Some(peer) = peer {
+                let started = self
+                    .sync_manager
+                    .write()
+                    .await
+                    .start_fork_recovery(orphan, peer);
+                if started {
+                    info!("Fork recovery triggered from production gate");
+                }
+            }
+        }
+    }
+
     /// Try to apply a chain of cached blocks when we're behind
     ///
     /// This function attempts to build a chain from cached fork blocks
@@ -1779,6 +2030,48 @@ impl Node {
                         }
                     }
                 }
+
+                // Process DelegateBond transactions
+                if tx.tx_type == TxType::DelegateBond {
+                    if let Some(data) = tx.delegate_bond_data() {
+                        match producers.delegate_bonds(
+                            &data.delegator,
+                            &data.delegate,
+                            data.bond_count,
+                        ) {
+                            Ok(()) => {
+                                info!(
+                                    "Delegated {} bonds from {} to {} at height {}",
+                                    data.bond_count,
+                                    crypto_hash(data.delegator.as_bytes()),
+                                    crypto_hash(data.delegate.as_bytes()),
+                                    height
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to delegate bonds: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Process RevokeDelegation transactions
+                if tx.tx_type == TxType::RevokeDelegation {
+                    if let Some(data) = tx.revoke_delegation_data() {
+                        match producers.revoke_delegation(&data.delegator) {
+                            Ok(()) => {
+                                info!(
+                                    "Revoked delegation for {} at height {}",
+                                    crypto_hash(data.delegator.as_bytes()),
+                                    height
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to revoke delegation: {}", e);
+                            }
+                        }
+                    }
+                }
             }
 
             // Process completed unbonding periods
@@ -1852,6 +2145,55 @@ impl Node {
                         );
                     }
                 }
+            }
+        }
+
+        // Track this block for finality (attestation-based finality gadget).
+        // The total_weight is the sum of all active producer bonds at this height.
+        {
+            let producers = self.producer_set.read().await;
+            let total_weight: u64 = producers
+                .active_producers_at_height(height)
+                .iter()
+                .map(|p| p.selection_weight())
+                .sum();
+            drop(producers);
+
+            if total_weight > 0 {
+                let mut sync = self.sync_manager.write().await;
+                sync.track_block_for_finality(block_hash, height, block.header.slot, total_weight);
+            }
+        }
+
+        // Recompute our tier at epoch boundaries and build EpochSnapshot
+        self.recompute_tier(height).await;
+        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+            let epoch = doli_core::EpochSnapshot::epoch_from_height(height);
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(height);
+            let pws: Vec<(PublicKey, u64)> = active
+                .iter()
+                .map(|p| (p.public_key.clone(), p.selection_weight()))
+                .collect();
+            let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
+            let tier1 = compute_tier1_set(&pws);
+            let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
+            all_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            drop(producers);
+
+            let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);
+            info!(
+                "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
+                epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
+            );
+        }
+
+        // Attest to blocks we didn't produce (self-attestation for our own blocks
+        // is handled in try_produce_block after broadcast)
+        if let Some(ref kp) = self.producer_key {
+            if block.header.producer != *kp.public_key() {
+                self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
+                    .await;
             }
         }
 
@@ -2138,12 +2480,15 @@ impl Node {
         // nodes at height 0 would produce orphan blocks for far-ahead slots.
         // =========================================================================
         {
-            let sync_state = self.sync_manager.read().await;
-            let auth_result = sync_state.can_produce(current_slot);
-            info!(
-                "[NODE_PRODUCE] slot={} can_produce result: {:?}",
-                current_slot, auth_result
-            );
+            let auth_result = {
+                let sync_state = self.sync_manager.read().await;
+                let result = sync_state.can_produce(current_slot);
+                info!(
+                    "[NODE_PRODUCE] slot={} can_produce result: {:?}",
+                    current_slot, result
+                );
+                result
+            }; // sync_state dropped here — allows &mut self in match arms
             match auth_result {
                 ProductionAuthorization::Authorized => {
                     // Production authorized - continue with other checks
@@ -2175,6 +2520,8 @@ impl Node {
                         "[NODE_PRODUCE] FORK DETECTED via AheadOfPeers: slot={} local_h={} peer_h={} ahead={}",
                         current_slot, local_height, peer_height, height_ahead
                     );
+                    // Trigger fork recovery: find a cached orphan and walk its parents
+                    self.try_trigger_fork_recovery().await;
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedInsufficientPeers {
@@ -2201,6 +2548,8 @@ impl Node {
                         "[NODE_PRODUCE] slot={} BLOCKED: Chain mismatch with peer {} at height {} (local={}, peer={}). We are on a fork!",
                         current_slot, peer_id, local_height, local_hash, peer_hash
                     );
+                    // Trigger fork recovery: find a cached orphan and walk its parents
+                    self.try_trigger_fork_recovery().await;
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedExplicit { reason } => {
@@ -2681,17 +3030,33 @@ impl Node {
             // Algorithm: slot % total_bonds -> deterministic ticket assignment
             // Uses cached DeterministicScheduler for O(log n) lookups per slot.
             let current_epoch = self.params.slot_to_epoch(current_slot) as u64;
+            let active_count = active_with_weights.len();
+            let total_bonds: u64 = active_with_weights.iter().map(|(_, b)| *b).sum();
             let scheduler = match &self.cached_scheduler {
-                Some((epoch, sched)) if *epoch == current_epoch => sched,
+                Some((epoch, count, bonds, sched))
+                    if *epoch == current_epoch
+                        && *count == active_count
+                        && *bonds == total_bonds =>
+                {
+                    sched
+                }
                 _ => {
-                    // Build new scheduler for this epoch
+                    // Build new scheduler (epoch changed or active producer set changed)
+                    info!(
+                        "Rebuilding scheduler: epoch={}, producers={}, total_bonds={}",
+                        current_epoch, active_count, total_bonds
+                    );
                     let producers: Vec<ScheduledProducer> = active_with_weights
                         .iter()
                         .map(|(pk, bonds)| ScheduledProducer::new(pk.clone(), *bonds as u32))
                         .collect();
-                    self.cached_scheduler =
-                        Some((current_epoch, DeterministicScheduler::new(producers)));
-                    &self.cached_scheduler.as_ref().unwrap().1
+                    self.cached_scheduler = Some((
+                        current_epoch,
+                        active_count,
+                        total_bonds,
+                        DeterministicScheduler::new(producers),
+                    ));
+                    &self.cached_scheduler.as_ref().unwrap().3
                 }
             };
             let eligible: Vec<_> = (0..MAX_FALLBACK_RANKS)
@@ -3065,6 +3430,10 @@ impl Node {
             let _ = network.broadcast_block(block).await;
         }
 
+        // Self-attest: producer immediately attests to their own block
+        self.create_and_broadcast_attestation(block_hash, current_slot, height)
+            .await;
+
         Ok(())
     }
 
@@ -3112,21 +3481,53 @@ impl Node {
             match calculator.calculate_producer_reward(&producer_info.public_key, index, epoch) {
                 Ok(result) => {
                     if result.has_reward() {
-                        // Convert pubkey to pubkey_hash for the output (using ADDRESS_DOMAIN)
-                        // Note: domain comes first, then data
+                        let total_reward = result.reward_amount;
                         let pubkey_hash =
                             hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
 
                         info!(
                             "Producer {} earned {} in epoch {} (present in {}/{} blocks)",
                             producer_info.public_key,
-                            result.reward_amount,
+                            total_reward,
                             epoch,
                             result.blocks_present,
                             result.total_blocks
                         );
 
-                        reward_outputs.push((result.reward_amount, pubkey_hash));
+                        // Split rewards if producer has received delegations
+                        if producer_info.received_delegations.is_empty() {
+                            // No delegations: 100% to producer
+                            reward_outputs.push((total_reward, pubkey_hash));
+                        } else {
+                            let own_bonds = producer_info.bond_count as u64;
+                            let delegated: u64 = producer_info
+                                .received_delegations
+                                .iter()
+                                .map(|(_, c)| *c as u64)
+                                .sum();
+                            let total_bonds = own_bonds + delegated;
+
+                            // Producer keeps: own_bond_share + DELEGATE_REWARD_PCT of delegated share
+                            let own_share = total_reward * own_bonds / total_bonds;
+                            let delegated_share = total_reward - own_share;
+                            let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
+                            let producer_total = own_share + delegate_fee;
+
+                            if producer_total > 0 {
+                                reward_outputs.push((producer_total, pubkey_hash));
+                            }
+
+                            // Distribute STAKER_REWARD_PCT to each delegator proportionally
+                            let staker_pool = delegated_share * STAKER_REWARD_PCT as u64 / 100;
+                            for (delegator_hash, bond_count) in &producer_info.received_delegations
+                            {
+                                let delegator_reward =
+                                    staker_pool * (*bond_count as u64) / delegated;
+                                if delegator_reward > 0 {
+                                    reward_outputs.push((delegator_reward, *delegator_hash));
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -3226,6 +3627,30 @@ impl Node {
 
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();
+
+        // Poll fork recovery: check if parent chain reached our block_store
+        {
+            let parent_hash = self
+                .sync_manager
+                .read()
+                .await
+                .fork_recovery_current_parent();
+            if let Some(parent_hash) = parent_hash {
+                let parent_known = self.block_store.has_block(&parent_hash).unwrap_or(false);
+                if parent_known {
+                    let completed = self
+                        .sync_manager
+                        .write()
+                        .await
+                        .check_fork_recovery_connection(true);
+                    if let Some(recovery) = completed {
+                        if let Err(e) = self.handle_completed_fork_recovery(recovery).await {
+                            warn!("Fork recovery reorg failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         // Check if we need to request sync
         if let Some((peer_id, request)) = self.sync_manager.write().await.next_request() {
