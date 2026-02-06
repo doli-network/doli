@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.8.0
+version: 2.9.0
 ---
 
 # DOLI Network Setup Skill
@@ -529,6 +529,46 @@ done
 
 ---
 
+## Scenario 3b: Remove a Producer from Running Network
+
+### ⚠️ CRITICAL: Always Exit Before Killing
+
+**NEVER kill a producer node or delete its wallet key before submitting an exit transaction.** A registered producer with no running node will still be selected by the scheduler but cannot produce blocks. If the producer holds many bonds, this can **halt the entire chain** because the scheduler assigns it a proportional share of slots that go unproduced.
+
+**Correct removal order: Exit → Confirm → Kill → Clean**
+
+```bash
+# 1. Submit exit transaction FIRST (while node is still running)
+./target/release/doli -r http://127.0.0.1:28545 \
+  -w ~/.doli/devnet/keys/producer_N.json producer exit
+
+# 2. Wait for exit confirmation (producer removed from scheduler)
+sleep 10
+./target/release/doli -r http://127.0.0.1:28545 \
+  -w ~/.doli/devnet/keys/producer_N.json producer status
+# Should show "exiting" or "exited"
+
+# 3. THEN kill the node process
+pkill -f "doli-node.*50309"  # use the node's P2P port
+
+# 4. THEN clean up data and keys
+rm -rf ~/.doli/devnet/data/nodeN
+rm -f ~/.doli/devnet/logs/nodeN.log
+rm -f ~/.doli/devnet/keys/producer_N.json
+```
+
+**What happens if you skip the exit:**
+
+| Action | Consequence |
+|--------|-------------|
+| Kill node without exit | Producer stays in scheduler, assigned slots produce no blocks |
+| Delete wallet without exit | **Permanent ghost producer** — cannot exit, cannot produce, occupies scheduler slots forever |
+| Ghost producer with many bonds | **Chain halt** — if ghost holds >50% of bond weight, majority of slots go empty and liveness checks block all other producers |
+
+**Recovery from ghost producer (devnet only):** Restart the devnet (`devnet stop && devnet clean && devnet init && devnet start`). There is no on-chain mechanism to remove a producer without its private key.
+
+---
+
 ## Scenario 4: Run as Systemd Service (Production)
 
 For persistent production operation (testnet/mainnet).
@@ -683,6 +723,26 @@ grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
 # Check balance is increasing (rewards)
 doli -w ~/.doli/devnet/keys/producer_NEW.json -r http://127.0.0.1:28545 wallet balance
 ```
+
+### Chain halted after killing a producer node
+
+**Symptom:** All nodes stuck at the same height, logs show `BlockedBehindPeers` with `height_diff: 0`, slots keep advancing but no blocks produced.
+
+**Cause:** A registered producer was killed without submitting an exit transaction first. The scheduler keeps selecting it for slots proportional to its bond count, but no node produces those blocks. If the dead producer holds many bonds (e.g., 10 out of 16 total), the majority of slots go empty and liveness checks block all remaining producers.
+
+**Prevention:** Always follow the exit-before-kill procedure in Scenario 3b.
+
+**Recovery (devnet):**
+```bash
+doli-node devnet stop
+doli-node devnet clean
+doli-node devnet init --nodes N
+doli-node devnet start
+```
+
+**Recovery (testnet/mainnet):** If the wallet key still exists, restart the node or submit an exit transaction. If the wallet key was deleted, the ghost producer persists until governance intervention.
+
+---
 
 ### Sent funds but recipient balance is 0
 
