@@ -1267,6 +1267,23 @@ fn validate_registration_data(
         ValidationError::InvalidRegistration(format!("invalid registration data: {}", e))
     })?;
 
+    // Validate bond_count is consensus-safe (WHITEPAPER Section 7)
+    // bond_count is embedded on-chain to ensure all nodes agree on producer selection.
+    // We only validate bounds here; the existing total_bond >= required_bond check
+    // above ensures sufficient collateral.
+    if reg_data.bond_count < 1 {
+        return Err(ValidationError::InvalidRegistration(
+            "bond_count must be at least 1".to_string(),
+        ));
+    }
+    if reg_data.bond_count > crate::consensus::MAX_BONDS_PER_PRODUCER {
+        return Err(ValidationError::InvalidRegistration(format!(
+            "bond_count {} exceeds maximum {}",
+            reg_data.bond_count,
+            crate::consensus::MAX_BONDS_PER_PRODUCER,
+        )));
+    }
+
     // Verify VDF proof for registration
     // (The actual VDF verification happens here)
     validate_registration_vdf(&reg_data, ctx.network)?;

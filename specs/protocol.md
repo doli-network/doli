@@ -862,7 +862,10 @@ registration_tx = {
         public_key: 32 bytes,
         epoch: uint32,
         vdf_output: bytes,
-        vdf_proof: bytes
+        vdf_proof: bytes,
+        prev_registration_hash: 32 bytes,  // Chain to previous registration
+        sequence_number: uint64,           // Monotonic counter
+        bond_count: uint32                 // On-chain bond count (consensus-critical)
     }
 }
 ```
@@ -916,6 +919,8 @@ A registration is valid if:
 3. Public key is not already registered
 4. Bond output has correct amount and lock duration
 5. Fee is sufficient
+6. `bond_count` is in range [1, MAX_BONDS] (consensus-critical for producer selection)
+7. Registration chain: `prev_registration_hash` and `sequence_number` are valid
 
 ### 6.6 Producer Activation
 

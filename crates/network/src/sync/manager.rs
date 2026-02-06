@@ -314,7 +314,7 @@ impl SyncManager {
             gossip_activity_timeout_secs: 180, // 3 minutes default
             consecutive_sync_failures: 0,
             max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
-            min_peers_for_production: 2,              // Need at least 2 peers to avoid echo chambers
+            min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers
             // Network tip tracking (from gossip)
             network_tip_height: 0,
             network_tip_slot: 0,
@@ -712,7 +712,8 @@ impl SyncManager {
         // With this check: peers=1 < min=2 → BLOCKED (prevents echo chamber)
         info!(
             "[CAN_PRODUCE] Layer5.5: peers={} min_required={}",
-            self.peers.len(), self.min_peers_for_production
+            self.peers.len(),
+            self.min_peers_for_production
         );
         if self.peers.len() < self.min_peers_for_production && self.local_height > 0 {
             // Only apply this check if we're past genesis (height > 0)
@@ -826,7 +827,8 @@ impl SyncManager {
             // This is legitimate at genesis or before first peer connection
             info!(
                 "[CAN_PRODUCE] Layer7 SKIPPED: no network data (peers={}, network_tip_height={})",
-                self.peers.len(), self.network_tip_height
+                self.peers.len(),
+                self.network_tip_height
             );
         }
 
@@ -851,27 +853,27 @@ impl SyncManager {
                 failure_count: self.consecutive_sync_failures,
             };
         }
-        
+
         // Layer 9: Chain Hash Verification (P0 #1)
-        // 
-        // Iterate through peers. If any peer is at the same height (or higher) 
+        //
+        // Iterate through peers. If any peer is at the same height (or higher)
         // but reports a DIFFERENT hash, we are on a fork.
         // This catches the case explicitly where heights match but chains differ.
         for (peer_id, status) in &self.peers {
             if status.best_height == self.local_height && status.best_hash != self.local_hash {
-                 warn!(
+                warn!(
                     "FORK DETECTION: Chain mismatch with peer {} at height {} (local_hash={}, peer_hash={})",
                     peer_id, self.local_height, self.local_hash, status.best_hash
                  );
-                 return ProductionAuthorization::BlockedChainMismatch {
-                     peer_id: *peer_id,
-                     local_hash: self.local_hash,
-                     peer_hash: status.best_hash,
-                     local_height: self.local_height,
-                 };
+                return ProductionAuthorization::BlockedChainMismatch {
+                    peer_id: *peer_id,
+                    local_hash: self.local_hash,
+                    peer_hash: status.best_hash,
+                    local_height: self.local_height,
+                };
             }
         }
-        
+
         // Layer 10: Gossip Activity Watchdog (P0 #3)
         //
         // If we have peers but haven't received ANY blocks via gossip for a long time,
@@ -880,19 +882,21 @@ impl SyncManager {
         // - No peers connected (handled by MinPeers check)
         // - Initial bootstrap (handled by BootstrapGate)
         if !self.peers.is_empty() {
-             let last_gossip = self.last_block_received_via_gossip.unwrap_or(Instant::now());
-             let elapsed = last_gossip.elapsed();
-             
-             if elapsed.as_secs() > self.gossip_activity_timeout_secs {
-                 warn!(
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let elapsed = last_gossip.elapsed();
+
+            if elapsed.as_secs() > self.gossip_activity_timeout_secs {
+                warn!(
                     "FORK DETECTION: No gossip activity for {}s (timeout {}) with {} peers - blocking production",
                     elapsed.as_secs(), self.gossip_activity_timeout_secs, self.peers.len()
                  );
-                 return ProductionAuthorization::BlockedNoGossipActivity {
-                     seconds_since_gossip: elapsed.as_secs(),
-                     peer_count: self.peers.len(),
-                 };
-             }
+                return ProductionAuthorization::BlockedNoGossipActivity {
+                    seconds_since_gossip: elapsed.as_secs(),
+                    peer_count: self.peers.len(),
+                };
+            }
         }
 
         // All checks passed - production is authorized
@@ -1077,10 +1081,7 @@ impl SyncManager {
     /// This should be calibrated to the slot duration (e.g., 18 * slot_duration).
     pub fn set_gossip_activity_timeout_secs(&mut self, secs: u64) {
         self.gossip_activity_timeout_secs = secs;
-        info!(
-            "Set gossip_activity_timeout_secs to {} seconds",
-            secs
-        );
+        info!("Set gossip_activity_timeout_secs to {} seconds", secs);
     }
 
     /// Note a sync failure (empty headers or invalid chain linkage)
@@ -1122,7 +1123,7 @@ impl SyncManager {
     pub fn consecutive_sync_failure_count(&self) -> u32 {
         self.consecutive_sync_failures
     }
-    
+
     /// Note that we received a block via gossip network (P0 #3)
     pub fn note_block_received_via_gossip(&mut self) {
         self.last_block_received_via_gossip = Some(Instant::now());
@@ -1534,7 +1535,7 @@ impl SyncManager {
         self.blocks_applied = 0;
         self.state = SyncState::Idle;
         self.reorg_handler.clear();
-        
+
         // Reset gossip tracking for fresh start
         self.last_block_received_via_gossip = Some(Instant::now());
 
@@ -1745,10 +1746,7 @@ mod tests {
                 assert_eq!(peer_height, 910);
                 assert_eq!(height_ahead, 82); // 992 - 910 = 82
             }
-            other => panic!(
-                "Expected BlockedAheadOfPeers, got {:?}",
-                other
-            ),
+            other => panic!("Expected BlockedAheadOfPeers, got {:?}", other),
         }
     }
 
@@ -2008,7 +2006,10 @@ mod tests {
         let result = manager.can_produce(0);
         // Should NOT be BlockedInsufficientPeers at height 0
         assert!(
-            !matches!(result, ProductionAuthorization::BlockedInsufficientPeers { .. }),
+            !matches!(
+                result,
+                ProductionAuthorization::BlockedInsufficientPeers { .. }
+            ),
             "Should not block for insufficient peers at genesis, got: {:?}",
             result
         );

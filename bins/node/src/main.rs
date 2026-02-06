@@ -1677,13 +1677,13 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
                         let tx_hash = tx.hash();
                         let era = params.height_to_era(height);
 
-                        let producer_info = ProducerInfo::new(
+                        let producer_info = ProducerInfo::new_with_bonds(
                             reg_data.public_key.clone(),
                             height,
                             bond_output.amount,
                             (tx_hash, bond_index as u32),
                             era,
-                            network.initial_bond(),
+                            reg_data.bond_count,
                         );
 
                         if let Err(e) = producer_set.register(producer_info, height) {

@@ -517,6 +517,7 @@ pub struct RegistrationData {
     pub vdf_proof: Vec<u8>,
     pub prev_registration_hash: Hash,  // Chain to previous registration
     pub sequence_number: u64,          // Monotonic counter
+    pub bond_count: u32,               // On-chain bond count (consensus-critical)
 }
 ```
 

@@ -319,8 +319,8 @@ impl NetworkParams {
                 // Economics
                 bond_unit: consensus::BOND_UNIT,
                 initial_reward: consensus::INITIAL_REWARD,
-                registration_base_fee: 100_000,         // 0.001 DOLI
-                max_registration_fee: 1_000_000_000,    // 10 DOLI
+                registration_base_fee: 100_000,      // 0.001 DOLI
+                max_registration_fee: 1_000_000_000, // 10 DOLI
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
@@ -404,23 +404,23 @@ impl NetworkParams {
 
                 // Timing (accelerated for testing)
                 slot_duration: consensus::SLOT_DURATION, // Same as mainnet for realistic testing
-                genesis_time: 0,       // Dynamic
-                veto_period_secs: 60,  // 1 minute
-                grace_period_secs: 30, // 30 seconds
-                bootstrap_grace_period_secs: 5, // 5s for fast devnet startup
-                unbonding_period: 60,  // ~10 minutes with 10s slots
+                genesis_time: 0,                         // Dynamic
+                veto_period_secs: 60,                    // 1 minute
+                grace_period_secs: 30,                   // 30 seconds
+                bootstrap_grace_period_secs: 5,          // 5s for fast devnet startup
+                unbonding_period: 60,                    // ~10 minutes with 10s slots
                 inactivity_threshold: 30,
 
                 // Economics (lower values for testing)
-                bond_unit: 100_000_000,                 // 1 DOLI (Devnet override)
-                initial_reward: 2_000_000_000,          // 20 DOLI (Devnet override)
-                registration_base_fee: 1_000,           // 0.00001 DOLI
-                max_registration_fee: 10_000_000,       // 0.1 DOLI
-                automatic_genesis_bond: consensus::BOND_UNIT, // Use mainnet bond for genesis? 
-                                                             // Original code: 10_000_000_000 (100 DOLI)
-                                                             // Devnet bond_unit is 1 DOLI. 
-                                                             // Wait, line 417 in original was 10_000_000_000.
-                                                             // So it uses MAINNET bond unit for genesis bond.
+                bond_unit: 100_000_000,           // 1 DOLI (Devnet override)
+                initial_reward: 2_000_000_000,    // 20 DOLI (Devnet override)
+                registration_base_fee: 1_000,     // 0.00001 DOLI
+                max_registration_fee: 10_000_000, // 0.1 DOLI
+                automatic_genesis_bond: consensus::BOND_UNIT, // Use mainnet bond for genesis?
+                // Original code: 10_000_000_000 (100 DOLI)
+                // Devnet bond_unit is 1 DOLI.
+                // Wait, line 417 in original was 10_000_000_000.
+                // So it uses MAINNET bond unit for genesis bond.
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
@@ -596,9 +596,9 @@ mod tests {
         assert_eq!(mainnet.commitment_period(), mainnet.blocks_per_era());
         assert_eq!(
             mainnet.exit_history_retention(),
-                mainnet.blocks_per_era() * 2
-            );
-        }
+            mainnet.blocks_per_era() * 2
+        );
+    }
 
     #[test]
     fn test_env_override() {

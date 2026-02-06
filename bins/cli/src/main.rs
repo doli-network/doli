@@ -785,8 +785,13 @@ async fn cmd_producer(
             let lock_until = chain_info.best_height + blocks_per_era;
 
             // Create registration transaction with bonds
-            let mut tx =
-                Transaction::new_registration(inputs, producer_pubkey, required_amount, lock_until);
+            let mut tx = Transaction::new_registration(
+                inputs,
+                producer_pubkey,
+                required_amount,
+                lock_until,
+                bonds,
+            );
 
             // Add change output if needed
             let change = total_input - required_amount - fee;

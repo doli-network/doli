@@ -201,6 +201,13 @@ pub struct RegistrationData {
     /// Starts at 0 for the first registration, increments by 1 for each
     /// subsequent registration. Used to verify registration ordering.
     pub sequence_number: u64,
+    /// Number of bonds being staked (each bond = 1 bond_unit).
+    ///
+    /// This is consensus-critical: all nodes must agree on bond_count for
+    /// deterministic producer selection (WHITEPAPER Section 7).
+    /// Stored on-chain to avoid re-deriving from bond_amount / local_bond_unit,
+    /// which would break consensus if nodes have different bond_unit configs.
+    pub bond_count: u32,
 }
 
 /// Exit data for producer exit transactions
@@ -632,6 +639,7 @@ impl Transaction {
         public_key: PublicKey,
         bond_amount: Amount,
         lock_until: BlockHeight,
+        bond_count: u32,
     ) -> Self {
         // Create registration data without VDF (for CLI use)
         // Full VDF registration happens through node's registration flow
@@ -642,6 +650,7 @@ impl Transaction {
             vdf_proof: Vec::new(),
             prev_registration_hash: Hash::ZERO,
             sequence_number: 0,
+            bond_count,
         };
         let extra_data = bincode::serialize(&reg_data).unwrap_or_default();
 
