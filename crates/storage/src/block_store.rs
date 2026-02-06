@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crypto::Hash;
 use doli_core::{Block, BlockHeader};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::StorageError;
 
@@ -38,6 +38,33 @@ impl BlockStore {
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
         Ok(Self { db })
+    }
+
+    /// Clear all block data from the store.
+    ///
+    /// Removes all entries from every column family (headers, bodies,
+    /// height_index, slot_index, presence). Used during force resync
+    /// from genesis to purge stale fork blocks.
+    pub fn clear(&self) -> Result<(), StorageError> {
+        let cf_names = [CF_HEADERS, CF_BODIES, CF_HEIGHT_INDEX, CF_SLOT_INDEX, CF_PRESENCE];
+
+        for cf_name in &cf_names {
+            let cf = self.db.cf_handle(cf_name).unwrap();
+            let mut batch = rocksdb::WriteBatch::default();
+            let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+            let mut count = 0u64;
+            for (key, _) in iter.flatten() {
+                batch.delete_cf(&cf, &key);
+                count += 1;
+            }
+            if count > 0 {
+                self.db.write(batch)?;
+                warn!("[BLOCK_STORE] Cleared {} entries from CF '{}'", count, cf_name);
+            }
+        }
+
+        info!("[BLOCK_STORE] All column families cleared");
+        Ok(())
     }
 
     /// Store a block
@@ -842,5 +869,96 @@ mod tests {
 
         let last_epoch = store.get_last_rewarded_epoch().unwrap();
         assert_eq!(last_epoch, 0, "Empty chain should return epoch 0");
+    }
+
+    #[test]
+    fn test_clear_removes_all_data() {
+        // Regression test: force_resync_from_genesis must clear the block store
+        // to purge stale fork blocks. Without clear(), old HEIGHT_INDEX and
+        // SLOT_INDEX entries persist and pollute queries.
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Populate store with blocks (simulating a fork)
+        for height in 0..10u64 {
+            let block = create_test_block(height as u32 + 1, &producer);
+            store.put_block(&block, height).unwrap();
+        }
+
+        // Verify data exists
+        assert!(store.get_block_by_height(0).unwrap().is_some());
+        assert!(store.get_block_by_height(9).unwrap().is_some());
+        assert!(store.get_block_by_slot(1).unwrap().is_some());
+        assert!(store.get_block_by_slot(10).unwrap().is_some());
+        assert_eq!(store.count_slot_index_entries().unwrap(), 10);
+
+        // Clear the store
+        store.clear().unwrap();
+
+        // Verify all data is gone
+        for h in 0..10u64 {
+            assert!(
+                store.get_block_by_height(h).unwrap().is_none(),
+                "Height {} should be empty after clear",
+                h
+            );
+        }
+        for s in 1..=10u32 {
+            assert!(
+                store.get_block_by_slot(s).unwrap().is_none(),
+                "Slot {} should be empty after clear",
+                s
+            );
+        }
+        assert_eq!(store.count_slot_index_entries().unwrap(), 0);
+        assert_eq!(store.get_last_rewarded_epoch().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_clear_then_repopulate() {
+        // After clear(), new blocks should be stored correctly without
+        // interference from previously cleared data.
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Store "fork" blocks at heights 0-4, slots 100-104
+        for i in 0..5u64 {
+            let block = create_test_block(100 + i as u32, &producer);
+            store.put_block(&block, i).unwrap();
+        }
+
+        // Clear (simulating resync)
+        store.clear().unwrap();
+
+        // Store "canonical" blocks at heights 0-2, slots 1-3
+        for i in 0..3u64 {
+            let block = create_test_block(i as u32 + 1, &producer);
+            store.put_block(&block, i).unwrap();
+        }
+
+        // Canonical blocks exist
+        assert!(store.get_block_by_height(0).unwrap().is_some());
+        assert!(store.get_block_by_height(2).unwrap().is_some());
+
+        // Old fork heights should NOT exist
+        assert!(
+            store.get_block_by_height(3).unwrap().is_none(),
+            "Old fork height 3 should be gone after clear"
+        );
+        assert!(
+            store.get_block_by_height(4).unwrap().is_none(),
+            "Old fork height 4 should be gone after clear"
+        );
+
+        // Old fork slots should NOT exist
+        assert!(
+            store.get_block_by_slot(100).unwrap().is_none(),
+            "Old fork slot 100 should be gone after clear"
+        );
+
+        // Only 3 entries in slot index
+        assert_eq!(store.count_slot_index_entries().unwrap(), 3);
     }
 }

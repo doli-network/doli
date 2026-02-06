@@ -1760,6 +1760,19 @@ impl Node {
         // Note: last_resync_time is set by the caller before calling this function
         // to implement the cooldown between resyncs
 
+        // =========================================================================
+        // LAYER 10: Clear RocksDB block store (purge stale fork blocks)
+        //
+        // Without this, old fork blocks remain in HEIGHT_INDEX and SLOT_INDEX,
+        // polluting queries like get_last_rewarded_epoch() which iterates from
+        // the end of HEIGHT_INDEX and would hit stale fork entries first.
+        // =========================================================================
+        if let Err(e) = self.block_store.clear() {
+            error!("Failed to clear block store during resync: {}", e);
+            // Non-fatal: sync will overwrite canonical entries, but stale
+            // entries beyond best_height remain. Log and continue.
+        }
+
         info!(
             "Complete state reset to genesis (height 0). \
              Production blocked until sync completes + grace period. \
