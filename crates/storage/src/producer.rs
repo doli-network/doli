@@ -371,6 +371,15 @@ pub struct ProducerInfo {
     /// First bond uses bond_outpoint, additional bonds stored here
     #[serde(default)]
     pub additional_bonds: Vec<(Hash, u32)>,
+    /// Who this producer delegates bond weight to (Tier 3 → Tier 1/2)
+    #[serde(default)]
+    pub delegated_to: Option<PublicKey>,
+    /// How many bonds are delegated
+    #[serde(default)]
+    pub delegated_bonds: u32,
+    /// Delegations received from other producers: (delegator pubkey hash, bond count)
+    #[serde(default)]
+    pub received_delegations: Vec<(Hash, u32)>,
 }
 
 /// Default bond count for backwards compatibility
@@ -430,6 +439,9 @@ impl ProducerInfo {
             activity_gaps: 0,
             bond_count,
             additional_bonds: Vec::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
         }
     }
 
@@ -459,6 +471,9 @@ impl ProducerInfo {
             activity_gaps: 0,
             bond_count,
             additional_bonds: Vec::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
         }
     }
 
@@ -496,6 +511,9 @@ impl ProducerInfo {
             activity_gaps: 0,
             bond_count,
             additional_bonds: Vec::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
         }
     }
 
@@ -659,13 +677,20 @@ impl ProducerInfo {
         all
     }
 
-    /// Get the selection weight based on bond count
+    /// Get the selection weight including bond delegations.
     ///
-    /// This is used for weighted producer selection.
-    /// More bonds = proportionally more chances to be selected.
-    pub fn selection_weight(&self) -> u32 {
+    /// This is used for weighted producer selection and tier computation.
+    /// Includes own bonds plus all delegated bonds received from other producers.
+    /// Returns 0 if producer is not active.
+    pub fn selection_weight(&self) -> u64 {
         if self.is_active() {
-            self.bond_count
+            let own_bonds = self.bond_count as u64;
+            let delegated: u64 = self
+                .received_delegations
+                .iter()
+                .map(|(_, count)| *count as u64)
+                .sum();
+            own_bonds + delegated
         } else {
             0
         }
@@ -912,6 +937,11 @@ pub struct ProducerSet {
     /// beyond any realistic attack horizon.
     #[serde(default)]
     exit_history: HashMap<Hash, u64>,
+    /// Epoch-based cache of active producer keys at a given height.
+    /// Avoids O(n) scan of all producers every slot.
+    /// Invalidated on any mutation (register, exit, slash, etc.).
+    #[serde(skip)]
+    active_cache: Option<(u64, Vec<Hash>)>,
 }
 
 impl ProducerSet {
@@ -920,12 +950,14 @@ impl ProducerSet {
         Self {
             producers: HashMap::new(),
             exit_history: HashMap::new(),
+            active_cache: None,
         }
     }
 
     /// Clear all producers (used during chain reorganization)
     pub fn clear(&mut self) {
         self.producers.clear();
+        self.active_cache = None;
         // Keep exit_history as it's needed for anti-sybil checks
     }
 
@@ -972,6 +1004,7 @@ impl ProducerSet {
         }
 
         self.producers.insert(key, info);
+        self.active_cache = None;
         Ok(())
     }
 
@@ -995,6 +1028,7 @@ impl ProducerSet {
         }
 
         self.producers.insert(key, info);
+        self.active_cache = None;
         Ok(())
     }
 
@@ -1102,9 +1136,13 @@ impl ProducerSet {
             activity_gaps: 0,
             bond_count,
             additional_bonds: Vec::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
         };
 
         self.producers.insert(key, info);
+        self.active_cache = None;
         Ok(())
     }
 
@@ -1160,13 +1198,46 @@ impl ProducerSet {
     ///
     /// This ensures all nodes have the same view of the producer set for a given
     /// height, preventing scheduling conflicts when new producers join.
+    ///
+    /// Uses epoch-based cache when available (call `ensure_active_cache()` to populate).
     pub fn active_producers_at_height(&self, current_height: u64) -> Vec<&ProducerInfo> {
+        // Fast path: use cached keys if available and valid for this height
+        if let Some((cached_height, ref keys)) = self.active_cache {
+            if cached_height == current_height {
+                return keys.iter().filter_map(|k| self.producers.get(k)).collect();
+            }
+        }
+
+        // Slow path: full scan
         self.producers
             .values()
             .filter(|p| {
                 p.is_active() && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
             })
             .collect()
+    }
+
+    /// Pre-build the active producer cache for the given height.
+    ///
+    /// Call once per slot before the hot path to avoid repeated O(n) scans.
+    /// The cache is automatically invalidated on any producer state mutation.
+    pub fn ensure_active_cache(&mut self, current_height: u64) {
+        if let Some((cached_height, _)) = &self.active_cache {
+            if *cached_height == current_height {
+                return; // Cache already valid
+            }
+        }
+
+        let keys: Vec<Hash> = self
+            .producers
+            .iter()
+            .filter(|(_, p)| {
+                p.is_active() && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
+            })
+            .map(|(k, _)| *k)
+            .collect();
+
+        self.active_cache = Some((current_height, keys));
     }
 
     /// Get all producers (all states)
@@ -1202,6 +1273,7 @@ impl ProducerSet {
         match info.status {
             ProducerStatus::Active => {
                 info.start_unbonding(current_height);
+                self.active_cache = None;
                 Ok(())
             }
             ProducerStatus::Unbonding { .. } => Err(StorageError::AlreadyExists(
@@ -1238,6 +1310,7 @@ impl ProducerSet {
         match info.status {
             ProducerStatus::Unbonding { .. } => {
                 info.status = ProducerStatus::Active;
+                self.active_cache = None;
                 Ok(())
             }
             ProducerStatus::Active => Err(StorageError::AlreadyExists(
@@ -1278,6 +1351,10 @@ impl ProducerSet {
             self.exit_history.insert(key, current_height);
         }
 
+        if !completed.is_empty() {
+            self.active_cache = None;
+        }
+
         completed
     }
 
@@ -1301,6 +1378,7 @@ impl ProducerSet {
 
         // Record in exit history with current height (slashed producers lose all seniority)
         self.exit_history.insert(key, current_height);
+        self.active_cache = None;
 
         Ok(slashed_amount)
     }
@@ -1334,14 +1412,19 @@ impl ProducerSet {
         info.registered_at = current_height;
         info.registration_era = new_era;
         info.status = ProducerStatus::Active;
+        self.active_cache = None;
 
         Ok(old_bond)
     }
 
     /// Remove exited producers from the set (cleanup)
     pub fn cleanup_exited(&mut self) {
+        let before = self.producers.len();
         self.producers
             .retain(|_, info| !matches!(info.status, ProducerStatus::Exited));
+        if self.producers.len() != before {
+            self.active_cache = None;
+        }
     }
 
     /// Iterate over all producers
@@ -2731,5 +2814,95 @@ mod tests {
 
         // Verify registered_at is still 0
         assert_eq!(set.get_by_pubkey(&pubkey).unwrap().registered_at, 0);
+    }
+
+    #[test]
+    fn test_active_cache_basic() {
+        let mut set = ProducerSet::new();
+        let p1 = make_producer(0);
+        let pubkey1 = p1.public_key;
+        set.register(p1, 0).unwrap();
+
+        let height = ACTIVATION_DELAY + 1;
+
+        // Before caching: slow path works
+        assert_eq!(set.active_producers_at_height(height).len(), 1);
+        assert!(set.active_cache.is_none());
+
+        // Build cache
+        set.ensure_active_cache(height);
+        assert!(set.active_cache.is_some());
+
+        // Cached path returns same result
+        assert_eq!(set.active_producers_at_height(height).len(), 1);
+        assert_eq!(
+            set.active_producers_at_height(height)[0].public_key,
+            pubkey1
+        );
+    }
+
+    #[test]
+    fn test_active_cache_invalidation() {
+        let mut set = ProducerSet::new();
+        let p1 = make_producer(0);
+        let pubkey1 = p1.public_key;
+        set.register(p1, 0).unwrap();
+
+        let height = ACTIVATION_DELAY + 1;
+        set.ensure_active_cache(height);
+        assert!(set.active_cache.is_some());
+
+        // Register new producer → invalidates cache
+        let p2 = make_producer(0);
+        set.register(p2, 0).unwrap();
+        assert!(set.active_cache.is_none());
+
+        // Rebuild and verify both producers present
+        set.ensure_active_cache(height);
+        assert_eq!(set.active_producers_at_height(height).len(), 2);
+
+        // Exit → invalidates cache
+        set.request_exit(&pubkey1, height).unwrap();
+        assert!(set.active_cache.is_none());
+    }
+
+    #[test]
+    fn test_active_cache_height_change() {
+        let mut set = ProducerSet::new();
+        let p1 = make_producer(100);
+        set.register(p1, 100).unwrap();
+
+        // At height 105: producer NOT yet eligible (ACTIVATION_DELAY=10)
+        set.ensure_active_cache(105);
+        assert_eq!(set.active_producers_at_height(105).len(), 0);
+
+        // Cache is valid at same height
+        assert!(set.active_cache.is_some());
+
+        // At height 111: producer IS eligible
+        set.ensure_active_cache(111);
+        assert_eq!(set.active_producers_at_height(111).len(), 1);
+
+        // Different height → cache miss (uses slow path but still correct)
+        assert_eq!(set.active_producers_at_height(200).len(), 1);
+    }
+
+    #[test]
+    fn test_active_cache_slash_invalidation() {
+        let mut set = ProducerSet::new();
+        let p1 = make_producer(0);
+        let pubkey1 = p1.public_key;
+        set.register(p1, 0).unwrap();
+
+        let height = ACTIVATION_DELAY + 1;
+        set.ensure_active_cache(height);
+        assert_eq!(set.active_producers_at_height(height).len(), 1);
+
+        // Slash → invalidates cache
+        set.slash_producer(&pubkey1, height).unwrap();
+        assert!(set.active_cache.is_none());
+
+        // No active producers after slash
+        assert_eq!(set.active_producers_at_height(height).len(), 0);
     }
 }

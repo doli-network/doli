@@ -16,8 +16,7 @@ use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, construct_vdf_input, reward_epoch, select_producer_for_slot, ConsensusParams,
-    UNBONDING_PERIOD,
+    self, construct_vdf_input, reward_epoch, ConsensusParams, MAX_FALLBACK_RANKS, UNBONDING_PERIOD,
 };
 use doli_core::rewards::{BlockSource, WeightedRewardCalculator};
 use doli_core::tpop::calibration::VdfCalibrator;
@@ -28,6 +27,7 @@ use doli_core::{
     AdaptiveGossip, Block, BlockHeader, MergeResult, Network, ProducerAnnouncement, ProducerGSet,
     Transaction,
 };
+use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkConfig, NetworkEvent, NetworkService,
     ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
@@ -96,6 +96,8 @@ pub struct Node {
     signed_slots_db: Option<SignedSlotsDb>,
     /// Blocks applied since last state save (for periodic persistence)
     blocks_since_save: u64,
+    /// Cached DeterministicScheduler (epoch_number, scheduler) — rebuilt per epoch
+    cached_scheduler: Option<(u64, DeterministicScheduler)>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -245,12 +247,6 @@ impl Node {
                 Network::Testnet | Network::Mainnet => 2,
             };
             sm.set_min_peers_for_production(min_peers);
-
-            // Configure gossip timeout based on slot duration (P0 #3)
-            // 18 slots = ~3 minutes on Mainnet (10s slots)
-            // Scales down for Devnet/Testnet with faster slots
-            let gossip_timeout = 18 * params.slot_duration;
-            sm.set_gossip_activity_timeout_secs(gossip_timeout);
         }
 
         if producer_key.is_some() {
@@ -320,6 +316,7 @@ impl Node {
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
             blocks_since_save: 0,
+            cached_scheduler: None,
         })
     }
 
@@ -2180,14 +2177,6 @@ impl Node {
                     );
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedSyncFailures { failure_count } => {
-                    // FORK DETECTION: Repeated sync failures indicate chain divergence
-                    warn!(
-                        "[NODE_PRODUCE] FORK DETECTED via SyncFailures: slot={} failures={}",
-                        current_slot, failure_count
-                    );
-                    return Ok(());
-                }
                 ProductionAuthorization::BlockedInsufficientPeers {
                     peer_count,
                     min_required,
@@ -2214,18 +2203,6 @@ impl Node {
                     );
                     return Ok(());
                 }
-                ProductionAuthorization::BlockedNoGossipActivity {
-                    seconds_since_gossip,
-                    peer_count,
-                } => {
-                    // CRITICAL FORK DETECTION (P0 #3)
-                    // We have peers but receive no gossip. We are likely partitioned/shadow-banned.
-                    error!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers. Network isolation detected.",
-                        current_slot, seconds_since_gossip, peer_count
-                    );
-                    return Ok(());
-                }
                 ProductionAuthorization::BlockedExplicit { reason } => {
                     info!(
                         "[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}",
@@ -2237,6 +2214,15 @@ impl Node {
                     info!(
                         "[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}",
                         current_slot, reason
+                    );
+                    return Ok(());
+                }
+                ProductionAuthorization::BlockedConflictsFinality {
+                    local_finalized_height,
+                } => {
+                    warn!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: Chain conflicts with finalized block at height {}",
+                        current_slot, local_finalized_height
                     );
                     return Ok(());
                 }
@@ -2693,7 +2679,24 @@ impl Node {
             // not "Proof of Delay" via long VDF.
             //
             // Algorithm: slot % total_bonds -> deterministic ticket assignment
-            let eligible = select_producer_for_slot(current_slot, &active_with_weights);
+            // Uses cached DeterministicScheduler for O(log n) lookups per slot.
+            let current_epoch = self.params.slot_to_epoch(current_slot) as u64;
+            let scheduler = match &self.cached_scheduler {
+                Some((epoch, sched)) if *epoch == current_epoch => sched,
+                _ => {
+                    // Build new scheduler for this epoch
+                    let producers: Vec<ScheduledProducer> = active_with_weights
+                        .iter()
+                        .map(|(pk, bonds)| ScheduledProducer::new(pk.clone(), *bonds as u32))
+                        .collect();
+                    self.cached_scheduler =
+                        Some((current_epoch, DeterministicScheduler::new(producers)));
+                    &self.cached_scheduler.as_ref().unwrap().1
+                }
+            };
+            let eligible: Vec<_> = (0..MAX_FALLBACK_RANKS)
+                .filter_map(|rank| scheduler.select_producer(current_slot, rank).cloned())
+                .collect();
             (eligible, None)
         };
 
@@ -2701,27 +2704,32 @@ impl Node {
             return Ok(());
         }
 
-        // Calculate slot offset to determine eligibility window
+        // Calculate slot offset in milliseconds for eligibility window
         let slot_start = self.params.slot_to_timestamp(current_slot);
-        let slot_offset = now.saturating_sub(slot_start);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let slot_start_ms = slot_start * 1000;
+        let slot_offset_ms = now_ms.saturating_sub(slot_start_ms);
 
         // Check if we're eligible at this time
         // For bootstrap mode, use continuous time-based scheduling
-        // For normal mode, use the standard eligibility check
+        // For normal mode, use the standard eligibility check (ms-precision)
         let is_eligible = if let Some(score) = our_bootstrap_rank {
             // Bootstrap mode: continuous time-based scheduling
             // The score (0-255) determines when we should produce within the slot.
             // We can produce when the current time offset exceeds our target offset.
-            let slot_duration = self.params.slot_duration;
+            let slot_duration_ms = self.params.slot_duration * 1000;
             let max_offset_percent = 80; // Leave 20% for propagation
             let target_offset_percent = (score as u64 * max_offset_percent) / 255;
-            let target_offset_secs = (slot_duration * target_offset_percent) / 100;
+            let target_offset_ms = (slot_duration_ms * target_offset_percent) / 100;
 
             // We're eligible if current offset >= our target offset
-            slot_offset >= target_offset_secs
+            slot_offset_ms >= target_offset_ms
         } else {
-            // Normal mode: use standard eligibility check
-            consensus::is_producer_eligible(&our_pubkey, &eligible, slot_offset)
+            // Normal mode: ms-precision sequential eligibility check
+            consensus::is_producer_eligible_ms(&our_pubkey, &eligible, slot_offset_ms)
         };
 
         if !is_eligible {
@@ -2730,30 +2738,23 @@ impl Node {
 
         // For devnet, add a minimum delay to allow heartbeat collection
         // This ensures heartbeats have time to propagate before block production
-        // Use millisecond precision since devnet has 1-second slots
         if self.config.network == Network::Devnet {
             let heartbeat_collection_ms = 700; // Wait 700ms for heartbeats
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            let slot_start_ms = slot_start * 1000;
-            let offset_ms = now_ms.saturating_sub(slot_start_ms);
-            if offset_ms < heartbeat_collection_ms {
+            if slot_offset_ms < heartbeat_collection_ms {
                 return Ok(()); // Too early, wait for heartbeats
             }
         }
 
         // We're eligible - produce a block!
         info!(
-            "Producing block for slot {} at height {} (offset {}s)",
-            current_slot, height, slot_offset
+            "Producing block for slot {} at height {} (offset {}ms)",
+            current_slot, height, slot_offset_ms
         );
 
         // =========================================================================
         // PROPAGATION RACE MITIGATION: Yield before VDF to catch in-flight blocks
         //
-        // Problem: During VDF computation (~700ms), the event loop is blocked and
+        // Problem: During VDF computation (~55ms), the event loop is blocked and
         // cannot process incoming gossip blocks. If another producer's block for
         // slot S is in-flight while we start producing for slot S+1, we won't see
         // it until after we've already broadcast our block, creating a fork.
@@ -2970,7 +2971,7 @@ impl Node {
                 .await
                 .record_timing(iterations, vdf_duration);
 
-            info!("VDF computed in {:?} (target: ~700ms)", vdf_duration);
+            info!("VDF computed in {:?} (target: ~55ms)", vdf_duration);
             (
                 VdfOutput {
                     value: output_bytes.to_vec(),
@@ -2994,7 +2995,7 @@ impl Node {
         // SAFETY CHECK: Verify no block appeared during VDF computation
         // This is critical for the fast fallback system with 1-second windows.
         // Without this check, we could produce a duplicate block if another
-        // producer's block propagated while we were computing the VDF (~700ms).
+        // producer's block propagated while we were computing the VDF (~55ms).
         if self.block_store.has_block_for_slot(current_slot as u64) {
             debug!(
                 "Block appeared during VDF computation for slot {} - aborting production",
