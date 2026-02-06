@@ -43,8 +43,8 @@ fn test_bond_unit_constant() {
 /// Test max bonds constant
 #[test]
 fn test_max_bonds_constant() {
-    // Maximum 100 bonds per producer
-    assert_eq!(MAX_BONDS_PER_PRODUCER, 100);
+    // Maximum 1000 bonds per producer (WHITEPAPER Section 6.3)
+    assert_eq!(MAX_BONDS_PER_PRODUCER, 1_000);
 }
 
 /// Test withdrawal delay constant
@@ -173,9 +173,9 @@ fn test_producer_bonds_add() {
 fn test_producer_bonds_max_limit() {
     let mut bonds = ProducerBonds::new();
 
-    // Add exactly 100 bonds (max)
-    bonds.add_bonds(100, 0).unwrap();
-    assert_eq!(bonds.bond_count(), 100);
+    // Add exactly 1000 bonds (max per WHITEPAPER Section 6.3)
+    bonds.add_bonds(1000, 0).unwrap();
+    assert_eq!(bonds.bond_count(), 1000);
 
     // Cannot add more
     let err = bonds.add_bonds(1, 1000).unwrap_err();
