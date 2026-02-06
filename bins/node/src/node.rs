@@ -256,10 +256,14 @@ impl Node {
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
             // Configure min peers for production based on network
-            // All networks: 2 peers minimum to prevent echo chambers.
-            // A forked node with only 1 peer (also forked) sees matching heights/hashes
-            // and happily keeps producing on the wrong chain.
-            let min_peers = 2;
+            // Devnet: 1 peer — uses --no-dht so non-bootstrap nodes only discover the
+            // bootstrap (1 peer). Requiring 2 blocks all non-bootstrap nodes permanently.
+            // Echo chambers are prevented by the auto-resync mechanism instead.
+            // Testnet/Mainnet: 2 peers — DHT enables full peer discovery.
+            let min_peers = match config.network {
+                Network::Devnet => 1,
+                Network::Testnet | Network::Mainnet => 2,
+            };
             sm.set_min_peers_for_production(min_peers);
 
             // Configure gossip timeout based on slot duration (P0 #3)
