@@ -883,7 +883,10 @@ impl SyncManager {
         // Exceptions:
         // - No peers connected (handled by MinPeers check)
         // - Initial bootstrap (handled by BootstrapGate)
-        if !self.peers.is_empty() {
+        // - No peer is ahead of us: gossip silence is expected when WE are the tip.
+        //   Without this exception, all nodes deadlock: nobody produces → no gossip
+        //   → watchdog blocks everyone → permanent halt.
+        if !self.peers.is_empty() && best_peer_height > self.local_height {
             let last_gossip = self
                 .last_block_received_via_gossip
                 .unwrap_or(Instant::now());
@@ -891,9 +894,10 @@ impl SyncManager {
 
             if elapsed.as_secs() > self.gossip_activity_timeout_secs {
                 warn!(
-                    "FORK DETECTION: No gossip activity for {}s (timeout {}) with {} peers - blocking production",
-                    elapsed.as_secs(), self.gossip_activity_timeout_secs, self.peers.len()
-                 );
+                    "FORK DETECTION: No gossip activity for {}s (timeout {}) with {} peers (peer_h={} > local_h={}) - blocking production",
+                    elapsed.as_secs(), self.gossip_activity_timeout_secs, self.peers.len(),
+                    best_peer_height, self.local_height
+                );
                 return ProductionAuthorization::BlockedNoGossipActivity {
                     seconds_since_gossip: elapsed.as_secs(),
                     peer_count: self.peers.len(),
