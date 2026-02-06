@@ -913,10 +913,10 @@ mod tests {
 
     #[test]
     fn test_automatic_genesis_bond() {
-        // All networks use 100 DOLI (1 bond unit) for automatic genesis bonds
-        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 10_000_000_000);
-        assert_eq!(Network::Testnet.automatic_genesis_bond(), 10_000_000_000);
-        assert_eq!(Network::Devnet.automatic_genesis_bond(), 10_000_000_000);
+        // All networks use 10 DOLI (1 bond unit) for automatic genesis bonds
+        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 1_000_000_000);
+        assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000_000);
+        assert_eq!(Network::Devnet.automatic_genesis_bond(), 1_000_000_000);
     }
 
     #[test]
