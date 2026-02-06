@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(mainnet.default_p2p_port, 30303);
         assert_eq!(mainnet.default_rpc_port, 8545);
         assert_eq!(mainnet.slot_duration, 10);
-        assert_eq!(mainnet.bond_unit, 10_000_000_000);
+        assert_eq!(mainnet.bond_unit, 1_000_000_000);
         assert_eq!(mainnet.blocks_per_year, 3_153_600);
 
         let devnet = NetworkParams::defaults(Network::Devnet);
