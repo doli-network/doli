@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 3.1.0
+version: 3.2.0
 ---
 
 # DOLI Network Setup Skill
@@ -40,6 +40,42 @@ This skill guides you through setting up and running DOLI nodes and producers on
 | Register producer | `doli -w <wallet> producer register --bonds 1` |
 
 Replace `<NETWORK>` with `devnet`, `testnet`, or `mainnet`.
+
+## Mandatory Rule: NEVER Reinitialize a Running Devnet
+
+**Before ANY `devnet clean`, `devnet init`, or `rm -rf ~/.doli/devnet`, you MUST check if a devnet is already running.**
+
+**Procedure (ALWAYS run first):**
+
+```bash
+# 1. Check if devnet is initialized
+cat ~/.doli/devnet/devnet.toml 2>/dev/null
+
+# 2. Check if nodes are running
+pgrep -f "doli-node" 2>/dev/null
+
+# 3. If EITHER returns results → devnet EXISTS. Check RPC health:
+curl -s --max-time 3 http://127.0.0.1:28545 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
+```
+
+**Decision matrix:**
+
+| devnet.toml exists? | Nodes running? | RPC healthy? | Action |
+|---------------------|----------------|--------------|--------|
+| No | No | N/A | Safe to `devnet init` + `devnet start` |
+| Yes | No | N/A | Run `devnet start` (do NOT reinit) |
+| Yes | Yes | Yes | **USE AS-IS** — just run `add-producer` |
+| Yes | Yes | No | Investigate logs before touching anything |
+
+**NEVER do this:**
+- `rm -rf ~/.doli/devnet` without checking first
+- `devnet clean` when the user asked to add producers
+- `devnet init` when devnet.toml already exists
+- Kill all processes + reinit just because an `add-producer` batch partially failed
+
+**When the user says "add N producers":** That means add to the EXISTING devnet. Only reinitialize if the user explicitly says "start fresh", "clean restart", or the devnet is confirmed broken beyond recovery.
 
 ## Mandatory Rule: Kill Zombies Before Deploy
 
@@ -108,26 +144,29 @@ fi
 ```
 User wants to...
 │
-├─ ALWAYS FIRST: Kill zombies on target port range
-│  └─ See "Mandatory Rule: Kill Zombies Before Deploy" above
+├─ STEP 0 (ALWAYS): Check if devnet already exists and is running
+│  └─ Run: cat ~/.doli/devnet/devnet.toml && doli-node devnet status
+│  └─ If running and healthy → SKIP init/clean, go straight to add-producer
+│  └─ If exists but stopped → devnet start (do NOT reinit)
+│  └─ If does not exist → safe to devnet init + devnet start
 │
-├─ Local development/testing?
-│  └─ Kill zombies → `doli-node devnet` commands
-│     doli-node devnet init --nodes 5
+├─ STEP 1: Kill zombies ONLY on target port range (NOT all processes)
+│  └─ For add-producer: only clean NEW ports, leave running nodes alone
+│  └─ For fresh init: clean ALL ports
+│
+├─ Add new producers to running devnet?
+│  └─ Check existing devnet → `doli-node devnet add-producer --count N`
+│  └─ If add-producer partially fails → retry failed ones, do NOT reinit
+│
+├─ Local development/testing (fresh)?
+│  └─ Only if no devnet exists → `doli-node devnet init --nodes 5`
 │     doli-node devnet start
-│     doli-node devnet status
 │
 ├─ Public testing with other operators?
 │  └─ Kill zombies → Use testnet (mirrors mainnet timing)
 │
 ├─ Production deployment?
 │  └─ Kill zombies → Use mainnet
-│
-├─ Add new producers to running devnet?
-│  └─ Kill zombies on NEW port range → `doli-node devnet add-producer --count N`
-│
-├─ Add new producers to testnet/mainnet?
-│  └─ Kill zombies on NEW port range → See Scenario 3 (Manual)
 │
 ├─ Run as background service?
 │  └─ Kill zombies → See Scenario 4 (Systemd Service)

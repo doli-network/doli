@@ -1026,9 +1026,12 @@ fn run_cli(args: &[&str]) -> Result<String> {
 }
 
 /// Add producer(s) to a running devnet
-pub async fn add_producer(count: u32) -> Result<()> {
+pub async fn add_producer(count: u32, bonds: u32, fund_amount: Option<u64>) -> Result<()> {
     if count == 0 || count > 10 {
         return Err(anyhow!("Count must be between 1 and 10, got {}", count));
+    }
+    if bonds == 0 {
+        return Err(anyhow!("Bonds must be at least 1"));
     }
 
     let config = load_config()?;
@@ -1070,11 +1073,21 @@ pub async fn add_producer(count: u32) -> Result<()> {
 
     info!("Using RPC: {}", rpc_url);
 
-    // Load funding wallet (producer_0 — the first genesis producer)
-    let funder_wallet = root.join("keys").join("producer_0.json");
-    if !funder_wallet.exists() {
-        return Err(anyhow!("Funder wallet not found: {:?}", funder_wallet));
+    // Collect available funder wallets (all existing genesis producers)
+    let mut funder_wallets: Vec<PathBuf> = Vec::new();
+    for i in 0..config.node_count {
+        let w = root.join("keys").join(format!("producer_{}.json", i));
+        if w.exists() {
+            funder_wallets.push(w);
+        }
     }
+    if funder_wallets.is_empty() {
+        return Err(anyhow!("No funder wallets found in {:?}/keys/", root));
+    }
+    info!(
+        "Found {} funder wallet(s) — will rotate across them",
+        funder_wallets.len()
+    );
 
     // Read actual bond_unit from chainspec (params may have stale OnceLock defaults)
     let chainspec_path = root.join("chainspec.json");
@@ -1087,8 +1100,9 @@ pub async fn add_producer(count: u32) -> Result<()> {
     } else {
         Network::Devnet.params().bond_unit
     };
-    // CLI expects DOLI (not sats), fund enough for 1 bond + buffer for tx fees
-    let fund_amount_doli = (bond_unit_sats / UNITS_PER_COIN) + 1;
+    // CLI expects DOLI (not sats): use explicit amount or auto-calc (bonds * bond_unit + 1 buffer)
+    let fund_amount_doli =
+        fund_amount.unwrap_or_else(|| (bonds as u64 * bond_unit_sats / UNITS_PER_COIN) + 1);
 
     let current_exe = std::env::current_exe()?;
     let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/{}", config.p2p_port(0));
@@ -1122,12 +1136,15 @@ pub async fn add_producer(count: u32) -> Result<()> {
         let new_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, keypair.public_key().as_ref());
         let new_addr = new_pubkey_hash.to_hex();
 
-        // 2. Fund from producer_0
+        // 2. Fund from rotating genesis wallet (avoids UTXO double-spend)
+        let funder_idx = (idx as usize) % funder_wallets.len();
+        let funder_wallet = &funder_wallets[funder_idx];
         let fund_str = format!("{}", fund_amount_doli);
         info!(
-            "  Funding {} with {} DOLI from producer_0...",
+            "  Funding {} with {} DOLI from producer_{}...",
             &new_addr[..16],
-            fund_str
+            fund_str,
+            funder_idx
         );
 
         let funder_str = funder_wallet.to_string_lossy().to_string();
@@ -1185,9 +1202,9 @@ pub async fn add_producer(count: u32) -> Result<()> {
             continue;
         }
 
-        // 4. Register as producer (1 bond per producer)
+        // 4. Register as producer
         let new_wallet_str = wallet_path.to_string_lossy().to_string();
-        let bond_str = "1";
+        let bond_str = format!("{}", bonds);
         info!("  Registering producer with {} bond(s)...", bond_str);
 
         let reg_output = run_cli(&[
@@ -1227,10 +1244,11 @@ pub async fn add_producer(count: u32) -> Result<()> {
             config.rpc_port(idx)
         );
 
-        // Wait for funder UTXO to refresh before next send (avoid double-spend)
-        // Need at least one full block for change output to confirm
-        info!("  Waiting for UTXO refresh before next producer...");
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Brief pause between producers (rotating wallets avoids most double-spend issues)
+        if count > 1 {
+            info!("  Waiting briefly before next producer...");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
 
     println!();
