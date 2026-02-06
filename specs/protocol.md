@@ -762,9 +762,9 @@ Producers can stake multiple bonds (1-100) to increase their block production sh
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| BOND_UNIT | 100 DOLI | 1 bond = 100 DOLI (10,000,000,000 base units) |
+| BOND_UNIT | 10 DOLI | 1 bond = 10 DOLI (1,000,000,000 base units) |
 | MIN_BONDS | 1 | Minimum to register |
-| MAX_BONDS | 100 | Anti-whale cap (10,000 DOLI max) |
+| MAX_BONDS | 10,000 | Anti-whale cap (100,000 DOLI max) |
 
 **FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
 This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
@@ -876,8 +876,8 @@ registration_tx = {
 def bond_amount(bond_count):
     return bond_count * BOND_UNIT
 
-BOND_UNIT = 10_000_000_000       // 100 DOLI per bond
-MAX_BONDS = 100                  // Maximum bonds per producer
+BOND_UNIT = 1_000_000_000        // 10 DOLI per bond
+MAX_BONDS = 10_000               // Maximum bonds per producer
 LOCK_DURATION = 4 * YEAR_IN_SLOTS  // ~4 years for full vesting
 ```
 
@@ -1023,7 +1023,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | P2P Port | 30303 | 40303 | 50303 | All |
 | RPC Port | 8545 | 18545 | 28545 | All |
 | Metrics Port | 9090 | 19090 | 29090 | All |
-| Bond Unit | 100 DOLI | 100 DOLI | 1 DOLI | Devnet only |
+| Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI | Devnet only |
 | Initial Reward | 1 DOLI | 1 DOLI | 20 DOLI | Devnet only |
 | VDF Iterations | 100,000 | 100,000 | 1 | Devnet only |
 | Heartbeat VDF | 10M (~700ms) | 10M (~700ms) | 10M (~700ms) | Devnet only |
@@ -1197,8 +1197,8 @@ Result:
 | R_TARGET           | 10                       |
 | R_CAP              | 100                      |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
-| BOND_UNIT          | 10,000,000,000 (100 DOLI) |
-| MAX_BONDS_PER_PRODUCER | 100                  |
+| BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
+| MAX_BONDS_PER_PRODUCER | 10,000               |
 | WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
 | YEAR_IN_SLOTS      | 3,153,600                |
 | COMMITMENT_PERIOD  | 12,614,400 (~4 years)    |

@@ -136,7 +136,7 @@ enum Commands {
 enum ProducerCommands {
     /// Register as a block producer
     Register {
-        /// Number of bonds to stake (1-1000, each bond = 1 bond_unit)
+        /// Number of bonds to stake (1-10000, each bond = 1 bond_unit)
         #[arg(short, long, default_value = "1")]
         bonds: u32,
     },
@@ -157,7 +157,7 @@ enum ProducerCommands {
 
     /// Add more bonds to increase stake (bond stacking)
     AddBond {
-        /// Number of bonds to add (1-1000)
+        /// Number of bonds to add (1-10000)
         #[arg(short, long)]
         count: u32,
     },
@@ -721,8 +721,8 @@ async fn cmd_producer(
             println!();
 
             // Validate bond count (WHITEPAPER Section 6.3: max 1000 bonds)
-            if bonds < 1 || bonds > 1000 {
-                println!("Error: Bond count must be between 1 and 1000");
+            if bonds < 1 || bonds > 10000 {
+                println!("Error: Bond count must be between 1 and 10000");
                 return Ok(());
             }
 
@@ -932,8 +932,8 @@ async fn cmd_producer(
             println!("{:-<60}", "");
             println!();
 
-            if count < 1 || count > 1000 {
-                println!("Error: Bond count must be between 1 and 1000");
+            if count < 1 || count > 10000 {
+                println!("Error: Bond count must be between 1 and 10000");
                 return Ok(());
             }
 

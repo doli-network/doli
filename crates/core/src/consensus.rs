@@ -10,10 +10,10 @@
 //! ```ignore
 //! // PREFERRED: Network-aware
 //! let params = NetworkParams::load(network);
-//! let bond_unit = params.bond_unit;  // 100 DOLI mainnet, 1 DOLI devnet
+//! let bond_unit = params.bond_unit;  // 10 DOLI mainnet, 1 DOLI devnet
 //!
 //! // AVOID: Direct import (hardcoded mainnet values)
-//! use doli_core::consensus::BOND_UNIT;  // Always 100 DOLI
+//! use doli_core::consensus::BOND_UNIT;  // Always 10 DOLI
 //! ```
 //!
 //! Constants here are locked for mainnet but can be overridden via `.env` for devnet.
@@ -201,19 +201,19 @@ pub const COINBASE_MATURITY: BlockHeight = 100;
 // More bonds = more selection weight = more block production opportunities.
 // Each bond has its own vesting timer (4 years to full maturity).
 
-/// Bond unit: 100 DOLI = 1 slot per cycle (WHITEPAPER Section 6.3)
+/// Bond unit: 10 DOLI = 1 slot per cycle
 /// This is the atomic unit for staking. You can only stake in multiples of this.
-/// With 100 DOLI per bond unit:
-/// - Producer with 1,000 DOLI = 10 slots per cycle
-/// - Maximum 1,000 bonds = 100,000 DOLI maximum per producer
-pub const BOND_UNIT: Amount = 10_000_000_000; // 100 DOLI in base units
+/// With 10 DOLI per bond unit:
+/// - Producer with 100 DOLI = 10 slots per cycle
+/// - Maximum 10,000 bonds = 100,000 DOLI maximum per producer
+pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
 
-/// Maximum bonds per producer (WHITEPAPER Section 6.3)
-/// 1000 bonds = 100,000 DOLI maximum stake per node
-pub const MAX_BONDS_PER_PRODUCER: u32 = 1_000;
+/// Maximum bonds per producer
+/// 10,000 bonds × 10 DOLI = 100,000 DOLI maximum stake per node
+pub const MAX_BONDS_PER_PRODUCER: u32 = 10_000;
 
 /// Withdrawal delay in slots (7 days at 10s slots)
 /// After requesting withdrawal, must wait this period before claiming
@@ -522,7 +522,7 @@ impl ProducerState {
 pub struct BondEntry {
     /// Slot when this bond was created
     pub creation_slot: Slot,
-    /// Amount staked (always BOND_UNIT = 100 DOLI)
+    /// Amount staked (always BOND_UNIT = 10 DOLI)
     pub amount: Amount,
 }
 
@@ -2172,16 +2172,16 @@ mod tests {
     fn test_bond_amount() {
         let params = ConsensusParams::mainnet();
 
-        // Era 0: 100 DOLI = 10_000_000_000 base units
-        assert_eq!(params.bond_amount(0), 10_000_000_000);
+        // Era 0: 10 DOLI = 1_000_000_000 base units
+        assert_eq!(params.bond_amount(0), 1_000_000_000);
 
-        // Era 1: 70% of initial
+        // Era 1: 70% of initial (1B * 0.7 = 700M)
         let era1_bond = params.bond_amount(BLOCKS_PER_ERA);
-        assert!(era1_bond > 6_900_000_000 && era1_bond < 7_100_000_000);
+        assert!(era1_bond > 690_000_000 && era1_bond < 710_000_000);
 
-        // Era 2: 49% of initial
+        // Era 2: 49% of initial (1B * 0.49 = 490M)
         let era2_bond = params.bond_amount(BLOCKS_PER_ERA * 2);
-        assert!(era2_bond > 4_800_000_000 && era2_bond < 5_000_000_000);
+        assert!(era2_bond > 480_000_000 && era2_bond < 500_000_000);
     }
 
     #[test]
