@@ -2766,15 +2766,24 @@ impl Node {
                     // Filter out producers who are registered but haven't passed
                     // ACTIVATION_DELAY yet. Without this, a registration changes the
                     // round-robin denominator (slot % N) before all nodes agree on N,
-                    // causing forks during genesis phase.
+                    // causing forks when new producers join mid-chain.
+                    //
+                    // Exception: genesis producers (registered_at == 0) are always
+                    // included — they ARE the initial set and waiting would deadlock.
                     {
                         let producers = self.producer_set.read().await;
                         known_producers.retain(|pk| {
                             match producers.get_by_pubkey(pk) {
                                 Some(info) => {
-                                    // Registered: only include if past activation delay
-                                    info.is_active()
-                                        && height >= info.registered_at + storage::ACTIVATION_DELAY
+                                    if !info.is_active() {
+                                        return false;
+                                    }
+                                    // Genesis producers: always eligible
+                                    if info.registered_at == 0 {
+                                        return true;
+                                    }
+                                    // Late joiners: must wait activation delay
+                                    height >= info.registered_at + storage::ACTIVATION_DELAY
                                 }
                                 None => {
                                     // Not registered (gossip-discovered): include in bootstrap
@@ -2788,6 +2797,10 @@ impl Node {
                     known_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                     let num_producers = known_producers.len();
+                    if num_producers == 0 {
+                        warn!("Bootstrap round-robin: no eligible producers after filtering, skipping slot {}", current_slot);
+                        return Ok(());
+                    }
                     let leader_index = (current_slot as usize) % num_producers;
                     let designated_leader = &known_producers[leader_index];
 
