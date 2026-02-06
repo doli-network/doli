@@ -251,7 +251,7 @@ impl Node {
                 Network::Testnet | Network::Mainnet => 2, // Require multiple peers for safety
             };
             sm.set_min_peers_for_production(min_peers);
-            
+
             // Configure gossip timeout based on slot duration (P0 #3)
             // 18 slots = ~3 minutes on Mainnet (10s slots)
             // Scales down for Devnet/Testnet with faster slots
@@ -844,7 +844,10 @@ impl Node {
             NetworkEvent::SyncResponse { peer_id, response } => {
                 debug!("Sync response from {}", peer_id);
                 // P1 #5: Note that this peer is sending data (active), not just reachable
-                self.sync_manager.write().await.note_block_received_from_peer(peer_id);
+                self.sync_manager
+                    .write()
+                    .await
+                    .note_block_received_from_peer(peer_id);
 
                 let blocks = self
                     .sync_manager
@@ -1419,13 +1422,13 @@ impl Node {
                                     let tx_hash = tx.hash();
                                     let era = self.params.height_to_era(height);
 
-                                    let producer_info = storage::ProducerInfo::new(
+                                    let producer_info = storage::ProducerInfo::new_with_bonds(
                                         reg_data.public_key.clone(),
                                         height,
                                         bond_output.amount,
                                         (tx_hash, bond_index as u32),
                                         era,
-                                        self.config.network.initial_bond(),
+                                        reg_data.bond_count,
                                     );
 
                                     let _ = producers.register(producer_info, height);
@@ -1689,13 +1692,13 @@ impl Node {
                             let tx_hash = tx.hash();
                             let era = self.params.height_to_era(height);
 
-                            let producer_info = storage::ProducerInfo::new(
+                            let producer_info = storage::ProducerInfo::new_with_bonds(
                                 reg_data.public_key.clone(),
                                 height,
                                 bond_output.amount,
                                 (tx_hash, bond_index as u32),
                                 era,
-                                self.config.network.initial_bond(),
+                                reg_data.bond_count,
                             );
 
                             if let Err(e) = producers.register(producer_info, height) {
@@ -2153,7 +2156,10 @@ impl Node {
             match auth_result {
                 ProductionAuthorization::Authorized => {
                     // Production authorized - continue with other checks
-                    info!("[NODE_PRODUCE] slot={} AUTHORIZED - proceeding", current_slot);
+                    info!(
+                        "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
+                        current_slot
+                    );
                 }
                 ProductionAuthorization::BlockedSyncing => {
                     info!("[NODE_PRODUCE] slot={} BLOCKED: Syncing", current_slot);
@@ -2227,11 +2233,17 @@ impl Node {
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedExplicit { reason } => {
-                    info!("[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}", current_slot, reason);
+                    info!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}",
+                        current_slot, reason
+                    );
                     return Ok(());
                 }
                 ProductionAuthorization::BlockedBootstrap { reason } => {
-                    info!("[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}", current_slot, reason);
+                    info!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}",
+                        current_slot, reason
+                    );
                     return Ok(());
                 }
             }
