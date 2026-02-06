@@ -1636,3 +1636,173 @@ Option C: devnet add-producer subcommand (manages env correctly)
 ```
 
 See "Architectural Discussion" section below for analysis.
+
+---
+
+## Failure Mode F: Sync Stall Deadlock — Slot-Aware Sync Recovery (2026-02-06)
+
+### Status: FIX IMPLEMENTED, LIVE TESTING IN PROGRESS
+
+### Severity: Critical (node permanently stuck — can't produce, won't sync)
+
+### Discovery
+
+12-node devnet with dynamically added producers. Three nodes (6, 7, 9) forked ahead of the main chain (height 1105), then became permanently stuck — unable to produce or recover.
+
+```
+╠══════════════════════════════════════════════════════════════════════╣
+║  Node Status   Height  Notes                                       ║
+╟──────────────────────────────────────────────────────────────────────╢
+║  0-5,8,10-11   1105    ✅ Main chain consensus                      ║
+║  6              1176    ❌ Forked (+71 blocks), stuck                 ║
+║  7              1211    ❌ Forked (+106 blocks), stuck                ║
+║  9              1153    ❌ Forked (+48 blocks), stuck                 ║
+```
+
+### Root Cause: Sync Manager Only Checks Height, Ignores Slot
+
+Node 7 log (smoking gun):
+
+```
+[CAN_PRODUCE] slot=1403 local_h=1211 local_s=850 peer_h=1211 peer_s=1400 peers=1 sync_failures=0 state=Synchronized
+result: BlockedBehindPeers { local_height: 1211, peer_height: 1211, height_diff: 0 }
+```
+
+| Field | Value | Problem |
+|-------|-------|---------|
+| `local_height` | 1211 | Forked chain — produced 106 extra blocks |
+| `peer_height` | 1211 | `best_peer_height() = max(peer_actual, network_tip) = 1211` |
+| `local_slot` | **850** | Stuck — hasn't advanced |
+| `peer_slot` | **1400** | Peer is 550 slots ahead |
+| `state` | **Synchronized** | Wrong! Should be syncing |
+| `height_diff` | **0** | Heights match → no sync triggered |
+
+### The Deadlock Cascade
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ 1. should_sync() checks only height                                  │
+│    └─ peer height (1211) == local height (1211) → false → NO SYNC   │
+├──────────────────────────────────────────────────────────────────────┤
+│ 2. update_local_tip() checks only height                             │
+│    └─ height >= peer height → marks state as "Synchronized"          │
+├──────────────────────────────────────────────────────────────────────┤
+│ 3. can_produce() Layer 6 detects slot lag correctly                   │
+│    └─ slot_diff = 1400 - 850 = 550 > max_slots_behind (2)           │
+│    └─ Returns BlockedBehindPeers { height_diff: 0 }                  │
+├──────────────────────────────────────────────────────────────────────┤
+│ 4. No recovery mechanism exists                                       │
+│    └─ Node stuck forever: can't produce, won't sync                  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Fix: Slot-Aware Sync Recovery (5 changes in `manager.rs`)
+
+**File**: `crates/network/src/sync/manager.rs`
+
+| Fix | Function | Change |
+|-----|----------|--------|
+| 1 | `should_sync()` | Added slot check: peers ahead in slot time now trigger sync even if heights match |
+| 2 | `best_peer()` | Filter includes slot-ahead peers; sort by `(height, slot)` |
+| 3 | `update_local_tip()` | Requires slot alignment before marking `Synchronized` |
+| 4 | `block_applied_with_weight()` | Requires `network_tip_slot` alignment before marking sync complete |
+| 5 | `cleanup()` | Stall recovery safety net — resets `Synchronized` to `Idle` when slot lag exceeds `5 * max_slots_behind` |
+
+**Fix 1 — `should_sync()`** (line 1146):
+```rust
+// BEFORE: height-only
+self.peers.values().any(|p| p.best_height > self.local_height)
+
+// AFTER: height OR slot
+self.peers.values().any(|p| {
+    p.best_height > self.local_height
+        || p.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
+})
+```
+
+**Fix 2 — `best_peer()`** (line 1158):
+```rust
+// BEFORE: filter height-only
+.filter(|(_, status)| status.best_height > self.local_height)
+
+// AFTER: filter height OR slot, sort by both
+.filter(|(_, status)| {
+    status.best_height > self.local_height
+        || status.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
+})
+.max_by_key(|(_, status)| (status.best_height, status.best_slot))
+```
+
+**Fix 3 — `update_local_tip()`** (line 363):
+```rust
+// BEFORE:
+if height >= status.best_height { ... Synchronized }
+
+// AFTER:
+let slot_aligned = self.max_slots_behind == 0
+    || status.best_slot.saturating_sub(slot) <= self.max_slots_behind;
+if height >= status.best_height && slot_aligned { ... Synchronized }
+```
+
+**Fix 4 — `block_applied_with_weight()`** (line 1499):
+```rust
+// BEFORE:
+if self.state.is_syncing() && height >= self.network_tip_height { ... Synchronized }
+
+// AFTER:
+let slot_ok = self.network_tip_slot.saturating_sub(slot) <= self.max_slots_behind;
+if self.state.is_syncing() && height >= self.network_tip_height && slot_ok { ... Synchronized }
+```
+
+**Fix 5 — `cleanup()`** (after stale peer removal):
+```rust
+// Stall recovery: if "Synchronized" but significantly behind in slots,
+// reset to Idle and trigger resync
+if self.state == SyncState::Synchronized && !self.peers.is_empty() {
+    let best_slot = self.best_peer_slot();
+    let slot_lag = best_slot.saturating_sub(self.local_slot);
+    let stall_threshold = self.max_slots_behind.saturating_mul(5); // 10 slots default
+    if slot_lag > stall_threshold {
+        self.state = SyncState::Idle;
+        if self.should_sync() { self.start_sync(); }
+    }
+}
+```
+
+### Tests Added (4 new, all passing)
+
+| Test | Validates |
+|------|-----------|
+| `test_should_sync_detects_slot_lag` | Slot lag triggers sync even when heights match |
+| `test_best_peer_returns_peer_ahead_in_slot` | Peer selection includes slot-ahead peers |
+| `test_stall_recovery_resets_to_idle` | cleanup() breaks deadlock by resetting state |
+| `test_update_local_tip_requires_slot_alignment` | Premature Synchronized prevented |
+
+### Verification
+
+| Step | Result |
+|------|--------|
+| `cargo build` | Pass (no new warnings) |
+| `cargo clippy -- -D warnings` | Pre-existing errors only (not in manager.rs) |
+| `cargo fmt --check` | Clean |
+| `cargo test -p network` | 70/70 pass (including 4 new) |
+| Live devnet | **Testing in progress** |
+
+### Commit
+
+`b2e9ea3` — `fix(network): slot-aware sync recovery — untested yet`
+
+### Relationship to Other Failure Modes
+
+This is a **new failure mode (F)** distinct from A-E:
+
+| Mode | Description | Status |
+|------|-------------|--------|
+| A: Ahead of Network | Forked node thinks it's ahead | ✅ DETECTED (P0 #2) |
+| B: Echo Chamber | Forked nodes peer only with each other | ✅ DETECTED (P0 #5) |
+| C: Chain Deadlock | Lowest peer check too aggressive | ✅ FIXED (disabled) |
+| D: Registration Race | Nodes process registrations differently | ⚠️ UNRESOLVED |
+| E: Slot Clock Desync | `.env`/chainspec params not applied | ✅ FIXED |
+| **F: Sync Stall** | **Heights match but slots diverge → deadlock** | **🔄 TESTING** |
+
+Mode F can occur as a **secondary effect** of any fork (A, B, D). Once a node forks and accumulates extra blocks, its height may match the main chain while its slot clock falls behind. The node then enters the deadlock: `Synchronized` state + `BlockedBehindPeers` with `height_diff=0`.
