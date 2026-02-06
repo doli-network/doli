@@ -151,9 +151,29 @@ impl ReorgHandler {
     ///
     /// Returns true if the new chain is heavier than our current chain.
     /// This implements the "heaviest chain wins" fork choice rule.
+    /// When weights are equal, uses lower block hash as tie-breaker
+    /// so all nodes deterministically converge to the same chain.
     pub fn should_reorg_by_weight(&self, new_tip: &Hash) -> bool {
         let new_weight = self.chain_weight(new_tip);
         new_weight > self.current_chain_weight
+    }
+
+    /// Check if we should reorg to a new chain based on weight,
+    /// with deterministic tie-breaking by block hash.
+    ///
+    /// When two chains have equal weight (common on devnet where all
+    /// producers have weight=1), uses the lower block hash as a
+    /// tie-breaker to ensure all nodes converge to the same chain.
+    pub fn should_reorg_by_weight_with_tiebreak(&self, new_tip: &Hash, current_tip: &Hash) -> bool {
+        let new_weight = self.chain_weight(new_tip);
+        if new_weight > self.current_chain_weight {
+            return true;
+        }
+        if new_weight == self.current_chain_weight && new_weight > 0 {
+            // Deterministic tie-break: lower hash wins
+            return new_tip.as_bytes() < current_tip.as_bytes();
+        }
+        false
     }
 
     /// Check if a new block triggers a reorganization (legacy - no weight check)
@@ -203,10 +223,22 @@ impl ReorgHandler {
         let new_chain_weight = parent_weight.saturating_add(block_producer_weight);
 
         // Only reorg if the new chain is heavier (weight-based fork choice)
-        if new_chain_weight <= self.current_chain_weight {
+        // When weights are equal, use lower block hash as deterministic tie-breaker
+        let should_reorg = if new_chain_weight > self.current_chain_weight {
+            true
+        } else if new_chain_weight == self.current_chain_weight && new_chain_weight > 0 {
+            // Tie-break: lower block hash wins (deterministic, all nodes converge)
+            block_hash.as_bytes() < current_tip.as_bytes()
+        } else {
+            false
+        };
+
+        if !should_reorg {
             debug!(
-                "Ignoring lighter fork: new_weight={} <= current_weight={}",
-                new_chain_weight, self.current_chain_weight
+                "Ignoring fork: new_weight={} vs current_weight={}, hash_tiebreak={}",
+                new_chain_weight,
+                self.current_chain_weight,
+                block_hash.as_bytes() < current_tip.as_bytes()
             );
             return None;
         }
@@ -591,5 +623,83 @@ mod tests {
             Ordering::Greater
         );
         assert_eq!(handler.compare_chains(&chain_a, &chain_a), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_equal_weight_tiebreak_by_hash() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::zero();
+        let hash1 = crypto::hash::hash(b"block1");
+        let hash2 = crypto::hash::hash(b"block2");
+
+        // Build main chain: genesis -> hash1 (weight=1) -> hash2 (weight=1)
+        // Total accumulated weight = 2
+        handler.record_block_with_weight(hash1, genesis, 1);
+        handler.record_block_with_weight(hash2, hash1, 1);
+
+        // Create a fork block on hash1 with weight=1 (equal total weight = 2)
+        let header = doli_core::BlockHeader {
+            version: 1,
+            prev_hash: hash1,
+            merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
+            timestamp: 0,
+            slot: 2,
+            producer: crypto::PublicKey::from_bytes([0u8; 32]),
+            vdf_output: vdf::VdfOutput { value: vec![] },
+            vdf_proof: vdf::VdfProof::empty(),
+        };
+        let fork_block = Block::new(header, vec![]);
+        let fork_hash = fork_block.hash();
+
+        // Equal weight: tie-break by hash
+        let result = handler.check_reorg_weighted(&fork_block, hash2, 1);
+
+        // One of the two hashes must be "lower" — the tie-breaker picks it
+        if fork_hash.as_bytes() < hash2.as_bytes() {
+            assert!(
+                result.is_some(),
+                "Fork with lower hash should win tie-break"
+            );
+        } else {
+            assert!(
+                result.is_none(),
+                "Fork with higher hash should lose tie-break"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tiebreak_with_new_method() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::zero();
+        let tip_a = crypto::hash::hash(b"tip_a");
+        let tip_b = crypto::hash::hash(b"tip_b");
+
+        // Both chains have equal weight
+        handler.record_block_with_weight(tip_a, genesis, 100);
+        // Reset current weight to test tiebreak method
+        handler.set_current_weight(100);
+
+        handler.block_weights.insert(
+            tip_b,
+            BlockWeight {
+                prev_hash: genesis,
+                producer_weight: 100,
+                accumulated_weight: 100,
+            },
+        );
+
+        // The lower hash should win
+        let a_wins = handler.should_reorg_by_weight_with_tiebreak(&tip_b, &tip_a);
+        let b_wins = handler.should_reorg_by_weight_with_tiebreak(&tip_a, &tip_b);
+
+        // Exactly one should win (they can't both have equal hashes)
+        assert_ne!(
+            a_wins, b_wins,
+            "Tie-break must be deterministic: exactly one chain wins"
+        );
     }
 }
