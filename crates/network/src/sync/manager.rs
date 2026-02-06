@@ -357,10 +357,12 @@ impl SyncManager {
         self.local_hash = hash;
         self.local_slot = slot;
 
-        // Check if we're now synchronized
+        // Check if we're now synchronized (require both height AND slot alignment)
         if let Some(best_peer) = self.best_peer() {
             if let Some(status) = self.peers.get(&best_peer) {
-                if height >= status.best_height {
+                let slot_aligned = self.max_slots_behind == 0
+                    || status.best_slot.saturating_sub(slot) <= self.max_slots_behind;
+                if height >= status.best_height && slot_aligned {
                     let was_syncing = self.state.is_syncing();
                     self.state = SyncState::Synchronized;
                     info!("Chain synchronized at height {}", height);
@@ -1148,18 +1150,24 @@ impl SyncManager {
             return false;
         }
 
-        // Check if any peer is ahead of us
-        self.peers
-            .values()
-            .any(|p| p.best_height > self.local_height)
+        // Check if any peer is ahead of us in height OR significantly ahead in slot time.
+        // The slot check catches the deadlock where heights match but slots diverge:
+        // e.g., local height=876/slot=261, peer height=834/slot=919 → slot lag triggers sync.
+        self.peers.values().any(|p| {
+            p.best_height > self.local_height
+                || p.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
+        })
     }
 
     /// Get the best peer to sync from
     fn best_peer(&self) -> Option<PeerId> {
         self.peers
             .iter()
-            .filter(|(_, status)| status.best_height > self.local_height)
-            .max_by_key(|(_, status)| status.best_height)
+            .filter(|(_, status)| {
+                status.best_height > self.local_height
+                    || status.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
+            })
+            .max_by_key(|(_, status)| (status.best_height, status.best_slot))
             .map(|(peer, _)| *peer)
     }
 
@@ -1496,10 +1504,11 @@ impl SyncManager {
         // - best_peer() filters for peers AHEAD of us (peer_height > local_height)
         // - When we catch up, there are no peers "ahead", so best_peer() returns None
         // - network_tip_height tracks the highest height seen from any peer
-        if self.state.is_syncing() && height >= self.network_tip_height {
+        let slot_ok = self.network_tip_slot.saturating_sub(slot) <= self.max_slots_behind;
+        if self.state.is_syncing() && height >= self.network_tip_height && slot_ok {
             info!(
-                "Sync complete: transitioning to Synchronized at height {} (network_tip={})",
-                height, self.network_tip_height
+                "Sync complete: transitioning to Synchronized at height {} slot {} (network_tip_h={} network_tip_s={})",
+                height, slot, self.network_tip_height, self.network_tip_slot
             );
             self.state = SyncState::Synchronized;
 
@@ -1649,6 +1658,25 @@ impl SyncManager {
         for peer in stale {
             warn!("Removing stale peer {}", peer);
             self.remove_peer(&peer);
+        }
+
+        // Stall recovery: if "Synchronized" but significantly behind in slots,
+        // we're in a deadlock (height matches but slot lags). Reset to Idle
+        // to allow re-evaluation and potential resync.
+        if self.state == SyncState::Synchronized && !self.peers.is_empty() {
+            let best_slot = self.best_peer_slot();
+            let slot_lag = best_slot.saturating_sub(self.local_slot);
+            let stall_threshold = self.max_slots_behind.saturating_mul(5);
+            if slot_lag > stall_threshold {
+                warn!(
+                    "Stall detected: Synchronized but {} slots behind peers (threshold {}). Resetting to Idle for recovery.",
+                    slot_lag, stall_threshold
+                );
+                self.state = SyncState::Idle;
+                if self.should_sync() {
+                    self.start_sync();
+                }
+            }
         }
     }
 
@@ -2116,5 +2144,144 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // =========================================================================
+    // Slot-aware sync recovery tests (sync stall deadlock fix)
+    // =========================================================================
+
+    #[test]
+    fn test_should_sync_detects_slot_lag() {
+        // Reproduce the deadlock: local height=876/slot=261, peer height=834/slot=919
+        // Heights: peer is NOT ahead (834 < 876), but slots: peer is WAY ahead (919 >> 261)
+        // should_sync() must return true because of slot lag.
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        manager.local_height = 876;
+        manager.local_slot = 261;
+
+        let peer = PeerId::random();
+        // add_peer triggers should_sync internally, so set state manually after
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 834,
+                best_hash: Hash::zero(),
+                best_slot: 919,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        assert!(
+            manager.should_sync(),
+            "should_sync() must detect slot lag: peer slot 919 >> local slot 261"
+        );
+    }
+
+    #[test]
+    fn test_best_peer_returns_peer_ahead_in_slot() {
+        // Same scenario: peer behind in height but ahead in slot.
+        // best_peer() must return the peer (not None).
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        manager.local_height = 876;
+        manager.local_slot = 261;
+
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 834,
+                best_hash: Hash::zero(),
+                best_slot: 919,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        let result = manager.best_peer();
+        assert_eq!(
+            result,
+            Some(peer),
+            "best_peer() must return peer that is ahead in slot time"
+        );
+    }
+
+    #[test]
+    fn test_stall_recovery_resets_to_idle() {
+        // Scenario: Synchronized state but significantly behind in slots.
+        // cleanup() should detect stall and reset to Idle.
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Simulate: height matches but slots diverge (the deadlock scenario)
+        manager.local_height = 876;
+        manager.local_slot = 261;
+        manager.state = SyncState::Synchronized;
+
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 876,
+                best_hash: Hash::zero(),
+                best_slot: 920,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        // Slot lag = 920 - 261 = 659, threshold = 2 * 5 = 10 → 659 > 10 → stall detected
+        manager.cleanup();
+
+        // State should no longer be Synchronized (either Idle or started sync)
+        assert_ne!(
+            manager.state,
+            SyncState::Synchronized,
+            "cleanup() must reset Synchronized state when slot lag ({}) exceeds stall threshold",
+            920 - 261
+        );
+    }
+
+    #[test]
+    fn test_update_local_tip_requires_slot_alignment() {
+        // Scenario: peer at height 100/slot 500, we reach height 100 but only slot 100.
+        // update_local_tip should NOT mark us as Synchronized because slots don't align.
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Start in a syncing state
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 100,
+                best_hash: Hash::zero(),
+                best_slot: 500,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        manager.state = SyncState::DownloadingHeaders {
+            target_slot: 500,
+            peer,
+            headers_count: 0,
+        };
+
+        // Height matches peer but slot is way behind
+        manager.update_local_tip(100, Hash::zero(), 100);
+
+        // Should NOT be Synchronized because slot lag = 500 - 100 = 400 >> max_slots_behind (2)
+        assert_ne!(
+            manager.state,
+            SyncState::Synchronized,
+            "update_local_tip must not mark Synchronized when slot lag is {} (max_slots_behind={})",
+            400,
+            manager.max_slots_behind
+        );
     }
 }
