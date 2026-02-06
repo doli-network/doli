@@ -2106,13 +2106,18 @@ pub fn validate_producer_eligibility(
         return Err(ValidationError::InvalidProducer);
     }
 
-    // Calculate time offset within the slot (in ms for sequential 1.3s windows)
+    // Calculate time offset within the slot (in ms for sequential 1.3s windows).
+    // Block timestamps have second precision, but eligibility uses 1.3s windows.
+    // Check if the producer is eligible at any point within the timestamp's second bucket
+    // [offset_secs * 1000, (offset_secs + 1) * 1000) to avoid false rejections.
     let slot_start = ctx.params.slot_to_timestamp(header.slot);
     let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
-    let slot_offset_ms = slot_offset_secs * 1000;
+    let slot_offset_ms_low = slot_offset_secs * 1000;
+    let slot_offset_ms_high = slot_offset_ms_low + 999;
 
-    // Check if producer is eligible at this time (ms-precision sequential windows)
-    if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms) {
+    if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
+        && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
+    {
         return Err(ValidationError::InvalidProducer);
     }
 
@@ -4630,8 +4635,13 @@ mod tests {
     fn test_validate_delegate_bond_valid() {
         use crate::transaction::{DelegateBondData, Transaction};
 
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(delegate.public_key().clone(), 3);
+        let data = DelegateBondData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+            3,
+        );
         let tx = Transaction::new_delegate_bond(data);
         let ctx = test_context();
 
@@ -4647,8 +4657,13 @@ mod tests {
     fn test_validate_delegate_bond_zero_bonds() {
         use crate::transaction::{DelegateBondData, TxType};
 
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(delegate.public_key().clone(), 0);
+        let data = DelegateBondData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+            0,
+        );
         let tx = Transaction {
             version: 1,
             tx_type: TxType::DelegateBond,
@@ -4691,8 +4706,12 @@ mod tests {
     fn test_validate_revoke_delegation_valid() {
         use crate::transaction::RevokeDelegationData;
 
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let data = RevokeDelegationData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+        );
         let tx = Transaction::new_revoke_delegation(data);
         let ctx = test_context();
 
