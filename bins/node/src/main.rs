@@ -554,6 +554,61 @@ async fn run_node(
         info!("Auto-updates disabled");
     }
 
+    // Load chainspec ALWAYS (consensus-critical overrides must apply on every start)
+    // Previously this was inside the first-init branch, causing slot_duration divergence on restarts
+    use doli_core::chainspec::ChainSpec;
+    let chainspec = if let Some(ref path) = chainspec_path {
+        info!("Loading chainspec from {:?}", path);
+        match ChainSpec::load(path) {
+            Ok(spec) => {
+                info!("Loaded chainspec: {} ({})", spec.name, spec.id);
+                Some(spec)
+            }
+            Err(e) => {
+                error!("Failed to load chainspec: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // Try default chainspec location
+        let default_path = data_dir.join("chainspec.json");
+        if default_path.exists() {
+            match ChainSpec::load(&default_path) {
+                Ok(spec) => {
+                    info!(
+                        "Loaded chainspec from {:?}: {} ({})",
+                        default_path, spec.name, spec.id
+                    );
+                    Some(spec)
+                }
+                Err(e) => {
+                    warn!("Could not load default chainspec: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    // Apply consensus-critical overrides from chainspec (MUST run on every start, not just first init)
+    if let Some(ref spec) = chainspec {
+        if spec.genesis.timestamp != 0 {
+            config.genesis_time_override = Some(spec.genesis.timestamp);
+            info!(
+                "Genesis time from chainspec: {} (all nodes will use this time)",
+                spec.genesis.timestamp
+            );
+        }
+        if spec.consensus.slot_duration > 0 {
+            config.slot_duration_override = Some(spec.consensus.slot_duration);
+            info!(
+                "Slot duration from chainspec: {}s (overrides local config)",
+                spec.consensus.slot_duration
+            );
+        }
+    }
+
     // Load producer set for update service (shared with Node)
     let producers_path = data_dir.join("producers.bin");
     let producer_set = if producers_path.exists() {
@@ -565,66 +620,8 @@ async fn run_node(
             }
         }
     } else {
-        // Initialize with genesis producers from chainspec (preferred) or built-in defaults
-        use doli_core::chainspec::ChainSpec;
-
-        // Try to load chainspec from provided path or default location
-        let chainspec = if let Some(ref path) = chainspec_path {
-            info!("Loading chainspec from {:?}", path);
-            match ChainSpec::load(path) {
-                Ok(spec) => {
-                    info!("Loaded chainspec: {} ({})", spec.name, spec.id);
-                    Some(spec)
-                }
-                Err(e) => {
-                    error!("Failed to load chainspec: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            // Try default chainspec location
-            let default_path = data_dir.join("chainspec.json");
-            if default_path.exists() {
-                match ChainSpec::load(&default_path) {
-                    Ok(spec) => {
-                        info!(
-                            "Loaded chainspec from {:?}: {} ({})",
-                            default_path, spec.name, spec.id
-                        );
-                        Some(spec)
-                    }
-                    Err(e) => {
-                        warn!("Could not load default chainspec: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        };
-
-        // Get genesis producers and genesis time from chainspec or fall back to built-in (legacy)
+        // Initialize with genesis producers from chainspec or built-in defaults
         if let Some(ref spec) = chainspec {
-            // Set genesis time override if specified in chainspec (non-zero)
-            // This ensures all nodes use the same genesis time for coordinated startup
-            if spec.genesis.timestamp != 0 {
-                config.genesis_time_override = Some(spec.genesis.timestamp);
-                info!(
-                    "Genesis time from chainspec: {} (all nodes will use this time)",
-                    spec.genesis.timestamp
-                );
-            }
-
-            // Set slot duration from chainspec (consensus-critical)
-            // This ensures all nodes compute the same slot numbers regardless of local .env
-            if spec.consensus.slot_duration > 0 {
-                config.slot_duration_override = Some(spec.consensus.slot_duration);
-                info!(
-                    "Slot duration from chainspec: {}s (overrides local config)",
-                    spec.consensus.slot_duration
-                );
-            }
-
             let genesis_producers = spec.get_genesis_producers();
             if !genesis_producers.is_empty() {
                 info!(
