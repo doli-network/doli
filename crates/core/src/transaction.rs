@@ -346,6 +346,8 @@ impl AddBondData {
 /// to the delegate's effective_weight for producer selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateBondData {
+    /// Public key of the delegator (the producer delegating weight)
+    pub delegator: PublicKey,
     /// Public key of the delegate (Tier 1/2 validator receiving weight)
     pub delegate: PublicKey,
     /// Number of bonds to delegate
@@ -353,8 +355,9 @@ pub struct DelegateBondData {
 }
 
 impl DelegateBondData {
-    pub fn new(delegate: PublicKey, bond_count: u32) -> Self {
+    pub fn new(delegator: PublicKey, delegate: PublicKey, bond_count: u32) -> Self {
         Self {
+            delegator,
             delegate,
             bond_count,
         }
@@ -363,6 +366,7 @@ impl DelegateBondData {
     /// Serialize to bytes for storage in extra_data
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
+        bytes.extend_from_slice(self.delegator.as_bytes());
         bytes.extend_from_slice(self.delegate.as_bytes());
         bytes.extend_from_slice(&self.bond_count.to_le_bytes());
         bytes
@@ -370,13 +374,15 @@ impl DelegateBondData {
 
     /// Deserialize from bytes
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 36 {
+        if bytes.len() < 68 {
             return None;
         }
-        let pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
-        let bond_count = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
+        let delegator_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        let delegate_bytes: [u8; 32] = bytes[32..64].try_into().ok()?;
+        let bond_count = u32::from_le_bytes(bytes[64..68].try_into().ok()?);
         Some(Self {
-            delegate: PublicKey::from_bytes(pubkey_bytes),
+            delegator: PublicKey::from_bytes(delegator_bytes),
+            delegate: PublicKey::from_bytes(delegate_bytes),
             bond_count,
         })
     }
@@ -387,28 +393,38 @@ impl DelegateBondData {
 /// DELEGATION_UNBONDING_SLOTS delay applies before weight is removed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokeDelegationData {
+    /// Public key of the delegator revoking
+    pub delegator: PublicKey,
     /// Public key of the delegate to revoke from
     pub delegate: PublicKey,
 }
 
 impl RevokeDelegationData {
-    pub fn new(delegate: PublicKey) -> Self {
-        Self { delegate }
+    pub fn new(delegator: PublicKey, delegate: PublicKey) -> Self {
+        Self {
+            delegator,
+            delegate,
+        }
     }
 
     /// Serialize to bytes for storage in extra_data
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.delegate.as_bytes().to_vec()
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(self.delegator.as_bytes());
+        bytes.extend_from_slice(self.delegate.as_bytes());
+        bytes
     }
 
     /// Deserialize from bytes
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 32 {
+        if bytes.len() < 64 {
             return None;
         }
-        let pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        let delegator_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        let delegate_bytes: [u8; 32] = bytes[32..64].try_into().ok()?;
         Some(Self {
-            delegate: PublicKey::from_bytes(pubkey_bytes),
+            delegator: PublicKey::from_bytes(delegator_bytes),
+            delegate: PublicKey::from_bytes(delegate_bytes),
         })
     }
 }
@@ -1650,8 +1666,13 @@ mod tests {
 
     #[test]
     fn test_delegate_bond_transaction() {
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(delegate.public_key().clone(), 5);
+        let data = DelegateBondData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+            5,
+        );
         let tx = Transaction::new_delegate_bond(data);
 
         assert!(tx.is_delegate_bond());
@@ -1661,14 +1682,19 @@ mod tests {
         assert!(tx.outputs.is_empty());
 
         let parsed = tx.delegate_bond_data().unwrap();
+        assert_eq!(parsed.delegator, *delegator.public_key());
         assert_eq!(parsed.delegate, *delegate.public_key());
         assert_eq!(parsed.bond_count, 5);
     }
 
     #[test]
     fn test_revoke_delegation_transaction() {
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let data = RevokeDelegationData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+        );
         let tx = Transaction::new_revoke_delegation(data);
 
         assert!(tx.is_revoke_delegation());
@@ -1678,13 +1704,19 @@ mod tests {
         assert!(tx.outputs.is_empty());
 
         let parsed = tx.revoke_delegation_data().unwrap();
+        assert_eq!(parsed.delegator, *delegator.public_key());
         assert_eq!(parsed.delegate, *delegate.public_key());
     }
 
     #[test]
     fn test_delegate_bond_data_serialization() {
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(delegate.public_key().clone(), 42);
+        let data = DelegateBondData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+            42,
+        );
         let bytes = data.to_bytes();
         let recovered = DelegateBondData::from_bytes(&bytes).unwrap();
         assert_eq!(data, recovered);
@@ -1692,14 +1724,18 @@ mod tests {
 
     #[test]
     fn test_delegate_bond_data_too_short() {
-        assert!(DelegateBondData::from_bytes(&[0u8; 35]).is_none());
+        assert!(DelegateBondData::from_bytes(&[0u8; 67]).is_none());
         assert!(DelegateBondData::from_bytes(&[]).is_none());
     }
 
     #[test]
     fn test_revoke_delegation_data_serialization() {
+        let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let data = RevokeDelegationData::new(
+            delegator.public_key().clone(),
+            delegate.public_key().clone(),
+        );
         let bytes = data.to_bytes();
         let recovered = RevokeDelegationData::from_bytes(&bytes).unwrap();
         assert_eq!(data, recovered);

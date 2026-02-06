@@ -92,6 +92,8 @@ pub enum NetworkEvent {
     NewVote(Vec<u8>),
     /// Heartbeat received for weighted presence rewards
     NewHeartbeat(Vec<u8>),
+    /// Attestation received for finality gadget
+    NewAttestation(Vec<u8>),
 }
 
 /// Commands to the network
@@ -142,6 +144,8 @@ pub enum NetworkCommand {
     BroadcastVote(Vec<u8>),
     /// Broadcast a heartbeat (weighted presence rewards)
     BroadcastHeartbeat(Vec<u8>),
+    /// Broadcast an attestation (finality gadget)
+    BroadcastAttestation(Vec<u8>),
 }
 
 /// Network service handle
@@ -188,7 +192,11 @@ impl NetworkService {
         let transport = build_transport(&keypair)
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
-        // Build gossipsub
+        // Build gossipsub with legacy (tier 0) settings.
+        // All topics are subscribed to ensure full connectivity at startup.
+        // Tier-aware mesh parameters (new_gossipsub_for_tier / subscribe_to_topics_for_tier)
+        // are available for future hot-reconfiguration when the node's tier is computed
+        // at the first epoch boundary after block sync.
         let mut gossipsub = new_gossipsub(&keypair)
             .map_err(|e| NetworkError::Other(format!("GossipSub error: {}", e)))?;
         subscribe_to_topics(&mut gossipsub)
@@ -268,6 +276,15 @@ impl NetworkService {
     pub async fn broadcast_block(&self, block: Block) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::BroadcastBlock(block))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Broadcast an attestation to the network (finality gadget)
+    pub async fn broadcast_attestation(&self, data: Vec<u8>) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::BroadcastAttestation(data))
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -628,6 +645,17 @@ async fn handle_behaviour_event(
                         .send(NetworkEvent::NewHeartbeat(message.data.clone()))
                         .await;
                 }
+                topic if topic == crate::gossip::ATTESTATION_TOPIC => {
+                    // Forward attestation data for finality gadget
+                    debug!(
+                        "Received attestation ({} bytes) from {}",
+                        message.data.len(),
+                        propagation_source
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::NewAttestation(message.data.clone()))
+                        .await;
+                }
                 _ => {}
             }
         }
@@ -923,6 +951,19 @@ async fn handle_command(
             {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to broadcast heartbeat: {}", e);
+                }
+            }
+        }
+
+        NetworkCommand::BroadcastAttestation(attestation_data) => {
+            let topic = IdentTopic::new(crate::gossip::ATTESTATION_TOPIC);
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic, attestation_data)
+            {
+                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                    warn!("Failed to broadcast attestation: {}", e);
                 }
             }
         }
