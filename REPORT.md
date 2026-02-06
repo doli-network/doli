@@ -1,7 +1,7 @@
 # Bug Report: Producer Nodes Forking After Initial Sync
 
 **Date**: 2026-02-04 (Updated: 2026-02-05)
-**Status**: P0 #2, P0 #4, P0 #5 IMPLEMENTED - NEW FAILURE MODE D (Registration Race) IDENTIFIED (2026-02-05)
+**Status**: P0 #2, P0 #4, P0 #5 IMPLEMENTED - Failure Modes D/G: 5 fork-causing bugs FIXED (2026-02-06, untested)
 **Severity**: Critical
 **Affected Components**: `crates/network/src/sync/manager.rs`, `crates/network/src/gossip.rs`, `bins/node/src/node.rs`
 
@@ -1801,8 +1801,159 @@ This is a **new failure mode (F)** distinct from A-E:
 | A: Ahead of Network | Forked node thinks it's ahead | ✅ DETECTED (P0 #2) |
 | B: Echo Chamber | Forked nodes peer only with each other | ✅ DETECTED (P0 #5) |
 | C: Chain Deadlock | Lowest peer check too aggressive | ✅ FIXED (disabled) |
-| D: Registration Race | Nodes process registrations differently | ⚠️ UNRESOLVED |
+| D: Registration Race | Nodes process registrations differently | ✅ FIX APPLIED (untested) |
 | E: Slot Clock Desync | `.env`/chainspec params not applied | ✅ FIXED |
 | **F: Sync Stall** | **Heights match but slots diverge → deadlock** | **🔄 TESTING** |
+| **G: Fork Root Causes** | **5 bugs causing forks during dynamic entry** | **✅ FIX APPLIED (untested)** |
 
 Mode F can occur as a **secondary effect** of any fork (A, B, D). Once a node forks and accumulates extra blocks, its height may match the main chain while its slot clock falls behind. The node then enters the deadlock: `Synchronized` state + `BlockedBehindPeers` with `height_diff=0`.
+
+---
+
+## Failure Mode G: 5 Fork-Causing Bugs in Dynamic Producer Entry (2026-02-06)
+
+### Status: FIX APPLIED, NOT YET TESTED
+
+### Severity: Critical (root causes of persistent forks with short slot times)
+
+### Discovery
+
+Deep analysis of the block production pipeline revealed 5 bugs that collectively cause forks when producers enter the network dynamically, especially with short slot durations (2-3 seconds). These are the **root causes** behind Failure Mode D (Registration Race) and the persistent fork issues observed in devnet testing.
+
+### Bug 1 (CRITICAL): VDF Blocks Event Loop — Stale Parent Fork
+
+**File**: `bins/node/src/node.rs:3009-3019`
+
+The ~700ms VDF computation via `spawn_blocking` prevents processing incoming blocks. The post-VDF safety check only verified `has_block_for_slot(current_slot)` (same-slot duplicate prevention) but did NOT detect blocks from previous slots that arrived during VDF.
+
+**Result**: Producer builds on a stale parent, creating a height-level fork.
+
+**Fix**: After VDF completes, re-read `chain_state` and abort if the tip has moved:
+
+```rust
+// Check if chain tip advanced during VDF (stale parent detection)
+let post_vdf_state = self.chain_state.read().await;
+if post_vdf_state.best_height >= height || post_vdf_state.best_hash != prev_hash {
+    info!("Chain advanced during VDF computation - aborting to avoid fork");
+    return Ok(());
+}
+```
+
+### Bug 2 (CRITICAL): No Fork Choice Tie-Breaker for Equal-Weight Chains
+
+**File**: `crates/network/src/sync/reorg.rs:154-156`
+
+`should_reorg_by_weight()` uses `>` (strictly greater). On devnet, all producers have weight=1 (year 0 seniority). Equal-weight forks **NEVER** resolve — each node stays on whichever chain it saw first.
+
+**Fix**: Added deterministic hash-based tie-breaking. When weights are equal, the lower block hash wins:
+
+```rust
+// In check_reorg_weighted():
+let should_reorg = if new_chain_weight > self.current_chain_weight {
+    true
+} else if new_chain_weight == self.current_chain_weight && new_chain_weight > 0 {
+    // Tie-break: lower block hash wins (deterministic, all nodes converge)
+    block_hash.as_bytes() < current_tip.as_bytes()
+} else {
+    false
+};
+```
+
+Also added `should_reorg_by_weight_with_tiebreak()` method and 2 new tests.
+
+### Bug 3 (HIGH): Timing Budget Exhausted — Hardcoded 700ms Heartbeat Delay
+
+**File**: `bins/node/src/node.rs:2746-2760`
+
+The 700ms heartbeat delay was hardcoded for devnet. With 2s slots: 700ms delay + 700ms VDF = 1400ms consumed, leaving only 600ms for propagation. With 3s slots: 700ms + 700ms = 1400ms (47% consumed).
+
+**Fix**: Scale heartbeat delay to 20% of slot duration, capped at 700ms:
+
+```rust
+let slot_duration_ms = self.params.slot_duration * 1000;
+let heartbeat_collection_ms = std::cmp::min(slot_duration_ms / 5, 700);
+```
+
+| Slot Duration | Old Delay | New Delay | Overhead |
+|---------------|-----------|-----------|----------|
+| 2s | 700ms (35%) | 400ms (20%) | Reduced |
+| 3s | 700ms (23%) | 600ms (20%) | Reduced |
+| 10s | 700ms (7%) | 700ms (7%) | Unchanged |
+
+### Bug 4 (HIGH): Bootstrap Mode Ignores ACTIVATION_DELAY
+
+**Files**: `bins/node/src/node.rs:1812-1831, 2662-2699`, `crates/storage/src/lib.rs`
+
+Two sub-bugs:
+
+**4a**: When registration transactions add producers to `known_producers`, `last_producer_list_change` was NOT set, so the stability check (3s for devnet) never triggered. The round-robin denominator changed silently.
+
+**Fix**: Set `self.last_producer_list_change = Some(Instant::now())` when registrations add to the list.
+
+**4b**: Bootstrap mode round-robin used `known_producers` directly, which includes newly registered producers immediately. This changed `slot % N` for all producers before the registration propagated to all nodes.
+
+**Fix**: Filter `known_producers` to exclude producers who ARE registered in the `producer_set` but have NOT passed `ACTIVATION_DELAY` (10 blocks). Gossip-discovered producers (not registered) are kept:
+
+```rust
+known_producers.retain(|pk| {
+    match producers.get_by_pubkey(pk) {
+        Some(info) => {
+            // Registered: only include if past activation delay
+            info.is_active() && height >= info.registered_at + storage::ACTIVATION_DELAY
+        }
+        None => true, // Not registered (gossip-discovered): include
+    }
+});
+```
+
+Also exported `ACTIVATION_DELAY` from the storage crate.
+
+### Bug 5 (MEDIUM): Pre-VDF Drain Limited to 10 Events
+
+**File**: `bins/node/src/node.rs:2913`
+
+The pre-VDF event drain was limited to 10 events. With 20+ nodes, blocks could remain in the queue unprocessed before VDF starts.
+
+**Fix**: Changed `for _ in 0..10` to `loop` to drain ALL pending events.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `bins/node/src/node.rs` | Bug 1 (post-VDF chain check), Bug 3 (scaled heartbeat), Bug 4a (stability trigger), Bug 4b (activation filter), Bug 5 (unlimited drain) |
+| `crates/network/src/sync/reorg.rs` | Bug 2 (tie-breaker in `check_reorg_weighted` + new `should_reorg_by_weight_with_tiebreak` + 2 tests) |
+| `crates/storage/src/lib.rs` | Export `ACTIVATION_DELAY` constant |
+
+### Verification
+
+| Step | Result |
+|------|--------|
+| `cargo build` | Pass (no new warnings) |
+| `cargo clippy -- -D warnings` | Pre-existing errors only (not in modified files) |
+| `cargo fmt --check` | Clean |
+| `cargo test` | 891 passed, 0 failed |
+
+### Commit
+
+`ca0bd78` — `fix(node,network): fix 5 fork-causing bugs in dynamic producer entry`
+
+### Recommended Test Configuration
+
+3-second slot duration with default VDF (10M iterations):
+
+```bash
+DOLI_SLOT_DURATION=3
+DOLI_HEARTBEAT_VDF_ITERATIONS=10000000
+```
+
+Timing budget: 600ms heartbeat + 700ms VDF = 1300ms overhead, 1700ms remaining.
+
+### NOT YET TESTED
+
+These fixes address the root causes identified through code analysis. Live devnet testing with dynamic producer addition is required to confirm:
+
+1. No forks occur during producer registration/activation
+2. Equal-weight forks resolve via hash tie-breaker
+3. VDF computation no longer causes stale parent forks
+4. Bootstrap round-robin remains stable during registrations
+5. Pre-VDF drain processes all pending events
