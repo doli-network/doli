@@ -119,7 +119,7 @@ All commands implicitly wrapped in Nix develop shell.
 | **Era** | 12.6M slots (~4y) | 576 | Halving trigger |
 | **VDF Block** | 10M iter (~700ms) | 10M | `T_BLOCK` |
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
-| **Bond** | 100 DOLI | 1 DOLI | `BOND_UNIT` |
+| **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
 | **Unbond** | 7 days | 10m | `WITHDRAWAL_DELAY_SLOTS` |
 | **Selection** | `slot % bonds` | - | Primary window 0-3s |
 
