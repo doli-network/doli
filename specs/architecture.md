@@ -490,9 +490,9 @@ def select_producer(slot, active_producers):
 - Zero variance: guaranteed slot allocation per cycle
 - Equitable ROI: same % return for all producers regardless of bond count
 
-### 2. Sync-Before-Produce (No Arbitrary Delays)
+### 2. Sync-Before-Produce (Multi-Layer Production Gating)
 
-New nodes use state-based production gating, not time-based warmup:
+New nodes use state-based production gating with multiple safety layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -505,17 +505,37 @@ New nodes use state-based production gating, not time-based warmup:
 │            (Seed node)                           (Joining)     │
 │                    │                                   │       │
 │                    ▼                                   ▼       │
-│         Produce immediately              Sync first, then      │
-│                                          produce when within   │
-│                                          2 slots of peers      │
+│         Produce after               Sync → 30s grace → check  │
+│         bootstrap grace             slot proximity → produce   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+**Production gating layers** (in `SyncManager::can_produce()`):
+
+| Layer | Check | Purpose |
+|-------|-------|---------|
+| 1 | Resync in progress | Block during active resync |
+| 2 | Bootstrap grace period | Wait at genesis for chain evidence |
+| 3 | Genesis check | Always allow at height 0 |
+| 4 | Syncing state | Block while downloading headers/bodies |
+| 5 | Post-resync grace | Wait after resync completes |
+| 5.6 | **First-sync grace (30s)** | Late-joining nodes wait for gossip mesh formation |
+| 5.5 | Minimum peers | Require min peers (devnet=1, mainnet=2) |
+| 6 | Behind peers (slots only) | Block if >2 slots behind best peer |
+| 7 | Ahead of network | Fork detection — too far ahead of peers |
+| 8 | Sync failures | Block after 3+ consecutive sync failures (60s decay) |
+
+**Key design decisions:**
+- **Slot-only peer comparison** (Layer 6): Heights are unreliable because forked nodes accumulate inflated block counts (h > slot). Slots are time-based and cannot be inflated.
+- **First-sync grace period** (Layer 5.6): After initial sync, nodes wait 30s before producing. This allows the gossip mesh to form and recent blocks to propagate. Without this, late-joining nodes produce on stale tips and create forks.
+- **Sync failure decay** (Layer 8): Failures decay after 60s of no new failures, preventing permanent deadlock from transient network issues.
+
 **Why this scales globally:**
-- No arbitrary time delays (warmup periods don't work for global networks)
+- No arbitrary time delays at genesis (warmup periods don't work for global networks)
 - Thousands of nodes can start simultaneously
 - Each node naturally syncs before competing
 - Seed nodes bootstrap immediately
+- Late joiners get a deterministic grace period for mesh formation
 
 ### 3. Epoch-Based Reward Distribution (Deterministic)
 
@@ -799,7 +819,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 **sync/** - Block Synchronization:
 | File | Lines | Purpose |
 |------|-------|---------|
-| `manager.rs` | 744 | Sync orchestration |
+| `manager.rs` | ~2,200 | Sync orchestration, production gating (10-layer), first-sync grace period |
 | `reorg.rs` | 595 | Chain reorganization handling |
 | `equivocation.rs` | 359 | Double-production detection and slashing |
 | `bodies.rs` | 340 | Block body download |

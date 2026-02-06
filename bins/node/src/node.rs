@@ -225,24 +225,11 @@ impl Node {
             config.network,
         )));
 
-        // Create sync manager with network-appropriate settings
-        // For devnet/testnet, use stricter production gating to prevent propagation race forks
+        // Create sync manager with default settings (2 slots/heights tolerance).
+        // All networks use the same tolerance — recovery from forks is handled by
+        // auto-resync (triggered by sync failure threshold), not by loose tolerances.
         let sync_config = SyncConfig::default();
-        let sync_manager =
-            if config.network == Network::Devnet || config.network == Network::Testnet {
-                // Stricter settings: don't produce if behind by even 1 height
-                // This prevents race conditions where we produce before receiving recent blocks
-                Arc::new(RwLock::new(SyncManager::new_with_settings(
-                    sync_config,
-                    genesis_hash,
-                    15, // Shorter resync grace period for faster recovery
-                    1,  // max_slots_behind: only 1 slot tolerance
-                    1,  // max_heights_behind: only 1 height tolerance
-                )))
-            } else {
-                // Mainnet: standard settings (2 slots/heights tolerance)
-                Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)))
-            };
+        let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
 
         // Configure bootstrap grace period from network params
         // This is the wait time at genesis before allowing production (chain evidence collection)
@@ -254,8 +241,8 @@ impl Node {
             // Devnet: 1 peer (--no-dht limits peer discovery, only bootstrap visible)
             // Testnet/Mainnet: 2 peers (proper peer discovery, echo chamber prevention)
             let min_peers = match config.network {
-                Network::Devnet => 1, // Allow single-peer production in limited discovery environment
-                Network::Testnet | Network::Mainnet => 2, // Require multiple peers for safety
+                Network::Devnet => 1,
+                Network::Testnet | Network::Mainnet => 2,
             };
             sm.set_min_peers_for_production(min_peers);
 
@@ -1152,9 +1139,9 @@ impl Node {
                 // startup synchronization. The original 20 was too aggressive and triggered
                 // resyncs during normal multi-node discovery.
                 let fork_threshold = match self.config.network {
-                    Network::Mainnet => 60, // 1 hour at 60s slots
+                    Network::Mainnet => 60, // 10 minutes at 10s slots
                     Network::Testnet => 40, // ~6-7 minutes at 10s slots
-                    Network::Devnet => 60,  // ~10 minutes at 10s slots (was 20 - too aggressive)
+                    Network::Devnet => 20,  // ~1 minute at 3s slots (strong fork evidence)
                 };
 
                 // Trigger resync if we have fork_threshold+ blocks from other chains that we can't apply
