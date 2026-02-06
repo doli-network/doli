@@ -24,6 +24,14 @@ pub struct NetworkConfig {
     /// Disable DHT discovery (only connect to explicit bootstrap nodes)
     /// Use this to isolate test networks from external peers
     pub no_dht: bool,
+    /// Target number of peers in gossipsub mesh per topic
+    pub mesh_n: usize,
+    /// Minimum peers in gossipsub mesh before requesting more
+    pub mesh_n_low: usize,
+    /// Maximum peers in gossipsub mesh before pruning
+    pub mesh_n_high: usize,
+    /// Number of peers to lazily gossip IHAVE messages to
+    pub gossip_lazy: usize,
 }
 
 impl Default for NetworkConfig {
@@ -49,6 +57,11 @@ impl NetworkConfig {
             network_id: network.id(),
             genesis_hash,
             no_dht: false,
+            // Standard gossipsub defaults (overridden from NetworkParams in node.rs)
+            mesh_n: 6,
+            mesh_n_low: 4,
+            mesh_n_high: 12,
+            gossip_lazy: 6,
         }
     }
 

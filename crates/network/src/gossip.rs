@@ -26,8 +26,20 @@ pub const VOTES_TOPIC: &str = "/doli/votes/1";
 /// GossipSub topic for presence heartbeats (weighted rewards)
 pub const HEARTBEATS_TOPIC: &str = "/doli/heartbeats/1";
 
-/// Create a new GossipSub behaviour
-pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
+/// Gossipsub mesh configuration
+pub struct MeshConfig {
+    pub mesh_n: usize,
+    pub mesh_n_low: usize,
+    pub mesh_n_high: usize,
+    pub gossip_lazy: usize,
+}
+
+/// Create a new GossipSub behaviour with configurable mesh parameters.
+///
+/// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.
+/// Devnet uses larger mesh (12/8/48) for --no-dht star topology.
+/// Mainnet/testnet use standard mesh (6/4/12) with DHT peer rotation.
+pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, GossipError> {
     // Message ID function: hash of message data
     let message_id_fn = |message: &Message| {
         let mut hasher = DefaultHasher::new();
@@ -42,13 +54,13 @@ pub fn new_gossipsub(keypair: &Keypair) -> Result<Gossipsub, GossipError> {
         .validation_mode(ValidationMode::Strict)
         // Message ID function
         .message_id_fn(message_id_fn)
-        // Mesh parameters
-        .mesh_n(6) // Target number of peers in mesh
-        .mesh_n_low(4) // Minimum peers in mesh
-        .mesh_n_high(12) // Maximum peers in mesh
+        // Mesh parameters (from NetworkParams)
+        .mesh_n(mesh.mesh_n)
+        .mesh_n_low(mesh.mesh_n_low)
+        .mesh_n_high(mesh.mesh_n_high)
         .mesh_outbound_min(2) // Minimum outbound peers in mesh
         // Gossip parameters
-        .gossip_lazy(6) // Peers to gossip to
+        .gossip_lazy(mesh.gossip_lazy)
         .gossip_factor(0.25) // Gossip to 25% of non-mesh peers
         // History
         .history_length(5)

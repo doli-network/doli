@@ -439,6 +439,13 @@ impl Node {
         network_config.max_peers = self.config.max_peers;
         network_config.no_dht = self.config.no_dht;
 
+        // Gossip mesh params from NetworkParams (env vars / .env / chainspec / defaults)
+        let net_params = self.config.network.params();
+        network_config.mesh_n = net_params.mesh_n;
+        network_config.mesh_n_low = net_params.mesh_n_low;
+        network_config.mesh_n_high = net_params.mesh_n_high;
+        network_config.gossip_lazy = net_params.gossip_lazy;
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,

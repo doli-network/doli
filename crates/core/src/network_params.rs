@@ -112,6 +112,16 @@ pub struct NetworkParams {
     // === Presence (telemetry) ===
     /// Presence window duration in milliseconds (for telemetry only, does not affect consensus)
     pub presence_window_ms: u64,
+
+    // === Gossip mesh ===
+    /// Target number of peers in gossipsub mesh per topic
+    pub mesh_n: usize,
+    /// Minimum peers in gossipsub mesh before requesting more
+    pub mesh_n_low: usize,
+    /// Maximum peers in gossipsub mesh before pruning
+    pub mesh_n_high: usize,
+    /// Number of peers to lazily gossip IHAVE messages to
+    pub gossip_lazy: usize,
 }
 
 impl NetworkParams {
@@ -287,6 +297,28 @@ impl NetworkParams {
 
             // Presence (telemetry - configurable for all networks)
             presence_window_ms: env_parse("DOLI_PRESENCE_WINDOW_MS", defaults.presence_window_ms),
+
+            // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
+            mesh_n: if is_mainnet {
+                defaults.mesh_n
+            } else {
+                env_parse("DOLI_MESH_N", defaults.mesh_n)
+            },
+            mesh_n_low: if is_mainnet {
+                defaults.mesh_n_low
+            } else {
+                env_parse("DOLI_MESH_N_LOW", defaults.mesh_n_low)
+            },
+            mesh_n_high: if is_mainnet {
+                defaults.mesh_n_high
+            } else {
+                env_parse("DOLI_MESH_N_HIGH", defaults.mesh_n_high)
+            },
+            gossip_lazy: if is_mainnet {
+                defaults.gossip_lazy
+            } else {
+                env_parse("DOLI_GOSSIP_LAZY", defaults.gossip_lazy)
+            },
         }
     }
 
@@ -344,6 +376,12 @@ impl NetworkParams {
 
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS, // Use consensus margin
+
+                // Gossip mesh (standard for DHT-enabled networks)
+                mesh_n: 6,
+                mesh_n_low: 4,
+                mesh_n_high: 12,
+                gossip_lazy: 6,
             },
 
             Network::Testnet => NetworkParams {
@@ -393,6 +431,12 @@ impl NetworkParams {
 
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Gossip mesh (standard for DHT-enabled networks)
+                mesh_n: 6,
+                mesh_n_low: 4,
+                mesh_n_high: 12,
+                gossip_lazy: 6,
             },
 
             Network::Devnet => NetworkParams {
@@ -443,6 +487,16 @@ impl NetworkParams {
 
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Gossip mesh (larger for --no-dht star topology)
+                // With --no-dht, all nodes connect to bootstrap only.
+                // Gossipsub must keep all peers in mesh since pruned
+                // nodes have no alternative peers for discovery.
+                // Sized for ~30 node devnets; override via .env for larger.
+                mesh_n: 15,
+                mesh_n_low: 10,
+                mesh_n_high: 35,
+                gossip_lazy: 15,
             },
         }
     }
