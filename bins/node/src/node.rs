@@ -245,16 +245,11 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
-            // Configure initial min peers for production based on network.
-            // Devnet: 1 peer (--no-dht limits peer discovery, only bootstrap visible)
-            // Testnet/Mainnet: 2 peers (proper peer discovery, echo chamber prevention)
+            // Configure initial min peers for production.
+            // All networks use DHT for peer discovery.
             // After first epoch boundary, recompute_tier() overrides this with
             // tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
-            let min_peers = match config.network {
-                Network::Devnet => 1,
-                Network::Testnet | Network::Mainnet => 2,
-            };
-            sm.set_min_peers_for_production(min_peers);
+            sm.set_min_peers_for_production(2);
         }
 
         if producer_key.is_some() {
@@ -552,12 +547,8 @@ impl Node {
                 self.our_tier, new_tier, current_epoch
             );
             // Update min peers for production based on new tier.
-            // Skip on devnet — peer discovery is limited by --no-dht,
-            // so we keep the lower network-level default (1 peer).
-            if self.config.network != Network::Devnet {
-                let mut sync = self.sync_manager.write().await;
-                sync.set_tier(new_tier);
-            }
+            let mut sync = self.sync_manager.write().await;
+            sync.set_tier(new_tier);
         }
 
         self.our_tier = new_tier;
