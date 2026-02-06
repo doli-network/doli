@@ -166,6 +166,13 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 **Key principle**: Consumer code never imports constants directly from `consensus.rs`. Instead, all configuration flows through `NetworkParams`, which enforces mainnet security while allowing devnet flexibility.
 
+**Parameter loading order** (during node startup):
+1. `.env` file loaded (with fallback from `{data_dir}/.env` to `~/.doli/{network}/.env`)
+2. Chainspec defaults applied (sets env vars for params not already set; skipped for mainnet)
+3. `NetworkParams::load()` reads env vars into OnceLock (frozen for process lifetime)
+
+**Priority**: Parent ENV > `.env` file > Chainspec > `consensus.rs` defaults
+
 ### 3.5. storage
 
 **Purpose:** RocksDB-backed persistence.

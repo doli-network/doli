@@ -1044,6 +1044,12 @@ DOLI_RPC_PORT=29545
 DOLI_BLOCKS_PER_REWARD_EPOCH=2
 ```
 
+**.env file lookup**: The node searches for `.env` in two locations:
+1. `{data_dir}/.env` — The directory specified by `--data-dir` (or the network default)
+2. `~/.doli/{network}/.env` — Fallback to the network root directory
+
+This fallback ensures that nodes started with custom `--data-dir` paths (e.g., `--data-dir ~/.doli/devnet/data/node5`) still pick up the shared network `.env` file.
+
 **Mainnet Security**: The following parameters are **locked for mainnet** and cannot be overridden:
 - `DOLI_SLOT_DURATION`, `DOLI_GENESIS_TIME`
 - `DOLI_BOND_UNIT`, `DOLI_INITIAL_REWARD`
@@ -1053,7 +1059,24 @@ DOLI_BLOCKS_PER_REWARD_EPOCH=2
 
 Attempting to override locked parameters on mainnet logs a warning and uses hardcoded values.
 
-**Precedence**: CLI flags > Environment variables > Network defaults
+**Precedence** (highest to lowest):
+1. CLI flags (e.g., `--p2p-port`)
+2. Parent process environment variables
+3. `.env` file variables
+4. Chainspec consensus parameters (`--chainspec` or `{data_dir}/chainspec.json`)
+5. Network defaults (hardcoded in `consensus.rs`)
+
+Chainspec parameters are applied as environment variable defaults before the `NetworkParams` OnceLock is initialized. Only parameters not already set by higher-priority sources are applied from the chainspec. The following chainspec fields are mapped:
+
+| Chainspec Field | Environment Variable |
+|----------------|---------------------|
+| `consensus.slot_duration` | `DOLI_SLOT_DURATION` |
+| `consensus.bond_amount` | `DOLI_BOND_UNIT` |
+| `consensus.slots_per_epoch` | `DOLI_SLOTS_PER_REWARD_EPOCH` |
+| `genesis.initial_reward` | `DOLI_INITIAL_REWARD` |
+| `genesis.timestamp` (non-zero) | `DOLI_GENESIS_TIME` |
+
+Mainnet chainspecs are skipped entirely (defense-in-depth).
 
 ### 8.3 Network Isolation
 

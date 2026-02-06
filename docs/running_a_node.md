@@ -329,11 +329,17 @@ Attempting to override these on mainnet will log a warning and use hardcoded val
 
 ### 5.5. Configuration Precedence
 
-1. **CLI flags** (highest priority)
-2. **Environment variables** (from `.env` file)
-3. **Network defaults** (hardcoded)
+1. **CLI flags** (highest priority, e.g., `--p2p-port`)
+2. **Parent process environment variables**
+3. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
+4. **Chainspec consensus parameters** (`--chainspec` or `{data_dir}/chainspec.json`)
+5. **Network defaults** (hardcoded in `consensus.rs`)
 
 Example: `--rpc-port 9999` overrides `DOLI_RPC_PORT=8888` in `.env`.
+
+**`.env` file lookup**: When `--data-dir` points to a subdirectory (e.g., `~/.doli/devnet/data/node5`), the node first checks `{data_dir}/.env`, then falls back to `~/.doli/{network}/.env`. This ensures manually-started nodes pick up the shared network configuration.
+
+**Chainspec defaults**: When a chainspec file is provided (via `--chainspec` or found at `{data_dir}/chainspec.json`), its consensus parameters (`slot_duration`, `bond_amount`, `slots_per_epoch`, `initial_reward`, `timestamp`) are applied as the lowest-priority defaults, below `.env` but above hardcoded values. Mainnet chainspecs are skipped (defense-in-depth).
 
 ---
 

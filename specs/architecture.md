@@ -762,7 +762,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 
 | File | Purpose |
 |------|---------|
-| `network_params.rs` | NetworkParams struct with all configurable parameters, loads .env files |
+| `network_params.rs` | NetworkParams struct with all configurable parameters, loads .env files, applies chainspec defaults |
 | `config_validation.rs` | Validates params and enforces mainnet locks |
 
 **Configurable parameters** (~25 total):
@@ -772,7 +772,14 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 - VDF: iterations for blocks and registration
 - Time structure: blocks per year/epoch
 
-**Security**: Critical parameters (VDF, emission, timing) are **locked for mainnet** and cannot be overridden via environment. Attempting to override logs a warning and uses hardcoded values.
+**Parameter loading order** (during node startup):
+1. `load_env_for_network()` — Loads `.env` from `{data_dir}/.env`, with fallback to `~/.doli/{network}/.env`
+2. `apply_chainspec_defaults()` — Sets env vars from chainspec for params not already set (skipped for mainnet)
+3. `NetworkParams::load()` — Reads env vars into OnceLock (frozen for process lifetime)
+
+**Priority hierarchy**: Parent ENV > `.env` file > Chainspec > `consensus.rs` defaults
+
+**Security**: Critical parameters (VDF, emission, timing) are **locked for mainnet** and cannot be overridden via environment or chainspec. Attempting to override logs a warning and uses hardcoded values.
 
 **tpop/** - Telemetry Proof of Presence (NOT consensus):
 | File | Lines | Purpose |
