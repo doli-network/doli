@@ -96,6 +96,9 @@ pub struct Node {
     signed_slots_db: Option<SignedSlotsDb>,
     /// Blocks applied since last state save (for periodic persistence)
     blocks_since_save: u64,
+    /// Consecutive slots where production was blocked due to fork detection
+    /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
+    consecutive_fork_blocks: u32,
 }
 
 /// How often to save state (every N blocks applied)
@@ -335,6 +338,7 @@ impl Node {
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
             blocks_since_save: 0,
+            consecutive_fork_blocks: 0,
         })
     }
 
@@ -1558,6 +1562,75 @@ impl Node {
     /// - chain_state: height, hash, slot → genesis
     /// - utxo_set: cleared completely
     /// - producer_set: cleared (keeping exit_history for anti-Sybil)
+    /// Auto-resync when fork detection has blocked production for too long.
+    ///
+    /// Triggers `force_resync_from_genesis()` after N consecutive fork-blocked
+    /// slots, respecting cooldown to prevent resync loops.
+    async fn maybe_auto_resync(&mut self, current_slot: u32) {
+        // Threshold: trigger resync after 10 consecutive fork-blocked slots
+        // This gives the node enough time for normal recovery (reorg, sync)
+        // before escalating to a full resync.
+        let fork_resync_threshold: u32 = if self.config.network == Network::Devnet {
+            10
+        } else {
+            20
+        };
+
+        if self.consecutive_fork_blocks < fork_resync_threshold {
+            return;
+        }
+
+        // Respect cooldown (reuse existing exponential backoff logic)
+        let (resync_in_progress, consecutive_resyncs) = {
+            let sync = self.sync_manager.read().await;
+            (
+                sync.is_resync_in_progress(),
+                sync.consecutive_resync_count(),
+            )
+        };
+
+        if resync_in_progress {
+            debug!("Fork recovery: resync already in progress, waiting");
+            return;
+        }
+
+        // Exponential backoff: 60s * 2^(resyncs), max ~16 min
+        let cooldown_secs = 60u64 * (1u64 << consecutive_resyncs.min(4));
+        let can_resync = match self.last_resync_time {
+            Some(last) => last.elapsed() > Duration::from_secs(cooldown_secs),
+            None => true,
+        };
+
+        if !can_resync {
+            debug!(
+                "Fork recovery: cooldown active ({}s remaining)",
+                cooldown_secs.saturating_sub(
+                    self.last_resync_time
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0)
+                )
+            );
+            return;
+        }
+
+        // Only auto-resync on devnet/testnet
+        if self.config.network == Network::Mainnet {
+            warn!("Fork detected on mainnet — manual intervention required");
+            return;
+        }
+
+        error!(
+            "FORK RECOVERY: {} consecutive fork-blocked slots (threshold {}). Triggering auto-resync at slot {}.",
+            self.consecutive_fork_blocks, fork_resync_threshold, current_slot
+        );
+
+        self.consecutive_fork_blocks = 0;
+        self.last_resync_time = Some(Instant::now());
+        if let Err(e) = self.force_resync_from_genesis().await {
+            error!("Fork recovery resync failed: {}", e);
+        }
+    }
+
     /// - known_producers: cleared
     /// - fork_block_cache: cleared
     /// - equivocation_detector: cleared
@@ -2162,106 +2235,107 @@ impl Node {
         // ALL checks must pass. This prevents the infinite resync loop bug where
         // nodes at height 0 would produce orphan blocks for far-ahead slots.
         // =========================================================================
-        {
+        let auth_result = {
             let sync_state = self.sync_manager.read().await;
-            let auth_result = sync_state.can_produce(current_slot);
+            let result = sync_state.can_produce(current_slot);
             info!(
                 "[NODE_PRODUCE] slot={} can_produce result: {:?}",
-                current_slot, auth_result
+                current_slot, result
             );
-            match auth_result {
-                ProductionAuthorization::Authorized => {
-                    // Production authorized - continue with other checks
-                    info!(
-                        "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
-                        current_slot
-                    );
-                }
-                ProductionAuthorization::BlockedSyncing => {
-                    info!("[NODE_PRODUCE] slot={} BLOCKED: Syncing", current_slot);
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedResync { .. } => {
-                    info!("[NODE_PRODUCE] slot={} BLOCKED: Resync", current_slot);
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedBehindPeers { .. } => {
-                    info!("[NODE_PRODUCE] slot={} BLOCKED: BehindPeers", current_slot);
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedAheadOfPeers {
-                    local_height,
-                    peer_height,
-                    height_ahead,
-                } => {
-                    // FORK DETECTION: We're suspiciously ahead of the network
-                    // This likely means we're on a fork and should stop producing
-                    warn!(
-                        "[NODE_PRODUCE] FORK DETECTED via AheadOfPeers: slot={} local_h={} peer_h={} ahead={}",
-                        current_slot, local_height, peer_height, height_ahead
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedSyncFailures { failure_count } => {
-                    // FORK DETECTION: Repeated sync failures indicate chain divergence
-                    warn!(
-                        "[NODE_PRODUCE] FORK DETECTED via SyncFailures: slot={} failures={}",
-                        current_slot, failure_count
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedInsufficientPeers {
-                    peer_count,
-                    min_required,
-                } => {
-                    // FORK PREVENTION: Not enough peers to safely produce
-                    // This prevents echo chambers where isolated nodes agree on the wrong chain
-                    warn!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: InsufficientPeers - only {} peers (need {})",
-                        current_slot, peer_count, min_required
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedChainMismatch {
-                    peer_id,
-                    local_hash,
-                    peer_hash,
-                    local_height,
-                } => {
-                    // CRITICAL FORK DETECTION (P0 #1)
-                    // We are at the same height as a peer but have different hashes.
-                    error!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: Chain mismatch with peer {} at height {} (local={}, peer={}). We are on a fork!",
-                        current_slot, peer_id, local_height, local_hash, peer_hash
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedNoGossipActivity {
-                    seconds_since_gossip,
-                    peer_count,
-                } => {
-                    // CRITICAL FORK DETECTION (P0 #3)
-                    // We have peers but receive no gossip. We are likely partitioned/shadow-banned.
-                    error!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers. Network isolation detected.",
-                        current_slot, seconds_since_gossip, peer_count
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedExplicit { reason } => {
-                    info!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}",
-                        current_slot, reason
-                    );
-                    return Ok(());
-                }
-                ProductionAuthorization::BlockedBootstrap { reason } => {
-                    info!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}",
-                        current_slot, reason
-                    );
-                    return Ok(());
-                }
+            result
+        }; // sync_state guard dropped here — safe to call &mut self methods below
+
+        match auth_result {
+            ProductionAuthorization::Authorized => {
+                self.consecutive_fork_blocks = 0;
+                info!(
+                    "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
+                    current_slot
+                );
+            }
+            ProductionAuthorization::BlockedSyncing => {
+                info!("[NODE_PRODUCE] slot={} BLOCKED: Syncing", current_slot);
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedResync { .. } => {
+                info!("[NODE_PRODUCE] slot={} BLOCKED: Resync", current_slot);
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedBehindPeers { .. } => {
+                info!("[NODE_PRODUCE] slot={} BLOCKED: BehindPeers", current_slot);
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedAheadOfPeers {
+                local_height,
+                peer_height,
+                height_ahead,
+            } => {
+                self.consecutive_fork_blocks += 1;
+                warn!(
+                    "[NODE_PRODUCE] FORK DETECTED via AheadOfPeers: slot={} local_h={} peer_h={} ahead={} (consecutive={})",
+                    current_slot, local_height, peer_height, height_ahead, self.consecutive_fork_blocks
+                );
+                self.maybe_auto_resync(current_slot).await;
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedSyncFailures { failure_count } => {
+                self.consecutive_fork_blocks += 1;
+                warn!(
+                    "[NODE_PRODUCE] FORK DETECTED via SyncFailures: slot={} failures={} (consecutive={})",
+                    current_slot, failure_count, self.consecutive_fork_blocks
+                );
+                self.maybe_auto_resync(current_slot).await;
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedInsufficientPeers {
+                peer_count,
+                min_required,
+            } => {
+                warn!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: InsufficientPeers - only {} peers (need {})",
+                    current_slot, peer_count, min_required
+                );
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedChainMismatch {
+                peer_id,
+                local_hash,
+                peer_hash,
+                local_height,
+            } => {
+                self.consecutive_fork_blocks += 1;
+                error!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Chain mismatch with peer {} at height {} (local={}, peer={}) (consecutive={})",
+                    current_slot, peer_id, local_height, local_hash, peer_hash, self.consecutive_fork_blocks
+                );
+                self.maybe_auto_resync(current_slot).await;
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedNoGossipActivity {
+                seconds_since_gossip,
+                peer_count,
+            } => {
+                self.consecutive_fork_blocks += 1;
+                error!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers (consecutive={})",
+                    current_slot, seconds_since_gossip, peer_count, self.consecutive_fork_blocks
+                );
+                self.maybe_auto_resync(current_slot).await;
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedExplicit { reason } => {
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Explicit - {}",
+                    current_slot, reason
+                );
+                return Ok(());
+            }
+            ProductionAuthorization::BlockedBootstrap { reason } => {
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Bootstrap - {}",
+                    current_slot, reason
+                );
+                return Ok(());
             }
         }
 
