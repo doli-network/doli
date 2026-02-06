@@ -20,6 +20,11 @@ use super::headers::HeaderDownloader;
 use super::reorg::ReorgHandler;
 use crate::protocols::{SyncRequest, SyncResponse};
 
+/// Minimum peers required for block production, by tier.
+const MIN_PEERS_TIER1: usize = 10;
+const MIN_PEERS_TIER2: usize = 5;
+const MIN_PEERS_TIER3: usize = 2;
+
 /// Sync configuration
 #[derive(Clone, Debug)]
 pub struct SyncConfig {
@@ -260,6 +265,12 @@ pub struct SyncManager {
 
     /// Producer tier (0=default, 1=validator, 2=attestor, 3=staker)
     tier: u8,
+
+    /// Finality tracker — tracks attestation weight and determines finalized blocks.
+    finality_tracker: doli_core::FinalityTracker,
+
+    /// Fork recovery tracker — active parent chain download for automatic reorg.
+    fork_recovery: super::fork_recovery::ForkRecoveryTracker,
 }
 
 impl SyncManager {
@@ -309,6 +320,8 @@ impl SyncManager {
             last_peer_status_received: None,
             bootstrap_grace_period_secs: 15, // Wait 15s at genesis for chain evidence
             tier: 0,
+            finality_tracker: doli_core::FinalityTracker::new(),
+            fork_recovery: super::fork_recovery::ForkRecoveryTracker::new(),
         }
     }
 
@@ -840,6 +853,21 @@ impl SyncManager {
             }
         }
 
+        // === Layer 8: Finality conflict check ===
+        // If we have a finalized block, ensure our chain doesn't conflict with it.
+        // This prevents producing blocks on a fork that has been superseded by finality.
+        if let Some(finalized_height) = self.last_finalized_height() {
+            if self.local_height < finalized_height {
+                info!(
+                    "[CAN_PRODUCE] Layer8: local_height={} < finalized_height={} - blocked",
+                    self.local_height, finalized_height
+                );
+                return ProductionAuthorization::BlockedConflictsFinality {
+                    local_finalized_height: finalized_height,
+                };
+            }
+        }
+
         // All checks passed - production is authorized
         info!("[CAN_PRODUCE] AUTHORIZED - all checks passed");
         ProductionAuthorization::Authorized
@@ -1022,10 +1050,10 @@ impl SyncManager {
     pub fn set_tier(&mut self, tier: u8) {
         self.tier = tier;
         let min_peers = match tier {
-            1 => 10, // Tier 1: validators need many peers for consensus
-            2 => 5,  // Tier 2: attestors need moderate connectivity
-            3 => 2,  // Tier 3: stakers (delegators) need minimal peers
-            _ => 2,  // Default: backward compatible
+            1 => MIN_PEERS_TIER1,
+            2 => MIN_PEERS_TIER2,
+            3 => MIN_PEERS_TIER3,
+            _ => MIN_PEERS_TIER3, // Default: backward compatible
         };
         self.min_peers_for_production = min_peers;
         info!("Set tier={} min_peers_for_production={}", tier, min_peers);
@@ -1034,6 +1062,44 @@ impl SyncManager {
     /// Get the current tier.
     pub fn tier(&self) -> u8 {
         self.tier
+    }
+
+    /// Track a newly applied block for finality.
+    pub fn track_block_for_finality(
+        &mut self,
+        hash: crypto::Hash,
+        height: u64,
+        slot: u32,
+        total_weight: u64,
+    ) {
+        self.finality_tracker
+            .track_block(hash, height, slot, total_weight);
+    }
+
+    /// Add attestation weight to a pending block.
+    pub fn add_attestation_weight(&mut self, block_hash: &crypto::Hash, weight: u64) {
+        self.finality_tracker
+            .add_attestation_weight(*block_hash, weight);
+        // Check if this triggers finality
+        if let Some(checkpoint) = self.finality_tracker.check_finality() {
+            info!(
+                "FINALITY: Block {} finalized at height {} (attestation {}/{})",
+                checkpoint.block_hash,
+                checkpoint.height,
+                checkpoint.attestation_weight,
+                checkpoint.total_weight
+            );
+            self.reorg_handler
+                .set_last_finality_height(checkpoint.height);
+        }
+    }
+
+    /// Get the last finalized height, if any.
+    pub fn last_finalized_height(&self) -> Option<u64> {
+        self.finality_tracker
+            .last_finalized
+            .as_ref()
+            .map(|c| c.height)
     }
 
     /// Check if sync failures indicate we're on a fork (no-op, kept for API compatibility)
@@ -1062,6 +1128,65 @@ impl SyncManager {
 
     // =========================================================================
     // END PRODUCTION GATE
+    // =========================================================================
+
+    // =========================================================================
+    // FORK RECOVERY — Active parent chain download
+    // =========================================================================
+
+    /// Start fork recovery for an orphan block.
+    /// Walks backward through parent chain requesting blocks from the peer.
+    pub fn start_fork_recovery(&mut self, orphan: doli_core::Block, peer: PeerId) -> bool {
+        self.fork_recovery.start(orphan, peer)
+    }
+
+    /// Check if fork recovery chain connected to our block_store.
+    /// Node calls this with the result of `block_store.has_block(current_parent)`.
+    pub fn check_fork_recovery_connection(
+        &mut self,
+        parent_known: bool,
+    ) -> Option<super::fork_recovery::CompletedRecovery> {
+        self.fork_recovery.check_connection(parent_known)
+    }
+
+    /// Get the parent hash the recovery is currently seeking.
+    /// Returns None if no recovery active or waiting for response.
+    pub fn fork_recovery_current_parent(&self) -> Option<Hash> {
+        self.fork_recovery.current_parent()
+    }
+
+    /// Is fork recovery currently active?
+    pub fn is_fork_recovery_active(&self) -> bool {
+        self.fork_recovery.is_active()
+    }
+
+    /// Can a new fork recovery start? (not active and not on cooldown)
+    pub fn can_start_fork_recovery(&self) -> bool {
+        self.fork_recovery.can_start()
+    }
+
+    /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
+    /// Used during fork recovery to populate weights before plan_reorg.
+    pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {
+        self.reorg_handler
+            .record_block_with_weight(hash, prev_hash, weight);
+    }
+
+    /// Get read-only access to the reorg handler (for plan_reorg from Node).
+    pub fn reorg_handler(&self) -> &super::reorg::ReorgHandler {
+        &self.reorg_handler
+    }
+
+    /// Pick the best peer for fork recovery (highest height).
+    pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
+        self.peers
+            .iter()
+            .max_by_key(|(_, status)| status.best_height)
+            .map(|(peer, _)| *peer)
+    }
+
+    // =========================================================================
+    // END FORK RECOVERY
     // =========================================================================
 
     /// Check if we should start syncing
@@ -1106,7 +1231,18 @@ impl SyncManager {
     /// Get the next sync request to send
     pub fn next_request(&mut self) -> Option<(PeerId, SyncRequest)> {
         match &self.state {
-            SyncState::Idle | SyncState::Synchronized => None,
+            SyncState::Idle | SyncState::Synchronized => {
+                // Serve fork recovery requests when main sync is idle
+                if let Some((peer, hash)) = self.fork_recovery.next_fetch() {
+                    let request = SyncRequest::GetBlockByHash { hash };
+                    let id = self.register_request(peer, request.clone());
+                    if let Some(status) = self.peers.get_mut(&peer) {
+                        status.pending_request = Some(id);
+                    }
+                    return Some((peer, request));
+                }
+                None
+            }
 
             SyncState::DownloadingHeaders { peer, .. } => {
                 let peer = *peer;
@@ -1202,6 +1338,13 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
                 );
+                // Fork recovery intercept: consume blocks during active recovery
+                if self.fork_recovery.is_active() {
+                    if self.fork_recovery.handle_block(peer, maybe_block.clone()) {
+                        return vec![]; // Consumed by fork recovery
+                    }
+                }
+                // Normal passthrough
                 if let Some(block) = maybe_block {
                     vec![block]
                 } else {
@@ -1459,6 +1602,9 @@ impl SyncManager {
         self.pending_blocks.clear();
         self.headers_needing_bodies.clear();
         self.pending_requests.clear();
+
+        // Cancel any active fork recovery
+        self.fork_recovery = super::fork_recovery::ForkRecoveryTracker::new();
 
         // Reset downloaders
         self.header_downloader = HeaderDownloader::new(
