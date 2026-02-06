@@ -319,8 +319,8 @@ impl NetworkParams {
                 // Economics
                 bond_unit: consensus::BOND_UNIT,
                 initial_reward: consensus::INITIAL_REWARD,
-                registration_base_fee: 100_000,         // 0.001 DOLI
-                max_registration_fee: 1_000_000_000,    // 10 DOLI
+                registration_base_fee: 100_000,      // 0.001 DOLI
+                max_registration_fee: 1_000_000_000, // 10 DOLI
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
@@ -404,23 +404,23 @@ impl NetworkParams {
 
                 // Timing (accelerated for testing)
                 slot_duration: consensus::SLOT_DURATION, // Same as mainnet for realistic testing
-                genesis_time: 0,       // Dynamic
-                veto_period_secs: 60,  // 1 minute
-                grace_period_secs: 30, // 30 seconds
-                bootstrap_grace_period_secs: 5, // 5s for fast devnet startup
-                unbonding_period: 60,  // ~10 minutes with 10s slots
+                genesis_time: 0,                         // Dynamic
+                veto_period_secs: 60,                    // 1 minute
+                grace_period_secs: 30,                   // 30 seconds
+                bootstrap_grace_period_secs: 5,          // 5s for fast devnet startup
+                unbonding_period: 60,                    // ~10 minutes with 10s slots
                 inactivity_threshold: 30,
 
                 // Economics (lower values for testing)
-                bond_unit: 100_000_000,                 // 1 DOLI (Devnet override)
-                initial_reward: 2_000_000_000,          // 20 DOLI (Devnet override)
-                registration_base_fee: 1_000,           // 0.00001 DOLI
-                max_registration_fee: 10_000_000,       // 0.1 DOLI
-                automatic_genesis_bond: consensus::BOND_UNIT, // Use mainnet bond for genesis? 
-                                                             // Original code: 10_000_000_000 (100 DOLI)
-                                                             // Devnet bond_unit is 1 DOLI. 
-                                                             // Wait, line 417 in original was 10_000_000_000.
-                                                             // So it uses MAINNET bond unit for genesis bond.
+                bond_unit: 100_000_000,           // 1 DOLI (Devnet override)
+                initial_reward: 2_000_000_000,    // 20 DOLI (Devnet override)
+                registration_base_fee: 1_000,     // 0.00001 DOLI
+                max_registration_fee: 10_000_000, // 0.1 DOLI
+                automatic_genesis_bond: consensus::BOND_UNIT, // Use mainnet bond for genesis?
+                // Original code: 10_000_000_000 (100 DOLI)
+                // Devnet bond_unit is 1 DOLI.
+                // Wait, line 417 in original was 10_000_000_000.
+                // So it uses MAINNET bond unit for genesis bond.
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
@@ -541,10 +541,31 @@ pub fn load_env_for_network(network_name: &str, data_dir: &Path) {
             }
         }
     } else {
-        debug!(
-            "No .env file found at {:?}, using defaults for {} network",
-            env_path, network_name
-        );
+        // Fallback: check the network root directory (~/.doli/{network}/.env)
+        // This handles custom --data-dir pointing to a subdirectory
+        let network_root = get_default_data_dir(network_name);
+        let root_env = network_root.join(".env");
+        if root_env.exists() && root_env != env_path {
+            match dotenvy::from_path(&root_env) {
+                Ok(()) => {
+                    info!(
+                        "Loaded environment from {:?} (fallback) for {} network",
+                        root_env, network_name
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to load environment from {:?} (fallback): {}",
+                        root_env, e
+                    );
+                }
+            }
+        } else {
+            debug!(
+                "No .env file found at {:?} or {:?}, using defaults for {} network",
+                env_path, root_env, network_name
+            );
+        }
     }
 }
 
@@ -567,9 +588,103 @@ pub fn init_env_for_network(network_name: &str) {
     load_env_for_network(network_name, &data_dir);
 }
 
+/// Apply chainspec consensus parameters as environment variable defaults.
+///
+/// Reads a chainspec JSON file and sets environment variables for consensus
+/// parameters that are not already set. This makes the chainspec the lowest
+/// priority source (below parent env and .env file) but above hardcoded defaults.
+///
+/// Priority hierarchy: Parent ENV > .env file > Chainspec > consensus.rs defaults
+///
+/// Skipped entirely for mainnet (defense-in-depth: mainnet params are locked).
+pub fn apply_chainspec_defaults(chainspec_path: &Path) {
+    use crate::chainspec::ChainSpec;
+
+    let spec = match ChainSpec::load(chainspec_path) {
+        Ok(spec) => spec,
+        Err(e) => {
+            warn!(
+                "Could not load chainspec from {:?} for defaults: {}",
+                chainspec_path, e
+            );
+            return;
+        }
+    };
+
+    // Defense-in-depth: never override mainnet params from chainspec
+    if matches!(spec.network, Network::Mainnet) {
+        debug!("Skipping chainspec defaults for mainnet (locked parameters)");
+        return;
+    }
+
+    let mut applied = Vec::new();
+
+    if set_env_if_absent(
+        "DOLI_SLOT_DURATION",
+        &spec.consensus.slot_duration.to_string(),
+    ) {
+        applied.push(format!(
+            "DOLI_SLOT_DURATION={}",
+            spec.consensus.slot_duration
+        ));
+    }
+    if set_env_if_absent("DOLI_BOND_UNIT", &spec.consensus.bond_amount.to_string()) {
+        applied.push(format!("DOLI_BOND_UNIT={}", spec.consensus.bond_amount));
+    }
+    if set_env_if_absent(
+        "DOLI_SLOTS_PER_REWARD_EPOCH",
+        &spec.consensus.slots_per_epoch.to_string(),
+    ) {
+        applied.push(format!(
+            "DOLI_SLOTS_PER_REWARD_EPOCH={}",
+            spec.consensus.slots_per_epoch
+        ));
+    }
+    if set_env_if_absent(
+        "DOLI_INITIAL_REWARD",
+        &spec.genesis.initial_reward.to_string(),
+    ) {
+        applied.push(format!(
+            "DOLI_INITIAL_REWARD={}",
+            spec.genesis.initial_reward
+        ));
+    }
+    if spec.genesis.timestamp != 0
+        && set_env_if_absent("DOLI_GENESIS_TIME", &spec.genesis.timestamp.to_string())
+    {
+        applied.push(format!("DOLI_GENESIS_TIME={}", spec.genesis.timestamp));
+    }
+
+    if applied.is_empty() {
+        debug!("Chainspec defaults: all vars already set, nothing applied");
+    } else {
+        info!(
+            "Applied {} chainspec defaults: {}",
+            applied.len(),
+            applied.join(", ")
+        );
+    }
+}
+
+/// Set an environment variable only if it is not already set.
+/// Returns true if the variable was set (i.e., it was absent).
+fn set_env_if_absent(key: &str, value: &str) -> bool {
+    if std::env::var(key).is_err() {
+        std::env::set_var(key, value);
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialize tests that modify process environment variables.
+    /// Env vars are process-global, so parallel tests can interfere with each other.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_defaults_match_network_rs() {
@@ -596,15 +711,13 @@ mod tests {
         assert_eq!(mainnet.commitment_period(), mainnet.blocks_per_era());
         assert_eq!(
             mainnet.exit_history_retention(),
-                mainnet.blocks_per_era() * 2
-            );
-        }
+            mainnet.blocks_per_era() * 2
+        );
+    }
 
     #[test]
     fn test_env_override() {
-        // Test that environment variables correctly override defaults (for non-locked networks)
-        // We use a lock to ensure thread safety for env var manipulation if tests run in parallel
-        let _lock = std::sync::Mutex::new(());
+        let _lock = ENV_MUTEX.lock().unwrap();
 
         // Save original value to restore later
         let original_val = std::env::var("DOLI_SLOT_DURATION");
@@ -653,6 +766,7 @@ mod tests {
 
     #[test]
     fn test_load_env_for_network_with_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let temp_dir = tempfile::TempDir::new().unwrap();
         let env_path = temp_dir.path().join(".env");
 
@@ -679,5 +793,163 @@ mod tests {
     fn test_get_default_data_dir() {
         let data_dir = get_default_data_dir("mainnet");
         assert!(data_dir.ends_with(".doli/mainnet"));
+    }
+
+    #[test]
+    fn test_load_env_fallback_to_network_root() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Create a "network root" dir with .env, and a "subdir" without .env
+        let root_dir = tempfile::TempDir::new().unwrap();
+        let sub_dir = root_dir.path().join("data").join("node5");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        // Write .env only in root
+        let env_path = root_dir.path().join(".env");
+        std::fs::write(&env_path, "DOLI_TEST_FALLBACK_VAR=from_root\n").unwrap();
+        std::env::remove_var("DOLI_TEST_FALLBACK_VAR");
+
+        // The sub_dir has no .env, so load_env_for_network won't find it there.
+        // The fallback uses get_default_data_dir which goes to ~/.doli/{network},
+        // so we can't fully test the fallback path here without mocking HOME.
+        // Instead, verify the function doesn't panic on subdirs without .env.
+        load_env_for_network("devnet", &sub_dir);
+
+        // Clean up
+        std::env::remove_var("DOLI_TEST_FALLBACK_VAR");
+    }
+
+    #[test]
+    fn test_apply_chainspec_defaults_sets_vars() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let chainspec_path = temp_dir.path().join("chainspec.json");
+
+        // Write a minimal devnet chainspec
+        let chainspec_json = r#"{
+            "name": "Test Devnet",
+            "id": "devnet",
+            "network": "Devnet",
+            "genesis": {
+                "timestamp": 1700000000,
+                "message": "test",
+                "initial_reward": 5000000000
+            },
+            "consensus": {
+                "slot_duration": 7,
+                "slots_per_epoch": 42,
+                "bond_amount": 200000000
+            },
+            "genesis_producers": []
+        }"#;
+        std::fs::write(&chainspec_path, chainspec_json).unwrap();
+
+        // Clear all related vars
+        std::env::remove_var("DOLI_SLOT_DURATION");
+        std::env::remove_var("DOLI_BOND_UNIT");
+        std::env::remove_var("DOLI_SLOTS_PER_REWARD_EPOCH");
+        std::env::remove_var("DOLI_INITIAL_REWARD");
+        std::env::remove_var("DOLI_GENESIS_TIME");
+
+        apply_chainspec_defaults(&chainspec_path);
+
+        assert_eq!(std::env::var("DOLI_SLOT_DURATION").unwrap(), "7");
+        assert_eq!(std::env::var("DOLI_BOND_UNIT").unwrap(), "200000000");
+        assert_eq!(std::env::var("DOLI_SLOTS_PER_REWARD_EPOCH").unwrap(), "42");
+        assert_eq!(std::env::var("DOLI_INITIAL_REWARD").unwrap(), "5000000000");
+        assert_eq!(std::env::var("DOLI_GENESIS_TIME").unwrap(), "1700000000");
+
+        // Clean up
+        std::env::remove_var("DOLI_SLOT_DURATION");
+        std::env::remove_var("DOLI_BOND_UNIT");
+        std::env::remove_var("DOLI_SLOTS_PER_REWARD_EPOCH");
+        std::env::remove_var("DOLI_INITIAL_REWARD");
+        std::env::remove_var("DOLI_GENESIS_TIME");
+    }
+
+    #[test]
+    fn test_apply_chainspec_defaults_no_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let chainspec_path = temp_dir.path().join("chainspec.json");
+
+        let chainspec_json = r#"{
+            "name": "Test Devnet",
+            "id": "devnet",
+            "network": "Devnet",
+            "genesis": {
+                "timestamp": 0,
+                "message": "test",
+                "initial_reward": 5000000000
+            },
+            "consensus": {
+                "slot_duration": 7,
+                "slots_per_epoch": 42,
+                "bond_amount": 200000000
+            },
+            "genesis_producers": []
+        }"#;
+        std::fs::write(&chainspec_path, chainspec_json).unwrap();
+
+        // Pre-set a var — chainspec should NOT override it
+        std::env::set_var("DOLI_SLOT_DURATION", "99");
+
+        apply_chainspec_defaults(&chainspec_path);
+
+        // Should remain 99, not 7 from chainspec
+        assert_eq!(std::env::var("DOLI_SLOT_DURATION").unwrap(), "99");
+
+        // Clean up
+        std::env::remove_var("DOLI_SLOT_DURATION");
+        std::env::remove_var("DOLI_BOND_UNIT");
+        std::env::remove_var("DOLI_SLOTS_PER_REWARD_EPOCH");
+        std::env::remove_var("DOLI_INITIAL_REWARD");
+    }
+
+    #[test]
+    fn test_apply_chainspec_defaults_mainnet_skipped() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let chainspec_path = temp_dir.path().join("chainspec.json");
+
+        let chainspec_json = r#"{
+            "name": "Test Mainnet",
+            "id": "mainnet",
+            "network": "Mainnet",
+            "genesis": {
+                "timestamp": 1700000000,
+                "message": "test",
+                "initial_reward": 999
+            },
+            "consensus": {
+                "slot_duration": 999,
+                "slots_per_epoch": 999,
+                "bond_amount": 999
+            },
+            "genesis_producers": []
+        }"#;
+        std::fs::write(&chainspec_path, chainspec_json).unwrap();
+
+        // Clear vars
+        std::env::remove_var("DOLI_SLOT_DURATION_MAINNET_TEST");
+
+        apply_chainspec_defaults(&chainspec_path);
+
+        // Mainnet chainspec should be skipped entirely — vars should NOT be set
+        assert!(
+            std::env::var("DOLI_SLOT_DURATION").is_err()
+                || std::env::var("DOLI_SLOT_DURATION").unwrap() != "999"
+        );
+    }
+
+    #[test]
+    fn test_apply_chainspec_defaults_malformed_file() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let chainspec_path = temp_dir.path().join("chainspec.json");
+
+        // Write invalid JSON
+        std::fs::write(&chainspec_path, "{ not valid json }").unwrap();
+
+        // Should not panic, just log a warning
+        apply_chainspec_defaults(&chainspec_path);
     }
 }

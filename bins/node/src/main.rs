@@ -335,6 +335,27 @@ async fn main() -> Result<()> {
     // This allows overriding network defaults via ~/.doli/{network}/.env
     if !is_devnet_command {
         network_params::load_env_for_network(network.name(), &data_dir);
+
+        // Apply chainspec consensus defaults (lowest priority: only sets vars not already set)
+        // Must happen BEFORE any code triggers NetworkParams OnceLock
+        let chainspec_for_defaults = match &cli.command {
+            Some(Commands::Run {
+                chainspec: Some(ref path),
+                ..
+            }) => Some(path.clone()),
+            Some(Commands::Run { .. }) => {
+                let default = data_dir.join("chainspec.json");
+                if default.exists() {
+                    Some(default)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(ref path) = chainspec_for_defaults {
+            network_params::apply_chainspec_defaults(path);
+        }
     }
 
     info!("DOLI Node v{}", env!("CARGO_PKG_VERSION"));
