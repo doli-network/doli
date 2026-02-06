@@ -38,6 +38,11 @@ pub struct NodeConfig {
     /// When set, this overrides the dynamic genesis time calculation.
     #[serde(default)]
     pub genesis_time_override: Option<u64>,
+
+    /// Override slot duration from chainspec (ensures all nodes agree on slot timing)
+    /// This is consensus-critical: different slot durations cause producer schedule divergence.
+    #[serde(default)]
+    pub slot_duration_override: Option<u64>,
 }
 
 impl Default for NodeConfig {
@@ -68,6 +73,7 @@ impl NodeConfig {
             producer: None,
             no_dht: false,
             genesis_time_override: None,
+            slot_duration_override: None,
         }
     }
 }
