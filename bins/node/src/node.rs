@@ -29,8 +29,8 @@ use doli_core::{
     Transaction,
 };
 use network::{
-    EquivocationDetector, EquivocationProof, NetworkConfig, NetworkEvent, NetworkService,
-    ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
+    EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
+    NetworkService, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
@@ -503,7 +503,7 @@ impl Node {
         };
 
         // Create RPC context with references to node state
-        let context = RpcContext::new(
+        let mut context = RpcContext::new(
             self.chain_state.clone(),
             self.block_store.clone(),
             self.utxo_set.clone(),
@@ -516,6 +516,17 @@ impl Node {
         .with_bond_unit(self.config.network.bond_unit())
         .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
+
+        // Wire up transaction broadcast so RPC-submitted txs are gossiped to peers
+        if let Some(ref network) = self.network {
+            let cmd_tx = network.command_sender();
+            context = context.with_broadcast(move |tx: Transaction| {
+                let cmd_tx = cmd_tx.clone();
+                tokio::spawn(async move {
+                    let _ = cmd_tx.send(NetworkCommand::BroadcastTransaction(tx)).await;
+                });
+            });
+        }
 
         let server = RpcServer::new(rpc_config, context);
         info!("Starting RPC server on {}", listen_addr);
@@ -2023,10 +2034,13 @@ impl Node {
             }
         }
 
-        // Remove transactions from mempool
+        // Remove transactions from mempool and prune any with now-spent inputs
         {
             let mut mempool = self.mempool.write().await;
             mempool.remove_for_block(&block.transactions);
+            let utxo = self.utxo_set.read().await;
+            let height = self.chain_state.read().await.best_height;
+            mempool.revalidate(&utxo, height);
         }
 
         // Get producer's effective weight for fork choice rule
