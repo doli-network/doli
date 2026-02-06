@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use crypto::{hash_with_domain, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::chainspec::{ChainSpec, ConsensusSpec, GenesisProducer, GenesisSpec};
+use doli_core::types::UNITS_PER_COIN;
 use doli_core::Network;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -1075,11 +1076,19 @@ pub async fn add_producer(count: u32) -> Result<()> {
         return Err(anyhow!("Funder wallet not found: {:?}", funder_wallet));
     }
 
-    // Get the bond amount from the chainspec or network params
-    let params = Network::Devnet.params();
-    let bond_amount = params.bond_unit;
-    // Need enough for bond + a small buffer for tx fees
-    let fund_amount = bond_amount * 2;
+    // Read actual bond_unit from chainspec (params may have stale OnceLock defaults)
+    let chainspec_path = root.join("chainspec.json");
+    let bond_unit_sats = if chainspec_path.exists() {
+        let cs_data = fs::read_to_string(&chainspec_path)?;
+        let cs: serde_json::Value = serde_json::from_str(&cs_data)?;
+        cs["consensus"]["bond_amount"]
+            .as_u64()
+            .unwrap_or(Network::Devnet.params().bond_unit)
+    } else {
+        Network::Devnet.params().bond_unit
+    };
+    // CLI expects DOLI (not sats), fund enough for 1 bond + buffer for tx fees
+    let fund_amount_doli = (bond_unit_sats / UNITS_PER_COIN) + 1;
 
     let current_exe = std::env::current_exe()?;
     let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/{}", config.p2p_port(0));
@@ -1109,13 +1118,14 @@ pub async fn add_producer(count: u32) -> Result<()> {
         fs::write(&wallet_path, &wallet_json)?;
         info!("  Created wallet: {:?}", wallet_path);
 
-        // Compute the new producer's address (pubkey_hash)
-        let new_addr = keypair.address().to_hex();
+        // Compute the new producer's pubkey_hash (64-char hex, required by send)
+        let new_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, keypair.public_key().as_ref());
+        let new_addr = new_pubkey_hash.to_hex();
 
         // 2. Fund from producer_0
-        let fund_str = format!("{}", fund_amount);
+        let fund_str = format!("{}", fund_amount_doli);
         info!(
-            "  Funding {} with {} base units from producer_0...",
+            "  Funding {} with {} DOLI from producer_0...",
             &new_addr[..16],
             fund_str
         );
@@ -1135,7 +1145,6 @@ pub async fn add_producer(count: u32) -> Result<()> {
         // 3. Wait for funding to confirm (poll balance)
         info!("  Waiting for funding confirmation...");
         let client = reqwest::Client::new();
-        let new_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, keypair.public_key().as_ref());
         let max_wait = Duration::from_secs(60);
         let start = std::time::Instant::now();
         let mut funded = false;
@@ -1156,9 +1165,9 @@ pub async fn add_producer(count: u32) -> Result<()> {
                 .await
             {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    let total = json["result"]["total"].as_u64().unwrap_or(0);
-                    if total >= bond_amount {
-                        info!("  Funded: {} base units", total);
+                    let confirmed = json["result"]["confirmed"].as_u64().unwrap_or(0);
+                    if confirmed >= bond_unit_sats {
+                        info!("  Funded (confirmed): {} base units", confirmed);
                         funded = true;
                         break;
                     }
@@ -1176,10 +1185,10 @@ pub async fn add_producer(count: u32) -> Result<()> {
             continue;
         }
 
-        // 4. Register as producer
+        // 4. Register as producer (1 bond per producer)
         let new_wallet_str = wallet_path.to_string_lossy().to_string();
-        let bond_str = format!("{}", bond_amount);
-        info!("  Registering producer with bond={} ...", bond_str);
+        let bond_str = "1";
+        info!("  Registering producer with {} bond(s)...", bond_str);
 
         let reg_output = run_cli(&[
             "-r",
@@ -1217,6 +1226,11 @@ pub async fn add_producer(count: u32) -> Result<()> {
             child.id(),
             config.rpc_port(idx)
         );
+
+        // Wait for funder UTXO to refresh before next send (avoid double-spend)
+        // Need at least one full block for change output to confirm
+        info!("  Waiting for UTXO refresh before next producer...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 
     println!();
