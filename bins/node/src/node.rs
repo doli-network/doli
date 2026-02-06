@@ -2291,12 +2291,13 @@ impl Node {
                 return Ok(());
             }
             ProductionAuthorization::BlockedSyncFailures { failure_count } => {
-                self.consecutive_fork_blocks += 1;
+                // Sync failures alone are NOT a fork signal — they happen during
+                // normal network churn. Only AheadOfPeers and ChainMismatch are
+                // definitive fork indicators that should trigger auto-resync.
                 warn!(
-                    "[NODE_PRODUCE] FORK DETECTED via SyncFailures: slot={} failures={} (consecutive={})",
-                    current_slot, failure_count, self.consecutive_fork_blocks
+                    "[NODE_PRODUCE] slot={} BLOCKED: SyncFailures (failures={})",
+                    current_slot, failure_count
                 );
-                self.maybe_auto_resync(current_slot).await;
                 return Ok(());
             }
             ProductionAuthorization::BlockedInsufficientPeers {
@@ -2327,12 +2328,12 @@ impl Node {
                 seconds_since_gossip,
                 peer_count,
             } => {
-                self.consecutive_fork_blocks += 1;
-                error!(
-                    "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers (consecutive={})",
-                    current_slot, seconds_since_gossip, peer_count, self.consecutive_fork_blocks
+                // No gossip activity is NOT a definitive fork signal — it can happen
+                // during network startup or temporary connectivity issues.
+                warn!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: No gossip activity for {}s with {} peers",
+                    current_slot, seconds_since_gossip, peer_count
                 );
-                self.maybe_auto_resync(current_slot).await;
                 return Ok(());
             }
             ProductionAuthorization::BlockedExplicit { reason } => {
