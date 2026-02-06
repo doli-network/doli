@@ -14,8 +14,13 @@ use doli_core::{Block, BlockHeader, Transaction};
 use std::collections::{HashMap, VecDeque};
 use tracing::warn;
 
-/// Maximum number of slots to track for equivocation detection
-const MAX_TRACKED_SLOTS: usize = 1000;
+/// Maximum number of entries to track for equivocation detection.
+/// At 360 producers per epoch, 10K entries covers ~28 slots.
+const MAX_TRACKED_ENTRIES: usize = 10_000;
+
+/// Number of slots to retain in the sliding window (1 epoch).
+/// Entries older than this are cleaned up to bound memory.
+const SLIDING_WINDOW_SLOTS: u32 = 360;
 
 /// Evidence of double production that can be used to create a slash transaction
 ///
@@ -83,11 +88,14 @@ pub struct EquivocationDetector {
     /// Stores (producer_pubkey, slot) tuples in order of insertion
     lru_order: VecDeque<(PublicKey, u32)>,
 
-    /// Maximum number of entries to track
+    /// Maximum number of entries to track (secondary cap)
     max_tracked: usize,
 
     /// Detected equivocation proofs ready to be reported
     pending_proofs: Vec<EquivocationProof>,
+
+    /// Oldest slot currently tracked (for sliding window cleanup)
+    oldest_tracked_slot: u32,
 }
 
 impl Default for EquivocationDetector {
@@ -102,8 +110,9 @@ impl EquivocationDetector {
         Self {
             seen_blocks: HashMap::new(),
             lru_order: VecDeque::new(),
-            max_tracked: MAX_TRACKED_SLOTS,
+            max_tracked: MAX_TRACKED_ENTRIES,
             pending_proofs: Vec::new(),
+            oldest_tracked_slot: 0,
         }
     }
 
@@ -120,6 +129,10 @@ impl EquivocationDetector {
         let slot = block.header.slot;
         let block_hash = block.hash();
         let key = (producer.clone(), slot);
+
+        // Sliding window: clean up entries older than 1 epoch
+        let min_slot = slot.saturating_sub(SLIDING_WINDOW_SLOTS);
+        self.cleanup_before_slot(min_slot);
 
         // Check if we've already seen a block for this (producer, slot)
         if let Some(existing_header) = self.seen_blocks.get(&key) {
@@ -192,6 +205,29 @@ impl EquivocationDetector {
         self.seen_blocks.clear();
         self.lru_order.clear();
         self.pending_proofs.clear();
+        self.oldest_tracked_slot = 0;
+    }
+
+    /// Remove all entries with slot < min_slot (sliding window cleanup).
+    ///
+    /// This bounds memory growth by evicting stale entries that are too old
+    /// to be relevant for equivocation detection.
+    pub fn cleanup_before_slot(&mut self, min_slot: u32) {
+        if min_slot <= self.oldest_tracked_slot {
+            return; // Already cleaned up to this point
+        }
+
+        // Remove from front of LRU (oldest entries are at front)
+        while let Some(front) = self.lru_order.front() {
+            if front.1 < min_slot {
+                let old_key = self.lru_order.pop_front().unwrap();
+                self.seen_blocks.remove(&old_key);
+            } else {
+                break;
+            }
+        }
+
+        self.oldest_tracked_slot = min_slot;
     }
 }
 
@@ -355,5 +391,73 @@ mod tests {
 
         // Should only have max_tracked entries
         assert!(detector.tracked_count() <= 10);
+    }
+
+    #[test]
+    fn test_sliding_window_cleanup() {
+        let mut detector = EquivocationDetector::new();
+        let producer = PublicKey::from_bytes([1u8; 32]);
+
+        // Add entries at slots 100-109
+        for slot in 100..110u32 {
+            let block = create_test_block(slot, &producer, crypto::hash::hash(&slot.to_le_bytes()));
+            detector.check_block(&block);
+        }
+        assert_eq!(detector.tracked_count(), 10);
+
+        // Cleanup slots before 105
+        detector.cleanup_before_slot(105);
+        assert_eq!(detector.tracked_count(), 5);
+
+        // Entries at 100-104 should be gone
+        assert!(!detector.seen_blocks.contains_key(&(producer.clone(), 100)));
+        assert!(!detector.seen_blocks.contains_key(&(producer.clone(), 104)));
+
+        // Entries at 105-109 should still exist
+        assert!(detector.seen_blocks.contains_key(&(producer.clone(), 105)));
+        assert!(detector.seen_blocks.contains_key(&(producer.clone(), 109)));
+    }
+
+    #[test]
+    fn test_old_slots_evicted_on_check() {
+        let mut detector = EquivocationDetector::new();
+        let producer = PublicKey::from_bytes([1u8; 32]);
+
+        // Add entry at slot 10
+        let block = create_test_block(10, &producer, Hash::ZERO);
+        detector.check_block(&block);
+        assert_eq!(detector.tracked_count(), 1);
+
+        // Check a block at slot 10 + SLIDING_WINDOW_SLOTS + 1 → triggers cleanup
+        let far_slot = 10 + SLIDING_WINDOW_SLOTS + 1;
+        let producer2 = PublicKey::from_bytes([2u8; 32]);
+        let block2 = create_test_block(far_slot, &producer2, Hash::ZERO);
+        detector.check_block(&block2);
+
+        // Old slot 10 entry should be evicted
+        assert!(!detector.seen_blocks.contains_key(&(producer, 10)));
+        // New entry should exist
+        assert!(detector.seen_blocks.contains_key(&(producer2, far_slot)));
+    }
+
+    #[test]
+    fn test_cleanup_idempotent() {
+        let mut detector = EquivocationDetector::new();
+        let producer = PublicKey::from_bytes([1u8; 32]);
+
+        for slot in 0..5u32 {
+            let block = create_test_block(slot, &producer, crypto::hash::hash(&slot.to_le_bytes()));
+            detector.check_block(&block);
+        }
+
+        // Cleanup twice with same min_slot — second call is no-op
+        detector.cleanup_before_slot(3);
+        let count_after_first = detector.tracked_count();
+        detector.cleanup_before_slot(3);
+        assert_eq!(detector.tracked_count(), count_after_first);
+
+        // Cleanup with lower min_slot — also no-op
+        detector.cleanup_before_slot(1);
+        assert_eq!(detector.tracked_count(), count_after_first);
     }
 }

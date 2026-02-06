@@ -25,7 +25,7 @@ use thiserror::Error;
 
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{
-    is_producer_eligible, max_block_size, select_producer_for_slot, ConsensusParams, RewardMode,
+    is_producer_eligible_ms, max_block_size, select_producer_for_slot, ConsensusParams, RewardMode,
     MAX_DRIFT, MAX_FUTURE_SLOTS, MAX_PAST_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
 };
 use crate::network::Network;
@@ -268,6 +268,10 @@ pub enum ValidationError {
     /// Maintainer change transaction validation failed.
     #[error("invalid maintainer change: {0}")]
     InvalidMaintainerChange(String),
+
+    /// Delegation transaction validation failed.
+    #[error("invalid delegation: {0}")]
+    InvalidDelegation(String),
 }
 
 /// Information about an unspent transaction output.
@@ -1056,6 +1060,8 @@ pub fn validate_transaction(
         && !tx.is_request_withdrawal()
         && !tx.is_claim_withdrawal()
         && !tx.is_epoch_reward()
+        && !tx.is_delegate_bond()
+        && !tx.is_revoke_delegation()
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have inputs".to_string(),
@@ -1071,6 +1077,8 @@ pub fn validate_transaction(
         && !tx.is_request_withdrawal()
         && !tx.is_claim_withdrawal()
         && !tx.is_epoch_reward()
+        && !tx.is_delegate_bond()
+        && !tx.is_revoke_delegation()
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have outputs".to_string(),
@@ -1130,6 +1138,12 @@ pub fn validate_transaction(
         }
         TxType::AddMaintainer => {
             validate_maintainer_change_data(tx)?;
+        }
+        TxType::DelegateBond => {
+            validate_delegate_bond_data(tx)?;
+        }
+        TxType::RevokeDelegation => {
+            validate_revoke_delegation_data(tx)?;
         }
     }
 
@@ -1816,6 +1830,87 @@ fn validate_maintainer_change_data(tx: &Transaction) -> Result<(), ValidationErr
     Ok(())
 }
 
+/// Validate DelegateBond transaction data.
+///
+/// Structural validation:
+/// - Must have no inputs (state-only operation)
+/// - Must have no outputs
+/// - Must have valid DelegateBondData in extra_data
+/// - Bond count must be positive
+///
+/// Note: Producer existence, active status, self-delegation, and
+/// sufficient bonds are checked at the node level.
+fn validate_delegate_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::transaction::DelegateBondData;
+
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "delegate bond must have no inputs".to_string(),
+        ));
+    }
+
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "delegate bond must have no outputs".to_string(),
+        ));
+    }
+
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "missing delegate bond data".to_string(),
+        ));
+    }
+
+    let data = DelegateBondData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidDelegation("invalid delegate bond data format".to_string())
+    })?;
+
+    if data.bond_count == 0 {
+        return Err(ValidationError::InvalidDelegation(
+            "bond count must be positive".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate RevokeDelegation transaction data.
+///
+/// Structural validation:
+/// - Must have no inputs (state-only operation)
+/// - Must have no outputs
+/// - Must have valid RevokeDelegationData in extra_data
+///
+/// Note: Active delegation existence and unbonding delay are
+/// checked at the node level.
+fn validate_revoke_delegation_data(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::transaction::RevokeDelegationData;
+
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "revoke delegation must have no inputs".to_string(),
+        ));
+    }
+
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "revoke delegation must have no outputs".to_string(),
+        ));
+    }
+
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidDelegation(
+            "missing revoke delegation data".to_string(),
+        ));
+    }
+
+    let _data = RevokeDelegationData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidDelegation("invalid revoke delegation data format".to_string())
+    })?;
+
+    Ok(())
+}
+
 /// Validate a transaction with full UTXO context.
 ///
 /// This performs complete validation including:
@@ -2011,12 +2106,13 @@ pub fn validate_producer_eligibility(
         return Err(ValidationError::InvalidProducer);
     }
 
-    // Calculate time offset within the slot
+    // Calculate time offset within the slot (in ms for sequential 1.3s windows)
     let slot_start = ctx.params.slot_to_timestamp(header.slot);
-    let slot_offset = header.timestamp.saturating_sub(slot_start);
+    let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
+    let slot_offset_ms = slot_offset_secs * 1000;
 
-    // Check if producer is eligible at this time
-    if !is_producer_eligible(&header.producer, &eligible, slot_offset) {
+    // Check if producer is eligible at this time (ms-precision sequential windows)
+    if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms) {
         return Err(ValidationError::InvalidProducer);
     }
 
@@ -3248,7 +3344,7 @@ mod tests {
         );
 
         // Mainnet and Testnet use production-grade parameters
-        assert_eq!(Network::Mainnet.vdf_iterations(), 100_000);
+        assert_eq!(Network::Mainnet.vdf_iterations(), 800_000);
         assert_eq!(Network::Mainnet.vdf_discriminant_bits(), 2048);
 
         // Devnet has minimal parameters (uses hash-chain VDF)
@@ -4526,6 +4622,105 @@ mod tests {
         assert!(
             matches!(result, Err(ValidationError::EpochRewardMismatch { .. })),
             "Should reject extra reward transaction: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_delegate_bond_valid() {
+        use crate::transaction::{DelegateBondData, Transaction};
+
+        let delegate = crypto::KeyPair::generate();
+        let data = DelegateBondData::new(delegate.public_key().clone(), 3);
+        let tx = Transaction::new_delegate_bond(data);
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            result.is_ok(),
+            "Valid DelegateBond should pass: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_delegate_bond_zero_bonds() {
+        use crate::transaction::{DelegateBondData, TxType};
+
+        let delegate = crypto::KeyPair::generate();
+        let data = DelegateBondData::new(delegate.public_key().clone(), 0);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::DelegateBond,
+            inputs: vec![],
+            outputs: vec![],
+            extra_data: data.to_bytes(),
+        };
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidDelegation(_))),
+            "DelegateBond with 0 bonds should fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_delegate_bond_empty_extra_data() {
+        use crate::transaction::TxType;
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::DelegateBond,
+            inputs: vec![],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidDelegation(_))),
+            "DelegateBond with empty data should fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_revoke_delegation_valid() {
+        use crate::transaction::RevokeDelegationData;
+
+        let delegate = crypto::KeyPair::generate();
+        let data = RevokeDelegationData::new(delegate.public_key().clone());
+        let tx = Transaction::new_revoke_delegation(data);
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            result.is_ok(),
+            "Valid RevokeDelegation should pass: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_revoke_delegation_empty_extra_data() {
+        use crate::transaction::TxType;
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::RevokeDelegation,
+            inputs: vec![],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidDelegation(_))),
+            "RevokeDelegation with empty data should fail: {:?}",
             result
         );
     }

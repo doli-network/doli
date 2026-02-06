@@ -112,11 +112,13 @@
 //!
 //! For complete security documentation, see `SECURITY.md` in the repository root.
 
+pub mod attestation;
 pub mod block;
 pub mod chainspec;
 pub mod config_validation;
 pub mod consensus;
 pub mod discovery;
+pub mod finality;
 pub mod genesis;
 pub mod heartbeat;
 pub mod maintainer;
@@ -130,12 +132,21 @@ pub mod transaction;
 pub mod types;
 pub mod validation;
 
+pub use attestation::{Attestation, AttestationError, RegionAggregate};
 pub use block::{Block, BlockBuilder, BlockHeader};
+#[allow(deprecated)]
 pub use consensus::{
     allowed_producer_rank,
     allowed_producer_rank_ms,
+    // Tiered architecture
+    compute_tier1_set,
+    eligible_rank_at_ms,
     get_producer_rank,
     is_producer_eligible,
+    is_producer_eligible_ms,
+    is_rank_eligible_at_ms,
+    producer_region,
+    producer_tier,
     select_producer_for_slot,
     withdrawal_penalty_rate,
     BondEntry,
@@ -152,18 +163,26 @@ pub use consensus::{
     BLOCK_REWARD_POOL,
     // Bond stacking system
     BOND_UNIT,
+    DELEGATE_REWARD_PCT,
+    DELEGATION_UNBONDING_SLOTS,
     ELIGIBLE_PRODUCER_POOL,
+    // Sequential fallback window constants
+    EMERGENCY_WINDOW_START_MS,
     EPOCH_REWARD_POOL,
+    FALLBACK_TIMEOUT_MS,
     GENESIS_TIME,
     INITIAL_PRESENCE_SCORE,
     MAX_BONDS_PER_PRODUCER,
+    MAX_DRIFT_MS,
     MAX_FALLBACK_PRODUCERS,
+    MAX_FALLBACK_RANKS,
     MAX_FUTURE_SLOTS,
     MAX_PAST_SLOTS,
     MAX_PRESENCE_SCORE,
     MIN_PRESENCE_RATE,
     MIN_PRESENCE_SCORE,
-    // Producer window parameters (milliseconds for precision)
+    NUM_REGIONS,
+    // Deprecated window constants (kept for backward compatibility)
     PRIMARY_WINDOW_MS,
     PRIMARY_WINDOW_SECS,
     SCORE_MISS_PENALTY,
@@ -175,11 +194,17 @@ pub use consensus::{
     SLOTS_PER_REWARD_EPOCH,
     // Proof of Time parameters
     SLOT_DURATION,
+    STAKER_REWARD_PCT,
     TERTIARY_WINDOW_MS,
     TERTIARY_WINDOW_SECS,
+    TIER1_MAX_VALIDATORS,
+    TIER2_MAX_ATTESTORS,
     VDF_DISCRIMINANT_BITS,
     WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
+};
+pub use finality::{
+    FinalityCheckpoint, FinalityTracker, FINALITY_THRESHOLD_PCT, FINALITY_TIMEOUT_SLOTS,
 };
 
 // Block-height based reward epoch utilities
@@ -285,7 +310,7 @@ pub use tpop::{
 // Discovery module exports (producer discovery system)
 pub use discovery::{
     decode_announcement, decode_digest, decode_producer_set, encode_announcement, encode_digest,
-    encode_producer_set, is_legacy_bincode_format, AdaptiveGossip, MergeResult,
+    encode_producer_set, is_legacy_bincode_format, AdaptiveGossip, EpochSnapshot, MergeResult,
     ProducerAnnouncement, ProducerBloomFilter, ProducerGSet, ProducerSetError, ProtoError,
     MAX_ANNOUNCEMENT_AGE_SECS, MAX_FUTURE_TIMESTAMP_SECS, PRODUCER_ANNOUNCEMENT_DOMAIN,
 };
