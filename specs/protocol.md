@@ -1060,21 +1060,25 @@ This fallback ensures that nodes started with custom `--data-dir` paths (e.g., `
 Attempting to override locked parameters on mainnet logs a warning and uses hardcoded values.
 
 **Precedence** (highest to lowest):
-1. CLI flags (e.g., `--p2p-port`)
-2. Parent process environment variables
-3. `.env` file variables
-4. Chainspec consensus parameters (`--chainspec` or `{data_dir}/chainspec.json`)
-5. Network defaults (hardcoded in `consensus.rs`)
+1. **CLI flags** (e.g., `--p2p-port`)
+2. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — applied via `ConsensusParams::apply_chainspec()` in `Node::new()`, overriding OnceLock values
+3. **Parent process environment variables**
+4. **`.env` file variables**
+5. **Network defaults** (hardcoded in `consensus.rs`)
 
-Chainspec parameters are applied as environment variable defaults before the `NetworkParams` OnceLock is initialized. Only parameters not already set by higher-priority sources are applied from the chainspec. The following chainspec fields are mapped:
+Chainspec parameters are applied in two phases:
+- **Phase 1 (env defaults)**: Before the OnceLock initializes, chainspec fields are set as lowest-priority env var defaults (backward compatibility).
+- **Phase 2 (direct injection)**: After `ConsensusParams::for_network()`, `apply_chainspec()` overwrites params directly from the chainspec. This is authoritative — it guarantees chainspec values are used regardless of OnceLock state.
 
-| Chainspec Field | Environment Variable |
-|----------------|---------------------|
-| `consensus.slot_duration` | `DOLI_SLOT_DURATION` |
-| `consensus.bond_amount` | `DOLI_BOND_UNIT` |
-| `consensus.slots_per_epoch` | `DOLI_SLOTS_PER_REWARD_EPOCH` |
-| `genesis.initial_reward` | `DOLI_INITIAL_REWARD` |
-| `genesis.timestamp` (non-zero) | `DOLI_GENESIS_TIME` |
+The following chainspec fields are applied directly:
+
+| Chainspec Field | ConsensusParams Field |
+|----------------|----------------------|
+| `consensus.slot_duration` | `slot_duration` |
+| `consensus.bond_amount` | `initial_bond` |
+| `consensus.slots_per_epoch` | `slots_per_reward_epoch` |
+| `genesis.initial_reward` | `initial_reward` |
+| `genesis.timestamp` (non-zero) | `genesis_time` |
 
 Mainnet chainspecs are skipped entirely (defense-in-depth).
 
