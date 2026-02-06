@@ -201,19 +201,19 @@ pub const COINBASE_MATURITY: BlockHeight = 100;
 // More bonds = more selection weight = more block production opportunities.
 // Each bond has its own vesting timer (4 years to full maturity).
 
-/// Bond unit: 100 DOLI = 1 slot per cycle
+/// Bond unit: 100 DOLI = 1 slot per cycle (WHITEPAPER Section 6.3)
 /// This is the atomic unit for staking. You can only stake in multiples of this.
 /// With 100 DOLI per bond unit:
 /// - Producer with 1,000 DOLI = 10 slots per cycle
-/// - Maximum 100 bonds = 10,000 DOLI maximum per producer
+/// - Maximum 1,000 bonds = 100,000 DOLI maximum per producer
 pub const BOND_UNIT: Amount = 10_000_000_000; // 100 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
 
-/// Maximum bonds per producer (prevents whale dominance)
-/// 100 bonds = 10,000 DOLI maximum stake per node
-pub const MAX_BONDS_PER_PRODUCER: u32 = 100;
+/// Maximum bonds per producer (WHITEPAPER Section 6.3)
+/// 1000 bonds = 100,000 DOLI maximum stake per node
+pub const MAX_BONDS_PER_PRODUCER: u32 = 1_000;
 
 /// Withdrawal delay in slots (7 days at 10s slots)
 /// After requesting withdrawal, must wait this period before claiming
