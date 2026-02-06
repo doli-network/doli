@@ -324,9 +324,9 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
-                // VDF
-                vdf_iterations: 100_000,
-                heartbeat_vdf_iterations: 10_000_000,
+                // VDF (800K iterations ~= 55ms for 1.3s sequential fallback windows)
+                vdf_iterations: 800_000,
+                heartbeat_vdf_iterations: 800_000,
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure
@@ -373,9 +373,9 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
-                // VDF (same as mainnet)
-                vdf_iterations: 100_000,
-                heartbeat_vdf_iterations: 10_000_000,
+                // VDF (800K iterations ~= 55ms, same as mainnet)
+                vdf_iterations: 800_000,
+                heartbeat_vdf_iterations: 800_000,
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure (same as mainnet)
@@ -424,9 +424,9 @@ impl NetworkParams {
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
-                vdf_iterations: 1,                    // Single iteration
-                heartbeat_vdf_iterations: 10_000_000, // Same as mainnet
-                vdf_register_iterations: 5_000_000,   // ~5 seconds
+                vdf_iterations: 1,                  // Single iteration
+                heartbeat_vdf_iterations: 800_000,  // 800K ~= 55ms
+                vdf_register_iterations: 5_000_000, // ~5 seconds
 
                 // Time structure (accelerated)
                 blocks_per_year: 144,       // ~24 minutes
