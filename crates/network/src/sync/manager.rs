@@ -250,8 +250,10 @@ pub struct SyncManager {
 
     /// Consecutive sync failures (empty headers = fork indicator)
     consecutive_sync_failures: u32,
-    /// Maximum sync failures before blocking production (fork detection)
+    /// Maximum sync failures before triggering auto-resync (fork detection)
     max_sync_failures_before_fork_detection: u32,
+    /// Time of last sync failure (for time-based decay)
+    last_sync_failure_time: Option<Instant>,
     /// Minimum peers required for production (P0 #5)
     min_peers_for_production: usize,
 
@@ -271,6 +273,16 @@ pub struct SyncManager {
     last_peer_status_received: Option<Instant>,
     /// Bootstrap grace period (seconds) - time to wait at genesis for chain evidence
     bootstrap_grace_period_secs: u64,
+
+    // === FIRST-SYNC GRACE PERIOD ===
+    /// Time when the node first transitioned to Synchronized state after initial sync.
+    /// Late-joining nodes must wait after syncing before producing, to allow gossip
+    /// mesh formation and recent block propagation. Without this, nodes that sync
+    /// from genesis produce on stale tips and create forks.
+    first_sync_completed: Option<Instant>,
+    /// Grace period (seconds) to wait after first sync before allowing production.
+    /// Gives gossip time to deliver recent blocks and establish peer connections.
+    first_sync_grace_period_secs: u64,
 }
 
 impl SyncManager {
@@ -313,7 +325,8 @@ impl SyncManager {
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
             consecutive_sync_failures: 0,
-            max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
+            max_sync_failures_before_fork_detection: 3, // Trigger resync after 3 failed syncs
+            last_sync_failure_time: None,
             min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers
             // Network tip tracking (from gossip)
             network_tip_height: 0,
@@ -323,6 +336,9 @@ impl SyncManager {
             first_peer_status_received: None,
             last_peer_status_received: None,
             bootstrap_grace_period_secs: 15, // Wait 15s at genesis for chain evidence
+            // First-sync grace period (for late-joining nodes)
+            first_sync_completed: None,
+            first_sync_grace_period_secs: 30, // Wait 30s after first sync for gossip mesh formation
         }
     }
 
@@ -364,6 +380,15 @@ impl SyncManager {
                     let was_syncing = self.state.is_syncing();
                     self.state = SyncState::Synchronized;
                     info!("Chain synchronized at height {}", height);
+
+                    // Record first sync completion for late-joiner grace period
+                    if self.first_sync_completed.is_none() && was_syncing && height > 0 {
+                        self.first_sync_completed = Some(Instant::now());
+                        info!(
+                            "First sync completed at height {} - grace period started ({}s)",
+                            height, self.first_sync_grace_period_secs
+                        );
+                    }
 
                     // If we were in a resync, complete it now
                     if self.resync_in_progress {
@@ -701,6 +726,28 @@ impl SyncManager {
             }
         }
 
+        // Layer 5.6: First-sync grace period for late-joining nodes
+        //
+        // When a node syncs from genesis to the current tip, it may have a stale view
+        // of recent blocks. The gossip mesh needs time to form and deliver latest blocks.
+        // Without this grace period, newly-synced nodes immediately produce on stale tips,
+        // creating forks that are difficult to resolve.
+        //
+        // This applies to ALL networks. Genesis producers (height=0 at start) are exempt
+        // because first_sync_completed is only set when height > 0 during sync.
+        if let Some(sync_completed) = self.first_sync_completed {
+            let elapsed = sync_completed.elapsed().as_secs();
+            if elapsed < self.first_sync_grace_period_secs {
+                info!(
+                    "[CAN_PRODUCE] Layer5.6: first-sync grace period active ({}s/{}s)",
+                    elapsed, self.first_sync_grace_period_secs
+                );
+                return ProductionAuthorization::BlockedResync {
+                    grace_remaining_secs: self.first_sync_grace_period_secs - elapsed,
+                };
+            }
+        }
+
         // Layer 5.5: Minimum peer count check (echo chamber prevention)
         //
         // With too few peers, a node might form an isolated cluster with other forked nodes
@@ -729,23 +776,28 @@ impl SyncManager {
         }
 
         // Layer 6: Peer synchronization check - too far BEHIND
-        let best_peer_height = self.best_peer_height();
+        //
+        // IMPORTANT: Only compare SLOTS, not heights. Heights are unreliable because
+        // forked nodes accumulate inflated block counts (height > slot). A single
+        // forked peer with height=200 would block honest nodes at height=158.
+        // Slots are time-based and can't be inflated by forks.
         let best_peer_slot = self.best_peer_slot();
 
         // Only check if we have peer data
-        if self.peers.len() > 0 && (best_peer_height > 0 || best_peer_slot > 0) {
-            let height_diff = best_peer_height.saturating_sub(self.local_height);
+        if !self.peers.is_empty() && best_peer_slot > 0 {
             let slot_diff = best_peer_slot.saturating_sub(self.local_slot);
 
-            // Per spec: "within 2 slots of peers" - we check both slots AND heights
-            if height_diff > self.max_heights_behind || slot_diff > self.max_slots_behind {
+            if slot_diff > self.max_slots_behind {
+                let best_peer_height = self.best_peer_height();
                 return ProductionAuthorization::BlockedBehindPeers {
                     local_height: self.local_height,
                     peer_height: best_peer_height,
-                    height_diff,
+                    height_diff: best_peer_height.saturating_sub(self.local_height),
                 };
             }
         }
+
+        let best_peer_height = self.best_peer_height();
 
         // Layer 7: "Ahead of network" detection (P0 #2) - FORK DETECTION
         //
@@ -837,16 +889,17 @@ impl SyncManager {
         // When our chain has diverged from peers:
         // - GetHeaders requests return empty (peer doesn't have our tip as ancestor)
         // - This increments consecutive_sync_failures
-        // - After 3+ failures, we're likely on a fork
+        // - After 3+ failures, a forced resync is triggered (via needs_forced_resync flag)
         //
-        // This catches forks where height comparison is inconclusive.
+        // Time-based decay runs in cleanup() — if 60s pass without a sync failure,
+        // the counter resets. This prevents permanent deadlock from transient issues.
         info!(
             "[CAN_PRODUCE] Layer8: sync_failures={} max_failures={}",
             self.consecutive_sync_failures, self.max_sync_failures_before_fork_detection
         );
         if self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection {
             warn!(
-                "FORK DETECTION: {} consecutive sync failures - blocking production",
+                "FORK DETECTION: {} consecutive sync failures - blocking production (resync requested)",
                 self.consecutive_sync_failures
             );
             return ProductionAuthorization::BlockedSyncFailures {
@@ -1075,6 +1128,16 @@ impl SyncManager {
         );
     }
 
+    /// Set the first-sync grace period in seconds
+    ///
+    /// After a late-joining node completes its initial sync, wait this many seconds
+    /// before allowing production. Gives gossip mesh time to form and deliver
+    /// recent blocks, preventing stale-tip forks.
+    pub fn set_first_sync_grace_period_secs(&mut self, secs: u64) {
+        self.first_sync_grace_period_secs = secs;
+        info!("Set first_sync_grace_period_secs to {} seconds", secs);
+    }
+
     /// Set the gossip activity timeout in seconds (P0 #3)
     ///
     /// If no blocks are received via gossip for this duration, production is blocked.
@@ -1091,13 +1154,34 @@ impl SyncManager {
     /// - Header chain doesn't link (hash mismatch)
     ///
     /// After `max_sync_failures_before_fork_detection` consecutive failures,
-    /// production is blocked (Layer 8 in can_produce).
+    /// production is blocked (Layer 8). Time-based decay (60s) prevents permanent
+    /// blocking. Fork recovery uses cache-based detection (orphan block accumulation)
+    /// which provides stronger evidence than sync failures alone.
     pub fn note_sync_failure(&mut self) {
         self.consecutive_sync_failures += 1;
+        self.last_sync_failure_time = Some(Instant::now());
         warn!(
-            "Sync failure #{} - chain may have diverged from peers",
-            self.consecutive_sync_failures
+            "Sync failure #{}/{} - chain may have diverged from peers",
+            self.consecutive_sync_failures, self.max_sync_failures_before_fork_detection
         );
+    }
+
+    /// Decay sync failures if enough time has passed since the last failure.
+    /// Prevents permanent accumulation from transient network issues.
+    fn decay_sync_failures(&mut self) {
+        if self.consecutive_sync_failures > 0 {
+            if let Some(last_time) = self.last_sync_failure_time {
+                // Decay after 60 seconds of no failures
+                if last_time.elapsed().as_secs() >= 60 {
+                    debug!(
+                        "Decaying {} sync failures (60s since last failure)",
+                        self.consecutive_sync_failures
+                    );
+                    self.consecutive_sync_failures = 0;
+                    self.last_sync_failure_time = None;
+                }
+            }
+        }
     }
 
     /// Clear sync failures after successful sync
@@ -1321,6 +1405,14 @@ impl SyncManager {
             } else {
                 self.state = SyncState::Synchronized;
                 info!("Chain synchronized");
+                // Record first sync completion for late-joiner grace period
+                if self.first_sync_completed.is_none() && self.local_height > 0 {
+                    self.first_sync_completed = Some(Instant::now());
+                    info!(
+                        "First sync completed at height {} - grace period started ({}s)",
+                        self.local_height, self.first_sync_grace_period_secs
+                    );
+                }
             }
             return;
         }
@@ -1503,6 +1595,15 @@ impl SyncManager {
             );
             self.state = SyncState::Synchronized;
 
+            // Record first sync completion for late-joiner grace period
+            if self.first_sync_completed.is_none() && height > 0 {
+                self.first_sync_completed = Some(Instant::now());
+                info!(
+                    "First sync completed at height {} - grace period started ({}s)",
+                    height, self.first_sync_grace_period_secs
+                );
+            }
+
             // If we were in a resync, complete it now
             if self.resync_in_progress {
                 self.complete_resync();
@@ -1538,6 +1639,19 @@ impl SyncManager {
 
         // Reset gossip tracking for fresh start
         self.last_block_received_via_gossip = Some(Instant::now());
+
+        // Reset network tip to 0 — stale tip from pre-fork state distorts
+        // the "behind peers" check (Layer 6) after resync, causing the node
+        // at height 0 to think it's hundreds of blocks behind a ghost tip.
+        self.network_tip_height = 0;
+        self.network_tip_slot = 0;
+
+        // Clear sync failures so the node starts fresh after resync
+        self.consecutive_sync_failures = 0;
+        self.last_sync_failure_time = None;
+
+        // Reset first-sync tracker so the grace period applies again after resync
+        self.first_sync_completed = None;
 
         // Clear all pending sync state to start fresh
         self.pending_headers.clear();
@@ -1594,6 +1708,9 @@ impl SyncManager {
     /// Clean up stale requests and peers
     pub fn cleanup(&mut self) {
         let now = Instant::now();
+
+        // Decay sync failures if enough time has passed (prevents permanent deadlock)
+        self.decay_sync_failures();
 
         // Log current state for debugging
         let pending_count = self
