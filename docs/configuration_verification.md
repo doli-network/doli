@@ -34,6 +34,23 @@ The following modules were audited and confirmed to consume `NetworkParams` inst
 - **Finding**: Some internal methods in `consensus.rs` (like `is_vested`) still use `YEAR_IN_SLOTS`.
 - **Status**: Acceptable for now as `consensus.rs` represents rules. For full Devnet acceleration, these specific internal methods may need refactoring in the future, but they do not block the primary configuration flow.
 
+### 4. `.env` Fallback and Chainspec Defaults (2026-02-06)
+
+Two bugs were found and fixed:
+
+**Bug 1 — `.env` fallback**: `load_env_for_network()` only checked `{data_dir}/.env`. When `--data-dir` pointed to a subdirectory (e.g., `~/.doli/devnet/data/node5`), the `.env` at `~/.doli/devnet/.env` was never found. Fix: added fallback to `get_default_data_dir(network_name)/.env`.
+
+**Bug 2 — Chainspec phantom**: The `NetworkParams` OnceLock was triggered by `NodeConfig::for_network()` before the chainspec was loaded. The chainspec's `ConsensusSpec` fields were stored in JSON but never applied. Fix: added `apply_chainspec_defaults()` that sets env vars from chainspec before any code triggers the OnceLock.
+
+**Updated priority hierarchy**: Parent ENV > `.env` file > Chainspec > `consensus.rs` defaults
+
+**New test coverage**:
+- `test_load_env_fallback_to_network_root`
+- `test_apply_chainspec_defaults_sets_vars`
+- `test_apply_chainspec_defaults_no_override`
+- `test_apply_chainspec_defaults_mainnet_skipped`
+- `test_apply_chainspec_defaults_malformed_file`
+
 ## Conclusion
 
-The configuration refactoring is complete and verified. `NetworkParams` acts as the single source of truth for configurable parameters, enabling safe environment variable overrides for Devnet while protecting Mainnet constants.
+The configuration refactoring is complete and verified. `NetworkParams` acts as the single source of truth for configurable parameters, enabling safe environment variable overrides for Devnet while protecting Mainnet constants. Chainspec consensus parameters are now properly applied as the lowest-priority defaults before the OnceLock triggers.
