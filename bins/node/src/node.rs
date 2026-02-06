@@ -2307,13 +2307,23 @@ impl Node {
                 return Ok(());
             }
             ProductionAuthorization::BlockedSyncFailures { failure_count } => {
-                // Sync failures alone are NOT a fork signal — they happen during
-                // normal network churn. Only AheadOfPeers and ChainMismatch are
-                // definitive fork indicators that should trigger auto-resync.
-                warn!(
-                    "[NODE_PRODUCE] slot={} BLOCKED: SyncFailures (failures={})",
-                    current_slot, failure_count
-                );
+                // Low sync failure counts (< 50) are normal network churn.
+                // But 50+ consecutive failures means our chain has genuinely diverged
+                // from ALL peers — every GetHeaders returns empty because no peer
+                // recognizes our tip hash. This IS a fork.
+                if failure_count >= 50 {
+                    self.consecutive_fork_blocks += 1;
+                    error!(
+                        "[NODE_PRODUCE] FORK DETECTED via persistent SyncFailures: slot={} failures={} (consecutive={})",
+                        current_slot, failure_count, self.consecutive_fork_blocks
+                    );
+                    self.maybe_auto_resync(current_slot).await;
+                } else {
+                    warn!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: SyncFailures (failures={})",
+                        current_slot, failure_count
+                    );
+                }
                 return Ok(());
             }
             ProductionAuthorization::BlockedInsufficientPeers {
