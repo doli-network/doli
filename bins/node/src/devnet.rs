@@ -422,7 +422,6 @@ fn start_node(
         config.rpc_port(node_index).to_string(),
         "--metrics-port".to_string(),
         config.metrics_port(node_index).to_string(),
-        "--no-dht".to_string(),
         "--no-auto-update".to_string(),
         "--force-start".to_string(),
         "--yes".to_string(), // Skip interactive confirmation for automation
