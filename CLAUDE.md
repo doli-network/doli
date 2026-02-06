@@ -1,6 +1,9 @@
 # CLAUDE.md - Project Brain
-# FIRST PRINCIPLE: 
+# FIRST PRINCIPLE:
 Elon Musk says: The best engine part is the one you can remove. In other words, less is more! Let this be our approach, even for the most complex problems: Always opt for the simplest solution without compromising safety.
+
+# SCALE PRINCIPLE:
+Always imagine **thousands of producer nodes** in **10-second slot windows** before architecting any fix or solution. This applies to every system: gossip propagation, sync recovery, fork detection, block validation. If a design doesn't work at scale, it doesn't work.
 
 ## 🚨 CRITICAL RULES
 
