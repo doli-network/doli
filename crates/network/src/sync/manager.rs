@@ -1126,6 +1126,27 @@ impl SyncManager {
         self.consecutive_sync_failures
     }
 
+    /// Network tip height (best seen via gossip or peer status)
+    pub fn network_tip_height(&self) -> u64 {
+        self.network_tip_height
+    }
+
+    /// Network tip slot (best seen via gossip or peer status)
+    pub fn network_tip_slot(&self) -> u32 {
+        self.network_tip_slot
+    }
+
+    /// Human-readable sync state name for diagnostics
+    pub fn sync_state_name(&self) -> &'static str {
+        match &self.state {
+            SyncState::Idle => "Idle",
+            SyncState::DownloadingHeaders { .. } => "DownloadingHeaders",
+            SyncState::DownloadingBodies { .. } => "DownloadingBodies",
+            SyncState::Processing { .. } => "Processing",
+            SyncState::Synchronized => "Synchronized",
+        }
+    }
+
     /// Note that we received a block via gossip network (P0 #3)
     pub fn note_block_received_via_gossip(&mut self) {
         self.last_block_received_via_gossip = Some(Instant::now());
