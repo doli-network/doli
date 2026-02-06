@@ -172,6 +172,9 @@ doli-node devnet status
 # Stop all nodes
 doli-node devnet stop
 
+# Add producers to a running devnet
+doli-node devnet add-producer --count 2
+
 # Clean up (--keep-keys preserves wallet files)
 doli-node devnet clean
 ```
@@ -181,6 +184,8 @@ This creates a self-contained devnet at `~/.doli/devnet/` with:
 - Pre-configured chainspec with all producers
 - Automatic port allocation (P2P: 50303+, RPC: 28545+, Metrics: 9090+)
 - PID tracking for process management
+
+**Adding producers dynamically:** `devnet add-producer` creates a wallet, funds it from producer_0, registers as a producer, and starts a node — all in one command. The new nodes inherit `.env` configuration and are managed by `devnet stop/status`.
 
 ---
 
@@ -330,16 +335,16 @@ Attempting to override these on mainnet will log a warning and use hardcoded val
 ### 5.5. Configuration Precedence
 
 1. **CLI flags** (highest priority, e.g., `--p2p-port`)
-2. **Parent process environment variables**
-3. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
-4. **Chainspec consensus parameters** (`--chainspec` or `{data_dir}/chainspec.json`)
+2. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — authoritative for consensus params
+3. **Parent process environment variables**
+4. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
 5. **Network defaults** (hardcoded in `consensus.rs`)
 
 Example: `--rpc-port 9999` overrides `DOLI_RPC_PORT=8888` in `.env`.
 
 **`.env` file lookup**: When `--data-dir` points to a subdirectory (e.g., `~/.doli/devnet/data/node5`), the node first checks `{data_dir}/.env`, then falls back to `~/.doli/{network}/.env`. This ensures manually-started nodes pick up the shared network configuration.
 
-**Chainspec defaults**: When a chainspec file is provided (via `--chainspec` or found at `{data_dir}/chainspec.json`), its consensus parameters (`slot_duration`, `bond_amount`, `slots_per_epoch`, `initial_reward`, `timestamp`) are applied as the lowest-priority defaults, below `.env` but above hardcoded values. Mainnet chainspecs are skipped (defense-in-depth).
+**Chainspec is authoritative**: When a chainspec file is provided (via `--chainspec` or found at `{data_dir}/chainspec.json`), its consensus parameters (`slot_duration`, `bond_amount`, `slots_per_epoch`, `initial_reward`, `timestamp`) are applied directly to `ConsensusParams` in `Node::new()`, overriding any values from the OnceLock/env pipeline. This guarantees correct params even if `.env` loading fails silently. Mainnet chainspecs are skipped (defense-in-depth).
 
 ---
 

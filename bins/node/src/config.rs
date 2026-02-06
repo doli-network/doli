@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use doli_core::chainspec::ChainSpec;
 use doli_core::Network;
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,10 @@ pub struct NodeConfig {
     /// When set, this overrides the dynamic genesis time calculation.
     #[serde(default)]
     pub genesis_time_override: Option<u64>,
+
+    /// Loaded chainspec (not serialized — passed in-memory from main)
+    #[serde(skip)]
+    pub chainspec: Option<ChainSpec>,
 }
 
 impl Default for NodeConfig {
@@ -68,6 +73,7 @@ impl NodeConfig {
             producer: None,
             no_dht: false,
             genesis_time_override: None,
+            chainspec: None,
         }
     }
 }

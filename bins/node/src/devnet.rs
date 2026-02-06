@@ -974,6 +974,260 @@ pub async fn status() -> Result<()> {
     Ok(())
 }
 
+/// Find the next producer index by scanning keys/ directory
+fn next_producer_index(root: &Path) -> u32 {
+    let keys_dir = root.join("keys");
+    let mut max_idx: Option<u32> = None;
+
+    if let Ok(entries) = fs::read_dir(&keys_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Some(idx_str) = name
+                    .strip_prefix("producer_")
+                    .and_then(|s| s.strip_suffix(".json"))
+                {
+                    if let Ok(idx) = idx_str.parse::<u32>() {
+                        max_idx = Some(max_idx.map_or(idx, |m: u32| m.max(idx)));
+                    }
+                }
+            }
+        }
+    }
+
+    max_idx.map_or(0, |m| m + 1)
+}
+
+/// Run the doli CLI binary with given args, capturing stdout
+fn run_cli(args: &[&str]) -> Result<String> {
+    // Use the doli binary from the same directory as our executable
+    let our_exe = std::env::current_exe()?;
+    let bin_dir = our_exe.parent().unwrap_or(Path::new("."));
+    let cli_path = bin_dir.join("doli");
+
+    if !cli_path.exists() {
+        return Err(anyhow!(
+            "doli CLI not found at {:?}. Build it with: cargo build -p doli-cli",
+            cli_path
+        ));
+    }
+
+    let output = Command::new(&cli_path)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to run doli CLI: {:?} {:?}", cli_path, args))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("doli CLI failed: {}", stderr));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Add producer(s) to a running devnet
+pub async fn add_producer(count: u32) -> Result<()> {
+    if count == 0 || count > 10 {
+        return Err(anyhow!("Count must be between 1 and 10, got {}", count));
+    }
+
+    let config = load_config()?;
+    let root = devnet_dir();
+
+    // Verify devnet is running (check that at least one node has a live RPC)
+    let mut rpc_url: Option<String> = None;
+    for i in 0..config.node_count {
+        if let Ok(Some(pid)) = load_pid(&root, i) {
+            if is_process_running(pid) {
+                let url = format!("http://127.0.0.1:{}", config.rpc_port(i));
+                // Quick RPC check
+                let client = reqwest::Client::new();
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "getChainInfo",
+                    "params": {},
+                    "id": 1
+                });
+                if let Ok(resp) = client
+                    .post(&url)
+                    .json(&req)
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await
+                {
+                    if resp.status().is_success() {
+                        rpc_url = Some(url);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let rpc_url = rpc_url.ok_or_else(|| {
+        anyhow!("No running devnet nodes found. Start the devnet first: doli-node devnet start")
+    })?;
+
+    info!("Using RPC: {}", rpc_url);
+
+    // Load funding wallet (producer_0 — the first genesis producer)
+    let funder_wallet = root.join("keys").join("producer_0.json");
+    if !funder_wallet.exists() {
+        return Err(anyhow!("Funder wallet not found: {:?}", funder_wallet));
+    }
+
+    // Get the bond amount from the chainspec or network params
+    let params = Network::Devnet.params();
+    let bond_amount = params.bond_unit;
+    // Need enough for bond + a small buffer for tx fees
+    let fund_amount = bond_amount * 2;
+
+    let current_exe = std::env::current_exe()?;
+    let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/{}", config.p2p_port(0));
+
+    // Load environment variables (child nodes inherit them)
+    doli_core::network_params::load_env_for_network("devnet", &root);
+
+    for _ in 0..count {
+        let idx = next_producer_index(&root);
+        info!("Adding producer {} ...", idx);
+
+        // 1. Generate wallet
+        let keypair = KeyPair::generate();
+        let wallet = Wallet {
+            name: format!("producer_{}", idx),
+            version: 1,
+            addresses: vec![WalletAddress {
+                address: keypair.address().to_hex(),
+                public_key: keypair.public_key().to_hex(),
+                private_key: keypair.private_key().to_hex(),
+                label: Some("primary".to_string()),
+            }],
+        };
+
+        let wallet_path = root.join("keys").join(format!("producer_{}.json", idx));
+        let wallet_json = serde_json::to_string_pretty(&wallet)?;
+        fs::write(&wallet_path, &wallet_json)?;
+        info!("  Created wallet: {:?}", wallet_path);
+
+        // Compute the new producer's address (pubkey_hash)
+        let new_addr = keypair.address().to_hex();
+
+        // 2. Fund from producer_0
+        let fund_str = format!("{}", fund_amount);
+        info!(
+            "  Funding {} with {} base units from producer_0...",
+            &new_addr[..16],
+            fund_str
+        );
+
+        let funder_str = funder_wallet.to_string_lossy().to_string();
+        let fund_output = run_cli(&[
+            "-r",
+            &rpc_url,
+            "-w",
+            &funder_str,
+            "send",
+            &new_addr,
+            &fund_str,
+        ])?;
+        info!("  Fund tx: {}", fund_output.trim());
+
+        // 3. Wait for funding to confirm (poll balance)
+        info!("  Waiting for funding confirmation...");
+        let client = reqwest::Client::new();
+        let new_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, keypair.public_key().as_ref());
+        let max_wait = Duration::from_secs(60);
+        let start = std::time::Instant::now();
+        let mut funded = false;
+
+        while start.elapsed() < max_wait {
+            let balance_req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "getBalance",
+                "params": { "address": new_pubkey_hash.to_hex() },
+                "id": 1
+            });
+
+            if let Ok(resp) = client
+                .post(&rpc_url)
+                .json(&balance_req)
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let total = json["result"]["total"].as_u64().unwrap_or(0);
+                    if total >= bond_amount {
+                        info!("  Funded: {} base units", total);
+                        funded = true;
+                        break;
+                    }
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        if !funded {
+            warn!(
+                "  Timeout waiting for funding of producer {}. Skipping registration.",
+                idx
+            );
+            continue;
+        }
+
+        // 4. Register as producer
+        let new_wallet_str = wallet_path.to_string_lossy().to_string();
+        let bond_str = format!("{}", bond_amount);
+        info!("  Registering producer with bond={} ...", bond_str);
+
+        let reg_output = run_cli(&[
+            "-r",
+            &rpc_url,
+            "-w",
+            &new_wallet_str,
+            "producer",
+            "register",
+            "-b",
+            &bond_str,
+        ])?;
+        info!("  Register tx: {}", reg_output.trim());
+
+        // 5. Wait for registration to confirm
+        info!("  Waiting for registration confirmation...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // 6. Create data directory and start node
+        let data_dir = root.join("data").join(format!("node{}", idx));
+        fs::create_dir_all(&data_dir)?;
+
+        let child = start_node(&config, &root, idx, &current_exe, Some(&bootstrap_addr))?;
+        save_pid(&root, idx, child.id())?;
+        info!(
+            "  Started node {} (PID {}, P2P:{}, RPC:{})",
+            idx,
+            child.id(),
+            config.p2p_port(idx),
+            config.rpc_port(idx)
+        );
+
+        println!(
+            "Producer {} added (PID {}, RPC: http://127.0.0.1:{})",
+            idx,
+            child.id(),
+            config.rpc_port(idx)
+        );
+    }
+
+    println!();
+    println!(
+        "Added {} producer(s). Use 'doli-node devnet status' to verify.",
+        count
+    );
+
+    Ok(())
+}
+
 /// Clean devnet data
 pub fn clean(keep_keys: bool) -> Result<()> {
     let root = devnet_dir();
@@ -1036,5 +1290,26 @@ mod tests {
         assert_eq!(config.rpc_port(1), 28546);
         assert_eq!(config.metrics_port(0), 9090);
         assert_eq!(config.metrics_port(1), 9091);
+    }
+
+    #[test]
+    fn test_next_producer_index() {
+        let tmp = std::env::temp_dir().join("doli_test_next_idx");
+        let keys_dir = tmp.join("keys");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&keys_dir).unwrap();
+
+        // Empty directory → index 0
+        assert_eq!(next_producer_index(&tmp), 0);
+
+        // Add producer_0.json → next is 1
+        fs::write(keys_dir.join("producer_0.json"), "{}").unwrap();
+        assert_eq!(next_producer_index(&tmp), 1);
+
+        // Add producer_2.json (gap) → next is 3
+        fs::write(keys_dir.join("producer_2.json"), "{}").unwrap();
+        assert_eq!(next_producer_index(&tmp), 3);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

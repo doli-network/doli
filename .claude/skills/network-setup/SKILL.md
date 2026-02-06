@@ -1,7 +1,7 @@
 ---
 name: network-setup
 description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
-version: 2.9.0
+version: 3.0.0
 ---
 
 # DOLI Network Setup Skill
@@ -31,6 +31,7 @@ This skill guides you through setting up and running DOLI nodes and producers on
 | Start local devnet | `doli-node devnet start` |
 | Check devnet status | `doli-node devnet status` |
 | Stop local devnet | `doli-node devnet stop` |
+| **Add producer to devnet** | `doli-node devnet add-producer [--count N]` |
 | Clean devnet data | `doli-node devnet clean [--keep-keys]` |
 | Run single node | `doli-node --network <NETWORK> run` |
 | Run as producer | `doli-node --network <NETWORK> run --producer --producer-key <wallet>` |
@@ -57,8 +58,11 @@ User wants to...
 ├─ Production deployment?
 │  └─ Use mainnet
 │
-├─ Add new producers to running network?
-│  └─ See Scenario 3 (Add New Producers)
+├─ Add new producers to running devnet?
+│  └─ Use `doli-node devnet add-producer --count N` (one command)
+│
+├─ Add new producers to testnet/mainnet?
+│  └─ See Scenario 3 (Manual Add New Producers)
 │
 ├─ Run as background service?
 │  └─ See Scenario 4 (Systemd Service)
@@ -106,6 +110,7 @@ mkdir -p ~/.doli/<NETWORK>
 doli-node devnet init --nodes 5
 doli-node devnet start
 doli-node devnet status
+doli-node devnet add-producer          # Add more producers dynamically
 doli-node devnet stop
 doli-node devnet clean
 ```
@@ -166,6 +171,9 @@ doli-node devnet status
 
 # Stop all nodes gracefully
 doli-node devnet stop
+
+# Add producers to a running devnet (creates wallet, funds, registers, starts node)
+doli-node devnet add-producer --count 2
 
 # Clean up devnet data (--keep-keys preserves wallet files)
 doli-node devnet clean
@@ -313,17 +321,46 @@ This script:
 
 ## Scenario 3: Add New Producers to Running Network
 
-For adding multiple new producers to an existing devnet/testnet.
+### Option A: Automated (Devnet Only — Recommended)
 
-### ⚠️ CRITICAL: Port Cleanup Before Adding Nodes
+One command to create a wallet, fund it, register as producer, and start the node:
 
-**Why is this needed?** The `devnet stop/clean` commands only kill nodes tracked via PID files (started by `devnet start`). When you **manually start new producer nodes** (as in this scenario), they are NOT tracked by devnet and must be cleaned up manually.
+```bash
+# Add 1 producer (default)
+doli-node devnet add-producer
+
+# Add 3 producers at once
+doli-node devnet add-producer --count 3
+```
+
+**What it does per producer:**
+1. Generates wallet at `~/.doli/devnet/keys/producer_N.json`
+2. Funds from producer_0 (needs sufficient balance)
+3. Registers as producer with 1 bond
+4. Creates data directory and starts node process
+5. Saves PID (managed by `devnet stop/status`)
+
+**Prerequisites:**
+- Devnet must be running (`doli-node devnet start`)
+- producer_0 must have enough balance to fund new producers (2x bond amount per producer)
+- The `doli` CLI binary must be built (`cargo build --release`)
+
+**Port allocation:** Same formula as init — P2P: 50303+N, RPC: 28545+N, Metrics: 9090+N
+
+### Option B: Manual (Testnet/Mainnet or Custom Setup)
+
+For adding producers to testnet/mainnet, or when you need full control over the process.
+
+#### ⚠️ CRITICAL: Port Cleanup Before Adding Nodes
+
+**Why is this needed?** When you **manually start new producer nodes**, they are NOT tracked by devnet PID management and must be cleaned up manually.
 
 **When to run cleanup:**
 | Situation | Cleanup Needed? |
 |-----------|-----------------|
 | Fresh `devnet init --nodes N` | No - devnet handles it |
-| Adding nodes via Scenario 3 (manual) | **YES** |
+| `devnet add-producer` | No - tracked via PID files |
+| Adding nodes manually (Option B) | **YES** |
 | Previous manual node attempt failed | **YES** |
 | Restarting after crash | **YES** |
 

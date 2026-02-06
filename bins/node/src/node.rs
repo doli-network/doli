@@ -120,6 +120,15 @@ impl Node {
     ) -> Result<Self> {
         let mut params = ConsensusParams::for_network(config.network);
 
+        // Apply chainspec overrides (authoritative for non-mainnet networks)
+        if let Some(ref spec) = config.chainspec {
+            params.apply_chainspec(spec);
+            info!(
+                "Applied chainspec overrides: slot_duration={}s, bond={}, reward={}",
+                params.slot_duration, params.initial_bond, params.initial_reward
+            );
+        }
+
         // Open storage
         let blocks_path = config.data_dir.join("blocks");
         let block_store = Arc::new(BlockStore::open(&blocks_path)?);
