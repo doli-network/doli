@@ -1399,6 +1399,23 @@ impl ConsensusParams {
         }
     }
 
+    /// Apply chainspec overrides directly to these params.
+    ///
+    /// This makes `--chainspec` authoritative for consensus parameters,
+    /// bypassing the OnceLock/env pipeline. Mainnet params are locked.
+    pub fn apply_chainspec(&mut self, spec: &crate::chainspec::ChainSpec) {
+        if matches!(spec.network, Network::Mainnet) {
+            return; // Mainnet params are LOCKED
+        }
+        self.slot_duration = spec.consensus.slot_duration;
+        self.slots_per_reward_epoch = spec.consensus.slots_per_epoch;
+        self.initial_bond = spec.consensus.bond_amount;
+        self.initial_reward = spec.genesis.initial_reward;
+        if spec.genesis.timestamp != 0 {
+            self.genesis_time = spec.genesis.timestamp;
+        }
+    }
+
     /// Calculate max block size for a given height.
     ///
     /// Block size doubles every era until reaching the cap.
@@ -3724,5 +3741,66 @@ mod tests {
             reward_epoch::last_complete_with(720, mainnet_blocks),
             reward_epoch::last_complete(720)
         );
+    }
+
+    #[test]
+    fn test_apply_chainspec() {
+        use crate::chainspec::{ChainSpec, ConsensusSpec, GenesisSpec};
+
+        let mut params = ConsensusParams::devnet();
+        let spec = ChainSpec {
+            name: "test".into(),
+            id: "test".into(),
+            network: Network::Devnet,
+            genesis: GenesisSpec {
+                timestamp: 9999,
+                message: "test".into(),
+                initial_reward: 50_000_000,
+            },
+            consensus: ConsensusSpec {
+                slot_duration: 2,
+                slots_per_epoch: 120,
+                bond_amount: 200_000_000,
+            },
+            genesis_producers: vec![],
+        };
+
+        params.apply_chainspec(&spec);
+        assert_eq!(params.slot_duration, 2);
+        assert_eq!(params.slots_per_reward_epoch, 120);
+        assert_eq!(params.initial_bond, 200_000_000);
+        assert_eq!(params.initial_reward, 50_000_000);
+        assert_eq!(params.genesis_time, 9999);
+    }
+
+    #[test]
+    fn test_apply_chainspec_mainnet_locked() {
+        use crate::chainspec::{ChainSpec, ConsensusSpec, GenesisSpec};
+
+        let mut params = ConsensusParams::mainnet();
+        let original_slot = params.slot_duration;
+        let original_bond = params.initial_bond;
+
+        let spec = ChainSpec {
+            name: "evil".into(),
+            id: "mainnet".into(),
+            network: Network::Mainnet,
+            genesis: GenesisSpec {
+                timestamp: 1,
+                message: "hack".into(),
+                initial_reward: 999,
+            },
+            consensus: ConsensusSpec {
+                slot_duration: 1,
+                slots_per_epoch: 1,
+                bond_amount: 1,
+            },
+            genesis_producers: vec![],
+        };
+
+        params.apply_chainspec(&spec);
+        // Mainnet params should be unchanged
+        assert_eq!(params.slot_duration, original_slot);
+        assert_eq!(params.initial_bond, original_bond);
     }
 }
