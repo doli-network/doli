@@ -1512,3 +1512,127 @@ With this fix, all nodes that share the same chainspec will use the same consens
 - `bins/node/src/node.rs` — The `genesis_time_override` logic becomes a harmless redundant fallback
 - `crates/core/src/chainspec.rs` — No structural changes needed
 - Specs/docs — Bug fix restoring intended behavior, no new user-facing changes
+
+---
+
+## Failure Mode E: Slot Clock Desync — `.env`/Chainspec Params Not Applied (2026-02-06)
+
+### Status: ROOT CAUSE CONFIRMED, FIX PENDING
+
+### Severity: Critical (producer silently fails to produce, no error)
+
+### Discovery
+
+Deployed a 6th producer node manually to a running 5-node devnet:
+
+```bash
+doli-node --network devnet --data-dir ~/.doli/devnet/data/node5 run \
+    --producer --producer-key ~/.doli/devnet/keys/producer_5.json \
+    --chainspec ~/.doli/devnet/chainspec.json \
+    --p2p-port 50308 --rpc-port 28550 --metrics-port 9095 \
+    --bootstrap '/ip4/127.0.0.1/tcp/50303' --no-dht --yes
+```
+
+Producer registered successfully, node synced to correct height, passed all production gate checks (`AUTHORIZED`), but **never produced a single block**. Balance stayed flat (no rewards).
+
+### Root Cause: Slot Duration Mismatch
+
+The devnet chainspec and `.env` configure `slot_duration=2` (2-second slots for fast iteration). The manually-started node used the **hardcoded default `slot_duration=10`**.
+
+**Empirical proof** (same wall-clock moment):
+
+| Node | Slot | Slot Duration | Source |
+|------|------|---------------|--------|
+| Node 0 (managed) | 262 | 2 seconds | Inherited from `devnet start` parent env |
+| Node 5 (manual) | 52 | 10 seconds | Hardcoded default (`consensus::SLOT_DURATION`) |
+
+Node 5's slot clock ran **5x slower** than the network. By the time node 5 reached slot X, the network had moved far past it. The scheduler selected node 5 for its designated slots, but no block was produced because the slot had long expired on the network.
+
+### Why the Existing Fix (Documented Above) Didn't Work
+
+The fix documented in the previous section added two code paths to set env vars before the OnceLock:
+
+1. **`load_env_for_network` fallback** (line 337) — Should load `~/.doli/devnet/.env`
+2. **`apply_chainspec_defaults`** (line 357) — Should set `DOLI_SLOT_DURATION=2` from chainspec
+
+**Neither produced any log output** in node 5's logs. The first log line is `DOLI Node v0.1.0` (line 361), with zero messages from the env loading or chainspec defaults functions — not even error messages.
+
+**Both functions exist in the code** and are called at the correct location (before the OnceLock trigger). But they silently fail to set the environment variables for manually-started nodes.
+
+### Why Managed Nodes Work
+
+```
+devnet start (parent process)
+  │
+  ├─ load_env_for_network("devnet", "~/.doli/devnet/")
+  │   └─ Finds ~/.doli/devnet/.env → sets DOLI_SLOT_DURATION=2 in parent env
+  │
+  ├─ Command::new("doli-node").args(["--network", "devnet", "run", ...]).spawn()
+  │   └─ Child inherits parent env → DOLI_SLOT_DURATION=2 already set
+  │
+  └─ In child main():
+      ├─ load_env_for_network → dotenvy won't override existing var (already = 2)
+      ├─ apply_chainspec_defaults → sees DOLI_SLOT_DURATION already set, skips
+      └─ NetworkParams::load() → reads DOLI_SLOT_DURATION=2 ✓
+```
+
+**Manually-started nodes skip the parent process env inheritance.** They rely entirely on the `.env` loading and chainspec defaults — which silently fail.
+
+### Symptoms (Diagnostic Checklist)
+
+| Symptom | Present? |
+|---------|----------|
+| Node syncs to correct height | ✅ Yes |
+| Producer shows in `producer list` | ✅ Yes |
+| `[NODE_PRODUCE] AUTHORIZED - proceeding` in logs | ✅ Yes |
+| `Producing block` or `[BLOCK_PRODUCED]` in logs | ❌ Never |
+| Balance increasing (rewards) | ❌ No |
+| Slot number matches other nodes at same wall time | ❌ No (5x slower) |
+| "Loaded environment" in log | ❌ Missing |
+| "Applied chainspec defaults" in log | ❌ Missing |
+
+### Workaround
+
+Export devnet env vars explicitly before starting:
+
+```bash
+export DOLI_SLOT_DURATION=2
+# ... other vars from ~/.doli/devnet/.env ...
+doli-node --network devnet run --producer ...
+```
+
+Or source the .env file:
+
+```bash
+source ~/.doli/devnet/.env
+doli-node --network devnet run --producer ...
+```
+
+### Architectural Problem
+
+The current env var pipeline is fragile:
+
+```
+.env file → dotenvy::from_path → std::env::set_var → OnceLock reads std::env::var → frozen
+            ^^^^^^^^^^^^^^^^^^^^^^                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            Silent failure here                        Too late to fix after this
+```
+
+Three independent mechanisms must all succeed in the correct order:
+1. `.env` file found at correct path
+2. `dotenvy` successfully sets env vars
+3. OnceLock hasn't been triggered yet
+
+If ANY step fails silently, the node uses wrong parameters with **zero error indication**.
+
+### Proposed Fix: Direct Chainspec Injection
+
+Instead of the fragile env var pipeline, make `--chainspec` **directly authoritative**:
+
+```
+Option A: Chainspec → ConsensusParams (bypass OnceLock entirely)
+Option B: Chainspec → env vars → OnceLock (current, but add validation)
+Option C: devnet add-producer subcommand (manages env correctly)
+```
+
+See "Architectural Discussion" section below for analysis.

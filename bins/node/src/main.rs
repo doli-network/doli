@@ -298,6 +298,13 @@ enum DevnetCommands {
         #[arg(long)]
         keep_keys: bool,
     },
+
+    /// Add producer(s) to a running devnet
+    AddProducer {
+        /// Number of producers to add
+        #[arg(long, default_value = "1")]
+        count: u32,
+    },
 }
 
 #[tokio::main]
@@ -575,6 +582,57 @@ async fn run_node(
         info!("Auto-updates disabled");
     }
 
+    // Load chainspec (always, so Node::new can apply overrides)
+    use doli_core::chainspec::ChainSpec;
+
+    let chainspec: Option<ChainSpec> = if let Some(ref path) = chainspec_path {
+        info!("Loading chainspec from {:?}", path);
+        match ChainSpec::load(path) {
+            Ok(spec) => {
+                info!("Loaded chainspec: {} ({})", spec.name, spec.id);
+                Some(spec)
+            }
+            Err(e) => {
+                error!("Failed to load chainspec: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // Try default chainspec location
+        let default_path = data_dir.join("chainspec.json");
+        if default_path.exists() {
+            match ChainSpec::load(&default_path) {
+                Ok(spec) => {
+                    info!(
+                        "Loaded chainspec from {:?}: {} ({})",
+                        default_path, spec.name, spec.id
+                    );
+                    Some(spec)
+                }
+                Err(e) => {
+                    warn!("Could not load default chainspec: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    // Pass chainspec to config so Node::new() can apply overrides
+    config.chainspec = chainspec.clone();
+
+    // Set genesis time override from chainspec
+    if let Some(ref spec) = chainspec {
+        if spec.genesis.timestamp != 0 {
+            config.genesis_time_override = Some(spec.genesis.timestamp);
+            info!(
+                "Genesis time from chainspec: {} (all nodes will use this time)",
+                spec.genesis.timestamp
+            );
+        }
+    }
+
     // Load producer set for update service (shared with Node)
     let producers_path = data_dir.join("producers.bin");
     let producer_set = if producers_path.exists() {
@@ -585,97 +643,46 @@ async fn run_node(
                 ProducerSet::new()
             }
         }
-    } else {
-        // Initialize with genesis producers from chainspec (preferred) or built-in defaults
-        use doli_core::chainspec::ChainSpec;
-
-        // Try to load chainspec from provided path or default location
-        let chainspec = if let Some(ref path) = chainspec_path {
-            info!("Loading chainspec from {:?}", path);
-            match ChainSpec::load(path) {
-                Ok(spec) => {
-                    info!("Loaded chainspec: {} ({})", spec.name, spec.id);
-                    Some(spec)
-                }
-                Err(e) => {
-                    error!("Failed to load chainspec: {}", e);
-                    std::process::exit(1);
-                }
+    } else if let Some(ref spec) = chainspec {
+        let genesis_producers = spec.get_genesis_producers();
+        if !genesis_producers.is_empty() {
+            info!(
+                "Initializing {} with {} genesis producers from chainspec",
+                network.name(),
+                genesis_producers.len()
+            );
+            for (pk, bonds) in &genesis_producers {
+                info!("  - {} (bonds: {})", pk.to_hex(), bonds);
             }
+            ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
         } else {
-            // Try default chainspec location
-            let default_path = data_dir.join("chainspec.json");
-            if default_path.exists() {
-                match ChainSpec::load(&default_path) {
-                    Ok(spec) => {
-                        info!(
-                            "Loaded chainspec from {:?}: {} ({})",
-                            default_path, spec.name, spec.id
-                        );
-                        Some(spec)
-                    }
-                    Err(e) => {
-                        warn!("Could not load default chainspec: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        };
-
-        // Get genesis producers and genesis time from chainspec or fall back to built-in (legacy)
-        if let Some(ref spec) = chainspec {
-            // Set genesis time override if specified in chainspec (non-zero)
-            // This ensures all nodes use the same genesis time for coordinated startup
-            if spec.genesis.timestamp != 0 {
-                config.genesis_time_override = Some(spec.genesis.timestamp);
-                info!(
-                    "Genesis time from chainspec: {} (all nodes will use this time)",
-                    spec.genesis.timestamp
-                );
-            }
-
-            let genesis_producers = spec.get_genesis_producers();
-            if !genesis_producers.is_empty() {
-                info!(
-                    "Initializing {} with {} genesis producers from chainspec",
-                    network.name(),
-                    genesis_producers.len()
-                );
-                for (pk, bonds) in &genesis_producers {
-                    info!("  - {} (bonds: {})", pk.to_hex(), bonds);
-                }
-                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-            } else {
-                info!("Chainspec has no genesis producers, using bootstrap mode");
+            info!("Chainspec has no genesis producers, using bootstrap mode");
+            ProducerSet::new()
+        }
+    } else {
+        // Legacy fallback: use hardcoded genesis producers
+        // This path is deprecated - prefer chainspec files
+        match network {
+            Network::Mainnet => {
+                warn!("No chainspec provided for mainnet - using bootstrap mode");
+                warn!("For production, use --chainspec with a validated chainspec file");
                 ProducerSet::new()
             }
-        } else {
-            // Legacy fallback: use hardcoded genesis producers
-            // This path is deprecated - prefer chainspec files
-            match network {
-                Network::Mainnet => {
-                    warn!("No chainspec provided for mainnet - using bootstrap mode");
-                    warn!("For production, use --chainspec with a validated chainspec file");
+            Network::Testnet => {
+                // Legacy testnet support - fall back to hardcoded producers
+                use doli_core::genesis::testnet_genesis_producers;
+                let genesis_producers = testnet_genesis_producers();
+                if !genesis_producers.is_empty() {
+                    info!(
+                        "Initializing testnet with {} genesis producers (legacy mode)",
+                        genesis_producers.len()
+                    );
+                    ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
+                } else {
                     ProducerSet::new()
                 }
-                Network::Testnet => {
-                    // Legacy testnet support - fall back to hardcoded producers
-                    use doli_core::genesis::testnet_genesis_producers;
-                    let genesis_producers = testnet_genesis_producers();
-                    if !genesis_producers.is_empty() {
-                        info!(
-                            "Initializing testnet with {} genesis producers (legacy mode)",
-                            genesis_producers.len()
-                        );
-                        ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-                    } else {
-                        ProducerSet::new()
-                    }
-                }
-                Network::Devnet => ProducerSet::new(),
             }
+            Network::Devnet => ProducerSet::new(),
         }
     };
     let producer_set = Arc::new(RwLock::new(producer_set));
@@ -1483,6 +1490,9 @@ async fn handle_devnet_command(action: DevnetCommands) -> Result<()> {
         }
         DevnetCommands::Clean { keep_keys } => {
             devnet::clean(keep_keys)?;
+        }
+        DevnetCommands::AddProducer { count } => {
+            devnet::add_producer(count).await?;
         }
     }
     Ok(())
