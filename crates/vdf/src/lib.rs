@@ -143,16 +143,17 @@ use crypto::Hash;
 /// 1. Trying many block variations to find favorable randomness
 /// 2. Instantly producing blocks when their slot arrives
 ///
-/// With 10-second slots, the VDF takes ~700ms, leaving ~9 seconds
-/// for block construction and propagation.
+/// With 10-second slots and 1.3s sequential fallback windows, the VDF
+/// takes ~55ms, leaving ~1245ms margin within each fallback window
+/// (55ms VDF + ~600ms propagation = 655ms, margin = 645ms).
 ///
 /// This is calibrated so that:
-/// - A single-threaded CPU takes ~700ms
+/// - A single-threaded CPU takes ~55ms
 /// - Even with ASIC speedup, still provides anti-grinding protection
 /// - Does not create hardware-based competitive advantage
 ///
 /// Registration VDF (T_REGISTER_BASE) remains long for anti-Sybil protection.
-pub const T_BLOCK: u64 = 10_000_000;
+pub const T_BLOCK: u64 = 800_000;
 
 /// Base VDF parameter for producer registration - MAINNET DEFAULT (~10 minutes).
 ///

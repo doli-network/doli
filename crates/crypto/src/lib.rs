@@ -90,6 +90,9 @@ pub const BLOCK_DOMAIN: &[u8] = b"DOLI_BLOCK_V1";
 /// Domain separation tag for VDF input.
 pub const VDF_DOMAIN: &[u8] = b"DOLI_VDF_V1";
 
+/// Domain separation tag for attestation signing (finality gadget).
+pub const ATTESTATION_DOMAIN: &[u8] = b"DOLI_ATTEST_V1";
+
 #[cfg(test)]
 mod tests {
     use super::*;

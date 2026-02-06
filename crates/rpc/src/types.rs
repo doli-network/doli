@@ -170,6 +170,8 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::EpochReward => "epoch_reward",
             doli_core::TxType::RemoveMaintainer => "remove_maintainer",
             doli_core::TxType::AddMaintainer => "add_maintainer",
+            doli_core::TxType::DelegateBond => "delegate_bond",
+            doli_core::TxType::RevokeDelegation => "revoke_delegation",
         };
 
         Self {

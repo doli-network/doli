@@ -93,8 +93,8 @@ DOLI uses a hash-chain VDF with dynamic calibration to maintain consistent timin
 
 | Parameter       | All Networks |
 |-----------------|--------------|
-| Target time     | ~700ms       |
-| Iterations      | ~10,000,000 (calibrated) |
+| Target time     | ~55ms        |
+| Iterations      | ~800,000 (calibrated) |
 | Output          | 32 bytes     |
 | Verification    | Recompute    |
 
@@ -104,11 +104,11 @@ VDF_verify(input, output, iterations) -> bool  // Recomputes the chain
 ```
 
 **Dynamic Calibration:**
-- Iterations adjusted ±20% per cycle to maintain ~700ms target timing
+- Iterations adjusted ±20% per cycle to maintain ~55ms target timing
 - Min: 100,000 | Max: 100,000,000 iterations
 - Calibration runs every 60 seconds
 
-**Note**: All networks use the same ~700ms VDF heartbeat. Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing.
+**Note**: All networks use the same ~55ms VDF heartbeat. Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing.
 
 ---
 
@@ -769,6 +769,35 @@ Producers can stake multiple bonds (1-100) to increase their block production sh
 **FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
 This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
 
+### 5.4.2 Sequential Fallback Windows
+
+When the primary producer misses their slot, fallback producers take over in exclusive 1.3-second sequential windows. Only ONE rank is eligible at any given time:
+
+| Window (ms) | Eligible Rank | Description |
+|-------------|---------------|-------------|
+| 0 – 1,299 | 0 | Primary producer only |
+| 1,300 – 2,599 | 1 | First fallback |
+| 2,600 – 3,899 | 2 | Second fallback |
+| 3,900 – 5,199 | 3 | Third fallback |
+| 5,200 – 6,499 | 4 | Fourth fallback |
+| 6,500 – 7,799 | 5 | Fifth fallback |
+| 7,800 – 9,099 | 6 | Sixth fallback |
+| 9,100 – 10,000 | 0–6 | Emergency — all ranks eligible |
+
+**Constants:**
+- `FALLBACK_TIMEOUT_MS = 1,300` — duration of each exclusive window
+- `MAX_FALLBACK_RANKS = 7` — total number of ranked producers per slot
+- `EMERGENCY_WINDOW_START_MS = 9,100` — start of emergency all-eligible window
+- `MAX_DRIFT_MS = 200` — maximum clock drift tolerance (ms)
+
+**Fallback producer selection:** Each rank gets an evenly-distributed offset in the ticket space:
+```
+offset(rank) = total_tickets * rank / MAX_FALLBACK_RANKS
+ticket(slot, rank) = (slot + offset(rank)) % total_tickets
+```
+
+This ensures fallback producers are spread across the producer set, not consecutive.
+
 **Example distribution:**
 ```
 Producer  Bonds   Tickets   Blocks/100   ROI/Bond
@@ -1186,12 +1215,12 @@ Result:
 | SLOTS_PER_EPOCH    | 360                      |
 | SLOTS_PER_ERA      | 12,614,400               |
 | BOOTSTRAP_BLOCKS   | 60,480                   |
-| DRIFT              | 10                       |
+| DRIFT              | 1                        |
 | NETWORK_MARGIN     | 1                        |
-| VDF_ITERATIONS_DEFAULT | 10,000,000           |
+| VDF_ITERATIONS_DEFAULT | 800,000              |
 | VDF_ITERATIONS_MIN | 100,000                  |
 | VDF_ITERATIONS_MAX | 100,000,000              |
-| VDF_TARGET_TIME_MS | 700                      |
+| VDF_TARGET_TIME_MS | 55                       |
 | T_REGISTER_BASE    | 600,000,000              |
 | T_REGISTER_CAP     | 86,400,000,000           |
 | R_TARGET           | 10                       |

@@ -355,22 +355,21 @@ impl Network {
     ///
     /// | Network | Slot  | VDF Target | Purpose                    |
     /// |---------|-------|------------|----------------------------|
-    /// | Mainnet | 10s   | ~700ms     | Heartbeat proof of presence|
-    /// | Testnet | 10s   | ~700ms     | Heartbeat proof of presence|
-    /// | Devnet  | 1s    | ~70ms      | Fast development cycles    |
+    /// | Mainnet | 10s   | ~55ms      | Block VDF proof            |
+    /// | Testnet | 10s   | ~55ms      | Block VDF proof            |
+    /// | Devnet  | 1s    | ~55ms      | Fast development cycles    |
     pub fn vdf_target_time_ms(&self) -> u64 {
         match self {
-            Network::Mainnet => 700, // ~700ms
-            Network::Testnet => 700, // ~700ms
-            Network::Devnet => 70,   // ~70ms (fast development)
+            Network::Mainnet => 55, // ~55ms (800K iterations)
+            Network::Testnet => 55, // ~55ms (800K iterations)
+            Network::Devnet => 55,  // ~55ms (800K iterations)
         }
     }
 
     /// Get heartbeat VDF iterations for this network
     ///
     /// Hash-chain VDF iterations calibrated for target time:
-    /// - 10M iterations ≈ 700ms on modern hardware
-    /// - 1M iterations ≈ 70ms on modern hardware
+    /// - 800K iterations ≈ 55ms on modern hardware
     ///
     /// Configurable via `DOLI_HEARTBEAT_VDF_ITERATIONS` environment variable (devnet only).
     /// Locked for mainnet to ensure consensus compatibility.

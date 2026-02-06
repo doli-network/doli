@@ -27,6 +27,7 @@ mod bloom;
 mod gossip;
 mod gset;
 pub mod proto;
+pub mod snapshot;
 
 pub use announcement::ProducerAnnouncement;
 pub use bloom::ProducerBloomFilter;
@@ -36,6 +37,7 @@ pub use proto::{
     decode_announcement, decode_digest, decode_producer_set, encode_announcement, encode_digest,
     encode_producer_set, is_legacy_bincode_format, ProtoError,
 };
+pub use snapshot::EpochSnapshot;
 
 use thiserror::Error;
 

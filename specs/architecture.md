@@ -298,7 +298,7 @@ Producers can stake 1-100 bonds to increase their block production share:
 │  3. Build block header                                       │
 │         │                                                    │
 │         ▼                                                    │
-│  4. Compute VDF proof (~700ms)                              │
+│  4. Compute VDF proof (~55ms)                               │
 │         │                                                    │
 │         ▼                                                    │
 │  5. Broadcast block                                          │
@@ -316,12 +316,12 @@ DOLI uses two VDF types:
 ```
 Hash-Chain VDF:
 ├── Input: HASH("DOLI_HEARTBEAT_V1" || producer_key || slot || prev_hash)
-├── Iterations: ~10,000,000 (dynamically calibrated)
+├── Iterations: ~800,000 (dynamically calibrated)
 ├── Output: 32 bytes (final hash)
 └── Verification: Recompute (no separate proof)
 ```
 
-- Target time: ~700ms
+- Target time: ~55ms
 - Iterations adjusted ±20% per cycle
 - Min iterations: 100,000 | Max iterations: 100,000,000
 
@@ -341,8 +341,8 @@ Wesolowski VDF:
 #### Operations
 | Operation        | Time (mainnet) | Time (testnet) | Time (devnet) |
 |------------------|----------------|----------------|---------------|
-| VDF compute      | ~700 ms        | ~70 ms         | Configurable  |
-| VDF verify       | ~10 ms (recompute) | ~1 ms     | N/A           |
+| VDF compute      | ~55 ms         | ~55 ms         | Configurable  |
+| VDF verify       | ~1 ms (recompute)  | ~1 ms     | N/A           |
 | BLAKE3 hash      | < 1 μs         | < 1 μs         | < 1 μs        |
 | Ed25519 sign     | < 1 ms         | < 1 ms         | < 1 ms        |
 | Ed25519 verify   | < 1 ms         | < 1 ms         | < 1 ms        |
@@ -514,28 +514,25 @@ New nodes use state-based production gating with multiple safety layers:
 
 | Layer | Check | Purpose |
 |-------|-------|---------|
-| 1 | Resync in progress | Block during active resync |
-| 2 | Bootstrap grace period | Wait at genesis for chain evidence |
-| 3 | Genesis check | Always allow at height 0 |
-| 4 | Syncing state | Block while downloading headers/bodies |
+| 1 | Explicit block | Block production explicitly disabled |
+| 2 | Resync in progress | Block during active resync |
+| 3 | Syncing state | Block while downloading headers/bodies |
+| 4 | Bootstrap grace period | Wait at genesis for chain evidence |
 | 5 | Post-resync grace | Wait after resync completes |
-| 5.6 | **First-sync grace (30s)** | Late-joining nodes wait for gossip mesh formation |
 | 5.5 | Minimum peers | Require min peers (devnet=1, mainnet=2) |
 | 6 | Behind peers (slots only) | Block if >2 slots behind best peer |
 | 7 | Ahead of network | Fork detection — too far ahead of peers |
-| 8 | Sync failures | Block after 3+ consecutive sync failures (60s decay) |
+| 9 | Chain hash mismatch | Fork detection — different hash at same height |
 
 **Key design decisions:**
 - **Slot-only peer comparison** (Layer 6): Heights are unreliable because forked nodes accumulate inflated block counts (h > slot). Slots are time-based and cannot be inflated.
-- **First-sync grace period** (Layer 5.6): After initial sync, nodes wait 30s before producing. This allows the gossip mesh to form and recent blocks to propagate. Without this, late-joining nodes produce on stale tips and create forks.
-- **Sync failure decay** (Layer 8): Failures decay after 60s of no new failures, preventing permanent deadlock from transient network issues.
+- **Chain hash mismatch** (Layer 9): Detects forks by comparing block hashes at the same height with peers.
 
 **Why this scales globally:**
 - No arbitrary time delays at genesis (warmup periods don't work for global networks)
 - Thousands of nodes can start simultaneously
 - Each node naturally syncs before competing
 - Seed nodes bootstrap immediately
-- Late joiners get a deterministic grace period for mesh formation
 
 ### 3. Epoch-Based Reward Distribution (Deterministic)
 
@@ -735,7 +732,7 @@ DOLI uses a strict 3-level configuration hierarchy to prevent inconsistencies:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  BOND_UNIT = 10_000_000_000                                 ││
 │  │  SLOTS_PER_EPOCH = 360                                      ││
-│  │  T_BLOCK = 10_000_000                                       ││
+│  │  T_BLOCK = 800_000                                            ││
 │  │  (immutable protocol constants)                             ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────┬───────────────────────────────────────┘
