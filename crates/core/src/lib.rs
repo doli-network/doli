@@ -250,11 +250,14 @@ pub use transaction::{
     // Bond stacking transactions
     AddBondData,
     ClaimWithdrawalData,
+    // Delegation transactions
+    DelegateBondData,
     ExitData,
     Input,
     Output,
     OutputType,
     RegistrationData,
+    RevokeDelegationData,
     Transaction,
     TxType,
     WithdrawalRequestData,
