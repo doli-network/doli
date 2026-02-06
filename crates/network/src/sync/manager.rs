@@ -1520,6 +1520,22 @@ impl SyncManager {
                     height, self.resync_grace_period_secs
                 );
             }
+        } else if matches!(self.state, SyncState::Processing { .. })
+            && self.pending_headers.is_empty()
+            && self.pending_blocks.is_empty()
+        {
+            // All downloaded blocks have been applied but we haven't caught up
+            // to the network tip (it advanced during processing via gossip).
+            // Transition to Idle so a new sync round can start — without this,
+            // Processing returns None from next_request() and we're stuck forever.
+            info!(
+                "Processing complete but network moved ahead (local h={} s={}, tip h={} s={}) — starting new sync round",
+                height, slot, self.network_tip_height, self.network_tip_slot
+            );
+            self.state = SyncState::Idle;
+            if self.should_sync() {
+                self.start_sync();
+            }
         }
     }
 
@@ -1676,6 +1692,24 @@ impl SyncManager {
                 if self.should_sync() {
                     self.start_sync();
                 }
+            }
+        }
+
+        // Stall recovery: Processing state with no pending work.
+        // This catches the case where all downloaded blocks were applied but
+        // the network tip advanced during processing (via gossip), so the
+        // completion check in block_applied_with_weight() never fired.
+        if matches!(self.state, SyncState::Processing { .. })
+            && self.pending_headers.is_empty()
+            && self.pending_blocks.is_empty()
+        {
+            warn!(
+                "Stall detected: Processing with no pending work (local h={} s={}, tip h={} s={}). Resetting to Idle.",
+                self.local_height, self.local_slot, self.network_tip_height, self.network_tip_slot
+            );
+            self.state = SyncState::Idle;
+            if self.should_sync() {
+                self.start_sync();
             }
         }
     }
@@ -2282,6 +2316,85 @@ mod tests {
             "update_local_tip must not mark Synchronized when slot lag is {} (max_slots_behind={})",
             400,
             manager.max_slots_behind
+        );
+    }
+
+    #[test]
+    fn test_processing_stuck_recovery_on_block_applied() {
+        // Reproduce: node downloads 58 blocks, applies them all, but network_tip
+        // advanced to 59 during processing. Processing state with no pending work
+        // should transition to Idle and start a new sync round.
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        // Simulate: downloaded blocks 1-58, now in Processing state
+        manager.state = SyncState::Processing { height: 1 };
+        manager.network_tip_height = 59; // Gossip bumped this during processing
+        manager.network_tip_slot = 64;
+
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 59,
+                best_hash: Hash::zero(),
+                best_slot: 64,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        // pending_headers and pending_blocks are empty (all applied)
+        assert!(manager.pending_headers.is_empty());
+        assert!(manager.pending_blocks.is_empty());
+
+        // Apply the last block (h=58) — completion check fails: 58 < 59
+        let hash = crypto::hash::hash(b"block58");
+        manager.block_applied_with_weight(hash, 58, 60, 1, Hash::ZERO);
+
+        // Should NOT be stuck in Processing — should have transitioned to Idle or started sync
+        assert!(
+            !matches!(manager.state, SyncState::Processing { .. }),
+            "Must not stay stuck in Processing when no pending work remains (state={:?})",
+            manager.state
+        );
+    }
+
+    #[test]
+    fn test_processing_stuck_recovery_via_cleanup() {
+        // Safety net: even if block_applied doesn't fire, cleanup() detects
+        // a stuck Processing state with no pending work.
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        manager.state = SyncState::Processing { height: 1 };
+        manager.local_height = 58;
+        manager.local_slot = 60;
+        manager.network_tip_height = 65;
+        manager.network_tip_slot = 70;
+
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 65,
+                best_hash: Hash::zero(),
+                best_slot: 70,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        // No pending work
+        assert!(manager.pending_headers.is_empty());
+        assert!(manager.pending_blocks.is_empty());
+
+        manager.cleanup();
+
+        assert!(
+            !matches!(manager.state, SyncState::Processing { .. }),
+            "cleanup() must recover stuck Processing state (state={:?})",
+            manager.state
         );
     }
 }
