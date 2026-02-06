@@ -304,6 +304,12 @@ enum DevnetCommands {
         /// Number of producers to add
         #[arg(long, default_value = "1")]
         count: u32,
+        /// Bonds per producer (default: 1)
+        #[arg(long, short = 'b', default_value = "1")]
+        bonds: u32,
+        /// DOLI to fund each new wallet (default: auto = bonds + 1)
+        #[arg(long)]
+        fund_amount: Option<u64>,
     },
 }
 
@@ -1491,8 +1497,12 @@ async fn handle_devnet_command(action: DevnetCommands) -> Result<()> {
         DevnetCommands::Clean { keep_keys } => {
             devnet::clean(keep_keys)?;
         }
-        DevnetCommands::AddProducer { count } => {
-            devnet::add_producer(count).await?;
+        DevnetCommands::AddProducer {
+            count,
+            bonds,
+            fund_amount,
+        } => {
+            devnet::add_producer(count, bonds, fund_amount).await?;
         }
     }
     Ok(())
