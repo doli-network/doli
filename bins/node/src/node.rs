@@ -256,12 +256,10 @@ impl Node {
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
             // Configure min peers for production based on network
-            // Devnet: 1 peer (--no-dht limits peer discovery, only bootstrap visible)
-            // Testnet/Mainnet: 2 peers (proper peer discovery, echo chamber prevention)
-            let min_peers = match config.network {
-                Network::Devnet => 1, // Allow single-peer production in limited discovery environment
-                Network::Testnet | Network::Mainnet => 2, // Require multiple peers for safety
-            };
+            // All networks: 2 peers minimum to prevent echo chambers.
+            // A forked node with only 1 peer (also forked) sees matching heights/hashes
+            // and happily keeps producing on the wrong chain.
+            let min_peers = 2;
             sm.set_min_peers_for_production(min_peers);
 
             // Configure gossip timeout based on slot duration (P0 #3)
@@ -3458,6 +3456,24 @@ impl Node {
                     }
                 }
             }
+        }
+
+        // Periodic health diagnostic — one-line summary every 30s for fork debugging
+        if now_secs % 30 == 0 {
+            let cs = self.chain_state.read().await;
+            let sync = self.sync_manager.read().await;
+            let peer_count = sync.peer_count();
+            let best_peer_h = sync.best_peer_height();
+            let best_peer_s = sync.best_peer_slot();
+            let net_tip_h = sync.network_tip_height();
+            let net_tip_s = sync.network_tip_slot();
+            let sync_fails = sync.consecutive_sync_failure_count();
+            warn!(
+                "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} fork_counter={} state={:?}",
+                cs.best_height, cs.best_slot, cs.best_hash,
+                peer_count, best_peer_h, best_peer_s, net_tip_h, net_tip_s,
+                sync_fails, self.consecutive_fork_blocks, sync.sync_state_name()
+            );
         }
 
         Ok(())
