@@ -104,6 +104,8 @@ pub struct Node {
     our_tier: u8,
     /// Last epoch for which we computed our tier (to detect epoch boundaries).
     last_tier_epoch: Option<u64>,
+    /// Channel to forward gossip votes to the UpdateService
+    vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -322,7 +324,13 @@ impl Node {
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,
+            vote_tx: None,
         })
+    }
+
+    /// Set the vote forwarding channel (connects gossip votes to UpdateService)
+    pub fn set_vote_tx(&mut self, tx: tokio::sync::mpsc::Sender<node_updater::VoteMessage>) {
+        self.vote_tx = Some(tx);
     }
 
     /// Run the node
@@ -1075,11 +1083,27 @@ impl Node {
             }
 
             NetworkEvent::NewVote(vote_data) => {
-                // Vote received via gossip - forward to updater service
-                // The updater service will decode and validate the vote
                 debug!("Received vote message ({} bytes)", vote_data.len());
-                // TODO: Forward to updater service via vote_tx channel
-                // This will be connected when the updater integration is complete
+                if let Some(ref vote_tx) = self.vote_tx {
+                    match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
+                        Ok(vote_msg) => {
+                            info!(
+                                "Vote received via gossip: {} vote for v{} from {}",
+                                if vote_msg.vote == node_updater::Vote::Veto {
+                                    "VETO"
+                                } else {
+                                    "APPROVE"
+                                },
+                                vote_msg.version,
+                                &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())]
+                            );
+                            let _ = vote_tx.try_send(vote_msg);
+                        }
+                        Err(e) => {
+                            debug!("Failed to decode vote message: {}", e);
+                        }
+                    }
+                }
             }
 
             // NOTE: Heartbeats removed in deterministic scheduler model
