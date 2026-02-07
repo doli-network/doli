@@ -693,7 +693,7 @@ async fn run_node(
     };
 
     // Spawn update service with real producer registry
-    let _vote_tx = updater::spawn_update_service(
+    let vote_tx = updater::spawn_update_service(
         update_config,
         data_dir.clone(),
         producer_count_fn,
@@ -713,6 +713,9 @@ async fn run_node(
         Some(shutdown_flag_for_node),
     )
     .await?;
+
+    // Connect vote forwarding: gossip votes → UpdateService
+    node.set_vote_tx(vote_tx);
 
     info!("Node running. Press Ctrl+C to stop.");
 

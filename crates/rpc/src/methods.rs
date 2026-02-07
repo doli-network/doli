@@ -59,6 +59,8 @@ pub struct RpcContext {
     pub sync_status: Arc<dyn Fn() -> SyncStatus + Send + Sync>,
     /// Broadcast vote function (for governance veto system)
     pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
+    /// Shared update status (populated by UpdateService, read by RPC)
+    pub update_status: Arc<RwLock<Value>>,
 }
 
 impl RpcContext {
@@ -91,6 +93,12 @@ impl RpcContext {
             broadcast_tx: Arc::new(|_| {}),
             sync_status: Arc::new(|| SyncStatus::default()),
             broadcast_vote: Arc::new(|_| {}),
+            update_status: Arc::new(RwLock::new(serde_json::json!({
+                "pending_update": null,
+                "veto_period_active": false,
+                "veto_count": 0,
+                "veto_percent": 0.0
+            }))),
         }
     }
 
@@ -127,6 +135,12 @@ impl RpcContext {
                 broadcast_tx: Arc::new(|_| {}),
                 sync_status: Arc::new(|| SyncStatus::default()),
                 broadcast_vote: Arc::new(|_| {}),
+                update_status: Arc::new(RwLock::new(serde_json::json!({
+                    "pending_update": null,
+                    "veto_period_active": false,
+                    "veto_count": 0,
+                    "veto_percent": 0.0
+                }))),
             }
         }
     }
@@ -188,6 +202,12 @@ impl RpcContext {
     /// Set broadcast vote callback (for governance veto system)
     pub fn with_broadcast_vote(mut self, f: impl Fn(Vec<u8>) + Send + Sync + 'static) -> Self {
         self.broadcast_vote = Arc::new(f);
+        self
+    }
+
+    /// Set shared update status (for getUpdateStatus RPC)
+    pub fn with_update_status(mut self, status: Arc<RwLock<Value>>) -> Self {
+        self.update_status = status;
         self
     }
 }
@@ -700,15 +720,11 @@ impl RpcContext {
     }
 
     /// Get the current update status (pending updates, votes, etc.)
+    ///
+    /// Reads from shared state populated by UpdateService.
     async fn get_update_status(&self) -> Result<Value, RpcError> {
-        // For now, return a placeholder - full implementation would query the update service
-        Ok(serde_json::json!({
-            "pending_update": null,
-            "veto_period_active": false,
-            "veto_count": 0,
-            "veto_percent": 0,
-            "message": "Update status tracking not yet integrated with RPC"
-        }))
+        let status = self.update_status.read().await;
+        Ok(status.clone())
     }
 
     /// Get node information including version

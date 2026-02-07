@@ -86,11 +86,14 @@
 
 pub mod block_store;
 pub mod chain_state;
+pub mod maintainer;
 pub mod producer;
+pub mod update;
 pub mod utxo;
 
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
+pub use maintainer::MaintainerState;
 pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
     producer_weight_precise_for_network, total_weight, total_weight_for_network,
@@ -99,6 +102,7 @@ pub use producer::{
     INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD, VETO_BOND_AMOUNT,
     VETO_THRESHOLD_PERCENT,
 };
+pub use update::UpdateState;
 pub use utxo::{Outpoint, UtxoEntry, UtxoSet};
 
 use std::path::Path;
