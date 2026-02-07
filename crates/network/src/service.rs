@@ -662,6 +662,14 @@ async fn handle_behaviour_event(
 
         DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated { peer, .. }) => {
             debug!("Kademlia routing updated for peer: {}", peer);
+            // Dial the discovered peer to establish a connection
+            if !swarm.is_connected(&peer) {
+                debug!("Dialing Kademlia-discovered peer {}", peer);
+                let _ = swarm.dial(peer);
+            }
+        }
+        DoliBehaviourEvent::Kademlia(_) => {
+            // Other Kademlia events (query progress, etc.) — no action needed
         }
 
         DoliBehaviourEvent::Identify(identify::Event::Received { peer_id, info }) => {
@@ -675,6 +683,9 @@ async fn handle_behaviour_event(
                 for addr in info.listen_addrs {
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                 }
+                // Trigger DHT bootstrap after adding peer addresses.
+                // This is idempotent — Kademlia ignores bootstrap if already running.
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
             }
         }
 
