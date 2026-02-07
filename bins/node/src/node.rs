@@ -801,6 +801,7 @@ impl Node {
                     let mut sync = self.sync_manager.write().await;
                     sync.refresh_all_peers();
                     sync.update_network_tip_slot(block.header.slot);
+                    sync.note_block_received_via_gossip();
                 }
                 self.handle_new_block(block).await?;
             }
@@ -1218,149 +1219,19 @@ impl Node {
                     cache.values().filter(|b| b.header.slot >= min_slot).count()
                 };
 
-                // If we have many cached blocks from other chains, we're likely on a fork
-                //
-                // DEFENSE-IN-DEPTH: Multiple conditions must be met before triggering resync:
-                // 1. Cache size exceeds threshold
-                // 2. Cooldown period passed (with exponential backoff)
-                // 3. Past discovery grace period
-                // 4. Have some chain progress (height > 0)
-                // 5. Not already syncing
-                // 6. Resync not already in progress
-                // 7. Devnet/Testnet only (mainnet never auto-resyncs)
-
-                // Get resync state from sync manager
-                let (is_syncing, resync_in_progress, consecutive_resyncs) = {
-                    let sync = self.sync_manager.read().await;
-                    (
-                        sync.state().is_syncing(),
-                        sync.is_resync_in_progress(),
-                        sync.consecutive_resync_count(),
-                    )
-                };
-
-                // Don't trigger resync if we're already syncing or resyncing
-                if is_syncing || resync_in_progress {
-                    debug!(
-                        "Fork detected but sync/resync in progress - waiting (cache_size={})",
-                        cache_size
+                // Many orphan blocks indicate we're on a minority fork.
+                // Stale chain detector + fork recovery handle this — no genesis resync.
+                if cache_size >= 10 && cache_size % 10 == 0 {
+                    warn!(
+                        "Fork detected: {} orphan blocks don't build on our chain (height {}). Relying on fork recovery + stale chain sync.",
+                        cache_size, our_height
                     );
-                    return Ok(());
                 }
 
-                // Exponential backoff for cooldown: base * 2^(consecutive_resyncs)
-                // This prevents infinite resync loops by increasing the cooldown each time
-                let base_cooldown = 120u64; // 2 minutes base
-                let cooldown_secs = base_cooldown * (1 << consecutive_resyncs.min(4));
-                let resync_cooldown = Duration::from_secs(cooldown_secs);
+                // Try fork recovery for the orphan block
+                self.try_trigger_fork_recovery().await;
 
-                let can_resync = match self.last_resync_time {
-                    Some(last_time) => last_time.elapsed() > resync_cooldown,
-                    None => true,
-                };
-
-                // Don't resync during discovery grace period
-                let past_grace_period = match self.first_peer_connected {
-                    Some(connected_time) => connected_time.elapsed() > Duration::from_secs(30),
-                    None => false,
-                };
-
-                // Fork detection threshold: number of orphan blocks before triggering resync.
-                // Must scale with peer count: with N peers, each sending blocks from a
-                // slightly different chain tip, we expect ~N orphans during normal operation.
-                // Only trigger resync when orphans vastly exceed what peers can explain.
-                let peer_count = {
-                    let sync = self.sync_manager.read().await;
-                    sync.peer_count().max(1)
-                };
-                let base_threshold = match self.config.network {
-                    Network::Mainnet | Network::Testnet => 60, // 10 minutes at 10s slots
-                    Network::Devnet => 30, // lower base for faster devnet iteration (10s slots, higher rewards)
-                };
-                // Scale with peers: at least base_threshold or 3× peer count, whichever is higher.
-                // This prevents false fork detection when many peers join simultaneously.
-                let fork_threshold = base_threshold.max(peer_count * 3);
-
-                // Trigger resync if we have fork_threshold+ blocks from other chains that we can't apply
-                // AND we're past the grace period AND we have some chain progress
-                // This indicates we're on a fork (devnet/testnet only)
-                if cache_size >= fork_threshold
-                    && can_resync
-                    && past_grace_period
-                    && our_height > 0
-                    && (self.config.network == Network::Devnet
-                        || self.config.network == Network::Testnet)
-                {
-                    // Log exponential backoff info if this is a repeated resync
-                    if consecutive_resyncs > 0 {
-                        warn!(
-                            "This is resync #{} - cooldown was {}s due to exponential backoff",
-                            consecutive_resyncs + 1,
-                            cooldown_secs
-                        );
-                    }
-                    warn!(
-                        "Detected fork: {} blocks cached (threshold={}) that don't build on our chain (height {}). Triggering forced resync.",
-                        cache_size, fork_threshold, our_height
-                    );
-
-                    // Log diagnostic info before resync
-                    {
-                        let state = self.chain_state.read().await;
-                        warn!(
-                            "  Our chain tip: hash={}, height={}, slot={}",
-                            &state.best_hash.to_string()[..16],
-                            state.best_height,
-                            state.best_slot
-                        );
-                    }
-
-                    // Log sample of orphan blocks
-                    {
-                        let cache = self.fork_block_cache.read().await;
-                        let mut orphans: Vec<_> = cache.iter().collect();
-                        // Sort by slot for consistent display
-                        orphans.sort_by_key(|(_, b)| b.header.slot);
-
-                        warn!(
-                            "  Sample orphan blocks (showing up to 5 of {}):",
-                            cache.len()
-                        );
-                        for (hash, block) in orphans.iter().take(5) {
-                            let producer_hash = crypto_hash(block.header.producer.as_bytes());
-                            let parent_short = &block.header.prev_hash.to_string()[..16];
-                            warn!(
-                                "    - hash={}, slot={}, parent={}, producer={}",
-                                &hash.to_string()[..16],
-                                block.header.slot,
-                                parent_short,
-                                &producer_hash.to_hex()[..16]
-                            );
-                        }
-
-                        // Check if orphans have a common pattern (same genesis, different chain)
-                        if let Some((_, first_block)) = orphans.first() {
-                            let first_parent = first_block.header.prev_hash;
-                            let same_parent_count = orphans
-                                .iter()
-                                .filter(|(_, b)| b.header.prev_hash == first_parent)
-                                .count();
-                            if same_parent_count > 3 {
-                                warn!(
-                                    "  Note: {} orphans share parent {} - likely external chain",
-                                    same_parent_count,
-                                    &first_parent.to_string()[..16]
-                                );
-                            }
-                        }
-                    }
-
-                    // Force resync: reset to genesis and rebuild from peers
-                    self.last_resync_time = Some(Instant::now());
-                    if let Err(e) = self.force_resync_from_genesis().await {
-                        error!("Failed to force resync: {}", e);
-                    }
-                } else if cache_size >= 2 {
+                if cache_size >= 2 {
                     // Try to chain the blocks from cache
                     debug!(
                         "Attempting to apply cached chain: {} blocks in cache",
@@ -3411,6 +3282,12 @@ impl Node {
         // Apply the block locally
         self.apply_block(block.clone()).await?;
 
+        // Reset stale chain timer — we just produced a block
+        self.sync_manager
+            .write()
+            .await
+            .note_block_received_via_gossip();
+
         // Mark that we produced for this slot
         self.last_produced_slot = current_slot;
 
@@ -3613,6 +3490,29 @@ impl Node {
 
     /// Run periodic tasks
     async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // Apply pending sync blocks in correct order BEFORE cleanup.
+        //
+        // The body downloader fetches blocks in parallel, so they arrive out of order.
+        // handle_response() returns them to handle_new_block() which requires strict
+        // chain order (prev_hash == tip). Out-of-order blocks get orphaned.
+        //
+        // get_blocks_to_apply() walks pending_headers in order and extracts matching
+        // bodies from pending_blocks, returning them in the correct chain order.
+        // This MUST run before cleanup() so blocks get applied before the stuck
+        // timeout fires and clears pending state.
+        {
+            let blocks = self.sync_manager.write().await.get_blocks_to_apply();
+            if !blocks.is_empty() {
+                info!("Applying {} pending sync blocks in order", blocks.len());
+                for block in blocks {
+                    if let Err(e) = self.apply_block(block).await {
+                        warn!("Failed to apply pending sync block: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+
         // Clean up sync manager
         self.sync_manager.write().await.cleanup();
 
@@ -3640,6 +3540,75 @@ impl Node {
                         }
                     }
                 }
+            }
+        }
+
+        // STALE CHAIN DETECTION (Ethereum-style):
+        // If we haven't received any block (gossip or sync) for 3 slots, something is wrong.
+        // Diagnose: no peers → re-bootstrap Kademlia; peers exist → aggressive status requests.
+        // Status responses trigger update_peer() → should_sync() → start_sync() automatically.
+        {
+            let stale_threshold = Duration::from_secs(self.params.slot_duration * 3);
+            let (is_stale, is_syncing, peer_count) = {
+                let sync = self.sync_manager.read().await;
+                (
+                    sync.is_chain_stale(stale_threshold),
+                    sync.state().is_syncing(),
+                    sync.peer_count(),
+                )
+            };
+
+            if is_stale && !is_syncing {
+                if peer_count == 0 {
+                    // No peers — re-bootstrap Kademlia to discover the network
+                    info!("Stale chain detected (no blocks for 3 slots) with 0 peers — re-bootstrapping DHT");
+                    if let Some(ref network) = self.network {
+                        let _ = network.bootstrap().await;
+                    }
+                } else {
+                    // Peers exist but no blocks — request status from ALL peers
+                    // This forces update_peer() which triggers should_sync()/start_sync()
+                    debug!(
+                        "Stale chain detected with {} peers — requesting status from all",
+                        peer_count
+                    );
+                    if let Some(ref network) = self.network {
+                        let genesis_hash = self.chain_state.read().await.genesis_hash;
+                        let status_request = if let Some(ref key) = self.producer_key {
+                            network::protocols::StatusRequest::with_producer(
+                                self.config.network.id(),
+                                genesis_hash,
+                                key.public_key().clone(),
+                            )
+                        } else {
+                            network::protocols::StatusRequest::new(
+                                self.config.network.id(),
+                                genesis_hash,
+                            )
+                        };
+                        let peer_ids: Vec<_> = {
+                            let sync = self.sync_manager.read().await;
+                            sync.peer_ids().collect()
+                        };
+                        for peer_id in peer_ids.iter().take(10) {
+                            let _ = network
+                                .request_status(*peer_id, status_request.clone())
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
+        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (3+ empty
+        // header responses), normal sync and fork recovery can't bridge the gap.
+        // Escalate to genesis resync — rebuild state from the canonical chain.
+        {
+            let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
+            if is_deep_fork {
+                warn!("Deep fork detected: peers consistently reject our chain tip. Initiating genesis resync.");
+                self.force_resync_from_genesis().await?;
+                return Ok(());
             }
         }
 

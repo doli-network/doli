@@ -129,9 +129,9 @@ fn save_config(config: &DevnetConfig) -> Result<()> {
 /// Initialize a new devnet with N producer nodes
 pub fn init(node_count: u32) -> Result<()> {
     // Validate node count
-    if node_count == 0 || node_count > 20 {
+    if node_count == 0 || node_count > 100 {
         return Err(anyhow!(
-            "Node count must be between 1 and 20, got {}",
+            "Node count must be between 1 and 100, got {}",
             node_count
         ));
     }
