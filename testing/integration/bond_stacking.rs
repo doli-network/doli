@@ -36,15 +36,15 @@ use doli_core::{
 /// Test bond unit constant
 #[test]
 fn test_bond_unit_constant() {
-    // 1 bond = 100 DOLI = 10_000_000_000 base units
-    assert_eq!(BOND_UNIT, 10_000_000_000);
+    // 1 bond = 10 DOLI = 1_000_000_000 base units
+    assert_eq!(BOND_UNIT, 1_000_000_000);
 }
 
 /// Test max bonds constant
 #[test]
 fn test_max_bonds_constant() {
-    // Maximum 100 bonds per producer
-    assert_eq!(MAX_BONDS_PER_PRODUCER, 100);
+    // Maximum 10,000 bonds per producer
+    assert_eq!(MAX_BONDS_PER_PRODUCER, 10_000);
 }
 
 /// Test withdrawal delay constant
@@ -173,12 +173,12 @@ fn test_producer_bonds_add() {
 fn test_producer_bonds_max_limit() {
     let mut bonds = ProducerBonds::new();
 
-    // Add exactly 100 bonds (max)
-    bonds.add_bonds(100, 0).unwrap();
-    assert_eq!(bonds.bond_count(), 100);
+    // Add exactly 10,000 bonds (max)
+    bonds.add_bonds(10_000, 0).unwrap();
+    assert_eq!(bonds.bond_count(), 10_000);
 
     // Cannot add more
-    let err = bonds.add_bonds(1, 1000).unwrap_err();
+    let err = bonds.add_bonds(1, 10_000).unwrap_err();
     assert!(matches!(err, BondError::MaxBondsExceeded { .. }));
 }
 

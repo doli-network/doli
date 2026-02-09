@@ -295,7 +295,7 @@ impl Heartbeat {
         for witness_sig in &self.witnesses {
             // Check witness is an active producer
             if !active_producers.contains(&witness_sig.witness) {
-                return Err(HeartbeatError::InvalidWitness(witness_sig.witness.clone()));
+                return Err(HeartbeatError::InvalidWitness(witness_sig.witness));
             }
 
             // Check witness is not the producer
@@ -305,9 +305,7 @@ impl Heartbeat {
 
             // Verify the signature
             if !witness_sig.verify(&self.producer, self.slot, &self.vdf_output) {
-                return Err(HeartbeatError::InvalidWitnessSignature(
-                    witness_sig.witness.clone(),
-                ));
+                return Err(HeartbeatError::InvalidWitnessSignature(witness_sig.witness));
             }
         }
 

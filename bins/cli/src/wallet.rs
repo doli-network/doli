@@ -152,6 +152,7 @@ impl Wallet {
     }
 
     /// Get private key for an address
+    #[allow(dead_code)]
     pub fn get_private_key(&self, address: &str) -> Result<PrivateKey> {
         let addr = self
             .find_address(address)

@@ -610,12 +610,12 @@ pub fn select_producer_by_presence(
     for (pubkey, bonds) in &eligible {
         cumulative_tickets += *bonds as u64;
         if ticket_index < cumulative_tickets {
-            return Some((*pubkey).clone());
+            return Some(**pubkey);
         }
     }
 
     // Fallback: return last producer (should not reach here)
-    eligible.last().map(|(pk, _)| (*pk).clone())
+    eligible.last().map(|(pk, _)| **pk)
 }
 
 /// Select producer with minimum presence score filter.
@@ -661,11 +661,11 @@ pub fn select_producer_by_presence_filtered(
     for (pubkey, bonds) in &eligible {
         cumulative_tickets += *bonds as u64;
         if ticket_index < cumulative_tickets {
-            return Some((*pubkey).clone());
+            return Some(**pubkey);
         }
     }
 
-    eligible.last().map(|(pk, _)| (*pk).clone())
+    eligible.last().map(|(pk, _)| **pk)
 }
 
 /// Get the ranked list of producers by presence score and bond count.
@@ -678,7 +678,7 @@ pub fn rank_producers_by_presence(
     let mut ranked: Vec<_> = presence_state
         .producer_states
         .iter()
-        .map(|s| (s.pubkey.clone(), s.presence_score, s.bond_count.max(1)))
+        .map(|s| (s.pubkey, s.presence_score, s.bond_count.max(1)))
         .collect();
 
     // Sort by score descending (bonds don't affect rank, only selection weight)
@@ -753,10 +753,10 @@ pub fn distribute_epoch_rewards(
 
             // Score multiplier: score / 1000, capped at 2.0
             // This gives high-score producers up to 2x weight
-            let score_multiplier_x1000 = (state.presence_score.min(2000)) as u64;
+            let score_multiplier_x1000 = state.presence_score.min(2000);
             let effective = (slots_present * score_multiplier_x1000) / 1000;
 
-            (state.pubkey.clone(), effective)
+            (state.pubkey, effective)
         })
         .filter(|(_, effective)| *effective > 0)
         .collect();
@@ -794,7 +794,7 @@ impl EpochPresenceRecords {
 
     /// Record a valid presence proof
     pub fn record_presence(&mut self, producer: &PublicKey, slot: Slot) {
-        self.records.entry(producer.clone()).or_default().push(slot);
+        self.records.entry(*producer).or_default().push(slot);
     }
 
     /// Get number of slots with valid proof for a producer

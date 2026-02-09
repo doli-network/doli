@@ -166,7 +166,7 @@ impl PresenceHeartbeat {
         slot: Slot,
         prev_block_hash: Hash,
     ) -> Result<Self, HeartbeatError> {
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Compute VDF input
         let vdf_input = Self::compute_vdf_input(&producer, slot, &prev_block_hash);
@@ -416,7 +416,7 @@ impl HeartbeatCollector {
         }
 
         // Add to collection
-        let key = (heartbeat.slot, heartbeat.producer.clone());
+        let key = (heartbeat.slot, heartbeat.producer);
         if !self.heartbeats.contains_key(&key) {
             *count += 1;
         }
@@ -439,7 +439,7 @@ impl HeartbeatCollector {
         self.heartbeats
             .iter()
             .filter(|((s, _), _)| *s == slot)
-            .map(|((_, pk), _)| pk.clone())
+            .map(|((_, pk), _)| *pk)
             .collect()
     }
 
@@ -456,7 +456,7 @@ impl HeartbeatCollector {
 
     /// Check if a producer submitted a heartbeat for a slot
     pub fn has_heartbeat(&self, slot: Slot, producer: &PublicKey) -> bool {
-        self.heartbeats.contains_key(&(slot, producer.clone()))
+        self.heartbeats.contains_key(&(slot, *producer))
     }
 }
 

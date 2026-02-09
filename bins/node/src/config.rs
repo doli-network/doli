@@ -43,6 +43,11 @@ pub struct NodeConfig {
     /// Loaded chainspec (not serialized — passed in-memory from main)
     #[serde(skip)]
     pub chainspec: Option<ChainSpec>,
+
+    /// Override slot duration from chainspec (ensures all nodes agree on slot timing)
+    /// This is consensus-critical: different slot durations cause producer schedule divergence.
+    #[serde(default)]
+    pub slot_duration_override: Option<u64>,
 }
 
 impl Default for NodeConfig {
@@ -63,17 +68,14 @@ impl NodeConfig {
             network,
             data_dir,
             listen_addr: format!("0.0.0.0:{}", network.default_p2p_port()),
-            bootstrap_nodes: network
-                .bootstrap_nodes()
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            bootstrap_nodes: network.bootstrap_nodes(),
             max_peers: 50,
             rpc: RpcConfig::for_network(network),
             producer: None,
             no_dht: false,
             genesis_time_override: None,
             chainspec: None,
+            slot_duration_override: None,
         }
     }
 }
