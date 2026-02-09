@@ -771,23 +771,21 @@ This ensures fair vesting calculation - bonds that have vested longer incur lowe
 
 ### 5.4.2 Sequential Fallback Windows
 
-When the primary producer misses their slot, fallback producers take over in exclusive 1.3-second sequential windows. Only ONE rank is eligible at any given time:
+When the primary producer misses their slot, fallback producers take over in exclusive 2-second sequential windows. Only ONE rank is eligible at any given time:
 
 | Window (ms) | Eligible Rank | Description |
 |-------------|---------------|-------------|
-| 0 – 1,299 | 0 | Primary producer only |
-| 1,300 – 2,599 | 1 | First fallback |
-| 2,600 – 3,899 | 2 | Second fallback |
-| 3,900 – 5,199 | 3 | Third fallback |
-| 5,200 – 6,499 | 4 | Fourth fallback |
-| 6,500 – 7,799 | 5 | Fifth fallback |
-| 7,800 – 9,099 | 6 | Sixth fallback |
-| 9,100 – 10,000 | 0–6 | Emergency — all ranks eligible |
+| 0 – 1,999 | 0 | Primary producer only |
+| 2,000 – 3,999 | 1 | First fallback |
+| 4,000 – 5,999 | 2 | Second fallback |
+| 6,000 – 7,999 | 3 | Third fallback |
+| 8,000 – 9,999 | 4 | Fourth fallback |
+
+5 ranks × 2,000ms = 10,000ms — fills the entire slot with no emergency window.
 
 **Constants:**
-- `FALLBACK_TIMEOUT_MS = 1,300` — duration of each exclusive window
-- `MAX_FALLBACK_RANKS = 7` — total number of ranked producers per slot
-- `EMERGENCY_WINDOW_START_MS = 9,100` — start of emergency all-eligible window
+- `FALLBACK_TIMEOUT_MS = 2,000` — duration of each exclusive window
+- `MAX_FALLBACK_RANKS = 5` — total number of ranked producers per slot
 - `MAX_DRIFT_MS = 200` — maximum clock drift tolerance (ms)
 
 **Fallback producer selection:** Each rank gets an evenly-distributed offset in the ticket space:

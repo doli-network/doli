@@ -143,9 +143,9 @@ use crypto::Hash;
 /// 1. Trying many block variations to find favorable randomness
 /// 2. Instantly producing blocks when their slot arrives
 ///
-/// With 10-second slots and 1.3s sequential fallback windows, the VDF
-/// takes ~55ms, leaving ~1245ms margin within each fallback window
-/// (55ms VDF + ~600ms propagation = 655ms, margin = 645ms).
+/// With 10-second slots and 2s sequential fallback windows, the VDF
+/// takes ~55ms, leaving ~1945ms margin within each fallback window
+/// (55ms VDF + ~600ms propagation = 655ms, margin = 1345ms).
 ///
 /// This is calibrated so that:
 /// - A single-threaded CPU takes ~55ms

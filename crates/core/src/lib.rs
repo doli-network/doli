@@ -167,7 +167,6 @@ pub use consensus::{
     DELEGATION_UNBONDING_SLOTS,
     ELIGIBLE_PRODUCER_POOL,
     // Sequential fallback window constants
-    EMERGENCY_WINDOW_START_MS,
     EPOCH_REWARD_POOL,
     FALLBACK_TIMEOUT_MS,
     GENESIS_TIME,

@@ -381,7 +381,7 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
-                // VDF (800K iterations ~= 55ms for 1.3s sequential fallback windows)
+                // VDF (800K iterations ~= 55ms for 2s sequential fallback windows)
                 vdf_iterations: 800_000,
                 heartbeat_vdf_iterations: 800_000,
                 vdf_register_iterations: 600_000_000,

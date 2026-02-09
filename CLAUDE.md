@@ -124,8 +124,8 @@ All commands implicitly wrapped in Nix develop shell.
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
 | **Unbond** | 7 days | 10m | `WITHDRAWAL_DELAY_SLOTS` |
-| **Selection** | `slot % bonds` | - | Sequential 1.3s exclusive windows |
-| **Fallback** | 7 ranks | 7 ranks | `MAX_FALLBACK_RANKS`, `FALLBACK_TIMEOUT_MS=1300` |
+| **Selection** | `slot % bonds` | - | Sequential 2s exclusive windows |
+| **Fallback** | 5 ranks | 5 ranks | `MAX_FALLBACK_RANKS`, `FALLBACK_TIMEOUT_MS=2000` |
 | **Clock Drift** | 1s / 200ms | 1s / 200ms | `MAX_DRIFT=1`, `MAX_DRIFT_MS=200` |
 
 ### 🌐 Network & Ports
