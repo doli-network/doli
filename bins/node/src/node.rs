@@ -17,7 +17,7 @@ use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
-    DELEGATE_REWARD_PCT, MAX_FALLBACK_RANKS, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
+    DELEGATE_REWARD_PCT, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
 };
 use doli_core::rewards::WeightedRewardCalculator;
 use doli_core::tpop::calibration::VdfCalibrator;
@@ -3158,7 +3158,7 @@ impl Node {
                     &self.cached_scheduler.as_ref().unwrap().3
                 }
             };
-            let eligible: Vec<_> = (0..MAX_FALLBACK_RANKS)
+            let eligible: Vec<_> = (0..self.config.network.params().max_fallback_ranks)
                 .filter_map(|rank| scheduler.select_producer(current_slot, rank).cloned())
                 .collect();
             (eligible, None)

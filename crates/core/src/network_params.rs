@@ -113,6 +113,14 @@ pub struct NetworkParams {
     /// Presence window duration in milliseconds (for telemetry only, does not affect consensus)
     pub presence_window_ms: u64,
 
+    // === Fallback timing ===
+    /// Sequential fallback timeout per rank in milliseconds
+    pub fallback_timeout_ms: u64,
+    /// Maximum fallback ranks per slot
+    pub max_fallback_ranks: usize,
+    /// Network margin / clock drift tolerance in milliseconds
+    pub network_margin_ms: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
@@ -298,6 +306,23 @@ impl NetworkParams {
             // Presence (telemetry - configurable for all networks)
             presence_window_ms: env_parse("DOLI_PRESENCE_WINDOW_MS", defaults.presence_window_ms),
 
+            // Fallback timing (locked for mainnet - consensus critical)
+            fallback_timeout_ms: if is_mainnet {
+                defaults.fallback_timeout_ms // LOCKED for mainnet
+            } else {
+                env_parse("DOLI_FALLBACK_TIMEOUT_MS", defaults.fallback_timeout_ms)
+            },
+            max_fallback_ranks: if is_mainnet {
+                defaults.max_fallback_ranks // LOCKED for mainnet
+            } else {
+                env_parse("DOLI_MAX_FALLBACK_RANKS", defaults.max_fallback_ranks)
+            },
+            network_margin_ms: if is_mainnet {
+                defaults.network_margin_ms // LOCKED for mainnet
+            } else {
+                env_parse("DOLI_NETWORK_MARGIN_MS", defaults.network_margin_ms)
+            },
+
             // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
             mesh_n: if is_mainnet {
                 defaults.mesh_n
@@ -377,6 +402,11 @@ impl NetworkParams {
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS, // Use consensus margin
 
+                // Fallback timing (locked for mainnet)
+                fallback_timeout_ms: consensus::FALLBACK_TIMEOUT_MS,
+                max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
+                network_margin_ms: consensus::NETWORK_MARGIN_MS,
+
                 // Gossip mesh (standard for DHT-enabled networks)
                 mesh_n: 6,
                 mesh_n_low: 4,
@@ -431,6 +461,11 @@ impl NetworkParams {
 
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Fallback timing (locked for mainnet)
+                fallback_timeout_ms: consensus::FALLBACK_TIMEOUT_MS,
+                max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
+                network_margin_ms: consensus::NETWORK_MARGIN_MS,
 
                 // Gossip mesh (standard for DHT-enabled networks)
                 mesh_n: 6,
@@ -487,6 +522,11 @@ impl NetworkParams {
 
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Fallback timing (configurable for devnet)
+                fallback_timeout_ms: consensus::FALLBACK_TIMEOUT_MS,
+                max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
+                network_margin_ms: consensus::NETWORK_MARGIN_MS,
 
                 // Gossip mesh (larger for --no-dht star topology)
                 // With --no-dht, all nodes connect to bootstrap only.
