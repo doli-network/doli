@@ -18,10 +18,12 @@ pub fn new_kademlia(local_peer_id: PeerId) -> Kademlia<MemoryStore> {
     // Set replication factor
     config.set_replication_factor(std::num::NonZeroUsize::new(20).unwrap());
 
-    // Enable server mode to respond to queries
     config.set_query_timeout(std::time::Duration::from_secs(60));
 
-    Kademlia::with_config(local_peer_id, store, config)
+    let mut kad = Kademlia::with_config(local_peer_id, store, config);
+    // Server mode: respond to DHT queries from other peers
+    kad.set_mode(Some(libp2p::kad::Mode::Server));
+    kad
 }
 
 /// Events emitted by the discovery layer

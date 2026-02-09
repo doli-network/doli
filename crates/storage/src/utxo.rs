@@ -215,6 +215,7 @@ impl UtxoSet {
     }
 
     /// Get spendable balance for a pubkey hash at a given height with default maturity
+    #[allow(deprecated)]
     pub fn get_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
         self.get_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
     }
@@ -235,6 +236,7 @@ impl UtxoSet {
 
     /// Get immature balance for a pubkey hash at a given height with default maturity
     /// Returns the sum of coinbase/epoch reward outputs that haven't matured yet
+    #[allow(deprecated)]
     pub fn get_immature_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
         self.get_immature_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
     }

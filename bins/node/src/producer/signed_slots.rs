@@ -45,7 +45,7 @@ impl SignedSlotsDb {
         // If key doesn't exist, inserts [1] and returns None
         let result = self
             .db
-            .compare_and_swap(&key, None::<&[u8]>, Some(&[1u8]))
+            .compare_and_swap(key, None::<&[u8]>, Some(&[1u8]))
             .map_err(|e| {
                 ProducerStartupError::SignedSlotsDbFailed(format!("Database error: {}", e))
             })?;
@@ -75,15 +75,17 @@ impl SignedSlotsDb {
     }
 
     /// Check if a slot was already signed (read-only)
+    #[allow(dead_code)]
     pub fn was_signed(&self, slot: u64) -> bool {
         let key = slot.to_be_bytes();
-        self.db.contains_key(&key).unwrap_or(false)
+        self.db.contains_key(key).unwrap_or(false)
     }
 
     /// Clear old entries to prevent unbounded growth
     ///
     /// Keeps only slots from the last N slots.
     /// Called periodically during normal operation.
+    #[allow(dead_code)]
     pub fn prune(&self, current_slot: u64, keep_slots: u64) -> Result<usize, String> {
         let cutoff = current_slot.saturating_sub(keep_slots);
         let mut removed = 0;
@@ -94,10 +96,8 @@ impl SignedSlotsDb {
                 Ok((key, _)) => {
                     if key.len() == 8 {
                         let slot = u64::from_be_bytes(key.as_ref().try_into().unwrap_or([0; 8]));
-                        if slot < cutoff {
-                            if self.db.remove(&key).is_ok() {
-                                removed += 1;
-                            }
+                        if slot < cutoff && self.db.remove(&key).is_ok() {
+                            removed += 1;
                         }
                     }
                 }
@@ -118,6 +118,7 @@ impl SignedSlotsDb {
     }
 
     /// Get the number of tracked slots
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.db.len()
     }

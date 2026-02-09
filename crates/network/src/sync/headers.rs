@@ -18,6 +18,7 @@ pub struct HeaderDownloader {
     /// Maximum headers per request
     max_headers_per_request: u32,
     /// Request timeout
+    #[allow(dead_code)]
     request_timeout: Duration,
     /// Validated header chain (in order)
     validated_headers: VecDeque<BlockHeader>,
