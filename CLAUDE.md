@@ -152,9 +152,12 @@ DOLI_BOND_UNIT, DOLI_INITIAL_REWARD, DOLI_BLOCKS_PER_YEAR
 
 # VDF (devnet only - locked for mainnet)
 DOLI_VDF_ITERATIONS, DOLI_HEARTBEAT_VDF_ITERATIONS
+
+# Fallback (devnet only - locked for mainnet)
+DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 ```
 
-**Locked for mainnet**: Slot duration, genesis time, bond unit, emission, VDF iterations, blocks/year.
+**Locked for mainnet**: Slot duration, genesis time, bond unit, emission, VDF iterations, blocks/year, fallback timing.
 **Files**: `.env.example.{devnet,testnet,mainnet}` in repo root.
 **Code**: `crates/core/src/network_params.rs`
 
