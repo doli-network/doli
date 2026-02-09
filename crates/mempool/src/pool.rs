@@ -5,10 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
-use doli_core::validation::{
-    validate_transaction, validate_transaction_with_utxos, UtxoInfo, UtxoProvider,
-    ValidationContext,
-};
+use doli_core::validation::{validate_transaction, ValidationContext};
 use doli_core::{BlockHeight, Transaction};
 use storage::{Outpoint, UtxoSet};
 use thiserror::Error;
@@ -427,7 +424,7 @@ impl Mempool {
         }
 
         // Calculate outgoing: spent UTXOs from this address
-        for (outpoint, _tx_hash) in &self.spent_outputs {
+        for outpoint in self.spent_outputs.keys() {
             if let Some(utxo) = utxo_set.get(outpoint) {
                 if &utxo.output.pubkey_hash == pubkey_hash {
                     outgoing = outgoing.saturating_add(utxo.output.amount);

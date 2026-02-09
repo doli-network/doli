@@ -22,8 +22,10 @@
 
 mod apply;
 mod download;
+pub mod hardfork;
 pub mod test_keys;
 mod vote;
+pub mod watchdog;
 
 pub use apply::{apply_update, backup_current, restart_node, rollback};
 pub use download::{download_binary, fetch_latest_release, verify_hash};
@@ -252,11 +254,23 @@ impl UpdateParams {
         Duration::from_secs(self.crash_window_secs)
     }
 
-    /// Calculate vote weight based on producer age in blocks
+    /// Calculate vote weight based on bonds staked and producer seniority.
     ///
-    /// weight = 1.0 + min(years, 4) * 0.75
-    /// Where years = blocks_active / seniority_step_blocks
-    pub fn calculate_vote_weight(&self, blocks_active: u64) -> f64 {
+    /// weight = bond_count × seniority_multiplier
+    /// seniority_multiplier = 1.0 + min(years, 4) × 0.75
+    ///
+    /// This balances economic stake (bonds) with time commitment (seniority).
+    /// A whale with 100 bonds registered yesterday gets 100 × 1.0 = 100,
+    /// while 25 veterans at 4 years get 25 × 4.0 = 100 — equal power.
+    pub fn calculate_vote_weight(&self, bond_count: u32, blocks_active: u64) -> f64 {
+        let years = blocks_active as f64 / self.seniority_step_blocks as f64;
+        let capped_years = years.min(4.0);
+        let seniority_multiplier = 1.0 + capped_years * 0.75;
+        bond_count as f64 * seniority_multiplier
+    }
+
+    /// Calculate seniority multiplier only (for display purposes).
+    pub fn seniority_multiplier(&self, blocks_active: u64) -> f64 {
         let years = blocks_active as f64 / self.seniority_step_blocks as f64;
         let capped_years = years.min(4.0);
         1.0 + capped_years * 0.75
@@ -779,5 +793,98 @@ mod tests {
             "unknown"
         ]
         .contains(&platform));
+    }
+
+    #[test]
+    fn test_vote_weight_bonds_times_seniority() {
+        let params = UpdateParams::for_network(Network::Devnet);
+        // Devnet: seniority_step_blocks = 144 (1 "year")
+
+        // 1 bond, 0 years → 1.0 × 1.0 = 1.0
+        let w = params.calculate_vote_weight(1, 0);
+        assert!((w - 1.0).abs() < 0.001, "1 bond, 0 years: got {}", w);
+
+        // 10 bonds, 0 years → 10.0 × 1.0 = 10.0
+        let w = params.calculate_vote_weight(10, 0);
+        assert!((w - 10.0).abs() < 0.001, "10 bonds, 0 years: got {}", w);
+
+        // 1 bond, 1 year (144 blocks on devnet) → 1.0 × 1.75 = 1.75
+        let w = params.calculate_vote_weight(1, params.seniority_step_blocks);
+        assert!((w - 1.75).abs() < 0.001, "1 bond, 1 year: got {}", w);
+
+        // 2 bonds, 4 years (576 blocks on devnet) → 2.0 × 4.0 = 8.0
+        let w = params.calculate_vote_weight(2, params.seniority_maturity_blocks);
+        assert!((w - 8.0).abs() < 0.001, "2 bonds, 4 years: got {}", w);
+
+        // 10 bonds, 4 years → 10.0 × 4.0 = 40.0
+        let w = params.calculate_vote_weight(10, params.seniority_maturity_blocks);
+        assert!((w - 40.0).abs() < 0.001, "10 bonds, 4 years: got {}", w);
+
+        // Seniority caps at 4 years (4.0x) even after 10 years
+        let w = params.calculate_vote_weight(1, params.seniority_step_blocks * 10);
+        assert!(
+            (w - 4.0).abs() < 0.001,
+            "1 bond, 10 years (capped): got {}",
+            w
+        );
+    }
+
+    #[test]
+    fn test_vote_weight_as_u64_for_tracker() {
+        let params = UpdateParams::for_network(Network::Devnet);
+
+        // Weights stored as u64 with 100x multiplier for 2-decimal precision
+        let w = params.calculate_vote_weight(1, 0);
+        assert_eq!((w * 100.0) as u64, 100); // 1.0 × 100
+
+        let w = params.calculate_vote_weight(10, 0);
+        assert_eq!((w * 100.0) as u64, 1000); // 10.0 × 100
+
+        let w = params.calculate_vote_weight(2, params.seniority_maturity_blocks);
+        assert_eq!((w * 100.0) as u64, 800); // 8.0 × 100
+
+        let w = params.calculate_vote_weight(10, params.seniority_maturity_blocks);
+        assert_eq!((w * 100.0) as u64, 4000); // 40.0 × 100
+    }
+
+    #[test]
+    fn test_vote_weight_veto_with_bonds() {
+        use crate::vote::{Vote, VoteTracker};
+        let params = UpdateParams::for_network(Network::Devnet);
+
+        // Scenario: 5 genesis producers (1 bond, ~24 blocks active) + 1 whale (10 bonds, new)
+        let mut weights = std::collections::HashMap::new();
+        for i in 0..5 {
+            let w = params.calculate_vote_weight(1, 24); // ~0.125 years
+            weights.insert(format!("genesis_{}", i), (w * 100.0) as u64);
+        }
+        let whale_w = params.calculate_vote_weight(10, 1);
+        weights.insert("whale".to_string(), (whale_w * 100.0) as u64);
+
+        let total_weight: u64 = weights.values().sum();
+        let mut tracker = VoteTracker::with_weights("99.0.0".into(), weights);
+
+        // Whale alone vetoes — should exceed 40%
+        tracker.record_vote("whale".into(), Vote::Veto);
+        assert!(
+            tracker.should_reject_weighted(total_weight),
+            "Whale (10 bonds) should be able to veto alone (weight {}/{})",
+            tracker.veto_weight(),
+            total_weight
+        );
+    }
+
+    #[test]
+    fn test_seniority_multiplier() {
+        let params = UpdateParams::for_network(Network::Devnet);
+
+        assert!((params.seniority_multiplier(0) - 1.0).abs() < 0.001);
+        assert!((params.seniority_multiplier(params.seniority_step_blocks) - 1.75).abs() < 0.001);
+        assert!(
+            (params.seniority_multiplier(params.seniority_step_blocks * 2) - 2.5).abs() < 0.001
+        );
+        assert!(
+            (params.seniority_multiplier(params.seniority_maturity_blocks) - 4.0).abs() < 0.001
+        );
     }
 }

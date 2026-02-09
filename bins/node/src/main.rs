@@ -7,7 +7,7 @@
 //! - Optionally produces blocks (if registered as producer)
 //! - Auto-updates with community veto (7 days, 40% threshold)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -464,6 +464,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_node(
     network: Network,
     data_dir: &PathBuf,
@@ -588,7 +589,8 @@ async fn run_node(
         info!("Auto-updates disabled");
     }
 
-    // Load chainspec (always, so Node::new can apply overrides)
+    // Load chainspec ALWAYS (consensus-critical overrides must apply on every start)
+    // Previously this was inside the first-init branch, causing slot_duration divergence on restarts
     use doli_core::chainspec::ChainSpec;
 
     let chainspec: Option<ChainSpec> = if let Some(ref path) = chainspec_path {
@@ -628,13 +630,20 @@ async fn run_node(
     // Pass chainspec to config so Node::new() can apply overrides
     config.chainspec = chainspec.clone();
 
-    // Set genesis time override from chainspec
+    // Apply consensus-critical overrides from chainspec (MUST run on every start, not just first init)
     if let Some(ref spec) = chainspec {
         if spec.genesis.timestamp != 0 {
             config.genesis_time_override = Some(spec.genesis.timestamp);
             info!(
                 "Genesis time from chainspec: {} (all nodes will use this time)",
                 spec.genesis.timestamp
+            );
+        }
+        if spec.consensus.slot_duration > 0 {
+            config.slot_duration_override = Some(spec.consensus.slot_duration);
+            info!(
+                "Slot duration from chainspec: {}s (overrides local config)",
+                spec.consensus.slot_duration
             );
         }
     }
@@ -720,7 +729,7 @@ async fn run_node(
     };
 
     // Spawn update service with real producer registry
-    let _vote_tx = updater::spawn_update_service(
+    let vote_tx = updater::spawn_update_service(
         update_config,
         data_dir.clone(),
         producer_count_fn,
@@ -740,6 +749,9 @@ async fn run_node(
         Some(shutdown_flag_for_node),
     )
     .await?;
+
+    // Connect vote forwarding: gossip votes → UpdateService
+    node.set_vote_tx(vote_tx);
 
     info!("Node running. Press Ctrl+C to stop.");
 
@@ -803,7 +815,7 @@ fn load_producer_key(path: &PathBuf) -> Result<KeyPair> {
     Ok(KeyPair::from_private_key(private_key))
 }
 
-async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Result<()> {
+async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Result<()> {
     match action {
         UpdateCommands::Check => {
             info!("Checking for updates...");
@@ -1214,12 +1226,12 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &PathBuf) -> Re
 
 async fn handle_maintainer_command(
     action: MaintainerCommands,
-    data_dir: &PathBuf,
-    network: Network,
+    data_dir: &Path,
+    _network: Network,
 ) -> Result<()> {
     use doli_core::maintainer::{
-        derive_maintainer_set, MaintainerChangeData, MaintainerSet, MaintainerSignature,
-        INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
+        MaintainerChangeData, MaintainerSignature, INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD,
+        MAX_MAINTAINERS, MIN_MAINTAINERS,
     };
 
     match action {
@@ -1275,7 +1287,7 @@ async fn handle_maintainer_command(
 
             // Load maintainer key
             let keypair = load_producer_key(&key)?;
-            let signer_pubkey = keypair.public_key().clone();
+            let signer_pubkey = *keypair.public_key();
 
             // Parse target public key
             let target_pubkey = match PublicKey::from_hex(&target) {
@@ -1300,7 +1312,7 @@ async fn handle_maintainer_command(
 
             // Create the change data
             let change_data = MaintainerChangeData::with_reason(
-                target_pubkey.clone(),
+                target_pubkey,
                 vec![], // Signatures will be collected separately
                 reason.unwrap_or_default(),
             );
@@ -1310,7 +1322,7 @@ async fn handle_maintainer_command(
             let signature = crypto::signature::sign(&message, keypair.private_key());
 
             let sig = MaintainerSignature {
-                pubkey: signer_pubkey.clone(),
+                pubkey: signer_pubkey,
                 signature,
             };
 
@@ -1346,7 +1358,7 @@ async fn handle_maintainer_command(
 
             // Load maintainer key
             let keypair = load_producer_key(&key)?;
-            let signer_pubkey = keypair.public_key().clone();
+            let signer_pubkey = *keypair.public_key();
 
             // Parse target public key
             let target_pubkey = match PublicKey::from_hex(&target) {
@@ -1370,14 +1382,14 @@ async fn handle_maintainer_command(
             };
 
             // Create the change data
-            let change_data = MaintainerChangeData::new(target_pubkey.clone(), vec![]);
+            let change_data = MaintainerChangeData::new(target_pubkey, vec![]);
 
             // Sign the proposal
             let message = change_data.signing_message(true); // true = addition
             let signature = crypto::signature::sign(&message, keypair.private_key());
 
             let sig = MaintainerSignature {
-                pubkey: signer_pubkey.clone(),
+                pubkey: signer_pubkey,
                 signature,
             };
 
@@ -1413,7 +1425,7 @@ async fn handle_maintainer_command(
 
             // Load maintainer key
             let keypair = load_producer_key(&key)?;
-            let signer_pubkey = keypair.public_key().clone();
+            let signer_pubkey = *keypair.public_key();
 
             println!("║                                                                  ║");
             println!(
@@ -1439,7 +1451,7 @@ async fn handle_maintainer_command(
 
             // Parse public key
             match PublicKey::from_hex(&pubkey) {
-                Ok(pk) => {
+                Ok(_pk) => {
                     println!(
                         "║                                                                  ║"
                     );
@@ -1572,7 +1584,7 @@ fn export_blocks(data_dir: &PathBuf, path: &PathBuf, from: u64, to: Option<u64>)
 /// - UTXO set (all unspent outputs)
 /// - producers.bin (registered producers)
 fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool) -> Result<()> {
-    use doli_core::consensus::{ConsensusParams, RewardMode, UNBONDING_PERIOD};
+    use doli_core::consensus::{ConsensusParams, UNBONDING_PERIOD};
     use doli_core::transaction::TxType;
     use storage::{BlockStore, ChainState, ProducerInfo, ProducerSet, UtxoSet};
 
@@ -1616,7 +1628,7 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
                 tip_slot = block.header.slot;
                 block_count += 1;
 
-                if block_count % 1000 == 0 {
+                if block_count.is_multiple_of(1000) {
                     print!("\r  Scanned {} blocks (height {})...", block_count, height);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
@@ -1718,13 +1730,13 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
                         let tx_hash = tx.hash();
                         let era = params.height_to_era(height);
 
-                        let producer_info = ProducerInfo::new(
-                            reg_data.public_key.clone(),
+                        let producer_info = ProducerInfo::new_with_bonds(
+                            reg_data.public_key,
                             height,
                             bond_output.amount,
                             (tx_hash, bond_index as u32),
                             era,
-                            network.initial_bond(),
+                            reg_data.bond_count,
                         );
 
                         if let Err(e) = producer_set.register(producer_info, height) {

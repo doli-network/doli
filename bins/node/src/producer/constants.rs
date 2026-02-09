@@ -7,6 +7,7 @@ pub const DUPLICATE_KEY_DETECTION_SECONDS: u64 = 300;
 
 /// Number of recent blocks to check for duplicate key detection
 /// 50 blocks is ~500 seconds on mainnet (10s slots), ~250 seconds on devnet (5s slots)
+#[allow(dead_code)]
 pub const DUPLICATE_KEY_DETECTION_BLOCKS: u64 = 50;
 
 /// Lock file name within data directory

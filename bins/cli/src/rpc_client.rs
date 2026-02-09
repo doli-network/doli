@@ -56,6 +56,7 @@ pub struct Balance {
 }
 
 /// UTXO information
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Utxo {
@@ -92,6 +93,7 @@ pub struct ChainInfo {
 }
 
 /// Network parameters (from getNetworkParams RPC)
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkParams {
@@ -114,6 +116,7 @@ pub struct NetworkParams {
 }
 
 /// Transaction information
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionInfo {
@@ -136,6 +139,7 @@ pub struct TransactionInfo {
 }
 
 /// History entry from getHistory RPC
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -308,6 +312,7 @@ impl RpcClient {
     }
 
     /// Get transaction by hash
+    #[allow(dead_code)]
     pub async fn get_transaction(&self, hash: &str) -> Result<TransactionInfo> {
         #[derive(Serialize)]
         struct Params<'a> {
@@ -349,6 +354,7 @@ impl RpcClient {
     }
 
     /// Register as a producer
+    #[allow(dead_code)]
     pub async fn register_producer(&self, tx_hex: &str) -> Result<String> {
         #[derive(Serialize)]
         struct Params<'a> {
@@ -359,6 +365,7 @@ impl RpcClient {
     }
 
     /// Request to withdraw as a producer
+    #[allow(dead_code)]
     pub async fn withdraw_producer(&self, tx_hex: &str) -> Result<String> {
         #[derive(Serialize)]
         struct Params<'a> {
@@ -415,6 +422,7 @@ impl RpcClient {
     }
 
     /// Estimate reward for a specific epoch
+    #[allow(dead_code)]
     pub async fn estimate_epoch_reward(
         &self,
         producer: &str,
@@ -463,9 +471,36 @@ impl RpcClient {
 
         self.call("getEpochInfo", Params {}).await
     }
+
+    /// Get update status (pending updates, veto status, etc.)
+    pub async fn get_update_status(&self) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("getUpdateStatus", Params {}).await
+    }
+
+    /// Submit a vote for a pending update
+    pub async fn submit_vote(&self, vote_json: serde_json::Value) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params {
+            vote: serde_json::Value,
+        }
+
+        self.call("submitVote", Params { vote: vote_json }).await
+    }
+
+    /// Get maintainer set
+    pub async fn get_maintainer_set(&self) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("getMaintainerSet", Params {}).await
+    }
 }
 
 /// Block information (for CLI display)
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockInfo {
@@ -500,6 +535,7 @@ pub struct ClaimableEpochEntry {
 }
 
 /// Response for getClaimableRewards
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimableRewardsResponse {
@@ -518,6 +554,7 @@ pub struct ClaimableRewardsResponse {
 }
 
 /// A single claim history entry
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimHistoryEntry {
@@ -534,6 +571,7 @@ pub struct ClaimHistoryEntry {
 }
 
 /// Response for getClaimHistory
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimHistoryResponse {
@@ -548,6 +586,7 @@ pub struct ClaimHistoryResponse {
 }
 
 /// Response for estimateEpochReward
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewardEstimateResponse {
@@ -574,6 +613,7 @@ pub struct RewardEstimateResponse {
 }
 
 /// Response for buildClaimTx
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildClaimTxResponse {
