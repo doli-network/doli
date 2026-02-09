@@ -2104,8 +2104,8 @@ pub fn validate_producer_eligibility(
         return Err(ValidationError::InvalidProducer);
     }
 
-    // Calculate time offset within the slot (in ms for sequential 1.3s windows).
-    // Block timestamps have second precision, but eligibility uses 1.3s windows.
+    // Calculate time offset within the slot (in ms for sequential 2s windows).
+    // Block timestamps have second precision, but eligibility uses 2s windows.
     // Check if the producer is eligible at any point within the timestamp's second bucket
     // [offset_secs * 1000, (offset_secs + 1) * 1000) to avoid false rejections.
     let slot_start = ctx.params.slot_to_timestamp(header.slot);
