@@ -14,24 +14,24 @@
 //!
 //! # Fast Fallback with Block Verification
 //!
-//! This scheduler uses 1-second fallback windows (10 ranks for 10-second slots).
-//! This aggressive fallback is safe because producers verify block existence
-//! before producing:
+//! This scheduler uses 1.3-second exclusive sequential fallback windows
+//! (7 ranks for 10-second slots). Each rank gets an exclusive 1300ms window:
 //!
 //! 1. Producer checks if a block already exists for the slot (early check)
-//! 2. If no block, computes VDF (~700ms)
+//! 2. If no block, computes VDF (~55ms)
 //! 3. Producer checks AGAIN after VDF (safety check)
 //! 4. Only broadcasts if no block appeared during VDF computation
 //!
 //! This double-check prevents duplicate blocks while enabling fast failover.
 //!
-//! # Fallback Windows (1-second each)
+//! # Fallback Windows (1.3s exclusive each)
 //!
-//! - 0-1s: rank 0 only (primary)
-//! - 1-2s: rank 0-1
-//! - 2-3s: rank 0-2
-//! - ... (continues for each second)
-//! - 9-10s: rank 0-9 (all 10 ranks)
+//! - 0-1.3s: rank 0 only (primary)
+//! - 1.3-2.6s: rank 1 only
+//! - 2.6-3.9s: rank 2 only
+//! - ... (continues for each rank)
+//! - 7.8-9.1s: rank 6 only
+//! - 9.1-10s: emergency — all ranks eligible
 //!
 //! # Example
 //!
@@ -51,12 +51,11 @@ use crypto::PublicKey;
 
 use crate::types::Slot;
 
-/// Maximum fallback producers (ranks 0-9, 10 total)
+/// Maximum fallback rank (0-6 = 7 ranks, matching consensus MAX_FALLBACK_RANKS).
 ///
-/// With 1-second fallback windows and block existence verification,
-/// we can safely allow 10 ranks for 10-second slots. Each additional
-/// second enables one more fallback rank.
-pub const MAX_FALLBACK_RANK: usize = 9;
+/// With sequential 1.3s exclusive windows, 7 ranks cover 9.1s of the 10s slot.
+/// The remaining 0.9s is an emergency window where all ranks are eligible.
+pub const MAX_FALLBACK_RANK: usize = 6;
 
 /// A producer scheduled for block production
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,10 +162,10 @@ impl DeterministicScheduler {
     /// Select the producer for a given slot at a specific rank.
     ///
     /// - Rank 0: Primary producer (ticket at `slot % total_bonds`)
-    /// - Rank 1-9: Fallback producers with evenly distributed offsets
+    /// - Rank 1-6: Fallback producers with evenly distributed offsets
     ///
-    /// Each rank gets an offset of `total_bonds * rank / 10`, ensuring
-    /// fallback producers are spread across the ticket space.
+    /// Each rank gets an offset of `total_bonds * rank / (MAX_FALLBACK_RANK + 1)`,
+    /// ensuring fallback producers are spread across the ticket space.
     ///
     /// Returns None if:
     /// - No producers registered
@@ -177,8 +176,8 @@ impl DeterministicScheduler {
         }
 
         // Calculate ticket offset based on rank
-        // Evenly distributed: rank 0 = 0%, rank 1 = 10%, rank 2 = 20%, etc.
-        let offset = (self.total_bonds * rank as u64) / 10;
+        // Evenly distributed across MAX_FALLBACK_RANK + 1 positions
+        let offset = (self.total_bonds * rank as u64) / (MAX_FALLBACK_RANK as u64 + 1);
 
         // Calculate ticket number for this slot
         let ticket = ((slot as u64) + offset) % self.total_bonds;
@@ -204,19 +203,28 @@ impl DeterministicScheduler {
 
     /// Get eligible producers based on elapsed time in slot.
     ///
-    /// Returns producers in order of priority:
-    /// - 0-3s: [rank 0]
-    /// - 3-6s: [rank 0, rank 1]
-    /// - 6-10s: [rank 0, rank 1, rank 2]
+    /// With sequential 1.3s exclusive windows, returns only the producer
+    /// whose rank matches the current window. In the emergency window
+    /// (9.1-10s), all ranks are eligible.
     pub fn eligible_producers(&self, slot: Slot, elapsed_secs: u64) -> Vec<&PublicKey> {
-        let max_rank = allowed_producer_rank(elapsed_secs);
-        let mut eligible = Vec::with_capacity(max_rank + 1);
+        let elapsed_ms = elapsed_secs * 1000;
+        let mut eligible = Vec::new();
 
-        for rank in 0..=max_rank {
-            if let Some(pubkey) = self.select_producer(slot, rank) {
-                // Avoid duplicates (can happen with small producer sets)
-                if !eligible.contains(&pubkey) {
+        match crate::consensus::eligible_rank_at_ms(elapsed_ms) {
+            Some(current_rank) => {
+                // Exclusive: only the current rank is eligible
+                if let Some(pubkey) = self.select_producer(slot, current_rank) {
                     eligible.push(pubkey);
+                }
+            }
+            None => {
+                // Emergency window: all ranks eligible
+                for rank in 0..=MAX_FALLBACK_RANK {
+                    if let Some(pubkey) = self.select_producer(slot, rank) {
+                        if !eligible.contains(&pubkey) {
+                            eligible.push(pubkey);
+                        }
+                    }
                 }
             }
         }
@@ -242,11 +250,19 @@ impl DeterministicScheduler {
         None
     }
 
-    /// Check if a producer is eligible at a given time.
+    /// Check if a producer is eligible at a given time (exclusive sequential windows).
     pub fn is_producer_eligible(&self, slot: Slot, pubkey: &PublicKey, elapsed_secs: u64) -> bool {
         if let Some(rank) = self.producer_rank(slot, pubkey) {
-            let max_rank = allowed_producer_rank(elapsed_secs);
-            rank <= max_rank
+            crate::consensus::is_rank_eligible_at_ms(rank, elapsed_secs * 1000)
+        } else {
+            false
+        }
+    }
+
+    /// Check if a producer is eligible at a given time with millisecond precision.
+    pub fn is_producer_eligible_ms(&self, slot: Slot, pubkey: &PublicKey, elapsed_ms: u64) -> bool {
+        if let Some(rank) = self.producer_rank(slot, pubkey) {
+            crate::consensus::is_rank_eligible_at_ms(rank, elapsed_ms)
         } else {
             false
         }
@@ -309,38 +325,18 @@ pub struct SchedulerStats {
     pub avg_bonds: f64,
 }
 
-/// Determine the maximum allowed producer rank based on elapsed time.
+/// Determine the exclusively eligible rank based on elapsed time within a slot.
 ///
-/// # Fast Fallback Windows (1-second each)
-///
-/// With block existence verification before production, we can use
-/// aggressive 1-second windows:
-///
-/// - 0-1s: rank 0 only (primary)
-/// - 1-2s: rank 0-1
-/// - 2-3s: rank 0-2
-/// - 3-4s: rank 0-3
-/// - 4-5s: rank 0-4
-/// - 5-6s: rank 0-5
-/// - 6-7s: rank 0-6
-/// - 7-8s: rank 0-7
-/// - 8-9s: rank 0-8
-/// - 9-10s: rank 0-9 (all 10 ranks)
-///
-/// The safety comes from producers checking if a block already exists
-/// for the slot BEFORE and AFTER VDF computation.
+/// Sequential 1.3s exclusive windows — delegates to consensus::eligible_rank_at_ms().
 pub fn allowed_producer_rank(elapsed_secs: u64) -> usize {
-    // Each second unlocks one more rank, capped at MAX_FALLBACK_RANK
-    std::cmp::min(elapsed_secs as usize, MAX_FALLBACK_RANK)
+    crate::consensus::allowed_producer_rank(elapsed_secs)
 }
 
-/// Determine the maximum allowed producer rank based on elapsed time (milliseconds).
+/// Determine the exclusively eligible rank based on elapsed time (milliseconds).
 ///
-/// Same as `allowed_producer_rank` but with millisecond precision.
-/// Each 1000ms unlocks one more fallback rank.
+/// Sequential 1.3s exclusive windows — delegates to consensus::allowed_producer_rank_ms().
 pub fn allowed_producer_rank_ms(elapsed_ms: u64) -> usize {
-    let elapsed_secs = elapsed_ms / 1000;
-    std::cmp::min(elapsed_secs as usize, MAX_FALLBACK_RANK)
+    crate::consensus::allowed_producer_rank_ms(elapsed_ms)
 }
 
 #[cfg(test)]
@@ -415,23 +411,23 @@ mod tests {
         ]);
 
         // Total = 30 tickets
-        // Each rank offset = total_bonds * rank / 10
+        // Each rank offset = total_bonds * rank / (MAX_FALLBACK_RANK + 1) = 30 * rank / 7
         // Rank 0: offset = 0
-        // Rank 1: offset = 3
-        // Rank 2: offset = 6
-        // Rank 3: offset = 9
-        // etc.
+        // Rank 1: offset = 4 (30*1/7)
+        // Rank 2: offset = 8 (30*2/7)
+        // Rank 3: offset = 12 (30*3/7)
+        // Rank 4: offset = 17 (30*4/7)
 
         // Slot 0:
         // - Rank 0: ticket 0 -> Alice (tickets 0-9)
-        // - Rank 1: ticket 3 -> Alice (still in 0-9)
-        // - Rank 2: ticket 6 -> Alice (still in 0-9)
-        // - Rank 3: ticket 9 -> Alice (still in 0-9)
-        // - Rank 4: ticket 12 -> Bob (tickets 10-19)
+        // - Rank 1: ticket 4 -> Alice (still in 0-9)
+        // - Rank 2: ticket 8 -> Alice (still in 0-9)
+        // - Rank 3: ticket 12 -> Bob (tickets 10-19)
+        // - Rank 4: ticket 17 -> Bob (still in 10-19)
         assert_eq!(scheduler.select_producer(0, 0), Some(&alice));
         assert_eq!(scheduler.select_producer(0, 1), Some(&alice));
         assert_eq!(scheduler.select_producer(0, 2), Some(&alice));
-        assert_eq!(scheduler.select_producer(0, 3), Some(&alice));
+        assert_eq!(scheduler.select_producer(0, 3), Some(&bob));
         assert_eq!(scheduler.select_producer(0, 4), Some(&bob));
     }
 
@@ -492,23 +488,28 @@ mod tests {
         ]);
 
         // Total = 20 bonds
+        // Offsets: rank * 20 / 7
         // Slot 0:
         //   Rank 0: ticket 0 -> Alice (tickets 0-9)
-        //   Rank 1: ticket 2 (20/10) -> Alice
-        //   Rank 2: ticket 4 (20*2/10) -> Alice
-        //   ...
-        //   Rank 5: ticket 10 (20*5/10) -> Bob (tickets 10-19)
+        //   Rank 1: ticket 2 (20*1/7) -> Alice
+        //   Rank 2: ticket 5 (20*2/7) -> Alice
+        //   Rank 3: ticket 8 (20*3/7) -> Alice
+        //   Rank 4: ticket 11 (20*4/7) -> Bob (tickets 10-19)
+        //   Rank 5: ticket 14 (20*5/7) -> Bob
+        //   Rank 6: ticket 17 (20*6/7) -> Bob
 
-        // Alice is primary at slot 0
+        // Alice is primary (rank 0), eligible at 0 seconds (0-1299ms window)
         assert!(scheduler.is_producer_eligible(0, &alice, 0));
-        assert!(scheduler.is_producer_eligible(0, &alice, 5));
 
-        // Bob is rank 5 at slot 0 (ticket 10), not eligible at 0 seconds
+        // Alice is NOT eligible at 5 seconds (exclusive: rank 0 window is 0-1.3s)
+        assert!(!scheduler.is_producer_eligible(0, &alice, 5));
+
+        // Bob's first rank is 4, not eligible at 0 seconds
         assert!(!scheduler.is_producer_eligible(0, &bob, 0));
-        // Not eligible at 4 seconds (rank 5 needs 5+ seconds)
-        assert!(!scheduler.is_producer_eligible(0, &bob, 4));
-        // Eligible at 5 seconds (rank 5 window starts)
-        assert!(scheduler.is_producer_eligible(0, &bob, 5));
+        // Not eligible at 5 seconds (rank 4 window is 5200-6499ms)
+        assert!(!scheduler.is_producer_eligible(0, &bob, 5));
+        // Eligible at 6 seconds (6000ms falls in rank 4 window: 5200-6499ms)
+        assert!(scheduler.is_producer_eligible(0, &bob, 6));
     }
 
     #[test]
@@ -533,48 +534,28 @@ mod tests {
 
     #[test]
     fn test_allowed_producer_rank() {
-        // 1-second windows: each second unlocks one more rank
-
-        // 0-1s: rank 0
-        assert_eq!(allowed_producer_rank(0), 0);
-
-        // 1-2s: rank 1
-        assert_eq!(allowed_producer_rank(1), 1);
-
-        // 2-3s: rank 2
-        assert_eq!(allowed_producer_rank(2), 2);
-
-        // 5-6s: rank 5
-        assert_eq!(allowed_producer_rank(5), 5);
-
-        // 9-10s: rank 9 (max)
-        assert_eq!(allowed_producer_rank(9), 9);
-
-        // Beyond 10s: still capped at rank 9
-        assert_eq!(allowed_producer_rank(10), 9);
-        assert_eq!(allowed_producer_rank(100), 9);
+        // Sequential 1.3s windows (seconds precision)
+        assert_eq!(allowed_producer_rank(0), 0); // 0ms → rank 0
+        assert_eq!(allowed_producer_rank(1), 0); // 1000ms → rank 0 (0-1299ms)
+        assert_eq!(allowed_producer_rank(2), 1); // 2000ms → rank 1 (1300-2599ms)
+        assert_eq!(allowed_producer_rank(3), 2); // 3000ms → rank 2
+        assert_eq!(allowed_producer_rank(8), 6); // 8000ms → rank 6
+        assert_eq!(allowed_producer_rank(9), 6); // 9000ms → rank 6
+        assert_eq!(allowed_producer_rank(10), 6); // emergency → max rank
     }
 
     #[test]
     fn test_allowed_producer_rank_ms() {
-        // 0-999ms: rank 0
+        // Sequential 1.3s exclusive windows (ms precision)
         assert_eq!(allowed_producer_rank_ms(0), 0);
-        assert_eq!(allowed_producer_rank_ms(999), 0);
-
-        // 1000-1999ms: rank 1
-        assert_eq!(allowed_producer_rank_ms(1000), 1);
-        assert_eq!(allowed_producer_rank_ms(1999), 1);
-
-        // 5000-5999ms: rank 5
-        assert_eq!(allowed_producer_rank_ms(5000), 5);
-        assert_eq!(allowed_producer_rank_ms(5999), 5);
-
-        // 9000-9999ms: rank 9 (max)
-        assert_eq!(allowed_producer_rank_ms(9000), 9);
-        assert_eq!(allowed_producer_rank_ms(9999), 9);
-
-        // Beyond 10s: capped at rank 9
-        assert_eq!(allowed_producer_rank_ms(10000), 9);
+        assert_eq!(allowed_producer_rank_ms(1299), 0);
+        assert_eq!(allowed_producer_rank_ms(1300), 1);
+        assert_eq!(allowed_producer_rank_ms(2599), 1);
+        assert_eq!(allowed_producer_rank_ms(2600), 2);
+        assert_eq!(allowed_producer_rank_ms(7800), 6);
+        assert_eq!(allowed_producer_rank_ms(9099), 6);
+        assert_eq!(allowed_producer_rank_ms(9100), 6); // emergency → max rank
+        assert_eq!(allowed_producer_rank_ms(10000), 6);
     }
 
     #[test]

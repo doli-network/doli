@@ -93,8 +93,8 @@ DOLI uses a hash-chain VDF with dynamic calibration to maintain consistent timin
 
 | Parameter       | All Networks |
 |-----------------|--------------|
-| Target time     | ~700ms       |
-| Iterations      | ~10,000,000 (calibrated) |
+| Target time     | ~55ms        |
+| Iterations      | ~800,000 (calibrated) |
 | Output          | 32 bytes     |
 | Verification    | Recompute    |
 
@@ -104,11 +104,11 @@ VDF_verify(input, output, iterations) -> bool  // Recomputes the chain
 ```
 
 **Dynamic Calibration:**
-- Iterations adjusted ±20% per cycle to maintain ~700ms target timing
+- Iterations adjusted ±20% per cycle to maintain ~55ms target timing
 - Min: 100,000 | Max: 100,000,000 iterations
 - Calibration runs every 60 seconds
 
-**Note**: All networks use the same ~700ms VDF heartbeat. Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing.
+**Note**: All networks use the same ~55ms VDF heartbeat. Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing.
 
 ---
 
@@ -762,12 +762,41 @@ Producers can stake multiple bonds (1-100) to increase their block production sh
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| BOND_UNIT | 100 DOLI | 1 bond = 100 DOLI (10,000,000,000 base units) |
+| BOND_UNIT | 10 DOLI | 1 bond = 10 DOLI (1,000,000,000 base units) |
 | MIN_BONDS | 1 | Minimum to register |
-| MAX_BONDS | 100 | Anti-whale cap (10,000 DOLI max) |
+| MAX_BONDS | 10,000 | Anti-whale cap (100,000 DOLI max) |
 
 **FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
 This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
+
+### 5.4.2 Sequential Fallback Windows
+
+When the primary producer misses their slot, fallback producers take over in exclusive 1.3-second sequential windows. Only ONE rank is eligible at any given time:
+
+| Window (ms) | Eligible Rank | Description |
+|-------------|---------------|-------------|
+| 0 – 1,299 | 0 | Primary producer only |
+| 1,300 – 2,599 | 1 | First fallback |
+| 2,600 – 3,899 | 2 | Second fallback |
+| 3,900 – 5,199 | 3 | Third fallback |
+| 5,200 – 6,499 | 4 | Fourth fallback |
+| 6,500 – 7,799 | 5 | Fifth fallback |
+| 7,800 – 9,099 | 6 | Sixth fallback |
+| 9,100 – 10,000 | 0–6 | Emergency — all ranks eligible |
+
+**Constants:**
+- `FALLBACK_TIMEOUT_MS = 1,300` — duration of each exclusive window
+- `MAX_FALLBACK_RANKS = 7` — total number of ranked producers per slot
+- `EMERGENCY_WINDOW_START_MS = 9,100` — start of emergency all-eligible window
+- `MAX_DRIFT_MS = 200` — maximum clock drift tolerance (ms)
+
+**Fallback producer selection:** Each rank gets an evenly-distributed offset in the ticket space:
+```
+offset(rank) = total_tickets * rank / MAX_FALLBACK_RANKS
+ticket(slot, rank) = (slot + offset(rank)) % total_tickets
+```
+
+This ensures fallback producers are spread across the producer set, not consecutive.
 
 **Example distribution:**
 ```
@@ -862,7 +891,10 @@ registration_tx = {
         public_key: 32 bytes,
         epoch: uint32,
         vdf_output: bytes,
-        vdf_proof: bytes
+        vdf_proof: bytes,
+        prev_registration_hash: 32 bytes,  // Chain to previous registration
+        sequence_number: uint64,           // Monotonic counter
+        bond_count: uint32                 // On-chain bond count (consensus-critical)
     }
 }
 ```
@@ -873,8 +905,8 @@ registration_tx = {
 def bond_amount(bond_count):
     return bond_count * BOND_UNIT
 
-BOND_UNIT = 10_000_000_000       // 100 DOLI per bond
-MAX_BONDS = 100                  // Maximum bonds per producer
+BOND_UNIT = 1_000_000_000        // 10 DOLI per bond
+MAX_BONDS = 10_000               // Maximum bonds per producer
 LOCK_DURATION = 4 * YEAR_IN_SLOTS  // ~4 years for full vesting
 ```
 
@@ -916,6 +948,8 @@ A registration is valid if:
 3. Public key is not already registered
 4. Bond output has correct amount and lock duration
 5. Fee is sufficient
+6. `bond_count` is in range [1, MAX_BONDS] (consensus-critical for producer selection)
+7. Registration chain: `prev_registration_hash` and `sequence_number` are valid
 
 ### 6.6 Producer Activation
 
@@ -1018,7 +1052,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | P2P Port | 30303 | 40303 | 50303 | All |
 | RPC Port | 8545 | 18545 | 28545 | All |
 | Metrics Port | 9090 | 19090 | 29090 | All |
-| Bond Unit | 100 DOLI | 100 DOLI | 1 DOLI | Devnet only |
+| Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI | Devnet only |
 | Initial Reward | 1 DOLI | 1 DOLI | 20 DOLI | Devnet only |
 | VDF Iterations | 100,000 | 100,000 | 1 | Devnet only |
 | Heartbeat VDF | 10M (~700ms) | 10M (~700ms) | 10M (~700ms) | Devnet only |
@@ -1208,19 +1242,19 @@ Result:
 | SLOTS_PER_EPOCH    | 360                      |
 | SLOTS_PER_ERA      | 12,614,400               |
 | BOOTSTRAP_BLOCKS   | 60,480                   |
-| DRIFT              | 10                       |
+| DRIFT              | 1                        |
 | NETWORK_MARGIN     | 1                        |
-| VDF_ITERATIONS_DEFAULT | 10,000,000           |
+| VDF_ITERATIONS_DEFAULT | 800,000              |
 | VDF_ITERATIONS_MIN | 100,000                  |
 | VDF_ITERATIONS_MAX | 100,000,000              |
-| VDF_TARGET_TIME_MS | 700                      |
+| VDF_TARGET_TIME_MS | 55                       |
 | T_REGISTER_BASE    | 600,000,000              |
 | T_REGISTER_CAP     | 86,400,000,000           |
 | R_TARGET           | 10                       |
 | R_CAP              | 100                      |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
-| BOND_UNIT          | 10,000,000,000 (100 DOLI) |
-| MAX_BONDS_PER_PRODUCER | 100                  |
+| BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
+| MAX_BONDS_PER_PRODUCER | 10,000               |
 | WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
 | YEAR_IN_SLOTS      | 3,153,600                |
 | COMMITMENT_PERIOD  | 12,614,400 (~4 years)    |

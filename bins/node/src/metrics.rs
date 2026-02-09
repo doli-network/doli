@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use axum::{routing::get, Router};
 use lazy_static::lazy_static;
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
-    IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+    Encoder, Gauge, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, IntGaugeVec,
+    Opts, Registry, TextEncoder,
 };
 use tracing::info;
 
@@ -311,6 +311,7 @@ pub fn spawn_metrics_server(addr: SocketAddr) {
 }
 
 /// Record a block being processed
+#[allow(dead_code)]
 pub fn record_block_processed(valid: bool) {
     BLOCKS_PROCESSED.inc();
     if valid {
@@ -321,6 +322,7 @@ pub fn record_block_processed(valid: bool) {
 }
 
 /// Record a transaction being validated
+#[allow(dead_code)]
 pub fn record_transaction_validated(tx_type: &str, valid: bool) {
     TRANSACTIONS_VALIDATED.inc();
     TRANSACTIONS_BY_TYPE.with_label_values(&[tx_type]).inc();
@@ -332,6 +334,7 @@ pub fn record_transaction_validated(tx_type: &str, valid: bool) {
 }
 
 /// Update sync metrics
+#[allow(dead_code)]
 pub fn update_sync_metrics(progress: f64, syncing: bool, behind: u64) {
     SYNC_PROGRESS.set(progress);
     IS_SYNCING.set(if syncing { 1 } else { 0 });
@@ -339,17 +342,20 @@ pub fn update_sync_metrics(progress: f64, syncing: bool, behind: u64) {
 }
 
 /// Update chain metrics
+#[allow(dead_code)]
 pub fn update_chain_metrics(height: u64, slot: u64) {
     CHAIN_HEIGHT.set(height as i64);
     CURRENT_SLOT.set(slot as i64);
 }
 
 /// Update network metrics
+#[allow(dead_code)]
 pub fn update_network_metrics(connected: usize) {
     PEERS_CONNECTED.set(connected as i64);
 }
 
 /// Update mempool metrics
+#[allow(dead_code)]
 pub fn update_mempool_metrics(count: usize, bytes: usize) {
     MEMPOOL_SIZE.set(count as i64);
     MEMPOOL_BYTES.set(bytes as i64);
