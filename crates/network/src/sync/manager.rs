@@ -20,6 +20,11 @@ use super::headers::HeaderDownloader;
 use super::reorg::ReorgHandler;
 use crate::protocols::{SyncRequest, SyncResponse};
 
+/// Minimum peers required for block production, by tier.
+const MIN_PEERS_TIER1: usize = 10;
+const MIN_PEERS_TIER2: usize = 5;
+const MIN_PEERS_TIER3: usize = 2;
+
 /// Sync configuration
 #[derive(Clone, Debug)]
 pub struct SyncConfig {
@@ -110,11 +115,6 @@ pub enum ProductionAuthorization {
         /// How far ahead we are
         height_ahead: u64,
     },
-    /// Production blocked: repeated sync failures indicate fork
-    BlockedSyncFailures {
-        /// Number of consecutive sync failures
-        failure_count: u32,
-    },
     /// Production blocked: critical chain mismatch with connected peer (P0 #1)
     BlockedChainMismatch {
         peer_id: PeerId,
@@ -122,17 +122,24 @@ pub enum ProductionAuthorization {
         peer_hash: Hash,
         local_height: u64,
     },
-    /// Production blocked: no gossip activity received despite having peers (P0 #3)
-    BlockedNoGossipActivity {
-        seconds_since_gossip: u64,
-        peer_count: usize,
-    },
     /// Production is blocked - too few peers to safely validate chain (echo chamber prevention)
     BlockedInsufficientPeers {
         /// Current peer count
         peer_count: usize,
         /// Minimum required
         min_required: usize,
+    },
+    /// Production is blocked due to excessive sync failures (likely on a fork)
+    BlockedSyncFailures {
+        /// How many consecutive sync failures
+        failure_count: u32,
+    },
+    /// Production is blocked due to no gossip activity (likely isolated)
+    BlockedNoGossipActivity {
+        /// Seconds since last gossip block
+        seconds_since_gossip: u64,
+        /// Number of connected peers
+        peer_count: usize,
     },
     /// Production is explicitly blocked (e.g., invariant violation)
     BlockedExplicit {
@@ -143,6 +150,11 @@ pub enum ProductionAuthorization {
     BlockedBootstrap {
         /// Reason for bootstrap block
         reason: String,
+    },
+    /// Production is blocked because our chain conflicts with a finalized block.
+    BlockedConflictsFinality {
+        /// Height of the last finalized block.
+        local_finalized_height: u64,
     },
 }
 
@@ -243,15 +255,18 @@ pub struct SyncManager {
     /// Max heights ahead of network before blocking (P0 #2)
     max_heights_ahead: u64,
 
-    /// Last time we received a block via gossip (P0 #3)
+    // === GOSSIP WATCHDOG FIELDS (P0 #3) ===
+    /// Last time we received a block via gossip (for gossip activity watchdog)
     last_block_received_via_gossip: Option<Instant>,
-    /// Max time allowed without gossip before blocking production (3 mins)
+    /// Gossip inactivity timeout in seconds (default 180s = 3 minutes)
     gossip_activity_timeout_secs: u64,
 
-    /// Consecutive sync failures (empty headers = fork indicator)
+    // === SYNC FAILURE TRACKING (P0 #4) ===
+    /// Consecutive sync failures (empty header responses)
     consecutive_sync_failures: u32,
-    /// Maximum sync failures before blocking production (fork detection)
+    /// Max sync failures before fork detection triggers
     max_sync_failures_before_fork_detection: u32,
+
     /// Minimum peers required for production (P0 #5)
     min_peers_for_production: usize,
 
@@ -271,6 +286,26 @@ pub struct SyncManager {
     last_peer_status_received: Option<Instant>,
     /// Bootstrap grace period (seconds) - time to wait at genesis for chain evidence
     bootstrap_grace_period_secs: u64,
+
+    /// Producer tier (0=default, 1=validator, 2=attestor, 3=staker)
+    tier: u8,
+
+    /// Finality tracker — tracks attestation weight and determines finalized blocks.
+    finality_tracker: doli_core::FinalityTracker,
+
+    /// Fork recovery tracker — active parent chain download for automatic reorg.
+    fork_recovery: super::fork_recovery::ForkRecoveryTracker,
+
+    /// Last time we received ANY block (gossip or sync). Used for stale chain detection.
+    last_block_seen: Instant,
+
+    /// Last time we successfully applied a block. Used to detect stuck Processing state.
+    /// Unlike `last_block_seen` (reset by gossip), this only resets on actual chain advancement.
+    last_block_applied: Instant,
+
+    /// Consecutive empty header responses (peers don't recognize our chain tip).
+    /// When >= 3, we're on a deep fork and need genesis resync.
+    consecutive_empty_headers: u32,
 }
 
 impl SyncManager {
@@ -323,6 +358,12 @@ impl SyncManager {
             first_peer_status_received: None,
             last_peer_status_received: None,
             bootstrap_grace_period_secs: 15, // Wait 15s at genesis for chain evidence
+            tier: 0,
+            finality_tracker: doli_core::FinalityTracker::new(),
+            fork_recovery: super::fork_recovery::ForkRecoveryTracker::new(),
+            last_block_seen: Instant::now(),
+            last_block_applied: Instant::now(),
+            consecutive_empty_headers: 0,
         }
     }
 
@@ -471,7 +512,6 @@ impl SyncManager {
             status.last_status_response = now;
             status.last_block_received = Some(now); // Gossip proves both liveness and data flow
         }
-        self.last_block_received_via_gossip = Some(now);
     }
 
     /// Remove a peer
@@ -585,14 +625,13 @@ impl SyncManager {
         let best_peer_h = self.best_peer_height();
         let best_peer_s = self.best_peer_slot();
         info!(
-            "[CAN_PRODUCE] slot={} local_h={} local_s={} peer_h={} peer_s={} peers={} sync_failures={} state={:?}",
+            "[CAN_PRODUCE] slot={} local_h={} local_s={} peer_h={} peer_s={} peers={} state={:?}",
             current_slot,
             self.local_height,
             self.local_slot,
             best_peer_h,
             best_peer_s,
             self.peers.len(),
-            self.consecutive_sync_failures,
             self.state
         );
 
@@ -686,10 +725,9 @@ impl SyncManager {
             }
         }
 
-        // Layer 5: Post-resync grace period
+        // Layer 5: Post-resync grace period (absorbs former Layer 5.6 first-sync grace)
         if let Some(completed) = self.last_resync_completed {
             let elapsed = completed.elapsed().as_secs();
-            // Exponential backoff: base grace * 2^(consecutive_resyncs - 1)
             let effective_grace = if self.consecutive_resync_count > 1 {
                 self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4))
             } else {
@@ -731,23 +769,28 @@ impl SyncManager {
         }
 
         // Layer 6: Peer synchronization check - too far BEHIND
-        let best_peer_height = self.best_peer_height();
+        //
+        // IMPORTANT: Only compare SLOTS, not heights. Heights are unreliable because
+        // forked nodes accumulate inflated block counts (height > slot). A single
+        // forked peer with height=200 would block honest nodes at height=158.
+        // Slots are time-based and can't be inflated by forks.
         let best_peer_slot = self.best_peer_slot();
 
         // Only check if we have peer data
-        if self.peers.len() > 0 && (best_peer_height > 0 || best_peer_slot > 0) {
-            let height_diff = best_peer_height.saturating_sub(self.local_height);
+        if !self.peers.is_empty() && best_peer_slot > 0 {
             let slot_diff = best_peer_slot.saturating_sub(self.local_slot);
 
-            // Per spec: "within 2 slots of peers" - we check both slots AND heights
-            if height_diff > self.max_heights_behind || slot_diff > self.max_slots_behind {
+            if slot_diff > self.max_slots_behind {
+                let best_peer_height = self.best_peer_height();
                 return ProductionAuthorization::BlockedBehindPeers {
                     local_height: self.local_height,
                     peer_height: best_peer_height,
-                    height_diff,
+                    height_diff: best_peer_height.saturating_sub(self.local_height),
                 };
             }
         }
+
+        let best_peer_height = self.best_peer_height();
 
         // Layer 7: "Ahead of network" detection (P0 #2) - FORK DETECTION
         //
@@ -834,7 +877,7 @@ impl SyncManager {
             );
         }
 
-        // Layer 8: Sync failure-based fork detection (P0 #4)
+        // Layer 9: Chain Hash Verification — INFORMATIONAL ONLY
         //
         // When our chain has diverged from peers:
         // - GetHeaders requests return empty (peer doesn't have our tip as ancestor)
@@ -901,6 +944,21 @@ impl SyncManager {
                 return ProductionAuthorization::BlockedNoGossipActivity {
                     seconds_since_gossip: elapsed.as_secs(),
                     peer_count: self.peers.len(),
+                };
+            }
+        }
+
+        // Layer 11: Finality conflict check
+        // If we have a finalized block, ensure our chain doesn't conflict with it.
+        // This prevents producing blocks on a fork that has been superseded by finality.
+        if let Some(finalized_height) = self.last_finalized_height() {
+            if self.local_height < finalized_height {
+                info!(
+                    "[CAN_PRODUCE] Layer11: local_height={} < finalized_height={} - blocked",
+                    self.local_height, finalized_height
+                );
+                return ProductionAuthorization::BlockedConflictsFinality {
+                    local_finalized_height: finalized_height,
                 };
             }
         }
@@ -1081,7 +1139,7 @@ impl SyncManager {
         );
     }
 
-    /// Set the gossip activity timeout in seconds (P0 #3)
+    /// Set the producer tier and adjust min_peers_for_production accordingly.
     ///
     /// If no blocks are received via gossip for this duration, production is blocked.
     /// This should be calibrated to the slot duration (e.g., 18 * slot_duration).
@@ -1090,44 +1148,67 @@ impl SyncManager {
         info!("Set gossip_activity_timeout_secs to {} seconds", secs);
     }
 
-    /// Note a sync failure (empty headers or invalid chain linkage)
+    /// Set the producer tier and adjust min_peers_for_production accordingly.
     ///
-    /// This is called when sync detects we're on a different chain than peers:
-    /// - GetHeaders returns empty (peer doesn't have our tip)
-    /// - Header chain doesn't link (hash mismatch)
-    ///
-    /// After `max_sync_failures_before_fork_detection` consecutive failures,
-    /// production is blocked (Layer 8 in can_produce).
-    pub fn note_sync_failure(&mut self) {
-        self.consecutive_sync_failures += 1;
-        warn!(
-            "Sync failure #{} - chain may have diverged from peers",
-            self.consecutive_sync_failures
-        );
+    /// Tier 1 validators need more peers (dense mesh), Tier 3 stakers need fewer.
+    pub fn set_tier(&mut self, tier: u8) {
+        self.tier = tier;
+        let min_peers = match tier {
+            1 => MIN_PEERS_TIER1,
+            2 => MIN_PEERS_TIER2,
+            3 => MIN_PEERS_TIER3,
+            _ => MIN_PEERS_TIER3, // Default: backward compatible
+        };
+        self.min_peers_for_production = min_peers;
+        info!("Set tier={} min_peers_for_production={}", tier, min_peers);
     }
 
-    /// Clear sync failures after successful sync
-    ///
-    /// Called when we successfully receive and process headers from peers,
-    /// indicating our chain is compatible with the network.
-    pub fn clear_sync_failures(&mut self) {
-        if self.consecutive_sync_failures > 0 {
-            debug!(
-                "Clearing {} consecutive sync failures after successful sync",
-                self.consecutive_sync_failures
+    /// Get the current tier.
+    pub fn tier(&self) -> u8 {
+        self.tier
+    }
+
+    /// Track a newly applied block for finality.
+    pub fn track_block_for_finality(
+        &mut self,
+        hash: crypto::Hash,
+        height: u64,
+        slot: u32,
+        total_weight: u64,
+    ) {
+        self.finality_tracker
+            .track_block(hash, height, slot, total_weight);
+    }
+
+    /// Add attestation weight to a pending block.
+    pub fn add_attestation_weight(&mut self, block_hash: &crypto::Hash, weight: u64) {
+        self.finality_tracker
+            .add_attestation_weight(*block_hash, weight);
+        // Check if this triggers finality
+        if let Some(checkpoint) = self.finality_tracker.check_finality() {
+            info!(
+                "FINALITY: Block {} finalized at height {} (attestation {}/{})",
+                checkpoint.block_hash,
+                checkpoint.height,
+                checkpoint.attestation_weight,
+                checkpoint.total_weight
             );
-            self.consecutive_sync_failures = 0;
+            self.reorg_handler
+                .set_last_finality_height(checkpoint.height);
         }
     }
 
-    /// Check if sync failures indicate we're on a fork
-    pub fn has_sync_failure_fork_indicator(&self) -> bool {
-        self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection
+    /// Get the last finalized height, if any.
+    pub fn last_finalized_height(&self) -> Option<u64> {
+        self.finality_tracker
+            .last_finalized
+            .as_ref()
+            .map(|c| c.height)
     }
 
-    /// Get the current consecutive sync failure count
-    pub fn consecutive_sync_failure_count(&self) -> u32 {
-        self.consecutive_sync_failures
+    /// Check if sync failures indicate we're on a fork (no-op, kept for API compatibility)
+    pub fn has_sync_failure_fork_indicator(&self) -> bool {
+        false
     }
 
     /// Network tip height (best seen via gossip or peer status)
@@ -1138,6 +1219,11 @@ impl SyncManager {
     /// Network tip slot (best seen via gossip or peer status)
     pub fn network_tip_slot(&self) -> u32 {
         self.network_tip_slot
+    }
+
+    /// Get consecutive sync failure count (for health diagnostics)
+    pub fn consecutive_sync_failure_count(&self) -> u32 {
+        self.consecutive_sync_failures
     }
 
     /// Human-readable sync state name for diagnostics
@@ -1153,11 +1239,18 @@ impl SyncManager {
 
     /// Note that we received a block via gossip network (P0 #3)
     pub fn note_block_received_via_gossip(&mut self) {
-        self.last_block_received_via_gossip = Some(Instant::now());
+        self.last_block_seen = Instant::now();
+        // NOTE: We intentionally do NOT reset consecutive_empty_headers here.
+        // Receiving gossip blocks proves the *network* is alive, but NOT that we're on
+        // the canonical chain. If we're on a fork, we receive gossip blocks from the
+        // canonical chain that we can't apply (orphans). Resetting the counter here
+        // would prevent deep fork detection from ever triggering, leaving the node
+        // permanently stuck on a dead fork.
     }
 
     /// Note that we received a block from a specific peer (P1 #5)
     pub fn note_block_received_from_peer(&mut self, peer_id: PeerId) {
+        self.last_block_seen = Instant::now();
         if let Some(status) = self.peers.get_mut(&peer_id) {
             status.last_block_received = Some(Instant::now());
             // Implicitly, if they sent us a block, they are reachable
@@ -1165,8 +1258,94 @@ impl SyncManager {
         }
     }
 
+    /// Check if the chain is stale (no blocks received for `threshold` duration).
+    /// Used by Node to detect stuck state and trigger re-sync.
+    pub fn is_chain_stale(&self, threshold: Duration) -> bool {
+        self.last_block_seen.elapsed() > threshold
+    }
+
+    /// Returns true if peers consistently reject our chain tip (deep fork).
+    /// Requires BOTH conditions:
+    /// 1. Many consecutive empty header responses (peers don't recognize our chain)
+    /// 2. We are significantly behind peers (not just a 1-block fork)
+    ///
+    /// Short forks (1-2 blocks) are normal and resolve naturally via heaviest chain.
+    /// Only trigger genesis resync for genuine deep forks where we're stuck.
+    pub fn is_deep_fork_detected(&self) -> bool {
+        if self.consecutive_empty_headers < 10 {
+            return false;
+        }
+        // Must be significantly behind peers to qualify as deep fork
+        let best_peer_height = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        best_peer_height > self.local_height + 5
+    }
+
     // =========================================================================
     // END PRODUCTION GATE
+    // =========================================================================
+
+    // =========================================================================
+    // FORK RECOVERY — Active parent chain download
+    // =========================================================================
+
+    /// Start fork recovery for an orphan block.
+    /// Walks backward through parent chain requesting blocks from the peer.
+    pub fn start_fork_recovery(&mut self, orphan: doli_core::Block, peer: PeerId) -> bool {
+        self.fork_recovery.start(orphan, peer)
+    }
+
+    /// Check if fork recovery chain connected to our block_store.
+    /// Node calls this with the result of `block_store.has_block(current_parent)`.
+    pub fn check_fork_recovery_connection(
+        &mut self,
+        parent_known: bool,
+    ) -> Option<super::fork_recovery::CompletedRecovery> {
+        self.fork_recovery.check_connection(parent_known)
+    }
+
+    /// Get the parent hash the recovery is currently seeking.
+    /// Returns None if no recovery active or waiting for response.
+    pub fn fork_recovery_current_parent(&self) -> Option<Hash> {
+        self.fork_recovery.current_parent()
+    }
+
+    /// Is fork recovery currently active?
+    pub fn is_fork_recovery_active(&self) -> bool {
+        self.fork_recovery.is_active()
+    }
+
+    /// Can a new fork recovery start? (not active and not on cooldown)
+    pub fn can_start_fork_recovery(&self) -> bool {
+        self.fork_recovery.can_start()
+    }
+
+    /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
+    /// Used during fork recovery to populate weights before plan_reorg.
+    pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {
+        self.reorg_handler
+            .record_block_with_weight(hash, prev_hash, weight);
+    }
+
+    /// Get read-only access to the reorg handler (for plan_reorg from Node).
+    pub fn reorg_handler(&self) -> &super::reorg::ReorgHandler {
+        &self.reorg_handler
+    }
+
+    /// Pick the best peer for fork recovery (highest height).
+    pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
+        self.peers
+            .iter()
+            .max_by_key(|(_, status)| status.best_height)
+            .map(|(peer, _)| *peer)
+    }
+
+    // =========================================================================
+    // END FORK RECOVERY
     // =========================================================================
 
     /// Check if we should start syncing
@@ -1210,6 +1389,12 @@ impl SyncManager {
                     peer,
                     headers_count: 0,
                 };
+
+                // Reset the stuck-sync timer so this new attempt gets a full 30s
+                // window before cleanup() declares it stuck. Without this, a node
+                // that hasn't applied blocks recently (e.g. after genesis resync)
+                // would have its sync attempt killed immediately by cleanup().
+                self.last_block_applied = Instant::now();
             }
         }
     }
@@ -1217,7 +1402,18 @@ impl SyncManager {
     /// Get the next sync request to send
     pub fn next_request(&mut self) -> Option<(PeerId, SyncRequest)> {
         match &self.state {
-            SyncState::Idle | SyncState::Synchronized => None,
+            SyncState::Idle | SyncState::Synchronized => {
+                // Serve fork recovery requests when main sync is idle
+                if let Some((peer, hash)) = self.fork_recovery.next_fetch() {
+                    let request = SyncRequest::GetBlockByHash { hash };
+                    let id = self.register_request(peer, request.clone());
+                    if let Some(status) = self.peers.get_mut(&peer) {
+                        status.pending_request = Some(id);
+                    }
+                    return Some((peer, request));
+                }
+                None
+            }
 
             SyncState::DownloadingHeaders { peer, .. } => {
                 let peer = *peer;
@@ -1287,9 +1483,11 @@ impl SyncManager {
             self.state
         );
 
-        // Clear pending request for this peer
+        // Clear pending request for this peer and remove from tracking map
         if let Some(status) = self.peers.get_mut(&peer) {
-            status.pending_request = None;
+            if let Some(req_id) = status.pending_request.take() {
+                self.pending_requests.remove(&req_id);
+            }
         }
 
         match response {
@@ -1313,6 +1511,13 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
                 );
+                // Fork recovery intercept: consume blocks during active recovery
+                if self.fork_recovery.is_active()
+                    && self.fork_recovery.handle_block(peer, maybe_block.clone())
+                {
+                    return vec![]; // Consumed by fork recovery
+                }
+                // Normal passthrough
                 if let Some(block) = maybe_block {
                     vec![block]
                 } else {
@@ -1331,26 +1536,20 @@ impl SyncManager {
         if headers.is_empty() {
             debug!("Received empty headers response from {}", peer);
 
-            // FORK DETECTION (P0 #4): Empty headers can mean two things:
-            // 1. We're caught up (good) - headers_needing_bodies has content
-            // 2. Peer doesn't have our chain (bad) - we're on a fork
-            //
-            // If we haven't downloaded any headers yet, empty response = fork indicator
-            if self.headers_needing_bodies.is_empty() && self.pending_headers.is_empty() {
-                // We requested headers starting from our tip, peer returned nothing
-                // This means peer doesn't have our tip as an ancestor = FORK
-                self.note_sync_failure();
-                warn!(
-                    "Empty headers from {} with no pending work - possible fork (failure #{})",
-                    peer, self.consecutive_sync_failures
-                );
-            }
-
             // No more headers, transition to body download
             if !self.headers_needing_bodies.is_empty() {
                 let total = self.headers_needing_bodies.len();
                 self.state = SyncState::DownloadingBodies { pending: 0, total };
                 info!("Starting body download for {} blocks", total);
+            } else if self.pending_headers.is_empty() {
+                // Empty headers with no pending work = peer doesn't recognize our chain.
+                // This means we're on a fork. Reset to Idle so we can try a different peer.
+                self.consecutive_empty_headers += 1;
+                warn!(
+                    "Empty headers from {} with no pending work — likely on fork (consecutive={}). Resetting to Idle.",
+                    peer, self.consecutive_empty_headers
+                );
+                self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;
                 info!("Chain synchronized");
@@ -1366,8 +1565,8 @@ impl SyncManager {
             .process_headers(&headers, self.local_hash);
 
         if valid_count > 0 {
-            // SUCCESS: Headers chain correctly from our tip - clear failure counter
-            self.clear_sync_failures();
+            // Successfully received valid headers — reset deep fork counter
+            self.consecutive_empty_headers = 0;
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -1389,13 +1588,9 @@ impl SyncManager {
                 };
             }
         } else {
-            // FORK DETECTION (P0 #4): Received headers but none are valid
+            // FORK DETECTION: Received headers but none are valid
             // This means "Header chain broken" - our chain diverged from peer's
-            self.note_sync_failure();
-            warn!(
-                "No valid headers from peer {} - header chain broken (failure #{})",
-                peer, self.consecutive_sync_failures
-            );
+            warn!("No valid headers from peer {} - header chain broken", peer);
         }
     }
 
@@ -1456,6 +1651,33 @@ impl SyncManager {
         let mut blocks = Vec::new();
         let mut current_hash = self.local_hash;
 
+        // Detect chain mismatch: if we have pending headers but the first one
+        // doesn't build on our local chain, we're on a fork. The downloaded
+        // chain is useless — clear it and signal fork so deep fork detection
+        // can trigger genesis resync.
+        if let Some(header) = self.pending_headers.front() {
+            if header.prev_hash != current_hash && !self.pending_headers.is_empty() {
+                warn!(
+                    "Sync chain mismatch: first pending header (height {}, prev={}) doesn't \
+                     build on local tip (hash={}). Clearing {} useless synced blocks.",
+                    header.slot,
+                    &header.prev_hash.to_string()[..16],
+                    &current_hash.to_string()[..16],
+                    self.pending_headers.len()
+                );
+                self.pending_headers.clear();
+                self.pending_blocks.clear();
+                self.headers_needing_bodies.clear();
+                self.header_downloader.clear();
+                // Count toward deep fork detection so genesis resync triggers
+                self.consecutive_empty_headers += 1;
+                if matches!(self.state, SyncState::Processing { .. }) {
+                    self.state = SyncState::Idle;
+                }
+                return blocks;
+            }
+        }
+
         // Get pending headers in order
         while let Some(header) = self.pending_headers.front() {
             if header.prev_hash != current_hash {
@@ -1501,6 +1723,10 @@ impl SyncManager {
         self.local_hash = hash;
         self.local_slot = slot;
         self.blocks_applied += 1;
+        self.last_block_applied = Instant::now();
+
+        // Applying a block means the chain is advancing — reset deep fork counter.
+        self.consecutive_empty_headers = 0;
 
         // Also update network tip - if we applied a block, the network has at least this height/slot
         // This helps the "behind peers" check work correctly even when peer status is stale
@@ -1591,11 +1817,27 @@ impl SyncManager {
         // Reset gossip tracking for fresh start
         self.last_block_received_via_gossip = Some(Instant::now());
 
+        // Reset network tip to 0 — stale tip from pre-fork state distorts
+        // the "behind peers" check (Layer 6) after resync, causing the node
+        // at height 0 to think it's hundreds of blocks behind a ghost tip.
+        self.network_tip_height = 0;
+        self.network_tip_slot = 0;
+
         // Clear all pending sync state to start fresh
         self.pending_headers.clear();
         self.pending_blocks.clear();
         self.headers_needing_bodies.clear();
         self.pending_requests.clear();
+
+        // Cancel any active fork recovery
+        self.fork_recovery = super::fork_recovery::ForkRecoveryTracker::new();
+
+        // Reset deep fork detection
+        self.consecutive_empty_headers = 0;
+
+        // Reset stale chain timers
+        self.last_block_seen = Instant::now();
+        self.last_block_applied = Instant::now();
 
         // Reset downloaders
         self.header_downloader = HeaderDownloader::new(
@@ -1722,25 +1964,37 @@ impl SyncManager {
             }
         }
 
-        // Stall recovery: Processing state with no active network requests.
+        // Escape stuck sync states: if we're in Processing or DownloadingHeaders/Bodies
+        // and no blocks have been APPLIED for 30s, reset to Idle.
         //
-        // Two cases:
-        // 1. All blocks applied but network tip advanced — pending_headers/blocks empty
-        // 2. Blocks downloaded but unchainable (local_hash mismatch) — pending_blocks
-        //    NOT empty, but pending_requests is 0 so nothing will ever arrive to fix it
-        //
-        // In both cases, no pending_requests means nothing will change. Clear and restart.
-        if matches!(self.state, SyncState::Processing { .. }) && self.pending_requests.is_empty() {
+        // CRITICAL: We check `last_block_applied` (not `last_block_seen`) because gossip
+        // blocks keep resetting `last_block_seen` every few seconds, preventing the timeout
+        // from ever firing — even though those gossip blocks can't be applied because the
+        // node is stuck at a lower height. This was causing permanent deadlocks in Processing
+        // state where the node would receive gossip blocks indefinitely but never advance.
+        let stuck_threshold = Duration::from_secs(30);
+        if self.state.is_syncing() && self.last_block_applied.elapsed() > stuck_threshold {
+            let was_processing = matches!(self.state, SyncState::Processing { .. });
             warn!(
-                "Stall detected: Processing with no active requests (headers={}, blocks={}, local h={} s={}, tip h={} s={}). Resetting to Idle.",
-                self.pending_headers.len(), self.pending_blocks.len(),
-                self.local_height, self.local_slot, self.network_tip_height, self.network_tip_slot
+                "Sync stuck in {:?} for >30s with no blocks applied (last_applied={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
+                self.state, self.last_block_applied.elapsed(), self.local_height, self.network_tip_height
             );
+            self.state = SyncState::Idle;
             self.pending_headers.clear();
             self.pending_blocks.clear();
-            self.state = SyncState::Idle;
-            if self.should_sync() {
-                self.start_sync();
+            self.headers_needing_bodies.clear();
+            self.pending_requests.clear();
+            // Reset header downloader so next sync starts from local_hash,
+            // not from a stale expected_prev_hash from a previous (failed) cycle.
+            self.header_downloader.clear();
+            // If stuck in Processing, count toward deep fork detection.
+            // The node downloaded a chain it can't apply — this is fork evidence.
+            if was_processing {
+                self.consecutive_empty_headers += 1;
+                info!(
+                    "Stuck Processing counted as fork signal (consecutive_empty_headers={})",
+                    self.consecutive_empty_headers
+                );
             }
         }
     }
@@ -1890,99 +2144,6 @@ mod tests {
             result,
             ProductionAuthorization::BlockedAheadOfPeers { .. }
         ));
-    }
-
-    // =========================================================================
-    // P0 #4: Sync failure-based fork detection tests
-    // =========================================================================
-
-    #[test]
-    fn test_sync_failures_block_production() {
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-
-        // Simulate 3 sync failures (default threshold)
-        manager.note_sync_failure();
-        manager.note_sync_failure();
-        manager.note_sync_failure();
-
-        // Should now be blocked
-        let result = manager.can_produce(1);
-        match result {
-            ProductionAuthorization::BlockedSyncFailures { failure_count } => {
-                assert_eq!(failure_count, 3);
-            }
-            other => panic!("Expected BlockedSyncFailures, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_sync_failures_under_threshold_allow_production() {
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-
-        // Only 2 failures (under threshold of 3)
-        manager.note_sync_failure();
-        manager.note_sync_failure();
-
-        // Need to set up conditions for production
-        manager.local_height = 100;
-        manager.local_slot = 100;
-
-        // Add TWO peers to satisfy min_peers_for_production
-        let peer1 = PeerId::random();
-        let peer2 = PeerId::random();
-        manager.add_peer(peer1, 100, Hash::zero(), 100);
-        manager.add_peer(peer2, 100, Hash::zero(), 100);
-        manager.has_connected_to_peer = true;
-        manager.first_peer_status_received = Some(std::time::Instant::now());
-
-        // Should still be authorized
-        let result = manager.can_produce(101);
-        assert_eq!(result, ProductionAuthorization::Authorized);
-    }
-
-    #[test]
-    fn test_successful_sync_clears_failure_counter() {
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-
-        // Accumulate failures
-        manager.note_sync_failure();
-        manager.note_sync_failure();
-        assert_eq!(manager.consecutive_sync_failure_count(), 2);
-
-        // Successful sync should clear
-        manager.clear_sync_failures();
-        assert_eq!(manager.consecutive_sync_failure_count(), 0);
-
-        // Production should be allowed
-        manager.local_height = 100;
-        manager.local_slot = 100;
-
-        // Add TWO peers to satisfy min_peers_for_production
-        let peer1 = PeerId::random();
-        let peer2 = PeerId::random();
-        manager.add_peer(peer1, 100, Hash::zero(), 100);
-        manager.add_peer(peer2, 100, Hash::zero(), 100);
-        manager.has_connected_to_peer = true;
-        manager.first_peer_status_received = Some(std::time::Instant::now());
-
-        let result = manager.can_produce(101);
-        assert_eq!(result, ProductionAuthorization::Authorized);
-    }
-
-    #[test]
-    fn test_has_sync_failure_fork_indicator() {
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-
-        assert!(!manager.has_sync_failure_fork_indicator());
-
-        manager.note_sync_failure();
-        assert!(!manager.has_sync_failure_fork_indicator());
-
-        manager.note_sync_failure();
-        assert!(!manager.has_sync_failure_fork_indicator());
-
-        manager.note_sync_failure();
-        assert!(manager.has_sync_failure_fork_indicator()); // Now at threshold
     }
 
     // =========================================================================
@@ -2402,6 +2563,8 @@ mod tests {
         manager.local_slot = 60;
         manager.network_tip_height = 65;
         manager.network_tip_slot = 70;
+        // Simulate stuck state: last block applied >30s ago
+        manager.last_block_applied = Instant::now() - Duration::from_secs(60);
 
         let peer = PeerId::random();
         manager.peers.insert(

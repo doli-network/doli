@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crypto::Hash;
-use doli_core::{Amount, Block, BlockHeader, Transaction};
+use doli_core::{Block, Transaction};
 
 use crate::error::RpcError;
 
@@ -170,14 +169,16 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::EpochReward => "epoch_reward",
             doli_core::TxType::RemoveMaintainer => "remove_maintainer",
             doli_core::TxType::AddMaintainer => "add_maintainer",
+            doli_core::TxType::DelegateBond => "delegate_bond",
+            doli_core::TxType::RevokeDelegation => "revoke_delegation",
         };
 
         Self {
             hash: tx.hash().to_hex(),
             version: tx.version,
             tx_type: tx_type.to_string(),
-            inputs: tx.inputs.iter().map(|i| InputResponse::from(i)).collect(),
-            outputs: tx.outputs.iter().map(|o| OutputResponse::from(o)).collect(),
+            inputs: tx.inputs.iter().map(InputResponse::from).collect(),
+            outputs: tx.outputs.iter().map(OutputResponse::from).collect(),
             size: tx.size(),
             fee: None,
             block_hash: None,

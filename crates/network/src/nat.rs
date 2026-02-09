@@ -73,20 +73,15 @@ impl NatConfig {
 }
 
 /// NAT status detected by autonat
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NatStatus {
     /// NAT status is unknown (still probing)
+    #[default]
     Unknown,
     /// Node is publicly reachable
     Public,
     /// Node is behind NAT
     Private,
-}
-
-impl Default for NatStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl std::fmt::Display for NatStatus {

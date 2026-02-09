@@ -152,9 +152,9 @@ impl SimplePresenceState {
     pub fn record_heartbeat(&mut self, producer: &PublicKey) {
         let state = self
             .producers
-            .entry(producer.clone())
+            .entry(*producer)
             .or_insert_with(|| SimpleProducerState {
-                pubkey: producer.clone(),
+                pubkey: *producer,
                 ..Default::default()
             });
 
@@ -199,7 +199,7 @@ impl SimplePresenceState {
         let mut ranked: Vec<_> = self
             .producers
             .iter()
-            .map(|(pk, state)| (pk.clone(), state.score))
+            .map(|(pk, state)| (*pk, state.score))
             .collect();
 
         // Sort by score descending
@@ -264,7 +264,7 @@ pub trait TpopConsensus {
                 // Check they have a valid heartbeat for this slot
                 let collector = self.heartbeat_collector();
                 if collector.has_heartbeat(self.current_slot(), producer) {
-                    return Some(producer.clone());
+                    return Some(*producer);
                 }
             }
         }
@@ -466,7 +466,7 @@ pub trait PresenceConsensus {
         let proofs: HashMap<_, _> = self
             .proofs_for_slot(slot)
             .into_iter()
-            .map(|p| (p.producer.clone(), p.clone()))
+            .map(|p| (p.producer, p.clone()))
             .collect();
 
         select_producer_by_presence(slot, checkpoint, &proofs, prev_hash)

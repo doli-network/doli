@@ -237,10 +237,7 @@ impl PeerDiversity {
         let prefix = IpPrefix::from_ip(ip);
 
         // Add to prefix tracking
-        self.by_prefix
-            .entry(prefix)
-            .or_insert_with(HashSet::new)
-            .insert(peer);
+        self.by_prefix.entry(prefix).or_default().insert(peer);
 
         // Store peer IP mapping
         self.peer_ips.insert(peer, ip);
@@ -249,10 +246,7 @@ impl PeerDiversity {
     /// Record a peer's ASN (call when ASN is discovered)
     pub fn record_asn(&mut self, peer: &PeerId, asn: u32) {
         self.peer_asns.insert(*peer, asn);
-        self.by_asn
-            .entry(asn)
-            .or_insert_with(HashSet::new)
-            .insert(*peer);
+        self.by_asn.entry(asn).or_default().insert(*peer);
     }
 
     /// Remove a disconnected peer

@@ -6,7 +6,7 @@
 //! - Balance queries
 //! - Network interaction
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -130,13 +130,25 @@ enum Commands {
 
     /// Show chain information
     Chain,
+
+    /// Update governance commands
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommands,
+    },
+
+    /// Maintainer governance commands
+    Maintainer {
+        #[command(subcommand)]
+        command: MaintainerCommands,
+    },
 }
 
 #[derive(Subcommand)]
 enum ProducerCommands {
     /// Register as a block producer
     Register {
-        /// Number of bonds to stake (1-100, each bond = 1,000 DOLI)
+        /// Number of bonds to stake (1-10000, each bond = 1 bond_unit)
         #[arg(short, long, default_value = "1")]
         bonds: u32,
     },
@@ -157,7 +169,7 @@ enum ProducerCommands {
 
     /// Add more bonds to increase stake (bond stacking)
     AddBond {
-        /// Number of bonds to add (1-100)
+        /// Number of bonds to add (1-10000)
         #[arg(short, long)]
         count: u32,
     },
@@ -232,6 +244,49 @@ enum RewardsCommands {
     Info,
 }
 
+#[derive(Subcommand)]
+enum UpdateCommands {
+    /// Check for available updates
+    Check,
+
+    /// Show pending update status, veto progress, deadlines
+    Status,
+
+    /// Vote on a pending update
+    Vote {
+        /// Version to vote on (e.g., "1.0.1")
+        #[arg(long)]
+        version: String,
+
+        /// Cast a veto vote
+        #[arg(long, conflicts_with = "approve")]
+        veto: bool,
+
+        /// Cast an approval vote
+        #[arg(long, conflicts_with = "veto")]
+        approve: bool,
+    },
+
+    /// Show current votes for a version
+    Votes {
+        /// Version to check (e.g., "1.0.1")
+        #[arg(long)]
+        version: String,
+    },
+
+    /// Manually apply an approved update
+    Apply,
+
+    /// Rollback to previous version
+    Rollback,
+}
+
+#[derive(Subcommand)]
+enum MaintainerCommands {
+    /// List current maintainers
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -283,6 +338,12 @@ async fn main() -> Result<()> {
         Commands::Chain => {
             cmd_chain(&cli.rpc).await?;
         }
+        Commands::Update { command } => {
+            cmd_update(&cli.wallet, &cli.rpc, command).await?;
+        }
+        Commands::Maintainer { command } => {
+            cmd_maintainer(&cli.rpc, command).await?;
+        }
     }
 
     Ok(())
@@ -306,7 +367,7 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_address(wallet_path: &PathBuf, label: Option<String>) -> Result<()> {
+fn cmd_address(wallet_path: &Path, label: Option<String>) -> Result<()> {
     let mut wallet = Wallet::load(wallet_path)?;
 
     let address = wallet.generate_address(label.as_deref())?;
@@ -317,7 +378,7 @@ fn cmd_address(wallet_path: &PathBuf, label: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_addresses(wallet_path: &PathBuf) -> Result<()> {
+fn cmd_addresses(wallet_path: &Path) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
     println!("Addresses:");
@@ -330,7 +391,7 @@ fn cmd_addresses(wallet_path: &PathBuf) -> Result<()> {
 }
 
 async fn cmd_balance(
-    wallet_path: &PathBuf,
+    wallet_path: &Path,
     rpc_endpoint: &str,
     address: Option<String>,
 ) -> Result<()> {
@@ -427,7 +488,7 @@ async fn cmd_balance(
 }
 
 async fn cmd_send(
-    wallet_path: &PathBuf,
+    wallet_path: &Path,
     rpc_endpoint: &str,
     to: &str,
     amount: &str,
@@ -576,7 +637,7 @@ async fn cmd_send(
     Ok(())
 }
 
-async fn cmd_history(wallet_path: &PathBuf, rpc_endpoint: &str, limit: usize) -> Result<()> {
+async fn cmd_history(wallet_path: &Path, rpc_endpoint: &str, limit: usize) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
 
@@ -637,7 +698,7 @@ async fn cmd_history(wallet_path: &PathBuf, rpc_endpoint: &str, limit: usize) ->
     Ok(())
 }
 
-fn cmd_export(wallet_path: &PathBuf, output: &PathBuf) -> Result<()> {
+fn cmd_export(wallet_path: &Path, output: &PathBuf) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
     wallet.export(output)?;
 
@@ -656,7 +717,7 @@ fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_info(wallet_path: &PathBuf) -> Result<()> {
+fn cmd_info(wallet_path: &Path) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
     println!("Wallet: {}", wallet.name());
@@ -672,7 +733,7 @@ fn cmd_info(wallet_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_sign(wallet_path: &PathBuf, message: &str, address: Option<String>) -> Result<()> {
+fn cmd_sign(wallet_path: &Path, message: &str, address: Option<String>) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
     let signature = wallet.sign_message(message, address.as_deref())?;
@@ -695,7 +756,7 @@ fn cmd_verify(message: &str, signature: &str, pubkey: &str) -> Result<()> {
 }
 
 async fn cmd_producer(
-    wallet_path: &PathBuf,
+    wallet_path: &Path,
     rpc_endpoint: &str,
     command: ProducerCommands,
 ) -> Result<()> {
@@ -720,9 +781,9 @@ async fn cmd_producer(
             println!("{:-<60}", "");
             println!();
 
-            // Validate bond count
-            if bonds < 1 || bonds > 100 {
-                println!("Error: Bond count must be between 1 and 100");
+            // Validate bond count (WHITEPAPER Section 6.3: max 1000 bonds)
+            if !(1..=10000).contains(&bonds) {
+                println!("Error: Bond count must be between 1 and 10000");
                 return Ok(());
             }
 
@@ -785,8 +846,13 @@ async fn cmd_producer(
             let lock_until = chain_info.best_height + blocks_per_era;
 
             // Create registration transaction with bonds
-            let mut tx =
-                Transaction::new_registration(inputs, producer_pubkey, required_amount, lock_until);
+            let mut tx = Transaction::new_registration(
+                inputs,
+                producer_pubkey,
+                required_amount,
+                lock_until,
+                bonds,
+            );
 
             // Add change output if needed
             let change = total_input - required_amount - fee;
@@ -927,8 +993,8 @@ async fn cmd_producer(
             println!("{:-<60}", "");
             println!();
 
-            if count < 1 || count > 100 {
-                println!("Error: Bond count must be between 1 and 100");
+            if !(1..=10000).contains(&count) {
+                println!("Error: Bond count must be between 1 and 10000");
                 return Ok(());
             }
 
@@ -1015,7 +1081,7 @@ async fn cmd_producer(
 
         ProducerCommands::RequestWithdrawal { count, destination } => {
             let wallet = Wallet::load(wallet_path)?;
-            let keypair = wallet.primary_keypair()?;
+            let _keypair = wallet.primary_keypair()?;
             let pubkey_hash = wallet.primary_pubkey_hash();
 
             println!("Request Withdrawal");
@@ -1329,7 +1395,7 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
 }
 
 async fn cmd_rewards(
-    wallet_path: &PathBuf,
+    wallet_path: &Path,
     rpc_endpoint: &str,
     command: RewardsCommands,
 ) -> Result<()> {
@@ -1656,6 +1722,219 @@ async fn cmd_rewards(
                 Err(e) => {
                     println!("Error fetching epoch info: {}", e);
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateCommands) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        println!("Error: Cannot connect to node at {}", rpc_endpoint);
+        return Ok(());
+    }
+
+    match command {
+        UpdateCommands::Check => {
+            println!("Update Check");
+            println!("{:-<60}", "");
+            println!();
+
+            match rpc.get_update_status().await {
+                Ok(status) => {
+                    if let Some(pending) = status.get("pending_update") {
+                        if pending.is_null() {
+                            println!("No pending updates. Your node is up to date.");
+                        } else {
+                            println!("Pending update found:");
+                            println!(
+                                "  Version: {}",
+                                pending
+                                    .get("version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?")
+                            );
+                            println!(
+                                "  Published: {}",
+                                pending
+                                    .get("published_at")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0)
+                            );
+                        }
+                    } else {
+                        println!("No pending updates.");
+                    }
+                }
+                Err(e) => println!("Error checking updates: {}", e),
+            }
+        }
+
+        UpdateCommands::Status => {
+            println!("Update Status");
+            println!("{:-<60}", "");
+            println!();
+
+            match rpc.get_update_status().await {
+                Ok(status) => {
+                    let veto_active = status
+                        .get("veto_period_active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let veto_count = status
+                        .get("veto_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let veto_pct = status
+                        .get("veto_percent")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+
+                    if let Some(pending) = status.get("pending_update") {
+                        if !pending.is_null() {
+                            let version = pending
+                                .get("version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            println!("Pending Update: v{}", version);
+                            println!(
+                                "Veto Period:    {}",
+                                if veto_active { "ACTIVE" } else { "ended" }
+                            );
+                            println!("Veto Count:     {}", veto_count);
+                            println!("Veto Percent:   {:.1}% (threshold: 40%)", veto_pct);
+                        } else {
+                            println!("No pending updates.");
+                        }
+                    } else {
+                        println!("No pending updates.");
+                    }
+                }
+                Err(e) => println!("Error fetching status: {}", e),
+            }
+        }
+
+        UpdateCommands::Vote {
+            version,
+            veto,
+            approve,
+        } => {
+            if !veto && !approve {
+                println!("Error: Must specify --veto or --approve");
+                return Ok(());
+            }
+
+            let wallet = Wallet::load(wallet_path)?;
+            let vote_type = if veto { "veto" } else { "approve" };
+            let producer_id = wallet.addresses()[0].public_key.clone();
+
+            println!(
+                "Submitting {} vote for v{}...",
+                vote_type.to_uppercase(),
+                version
+            );
+
+            let vote_msg = serde_json::json!({
+                "version": version,
+                "vote": vote_type,
+                "producer_id": producer_id,
+            });
+
+            match rpc.submit_vote(vote_msg).await {
+                Ok(result) => {
+                    let status = result
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    println!("Vote {}: {}", vote_type, status);
+                }
+                Err(e) => println!("Error submitting vote: {}", e),
+            }
+        }
+
+        UpdateCommands::Votes { version } => {
+            println!("Votes for v{}", version);
+            println!("{:-<60}", "");
+            println!();
+
+            match rpc.get_update_status().await {
+                Ok(status) => {
+                    let veto_count = status
+                        .get("veto_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let veto_pct = status
+                        .get("veto_percent")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+
+                    println!("Veto votes:   {}", veto_count);
+                    println!("Veto weight:  {:.1}%", veto_pct);
+                    println!(
+                        "Threshold:    40% ({})",
+                        if veto_pct >= 40.0 {
+                            "REJECTED"
+                        } else {
+                            "not reached"
+                        }
+                    );
+                }
+                Err(e) => println!("Error fetching votes: {}", e),
+            }
+        }
+
+        UpdateCommands::Apply => {
+            println!("Manual update apply is not yet supported via CLI.");
+            println!("Updates are applied automatically by the node after the grace period.");
+        }
+
+        UpdateCommands::Rollback => {
+            println!("Manual rollback is not yet supported via CLI.");
+            println!("The watchdog automatically rolls back after 3 crashes.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        println!("Error: Cannot connect to node at {}", rpc_endpoint);
+        return Ok(());
+    }
+
+    match command {
+        MaintainerCommands::List => {
+            println!("Maintainer Set");
+            println!("{:-<60}", "");
+            println!();
+
+            match rpc.get_maintainer_set().await {
+                Ok(set) => {
+                    if let Some(members) = set.get("members").and_then(|m| m.as_array()) {
+                        let threshold = set.get("threshold").and_then(|t| t.as_u64()).unwrap_or(3);
+                        println!("Threshold: {} of {}", threshold, members.len());
+                        println!();
+
+                        for (i, member) in members.iter().enumerate() {
+                            let key = member.as_str().unwrap_or("?");
+                            let short = if key.len() > 24 {
+                                format!("{}...{}", &key[..16], &key[key.len() - 8..])
+                            } else {
+                                key.to_string()
+                            };
+                            println!("  {}. {}", i + 1, short);
+                        }
+                    } else {
+                        println!("No maintainers found (or unsupported response format).");
+                    }
+                }
+                Err(e) => println!("Error fetching maintainer set: {}", e),
             }
         }
     }

@@ -15,7 +15,7 @@ use libp2p::{
     Multiaddr, PeerId, Swarm,
 };
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use doli_core::{
     decode_producer_set, encode_producer_set, is_legacy_bincode_format, Block,
@@ -92,6 +92,8 @@ pub enum NetworkEvent {
     NewVote(Vec<u8>),
     /// Heartbeat received for weighted presence rewards
     NewHeartbeat(Vec<u8>),
+    /// Attestation received for finality gadget
+    NewAttestation(Vec<u8>),
 }
 
 /// Commands to the network
@@ -142,15 +144,19 @@ pub enum NetworkCommand {
     BroadcastVote(Vec<u8>),
     /// Broadcast a heartbeat (weighted presence rewards)
     BroadcastHeartbeat(Vec<u8>),
+    /// Broadcast an attestation (finality gadget)
+    BroadcastAttestation(Vec<u8>),
 }
 
 /// Network service handle
 pub struct NetworkService {
     /// Configuration
+    #[allow(dead_code)]
     config: NetworkConfig,
     /// Connected peers
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     /// Event sender
+    #[allow(dead_code)]
     event_tx: mpsc::Sender<NetworkEvent>,
     /// Event receiver
     event_rx: mpsc::Receiver<NetworkEvent>,
@@ -188,7 +194,11 @@ impl NetworkService {
         let transport = build_transport(&keypair)
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
-        // Build gossipsub with mesh params from NetworkParams
+        // Build gossipsub with mesh params from NetworkParams.
+        // All topics are subscribed to ensure full connectivity at startup.
+        // Tier-aware mesh parameters (new_gossipsub_for_tier / subscribe_to_topics_for_tier)
+        // are available for future hot-reconfiguration when the node's tier is computed
+        // at the first epoch boundary after block sync.
         let mesh = crate::gossip::MeshConfig {
             mesh_n: config.mesh_n,
             mesh_n_low: config.mesh_n_low,
@@ -274,6 +284,15 @@ impl NetworkService {
     pub async fn broadcast_block(&self, block: Block) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::BroadcastBlock(block))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Broadcast an attestation to the network (finality gadget)
+    pub async fn broadcast_attestation(&self, data: Vec<u8>) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::BroadcastAttestation(data))
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -634,12 +653,31 @@ async fn handle_behaviour_event(
                         .send(NetworkEvent::NewHeartbeat(message.data.clone()))
                         .await;
                 }
+                topic if topic == crate::gossip::ATTESTATION_TOPIC => {
+                    // Forward attestation data for finality gadget
+                    debug!(
+                        "Received attestation ({} bytes) from {}",
+                        message.data.len(),
+                        propagation_source
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::NewAttestation(message.data.clone()))
+                        .await;
+                }
                 _ => {}
             }
         }
 
         DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated { peer, .. }) => {
             debug!("Kademlia routing updated for peer: {}", peer);
+            // Dial the discovered peer to establish a connection
+            if !swarm.is_connected(&peer) {
+                debug!("Dialing Kademlia-discovered peer {}", peer);
+                let _ = swarm.dial(peer);
+            }
+        }
+        DoliBehaviourEvent::Kademlia(_) => {
+            // Other Kademlia events (query progress, etc.) — no action needed
         }
 
         DoliBehaviourEvent::Identify(identify::Event::Received { peer_id, info }) => {
@@ -653,6 +691,9 @@ async fn handle_behaviour_event(
                 for addr in info.listen_addrs {
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                 }
+                // Trigger DHT bootstrap after adding peer addresses.
+                // This is idempotent — Kademlia ignores bootstrap if already running.
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
             }
         }
 
@@ -929,6 +970,19 @@ async fn handle_command(
             {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to broadcast heartbeat: {}", e);
+                }
+            }
+        }
+
+        NetworkCommand::BroadcastAttestation(attestation_data) => {
+            let topic = IdentTopic::new(crate::gossip::ATTESTATION_TOPIC);
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic, attestation_data)
+            {
+                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                    warn!("Failed to broadcast attestation: {}", e);
                 }
             }
         }

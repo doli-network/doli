@@ -66,7 +66,7 @@ impl LocalPresenceChain {
         let state = checkpoint
             .get_producer_state(pubkey)
             .cloned()
-            .unwrap_or_else(|| ProducerPresenceState::new(pubkey.clone(), 0));
+            .unwrap_or_else(|| ProducerPresenceState::new(*pubkey, 0));
 
         Self {
             keypair,
@@ -156,7 +156,7 @@ impl LocalPresenceChain {
         }
 
         Some(PresenceProof {
-            producer: self.keypair.public_key().clone(),
+            producer: *self.keypair.public_key(),
             slot,
             vdf_chain: self.chain.clone(),
             checkpoint_height: self.checkpoint_height,
@@ -356,12 +356,12 @@ impl PresenceProducer {
         // Find our rank
         let our_pubkey = {
             let chain = self.chain.read().await;
-            chain.public_key().clone()
+            *chain.public_key()
         };
 
         let our_rank = rankings
             .iter()
-            .find(|(pk, _, _, _)| pk == &our_pubkey)
+            .find(|(pk, _, _, _)| *pk == our_pubkey)
             .map(|(_, _, _, rank)| *rank);
 
         let our_rank = match our_rank {
@@ -427,7 +427,7 @@ impl PresenceProducer {
     /// Get our public key
     pub async fn public_key(&self) -> PublicKey {
         let chain = self.chain.read().await;
-        chain.public_key().clone()
+        *chain.public_key()
     }
 
     /// Get current checkpoint
@@ -495,7 +495,7 @@ impl PresenceMessageHandler {
 
         // Store for later use in block production
         let mut proofs = self.pending_proofs.write().await;
-        proofs.insert(proof.producer.clone(), proof);
+        proofs.insert(proof.producer, proof);
 
         Ok(())
     }

@@ -12,7 +12,7 @@
 //! - If no veto threshold reached after 7 days, update auto-applies
 
 // Re-export items from the updater crate
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -20,8 +20,8 @@ use tracing::{debug, error, info, warn};
 pub use updater::{
     apply_update, calculate_veto_result, check_production_allowed, current_version,
     fetch_latest_release, is_newer_version, restart_node, rollback, verify_release_signatures,
-    veto_deadline, veto_period_ended, ProductionBlocked, Release, UpdateConfig, UpdateError,
-    VersionEnforcement, Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
+    veto_deadline, veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement,
+    Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -53,7 +53,7 @@ pub struct PendingUpdate {
 
 impl PendingUpdate {
     /// Load pending update from disk
-    pub fn load(data_dir: &PathBuf) -> Option<Self> {
+    pub fn load(data_dir: &Path) -> Option<Self> {
         let path = data_dir.join("pending_update.json");
         if path.exists() {
             match std::fs::read_to_string(&path) {
@@ -75,14 +75,14 @@ impl PendingUpdate {
     }
 
     /// Save pending update to disk
-    pub fn save(&self, data_dir: &PathBuf) -> std::io::Result<()> {
+    pub fn save(&self, data_dir: &Path) -> std::io::Result<()> {
         let path = data_dir.join("pending_update.json");
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, content)
     }
 
     /// Remove pending update from disk
-    pub fn remove(data_dir: &PathBuf) -> std::io::Result<()> {
+    pub fn remove(data_dir: &Path) -> std::io::Result<()> {
         let path = data_dir.join("pending_update.json");
         if path.exists() {
             std::fs::remove_file(&path)?;
@@ -584,20 +584,19 @@ impl UpdateService {
 
         let mut pending = self.pending.write().await;
         if let Some(ref mut p) = *pending {
-            if p.release.version == vote_msg.version {
-                if p.vote_tracker
+            if p.release.version == vote_msg.version
+                && p.vote_tracker
                     .record_vote(vote_msg.producer_id.clone(), vote_msg.vote)
-                {
-                    debug!(
-                        "Recorded {} vote from {}",
-                        if vote_msg.vote == Vote::Veto {
-                            "VETO"
-                        } else {
-                            "APPROVE"
-                        },
-                        &vote_msg.producer_id[..16]
-                    );
-                }
+            {
+                debug!(
+                    "Recorded {} vote from {}",
+                    if vote_msg.vote == Vote::Veto {
+                        "VETO"
+                    } else {
+                        "APPROVE"
+                    },
+                    &vote_msg.producer_id[..16]
+                );
             }
         }
     }
@@ -735,23 +734,23 @@ pub fn spawn_update_service(
 }
 
 /// Get the pending update version from disk (for CLI use)
-pub fn get_pending_version(data_dir: &PathBuf) -> Option<String> {
+pub fn get_pending_version(data_dir: &Path) -> Option<String> {
     PendingUpdate::load(data_dir).map(|p| p.release.version)
 }
 
 /// Get the current version enforcement state (for production check)
-pub fn get_version_enforcement(data_dir: &PathBuf) -> Option<VersionEnforcement> {
+pub fn get_version_enforcement(data_dir: &Path) -> Option<VersionEnforcement> {
     PendingUpdate::load(data_dir).and_then(|p| p.enforcement)
 }
 
 /// Check if production is currently allowed based on version enforcement
-pub fn is_production_allowed(data_dir: &PathBuf) -> Result<(), ProductionBlocked> {
+pub fn is_production_allowed(data_dir: &Path) -> Result<(), ProductionBlocked> {
     let enforcement = get_version_enforcement(data_dir);
     check_production_allowed(enforcement.as_ref())
 }
 
 /// Get the pending update for display (for CLI use)
-pub fn get_pending_update(data_dir: &PathBuf) -> Option<PendingUpdate> {
+pub fn get_pending_update(data_dir: &Path) -> Option<PendingUpdate> {
     PendingUpdate::load(data_dir)
 }
 
@@ -760,7 +759,7 @@ pub mod cli {
     use super::*;
 
     /// Show update status from disk (for CLI commands)
-    pub fn show_status_from_disk(data_dir: &PathBuf) {
+    pub fn show_status_from_disk(data_dir: &Path) {
         match PendingUpdate::load(data_dir) {
             Some(p) => {
                 use colors::*;

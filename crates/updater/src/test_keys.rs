@@ -25,8 +25,8 @@ fn generate_test_key(seed: u8) -> TestMaintainerKey {
     seed_bytes[0] = seed;
     seed_bytes[31] = seed;
     // Fill with deterministic pattern
-    for i in 1..31 {
-        seed_bytes[i] = ((seed as u16 * (i as u16 + 1)) % 256) as u8;
+    for (i, byte) in seed_bytes.iter_mut().enumerate().take(31).skip(1) {
+        *byte = ((seed as u16 * (i as u16 + 1)) % 256) as u8;
     }
 
     let private_key = PrivateKey::from_bytes(seed_bytes);

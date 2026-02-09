@@ -26,10 +26,11 @@ static TESTNET_VDF_PARAMS: OnceLock<VdfParams> = OnceLock::new();
 static DEVNET_VDF_PARAMS: OnceLock<VdfParams> = OnceLock::new();
 
 /// Network identifier
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u32)]
 pub enum Network {
     /// Production network - real money
+    #[default]
     Mainnet = 1,
     /// Public test network - valueless coins for testing
     Testnet = 2,
@@ -355,22 +356,21 @@ impl Network {
     ///
     /// | Network | Slot  | VDF Target | Purpose                    |
     /// |---------|-------|------------|----------------------------|
-    /// | Mainnet | 10s   | ~700ms     | Heartbeat proof of presence|
-    /// | Testnet | 10s   | ~700ms     | Heartbeat proof of presence|
-    /// | Devnet  | 1s    | ~70ms      | Fast development cycles    |
+    /// | Mainnet | 10s   | ~55ms      | Block VDF proof            |
+    /// | Testnet | 10s   | ~55ms      | Block VDF proof            |
+    /// | Devnet  | 1s    | ~55ms      | Fast development cycles    |
     pub fn vdf_target_time_ms(&self) -> u64 {
         match self {
-            Network::Mainnet => 700, // ~700ms
-            Network::Testnet => 700, // ~700ms
-            Network::Devnet => 70,   // ~70ms (fast development)
+            Network::Mainnet => 55, // ~55ms (800K iterations)
+            Network::Testnet => 55, // ~55ms (800K iterations)
+            Network::Devnet => 55,  // ~55ms (800K iterations)
         }
     }
 
     /// Get heartbeat VDF iterations for this network
     ///
     /// Hash-chain VDF iterations calibrated for target time:
-    /// - 10M iterations ≈ 700ms on modern hardware
-    /// - 1M iterations ≈ 70ms on modern hardware
+    /// - 800K iterations ≈ 55ms on modern hardware
     ///
     /// Configurable via `DOLI_HEARTBEAT_VDF_ITERATIONS` environment variable (devnet only).
     /// Locked for mainnet to ensure consensus compatibility.
@@ -563,12 +563,6 @@ impl FromStr for Network {
             "devnet" | "dev" | "local" => Ok(Network::Devnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
-    }
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Network::Mainnet
     }
 }
 
@@ -913,10 +907,10 @@ mod tests {
 
     #[test]
     fn test_automatic_genesis_bond() {
-        // All networks use 100 DOLI (1 bond unit) for automatic genesis bonds
-        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 10_000_000_000);
-        assert_eq!(Network::Testnet.automatic_genesis_bond(), 10_000_000_000);
-        assert_eq!(Network::Devnet.automatic_genesis_bond(), 10_000_000_000);
+        // All networks use 10 DOLI (1 bond unit) for automatic genesis bonds
+        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 1_000_000_000);
+        assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000_000);
+        assert_eq!(Network::Devnet.automatic_genesis_bond(), 1_000_000_000);
     }
 
     #[test]

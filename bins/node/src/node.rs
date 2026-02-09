@@ -12,22 +12,23 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crypto::hash::{hash as crypto_hash, hash_concat, hash_with_domain};
+use crypto::hash::{hash as crypto_hash, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, construct_vdf_input, reward_epoch, select_producer_for_slot, ConsensusParams,
-    UNBONDING_PERIOD,
+    self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
+    DELEGATE_REWARD_PCT, MAX_FALLBACK_RANKS, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
 };
-use doli_core::rewards::{BlockSource, WeightedRewardCalculator};
+use doli_core::rewards::WeightedRewardCalculator;
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::{
-    AdaptiveGossip, Block, BlockHeader, MergeResult, Network, ProducerAnnouncement, ProducerGSet,
+    AdaptiveGossip, Attestation, Block, BlockHeader, Network, ProducerAnnouncement, ProducerGSet,
     Transaction,
 };
+use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
     NetworkService, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
@@ -69,7 +70,7 @@ pub struct Node {
     /// Last slot we produced a block for (to avoid double-producing)
     last_produced_slot: u32,
     /// Last time we checked for production opportunity
-    last_production_check: Instant,
+    _last_production_check: Instant,
     /// All known producers (persists across epochs for round-robin)
     known_producers: Arc<RwLock<Vec<PublicKey>>>,
     /// Time when we first connected to a peer (for discovery grace period)
@@ -99,6 +100,15 @@ pub struct Node {
     /// Consecutive slots where production was blocked due to fork detection
     /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
     consecutive_fork_blocks: u32,
+    /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
+    /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
+    cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
+    /// Our computed tier (1, 2, or 3). Recomputed at each epoch boundary.
+    our_tier: u8,
+    /// Last epoch for which we computed our tier (to detect epoch boundaries).
+    last_tier_epoch: Option<u64>,
+    /// Channel to forward gossip votes to the UpdateService
+    vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -154,6 +164,13 @@ impl Node {
             ChainState::new(genesis_hash)
         };
         let genesis_hash = chain_state.genesis_hash;
+
+        // Apply slot_duration from chainspec if available (consensus-critical)
+        // This ensures all nodes compute the same slot numbers regardless of local .env
+        if let Some(slot_duration) = config.slot_duration_override {
+            params.slot_duration = slot_duration;
+            info!("Slot duration from chainspec: {}s", slot_duration);
+        }
 
         // For devnet, handle genesis_time from multiple sources (in priority order):
         // 1. Chainspec override (config.genesis_time_override) - ensures all nodes use same time
@@ -230,24 +247,11 @@ impl Node {
             config.network,
         )));
 
-        // Create sync manager with network-appropriate settings
-        // For devnet/testnet, use stricter production gating to prevent propagation race forks
+        // Create sync manager with default settings (2 slots/heights tolerance).
+        // All networks use the same tolerance — recovery from forks is handled by
+        // auto-resync (triggered by sync failure threshold), not by loose tolerances.
         let sync_config = SyncConfig::default();
-        let sync_manager =
-            if config.network == Network::Devnet || config.network == Network::Testnet {
-                // Stricter settings: don't produce if behind by even 1 height
-                // This prevents race conditions where we produce before receiving recent blocks
-                Arc::new(RwLock::new(SyncManager::new_with_settings(
-                    sync_config,
-                    genesis_hash,
-                    15, // Shorter resync grace period for faster recovery
-                    1,  // max_slots_behind: only 1 slot tolerance
-                    1,  // max_heights_behind: only 1 height tolerance
-                )))
-            } else {
-                // Mainnet: standard settings (2 slots/heights tolerance)
-                Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)))
-            };
+        let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
 
         // Configure bootstrap grace period from network params
         // This is the wait time at genesis before allowing production (chain evidence collection)
@@ -260,6 +264,8 @@ impl Node {
             // bootstrap (1 peer). Requiring 2 blocks all non-bootstrap nodes permanently.
             // Echo chambers are prevented by the auto-resync mechanism instead.
             // Testnet/Mainnet: 2 peers — DHT enables full peer discovery.
+            // After first epoch boundary, recompute_tier() overrides this with
+            // tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
             let min_peers = match config.network {
                 Network::Devnet => 1,
                 Network::Testnet | Network::Mainnet => 2,
@@ -326,7 +332,7 @@ impl Node {
             shutdown,
             producer_key,
             last_produced_slot: 0,
-            last_production_check: Instant::now(),
+            _last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector,
@@ -341,7 +347,16 @@ impl Node {
             signed_slots_db,
             blocks_since_save: 0,
             consecutive_fork_blocks: 0,
+            cached_scheduler: None,
+            our_tier: 0, // Computed on first block application
+            last_tier_epoch: None,
+            vote_tx: None,
         })
+    }
+
+    /// Set the vote forwarding channel (connects gossip votes to UpdateService)
+    pub fn set_vote_tx(&mut self, tx: tokio::sync::mpsc::Sender<node_updater::VoteMessage>) {
+        self.vote_tx = Some(tx);
     }
 
     /// Run the node
@@ -368,7 +383,7 @@ impl Node {
         // we might produce blocks in slots assigned to other producers.
         if let Some(ref key) = self.producer_key {
             if self.config.network == Network::Testnet || self.config.network == Network::Devnet {
-                let our_pubkey = key.public_key().clone();
+                let our_pubkey = *key.public_key();
 
                 // Create initial announcement with sequence 0
                 let announcement = ProducerAnnouncement::new(key, self.config.network.id(), 0);
@@ -383,7 +398,7 @@ impl Node {
                 // Also add to legacy known_producers for compatibility during transition
                 let mut known = self.known_producers.write().await;
                 if !known.contains(&our_pubkey) {
-                    known.push(our_pubkey.clone());
+                    known.push(our_pubkey);
                     known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                     let pubkey_hash = crypto_hash(our_pubkey.as_bytes());
                     info!(
@@ -510,14 +525,14 @@ impl Node {
         };
 
         // Create RPC context with references to node state
-        let mut context = RpcContext::new(
+        let mut context = RpcContext::new_for_network(
             self.chain_state.clone(),
             self.block_store.clone(),
             self.utxo_set.clone(),
             self.mempool.clone(),
             self.params.clone(),
+            self.config.network,
         )
-        .with_network(self.config.network.name().to_string())
         .with_blocks_per_reward_epoch(self.config.network.blocks_per_reward_epoch())
         .with_coinbase_maturity(self.config.network.coinbase_maturity())
         .with_bond_unit(self.config.network.bond_unit())
@@ -540,6 +555,90 @@ impl Node {
         server.spawn();
 
         Ok(())
+    }
+
+    /// Recompute our tier classification from the active producer set.
+    /// Called once per epoch boundary (when `height / SLOTS_PER_EPOCH` changes).
+    async fn recompute_tier(&mut self, height: u64) {
+        let current_epoch = height / SLOTS_PER_EPOCH as u64;
+        if self.last_tier_epoch == Some(current_epoch) {
+            return; // Already computed for this epoch
+        }
+
+        let our_pubkey = match &self.producer_key {
+            Some(kp) => *kp.public_key(),
+            None => {
+                self.our_tier = 0; // Non-producer
+                self.last_tier_epoch = Some(current_epoch);
+                return;
+            }
+        };
+
+        let producers = self.producer_set.read().await;
+        let active = producers.active_producers_at_height(height);
+        let producers_with_weights: Vec<(PublicKey, u64)> = active
+            .iter()
+            .map(|p| (p.public_key, p.selection_weight()))
+            .collect();
+        drop(producers);
+
+        let tier1_set = compute_tier1_set(&producers_with_weights);
+        // Build sorted-by-weight list for producer_tier()
+        let mut all_sorted = producers_with_weights.clone();
+        all_sorted.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+        });
+        let all_sorted_pks: Vec<PublicKey> = all_sorted.into_iter().map(|(pk, _)| pk).collect();
+
+        let new_tier = producer_tier(&our_pubkey, &tier1_set, &all_sorted_pks);
+
+        if self.our_tier != new_tier {
+            info!(
+                "Tier classification changed: {} -> {} (epoch {})",
+                self.our_tier, new_tier, current_epoch
+            );
+            // Update min peers for production based on new tier.
+            let mut sync = self.sync_manager.write().await;
+            sync.set_tier(new_tier);
+        }
+
+        self.our_tier = new_tier;
+        self.last_tier_epoch = Some(current_epoch);
+    }
+
+    /// Create an attestation for a block and broadcast it to the network.
+    async fn create_and_broadcast_attestation(&self, block_hash: Hash, slot: u32, height: u64) {
+        let (private_key, public_key, weight) = match &self.producer_key {
+            Some(kp) => {
+                let pk = *kp.public_key();
+                let producers = self.producer_set.read().await;
+                let w = producers
+                    .get_by_pubkey(&pk)
+                    .map(|p| p.selection_weight())
+                    .unwrap_or(0);
+                (kp.private_key().clone(), pk, w)
+            }
+            None => return, // Non-producer can't attest
+        };
+
+        if weight == 0 {
+            return; // Not active, skip attestation
+        }
+
+        let attestation =
+            Attestation::new(block_hash, slot, height, weight, &private_key, public_key);
+
+        // Add our own weight to finality tracker
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.add_attestation_weight(&block_hash, weight);
+        }
+
+        // Broadcast to network
+        if let Some(ref network) = self.network {
+            let _ = network.broadcast_attestation(attestation.to_bytes()).await;
+        }
     }
 
     /// Main event loop
@@ -723,7 +822,7 @@ impl Node {
                     network::protocols::StatusRequest::with_producer(
                         self.config.network.id(),
                         genesis_hash,
-                        key.public_key().clone(),
+                        *key.public_key(),
                     )
                 } else {
                     network::protocols::StatusRequest::new(self.config.network.id(), genesis_hash)
@@ -754,6 +853,7 @@ impl Node {
                     let mut sync = self.sync_manager.write().await;
                     sync.refresh_all_peers();
                     sync.update_network_tip_slot(block.header.slot);
+                    sync.note_block_received_via_gossip();
                 }
                 self.handle_new_block(block).await?;
             }
@@ -792,7 +892,7 @@ impl Node {
                     {
                         let mut known = self.known_producers.write().await;
                         if !known.contains(producer_pubkey) {
-                            known.push(producer_pubkey.clone());
+                            known.push(*producer_pubkey);
                             // Keep sorted for deterministic ordering
                             known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                             let pubkey_hash = crypto_hash(producer_pubkey.as_bytes());
@@ -824,7 +924,7 @@ impl Node {
                     {
                         let mut known = self.known_producers.write().await;
                         if !known.contains(producer_pubkey) {
-                            known.push(producer_pubkey.clone());
+                            known.push(*producer_pubkey);
                             known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                             let pubkey_hash = crypto_hash(producer_pubkey.as_bytes());
                             info!("Bootstrap producer discovered via status request: {} (now {} known)",
@@ -846,7 +946,7 @@ impl Node {
                         best_height: state.best_height,
                         best_hash: state.best_hash,
                         best_slot: state.best_slot,
-                        producer_pubkey: Some(key.public_key().clone()),
+                        producer_pubkey: Some(*key.public_key()),
                     }
                 } else {
                     network::protocols::StatusResponse {
@@ -888,7 +988,11 @@ impl Node {
                     .await
                     .handle_response(peer_id, response);
                 for block in blocks {
-                    self.apply_block(block).await?;
+                    // Route through handle_new_block for orphan/fork detection.
+                    // For normal sync blocks that build on tip, this falls through
+                    // to apply_block unchanged. For orphan blocks (e.g., peer's tip
+                    // when we're on a fork), they get cached and trigger fork recovery.
+                    self.handle_new_block(block).await?;
                 }
             }
 
@@ -926,7 +1030,7 @@ impl Node {
                         // CRDT MERGE: Add any producers we don't already know about
                         for producer in &remote_list {
                             if !known.contains(producer) {
-                                known.push(producer.clone());
+                                known.push(*producer);
                                 changed = true;
                                 let pubkey_hash = crypto_hash(producer.as_bytes());
                                 info!(
@@ -1023,17 +1127,47 @@ impl Node {
             }
 
             NetworkEvent::NewVote(vote_data) => {
-                // Vote received via gossip - forward to updater service
-                // The updater service will decode and validate the vote
                 debug!("Received vote message ({} bytes)", vote_data.len());
-                // TODO: Forward to updater service via vote_tx channel
-                // This will be connected when the updater integration is complete
+                if let Some(ref vote_tx) = self.vote_tx {
+                    match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
+                        Ok(vote_msg) => {
+                            info!(
+                                "Vote received via gossip: {} vote for v{} from {}",
+                                if vote_msg.vote == node_updater::Vote::Veto {
+                                    "VETO"
+                                } else {
+                                    "APPROVE"
+                                },
+                                vote_msg.version,
+                                &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())]
+                            );
+                            let _ = vote_tx.try_send(vote_msg);
+                        }
+                        Err(e) => {
+                            debug!("Failed to decode vote message: {}", e);
+                        }
+                    }
+                }
             }
 
             // NOTE: Heartbeats removed in deterministic scheduler model
             // Rewards go 100% to block producer via coinbase
             NetworkEvent::NewHeartbeat(_) => {
                 // Ignored - deterministic scheduler model doesn't use heartbeats
+            }
+            NetworkEvent::NewAttestation(data) => {
+                // Decode and apply attestation for finality gadget
+                if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
+                    if attestation.verify().is_ok() {
+                        let mut sync = self.sync_manager.write().await;
+                        sync.add_attestation_weight(
+                            &attestation.block_hash,
+                            attestation.attester_weight,
+                        );
+                    } else {
+                        debug!("Received invalid attestation signature");
+                    }
+                }
             }
         }
 
@@ -1119,150 +1253,53 @@ impl Node {
                     error!("Failed to execute reorg: {}", e);
                 }
             } else {
-                // Reorg detection failed (parent not in our recent blocks)
-                // Check if we're likely on a fork by looking at cache size
-                let cache_size = self.fork_block_cache.read().await.len();
-                let our_height = self.chain_state.read().await.best_height;
-
-                // If we have many cached blocks from other chains, we're likely on a fork
-                //
-                // DEFENSE-IN-DEPTH: Multiple conditions must be met before triggering resync:
-                // 1. Cache size exceeds threshold
-                // 2. Cooldown period passed (with exponential backoff)
-                // 3. Past discovery grace period
-                // 4. Have some chain progress (height > 0)
-                // 5. Not already syncing
-                // 6. Resync not already in progress
-                // 7. Devnet/Testnet only (mainnet never auto-resyncs)
-
-                // Get resync state from sync manager
-                let (is_syncing, resync_in_progress, consecutive_resyncs) = {
-                    let sync = self.sync_manager.read().await;
-                    (
-                        sync.state().is_syncing(),
-                        sync.is_resync_in_progress(),
-                        sync.consecutive_resync_count(),
-                    )
-                };
-
-                // Don't trigger resync if we're already syncing or resyncing
-                if is_syncing || resync_in_progress {
-                    debug!(
-                        "Fork detected but sync/resync in progress - waiting (cache_size={})",
-                        cache_size
-                    );
-                    return Ok(());
+                // Reorg detection failed (parent not in our recent blocks).
+                // Try active fork recovery: walk backward through parent chain
+                // from this orphan block until we connect to our chain.
+                let can_start = self.sync_manager.read().await.can_start_fork_recovery();
+                if can_start {
+                    let peer = self.sync_manager.read().await.best_peer_for_recovery();
+                    if let Some(peer) = peer {
+                        let started = self
+                            .sync_manager
+                            .write()
+                            .await
+                            .start_fork_recovery(block.clone(), peer);
+                        if started {
+                            info!(
+                                "Fork recovery started: walking parents from block {}",
+                                block_hash
+                            );
+                            return Ok(());
+                        }
+                    }
                 }
 
-                // Exponential backoff for cooldown: base * 2^(consecutive_resyncs)
-                // This prevents infinite resync loops by increasing the cooldown each time
-                let base_cooldown = 120u64; // 2 minutes base
-                let cooldown_secs = base_cooldown * (1 << consecutive_resyncs.min(4));
-                let resync_cooldown = Duration::from_secs(cooldown_secs);
-
-                let can_resync = match self.last_resync_time {
-                    Some(last_time) => last_time.elapsed() > resync_cooldown,
-                    None => true,
+                // Fallback: Check if we're likely on a fork by looking at RECENT orphan blocks.
+                // Only blocks near our current slot count as fork evidence.
+                // Old blocks from syncing peers are NOT fork evidence.
+                let our_slot = self.chain_state.read().await.best_slot;
+                let our_height = self.chain_state.read().await.best_height;
+                let cache_size = {
+                    let cache = self.fork_block_cache.read().await;
+                    let slot_window = 30u32; // only count blocks within last 30 slots (~5 min)
+                    let min_slot = our_slot.saturating_sub(slot_window);
+                    cache.values().filter(|b| b.header.slot >= min_slot).count()
                 };
 
-                // Don't resync during discovery grace period
-                let past_grace_period = match self.first_peer_connected {
-                    Some(connected_time) => connected_time.elapsed() > Duration::from_secs(30),
-                    None => false,
-                };
-
-                // Fork detection threshold: number of orphan blocks before triggering resync
-                // Higher thresholds prevent false positives from external peers with different chains
-                //
-                // INCREASED devnet threshold from 20 to 60 to allow more time for 20-node
-                // startup synchronization. The original 20 was too aggressive and triggered
-                // resyncs during normal multi-node discovery.
-                let fork_threshold = match self.config.network {
-                    Network::Mainnet => 60, // 1 hour at 60s slots
-                    Network::Testnet => 40, // ~6-7 minutes at 10s slots
-                    Network::Devnet => 60,  // ~10 minutes at 10s slots (was 20 - too aggressive)
-                };
-
-                // Trigger resync if we have fork_threshold+ blocks from other chains that we can't apply
-                // AND we're past the grace period AND we have some chain progress
-                // This indicates we're on a fork (devnet/testnet only)
-                if cache_size >= fork_threshold
-                    && can_resync
-                    && past_grace_period
-                    && our_height > 0
-                    && (self.config.network == Network::Devnet
-                        || self.config.network == Network::Testnet)
-                {
-                    // Log exponential backoff info if this is a repeated resync
-                    if consecutive_resyncs > 0 {
-                        warn!(
-                            "This is resync #{} - cooldown was {}s due to exponential backoff",
-                            consecutive_resyncs + 1,
-                            cooldown_secs
-                        );
-                    }
+                // Many orphan blocks indicate we're on a minority fork.
+                // Stale chain detector + fork recovery handle this — no genesis resync.
+                if cache_size >= 10 && cache_size % 10 == 0 {
                     warn!(
-                        "Detected fork: {} blocks cached (threshold={}) that don't build on our chain (height {}). Triggering forced resync.",
-                        cache_size, fork_threshold, our_height
+                        "Fork detected: {} orphan blocks don't build on our chain (height {}). Relying on fork recovery + stale chain sync.",
+                        cache_size, our_height
                     );
+                }
 
-                    // Log diagnostic info before resync
-                    {
-                        let state = self.chain_state.read().await;
-                        warn!(
-                            "  Our chain tip: hash={}, height={}, slot={}",
-                            &state.best_hash.to_string()[..16],
-                            state.best_height,
-                            state.best_slot
-                        );
-                    }
+                // Try fork recovery for the orphan block
+                self.try_trigger_fork_recovery().await;
 
-                    // Log sample of orphan blocks
-                    {
-                        let cache = self.fork_block_cache.read().await;
-                        let mut orphans: Vec<_> = cache.iter().collect();
-                        // Sort by slot for consistent display
-                        orphans.sort_by_key(|(_, b)| b.header.slot);
-
-                        warn!(
-                            "  Sample orphan blocks (showing up to 5 of {}):",
-                            cache.len()
-                        );
-                        for (hash, block) in orphans.iter().take(5) {
-                            let producer_hash = crypto_hash(block.header.producer.as_bytes());
-                            let parent_short = &block.header.prev_hash.to_string()[..16];
-                            warn!(
-                                "    - hash={}, slot={}, parent={}, producer={}",
-                                &hash.to_string()[..16],
-                                block.header.slot,
-                                parent_short,
-                                &producer_hash.to_hex()[..16]
-                            );
-                        }
-
-                        // Check if orphans have a common pattern (same genesis, different chain)
-                        if let Some((_, first_block)) = orphans.first() {
-                            let first_parent = first_block.header.prev_hash;
-                            let same_parent_count = orphans
-                                .iter()
-                                .filter(|(_, b)| b.header.prev_hash == first_parent)
-                                .count();
-                            if same_parent_count > 3 {
-                                warn!(
-                                    "  Note: {} orphans share parent {} - likely external chain",
-                                    same_parent_count,
-                                    &first_parent.to_string()[..16]
-                                );
-                            }
-                        }
-                    }
-
-                    // Force resync: reset to genesis and rebuild from peers
-                    self.last_resync_time = Some(Instant::now());
-                    if let Err(e) = self.force_resync_from_genesis().await {
-                        error!("Failed to force resync: {}", e);
-                    }
-                } else if cache_size >= 2 {
+                if cache_size >= 2 {
                     // Try to chain the blocks from cache
                     debug!(
                         "Attempting to apply cached chain: {} blocks in cache",
@@ -1455,13 +1492,13 @@ impl Node {
                                     let tx_hash = tx.hash();
                                     let era = self.params.height_to_era(height);
 
-                                    let producer_info = storage::ProducerInfo::new(
-                                        reg_data.public_key.clone(),
+                                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                                        reg_data.public_key,
                                         height,
                                         bond_output.amount,
                                         (tx_hash, bond_index as u32),
                                         era,
-                                        self.config.network.initial_bond(),
+                                        reg_data.bond_count,
                                     );
 
                                     let _ = producers.register(producer_info, height);
@@ -1501,6 +1538,108 @@ impl Node {
         );
 
         Ok(())
+    }
+
+    /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
+    ///
+    /// Called when the parent chain walk connects to a block in our block_store.
+    /// Records weights, moves blocks to fork_block_cache, plans reorg, executes if heavier.
+    async fn handle_completed_fork_recovery(
+        &mut self,
+        recovery: network::sync::CompletedRecovery,
+    ) -> Result<()> {
+        let fork_len = recovery.blocks.len();
+        info!(
+            "Fork recovery complete: {} blocks connected at {}",
+            fork_len,
+            &recovery.connection_point.to_string()[..16]
+        );
+
+        let current_height = self.chain_state.read().await.best_height;
+        let current_tip = self.chain_state.read().await.best_hash;
+
+        // 1. Record fork blocks in reorg_handler with weights (forward order for correct accumulation)
+        {
+            let producers = self.producer_set.read().await;
+            let mut sync = self.sync_manager.write().await;
+            for block in &recovery.blocks {
+                let weight = producers
+                    .get_by_pubkey(&block.header.producer)
+                    .map(|p| p.effective_weight(current_height + 1))
+                    .unwrap_or(1);
+                sync.record_fork_block_weight(block.hash(), block.header.prev_hash, weight);
+            }
+        }
+
+        // 2. Move fork blocks to fork_block_cache (execute_reorg reads from here)
+        {
+            let mut cache = self.fork_block_cache.write().await;
+            for block in &recovery.blocks {
+                cache.insert(block.hash(), block.clone());
+            }
+        }
+
+        // 3. Plan reorg: find common ancestor, build rollback list, compare weights
+        let fork_tip_hash = recovery.blocks.last().unwrap().hash();
+        let reorg_result = {
+            let sync = self.sync_manager.read().await;
+            let store = &self.block_store;
+            sync.reorg_handler()
+                .plan_reorg(current_tip, fork_tip_hash, |hash| {
+                    store.get_header(hash).ok().flatten().map(|h| h.prev_hash)
+                })
+        };
+
+        // 4. Execute reorg if fork is heavier
+        match reorg_result {
+            Some(result) if result.weight_delta > 0 => {
+                info!(
+                    "Fork is heavier (+{}) — executing reorg: rollback={}, new={}",
+                    result.weight_delta,
+                    result.rollback.len(),
+                    result.new_blocks.len()
+                );
+                let trigger = recovery.blocks.last().unwrap().clone();
+                self.execute_reorg(result, trigger).await?;
+            }
+            Some(result) => {
+                info!(
+                    "Fork is lighter ({}) — keeping current chain",
+                    result.weight_delta
+                );
+            }
+            None => {
+                warn!("Could not plan reorg from recovered fork — common ancestor not found");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Try to start fork recovery from cached orphan blocks.
+    /// Called from production gate when fork is detected (ChainMismatch, AheadOfPeers).
+    async fn try_trigger_fork_recovery(&mut self) {
+        let can_start = self.sync_manager.read().await.can_start_fork_recovery();
+        if !can_start {
+            return;
+        }
+        let orphan = {
+            let cache = self.fork_block_cache.read().await;
+            cache.values().next().cloned()
+        };
+        if let Some(orphan) = orphan {
+            let peer = self.sync_manager.read().await.best_peer_for_recovery();
+            if let Some(peer) = peer {
+                let started = self
+                    .sync_manager
+                    .write()
+                    .await
+                    .start_fork_recovery(orphan, peer);
+                if started {
+                    info!("Fork recovery triggered from production gate");
+                }
+            }
+        }
     }
 
     /// Try to apply a chain of cached blocks when we're behind
@@ -1582,6 +1721,7 @@ impl Node {
     /// - chain_state: height, hash, slot → genesis
     /// - utxo_set: cleared completely
     /// - producer_set: cleared (keeping exit_history for anti-Sybil)
+    ///
     /// Auto-resync when fork detection has blocked production for too long.
     ///
     /// Triggers `force_resync_from_genesis()` after N consecutive fork-blocked
@@ -1819,13 +1959,13 @@ impl Node {
                             let tx_hash = tx.hash();
                             let era = self.params.height_to_era(height);
 
-                            let producer_info = storage::ProducerInfo::new(
-                                reg_data.public_key.clone(),
+                            let producer_info = storage::ProducerInfo::new_with_bonds(
+                                reg_data.public_key,
                                 height,
                                 bond_output.amount,
                                 (tx_hash, bond_index as u32),
                                 era,
-                                self.config.network.initial_bond(),
+                                reg_data.bond_count,
                             );
 
                             if let Err(e) = producers.register(producer_info, height) {
@@ -1837,7 +1977,7 @@ impl Node {
                                     height
                                 );
                                 // Track for known_producers update after lock release
-                                new_registrations.push(reg_data.public_key.clone());
+                                new_registrations.push(reg_data.public_key);
                             }
                         }
                     }
@@ -1915,6 +2055,48 @@ impl Node {
                         }
                     }
                 }
+
+                // Process DelegateBond transactions
+                if tx.tx_type == TxType::DelegateBond {
+                    if let Some(data) = tx.delegate_bond_data() {
+                        match producers.delegate_bonds(
+                            &data.delegator,
+                            &data.delegate,
+                            data.bond_count,
+                        ) {
+                            Ok(()) => {
+                                info!(
+                                    "Delegated {} bonds from {} to {} at height {}",
+                                    data.bond_count,
+                                    crypto_hash(data.delegator.as_bytes()),
+                                    crypto_hash(data.delegate.as_bytes()),
+                                    height
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to delegate bonds: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Process RevokeDelegation transactions
+                if tx.tx_type == TxType::RevokeDelegation {
+                    if let Some(data) = tx.revoke_delegation_data() {
+                        match producers.revoke_delegation(&data.delegator) {
+                            Ok(()) => {
+                                info!(
+                                    "Revoked delegation for {} at height {}",
+                                    crypto_hash(data.delegator.as_bytes()),
+                                    height
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to revoke delegation: {}", e);
+                            }
+                        }
+                    }
+                }
             }
 
             // Process completed unbonding periods
@@ -1936,7 +2118,7 @@ impl Node {
             let mut added_any = false;
             for pubkey in new_registrations {
                 if !known.contains(&pubkey) {
-                    known.push(pubkey.clone());
+                    known.push(pubkey);
                     added_any = true;
                     let pubkey_hash = crypto_hash(pubkey.as_bytes());
                     info!(
@@ -1998,6 +2180,55 @@ impl Node {
             }
         }
 
+        // Track this block for finality (attestation-based finality gadget).
+        // The total_weight is the sum of all active producer bonds at this height.
+        {
+            let producers = self.producer_set.read().await;
+            let total_weight: u64 = producers
+                .active_producers_at_height(height)
+                .iter()
+                .map(|p| p.selection_weight())
+                .sum();
+            drop(producers);
+
+            if total_weight > 0 {
+                let mut sync = self.sync_manager.write().await;
+                sync.track_block_for_finality(block_hash, height, block.header.slot, total_weight);
+            }
+        }
+
+        // Recompute our tier at epoch boundaries and build EpochSnapshot
+        self.recompute_tier(height).await;
+        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+            let epoch = doli_core::EpochSnapshot::epoch_from_height(height);
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(height);
+            let pws: Vec<(PublicKey, u64)> = active
+                .iter()
+                .map(|p| (p.public_key, p.selection_weight()))
+                .collect();
+            let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
+            let tier1 = compute_tier1_set(&pws);
+            let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
+            all_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            drop(producers);
+
+            let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);
+            info!(
+                "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
+                epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
+            );
+        }
+
+        // Attest to blocks we didn't produce (self-attestation for our own blocks
+        // is handled in try_produce_block after broadcast)
+        if let Some(ref kp) = self.producer_key {
+            if block.header.producer != *kp.public_key() {
+                self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
+                    .await;
+            }
+        }
+
         // GENESIS END: Derive and register producers from the blockchain
         // This transition happens when we move from genesis_blocks to genesis_blocks + 1
         // The blockchain is the source of truth - we scan block headers to find genesis producers
@@ -2021,7 +2252,7 @@ impl Node {
                 let bond_unit = self.config.network.bond_unit();
 
                 for pubkey in genesis_producers {
-                    match producers.register_genesis_producer(pubkey.clone(), 1, bond_unit) {
+                    match producers.register_genesis_producer(pubkey, 1, bond_unit) {
                         Ok(()) => {
                             info!(
                                 "  Registered genesis producer: {}",
@@ -2323,6 +2554,8 @@ impl Node {
                     "[NODE_PRODUCE] FORK DETECTED via AheadOfPeers: slot={} local_h={} peer_h={} ahead={} (consecutive={})",
                     current_slot, local_height, peer_height, height_ahead, self.consecutive_fork_blocks
                 );
+                // Try fork recovery first, then auto-resync if threshold exceeded
+                self.try_trigger_fork_recovery().await;
                 self.maybe_auto_resync(current_slot).await;
                 return Ok(());
             }
@@ -2367,6 +2600,8 @@ impl Node {
                     "[NODE_PRODUCE] slot={} BLOCKED: Chain mismatch with peer {} at height {} (local={}, peer={}) (consecutive={})",
                     current_slot, peer_id, local_height, local_hash, peer_hash, self.consecutive_fork_blocks
                 );
+                // Try fork recovery first, then auto-resync if threshold exceeded
+                self.try_trigger_fork_recovery().await;
                 self.maybe_auto_resync(current_slot).await;
                 return Ok(());
             }
@@ -2396,10 +2631,19 @@ impl Node {
                 );
                 return Ok(());
             }
+            ProductionAuthorization::BlockedConflictsFinality {
+                local_finalized_height,
+            } => {
+                warn!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Chain conflicts with finalized block at height {}",
+                    current_slot, local_finalized_height
+                );
+                return Ok(());
+            }
         }
 
         // Log slot info periodically (every ~60 seconds)
-        if current_slot % 60 == 0 && current_slot != self.last_produced_slot {
+        if current_slot.is_multiple_of(60) && current_slot != self.last_produced_slot {
             info!(
                 "Production check: now={}, genesis={}, current_slot={}, last_produced={}",
                 now, self.params.genesis_time, current_slot, self.last_produced_slot
@@ -2472,7 +2716,7 @@ impl Node {
         // 2. Only apply gap check if there's evidence the network is ahead
         // 3. If network tip <= our tip, allow production (we're not behind)
         // =========================================================================
-        let (network_tip_slot, network_tip_height) = {
+        let (_network_tip_slot, network_tip_height) = {
             let sync = self.sync_manager.read().await;
             (sync.best_peer_slot(), sync.best_peer_height())
         };
@@ -2515,7 +2759,7 @@ impl Node {
         let active_with_weights: Vec<(PublicKey, u64)> = producers
             .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key.clone(), p.bond_count as u64))
+            .map(|p| (p.public_key, p.bond_count as u64))
             .collect();
         let total_producers = producers.total_count();
         drop(producers);
@@ -2524,7 +2768,7 @@ impl Node {
         let in_genesis = self.config.network.is_in_genesis(height);
 
         let our_pk = producer_key.public_key();
-        let we_are_active = active_with_weights.iter().any(|(pk, _)| pk == our_pk);
+        let _we_are_active = active_with_weights.iter().any(|(pk, _)| pk == our_pk);
 
         // =========================================================================
         // INVARIANT CHECK: Detect inconsistent state after resync
@@ -2561,7 +2805,7 @@ impl Node {
         // Use bootstrap mode if:
         // 1. Still in genesis phase (no bond required), OR
         // 2. No active producers registered (testnet/devnet only)
-        let our_pubkey = producer_key.public_key().clone();
+        let our_pubkey = *producer_key.public_key();
         let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
             match self.config.network {
                 Network::Testnet | Network::Devnet => {
@@ -2807,7 +3051,7 @@ impl Node {
 
                     // Always include ourselves
                     if !known_producers.iter().any(|p| p == &our_pubkey) {
-                        known_producers.push(our_pubkey.clone());
+                        known_producers.push(our_pubkey);
                     }
 
                     // Filter out producers who are registered but haven't passed
@@ -2864,7 +3108,7 @@ impl Node {
                     }
 
                     // It's our turn - produce immediately (score 0)
-                    (vec![our_pubkey.clone()], Some(0))
+                    (vec![our_pubkey], Some(0))
                 }
                 Network::Mainnet => {
                     // Mainnet requires registered producers
@@ -2883,7 +3127,40 @@ impl Node {
             // not "Proof of Delay" via long VDF.
             //
             // Algorithm: slot % total_bonds -> deterministic ticket assignment
-            let eligible = select_producer_for_slot(current_slot, &active_with_weights);
+            // Uses cached DeterministicScheduler for O(log n) lookups per slot.
+            let current_epoch = self.params.slot_to_epoch(current_slot) as u64;
+            let active_count = active_with_weights.len();
+            let total_bonds: u64 = active_with_weights.iter().map(|(_, b)| *b).sum();
+            let scheduler = match &self.cached_scheduler {
+                Some((epoch, count, bonds, sched))
+                    if *epoch == current_epoch
+                        && *count == active_count
+                        && *bonds == total_bonds =>
+                {
+                    sched
+                }
+                _ => {
+                    // Build new scheduler (epoch changed or active producer set changed)
+                    info!(
+                        "Rebuilding scheduler: epoch={}, producers={}, total_bonds={}",
+                        current_epoch, active_count, total_bonds
+                    );
+                    let producers: Vec<ScheduledProducer> = active_with_weights
+                        .iter()
+                        .map(|(pk, bonds)| ScheduledProducer::new(*pk, *bonds as u32))
+                        .collect();
+                    self.cached_scheduler = Some((
+                        current_epoch,
+                        active_count,
+                        total_bonds,
+                        DeterministicScheduler::new(producers),
+                    ));
+                    &self.cached_scheduler.as_ref().unwrap().3
+                }
+            };
+            let eligible: Vec<_> = (0..MAX_FALLBACK_RANKS)
+                .filter_map(|rank| scheduler.select_producer(current_slot, rank).cloned())
+                .collect();
             (eligible, None)
         };
 
@@ -2891,27 +3168,32 @@ impl Node {
             return Ok(());
         }
 
-        // Calculate slot offset to determine eligibility window
+        // Calculate slot offset in milliseconds for eligibility window
         let slot_start = self.params.slot_to_timestamp(current_slot);
-        let slot_offset = now.saturating_sub(slot_start);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let slot_start_ms = slot_start * 1000;
+        let slot_offset_ms = now_ms.saturating_sub(slot_start_ms);
 
         // Check if we're eligible at this time
         // For bootstrap mode, use continuous time-based scheduling
-        // For normal mode, use the standard eligibility check
+        // For normal mode, use the standard eligibility check (ms-precision)
         let is_eligible = if let Some(score) = our_bootstrap_rank {
             // Bootstrap mode: continuous time-based scheduling
             // The score (0-255) determines when we should produce within the slot.
             // We can produce when the current time offset exceeds our target offset.
-            let slot_duration = self.params.slot_duration;
+            let slot_duration_ms = self.params.slot_duration * 1000;
             let max_offset_percent = 80; // Leave 20% for propagation
             let target_offset_percent = (score as u64 * max_offset_percent) / 255;
-            let target_offset_secs = (slot_duration * target_offset_percent) / 100;
+            let target_offset_ms = (slot_duration_ms * target_offset_percent) / 100;
 
             // We're eligible if current offset >= our target offset
-            slot_offset >= target_offset_secs
+            slot_offset_ms >= target_offset_ms
         } else {
-            // Normal mode: use standard eligibility check
-            consensus::is_producer_eligible(&our_pubkey, &eligible, slot_offset)
+            // Normal mode: ms-precision sequential eligibility check
+            consensus::is_producer_eligible_ms(&our_pubkey, &eligible, slot_offset_ms)
         };
 
         if !is_eligible {
@@ -2937,14 +3219,14 @@ impl Node {
 
         // We're eligible - produce a block!
         info!(
-            "Producing block for slot {} at height {} (offset {}s)",
-            current_slot, height, slot_offset
+            "Producing block for slot {} at height {} (offset {}ms)",
+            current_slot, height, slot_offset_ms
         );
 
         // =========================================================================
         // PROPAGATION RACE MITIGATION: Yield before VDF to catch in-flight blocks
         //
-        // Problem: During VDF computation (~700ms), the event loop is blocked and
+        // Problem: During VDF computation (~55ms), the event loop is blocked and
         // cannot process incoming gossip blocks. If another producer's block for
         // slot S is in-flight while we start producing for slot S+1, we won't see
         // it until after we've already broadcast our block, creating a fork.
@@ -3002,8 +3284,8 @@ impl Node {
         }
 
         // Build the block
-        let mut builder = BlockBuilder::new(prev_hash, prev_slot, our_pubkey.clone())
-            .with_params(self.params.clone());
+        let mut builder =
+            BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
 
         // AUTOMATIC EPOCH REWARDS: At epoch boundaries, calculate and distribute
         // rewards to all producers who were present in the completed epoch.
@@ -3087,12 +3369,8 @@ impl Node {
                     let mut events = Vec::new();
                     // Drain ALL pending events (not just 10)
                     // With 20+ nodes, limiting to 10 can leave blocks unprocessed
-                    loop {
-                        if let Some(event) = network.try_next_event() {
-                            events.push(event);
-                        } else {
-                            break;
-                        }
+                    while let Some(event) = network.try_next_event() {
+                        events.push(event);
                     }
                     events
                 } else {
@@ -3162,7 +3440,7 @@ impl Node {
                 .await
                 .record_timing(iterations, vdf_duration);
 
-            info!("VDF computed in {:?} (target: ~700ms)", vdf_duration);
+            info!("VDF computed in {:?} (target: ~55ms)", vdf_duration);
             (
                 VdfOutput {
                     value: output_bytes.to_vec(),
@@ -3262,6 +3540,12 @@ impl Node {
         // Apply the block locally
         self.apply_block(block.clone()).await?;
 
+        // Reset stale chain timer — we just produced a block
+        self.sync_manager
+            .write()
+            .await
+            .note_block_received_via_gossip();
+
         // Mark that we produced for this slot
         self.last_produced_slot = current_slot;
 
@@ -3271,6 +3555,10 @@ impl Node {
         if let Some(ref network) = self.network {
             let _ = network.broadcast_block(block).await;
         }
+
+        // Self-attest: producer immediately attests to their own block
+        self.create_and_broadcast_attestation(block_hash, current_slot, height)
+            .await;
 
         Ok(())
     }
@@ -3316,24 +3604,57 @@ impl Node {
         let mut reward_outputs = Vec::new();
 
         for (index, producer_info) in sorted_producers.iter().enumerate() {
+            #[allow(deprecated)]
             match calculator.calculate_producer_reward(&producer_info.public_key, index, epoch) {
                 Ok(result) => {
                     if result.has_reward() {
-                        // Convert pubkey to pubkey_hash for the output (using ADDRESS_DOMAIN)
-                        // Note: domain comes first, then data
+                        let total_reward = result.reward_amount;
                         let pubkey_hash =
                             hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
 
                         info!(
                             "Producer {} earned {} in epoch {} (present in {}/{} blocks)",
                             producer_info.public_key,
-                            result.reward_amount,
+                            total_reward,
                             epoch,
                             result.blocks_present,
                             result.total_blocks
                         );
 
-                        reward_outputs.push((result.reward_amount, pubkey_hash));
+                        // Split rewards if producer has received delegations
+                        if producer_info.received_delegations.is_empty() {
+                            // No delegations: 100% to producer
+                            reward_outputs.push((total_reward, pubkey_hash));
+                        } else {
+                            let own_bonds = producer_info.bond_count as u64;
+                            let delegated: u64 = producer_info
+                                .received_delegations
+                                .iter()
+                                .map(|(_, c)| *c as u64)
+                                .sum();
+                            let total_bonds = own_bonds + delegated;
+
+                            // Producer keeps: own_bond_share + DELEGATE_REWARD_PCT of delegated share
+                            let own_share = total_reward * own_bonds / total_bonds;
+                            let delegated_share = total_reward - own_share;
+                            let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
+                            let producer_total = own_share + delegate_fee;
+
+                            if producer_total > 0 {
+                                reward_outputs.push((producer_total, pubkey_hash));
+                            }
+
+                            // Distribute STAKER_REWARD_PCT to each delegator proportionally
+                            let staker_pool = delegated_share * STAKER_REWARD_PCT as u64 / 100;
+                            for (delegator_hash, bond_count) in &producer_info.received_delegations
+                            {
+                                let delegator_reward =
+                                    staker_pool * (*bond_count as u64) / delegated;
+                                if delegator_reward > 0 {
+                                    reward_outputs.push((delegator_reward, *delegator_hash));
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -3428,11 +3749,127 @@ impl Node {
 
     /// Run periodic tasks
     async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // Apply pending sync blocks in correct order BEFORE cleanup.
+        //
+        // The body downloader fetches blocks in parallel, so they arrive out of order.
+        // handle_response() returns them to handle_new_block() which requires strict
+        // chain order (prev_hash == tip). Out-of-order blocks get orphaned.
+        //
+        // get_blocks_to_apply() walks pending_headers in order and extracts matching
+        // bodies from pending_blocks, returning them in the correct chain order.
+        // This MUST run before cleanup() so blocks get applied before the stuck
+        // timeout fires and clears pending state.
+        {
+            let blocks = self.sync_manager.write().await.get_blocks_to_apply();
+            if !blocks.is_empty() {
+                info!("Applying {} pending sync blocks in order", blocks.len());
+                for block in blocks {
+                    if let Err(e) = self.apply_block(block).await {
+                        warn!("Failed to apply pending sync block: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+
         // Clean up sync manager
         self.sync_manager.write().await.cleanup();
 
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();
+
+        // Poll fork recovery: check if parent chain reached our block_store
+        {
+            let parent_hash = self
+                .sync_manager
+                .read()
+                .await
+                .fork_recovery_current_parent();
+            if let Some(parent_hash) = parent_hash {
+                let parent_known = self.block_store.has_block(&parent_hash).unwrap_or(false);
+                if parent_known {
+                    let completed = self
+                        .sync_manager
+                        .write()
+                        .await
+                        .check_fork_recovery_connection(true);
+                    if let Some(recovery) = completed {
+                        if let Err(e) = self.handle_completed_fork_recovery(recovery).await {
+                            warn!("Fork recovery reorg failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // STALE CHAIN DETECTION (Ethereum-style):
+        // If we haven't received any block (gossip or sync) for 3 slots, something is wrong.
+        // Diagnose: no peers → re-bootstrap Kademlia; peers exist → aggressive status requests.
+        // Status responses trigger update_peer() → should_sync() → start_sync() automatically.
+        {
+            let stale_threshold = Duration::from_secs(self.params.slot_duration * 3);
+            let (is_stale, is_syncing, peer_count) = {
+                let sync = self.sync_manager.read().await;
+                (
+                    sync.is_chain_stale(stale_threshold),
+                    sync.state().is_syncing(),
+                    sync.peer_count(),
+                )
+            };
+
+            if is_stale && !is_syncing {
+                if peer_count == 0 {
+                    // No peers — re-bootstrap Kademlia to discover the network
+                    info!("Stale chain detected (no blocks for 3 slots) with 0 peers — re-bootstrapping DHT");
+                    if let Some(ref network) = self.network {
+                        let _ = network.bootstrap().await;
+                    }
+                } else {
+                    // Peers exist but no blocks — request status from ALL peers
+                    // This forces update_peer() which triggers should_sync()/start_sync()
+                    debug!(
+                        "Stale chain detected with {} peers — requesting status from all",
+                        peer_count
+                    );
+                    if let Some(ref network) = self.network {
+                        let genesis_hash = self.chain_state.read().await.genesis_hash;
+                        let status_request = if let Some(ref key) = self.producer_key {
+                            network::protocols::StatusRequest::with_producer(
+                                self.config.network.id(),
+                                genesis_hash,
+                                *key.public_key(),
+                            )
+                        } else {
+                            network::protocols::StatusRequest::new(
+                                self.config.network.id(),
+                                genesis_hash,
+                            )
+                        };
+                        let peer_ids: Vec<_> = {
+                            let sync = self.sync_manager.read().await;
+                            sync.peer_ids().collect()
+                        };
+                        for peer_id in peer_ids.iter().take(10) {
+                            let _ = network
+                                .request_status(*peer_id, status_request.clone())
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
+        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (3+ empty
+        // header responses), normal sync and fork recovery can't bridge the gap.
+        // Escalate to genesis resync — rebuild state from the canonical chain.
+        {
+            let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
+            if is_deep_fork {
+                warn!("Deep fork detected: peers consistently reject our chain tip. Initiating genesis resync.");
+                self.force_resync_from_genesis().await?;
+                return Ok(());
+            }
+        }
 
         // Check if we need to request sync
         if let Some((peer_id, request)) = self.sync_manager.write().await.next_request() {
@@ -3464,7 +3901,7 @@ impl Node {
             30
         };
 
-        if now_secs % status_interval == 0 {
+        if now_secs.is_multiple_of(status_interval) {
             if let Some(ref network) = self.network {
                 let peer_ids: Vec<_> = {
                     let sync = self.sync_manager.read().await;
@@ -3477,7 +3914,7 @@ impl Node {
                         network::protocols::StatusRequest::with_producer(
                             self.config.network.id(),
                             genesis_hash,
-                            key.public_key().clone(),
+                            *key.public_key(),
                         )
                     } else {
                         network::protocols::StatusRequest::new(
@@ -3507,7 +3944,7 @@ impl Node {
         }
 
         // Periodic health diagnostic — one-line summary every 30s for fork debugging
-        if now_secs % 30 == 0 {
+        if now_secs.is_multiple_of(30) {
             let cs = self.chain_state.read().await;
             let sync = self.sync_manager.read().await;
             let peer_count = sync.peer_count();
@@ -3528,21 +3965,25 @@ impl Node {
     }
 
     /// Get current chain height
+    #[allow(dead_code)]
     pub async fn height(&self) -> u64 {
         self.chain_state.read().await.best_height
     }
 
     /// Get current best hash
+    #[allow(dead_code)]
     pub async fn best_hash(&self) -> Hash {
         self.chain_state.read().await.best_hash
     }
 
     /// Get sync state
+    #[allow(dead_code)]
     pub async fn sync_state(&self) -> network::SyncState {
         self.sync_manager.read().await.state().clone()
     }
 
     /// Get peer count
+    #[allow(dead_code)]
     pub async fn peer_count(&self) -> usize {
         if let Some(ref network) = self.network {
             network.peer_count().await
@@ -3552,6 +3993,7 @@ impl Node {
     }
 
     /// Get mempool size
+    #[allow(dead_code)]
     pub async fn mempool_size(&self) -> usize {
         self.mempool.read().await.len()
     }
@@ -3573,7 +4015,7 @@ impl Node {
 
         for height in 1..=genesis_blocks {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
-                if seen.insert(block.header.producer.clone()) {
+                if seen.insert(block.header.producer) {
                     producers.push(block.header.producer);
                 }
             }

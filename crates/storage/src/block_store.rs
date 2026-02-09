@@ -46,7 +46,13 @@ impl BlockStore {
     /// height_index, slot_index, presence). Used during force resync
     /// from genesis to purge stale fork blocks.
     pub fn clear(&self) -> Result<(), StorageError> {
-        let cf_names = [CF_HEADERS, CF_BODIES, CF_HEIGHT_INDEX, CF_SLOT_INDEX, CF_PRESENCE];
+        let cf_names = [
+            CF_HEADERS,
+            CF_BODIES,
+            CF_HEIGHT_INDEX,
+            CF_SLOT_INDEX,
+            CF_PRESENCE,
+        ];
 
         for cf_name in &cf_names {
             let cf = self.db.cf_handle(cf_name).unwrap();
@@ -59,7 +65,10 @@ impl BlockStore {
             }
             if count > 0 {
                 self.db.write(batch)?;
-                warn!("[BLOCK_STORE] Cleared {} entries from CF '{}'", count, cf_name);
+                warn!(
+                    "[BLOCK_STORE] Cleared {} entries from CF '{}'",
+                    count, cf_name
+                );
             }
         }
 
@@ -292,14 +301,12 @@ impl BlockStore {
         let mut min_slot = u32::MAX;
         let mut max_slot = 0u32;
 
-        for item in iter {
-            if let Ok((key, _)) = item {
-                count += 1;
-                if key.len() == 4 {
-                    let slot = u32::from_le_bytes([key[0], key[1], key[2], key[3]]);
-                    min_slot = min_slot.min(slot);
-                    max_slot = max_slot.max(slot);
-                }
+        for (key, _) in iter.flatten() {
+            count += 1;
+            if key.len() == 4 {
+                let slot = u32::from_le_bytes([key[0], key[1], key[2], key[3]]);
+                min_slot = min_slot.min(slot);
+                max_slot = max_slot.max(slot);
             }
         }
 

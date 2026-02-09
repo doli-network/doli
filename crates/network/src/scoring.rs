@@ -159,7 +159,7 @@ impl PeerScorer {
 
     /// Get or create a score for a peer
     fn get_or_create_score(&mut self, peer: &PeerId) -> &mut PeerScore {
-        self.scores.entry(*peer).or_insert_with(PeerScore::new)
+        self.scores.entry(*peer).or_default()
     }
 
     /// Get the score for a peer

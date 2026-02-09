@@ -345,8 +345,8 @@ impl NetworkParams {
                 veto_period_secs: 7 * 24 * 3600, // 7 days (policy, not consensus rule per se, but good default)
                 grace_period_secs: 48 * 3600,    // 48 hours
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: consensus::UNBONDING_PERIOD as u64, // blocks
-                inactivity_threshold: consensus::INACTIVITY_THRESHOLD as u64,
+                unbonding_period: consensus::UNBONDING_PERIOD, // blocks (already u64)
+                inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics
                 bond_unit: consensus::BOND_UNIT,
@@ -356,9 +356,9 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
-                // VDF
-                vdf_iterations: 100_000,
-                heartbeat_vdf_iterations: 10_000_000,
+                // VDF (800K iterations ~= 55ms for 1.3s sequential fallback windows)
+                vdf_iterations: 800_000,
+                heartbeat_vdf_iterations: 800_000,
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure
@@ -400,8 +400,8 @@ impl NetworkParams {
                 veto_period_secs: 7 * 24 * 3600,
                 grace_period_secs: 48 * 3600,
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: consensus::UNBONDING_PERIOD as u64,
-                inactivity_threshold: consensus::INACTIVITY_THRESHOLD as u64,
+                unbonding_period: consensus::UNBONDING_PERIOD,
+                inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (same as mainnet)
                 bond_unit: consensus::BOND_UNIT,
@@ -411,9 +411,9 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 0,
 
-                // VDF (same as mainnet)
-                vdf_iterations: 100_000,
-                heartbeat_vdf_iterations: 10_000_000,
+                // VDF (800K iterations ~= 55ms, same as mainnet)
+                vdf_iterations: 800_000,
+                heartbeat_vdf_iterations: 800_000,
                 vdf_register_iterations: 600_000_000,
 
                 // Time structure (same as mainnet)
@@ -468,9 +468,9 @@ impl NetworkParams {
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
-                vdf_iterations: 1,                    // Single iteration
-                heartbeat_vdf_iterations: 10_000_000, // Same as mainnet
-                vdf_register_iterations: 5_000_000,   // ~5 seconds
+                vdf_iterations: 1,                  // Single iteration
+                heartbeat_vdf_iterations: 800_000,  // 800K ~= 55ms
+                vdf_register_iterations: 5_000_000, // ~5 seconds
 
                 // Time structure (accelerated)
                 blocks_per_year: 144,       // ~24 minutes
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(mainnet.default_p2p_port, 30303);
         assert_eq!(mainnet.default_rpc_port, 8545);
         assert_eq!(mainnet.slot_duration, 10);
-        assert_eq!(mainnet.bond_unit, 10_000_000_000);
+        assert_eq!(mainnet.bond_unit, 1_000_000_000);
         assert_eq!(mainnet.blocks_per_year, 3_153_600);
 
         let devnet = NetworkParams::defaults(Network::Devnet);

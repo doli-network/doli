@@ -86,6 +86,18 @@ impl BlockHeader {
         // timestamp(8) + slot(4) + producer(32) + vdf_output + vdf_proof
         4 + 32 + 32 + 32 + 8 + 4 + 32 + self.vdf_output.value.len() + self.vdf_proof.pi.len()
     }
+
+    /// For version >= 2 blocks, `presence_root` contains the attestation commitment
+    /// (Merkle root of RegionAggregates from the previous slot).
+    ///
+    /// Returns `None` for version 1 blocks where presence_root is unused.
+    pub fn attestation_commitment(&self) -> Option<Hash> {
+        if self.version >= 2 {
+            Some(self.presence_root)
+        } else {
+            None
+        }
+    }
 }
 
 /// A complete block

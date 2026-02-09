@@ -47,11 +47,7 @@ impl NetworkConfig {
             listen_addr: format!("0.0.0.0:{}", network.default_p2p_port())
                 .parse()
                 .unwrap(),
-            bootstrap_nodes: network
-                .bootstrap_nodes()
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            bootstrap_nodes: network.bootstrap_nodes(),
             max_peers: 50,
             node_key_path: None,
             network_id: network.id(),
@@ -77,9 +73,7 @@ impl NetworkConfig {
 
     /// Create a config for local development
     pub fn devnet(genesis_hash: Hash) -> Self {
-        let mut config = Self::for_network(Network::Devnet, genesis_hash);
-        config.max_peers = 10;
-        config
+        Self::for_network(Network::Devnet, genesis_hash)
     }
 
     /// Create a config for local development (alias for devnet)

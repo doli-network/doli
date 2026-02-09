@@ -173,6 +173,16 @@ sequenceDiagram
 
 **Result:** We reached **Slot 8**, but only have **4 Blocks** (Height 4). The missing blocks are the "safety tax" we pay to ensure Node 1 didn't accidentally fork the network at the start.
 
+### Late-Joining Node Behavior
+
+When a node joins a running network, it goes through these phases:
+
+1. **Sync phase**: Downloads headers and bodies from peers until caught up
+2. **Post-resync grace**: Brief grace period after resync completes
+3. **Production phase**: Production is authorized if the node is within 2 slots of its best peer and has minimum peers connected
+
+**Temporary forks are normal.** When new nodes join, 1-3 block forks that self-resolve within 30-60 seconds are expected behavior in any blockchain (Bitcoin, Ethereum, DOLI). The heaviest-chain fork choice rule resolves these automatically. Only persistent non-converging forks indicate a bug.
+
 ---
 
 ## 6. Adding New Producers to Running Devnet

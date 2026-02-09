@@ -59,6 +59,8 @@ pub struct RpcContext {
     pub sync_status: Arc<dyn Fn() -> SyncStatus + Send + Sync>,
     /// Broadcast vote function (for governance veto system)
     pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
+    /// Shared update status (populated by UpdateService, read by RPC)
+    pub update_status: Arc<RwLock<Value>>,
 }
 
 impl RpcContext {
@@ -89,8 +91,14 @@ impl RpcContext {
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             broadcast_tx: Arc::new(|_| {}),
-            sync_status: Arc::new(|| SyncStatus::default()),
+            sync_status: Arc::new(SyncStatus::default),
             broadcast_vote: Arc::new(|_| {}),
+            update_status: Arc::new(RwLock::new(serde_json::json!({
+                "pending_update": null,
+                "veto_period_active": false,
+                "veto_count": 0,
+                "veto_percent": 0.0
+            }))),
         }
     }
 
@@ -125,8 +133,14 @@ impl RpcContext {
                 peer_id: "unknown".to_string(),
                 peer_count: Arc::new(|| 0),
                 broadcast_tx: Arc::new(|_| {}),
-                sync_status: Arc::new(|| SyncStatus::default()),
+                sync_status: Arc::new(SyncStatus::default),
                 broadcast_vote: Arc::new(|_| {}),
+                update_status: Arc::new(RwLock::new(serde_json::json!({
+                    "pending_update": null,
+                    "veto_period_active": false,
+                    "veto_count": 0,
+                    "veto_percent": 0.0
+                }))),
             }
         }
     }
@@ -190,6 +204,12 @@ impl RpcContext {
         self.broadcast_vote = Arc::new(f);
         self
     }
+
+    /// Set shared update status (for getUpdateStatus RPC)
+    pub fn with_update_status(mut self, status: Arc<RwLock<Value>>) -> Self {
+        self.update_status = status;
+        self
+    }
 }
 
 impl RpcContext {
@@ -238,7 +258,7 @@ impl RpcContext {
             .block_store
             .get_block(&hash)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(|| RpcError::block_not_found())?;
+            .ok_or_else(RpcError::block_not_found)?;
 
         // Height not directly available from hash lookup
         // Would require reverse index - for now return 0
@@ -259,13 +279,13 @@ impl RpcContext {
             .block_store
             .get_hash_by_height(params.height)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(|| RpcError::block_not_found())?;
+            .ok_or_else(RpcError::block_not_found)?;
 
         let block = self
             .block_store
             .get_block(&hash)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(|| RpcError::block_not_found())?;
+            .ok_or_else(RpcError::block_not_found)?;
 
         let mut response = BlockResponse::from(&block);
         response.height = params.height;
@@ -491,7 +511,7 @@ impl RpcContext {
 
         let info = producers
             .get_by_pubkey(&pubkey)
-            .ok_or_else(|| RpcError::producer_not_found())?;
+            .ok_or_else(RpcError::producer_not_found)?;
 
         let status = match &info.status {
             storage::ProducerStatus::Active => "active",
@@ -571,7 +591,7 @@ impl RpcContext {
 
         let chain_state = self.chain_state.read().await;
         let best_height = chain_state.best_height;
-        let utxo_set = self.utxo_set.read().await;
+        let _utxo_set = self.utxo_set.read().await;
 
         let mut history: Vec<HistoryEntryResponse> = Vec::new();
         let limit = params.limit.min(100); // Cap at 100 entries
@@ -598,7 +618,7 @@ impl RpcContext {
 
             for tx in &block.transactions {
                 let mut amount_received: u64 = 0;
-                let mut amount_sent: u64 = 0;
+                let amount_sent: u64 = 0;
                 let mut is_relevant = false;
 
                 // Check outputs for received amounts
@@ -614,7 +634,7 @@ impl RpcContext {
                 for input in &tx.inputs {
                     // Look up the spent output in our UTXO set or block store
                     // Since the UTXO is already spent, we need to look at the original tx
-                    if let Ok(Some(prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
+                    if let Ok(Some(_prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
                         // The input.prev_tx_hash is actually a tx hash, not block hash
                         // We need a different approach - check if any input signature matches
                         continue;
@@ -656,6 +676,8 @@ impl RpcContext {
                     doli_core::TxType::EpochReward => "epoch_reward",
                     doli_core::TxType::RemoveMaintainer => "remove_maintainer",
                     doli_core::TxType::AddMaintainer => "add_maintainer",
+                    doli_core::TxType::DelegateBond => "delegate_bond",
+                    doli_core::TxType::RevokeDelegation => "revoke_delegation",
                 };
 
                 history.push(HistoryEntryResponse {
@@ -698,15 +720,11 @@ impl RpcContext {
     }
 
     /// Get the current update status (pending updates, votes, etc.)
+    ///
+    /// Reads from shared state populated by UpdateService.
     async fn get_update_status(&self) -> Result<Value, RpcError> {
-        // For now, return a placeholder - full implementation would query the update service
-        Ok(serde_json::json!({
-            "pending_update": null,
-            "veto_period_active": false,
-            "veto_count": 0,
-            "veto_percent": 0,
-            "message": "Update status tracking not yet integrated with RPC"
-        }))
+        let status = self.update_status.read().await;
+        Ok(status.clone())
     }
 
     /// Get node information including version

@@ -68,6 +68,7 @@ struct TimingSample {
     /// Actual time taken
     duration_ms: u64,
     /// When this sample was taken
+    #[allow(dead_code)]
     timestamp: Instant,
 }
 

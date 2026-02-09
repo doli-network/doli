@@ -59,6 +59,9 @@ fn create_producer_set_with_bonds(producers: &[(&PublicKey, u64)]) -> ProducerSe
             activity_gaps: 0,
             bond_count: 1,
             additional_bonds: vec![],
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: vec![],
         };
         // Use register method with current_height = 0
         let _ = set.register(info, 0);

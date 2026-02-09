@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
@@ -102,6 +102,7 @@ async fn handle_rpc(
 }
 
 /// Handle batch JSON-RPC requests
+#[allow(dead_code)]
 async fn handle_batch_rpc(
     State(context): State<Arc<RpcContext>>,
     Json(requests): Json<Vec<JsonRpcRequest>>,

@@ -298,7 +298,7 @@ Producers can stake 1-100 bonds to increase their block production share:
 │  3. Build block header                                       │
 │         │                                                    │
 │         ▼                                                    │
-│  4. Compute VDF proof (~700ms)                              │
+│  4. Compute VDF proof (~55ms)                               │
 │         │                                                    │
 │         ▼                                                    │
 │  5. Broadcast block                                          │
@@ -316,12 +316,12 @@ DOLI uses two VDF types:
 ```
 Hash-Chain VDF:
 ├── Input: HASH("DOLI_HEARTBEAT_V1" || producer_key || slot || prev_hash)
-├── Iterations: ~10,000,000 (dynamically calibrated)
+├── Iterations: ~800,000 (dynamically calibrated)
 ├── Output: 32 bytes (final hash)
 └── Verification: Recompute (no separate proof)
 ```
 
-- Target time: ~700ms
+- Target time: ~55ms
 - Iterations adjusted ±20% per cycle
 - Min iterations: 100,000 | Max iterations: 100,000,000
 
@@ -341,8 +341,8 @@ Wesolowski VDF:
 #### Operations
 | Operation        | Time (mainnet) | Time (testnet) | Time (devnet) |
 |------------------|----------------|----------------|---------------|
-| VDF compute      | ~700 ms        | ~70 ms         | Configurable  |
-| VDF verify       | ~10 ms (recompute) | ~1 ms     | N/A           |
+| VDF compute      | ~55 ms         | ~55 ms         | Configurable  |
+| VDF verify       | ~1 ms (recompute)  | ~1 ms     | N/A           |
 | BLAKE3 hash      | < 1 μs         | < 1 μs         | < 1 μs        |
 | Ed25519 sign     | < 1 ms         | < 1 ms         | < 1 ms        |
 | Ed25519 verify   | < 1 ms         | < 1 ms         | < 1 ms        |
@@ -490,9 +490,9 @@ def select_producer(slot, active_producers):
 - Zero variance: guaranteed slot allocation per cycle
 - Equitable ROI: same % return for all producers regardless of bond count
 
-### 2. Sync-Before-Produce (No Arbitrary Delays)
+### 2. Sync-Before-Produce (Multi-Layer Production Gating)
 
-New nodes use state-based production gating, not time-based warmup:
+New nodes use state-based production gating with multiple safety layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -505,14 +505,31 @@ New nodes use state-based production gating, not time-based warmup:
 │            (Seed node)                           (Joining)     │
 │                    │                                   │       │
 │                    ▼                                   ▼       │
-│         Produce immediately              Sync first, then      │
-│                                          produce when within   │
-│                                          2 slots of peers      │
+│         Produce after               Sync → 30s grace → check  │
+│         bootstrap grace             slot proximity → produce   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+**Production gating layers** (in `SyncManager::can_produce()`):
+
+| Layer | Check | Purpose |
+|-------|-------|---------|
+| 1 | Explicit block | Block production explicitly disabled |
+| 2 | Resync in progress | Block during active resync |
+| 3 | Syncing state | Block while downloading headers/bodies |
+| 4 | Bootstrap grace period | Wait at genesis for chain evidence |
+| 5 | Post-resync grace | Wait after resync completes |
+| 5.5 | Minimum peers | Require min peers (devnet=1, mainnet=2) |
+| 6 | Behind peers (slots only) | Block if >2 slots behind best peer |
+| 7 | Ahead of network | Fork detection — too far ahead of peers |
+| 9 | Chain hash mismatch | Fork detection — different hash at same height |
+
+**Key design decisions:**
+- **Slot-only peer comparison** (Layer 6): Heights are unreliable because forked nodes accumulate inflated block counts (h > slot). Slots are time-based and cannot be inflated.
+- **Chain hash mismatch** (Layer 9): Detects forks by comparing block hashes at the same height with peers.
+
 **Why this scales globally:**
-- No arbitrary time delays (warmup periods don't work for global networks)
+- No arbitrary time delays at genesis (warmup periods don't work for global networks)
 - Thousands of nodes can start simultaneously
 - Each node naturally syncs before competing
 - Seed nodes bootstrap immediately
@@ -715,7 +732,7 @@ DOLI uses a strict 3-level configuration hierarchy to prevent inconsistencies:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  BOND_UNIT = 10_000_000_000                                 ││
 │  │  SLOTS_PER_EPOCH = 360                                      ││
-│  │  T_BLOCK = 10_000_000                                       ││
+│  │  T_BLOCK = 800_000                                            ││
 │  │  (immutable protocol constants)                             ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────┬───────────────────────────────────────┘
@@ -779,6 +796,8 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 
 **Priority hierarchy**: Parent ENV > `.env` file > Chainspec > `consensus.rs` defaults
 
+**Chainspec overrides**: When a chainspec file is provided (`--chainspec`), consensus-critical parameters (`genesis_time`, `slot_duration`) are read from the chainspec rather than from `.env`. This ensures all nodes on the same network use identical timing parameters regardless of local configuration. **These overrides are applied on every startup**, not just on first initialization — this is critical because nodes that restart with existing data (`producers.bin`) must still load consensus parameters from the chainspec to avoid divergent slot computation.
+
 **Security**: Critical parameters (VDF, emission, timing) are **locked for mainnet** and cannot be overridden via environment or chainspec. Attempting to override logs a warning and uses hardcoded values.
 
 **tpop/** - Telemetry Proof of Presence (NOT consensus):
@@ -804,7 +823,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 **sync/** - Block Synchronization:
 | File | Lines | Purpose |
 |------|-------|---------|
-| `manager.rs` | 744 | Sync orchestration |
+| `manager.rs` | ~2,200 | Sync orchestration, production gating (10-layer), first-sync grace period |
 | `reorg.rs` | 595 | Chain reorganization handling |
 | `equivocation.rs` | 359 | Double-production detection and slashing |
 | `bodies.rs` | 340 | Block body download |
