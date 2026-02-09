@@ -5,9 +5,9 @@
 | Parameter | Current | Revised | Rationale |
 |---|---|---|---|
 | VDF target | 700ms (T_BLOCK=10M) | **55ms** (T_BLOCK=800K) | Minimizes slot overhead; anti-grinding still holds since selection is hash-independent |
-| Fallback model | Overlapping windows (0-3s/3-6s/6-10s) | **Sequential 1.3s exclusive windows** | Exactly one legitimate producer per moment → eliminates simultaneous-block forks |
+| Fallback model | Overlapping windows (0-3s/3-6s/6-10s) | **Sequential 2s exclusive windows** | Exactly one legitimate producer per moment → eliminates simultaneous-block forks |
 | Max clock drift | 10s (MAX_DRIFT=10) | **200ms** (MAX_DRIFT_MS=200) | NTP mandatory for all producers; enables tight sequential windows |
-| Slot duration | 10s | **10s** (unchanged) | Gives 7 sequential fallback ranks per slot |
+| Slot duration | 10s | **10s** (unchanged) | Gives 5 sequential fallback ranks per slot |
 | NTP requirement | Implicit/lenient | **Mandatory — protocol enforced** | Minimal operational requirement; every production server already runs NTP |
 
 ---
@@ -16,7 +16,7 @@
 
 After deep analysis of all 8 crates, the node binary, sync manager, gossip layer, scheduler, discovery CRDT, reorg handler, and production gate logic, I've identified **7 critical bottlenecks** that would prevent DOLI from scaling to 150,000 producer nodes — and a concrete architectural solution for each.
 
-The revised protocol parameters (55ms VDF, 1.3s sequential fallback, mandatory NTP with 200ms max drift) transform the timing model from "overlapping ambiguity" to "exactly one producer per moment" — eliminating an entire class of forks by construction. Combined with a three-tier producer hierarchy and a 2/3-weight finality gadget, the network can scale to 150K producers with mathematical guarantees against persistent forks.
+The revised protocol parameters (55ms VDF, 2s sequential fallback, mandatory NTP with 200ms max drift) transform the timing model from "overlapping ambiguity" to "exactly one producer per moment" — eliminating an entire class of forks by construction. Combined with a three-tier producer hierarchy and a 2/3-weight finality gadget, the network can scale to 150K producers with mathematical guarantees against persistent forks.
 
 ---
 
@@ -36,15 +36,15 @@ Your defense-in-depth production authorization (explicit block → resync → ac
 
 ---
 
-## Part 2: Revised Timing Model — 55ms VDF + 1.3s Sequential Fallback
+## Part 2: Revised Timing Model — 55ms VDF + 2s Sequential Fallback
 
 ### The Slot Timeline (10 seconds)
 
 ```
- 0ms ─────── 1300ms ────── 2600ms ────── 3900ms ────── 5200ms ────── 6500ms ────── 7800ms ────── 9100ms ── 10000ms
- │  RANK 0   │  RANK 1    │  RANK 2    │  RANK 3    │  RANK 4    │  RANK 5    │  RANK 6    │ EMERGENCY │
- │ exclusive │ exclusive  │ exclusive  │ exclusive  │ exclusive  │ exclusive  │ exclusive  │ any Tier1 │
- └───────────┴────────────┴────────────┴────────────┴────────────┴────────────┴────────────┴───────────┘
+ 0ms ──────── 2000ms ──────── 4000ms ──────── 6000ms ──────── 8000ms ──────── 10000ms
+ │   RANK 0   │   RANK 1    │   RANK 2    │   RANK 3    │   RANK 4    │
+ │  exclusive  │  exclusive   │  exclusive   │  exclusive   │  exclusive   │
+ └─────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
 ```
 
 ### Rank 0 Success Path (Normal Case, ~95%+ of slots)
@@ -61,17 +61,17 @@ Your defense-in-depth production authorization (explicit block → resync → ac
          ✓ SLOT COMPLETE. 9.5 seconds of idle time remaining.
 ```
 
-**Key insight:** With 55ms VDF, rank 0 completes in ~180ms across all Tier 1 nodes. That leaves **1120ms of buffer** before rank 1's window opens at 1300ms. Network jitter, slow VDF hardware, and propagation delays all fit comfortably within this margin.
+**Key insight:** With 55ms VDF, rank 0 completes in ~180ms across all Tier 1 nodes. That leaves **1820ms of buffer** before rank 1's window opens at 2000ms. Network jitter, slow VDF hardware, and propagation delays all fit comfortably within this margin.
 
 ### Rank 0 Failure → Rank 1 Fallback (Rare, ~5% of slots)
 
 ```
    0ms    Slot N begins. Rank 0 is offline/unreachable.
-1300ms    No block received. Rank 1 timeout fires.
-1300ms    Rank 1 begins VDF computation.
-1355ms    VDF complete. Block broadcast.
-1355ms    ─── Propagation through Tier 1 ───
-1475ms    Block reaches all Tier 1 validators.
+2000ms    No block received. Rank 1 timeout fires.
+2000ms    Rank 1 begins VDF computation.
+2055ms    VDF complete. Block broadcast.
+2055ms    ─── Propagation through Tier 1 ───
+2175ms    Block reaches all Tier 1 validators.
           ✓ SLOT COMPLETE with 1 fallback.
 ```
 
@@ -79,9 +79,9 @@ Your defense-in-depth production authorization (explicit block → resync → ac
 
 ```
    0ms    Slot N. Rank 0 offline.
-1300ms    Rank 1 also offline.
-2600ms    Rank 2 timeout fires, produces, broadcasts.
-2720ms    Block propagated.
+2000ms    Rank 1 also offline.
+4000ms    Rank 2 timeout fires, produces, broadcasts.
+4120ms    Block propagated.
           ✓ SLOT COMPLETE with 2 fallbacks.
 ```
 
@@ -92,11 +92,11 @@ Your defense-in-depth production authorization (explicit block → resync → ac
 - If rank 0's block is slightly delayed (network jitter), rank 1 produces a competing block
 - Two valid blocks exist for the same slot → fork requiring weight-based resolution
 
-**Sequential 1.3s windows eliminate this entirely:**
+**Sequential 2s windows eliminate this entirely:**
 - At any millisecond, exactly ONE rank is eligible
 - A rank only starts VDF computation after the previous rank's full timeout expires
-- If rank 0's block arrives at 1200ms (within its window), all nodes see it and rank 1 never fires
-- If rank 0's block arrives at 1400ms (after rank 1 started), rank 1 has already begun VDF — but rank 0's block is accepted and rank 1 detects it during the post-VDF existence check
+- If rank 0's block arrives at 1800ms (within its window), all nodes see it and rank 1 never fires
+- If rank 0's block arrives at 2100ms (after rank 1 started), rank 1 has already begun VDF — but rank 0's block is accepted and rank 1 detects it during the post-VDF existence check
 
 The **double-check pattern** in your current `try_produce_block()` already handles this:
 ```
@@ -106,7 +106,7 @@ The **double-check pattern** in your current `try_produce_block()` already handl
 4. Only broadcast if still no block
 ```
 
-With 55ms VDF, step 2 is so fast that the window for a race condition between steps 1 and 3 is tiny. At 700ms VDF, another producer had 700ms to sneak in a block. At 55ms, they have 55ms — and the 1.3s exclusive window means no other rank is even trying during those 55ms.
+With 55ms VDF, step 2 is so fast that the window for a race condition between steps 1 and 3 is tiny. At 700ms VDF, another producer had 700ms to sneak in a block. At 55ms, they have 55ms — and the 2s exclusive window means no other rank is even trying during those 55ms.
 
 ### Revised Constants
 
@@ -129,21 +129,17 @@ pub const VDF_DEADLINE_MS: u64 = 1_300;
 
 /// Sequential fallback timeout in milliseconds.
 /// After this duration with no block, the next rank becomes eligible.
-/// Budget: 55ms VDF + 5ms block assembly + ~200ms propagation + ~1040ms safety margin.
-pub const FALLBACK_TIMEOUT_MS: u64 = 1_300;
+/// Budget: 55ms VDF + 5ms block assembly + ~200ms propagation + ~1740ms safety margin.
+pub const FALLBACK_TIMEOUT_MS: u64 = 2_000;
 
 /// Maximum fallback ranks per slot.
-/// floor(10000 / 1300) = 7 ranks, plus emergency window.
-pub const MAX_FALLBACK_RANKS: usize = 7;
-
-/// Emergency window: last 900ms of slot (9100-10000ms).
-/// Any Tier 1 validator can produce if all 7 ranks failed.
-pub const EMERGENCY_WINDOW_START_MS: u64 = 9_100;
+/// 10000 / 2000 = 5 ranks, no emergency window.
+pub const MAX_FALLBACK_RANKS: usize = 5;
 
 /// Maximum clock drift allowed (milliseconds).
 /// NTP MANDATORY for all producers. Nodes exceeding this are
 /// rejected by peers via timestamp validation.
-/// 200ms gives ~15% margin on the 1300ms window.
+/// 200ms gives 10% margin on the 2000ms window.
 pub const MAX_DRIFT_MS: u64 = 200;
 
 /// Maximum clock drift in seconds (legacy compat, derived from MS).
@@ -159,32 +155,27 @@ pub const MAX_FUTURE_SLOTS: u64 = 1;
 /// Determine the eligible rank at a given millisecond offset within a slot.
 /// Returns exactly ONE rank (no overlap).
 ///
-/// 0-1299ms:    Rank 0 exclusive
-/// 1300-2599ms: Rank 1 exclusive
-/// 2600-3899ms: Rank 2 exclusive
-/// ...
-/// 7800-9099ms: Rank 6 exclusive  
-/// 9100-9999ms: Emergency (any Tier 1)
+/// 0-1999ms:    Rank 0 exclusive
+/// 2000-3999ms: Rank 1 exclusive
+/// 4000-5999ms: Rank 2 exclusive
+/// 6000-7999ms: Rank 3 exclusive
+/// 8000-9999ms: Rank 4 exclusive
 pub const fn eligible_rank_at_ms(offset_ms: u64) -> Option<usize> {
-    if offset_ms >= EMERGENCY_WINDOW_START_MS {
-        return None; // Emergency window — caller handles separately
-    }
     let rank = (offset_ms / FALLBACK_TIMEOUT_MS) as usize;
-    if rank <= MAX_FALLBACK_RANKS {
+    if rank < MAX_FALLBACK_RANKS {
         Some(rank)
     } else {
-        None
+        None // Past slot end
     }
 }
 
 /// Check if a specific producer rank is eligible at the given offset.
 /// Unlike the old overlapping model, only ONE rank is eligible at any time.
 pub const fn is_rank_eligible_at_ms(rank: usize, offset_ms: u64) -> bool {
-    if offset_ms >= EMERGENCY_WINDOW_START_MS {
-        return rank <= MAX_FALLBACK_RANKS; // Emergency: all ranks eligible
+    match eligible_rank_at_ms(offset_ms) {
+        Some(current_rank) => rank == current_rank,
+        None => false, // Past slot end
     }
-    let current_rank = (offset_ms / FALLBACK_TIMEOUT_MS) as usize;
-    rank == current_rank
 }
 ```
 
@@ -242,7 +233,7 @@ pub const DRIFT_PENALTY_SCORE: f64 = -100.0;
 .gossip_factor(0.25) // 25% of non-mesh
 ```
 
-**The Problem:** With 150K nodes and mesh_n=6, the gossip diameter is `log_6(150000) ≈ 6.7 hops`. At ~60ms per hop, that's ~400ms — fine for the 1300ms exclusive window. But the real issue is **message amplification**:
+**The Problem:** With 150K nodes and mesh_n=6, the gossip diameter is `log_6(150000) ≈ 6.7 hops`. At ~60ms per hop, that's ~400ms — fine for the 2000ms exclusive window. But the real issue is **message amplification**:
 
 - Each block (~200KB-1MB) is forwarded by every mesh peer
 - 150K nodes × 6 mesh peers = 900K gossip messages per block
@@ -307,7 +298,7 @@ Weight-based fork choice alone can't converge fast enough when a 1% partition (1
                     ┌─────────────────────────┐
                     │   TIER 1: Validators     │
                     │   (100-500 nodes)        │
-                    │   Block production       │ ◄── 55ms VDF, 1.3s sequential fallback
+                    │   Block production       │ ◄── 55ms VDF, 2s sequential fallback
                     │   Dense mesh (mesh_n=20) │
                     │   NTP ≤ 200ms mandatory  │
                     └───────────┬─────────────┘
@@ -345,9 +336,9 @@ Slot N starts:
   │  180ms: All Tier 1 nodes have block ✓
   │
   ├─ If rank 0 fails:
-  │  1300ms: Rank 1 starts VDF
-  │  1355ms: Broadcast
-  │  1475ms: All Tier 1 nodes have block ✓
+  │  2000ms: Rank 1 starts VDF
+  │  2055ms: Broadcast
+  │  2175ms: All Tier 1 nodes have block ✓
   │
   └─ Probability of needing rank 2+: < 0.25% (assuming 95% uptime per node)
 ```
@@ -441,7 +432,7 @@ pub struct RegionAggregate {
  800ms    Regional leaders aggregate attestations
  900ms    Regional aggregates relayed back to Tier 1
 1000ms    Tier 1 nodes have attestation data from all regions
-          ✓ All within rank 0's 1300ms exclusive window
+          ✓ All within rank 0's 2000ms exclusive window
 ```
 
 ### Tier 3: Stakers (up to 150,000 nodes)
@@ -489,7 +480,7 @@ pub const STAKER_REWARD_PCT: u32 = 90;    // Stakers get 90%
 
 ### Why Finality Is Required at 150K Nodes
 
-The sequential fallback model (1.3s exclusive windows) eliminates **same-slot forks** — no two producers are ever simultaneously eligible. But it cannot prevent **partition forks**: if the network splits, each side has its own Tier 1 validators producing blocks sequentially. When the partition heals, you have two competing chains.
+The sequential fallback model (2s exclusive windows) eliminates **same-slot forks** — no two producers are ever simultaneously eligible. But it cannot prevent **partition forks**: if the network splits, each side has its own Tier 1 validators producing blocks sequentially. When the partition heals, you have two competing chains.
 
 **Finality makes forks impossible, not just improbable.**
 
@@ -691,9 +682,9 @@ Tier 3: max_peers=20,  min_peers_for_production=0 (don't produce)
 
 | Fork Cause | Current Protection | + Sequential Fallback (55ms VDF) | + Tiering + Finality |
 |---|---|---|---|
-| **Two producers for same slot** | Overlapping windows allow it | **ELIMINATED** — exclusive 1.3s windows | Same |
+| **Two producers for same slot** | Overlapping windows allow it | **ELIMINATED** — exclusive 2s windows | Same |
 | **Clock drift race condition** | MAX_DRIFT=10s allows massive overlap | **ELIMINATED** — NTP mandatory, 200ms drift | Same |
-| **Temporary network delay** | Fallback at 3s/6s with overlap | Fallback at 1.3s, no overlap, 55ms VDF | + finality prevents persistence |
+| **Temporary network delay** | Fallback at 3s/6s with overlap | Fallback at 2s, no overlap, 55ms VDF | + finality prevents persistence |
 | **Network partition (<33%)** | Production gate Layer 7 | Same | Minority can't finalize → clean reorg |
 | **Network partition (33-50%)** | Slow convergence via weight | Sequential reduces fork depth | **Neither side finalizes** → clean merge |
 | **Sybil attack** | VDF registration, bond | Same | Tier 1 requires top-500 weight |
@@ -709,7 +700,7 @@ Tier 3: max_peers=20,  min_peers_for_production=0 (don't produce)
 ### Phase 1: Timing Model Upgrade (1-2 weeks, no protocol break)
 
 1. **Reduce VDF iterations:** `T_BLOCK: 10M → 800K` (55ms target)
-2. **Replace overlapping windows with sequential 1.3s fallback**
+2. **Replace overlapping windows with sequential 2s fallback**
 3. **Tighten clock drift:** `MAX_DRIFT_MS = 200`, NTP enforcement in peer scoring
 4. **Unify scheduler:** Replace `select_producer_for_slot()` with cached `DeterministicScheduler`
 5. **Add epoch-based producer cache**
@@ -744,9 +735,8 @@ Tier 3: max_peers=20,  min_peers_for_production=0 (don't produce)
 pub const SLOT_DURATION: u64 = 10;           // 10 seconds (unchanged)
 pub const T_BLOCK: u64 = 800_000;            // ~55ms VDF
 pub const VDF_TARGET_MS: u64 = 55;
-pub const FALLBACK_TIMEOUT_MS: u64 = 1_300;  // Sequential exclusive window
-pub const MAX_FALLBACK_RANKS: usize = 7;
-pub const EMERGENCY_WINDOW_START_MS: u64 = 9_100;
+pub const FALLBACK_TIMEOUT_MS: u64 = 2_000;  // Sequential exclusive window
+pub const MAX_FALLBACK_RANKS: usize = 5;
 pub const MAX_DRIFT_MS: u64 = 200;           // NTP mandatory
 
 // Tier configuration
@@ -784,7 +774,7 @@ pub const DELEGATION_UNBONDING: u64 = 60_480; // 7 days
 
 The revised architecture combines three reinforcing layers of fork prevention:
 
-1. **Sequential 1.3s exclusive windows + 55ms VDF + mandatory NTP** → eliminates intra-slot forks by construction (only one producer eligible at any moment, with 200ms max drift providing 15% safety margin on the 1300ms window)
+1. **Sequential 2s exclusive windows + 55ms VDF + mandatory NTP** → eliminates intra-slot forks by construction (only one producer eligible at any moment, with 200ms max drift providing 10% safety margin on the 2000ms window)
 
 2. **Three-tier hierarchy (500 validators / 15K attestors / 150K stakers)** → keeps consensus-critical path at 500 nodes where gossip, selection, and state management all work efficiently
 
