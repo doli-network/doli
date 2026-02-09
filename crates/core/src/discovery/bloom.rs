@@ -72,7 +72,7 @@ impl ProducerBloomFilter {
 
         // Ensure minimum sizes
         let m = m.max(64);
-        let k = k.max(1).min(16); // Cap at 16 hash functions
+        let k = k.clamp(1, 16); // Cap at 16 hash functions
 
         Self {
             bits: bitvec![u8, Lsb0; 0; m],
@@ -172,7 +172,7 @@ impl ProducerBloomFilter {
     /// Get the size of the bit array in bytes.
     #[must_use]
     pub fn size_bytes(&self) -> usize {
-        (self.m + 7) / 8
+        self.m.div_ceil(8)
     }
 
     /// Calculate the theoretical false positive rate.

@@ -20,6 +20,7 @@ struct BodyRequest {
     /// Hashes being requested
     hashes: Vec<Hash>,
     /// Peer the request was sent to
+    #[allow(dead_code)]
     peer: PeerId,
     /// When the request was sent
     sent_at: Instant,

@@ -130,9 +130,9 @@ fn save_config(config: &DevnetConfig) -> Result<()> {
 /// Initialize a new devnet with N producer nodes
 pub fn init(node_count: u32) -> Result<()> {
     // Validate node count
-    if node_count == 0 || node_count > 20 {
+    if node_count == 0 || node_count > 100 {
         return Err(anyhow!(
-            "Node count must be between 1 and 20, got {}",
+            "Node count must be between 1 and 100, got {}",
             node_count
         ));
     }
@@ -282,7 +282,7 @@ pub async fn start() -> Result<()> {
     if pids_dir.exists() {
         for entry in fs::read_dir(&pids_dir)? {
             let entry = entry?;
-            if entry.path().extension().map_or(false, |e| e == "pid") {
+            if entry.path().extension().is_some_and(|e| e == "pid") {
                 let pid_str = fs::read_to_string(entry.path())?;
                 if let Ok(pid) = pid_str.trim().parse::<u32>() {
                     if is_process_running(pid) {
@@ -322,7 +322,7 @@ pub async fn start() -> Result<()> {
     if logs_dir.exists() {
         for entry in fs::read_dir(&logs_dir)? {
             let entry = entry?;
-            if entry.path().extension().map_or(false, |e| e == "log") {
+            if entry.path().extension().is_some_and(|e| e == "log") {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -393,9 +393,9 @@ pub async fn start() -> Result<()> {
 /// Start a single devnet node
 fn start_node(
     config: &DevnetConfig,
-    root: &PathBuf,
+    root: &Path,
     node_index: u32,
-    exe_path: &PathBuf,
+    exe_path: &Path,
     bootstrap: Option<&str>,
 ) -> Result<Child> {
     let data_dir = root.join("data").join(format!("node{}", node_index));
@@ -423,7 +423,6 @@ fn start_node(
         config.rpc_port(node_index).to_string(),
         "--metrics-port".to_string(),
         config.metrics_port(node_index).to_string(),
-        "--no-dht".to_string(),
         "--no-auto-update".to_string(),
         "--force-start".to_string(),
         "--yes".to_string(), // Skip interactive confirmation for automation
@@ -450,14 +449,14 @@ fn start_node(
 }
 
 /// Save PID file for a node
-fn save_pid(root: &PathBuf, node_index: u32, pid: u32) -> Result<()> {
+fn save_pid(root: &Path, node_index: u32, pid: u32) -> Result<()> {
     let pid_file = root.join("pids").join(format!("node{}.pid", node_index));
     fs::write(&pid_file, pid.to_string())?;
     Ok(())
 }
 
 /// Load PID from file
-fn load_pid(root: &PathBuf, node_index: u32) -> Result<Option<u32>> {
+fn load_pid(root: &Path, node_index: u32) -> Result<Option<u32>> {
     let pid_file = root.join("pids").join(format!("node{}.pid", node_index));
     if !pid_file.exists() {
         return Ok(None);
@@ -633,7 +632,8 @@ pub async fn stop() -> Result<()> {
 
 /// Load producer pubkey_hash from wallet file (for balance queries)
 /// Returns the 32-byte hash used as UTXO key, not the 20-byte display address
-fn load_producer_pubkey_hash(root: &PathBuf, node_index: u32) -> Option<String> {
+#[allow(dead_code)]
+fn load_producer_pubkey_hash(root: &Path, node_index: u32) -> Option<String> {
     let wallet_path = root
         .join("keys")
         .join(format!("producer_{}.json", node_index));
@@ -812,7 +812,7 @@ pub async fn status() -> Result<()> {
                                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                                     json["result"]["total"]
                                         .as_u64()
-                                        .map_or("-".to_string(), |v| format_doli(v))
+                                        .map_or("-".to_string(), format_doli)
                                 } else {
                                     "-".to_string()
                                 }
@@ -896,7 +896,7 @@ pub async fn status() -> Result<()> {
     let mut node_statuses = Vec::new();
     for &i in &all_node_indices {
         let pid = load_pid(&root, i).ok().flatten();
-        let pid_running = pid.map_or(false, is_process_running);
+        let pid_running = pid.is_some_and(is_process_running);
 
         // Try to get chain info from RPC (also detects running nodes without PID files)
         let url = format!("http://127.0.0.1:{}", config.rpc_port(i));

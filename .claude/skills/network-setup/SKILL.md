@@ -1,12 +1,10 @@
 ---
 name: network-setup
-description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration.
+description: Use this skill when the user wants to set up a node, create a producer, join a network (devnet/testnet/mainnet), run a node, become a producer, or asks about network configuration, peer discovery, sync issues, forks, or network health.
 version: 3.2.0
 ---
 
 # DOLI Network Setup Skill
-
-This skill guides you through setting up and running DOLI nodes and producers on any network.
 
 ## Network Parameters
 
@@ -15,13 +13,50 @@ This skill guides you through setting up and running DOLI nodes and producers on
 | **Network ID** | 99 | 2 | 1 |
 | **Address Prefix** | `ddoli` | `tdoli` | `doli` |
 | **Slot Duration** | 10 seconds | 10 seconds | 10 seconds |
-| **Epoch Length** | 60 slots | 360 slots | 360 slots |
+| **Epoch Length** | 6 slots (1 min) | 360 slots (1 hr) | 360 slots (1 hr) |
 | **P2P Port** | 50303 | 40303 | 30303 |
 | **RPC Port** | 28545 | 18545 | 8545 |
-| **Bootstrap** | None (local) | `testnet.doli.network` | `doli.network` |
-| **Block Reward** | 1 dDOLI | 1 tDOLI | 1 DOLI |
-| **Bond Unit** | 1 DOLI | 100 DOLI | 100 DOLI |
+| **Bootstrap** | None (local DHT) | `testnet.doli.network` | `doli.network` |
+| **Block Reward** | 20 dDOLI | 1 tDOLI | 1 DOLI |
+| **Bond Unit** | 1 DOLI | 10 DOLI | 10 DOLI |
 | **ACTIVATION_DELAY** | 10 blocks (~100s) | 10 blocks (~100s) | 10 blocks (~100s) |
+| **Genesis Bootstrap** | 24 blocks (4 min) | 60,480 blocks (~7 days) | 60,480 blocks (~7 days) |
+
+## Network Architecture
+
+DOLI uses libp2p with three protocols working together:
+
+| Layer | Protocol | Role |
+|-------|----------|------|
+| **Discovery** | Kademlia DHT | Finds peers via distributed hash table random walks |
+| **Propagation** | GossipSub | Publishes blocks/txs to mesh peers (mesh_n=6, max=12 per topic) |
+| **Identity** | Identify | Exchanges listen addresses; feeds addresses into Kademlia |
+
+**How peer discovery works:** Node A connects to bootstrap → Kademlia random walks find nodes B, C, D → GossipSub builds mesh overlay on top of connected peers → blocks propagate in O(log N) hops.
+
+**GossipSub mesh pruning:** GossipSub maintains 6-12 peers per topic. When it prunes excess peers, Kademlia provides replacements. Without DHT, pruned nodes become isolated — this is why `--no-dht` is dangerous for networks with >12 nodes.
+
+### Peer Discovery and Network Isolation
+
+DHT (Kademlia) is **always enabled** on all networks. Network isolation happens via **network ID validation** — when a peer connects, the node checks `network_id` in the status handshake and disconnects mismatches. Devnet (ID=99), testnet (ID=2), and mainnet (ID=1) never cross-contaminate, even on the same machine with DHT active. This is how Ethereum, Polkadot, and Filecoin work.
+
+**`--no-dht` exists as a debug/emergency flag but should NEVER be used in normal operation.** It disables Kademlia, which means:
+- Nodes can ONLY connect to their `--bootstrap` peer (no discovery)
+- GossipSub cannot graft replacements after mesh pruning
+- Topology collapses to a star → networks >12 nodes will have isolated nodes
+- This was the root cause of fork instability in early devnet testing
+
+### Tiered Architecture
+
+Producers self-classify into tiers based on bond weight at epoch boundaries:
+
+| Tier | Bond Weight | GossipSub mesh_n | Min Peers to Produce |
+|------|-------------|-------------------|---------------------|
+| Tier 1 | Top 500 by weight | 20 (dense) | 10 |
+| Tier 2 | Next tier | 8 (moderate) | 5 |
+| Tier 3 | Light producers | 4 (light) | 2 |
+
+Tier classification happens automatically. Initial min_peers before first epoch: 2 (all networks).
 
 ## Quick Reference
 
@@ -138,7 +173,6 @@ fi
 | Devnet (N nodes) | 50303–50303+N | 28545–28545+N | 9090–9090+N |
 | Testnet (N nodes) | 40303–40303+N | 18545–18545+N | 9090–9090+N |
 | Mainnet | 30303 | 8545 | 9090 |
-
 ## Decision Tree
 
 ```
@@ -160,7 +194,7 @@ User wants to...
 │
 ├─ Local development/testing (fresh)?
 │  └─ Only if no devnet exists → `doli-node devnet init --nodes 5`
-│     doli-node devnet start
+│     doli-node devnet start (DHT enabled by default)
 │
 ├─ Public testing with other operators?
 │  └─ Kill zombies → Use testnet (mirrors mainnet timing)
@@ -171,6 +205,9 @@ User wants to...
 ├─ Run as background service?
 │  └─ Kill zombies → See Scenario 4 (Systemd Service)
 │
+├─ Network health issues (forks, stuck nodes, sync failures)?
+│  └─ See Network Health Monitoring + Troubleshooting
+│
 └─ Launch a brand new network?
    └─ Kill zombies → See Scenario 5 (Network Operators)
 ```
@@ -180,21 +217,14 @@ User wants to...
 ### Step 1: Build DOLI
 
 ```bash
-# Enter Nix environment
-`nix --extra-experimental-features "nix-command flakes" develop --command bash -c "<command>"`
-
-# Build release binaries
-cargo build --release
+nix --extra-experimental-features "nix-command flakes" develop --command bash -c "cargo build --release"
 ```
 
 ### Step 2: Create Producer Wallet
 
 ```bash
-# Create directory and wallet
 mkdir -p ~/.doli/<NETWORK>
 ./target/release/doli -w ~/.doli/<NETWORK>/producer.json new
-
-# View public key (save this!)
 ./target/release/doli -w ~/.doli/<NETWORK>/producer.json info
 ```
 
@@ -212,40 +242,24 @@ mkdir -p ~/.doli/<NETWORK>
 
 **Devnet (recommended):** Use the devnet subcommands — see **Scenario 2 Option A**. They handle keys, chainspec, ports, and PID tracking automatically. Do NOT manually start devnet nodes unless you have a specific reason.
 
-**Testnet:**
+**Testnet/Mainnet:**
 ```bash
-./target/release/doli-node --network testnet run --producer --producer-key ~/.doli/testnet/producer.json
+./target/release/doli-node --network <NETWORK> run \
+    --producer --producer-key ~/.doli/<NETWORK>/producer.json
 ```
 
-**Mainnet:**
-```bash
-./target/release/doli-node --network mainnet run --producer --producer-key ~/.doli/mainnet/producer.json
-```
-
-For testnet/mainnet, the node auto-connects to bootstrap nodes and starts syncing.
-
-### Step 5: Register as Producer (earn rewards)
+### Step 5: Register as Producer
 
 ```bash
-# Set RPC endpoint based on network
-export DOLI_RPC=http://127.0.0.1:<RPC_PORT>  # 28545 (devnet), 18545 (testnet), 8545 (mainnet)
-
-# Check balance (need 1,000 tokens per bond)
-./target/release/doli -w ~/.doli/<NETWORK>/producer.json balance
-
-# Register with 1 bond
-./target/release/doli -w ~/.doli/<NETWORK>/producer.json producer register --bonds 1
-
-# Verify registration
-./target/release/doli -w ~/.doli/<NETWORK>/producer.json producer status
-
-# List all producers
-./target/release/doli producer list
+# RPC ports: 28545 (devnet), 18545 (testnet), 8545 (mainnet)
+./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json balance
+./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json producer register --bonds 1
+./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json producer status
 ```
+
+**Bond cost:** Devnet = 1 DOLI per bond. Testnet/Mainnet = 10 DOLI per bond.
 
 ## Scenario 2: Local Multi-Node Devnet
-
-For development and testing with multiple nodes on a single machine.
 
 ### Option A: Built-in Devnet Commands (Recommended)
 
@@ -254,16 +268,9 @@ The `doli-node devnet` subcommands provide the easiest way to manage a local mul
 **⚠️ FIRST: Run zombie cleanup (see "Mandatory Rule" above) before `init` or `start`.**
 
 ```bash
-# Initialize a 10-node devnet (generates keys, chainspec, directories)
 doli-node devnet init --nodes 10
-
-# Start all nodes (handles bootstrap, port allocation, --force-start)
 doli-node devnet start
-
-# Check status (shows running/stopped, height, slot, peers)
 doli-node devnet status
-
-# Stop all nodes gracefully
 doli-node devnet stop
 
 # Add producers to a running devnet (creates wallet, funds, registers, starts node)
@@ -274,40 +281,35 @@ doli-node devnet clean
 doli-node devnet clean --keep-keys
 ```
 
-**Directory structure created at `~/.doli/devnet/`:**
+**Directory structure:** `~/.doli/devnet/`
 ```
-~/.doli/devnet/
 ├── devnet.toml          # Config (node_count, base ports)
 ├── chainspec.json       # Genesis with all producers
-├── keys/producer_*.json # Wallet files (compatible with doli-cli)
+├── keys/producer_*.json # Wallet files
 ├── data/node*/          # Node data directories
 ├── logs/node*.log       # Log files
 └── pids/node*.pid       # PID tracking
 ```
 
-**Port allocation (automatic):**
+**Port allocation:**
 | Node | P2P Port | RPC Port | Metrics Port |
 |------|----------|----------|--------------|
 | 0 | 50303 | 28545 | 9090 |
-| 1 | 50304 | 28546 | 9091 |
 | N | 50303+N | 28545+N | 9090+N |
 
-### Option B: Manual Multi-Node Setup
+### Option B: Manual Multi-Node Setup (Private Local Testnet)
 
-For more control (e.g., custom ports, specific configuration):
+Use this only when you need a **private** local testnet with custom chainspec:
 
 ```bash
-# Set up directories
 export TESTNET_DIR=~/.doli/testnet
 mkdir -p $TESTNET_DIR/keys $TESTNET_DIR/logs
 mkdir -p $TESTNET_DIR/{node1,node2,node3,node4,node5}/data
 
-# Generate N producer wallets
 for i in 1 2 3 4 5; do
     ./target/release/doli -w $TESTNET_DIR/keys/producer_$i.json new
 done
 
-# IMPORTANT: Generate chainspec from wallets (required for local testnet)
 ./scripts/generate_chainspec.sh testnet $TESTNET_DIR/keys $TESTNET_DIR/chainspec.json
 ```
 
@@ -323,13 +325,11 @@ done
     --p2p-port 40303 \
     --rpc-port 18545 \
     --metrics-port 9090 \
-    --no-auto-update \
-    --no-dht
+    --no-auto-update
 ```
 
-**Start Nodes 2-N (Bootstrap from Node 1):**
+**Start Nodes 2-N:**
 ```bash
-# Node 2
 ./target/release/doli-node \
     --data-dir $TESTNET_DIR/node2/data \
     --network testnet \
@@ -341,33 +341,19 @@ done
     --rpc-port 18546 \
     --metrics-port 9091 \
     --bootstrap "/ip4/127.0.0.1/tcp/40303" \
-    --no-auto-update \
-    --no-dht
-
-# Pattern for nodes 3-N: increment ports by 1 for each node
-# Node 3: p2p=40305, rpc=18547, metrics=9092
-# Node 4: p2p=40306, rpc=18548, metrics=9093
-# Node 5: p2p=40307, rpc=18549, metrics=9094
+    --no-auto-update
 ```
 
-**Key flags for local testnet:**
-- `--chainspec`: Use custom genesis with your producer wallets
-- `--no-dht`: Isolate from external peers (prevents connecting to public testnet)
+**⚠️ WARNING:** `--no-dht` is used here ONLY to isolate from the public testnet (same network ID). This limits the network to ≤12 nodes reliably. For >12 nodes, use unique network ID or devnet commands instead.
+
+**Key flags:**
+- `--chainspec`: Custom genesis with your producer wallets
 - `--no-auto-update`: Disable auto-updates during testing
-
-### Port Allocation Pattern
-
-| Node | P2P Port | RPC Port | Metrics Port |
-|------|----------|----------|--------------|
-| 1 | 40303 | 18545 | 9090 |
-| 2 | 40304 | 18546 | 9091 |
-| 3 | 40305 | 18547 | 9092 |
-| N | 40303+(N-1) | 18545+(N-1) | 9090+(N-1) |
+- Network isolation is automatic via network ID — no need for `--no-dht`
 
 ### Check Multi-Node Status
 
 ```bash
-# Quick status check for 5 nodes
 for port in 18545 18546 18547 18548 18549; do
   echo "=== RPC $port ==="
   curl -s http://127.0.0.1:$port -X POST \
@@ -376,42 +362,6 @@ for port in 18545 18546 18547 18548 18549; do
     jq -c '.result | {height: .bestHeight, slot: .bestSlot}'
 done
 ```
-
-### Testnet Management Scripts
-
-After setting up a local testnet, these scripts help manage it:
-
-| Script | Location | Description |
-|--------|----------|-------------|
-| `start_5node_testnet.sh` | `~/.doli/testnet/` | Start all 5 nodes |
-| `stop_testnet.sh` | `~/.doli/testnet/` | Stop all nodes gracefully |
-| `status.sh` | `~/.doli/testnet/` | Check status of all nodes |
-| `rebuild_restart.sh` | `~/.doli/testnet/` | Rebuild binary and restart nodes |
-
-**Rebuild and Restart (after code changes):**
-```bash
-~/.doli/testnet/rebuild_restart.sh
-```
-
-This script:
-1. Stops all running testnet nodes
-2. Rebuilds the binary with `cargo build --release`
-3. Restarts all nodes with the new binary
-4. Shows chain status to verify restart
-
-### Available Test Scripts
-
-> **Note:** For general local development, prefer `doli-node devnet` commands over these scripts.
-> These scripts are for specific test scenarios.
-
-| Script | Description |
-|--------|-------------|
-| `scripts/launch_testnet.sh` | Quick 2-node devnet (legacy) |
-| `scripts/test_3node_proportional_rewards.sh` | 3-node reward testing |
-| `scripts/test_5node_epoch_rewards_consistency.sh` | 5-node epoch rewards |
-| `scripts/test_devnet_3node_rewards.sh` | 3-node devnet rewards |
-
----
 
 ## Scenario 3: Add New Producers to Running Network
 
@@ -471,37 +421,26 @@ For adding producers to testnet/mainnet, or when you need full control over the 
 
 | Step | Action | Result if Skipped |
 |------|--------|-------------------|
-| 0. **Clean ports** | Kill zombie processes, verify ports free | **NODE PANIC on startup** |
+| 0. **Clean ports** | Kill zombie processes | **NODE PANIC on startup** |
 | 1. Create wallet | `doli wallet new` | No key exists |
-| 2. Fund wallet | Send DOLI to address | Cannot register (no bond) |
+| 2. Fund wallet | Send DOLI to address | Cannot register |
 | 3. Register | `doli producer register` | Not in producer set |
-| 4. **Start node** | `doli-node --producer --producer-key <wallet>` | **REGISTERED BUT NOT PRODUCING** |
+| 4. **Start node** | `doli-node --producer --producer-key` | **REGISTERED BUT NOT PRODUCING** |
 
-**Common Mistakes:**
-- **Skipping Step 0:** Node panics with "Address already in use" because zombie processes hold ports
-- **Skipping Step 4:** Registration puts the public key on the blockchain, but without a running node there's no process to produce blocks
-
-### Step 1: Create Producer Wallets
+### Step 1: Create Wallets
 
 ```bash
-# Create wallets for producers 15-29 (example: 15 new producers)
 for i in {15..29}; do
   ./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json new -n "producer_$i"
 done
 ```
 
-### Step 2: Get Pubkey Hashes (Required for Sending)
+### Step 2: Get Pubkey Hashes
 
-**⚠️ CRITICAL: Use "Pubkey Hash", NOT "Public Key"**
-
-The `doli info` command shows THREE different values. You MUST use the **Pubkey Hash (32-byte)** for sending:
+**⚠️ Use "Pubkey Hash (32-byte)", NOT "Public Key" — both are 64 chars but different values!**
 
 ```bash
-./target/release/doli -w ~/.doli/devnet/keys/producer_15.json info
-# Output:
-#   Address (20-byte):     cf98716522ee9e5c...              ❌ DON'T USE (too short)
-#   Pubkey Hash (32-byte): cf98716522ee9e5c62f9...686eab84  ✅ USE THIS FOR SENDING
-#   Public Key:            cc9a1710b8bffb38...22d7cb51      ❌ DON'T USE (wrong hash)
+pubkey_hash=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
 ```
 
 | Field | Length | Use For |
@@ -510,66 +449,32 @@ The `doli info` command shows THREE different values. You MUST use the **Pubkey 
 | **Pubkey Hash (32-byte)** | **64 chars** | **Sending coins, RPC queries** |
 | Public Key | 64 chars | Verification only |
 
-**Common Mistake:** Using "Public Key" instead of "Pubkey Hash" - both are 64 characters but they are DIFFERENT values. The send will succeed but coins go to wrong address!
-
-**Extract Pubkey Hash in scripts:**
-```bash
-# Correct way to get pubkey hash for sending
-pubkey_hash=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
-```
-
-### Step 3: Fund New Producers
-
-**UTXO Reuse Warning:** Sending multiple transactions from the same wallet in quick succession causes "double spend with mempool transaction" errors because the UTXO set isn't refreshed.
-
-**Solution:** Use different source wallets for each send, or wait for confirmation between sends.
+### Step 3: Fund Producers
 
 ```bash
-# Fund each new producer from a DIFFERENT source wallet
+# Use different source wallets to avoid UTXO double-spend errors
 for i in {15..29}; do
-  src=$((i - 15))  # producer_0 sends to 15, producer_1 sends to 16, etc.
+  src=$((i - 15))
   pubkey=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
-  echo "Sending from producer_$src to producer_$i..."
   ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$src.json send "$pubkey" 2
 done
 ```
 
-**Alternative (slower but uses single wallet):**
-```bash
-# Wait for confirmation between each send
-for i in {15..29}; do
-  pubkey=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
-  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_0.json send "$pubkey" 2
-  sleep 12  # Wait for next block
-done
-```
-
-### Step 4: Register as Producers
-
-**Bond requirements:**
-- Devnet: 1 DOLI per bond
-- Testnet/Mainnet: 100 DOLI per bond
+### Step 4: Register
 
 ```bash
-# Register all new producers
 for i in {15..29}; do
-  echo "Registering producer_$i..."
   ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$i.json producer register -b 1
 done
 ```
 
-### Step 5: Start Producer Nodes (CRITICAL)
-
-**⚠️ This step is REQUIRED. Without a running node, the registered producer cannot produce blocks.**
-
-**⚠️ IMPORTANT: Always specify `--metrics-port` explicitly to avoid port conflicts!**
+### Step 5: Start Nodes (DO NOT use --no-dht)
 
 ```bash
-# Start each new producer node with UNIQUE ports for P2P, RPC, AND METRICS
 for i in {15..29}; do
   P2P_PORT=$((50303 + i))
   RPC_PORT=$((28545 + i))
-  METRICS_PORT=$((9090 + i))  # REQUIRED: unique metrics port per node
+  METRICS_PORT=$((9090 + i))
 
   ./target/release/doli-node \
     --network devnet \
@@ -582,32 +487,21 @@ for i in {15..29}; do
     --metrics-port $METRICS_PORT \
     --bootstrap '/ip4/127.0.0.1/tcp/50303' \
     --chainspec ~/.doli/devnet/chainspec.json \
-    --no-dht \
     --yes \
     > ~/.doli/devnet/logs/node$i.log 2>&1 &
 
-  echo "Started node $i (P2P: $P2P_PORT, RPC: $RPC_PORT, Metrics: $METRICS_PORT)"
+  echo "Started node $i (P2P:$P2P_PORT RPC:$RPC_PORT Metrics:$METRICS_PORT)"
 done
 ```
 
-**Each new producer needs THREE unique ports:**
-| Port Type | Formula | Example (node 15) |
-|-----------|---------|-------------------|
-| P2P | 50303 + N | 50318 |
-| RPC | 28545 + N | 28560 |
-| **Metrics** | 9090 + N | 9105 |
-
-**Common failure:** Omitting `--metrics-port` causes nodes to use default port 9090, conflicting with node 0.
+**⚠️ No `--no-dht` flag!** DHT enables peer discovery so nodes form a distributed mesh. Without it, all nodes only connect to the bootstrap node, creating a fragile star topology.
 
 ### Producer Activation Timeline
 
-After registration, producers go through two phases:
+1. **Bootstrap Mode (immediate):** New producers join `known_producers` on block application.
+2. **Normal Mode (after ACTIVATION_DELAY = 10 blocks):** Producer appears in `active_producers_at_height()`. ~100 seconds on all networks (10 blocks × 10s slots).
 
-1. **Bootstrap Mode (immediate):** New producers are added to `known_producers` on block application. They can be selected via round-robin immediately.
-
-2. **Normal Mode (after ACTIVATION_DELAY):** Requires 10 blocks (~100 seconds) before producer appears in `active_producers_at_height()`. This ensures all nodes have time to sync the registration transaction.
-
-### Verify Producer Status
+## Scenario 4: Systemd Service (Production)
 
 ```bash
 # List all active producers
@@ -674,7 +568,7 @@ For persistent production operation (testnet/mainnet).
 ```bash
 sudo tee /etc/systemd/system/doli-<NETWORK>.service > /dev/null << 'EOF'
 [Unit]
-Description=DOLI <NETWORK> Producer
+Description=DOLI Producer
 After=network.target
 
 [Service]
@@ -688,47 +582,96 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Replace placeholders
-sudo sed -i "s/YOUR_USER/$USER/g" /etc/systemd/system/doli-<NETWORK>.service
-sudo sed -i "s/<NETWORK>/testnet/g" /etc/systemd/system/doli-<NETWORK>.service  # or mainnet
-
-# Enable and start
+sudo sed -i "s/YOUR_USER/$USER/g" /etc/systemd/system/doli-producer.service
 sudo systemctl daemon-reload
-sudo systemctl enable doli-<NETWORK>
-sudo systemctl start doli-<NETWORK>
-
-# View logs
-journalctl -u doli-<NETWORK> -f
+sudo systemctl enable doli-producer
+sudo systemctl start doli-producer
+journalctl -u doli-producer -f
 ```
 
-## Scenario 5: Launch New Network (Network Operators Only)
-
-Only for launching a completely new network from scratch.
-
-### Step 1: Create Genesis Producer Wallets
+## Scenario 5: Launch New Network
 
 ```bash
 mkdir -p ~/.doli/genesis
-
 for i in 1 2 3 4 5; do
     ./target/release/doli -w ~/.doli/genesis/producer_$i.json new
 done
-```
-
-### Step 2: Generate Chainspec
-
-```bash
 ./scripts/generate_chainspec.sh <NETWORK> ~/.doli/genesis chainspec.json
-```
-
-### Step 3: Start Genesis Node
-
-```bash
 ./target/release/doli-node --network <NETWORK> --chainspec chainspec.json run \
     --producer --producer-key ~/.doli/genesis/producer_1.json
 ```
 
-See [genesis.md](/docs/genesis.md) for complete network launch procedures.
+## Network Health Monitoring
+
+### Quick Health Check (all nodes)
+
+```bash
+# Check height, slot, peers, sync status for all devnet nodes
+for i in $(seq 0 $(($(cat ~/.doli/devnet/devnet.toml 2>/dev/null | grep node_count | sed 's/[^0-9]//g') - 1))); do
+  RPC=$((28545 + i))
+  result=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' 2>/dev/null)
+  chain=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' 2>/dev/null)
+  peers=$(echo $result | jq -r '.result.peer_count // "DOWN"')
+  height=$(echo $chain | jq -r '.result.bestHeight // "DOWN"')
+  hash=$(echo $chain | jq -r '.result.bestHash // "?"' | head -c 16)
+  echo "Node $i: height=$height peers=$peers hash=$hash..."
+done
+```
+
+**What to look for:**
+- All nodes should have similar heights (within 2-3 blocks)
+- All nodes should share the same `bestHash` at the same height (different hash = fork)
+- All nodes should have peers > 0 (0 peers = isolated, won't produce)
+- Devnet nodes should have >1 peer (just 1 peer = star topology, fragile)
+
+### Detecting Forks
+
+```bash
+# Compare best hashes across all nodes at similar heights
+heights=()
+hashes=()
+for i in $(seq 0 4); do
+  RPC=$((28545 + i))
+  chain=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' 2>/dev/null)
+  h=$(echo $chain | jq -r '.result.bestHeight')
+  hash=$(echo $chain | jq -r '.result.bestHash' | head -c 16)
+  echo "Node $i: height=$h hash=$hash"
+done
+# If nodes at similar height have DIFFERENT hashes → fork detected
+```
+
+### Log Monitoring Keywords
+
+```bash
+# Watch for problems in a specific node's log
+grep -E "fork|reorg|stuck|orphan|resync|disconnect|failed" ~/.doli/devnet/logs/node3.log | tail -20
+
+# Watch for block production across all nodes
+grep "Produced block\|Producing block" ~/.doli/devnet/logs/node*.log | tail -20
+
+# Watch for peer connection events
+grep "Connected to peer\|Disconnected from" ~/.doli/devnet/logs/node0.log | tail -10
+```
+
+### Available RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `getChainInfo` | Chain tip: height, slot, hash, network |
+| `getNetworkInfo` | Peer count, sync status, peer ID |
+| `getBlockByHeight` | Block at specific height |
+| `getBlockByHash` | Block by hash |
+| `getBalance` | Address balance |
+| `getUtxos` | UTXOs for address |
+| `getProducers` | All registered producers |
+| `getProducer` | Specific producer info |
+| `getMempoolInfo` | Mempool statistics |
+| `getEpochInfo` | Current reward epoch info |
+| `sendTransaction` | Submit signed transaction |
+| `getNodeInfo` | Node version info |
 
 ## CLI Commands Reference
 
@@ -744,83 +687,44 @@ See [genesis.md](/docs/genesis.md) for complete network launch procedures.
 
 ## Troubleshooting
 
-### Node panics on startup: "Address already in use"
+### Node panics: "Address already in use"
 
-**Symptom:** Node crashes immediately with:
-```
-Failed to bind metrics server: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
-```
-
-**Cause:** Another process (often a zombie from a previous failed attempt) is holding the metrics port.
-
-**Solution:**
+**Cause:** Zombie process holding a port. **Fix:**
 ```bash
-# 1. Find what's using the port (e.g., metrics port 9095)
-lsof -i :9095
-
-# 2. Kill the process
-kill <PID>
-
-# 3. Or kill by pattern
-pkill -f "doli-node.*metrics.*9095"
-
-# 4. Always specify unique metrics port when starting nodes
---metrics-port $((9090 + NODE_NUMBER))
+lsof -i :<PORT>          # Find PID
+kill <PID>               # Kill it
 ```
 
 **Prevention:** Always run the "Mandatory Rule: Kill Zombies Before Deploy" procedure before starting new producer nodes.
 
-### Node won't sync (testnet/mainnet)
+### Node stuck at height 0 or low height
 
-```bash
-# Test connectivity
-nc -zv testnet.doli.network 40303  # or mainnet equivalent
+**Possible causes:**
+1. **No peers:** Check `getNetworkInfo` → `peer_count`. If 0, node is isolated. Check bootstrap address and firewall.
+2. **Sync stuck in Processing state:** The sync manager can get stuck if it downloaded headers but can't apply them (missing parent chain). The node receives gossip blocks which reset the "stale chain" timer, preventing timeout recovery. Check logs for repeated "Processing" state without height advancement.
+3. **Legacy `--no-dht` usage:** If the node was started with `--no-dht`, it can't discover peers beyond its bootstrap. Remove the flag and restart. DHT is safe on all networks — isolation is handled by network ID.
 
-# Check firewall
-sudo ufw status
-```
+### Nodes forked (different hashes at same height)
+
+**Diagnosis:** Run the fork detection check above. If nodes show different hashes at similar heights:
+
+1. **Check peer counts:** Isolated nodes (0-1 peers) fork easily because they don't see competing blocks in time
+2. **Check topology:** If all nodes have exactly 1 peer, you have a star topology (all through bootstrap). Enable DHT.
+3. **Recovery:** Nodes with fork recovery will attempt to follow the heavier chain automatically. If a node is deeply forked, restart it with clean data and let it resync.
 
 ### Not producing blocks
 
 1. Ensure `--producer` flag is set
-2. Wait for sync to complete (testnet/mainnet)
-3. Wait 15 seconds for producer discovery
-4. Check registration status: `doli producer status`
-5. **For local testnet**: Ensure you're using `--chainspec` with a chainspec generated from your producer wallets (see Scenario 2 Option B)
-6. **After registration**: Wait for ACTIVATION_DELAY (10 blocks, ~100 seconds) for normal mode scheduling
-7. **Bootstrap mode**: New producers are added to round-robin immediately on registration (as of commit TBD)
+2. Check sync: node must be synced to tip before producing
+3. Check peers: node needs ≥ min_peers (2 initially, tier-dependent after first epoch)
+4. Check registration: `doli producer status`
+5. Wait for ACTIVATION_DELAY (10 blocks, ~100s on all networks)
+6. For manual local testnet: ensure `--chainspec` points to genesis with your producer wallets
 
-### Producer registered but not producing (balance not increasing)
+### Double spend errors sending multiple transactions
 
-**Symptom:** Producer shows in `producer list`, registration completed, but balance stuck at initial amount (no rewards).
-
-**Cause:** Node not running with the producer's private key.
-
-| What you did | Result |
-|--------------|--------|
-| Steps 1-3 only (wallet, fund, register) | Producer registered but **no blocks produced** |
-| Steps 1-4 (wallet, fund, register, **start node**) | Producer registered **and producing blocks** |
-
-**Solution:** Start a node with the producer key:
-```bash
-doli-node --network devnet run \
-    --producer \
-    --producer-key ~/.doli/devnet/keys/producer_NEW.json \
-    --p2p-port <UNIQUE_PORT> \
-    --rpc-port <UNIQUE_PORT> \
-    --bootstrap /ip4/127.0.0.1/tcp/50303 \
-    --chainspec ~/.doli/devnet/chainspec.json \
-    --yes
-```
-
-**Verification:**
-```bash
-# Watch for production in logs
-grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
-
-# Check balance is increasing (rewards)
-doli -w ~/.doli/devnet/keys/producer_NEW.json -r http://127.0.0.1:28545 wallet balance
-```
+**Cause:** UTXO reuse when sending from same wallet in quick succession.
+**Fix:** Use different source wallets, or wait one block (~10s) between sends from the same wallet.
 
 ### Chain halted after killing a producer node
 
@@ -844,67 +748,17 @@ doli-node devnet start
 
 ### Sent funds but recipient balance is 0
 
-**Symptom:** Transaction succeeds but recipient wallet shows 0 balance.
-
-**Cause:** Used "Public Key" instead of "Pubkey Hash (32-byte)" as recipient address. Both are 64 characters but are DIFFERENT values - coins went to wrong address.
-
-**Prevention:**
+**Cause:** Used "Public Key" instead of "Pubkey Hash (32-byte)" — both 64 chars but different values.
 ```bash
-# WRONG - using Public Key field
-pubkey=$(doli -w wallet.json info | grep "Public Key" | awk '{print $3}')
-
-# CORRECT - using Pubkey Hash field
+# CORRECT
 pubkey_hash=$(doli -w wallet.json info | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
 ```
 
-**Recovery:** Funds sent to wrong address are lost unless you control that address.
-
-### Double spend errors when sending multiple transactions
-
-**Symptom:** "RPC error -32603: double spend with mempool transaction"
-
-**Cause:** The wallet reuses the same UTXO when sending multiple transactions in quick succession because the local UTXO cache isn't refreshed.
-
-**Solutions:**
-1. **Use different source wallets** for each transaction
-2. **Wait for confirmation** (one block, ~10 seconds) between transactions from same wallet
-3. **Split funds first** into multiple UTXOs if you need to send many transactions quickly
-
-### Registration succeeds but producer not in list
-
-**Cause:** `ACTIVATION_DELAY` of 10 blocks before producer appears in scheduler.
-
-**Check:**
-```bash
-# View your registration
-./target/release/doli -r http://127.0.0.1:28545 producer list
-# Your producer should show "active" but may not produce until 10 blocks pass
-```
-
-### Insufficient balance for bond
-
-**Check bond requirements:**
-- Devnet: 1 DOLI per bond
-- Testnet/Mainnet: 100 DOLI per bond
+### Node won't sync (testnet/mainnet)
 
 ```bash
-# Check balance
-./target/release/doli -r http://127.0.0.1:28545 -w <wallet> balance
-# Need at least bond_unit + fees
-```
-
-### Check node status
-
-```bash
-journalctl -u doli-<NETWORK> | grep -i "height\|produced"
-```
-
-### Verify RPC connectivity
-
-```bash
-# Replace port: 28545 (devnet), 18545 (testnet), 8545 (mainnet)
-curl -s http://127.0.0.1:<RPC_PORT> -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
+nc -zv testnet.doli.network 40303
+sudo ufw status
 ```
 
 ## Server Requirements
@@ -915,12 +769,4 @@ curl -s http://127.0.0.1:<RPC_PORT> -X POST -H "Content-Type: application/json" 
 | CPU | 2+ cores |
 | RAM | 4 GB |
 | Storage | 50 GB SSD |
-| Network | P2P port open (see table above) |
-
-## Related Documentation
-
-- [genesis.md](/docs/genesis.md) - Network launch procedures
-- [testnet.md](/docs/testnet.md) - Testnet information
-- [running_a_node.md](/docs/running_a_node.md) - Node operation guide
-- [becoming_a_producer.md](/docs/becoming_a_producer.md) - Producer guide
-- [cli.md](/docs/cli.md) - Complete CLI reference
+| Network | P2P port open (see Network Parameters table) |

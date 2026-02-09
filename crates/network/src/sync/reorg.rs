@@ -30,6 +30,8 @@ pub struct BlockWeight {
     pub producer_weight: u64,
     /// Accumulated chain weight from genesis to this block
     pub accumulated_weight: u64,
+    /// Block height (for finality check).
+    pub height: u64,
 }
 
 /// Reorganization result
@@ -59,6 +61,8 @@ pub struct ReorgHandler {
     lru_order: VecDeque<Hash>,
     /// Current chain tip accumulated weight
     current_chain_weight: u64,
+    /// Height of the last finalized block (reorgs below this are rejected).
+    last_finality_height: Option<u64>,
 }
 
 impl ReorgHandler {
@@ -71,6 +75,7 @@ impl ReorgHandler {
             max_tracked: 10000,
             lru_order: VecDeque::new(),
             current_chain_weight: 0,
+            last_finality_height: None,
         }
     }
 
@@ -85,14 +90,15 @@ impl ReorgHandler {
     /// weight is computed from the parent's accumulated weight plus
     /// this block's producer weight.
     pub fn record_block_with_weight(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
-        // Calculate accumulated weight
-        let parent_accumulated = self
+        // Calculate accumulated weight and height
+        let (parent_accumulated, parent_height) = self
             .block_weights
             .get(&prev_hash)
-            .map(|w| w.accumulated_weight)
-            .unwrap_or(0);
+            .map(|w| (w.accumulated_weight, w.height))
+            .unwrap_or((0, 0));
 
         let accumulated_weight = parent_accumulated.saturating_add(producer_weight);
+        let height = parent_height + 1;
 
         // Store block weight info
         self.block_weights.insert(
@@ -101,6 +107,7 @@ impl ReorgHandler {
                 prev_hash,
                 producer_weight,
                 accumulated_weight,
+                height,
             },
         );
 
@@ -133,6 +140,11 @@ impl ReorgHandler {
     /// Get current chain tip weight
     pub fn current_weight(&self) -> u64 {
         self.current_chain_weight
+    }
+
+    /// Update the last finality height. Reorgs below this height are rejected.
+    pub fn set_last_finality_height(&mut self, height: u64) {
+        self.last_finality_height = Some(height);
     }
 
     /// Compare two chains and return which is heavier
@@ -252,6 +264,22 @@ impl ReorgHandler {
                 // Found common ancestor
                 if to_rollback.is_empty() {
                     return None; // No reorg needed
+                }
+
+                // Finality check: never reorg past the last finalized block
+                if let Some(finality_height) = self.last_finality_height {
+                    let ancestor_height = self
+                        .block_weights
+                        .get(&current)
+                        .map(|w| w.height)
+                        .unwrap_or(0);
+                    if ancestor_height <= finality_height {
+                        warn!(
+                            "FINALITY: Rejecting reorg past finalized height {} (ancestor at {})",
+                            finality_height, ancestor_height
+                        );
+                        return None;
+                    }
                 }
 
                 let weight_delta = new_chain_weight as i64 - self.current_chain_weight as i64;
@@ -689,6 +717,7 @@ mod tests {
                 prev_hash: genesis,
                 producer_weight: 100,
                 accumulated_weight: 100,
+                height: 1,
             },
         );
 
@@ -701,5 +730,80 @@ mod tests {
             a_wins, b_wins,
             "Tie-break must be deterministic: exactly one chain wins"
         );
+    }
+
+    #[test]
+    fn test_reorg_past_finality_rejected() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::zero();
+        let block1 = crypto::hash::hash(b"block1");
+        let block2 = crypto::hash::hash(b"block2");
+        let fork_block = crypto::hash::hash(b"fork");
+
+        // Build main chain: genesis -> block1 -> block2
+        handler.record_block_with_weight(block1, genesis, 10);
+        handler.record_block_with_weight(block2, block1, 10);
+
+        // Set finality at height 1 (block1)
+        handler.set_last_finality_height(1);
+
+        // Create a fork from genesis with higher weight
+        // This would reorg past the finalized block1 — should be rejected
+        let fork = Block {
+            header: doli_core::BlockHeader {
+                version: 1,
+                prev_hash: genesis, // forks from genesis (height 0) < finality height 1
+                merkle_root: Hash::ZERO,
+                presence_root: Hash::ZERO,
+                timestamp: 100,
+                slot: 1,
+                producer: crypto::PublicKey::from_bytes([0u8; 32]),
+                vdf_output: vdf::VdfOutput {
+                    value: vec![0u8; 32],
+                },
+                vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
+            },
+            transactions: vec![],
+        };
+
+        let result = handler.check_reorg_weighted(&fork, block2, 100);
+        assert!(result.is_none(), "Reorg past finality should be rejected");
+    }
+
+    #[test]
+    fn test_reorg_after_finality_ok() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::zero();
+        let block1 = crypto::hash::hash(b"block1");
+        let block2 = crypto::hash::hash(b"block2");
+
+        handler.record_block_with_weight(block1, genesis, 10);
+        handler.record_block_with_weight(block2, block1, 10);
+
+        // Set finality at height 0 (genesis)
+        handler.set_last_finality_height(0);
+
+        // Fork from block1 (height 1) which is above finality — should be allowed if heavier
+        let fork = Block {
+            header: doli_core::BlockHeader {
+                version: 1,
+                prev_hash: block1, // forks from block1 (height 1) > finality height 0
+                merkle_root: Hash::ZERO,
+                presence_root: Hash::ZERO,
+                timestamp: 200,
+                slot: 2,
+                producer: crypto::PublicKey::from_bytes([0u8; 32]),
+                vdf_output: vdf::VdfOutput {
+                    value: vec![0u8; 32],
+                },
+                vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
+            },
+            transactions: vec![],
+        };
+
+        let result = handler.check_reorg_weighted(&fork, block2, 100);
+        assert!(result.is_some(), "Reorg above finality should be allowed");
     }
 }
