@@ -372,6 +372,8 @@ Producer Selection (deterministic round-robin)
       │                                   │
 ```
 
+**Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
+
 ---
 
 ## 5. Consensus Architecture

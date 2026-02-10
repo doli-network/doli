@@ -29,7 +29,34 @@ sudo journalctl -u doli-node -n 100
 
 ---
 
-### 1.2. Node Not Syncing
+### 1.2. Node Crashes on Restart (RocksDB LOCK File)
+
+**Symptom:** Node crashes with `Trace/BPT trap: 5` (SIGTRAP) immediately after restarting a previously killed node. Common on macOS.
+
+**Cause:** When a node is killed (SIGTERM/SIGKILL), RocksDB may leave stale `LOCK` files in the data directory. The new process crashes when RocksDB tries to open the database and finds the lock held.
+
+**Solution:**
+```bash
+# Remove stale LOCK files before restart
+rm -f ~/.doli/<NETWORK>/data/node*/blocks/LOCK
+rm -f ~/.doli/<NETWORK>/data/node*/signed_slots.db/LOCK
+
+# Then restart the node normally
+```
+
+**For devnet nodes:**
+```bash
+# Remove LOCK files for a specific node (e.g., node 3)
+DD=~/.doli/devnet
+rm -f $DD/data/node3/blocks/LOCK
+rm -f $DD/data/node3/signed_slots.db/LOCK
+```
+
+**Prevention:** Graceful shutdown via `doli-node devnet stop` avoids stale LOCK files. This only occurs after forced kills.
+
+---
+
+### 1.3. Node Not Syncing
 
 **Symptom:** Chain height not increasing, stuck at old block.
 
@@ -62,7 +89,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-### 1.3. Low Peer Count
+### 1.4. Low Peer Count
 
 **Symptom:** Fewer than 5 peers connected.
 
@@ -90,7 +117,7 @@ nc -zv your-node-ip 30303
 
 ---
 
-### 1.4. High Memory Usage
+### 1.5. High Memory Usage
 
 **Symptom:** Node consuming excessive RAM.
 
@@ -107,7 +134,7 @@ nc -zv your-node-ip 30303
 
 ---
 
-### 1.5. Database Corruption
+### 1.6. Database Corruption
 
 **Symptom:** Node crashes with database errors.
 

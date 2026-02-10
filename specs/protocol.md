@@ -419,7 +419,7 @@ Validators recalculate expected rewards from BlockStore and require exact match:
 **Guarantees:**
 
 - **Deterministic**: Any node calculates identical rewards from the same BlockStore
-- **Restart-safe**: No local state to lose on node restart
+- **Restart-safe**: SyncManager initializes from stored ChainState on restart (resumes from tip, not genesis). `apply_block()` rejects duplicate blocks already in BlockStore.
 - **Sync-safe**: Nodes syncing from peers validate all historical rewards
 - **Fork-safe**: Each chain fork recalculates rewards from its own blocks
 - **Maturity**: Epoch reward outputs require 100 confirmations (REWARD_MATURITY)

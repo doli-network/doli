@@ -812,6 +812,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `test_autoupdate_e2e.sh` | 5 | ~2 min | **E2E auto-update flow** |
 | `test_update_notification.sh` | 0 | ~10 sec | **Update notification CLI** |
 | `test_version_enforcement.sh` | 0 | ~10 sec | **Version enforcement system** |
+| `test_restart_sync_issue5.sh` | 5 | ~5 min | **ISSUE-5: Restart sync height fix** |
 | `test_maintainer_bootstrap.sh` | 10 | ~2 min | **Maintainer bootstrap & CLI** |
 
 ---
@@ -845,6 +846,42 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 - Threshold = 3 of 5
 - Additional producers are NOT maintainers
 - CLI commands execute correctly
+
+---
+
+### test_restart_sync_issue5.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_restart_sync_issue5.sh` |
+| **Purpose** | Test that restarted nodes do NOT double-count block heights (ISSUE-5) |
+| **What it tests** | SyncManager initialization from stored ChainState, duplicate block rejection, height correctness after restart |
+| **Dependencies** | `cargo build --release`, running 5-node devnet, `jq` |
+| **Run time** | ~5 minutes (includes waiting for height >= 20) |
+| **Output** | Test results to stdout, node logs in `~/.doli/devnet/logs/` |
+
+**Usage:**
+```bash
+# Requires running devnet with correct PID files
+./scripts/test_restart_sync_issue5.sh
+```
+
+**Test scenario:**
+1. Verify 5-node devnet is healthy
+2. Wait for chain height >= 20
+3. Kill nodes 2, 3, 4 (keep 0, 1 alive for fallback)
+4. Wait 40s for chain to advance
+5. Restart killed nodes (removes stale RocksDB LOCK files)
+6. Verify: all nodes converge, no height double-counting
+7. Check logs for Fix A ("Sync manager initialized") and Fix B ("already in store") evidence
+
+**Key validations:**
+- Restarted node height <= surviving node height + tolerance (no double-counting)
+- "Sync manager initialized at height X" appears in restart logs
+- No "already in store" warnings (Fix A prevents re-download)
+- All nodes share same hash at same height (no fork)
+
+**Note:** On macOS, stale RocksDB LOCK files can cause SIGTRAP crashes on restart. The script removes these automatically.
 
 ---
 

@@ -527,6 +527,7 @@ New nodes use state-based production gating with multiple safety layers:
 **Key design decisions:**
 - **Slot-only peer comparison** (Layer 6): Heights are unreliable because forked nodes accumulate inflated block counts (h > slot). Slots are time-based and cannot be inflated.
 - **Chain hash mismatch** (Layer 9): Detects forks by comparing block hashes at the same height with peers.
+- **Restart-safe initialization** (ISSUE-5 fix): On startup, `Node::new()` initializes the SyncManager with the stored ChainState tip (`best_height`, `best_hash`, `best_slot`). Without this, the SyncManager starts at genesis and re-downloads the entire chain, causing height double-counting. Additionally, `apply_block()` includes a defense-in-depth duplicate check via `BlockStore::has_block()` to prevent height corruption from re-applied blocks.
 
 **Why this scales globally:**
 - No arbitrary time delays at genesis (warmup periods don't work for global networks)
@@ -823,7 +824,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 **sync/** - Block Synchronization:
 | File | Lines | Purpose |
 |------|-------|---------|
-| `manager.rs` | ~2,200 | Sync orchestration, production gating (10-layer), first-sync grace period |
+| `manager.rs` | ~2,200 | Sync orchestration, production gating (10-layer), first-sync grace period, restart-safe ChainState init |
 | `reorg.rs` | 595 | Chain reorganization handling |
 | `equivocation.rs` | 359 | Double-production detection and slashing |
 | `bodies.rs` | 340 | Block body download |
