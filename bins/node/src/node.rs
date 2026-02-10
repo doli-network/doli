@@ -24,6 +24,7 @@ use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
 use doli_core::types::UNITS_PER_COIN;
+use doli_core::validation;
 use doli_core::{
     AdaptiveGossip, Attestation, Block, BlockHeader, Network, ProducerAnnouncement, ProducerGSet,
     Transaction,
@@ -157,13 +158,55 @@ impl Node {
 
         // Load or create chain state
         let state_path = config.data_dir.join("chain_state.bin");
-        let chain_state = if state_path.exists() {
+        let mut chain_state = if state_path.exists() {
             ChainState::load(&state_path)?
         } else {
             let genesis_hash = crypto::hash::hash(b"DOLI Genesis");
             ChainState::new(genesis_hash)
         };
         let genesis_hash = chain_state.genesis_hash;
+
+        // Verify chain state consistency with block store
+        if chain_state.best_height > 0 {
+            match block_store.get_block(&chain_state.best_hash) {
+                Ok(Some(_tip_block)) => {
+                    // Tip hash exists in store — chain state is consistent
+                }
+                Ok(None) => {
+                    warn!(
+                        "Chain state tip {} at height {} not found in block store. Recovering...",
+                        chain_state.best_hash, chain_state.best_height
+                    );
+                    // Walk backwards through height index to find highest valid block
+                    let mut recovered = false;
+                    for h in (1..chain_state.best_height).rev() {
+                        if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                            info!(
+                                "Recovered chain state to height {} (hash {})",
+                                h,
+                                block.hash()
+                            );
+                            chain_state.best_hash = block.hash();
+                            chain_state.best_height = h;
+                            chain_state.best_slot = block.header.slot;
+                            recovered = true;
+                            break;
+                        }
+                    }
+                    if !recovered {
+                        warn!("No valid blocks found in store. Resetting to genesis.");
+                        chain_state = ChainState::new(genesis_hash);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Block store error during integrity check: {}. Resetting to genesis.",
+                        e
+                    );
+                    chain_state = ChainState::new(genesis_hash);
+                }
+            }
+        }
 
         // Apply slot_duration from chainspec if available (consensus-critical)
         // This ensures all nodes compute the same slot numbers regardless of local .env
@@ -1315,6 +1358,12 @@ impl Node {
         }
         drop(state);
 
+        // Validate producer eligibility before applying
+        if let Err(e) = self.check_producer_eligibility(&block).await {
+            warn!("Rejected gossip block at slot {}: {}", block.header.slot, e);
+            return Ok(());
+        }
+
         // Apply the block
         self.apply_block(block).await?;
 
@@ -1512,6 +1561,12 @@ impl Node {
 
         // Now apply the new blocks through normal path
         info!("Applying {} new blocks from fork", new_blocks.len());
+        for block in &new_blocks {
+            if let Err(e) = self.check_producer_eligibility(block).await {
+                warn!("Reorg rejected block at slot {}: {}", block.header.slot, e);
+                return Err(anyhow::anyhow!("Reorg contains invalid producer: {}", e));
+            }
+        }
         for block in new_blocks {
             self.apply_block(block).await?;
         }
@@ -1671,6 +1726,14 @@ impl Node {
 
                 // Apply all blocks in order
                 for block in chain {
+                    // Validate producer eligibility
+                    if let Err(e) = self.check_producer_eligibility(&block).await {
+                        warn!(
+                            "Cached chain rejected block at slot {}: {}",
+                            block.header.slot, e
+                        );
+                        anyhow::bail!("Cached chain contains invalid producer: {}", e);
+                    }
                     // Remove from cache before applying
                     {
                         let mut cache = self.fork_block_cache.write().await;
@@ -1919,6 +1982,44 @@ impl Node {
              Will actively request blocks from peers."
         );
 
+        Ok(())
+    }
+
+    /// Check producer eligibility for a received block.
+    ///
+    /// Builds a lightweight ValidationContext and calls validate_producer_eligibility.
+    /// Returns Ok(()) during bootstrap (anyone can produce) or when no producers are known.
+    async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
+        let state = self.chain_state.read().await;
+        let height = state.best_height + 1;
+
+        // Build weighted producer list
+        let producers = self.producer_set.read().await;
+        let active = producers.active_producers_at_height(height);
+        let weighted: Vec<(PublicKey, u64)> = active
+            .iter()
+            .map(|p| (p.public_key, p.bond_count as u64))
+            .collect();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut ctx = validation::ValidationContext::new(
+            ConsensusParams::for_network(self.config.network),
+            self.config.network,
+            now,
+            height,
+        )
+        .with_producers_weighted(weighted);
+
+        // Apply chainspec if present
+        if let Some(ref spec) = self.config.chainspec {
+            ctx.params.apply_chainspec(spec);
+        }
+
+        validation::validate_producer_eligibility(&block.header, &ctx)?;
         Ok(())
     }
 
@@ -3158,11 +3259,31 @@ impl Node {
                     &self.cached_scheduler.as_ref().unwrap().3
                 }
             };
-            let eligible: Vec<_> = (0..self.config.network.params().max_fallback_ranks)
-                .filter_map(|rank| scheduler.select_producer(current_slot, rank).cloned())
-                .collect();
+            // Dedup: a producer may appear at multiple ranks (small producer sets).
+            // Without dedup, position() returns the first occurrence, masking later ranks.
+            // This matches the dedup in select_producer_for_slot() (consensus.rs).
+            let mut eligible: Vec<PublicKey> =
+                Vec::with_capacity(self.config.network.params().max_fallback_ranks);
+            for rank in 0..self.config.network.params().max_fallback_ranks {
+                if let Some(pk) = scheduler.select_producer(current_slot, rank).cloned() {
+                    if !eligible.contains(&pk) {
+                        eligible.push(pk);
+                    }
+                }
+            }
             (eligible, None)
         };
+
+        debug!(
+            "Slot {} eligible list ({}): {:?}, our_rank: {:?}",
+            current_slot,
+            eligible.len(),
+            eligible
+                .iter()
+                .map(|pk| hex::encode(&pk.as_bytes()[..4]))
+                .collect::<Vec<_>>(),
+            eligible.iter().position(|p| p == &our_pubkey),
+        );
 
         if eligible.is_empty() {
             return Ok(());
