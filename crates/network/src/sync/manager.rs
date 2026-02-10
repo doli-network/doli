@@ -1151,16 +1151,22 @@ impl SyncManager {
     /// Set the producer tier and adjust min_peers_for_production accordingly.
     ///
     /// Tier 1 validators need more peers (dense mesh), Tier 3 stakers need fewer.
-    pub fn set_tier(&mut self, tier: u8) {
+    /// The `active_producer_count` caps min_peers so small networks aren't deadlocked
+    /// (a node can have at most `active_producer_count - 1` peers).
+    pub fn set_tier(&mut self, tier: u8, active_producer_count: usize) {
         self.tier = tier;
-        let min_peers = match tier {
+        let tier_min = match tier {
             1 => MIN_PEERS_TIER1,
             2 => MIN_PEERS_TIER2,
             3 => MIN_PEERS_TIER3,
             _ => MIN_PEERS_TIER3, // Default: backward compatible
         };
-        self.min_peers_for_production = min_peers;
-        info!("Set tier={} min_peers_for_production={}", tier, min_peers);
+        let max_possible = active_producer_count.saturating_sub(1).max(1);
+        self.min_peers_for_production = tier_min.min(max_possible);
+        info!(
+            "Set tier={} min_peers_for_production={} (tier_req={}, network_size={})",
+            tier, self.min_peers_for_production, tier_min, active_producer_count
+        );
     }
 
     /// Get the current tier.

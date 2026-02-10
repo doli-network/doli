@@ -658,7 +658,7 @@ impl Node {
             );
             // Update min peers for production based on new tier.
             let mut sync = self.sync_manager.write().await;
-            sync.set_tier(new_tier);
+            sync.set_tier(new_tier, producers_with_weights.len());
         }
 
         self.our_tier = new_tier;
