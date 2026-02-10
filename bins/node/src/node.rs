@@ -320,6 +320,21 @@ impl Node {
             // Scales down for Devnet/Testnet with faster slots
             let gossip_timeout = 18 * params.slot_duration;
             sm.set_gossip_activity_timeout_secs(gossip_timeout);
+
+            // Initialize sync manager with current chain state (critical for restart correctness).
+            // Without this, SyncManager starts at genesis and re-downloads the entire chain,
+            // causing height double-counting (ISSUE-5).
+            {
+                let state = chain_state.read().await;
+                if state.best_height > 0 {
+                    sm.update_local_tip(state.best_height, state.best_hash, state.best_slot);
+                    info!(
+                        "Sync manager initialized at height {} (hash {})",
+                        state.best_height,
+                        &state.best_hash.to_string()[..16]
+                    );
+                }
+            }
         }
 
         if producer_key.is_some() {
@@ -2026,6 +2041,17 @@ impl Node {
     /// Apply a block to the chain
     async fn apply_block(&mut self, block: Block) -> Result<()> {
         let block_hash = block.hash();
+
+        // Defense-in-depth: skip blocks we already have.
+        // Prevents height double-counting if sync delivers stored blocks (ISSUE-5).
+        if self.block_store.has_block(&block_hash)? {
+            warn!(
+                "Block {} already in store, skipping apply to prevent height corruption",
+                block_hash
+            );
+            return Ok(());
+        }
+
         let height = self.chain_state.read().await.best_height + 1;
 
         info!("Applying block {} at height {}", block_hash, height);
