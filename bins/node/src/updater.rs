@@ -430,6 +430,11 @@ impl UpdateService {
         self.vote_tx.clone()
     }
 
+    /// Get the shared pending update state (for RPC to read live state)
+    pub fn pending_state(&self) -> Arc<RwLock<Option<PendingUpdate>>> {
+        self.pending.clone()
+    }
+
     /// Run the update service
     pub async fn run(
         mut self,
@@ -717,20 +722,28 @@ enum UpdateTransition {
 }
 
 /// Start the update service in a background task
+///
+/// Returns `(vote_tx, pending)`:
+/// - `vote_tx`: channel to forward gossip votes into the UpdateService
+/// - `pending`: shared state for RPC to read live update status
 pub fn spawn_update_service(
     config: UpdateConfig,
     data_dir: PathBuf,
     producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
     is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
-) -> mpsc::Sender<VoteMessage> {
+) -> (
+    mpsc::Sender<VoteMessage>,
+    Arc<RwLock<Option<PendingUpdate>>>,
+) {
     let service = UpdateService::new(config, data_dir);
     let vote_tx = service.vote_sender();
+    let pending = service.pending_state();
 
     tokio::spawn(async move {
         service.run(producer_count_fn, is_producer_fn).await;
     });
 
-    vote_tx
+    (vote_tx, pending)
 }
 
 /// Get the pending update version from disk (for CLI use)
