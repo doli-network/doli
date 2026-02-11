@@ -110,6 +110,8 @@ pub struct Node {
     last_tier_epoch: Option<u64>,
     /// Channel to forward gossip votes to the UpdateService
     vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
+    /// Shared pending update state from UpdateService (for RPC to read live)
+    pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -409,12 +411,21 @@ impl Node {
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,
             vote_tx: None,
+            pending_update: None,
         })
     }
 
     /// Set the vote forwarding channel (connects gossip votes to UpdateService)
     pub fn set_vote_tx(&mut self, tx: tokio::sync::mpsc::Sender<node_updater::VoteMessage>) {
         self.vote_tx = Some(tx);
+    }
+
+    /// Set the shared pending update state (connects UpdateService to RPC)
+    pub fn set_pending_update(
+        &mut self,
+        pending: Arc<RwLock<Option<node_updater::PendingUpdate>>>,
+    ) {
+        self.pending_update = Some(pending);
     }
 
     /// Run the node
@@ -605,6 +616,67 @@ impl Node {
                 tokio::spawn(async move {
                     let _ = cmd_tx.send(NetworkCommand::BroadcastTransaction(tx)).await;
                 });
+            });
+        }
+
+        // Wire up vote broadcast so RPC-submitted votes are gossiped to peers
+        if let Some(ref network) = self.network {
+            let cmd_tx = network.command_sender();
+            context = context.with_broadcast_vote(move |vote_data: Vec<u8>| {
+                let cmd_tx = cmd_tx.clone();
+                tokio::spawn(async move {
+                    let _ = cmd_tx.send(NetworkCommand::BroadcastVote(vote_data)).await;
+                });
+            });
+        }
+
+        // Wire up update status callback to read live state from UpdateService
+        if let Some(ref pending) = self.pending_update {
+            let pending = pending.clone();
+            let producer_set = self.producer_set.clone();
+            context = context.with_update_status(move || {
+                let pending_guard = pending.try_read();
+                match pending_guard {
+                    Ok(guard) => match guard.as_ref() {
+                        Some(p) => {
+                            let total_producers = producer_set
+                                .try_read()
+                                .map(|set| set.active_count())
+                                .unwrap_or(0);
+                            let veto_active =
+                                !p.approved && !node_updater::veto_period_ended(&p.release);
+                            serde_json::json!({
+                                "pending_update": {
+                                    "version": p.release.version,
+                                    "published_at": p.release.published_at,
+                                    "changelog": p.release.changelog,
+                                    "approved": p.approved,
+                                    "days_remaining": p.days_remaining(),
+                                    "hours_remaining": p.hours_remaining(),
+                                },
+                                "veto_period_active": veto_active,
+                                "veto_count": p.vote_tracker.veto_count(),
+                                "veto_percent": p.vote_tracker.veto_percent(total_producers) as f64,
+                                "enforcement": p.enforcement.as_ref().map(|e| serde_json::json!({
+                                    "active": e.active,
+                                    "min_version": e.min_version,
+                                })),
+                            })
+                        }
+                        None => serde_json::json!({
+                            "pending_update": null,
+                            "veto_period_active": false,
+                            "veto_count": 0,
+                            "veto_percent": 0.0
+                        }),
+                    },
+                    Err(_) => serde_json::json!({
+                        "pending_update": null,
+                        "veto_period_active": false,
+                        "veto_count": 0,
+                        "veto_percent": 0.0
+                    }),
+                }
             });
         }
 

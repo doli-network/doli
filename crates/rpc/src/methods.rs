@@ -59,8 +59,8 @@ pub struct RpcContext {
     pub sync_status: Arc<dyn Fn() -> SyncStatus + Send + Sync>,
     /// Broadcast vote function (for governance veto system)
     pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
-    /// Shared update status (populated by UpdateService, read by RPC)
-    pub update_status: Arc<RwLock<Value>>,
+    /// Update status callback (reads live state from UpdateService)
+    pub update_status: Arc<dyn Fn() -> Value + Send + Sync>,
 }
 
 impl RpcContext {
@@ -93,12 +93,14 @@ impl RpcContext {
             broadcast_tx: Arc::new(|_| {}),
             sync_status: Arc::new(SyncStatus::default),
             broadcast_vote: Arc::new(|_| {}),
-            update_status: Arc::new(RwLock::new(serde_json::json!({
-                "pending_update": null,
-                "veto_period_active": false,
-                "veto_count": 0,
-                "veto_percent": 0.0
-            }))),
+            update_status: Arc::new(|| {
+                serde_json::json!({
+                    "pending_update": null,
+                    "veto_period_active": false,
+                    "veto_count": 0,
+                    "veto_percent": 0.0
+                })
+            }),
         }
     }
 
@@ -135,12 +137,14 @@ impl RpcContext {
                 broadcast_tx: Arc::new(|_| {}),
                 sync_status: Arc::new(SyncStatus::default),
                 broadcast_vote: Arc::new(|_| {}),
-                update_status: Arc::new(RwLock::new(serde_json::json!({
-                    "pending_update": null,
-                    "veto_period_active": false,
-                    "veto_count": 0,
-                    "veto_percent": 0.0
-                }))),
+                update_status: Arc::new(|| {
+                    serde_json::json!({
+                        "pending_update": null,
+                        "veto_period_active": false,
+                        "veto_count": 0,
+                        "veto_percent": 0.0
+                    })
+                }),
             }
         }
     }
@@ -205,9 +209,9 @@ impl RpcContext {
         self
     }
 
-    /// Set shared update status (for getUpdateStatus RPC)
-    pub fn with_update_status(mut self, status: Arc<RwLock<Value>>) -> Self {
-        self.update_status = status;
+    /// Set update status callback (for getUpdateStatus RPC)
+    pub fn with_update_status(mut self, f: impl Fn() -> Value + Send + Sync + 'static) -> Self {
+        self.update_status = Arc::new(f);
         self
     }
 }
@@ -721,10 +725,9 @@ impl RpcContext {
 
     /// Get the current update status (pending updates, votes, etc.)
     ///
-    /// Reads from shared state populated by UpdateService.
+    /// Calls the update status callback to read live state from UpdateService.
     async fn get_update_status(&self) -> Result<Value, RpcError> {
-        let status = self.update_status.read().await;
-        Ok(status.clone())
+        Ok((self.update_status)())
     }
 
     /// Get node information including version
