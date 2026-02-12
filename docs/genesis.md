@@ -7,11 +7,11 @@ Complete technical documentation for launching DOLI mainnet.
 | Component | Location | Configurable? |
 |-----------|----------|---------------|
 | Genesis producers | Self-register during genesis phase | No chainspec keys |
-| Maintainer keys (5) | Binary | No - recompile required |
+| Maintainer keys (5) | On-chain (first 5 producers) | Yes - via governance |
 
 - **Genesis producers**: FREE, no bond, self-register during 7-day genesis phase
 - **Regular producers**: 10 DOLI bond, `doli producer register`
-- **Maintainer keys**: Hardcoded in `crates/updater/src/lib.rs` for security
+- **Maintainer keys**: Derived from first 5 registered producers on-chain; bootstrap keys in binary used as fallback before chain sync
 
 ---
 
@@ -36,7 +36,7 @@ Complete technical documentation for launching DOLI mainnet.
 
 ### Code Verification
 
-- [ ] `MAINTAINER_KEYS` in `crates/updater/src/lib.rs` contains 5 real Ed25519 public keys
+- [ ] `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs` contains 5 real Ed25519 public keys
 - [ ] `is_using_placeholder_keys()` returns `false`
 - [ ] All unit tests pass: `cargo test`
 - [ ] Release build compiles: `cargo build --release`
@@ -112,17 +112,27 @@ This follows the same pattern as Ethereum, Cosmos, and Polkadot.
 
 5 maintainers control protocol updates with a 3-of-5 signature threshold.
 
-**Hardcoded in binary** (not in chainspec) for security - can't be changed via config files.
+### Key Derivation
 
-| Location | `crates/updater/src/lib.rs` |
-|----------|------------------------------|
-| Keys | 5 Ed25519 public keys |
+Maintainer keys are derived from the **first 5 registered producers** on-chain.
+Once the node has synced, these on-chain keys are used for release signature verification.
+
+| Source | When Used |
+|--------|-----------|
+| On-chain (first 5 producers by registration height) | Running node with synced chain |
+| Bootstrap keys in `crates/updater/src/lib.rs` | Before chain sync, CLI commands |
+
+| Parameter | Value |
+|-----------|-------|
+| Keys | 5 Ed25519 public keys (derived from chain) |
 | Threshold | 3-of-5 signatures required |
 
-### Current Keys
+### Bootstrap Keys
+
+These keys are hardcoded as fallback before chain state is available:
 
 ```rust
-pub const MAINTAINER_KEYS: [&str; 5] = [
+pub const BOOTSTRAP_MAINTAINER_KEYS: [&str; 5] = [
     "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9",
     "d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d",
     "9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697",
@@ -131,13 +141,11 @@ pub const MAINTAINER_KEYS: [&str; 5] = [
 ];
 ```
 
-### Generating New Keys (for mainnet)
+### Changing Maintainers
 
-```bash
-doli new -w maintainer.json
-doli info -w maintainer.json  # Shows public key
-# Store private key offline, submit public key for inclusion in code
-```
+Maintainer changes happen via on-chain governance transactions (3/5 multisig):
+- `doli-node maintainer add --target <pubkey> --key <maintainer.json>`
+- `doli-node maintainer remove --target <pubkey> --key <maintainer.json>`
 
 ---
 
@@ -489,11 +497,11 @@ For implementation details, see `REWARDS.md` in the repository root.
 | `scripts/generate_chainspec.sh` | Generate chainspec from wallet files |
 | `crates/core/src/chainspec.rs` | Chainspec parsing and validation |
 
-### Binary (maintainer keys - hardcoded)
+### Binary (bootstrap maintainer keys)
 
 | File | Purpose |
 |------|---------|
-| `crates/updater/src/lib.rs` | **5 maintainer keys** (3-of-5 for auto-update) |
+| `crates/updater/src/lib.rs` | **5 bootstrap maintainer keys** (fallback before chain sync) |
 
 ### Other
 
@@ -534,5 +542,6 @@ pub const REQUIRED_SIGNATURES: usize = 3;  // 3-of-5 maintainers
 **Changelog:**
 - v2.3: Added comprehensive Epoch Rewards Architecture section (BlockStore-based design)
 - v2.2: Updated for deterministic BlockStore-based rewards (removed epoch state persistence references)
+- v2.4: Unified maintainer system - on-chain keys with bootstrap fallback
 - v2.1: Clarified maintainer keys are hardcoded in binary (not chainspec)
 - v2.0: Added industry-standard chainspec system for genesis configuration
