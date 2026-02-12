@@ -986,6 +986,19 @@ impl Node {
             NetworkEvent::PeerDisconnected(peer_id) => {
                 info!("Peer disconnected: {}", peer_id);
                 self.sync_manager.write().await.remove_peer(&peer_id);
+
+                // Reconnect to bootstrap nodes if we lost all peers
+                let peer_count = self.sync_manager.read().await.peer_count();
+                if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
+                    info!("Lost all peers — scheduling reconnect to bootstrap nodes");
+                    if let Some(ref network) = self.network {
+                        for addr in &self.config.bootstrap_nodes {
+                            if let Err(e) = network.connect(addr).await {
+                                warn!("Failed to reconnect to bootstrap {}: {}", addr, e);
+                            }
+                        }
+                    }
+                }
             }
 
             NetworkEvent::NewBlock(block) => {
