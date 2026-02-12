@@ -201,7 +201,8 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **Proof**: `EquivocationProof` (two signed headers, same slot, same producer)
 
 ### Governance
-- **Maintainers**: 3/5 multisig required for updates
+- **Maintainers**: First 5 registered producers (on-chain); `BOOTSTRAP_MAINTAINER_KEYS` as fallback pre-sync
+- **Updates**: 3/5 multisig required for release signatures
 - **Veto**: 40% stake can block (7-day voting period)
 
 ## 📂 File Map

@@ -20,8 +20,9 @@ use tracing::{debug, error, info, warn};
 pub use updater::{
     apply_update, calculate_veto_result, check_production_allowed, current_version,
     fetch_latest_release, is_newer_version, restart_node, rollback, verify_release_signatures,
-    veto_deadline, veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement,
-    Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
+    verify_release_signatures_with_keys, veto_deadline, veto_period_ended, ProductionBlocked,
+    Release, UpdateConfig, VersionEnforcement, Vote, VoteMessage, VoteTracker,
+    BOOTSTRAP_MAINTAINER_KEYS, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -440,6 +441,7 @@ impl UpdateService {
         mut self,
         producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
         is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
+        maintainer_keys_fn: impl Fn() -> Vec<String> + Send + Sync + 'static,
     ) {
         if !self.config.enabled {
             info!("Auto-updates disabled");
@@ -471,7 +473,7 @@ impl UpdateService {
             tokio::select! {
                 // Periodic update check
                 _ = check_ticker.tick() => {
-                    self.check_for_updates(&producer_count_fn).await;
+                    self.check_for_updates(&producer_count_fn, &maintainer_keys_fn).await;
                 }
 
                 // Process incoming votes
@@ -504,7 +506,11 @@ impl UpdateService {
     }
 
     /// Check for available updates
-    async fn check_for_updates(&mut self, producer_count_fn: &impl Fn() -> usize) {
+    async fn check_for_updates(
+        &mut self,
+        producer_count_fn: &impl Fn() -> usize,
+        maintainer_keys_fn: &impl Fn() -> Vec<String>,
+    ) {
         debug!("Checking for updates...");
 
         let release = match fetch_latest_release(self.config.custom_url.as_deref()).await {
@@ -536,8 +542,9 @@ impl UpdateService {
             }
         }
 
-        // Verify signatures
-        if let Err(e) = verify_release_signatures(&release) {
+        // Verify signatures using on-chain maintainer keys (falls back to bootstrap keys)
+        let on_chain_keys = maintainer_keys_fn();
+        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys) {
             error!("Release {} has invalid signatures: {}", release.version, e);
             return;
         }
@@ -731,6 +738,7 @@ pub fn spawn_update_service(
     data_dir: PathBuf,
     producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
     is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
+    maintainer_keys_fn: impl Fn() -> Vec<String> + Send + Sync + 'static,
 ) -> (
     mpsc::Sender<VoteMessage>,
     Arc<RwLock<Option<PendingUpdate>>>,
@@ -740,7 +748,9 @@ pub fn spawn_update_service(
     let pending = service.pending_state();
 
     tokio::spawn(async move {
-        service.run(producer_count_fn, is_producer_fn).await;
+        service
+            .run(producer_count_fn, is_producer_fn, maintainer_keys_fn)
+            .await;
     });
 
     (vote_tx, pending)
