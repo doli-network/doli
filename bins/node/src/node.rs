@@ -2968,6 +2968,11 @@ impl Node {
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
 
+        info!(
+            "[TRACE_A] slot={} height={} in_genesis={} active_producers={} total={}",
+            current_slot, height, in_genesis, active_with_weights.len(), total_producers
+        );
+
         let our_pk = producer_key.public_key();
         let _we_are_active = active_with_weights.iter().any(|(pk, _)| pk == our_pk);
 
