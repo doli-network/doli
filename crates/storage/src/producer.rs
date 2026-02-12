@@ -1296,6 +1296,10 @@ impl ProducerSet {
     /// 1. They are in active status
     /// 2. They have passed the ACTIVATION_DELAY since registration
     ///
+    /// Genesis producers (registered_at == 0) are exempt from ACTIVATION_DELAY
+    /// because they are pre-registered in the chainspec and don't need network
+    /// propagation time.
+    ///
     /// This ensures all nodes have the same view of the producer set for a given
     /// height, preventing scheduling conflicts when new producers join.
     ///
@@ -1312,7 +1316,9 @@ impl ProducerSet {
         self.producers
             .values()
             .filter(|p| {
-                p.is_active() && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
+                p.is_active()
+                    && (p.registered_at == 0
+                        || current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY))
             })
             .collect()
     }
