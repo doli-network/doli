@@ -4068,9 +4068,14 @@ impl Node {
 
             if is_stale && !is_syncing {
                 if peer_count == 0 {
-                    // No peers — re-bootstrap Kademlia to discover the network
-                    info!("Stale chain detected (no blocks for 3 slots) with 0 peers — re-bootstrapping DHT");
+                    // No peers — redial bootstrap nodes and re-bootstrap DHT
+                    info!("Stale chain detected (no blocks for 3 slots) with 0 peers — redialing bootstrap nodes");
                     if let Some(ref network) = self.network {
+                        for addr in &self.config.bootstrap_nodes {
+                            if let Err(e) = network.connect(addr).await {
+                                warn!("Failed to redial bootstrap {}: {}", addr, e);
+                            }
+                        }
                         let _ = network.bootstrap().await;
                     }
                 } else {
