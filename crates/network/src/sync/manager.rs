@@ -1403,10 +1403,16 @@ impl SyncManager {
         // Check if any peer is ahead of us in height OR significantly ahead in slot time.
         // The slot check catches the deadlock where heights match but slots diverge:
         // e.g., local height=876/slot=261, peer height=834/slot=919 → slot lag triggers sync.
-        self.peers.values().any(|p| {
+        let peer_ahead = self.peers.values().any(|p| {
             p.best_height > self.local_height
                 || p.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
-        })
+        });
+
+        // Also check network_tip_height (updated by gossip) since peer best_height
+        // in the HashMap can be stale if no status messages are received.
+        let network_ahead = self.network_tip_height > self.local_height;
+
+        peer_ahead || network_ahead
     }
 
     /// Get the best peer to sync from
