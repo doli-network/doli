@@ -65,7 +65,7 @@ Complete technical documentation for launching DOLI mainnet.
 
 ### Infrastructure
 
-- [ ] DNS record `mainnet.doli.network` points to seed server IP
+- [ ] DNS records `seed1.doli.network` and `seed2.doli.network` point to seed server IP
 - [ ] Firewall allows port 30303 (P2P) and 8545 (RPC)
 - [ ] 5 producer servers ready with wallet files
 - [ ] Binary AND chainspec deployed to all 5 servers
@@ -220,7 +220,8 @@ doli-node --network mainnet --chainspec mainnet.json run \
 ### Required DNS Records
 
 ```
-mainnet.doli.network    A       <seed_server_ip>
+seed1.doli.network    A       <seed_server_ip>
+seed2.doli.network    A       <seed_server_ip>
 ```
 
 ### Seed Server Requirements
@@ -232,10 +233,11 @@ mainnet.doli.network    A       <seed_server_ip>
 
 ### Bootstrap Configuration
 
-Other nodes worldwide connect using:
+Nodes connect automatically using the hardcoded defaults in `network_params.rs`.
+No `--bootstrap` flag is needed:
 
 ```bash
-./doli-node --network mainnet run --bootstrap /dns4/mainnet.doli.network/tcp/30303/p2p/<PEER_ID>
+./doli-node --network mainnet run --chainspec resources/chainspec/mainnet.json --producer --producer-key producer.json
 ```
 
 The `<PEER_ID>` is printed in logs when seed node starts:
@@ -272,7 +274,8 @@ rm -rf ~/.doli/mainnet/node*/data/
 
 2. Verify DNS resolves correctly:
 ```bash
-dig mainnet.doli.network
+dig seed1.doli.network
+dig seed2.doli.network
 ```
 
 3. Verify firewall rules:
@@ -298,9 +301,9 @@ doli-node --network mainnet --chainspec mainnet.json run \
 grep "Local peer id" node.log
 
 # 3. Start other nodes (on other servers)
+#    Bootstrap is automatic via seed1/seed2.doli.network defaults
 doli-node --network mainnet --chainspec mainnet.json run \
-    --producer --producer-key producer_2.json \
-    --bootstrap /dns4/mainnet.doli.network/tcp/30303/p2p/<PEER_ID>
+    --producer --producer-key producer_2.json
 ```
 
 ---
