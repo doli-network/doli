@@ -306,6 +306,12 @@ pub struct SyncManager {
     /// Consecutive empty header responses (peers don't recognize our chain tip).
     /// When >= 3, we're on a deep fork and need genesis resync.
     consecutive_empty_headers: u32,
+
+    /// Timestamp when all peers were lost (for peer loss timeout).
+    /// After `peer_loss_timeout_secs`, production resumes solo.
+    peers_lost_at: Option<Instant>,
+    /// Seconds to wait after losing all peers before resuming production.
+    peer_loss_timeout_secs: u64,
 }
 
 impl SyncManager {
@@ -364,6 +370,8 @@ impl SyncManager {
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             consecutive_empty_headers: 0,
+            peers_lost_at: None,
+            peer_loss_timeout_secs: 30,
         }
     }
 
@@ -435,6 +443,9 @@ impl SyncManager {
     /// Register a new peer
     pub fn add_peer(&mut self, peer: PeerId, height: u64, hash: Hash, slot: u32) {
         info!("Adding peer {} with height {}, slot {}", peer, height, slot);
+
+        // Clear peer loss tracker since we have a peer again
+        self.peers_lost_at = None;
 
         self.peers.insert(
             peer,
@@ -517,6 +528,15 @@ impl SyncManager {
     /// Remove a peer
     pub fn remove_peer(&mut self, peer: &PeerId) {
         self.peers.remove(peer);
+
+        // Track when we lost all peers (for peer loss timeout)
+        if self.peers.is_empty() && self.peers_lost_at.is_none() {
+            info!(
+                "All peers lost — starting peer loss timeout ({}s)",
+                self.peer_loss_timeout_secs
+            );
+            self.peers_lost_at = Some(Instant::now());
+        }
 
         // Cancel any pending requests from this peer
         self.pending_requests.retain(|_, req| &req.peer != peer);
@@ -687,11 +707,23 @@ impl SyncManager {
                 };
             }
 
-            // Check 2: If we lost all peers (height > 0 but peers empty), wait for reconnection
+            // Check 2: If we lost all peers (height > 0 but peers empty), wait for reconnection.
+            // After peer_loss_timeout_secs, allow production to resume solo — the peer
+            // may be permanently down and halting the chain is worse than a temporary fork.
             if self.local_height > 0 && self.peers.is_empty() {
-                return ProductionAuthorization::BlockedBootstrap {
-                    reason: "Lost all peers - waiting for reconnection".to_string(),
-                };
+                let past_timeout = self
+                    .peers_lost_at
+                    .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
+                    .unwrap_or(false);
+                if !past_timeout {
+                    return ProductionAuthorization::BlockedBootstrap {
+                        reason: "Lost all peers - waiting for reconnection".to_string(),
+                    };
+                }
+                info!(
+                    "Peer loss timeout reached ({}s) — resuming solo production at height {}",
+                    self.peer_loss_timeout_secs, self.local_height
+                );
             }
 
             // Check 3: Have we seen any chain activity? (block via gossip OR peer with height > 0)
@@ -755,9 +787,17 @@ impl SyncManager {
             self.peers.len(),
             self.min_peers_for_production
         );
-        if self.peers.len() < self.min_peers_for_production && self.local_height > 0 {
+        let past_peer_loss_timeout = self
+            .peers_lost_at
+            .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
+            .unwrap_or(false);
+        if self.peers.len() < self.min_peers_for_production
+            && self.local_height > 0
+            && !past_peer_loss_timeout
+        {
             // Only apply this check if we're past genesis (height > 0)
             // At genesis (height 0), we may legitimately be the first producer
+            // Skip if peer loss timeout expired — solo production is preferable to chain halt
             warn!(
                 "FORK PREVENTION: Only {} peers (need {}) - blocking production to prevent echo chamber",
                 self.peers.len(), self.min_peers_for_production
