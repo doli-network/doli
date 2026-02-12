@@ -12,31 +12,5 @@
     "slots_per_epoch": 360,
     "bond_amount": 100000000000
   },
-  "genesis_producers": [
-    {
-      "name": "producer_1",
-      "public_key": "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
-      "bond_count": 1
-    },
-    {
-      "name": "producer_2",
-      "public_key": "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
-      "bond_count": 1
-    },
-    {
-      "name": "producer_3",
-      "public_key": "77949bbf946d516599e8f3863378df4e3e82eef39e0b1262821c01217e6253ae",
-      "bond_count": 1
-    },
-    {
-      "name": "producer_4",
-      "public_key": "3b9cc056e1a520fecfa82565caf8fe12cd897883bb1b03593fdd1390fb2a4456",
-      "bond_count": 1
-    },
-    {
-      "name": "producer_5",
-      "public_key": "395456fd5345ffe6f9a6d4fbd7b7637fba0c307ee56344e3ea78e998acec697a",
-      "bond_count": 1
-    }
-  ]
+  "genesis_producers": []
 }
