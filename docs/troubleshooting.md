@@ -83,8 +83,8 @@ curl -X POST http://127.0.0.1:8545 \
 **Add bootstrap nodes:**
 ```bash
 ./target/release/doli-node run \
-    --bootstrap /ip4/boot1.doli.network/tcp/30303 \
-    --bootstrap /ip4/boot2.doli.network/tcp/30303
+    --bootstrap /dns4/seed1.doli.network/tcp/30303 \
+    --bootstrap /dns4/seed2.doli.network/tcp/30303
 ```
 
 ---
