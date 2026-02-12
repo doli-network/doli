@@ -2043,6 +2043,17 @@ impl SyncManager {
                 );
             }
         }
+
+        // Periodic sync retry: if Idle and behind peers, restart sync.
+        // This catches cases where sync was attempted, failed (e.g., empty headers
+        // from gossip race), reset to Idle, and never retried.
+        if self.state == SyncState::Idle && self.should_sync() {
+            info!(
+                "Sync retry: Idle but behind peers (local_h={}, network_tip={}). Restarting sync.",
+                self.local_height, self.network_tip_height
+            );
+            self.start_sync();
+        }
     }
 
     /// Get sync progress as a percentage
