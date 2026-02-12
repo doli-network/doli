@@ -3019,11 +3019,14 @@ impl Node {
                     return Ok(());
                 }
                 Network::Mainnet | Network::Testnet | Network::Devnet => {
-                    // Bootstrap mode: deterministic rank-based leader election
-                    // Each producer computes their rank based on slot + their public key.
-                    // We deliberately DO NOT use prev_hash here because nodes may be on
-                    // different chains initially. Using only slot ensures all nodes
-                    // compute the same election result regardless of chain state.
+                    let has_bootstrap_nodes = !self.config.bootstrap_nodes.is_empty();
+                    info!(
+                        "[TRACE_B] Entering bootstrap: has_bootstrap={} last_producer_change={:?} known_producers={} peer_count={}",
+                        has_bootstrap_nodes,
+                        self.last_producer_list_change.map(|t| t.elapsed().as_secs()),
+                        self.known_producers.read().await.len(),
+                        self.sync_manager.read().await.peer_count(),
+                    );
 
                     // PRODUCER LIST STABILITY CHECK: Don't produce until the producer list
                     // has been stable for N seconds. This ensures anti-entropy has converged
