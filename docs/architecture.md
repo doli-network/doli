@@ -110,7 +110,7 @@ crypto ──► bins/cli (wallet binary)
 - `registration_input()` - Build registration VDF preimage
 
 **Parameters:**
-- Block: 10M iterations (~700ms)
+- Block: 800K iterations (~55ms)
 - Registration base: 600M iterations (~10 minutes)
 - Discriminant: 2048 bits
 
