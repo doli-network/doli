@@ -12,5 +12,16 @@
     "slots_per_epoch": 360,
     "bond_amount": 100000000000
   },
-  "genesis_producers": []
+  "genesis_producers": [
+    {
+      "name": "producer_1",
+      "public_key": "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
+      "bond_count": 1
+    },
+    {
+      "name": "producer_2",
+      "public_key": "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
+      "bond_count": 1
+    }
+  ]
 }
