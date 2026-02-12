@@ -146,14 +146,14 @@ cargo build --release
 |---------|---------|-----------|----------------|
 | Mainnet | Production | 10s | `~/.doli/mainnet/` |
 | Testnet | Testing | 10s | `~/.doli/testnet/` |
-| Devnet | Development | 1s | `~/.doli/devnet/` |
+| Devnet | Development | 10s | `~/.doli/devnet/` |
 
 **Devnet special features:**
 - **Dynamic genesis:** Genesis time is set automatically when the first node starts
 - **Bootstrapping:** "Sync-Before-Produce" logic prevents split-brain genesis (see [devnet.md](./devnet.md))
 - **Fast grace periods:** Reduced wait times for quicker testing
-- **Same bond requirements:** 1000 DOLI required (same as mainnet/testnet)
-- **Faster epochs:** 60 slots per epoch (~1 minute with 1s slots)
+- **Lower bond:** 1 DOLI required (vs 10 DOLI on mainnet/testnet)
+- **Faster reward epochs:** 4 blocks per reward epoch (~40 seconds)
 
 ### 3.1. Local Multi-Node Devnet (Recommended for Development)
 
@@ -313,7 +313,7 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_UNBONDING_PERIOD` | 60480 | Devnet only |
 | `DOLI_BOND_UNIT` | 10B | Devnet only |
 | `DOLI_INITIAL_REWARD` | 100M | Devnet only |
-| `DOLI_VDF_ITERATIONS` | 100000 | Devnet only |
+| `DOLI_VDF_ITERATIONS` | 800000 | Devnet only |
 | `DOLI_BLOCKS_PER_YEAR` | 3153600 | Devnet only |
 | `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Devnet only |
 | `DOLI_COINBASE_MATURITY` | 100 | Devnet only |
@@ -324,7 +324,7 @@ For security, the following parameters are **locked for mainnet** and cannot be 
 
 - `DOLI_SLOT_DURATION` - Must be 10s
 - `DOLI_GENESIS_TIME` - Fixed launch time
-- `DOLI_BOND_UNIT` - 100 DOLI minimum
+- `DOLI_BOND_UNIT` - 10 DOLI per bond
 - `DOLI_INITIAL_REWARD` - Emission schedule
 - `DOLI_VDF_ITERATIONS` - Consensus security
 - `DOLI_BLOCKS_PER_YEAR` - Era calculation
@@ -617,9 +617,9 @@ doli-node export <file>           # Export blocks to file
 | Metrics Port | 9090 | 19090 | 29090 |
 | Slot Duration | 10s | 10s | 10s |
 | Block Reward | 1 DOLI | 1 DOLI | 20 DOLI |
-| Bond Unit | 100 DOLI | 100 DOLI | 1 DOLI |
-| VDF Iterations | 100K | 100K | 1 |
-| Heartbeat VDF | 10M (~700ms) | 10M (~700ms) | 10M (~700ms) |
+| Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI |
+| VDF Iterations | 800K (~55ms) | 800K (~55ms) | 1 |
+| Heartbeat VDF | 800K (~55ms) | 800K (~55ms) | 800K (~55ms) |
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 |
 | Reward Epoch | 360 blocks | 360 blocks | 4 blocks |
 | Address Prefix | `doli` | `tdoli` | `ddoli` |

@@ -131,11 +131,11 @@ DOLI uses **Proof of Time** with two complementary mechanisms:
 
 | Network | Slot  | VDF Time | Purpose                        |
 |---------|-------|----------|--------------------------------|
-| All     | 60/10/5s | ~700ms | Heartbeat proof of presence    |
+| All     | 10s   | ~55ms    | Heartbeat proof of presence    |
 
 ```
 vdf_input = HASH("DOLI_HEARTBEAT_V1" || producer_key || slot || prev_hash)
-vdf_output = hash_chain(vdf_input, iterations)  // ~10M iterations
+vdf_output = hash_chain(vdf_input, iterations)  // ~800K iterations
 ```
 
 **Why Epoch Lookahead prevents grinding:**
@@ -174,18 +174,18 @@ vdf_output = hash_chain(vdf_input, iterations)  // ~10M iterations
 To become a block producer:
 
 1. Complete a VDF proof (base: 10 minutes, adjusts with demand)
-2. Lock an activation bond (Era 1: 1,000 coins, decreases 30% per era)
+2. Lock an activation bond (10 DOLI per bond)
 3. Bond is locked for ~4 years and slashed for misbehavior
 
 ### Bond Stacking
 
-Producers can stake 1-100 bonds to increase their block production share:
+Producers can stake 1-10,000 bonds to increase their block production share:
 
 | Bonds | Investment | Blocks/Cycle | ROI |
 |-------|------------|--------------|-----|
-| 1 | 1,000 DOLI | 1 of 10 | 0.5% |
-| 5 | 5,000 DOLI | 5 of 10 | 0.5% |
-| 10 | 10,000 DOLI | 10 of 20 | 0.5% |
+| 1 | 10 DOLI | 1 of 10 | 10% |
+| 5 | 50 DOLI | 5 of 10 | 10% |
+| 10 | 100 DOLI | 10 of 20 | 10% |
 
 **Key:** Uses deterministic round-robin rotation (NOT lottery). More bonds = more blocks, same ROI %.
 
@@ -193,7 +193,7 @@ Producers can stake 1-100 bonds to increase their block production share:
 
 - **Hash function**: BLAKE3-256
 - **Signatures**: Ed25519
-- **VDF**: Hash-chain (iterated SHA-256, ~10M iterations)
+- **VDF**: Hash-chain (iterated SHA-256, ~800K iterations)
 
 ## Networks
 
@@ -216,8 +216,7 @@ Each network has its own genesis, address prefix (`doli`, `tdoli`, `ddoli`), and
 | Epoch duration      | 360 slots (1 hour)     |
 | Block size limit    | 1,000,000 bytes        |
 | Reward maturity     | 100 blocks             |
-| Initial bond        | 1,000 coins            |
-| Bond decay          | 30% per era            |
+| Initial bond        | 10 DOLI                |
 | Slashing (double)   | 100% of bond           |
 | Exclusion period    | 60,480 slots (7 days)  |
 
