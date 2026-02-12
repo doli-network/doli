@@ -3257,6 +3257,20 @@ impl Node {
                     let mut known_producers: Vec<PublicKey> = known.clone();
                     drop(known);
 
+                    // During genesis, use the registered producer set (from chainspec)
+                    // instead of relying on gossip discovery, which may not have
+                    // converged yet. This ensures all nodes agree on the producer
+                    // list from the start, preventing independent production and forks.
+                    if in_genesis {
+                        let producers = self.producer_set.read().await;
+                        let active = producers.active_producers_at_height(height);
+                        for p in &active {
+                            if !known_producers.contains(&p.public_key) {
+                                known_producers.push(p.public_key);
+                            }
+                        }
+                    }
+
                     // Always include ourselves
                     if !known_producers.iter().any(|p| p == &our_pubkey) {
                         known_producers.push(our_pubkey);
