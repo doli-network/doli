@@ -730,9 +730,12 @@ impl Node {
                 "Tier classification changed: {} -> {} (epoch {})",
                 self.our_tier, new_tier, current_epoch
             );
-            // Update min peers for production based on new tier.
             let mut sync = self.sync_manager.write().await;
             sync.set_tier(new_tier, producers_with_weights.len());
+            // During genesis, keep min_peers=1 to allow bootstrapping with fewer nodes
+            if self.config.network.is_in_genesis(height) {
+                sync.set_min_peers_for_production(1);
+            }
         }
 
         self.our_tier = new_tier;
