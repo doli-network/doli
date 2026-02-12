@@ -1052,8 +1052,8 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Metrics Port | 9090 | 19090 | 29090 | All |
 | Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI | Devnet only |
 | Initial Reward | 1 DOLI | 1 DOLI | 20 DOLI | Devnet only |
-| VDF Iterations | 100,000 | 100,000 | 1 | Devnet only |
-| Heartbeat VDF | 10M (~700ms) | 10M (~700ms) | 10M (~700ms) | Devnet only |
+| VDF Iterations | 800,000 | 800,000 | 1 | Devnet only |
+| Heartbeat VDF | 800,000 (~55ms) | 800,000 (~55ms) | 800,000 (~55ms) | Devnet only |
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 | Devnet only |
 | Reward Epoch | 360 blocks | 360 blocks | 4 blocks | Devnet only |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 | Devnet only |
