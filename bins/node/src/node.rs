@@ -304,15 +304,17 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
-            // Configure min peers for production based on network
-            // Devnet: 1 peer — uses --no-dht so non-bootstrap nodes only discover the
-            // bootstrap (1 peer). Requiring 2 blocks all non-bootstrap nodes permanently.
-            // Echo chambers are prevented by the auto-resync mechanism instead.
-            // Testnet/Mainnet: 2 peers — DHT enables full peer discovery.
-            // After first epoch boundary, recompute_tier() overrides this with
-            // tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
+            // Configure min peers for production based on network and genesis phase.
+            // During genesis, allow single-peer production since the network is
+            // still bootstrapping with very few nodes. After the first epoch boundary,
+            // recompute_tier() overrides with tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
+            let in_genesis_at_start = {
+                let state = chain_state.read().await;
+                config.network.is_in_genesis(state.best_height + 1)
+            };
             let min_peers = match config.network {
                 Network::Devnet => 1,
+                _ if in_genesis_at_start => 1,
                 Network::Testnet | Network::Mainnet => 2,
             };
             sm.set_min_peers_for_production(min_peers);
