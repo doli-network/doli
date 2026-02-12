@@ -112,6 +112,8 @@ pub struct Node {
     vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
     /// Shared pending update state from UpdateService (for RPC to read live)
     pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
+    /// Last time we attempted to redial bootstrap nodes (rate limiter)
+    last_peer_redial: Option<Instant>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -414,6 +416,7 @@ impl Node {
             last_tier_epoch: None,
             vote_tx: None,
             pending_update: None,
+            last_peer_redial: None,
         })
     }
 
@@ -4045,6 +4048,29 @@ impl Node {
                     if let Some(recovery) = completed {
                         if let Err(e) = self.handle_completed_fork_recovery(recovery).await {
                             warn!("Fork recovery reorg failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // PEER MAINTENANCE: Periodically redial bootstrap nodes when isolated.
+        // Unlike stale chain detection (which requires chain inactivity), this runs
+        // even when the node is producing solo — ensuring reconnection attempts
+        // happen regardless of local production state.
+        {
+            let peer_count = self.sync_manager.read().await.peer_count();
+            if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
+                // Redial every 10 seconds (slot duration) when isolated
+                let should_redial = self
+                    .last_peer_redial
+                    .map(|t| t.elapsed().as_secs() >= self.params.slot_duration)
+                    .unwrap_or(true);
+                if should_redial {
+                    self.last_peer_redial = Some(std::time::Instant::now());
+                    if let Some(ref network) = self.network {
+                        for addr in &self.config.bootstrap_nodes {
+                            let _ = network.connect(addr).await;
                         }
                     }
                 }
