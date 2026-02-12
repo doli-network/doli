@@ -3374,15 +3374,12 @@ impl Node {
             (eligible, None)
         };
 
-        debug!(
-            "Slot {} eligible list ({}): {:?}, our_rank: {:?}",
+        info!(
+            "[BOOTSTRAP_TRACE] slot={} eligible={} bootstrap_rank={:?} in_genesis={}",
             current_slot,
             eligible.len(),
-            eligible
-                .iter()
-                .map(|pk| hex::encode(&pk.as_bytes()[..4]))
-                .collect::<Vec<_>>(),
-            eligible.iter().position(|p| p == &our_pubkey),
+            our_bootstrap_rank,
+            in_genesis,
         );
 
         if eligible.is_empty() {
