@@ -453,7 +453,14 @@ impl Node {
         // This is critical for round-robin slot assignment - if we don't know about ourselves,
         // we might produce blocks in slots assigned to other producers.
         if let Some(ref key) = self.producer_key {
-            if self.config.network == Network::Testnet || self.config.network == Network::Devnet {
+            let genesis_active = {
+                let state = self.chain_state.read().await;
+                self.config.network.is_in_genesis(state.best_height + 1)
+            };
+            if self.config.network == Network::Testnet
+                || self.config.network == Network::Devnet
+                || genesis_active
+            {
                 let our_pubkey = *key.public_key();
 
                 // Create initial announcement with sequence 0
@@ -847,7 +854,11 @@ impl Node {
                 // Phase 1: Uses adaptive intervals based on network activity
                 // Phase 2: Uses delta sync (bloom filter) for large networks
                 _ = gossip_timer.tick() => {
-                    if self.config.network == Network::Testnet || self.config.network == Network::Devnet {
+                    let genesis_active = {
+                        let state = self.chain_state.read().await;
+                        self.config.network.is_in_genesis(state.best_height + 1)
+                    };
+                    if self.config.network == Network::Testnet || self.config.network == Network::Devnet || genesis_active {
                         if let Some(ref network) = self.network {
                             // Update our producer announcement if we're a producer
                             if let Some(ref key) = self.producer_key {
@@ -1022,8 +1033,13 @@ impl Node {
                 // where blocks can't be applied (they look like forks) because producers
                 // don't know about each other.
                 if let Some(ref producer_pubkey) = status.producer_pubkey {
+                    let genesis_active = {
+                        let state = self.chain_state.read().await;
+                        self.config.network.is_in_genesis(state.best_height + 1)
+                    };
                     if self.config.network == Network::Testnet
                         || self.config.network == Network::Devnet
+                        || genesis_active
                     {
                         let mut known = self.known_producers.write().await;
                         if !known.contains(producer_pubkey) {
@@ -1054,8 +1070,13 @@ impl Node {
                 // BOOTSTRAP PRODUCER DISCOVERY: If the requesting peer is a producer,
                 // add them to known_producers (same as we do for PeerStatus)
                 if let Some(ref producer_pubkey) = request.producer_pubkey {
+                    let genesis_active = {
+                        let state = self.chain_state.read().await;
+                        self.config.network.is_in_genesis(state.best_height + 1)
+                    };
                     if self.config.network == Network::Testnet
                         || self.config.network == Network::Devnet
+                        || genesis_active
                     {
                         let mut known = self.known_producers.write().await;
                         if !known.contains(producer_pubkey) {
@@ -1156,7 +1177,13 @@ impl Node {
                 // This is STATE-BASED (not event-based) - we receive the sender's full view
                 // and merge using CRDT union semantics: Union(Local, Remote)
                 // This guarantees convergence even with packet loss or network partitions.
-                if self.config.network == Network::Testnet || self.config.network == Network::Devnet
+                let genesis_active = {
+                    let state = self.chain_state.read().await;
+                    self.config.network.is_in_genesis(state.best_height + 1)
+                };
+                if self.config.network == Network::Testnet
+                    || self.config.network == Network::Devnet
+                    || genesis_active
                 {
                     let changed = {
                         let mut known = self.known_producers.write().await;
@@ -2315,8 +2342,11 @@ impl Node {
 
         // Add newly registered producers to known_producers for bootstrap round-robin
         // This ensures they can produce blocks immediately (without waiting for gossip discovery)
+        let genesis_active = self.config.network.is_in_genesis(height);
         if !new_registrations.is_empty()
-            && (self.config.network == Network::Testnet || self.config.network == Network::Devnet)
+            && (self.config.network == Network::Testnet
+                || self.config.network == Network::Devnet
+                || genesis_active)
         {
             let mut known = self.known_producers.write().await;
             let mut added_any = false;
