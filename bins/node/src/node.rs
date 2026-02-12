@@ -3047,8 +3047,11 @@ impl Node {
                     // This is bootstrap-specific: seed nodes have no bootstrap config,
                     // joining nodes have bootstrap config and must wait for connection.
                     // (Sync-before-produce checks are handled globally above)
+                    //
+                    // Skip during genesis: all nodes are bootstrapping together from scratch,
+                    // there's no existing chain to sync from and no seed to wait for.
                     let has_bootstrap_nodes = !self.config.bootstrap_nodes.is_empty();
-                    if has_bootstrap_nodes {
+                    if has_bootstrap_nodes && !in_genesis {
                         let sync_state = self.sync_manager.read().await;
                         let peer_count = sync_state.peer_count();
                         let best_peer_height = sync_state.best_peer_height();
