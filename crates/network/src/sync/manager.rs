@@ -312,6 +312,9 @@ pub struct SyncManager {
     peers_lost_at: Option<Instant>,
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
+    /// Genesis block hash — used as fallback start_hash when peer doesn't
+    /// recognize our chain tip (consecutive_empty_headers >= 3).
+    genesis_hash: Hash,
 }
 
 impl SyncManager {
@@ -372,6 +375,7 @@ impl SyncManager {
             consecutive_empty_headers: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
+            genesis_hash,
         }
     }
 
@@ -1470,8 +1474,18 @@ impl SyncManager {
             SyncState::DownloadingHeaders { peer, .. } => {
                 let peer = *peer;
 
-                // Request headers from our current tip
-                let request = self.header_downloader.create_request(self.local_hash);
+                // After 3+ consecutive empty responses, peer doesn't recognize our tip.
+                // Fall back to genesis hash so we can resync the full chain.
+                let start_hash = if self.consecutive_empty_headers >= 3 {
+                    info!(
+                        "Genesis fallback: {} consecutive empty headers, syncing from genesis",
+                        self.consecutive_empty_headers
+                    );
+                    self.genesis_hash
+                } else {
+                    self.local_hash
+                };
+                let request = self.header_downloader.create_request(start_hash);
 
                 if let Some(req) = request {
                     let id = self.register_request(peer, req.clone());
