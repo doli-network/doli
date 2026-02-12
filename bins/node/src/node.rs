@@ -3007,7 +3007,11 @@ impl Node {
         let our_pubkey = *producer_key.public_key();
         let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
             match self.config.network {
-                Network::Testnet | Network::Devnet => {
+                Network::Mainnet if !in_genesis => {
+                    // Outside genesis, mainnet requires registered producers
+                    return Ok(());
+                }
+                Network::Mainnet | Network::Testnet | Network::Devnet => {
                     // Bootstrap mode: deterministic rank-based leader election
                     // Each producer computes their rank based on slot + their public key.
                     // We deliberately DO NOT use prev_hash here because nodes may be on
@@ -3308,10 +3312,6 @@ impl Node {
 
                     // It's our turn - produce immediately (score 0)
                     (vec![our_pubkey], Some(0))
-                }
-                Network::Mainnet => {
-                    // Mainnet requires registered producers
-                    return Ok(());
                 }
             }
         } else {
