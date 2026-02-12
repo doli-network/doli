@@ -65,35 +65,18 @@ pub const VETO_THRESHOLD_PERCENT: u8 = 40;
 /// Required maintainer signatures: 3 of 5
 pub const REQUIRED_SIGNATURES: usize = 3;
 
-/// Maintainer public keys (Ed25519, hex-encoded)
-/// These are hardcoded for security - no external configuration
+/// Bootstrap maintainer public keys (Ed25519, hex-encoded)
 ///
-/// # IMPORTANT: Production Keys Required
+/// These keys are used as a **fallback** for release signature verification
+/// before on-chain state is available (e.g., during initial sync or CLI commands
+/// without a running node). Once the node has synced and the on-chain maintainer
+/// set is derived from the first 5 registered producers, those on-chain keys
+/// take precedence.
 ///
-/// The keys below are **PLACEHOLDER VALUES** for development only.
-/// Before mainnet launch, these must be replaced with real Ed25519 public keys
-/// belonging to the 5 designated maintainers.
-///
-/// ## Key Generation Process
-///
-/// Each maintainer should:
-/// 1. Generate an Ed25519 keypair offline
-/// 2. Store the private key securely (hardware wallet, air-gapped machine)
-/// 3. Provide only the public key (hex-encoded) for inclusion here
-///
-/// ## Security Requirements
-///
-/// - Keys must be generated on secure, air-gapped systems
-/// - Private keys must never touch an internet-connected device
-/// - Each maintainer must control exactly one key
-/// - 3 of 5 signatures required for any update
-///
-/// ## Verification
-///
-/// Before mainnet: `is_using_placeholder_keys()` must return `false`
-pub const MAINTAINER_KEYS: [&str; 5] = [
-    // Testnet maintainer keys (also used for mainnet until replaced)
-    // These are the 5 keys that control protocol updates (3-of-5 threshold)
+/// See `verify_release_signatures_with_keys()` for the key selection logic.
+pub const BOOTSTRAP_MAINTAINER_KEYS: [&str; 5] = [
+    // Bootstrap keys (first 5 registered producers on mainnet)
+    // These are overridden by on-chain state once the node is synced
     // Key 1
     "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9",
     // Key 2
@@ -106,53 +89,39 @@ pub const MAINTAINER_KEYS: [&str; 5] = [
     "82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096",
 ];
 
-/// Check if the maintainer keys are still placeholders
+/// Check if the bootstrap maintainer keys are still placeholders
 ///
 /// Returns `true` if any key starts with "00000000" (placeholder pattern).
 /// This MUST return `false` before mainnet launch.
-///
-/// # Example
-///
-/// ```rust
-/// use updater::is_using_placeholder_keys;
-///
-/// // In production startup code:
-/// if is_using_placeholder_keys() {
-///     eprintln!("WARNING: Using placeholder maintainer keys!");
-///     eprintln!("This build is NOT suitable for mainnet.");
-/// }
-/// ```
 pub fn is_using_placeholder_keys() -> bool {
-    MAINTAINER_KEYS.iter().any(|k| k.starts_with("00000000"))
+    BOOTSTRAP_MAINTAINER_KEYS
+        .iter()
+        .any(|k| k.starts_with("00000000"))
 }
 
-/// Verify that maintainer keys are production-ready
+/// Verify that bootstrap maintainer keys are production-ready
 ///
 /// Panics if placeholder keys are detected.
 /// Call this during mainnet node initialization.
-///
-/// # Panics
-///
-/// Panics with a descriptive message if placeholder keys are in use.
 pub fn assert_production_keys() {
     if is_using_placeholder_keys() {
         panic!(
-            "FATAL: Placeholder maintainer keys detected!\n\
+            "FATAL: Placeholder bootstrap maintainer keys detected!\n\
              This build cannot be used for mainnet.\n\
-             Replace MAINTAINER_KEYS in doli-updater/src/lib.rs with real keys."
+             Replace BOOTSTRAP_MAINTAINER_KEYS in doli-updater/src/lib.rs with real keys."
         );
     }
 }
 
-/// Get the active maintainer public keys
+/// Get the bootstrap maintainer public keys
 ///
-/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns production keys.
-/// For devnet testing, set the environment variable before starting nodes.
+/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns bootstrap keys.
+/// For on-chain maintainer keys, use `verify_release_signatures_with_keys()`.
 pub fn get_maintainer_keys() -> Vec<&'static str> {
     if should_use_test_keys() {
         test_maintainer_pubkeys()
     } else {
-        MAINTAINER_KEYS.to_vec()
+        BOOTSTRAP_MAINTAINER_KEYS.to_vec()
     }
 }
 
@@ -572,16 +541,44 @@ pub fn in_grace_period_for_network(release: &Release, network: Network) -> bool 
 // Core Logic
 // ============================================================================
 
-/// Verify that a release has sufficient valid maintainer signatures
+/// Verify release signatures using bootstrap keys only (convenience wrapper)
+///
+/// Use this for CLI commands and contexts where on-chain state is not available.
+/// For the running node, prefer `verify_release_signatures_with_keys()`.
 pub fn verify_release_signatures(release: &Release) -> Result<()> {
+    verify_release_signatures_with_keys(release, &[])
+}
+
+/// Verify that a release has sufficient valid maintainer signatures
+///
+/// If `on_chain_keys` is non-empty, those keys are used for verification
+/// (derived from first 5 registered producers on-chain). If empty, falls
+/// back to `BOOTSTRAP_MAINTAINER_KEYS`.
+pub fn verify_release_signatures_with_keys(
+    release: &Release,
+    on_chain_keys: &[String],
+) -> Result<()> {
     let message = format!("{}:{}", release.version, release.binary_sha256);
     let message_bytes = message.as_bytes();
+
+    // Determine which keys to use
+    let using_on_chain = !on_chain_keys.is_empty();
+    let allowed_keys: Vec<&str> = if using_on_chain {
+        info!(
+            "Verifying release signatures with {} on-chain maintainer keys",
+            on_chain_keys.len()
+        );
+        on_chain_keys.iter().map(|s| s.as_str()).collect()
+    } else {
+        debug!("Verifying release signatures with bootstrap maintainer keys");
+        BOOTSTRAP_MAINTAINER_KEYS.to_vec()
+    };
 
     let mut valid_count = 0;
 
     for sig in &release.signatures {
         // Check if this is a known maintainer
-        if !MAINTAINER_KEYS.contains(&sig.public_key.as_str()) {
+        if !allowed_keys.contains(&sig.public_key.as_str()) {
             debug!("Ignoring signature from unknown key: {}", sig.public_key);
             continue;
         }
@@ -621,8 +618,15 @@ pub fn verify_release_signatures(release: &Release) -> Result<()> {
 
     if valid_count >= REQUIRED_SIGNATURES {
         info!(
-            "Release {} verified: {}/{} valid signatures",
-            release.version, valid_count, REQUIRED_SIGNATURES
+            "Release {} verified: {}/{} valid signatures (source: {})",
+            release.version,
+            valid_count,
+            REQUIRED_SIGNATURES,
+            if using_on_chain {
+                "on-chain"
+            } else {
+                "bootstrap"
+            }
         );
         Ok(())
     } else {

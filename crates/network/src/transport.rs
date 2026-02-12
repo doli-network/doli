@@ -11,8 +11,8 @@ pub fn build_transport(
 {
     let tcp_config = tcp::Config::default().nodelay(true);
     let tcp_transport = tcp::tokio::Transport::new(tcp_config);
-    let dns_transport = dns::tokio::Transport::system(tcp_transport)
-        .map_err(std::io::Error::other)?;
+    let dns_transport =
+        dns::tokio::Transport::system(tcp_transport).map_err(std::io::Error::other)?;
 
     let noise_config =
         noise::Config::new(keypair).expect("Noise config should be valid with ed25519 keypair");
