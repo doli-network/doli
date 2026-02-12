@@ -2919,67 +2919,46 @@ impl Node {
         }
 
         // =========================================================================
-        // DEFENSE-IN-DEPTH: Universal Height-Slot Gap Check
+        // DEFENSE-IN-DEPTH: Peer-Aware Behind-Network Check
         //
-        // This is a SECONDARY safety net in addition to the ProductionGate.
-        // Even if ProductionGate passes, we still check for dangerous height-slot gaps.
+        // Prevents producing orphan blocks when we're significantly behind the
+        // network. A node at height 0 should never produce for slot 92 if peers
+        // are at height 90 — the block would be an orphan.
         //
-        // The key insight from the infinite resync bug: a node at height 0 should NEVER
-        // produce a block for slot 92. The resulting block would be an orphan that
-        // can never join the canonical chain.
+        // Key insight: Compare HEIGHTS, not slot-height gap. In sparse chains
+        // (genesis phase, network downtime), slots advance via wall-clock while
+        // blocks are produced infrequently. A large slot-height gap (e.g.,
+        // slot 100,000 at height 175) is normal and does NOT indicate we're
+        // behind — it means the chain has been producing sparsely. What matters
+        // is whether peers have blocks we're missing.
         //
-        // Adaptive thresholds based on height:
-        // - Height 0-1: Allow max 3 slot gap (tight - genesis should be quick)
-        // - Height 2-9: Allow max 5 slot gap (some propagation time)
-        // - Height 10+: Allow max 10 slot gap (normal operation)
+        // Previous bug: Using current_slot - height as the gap metric caused a
+        // permanent deadlock where joining nodes could never produce because
+        // the slot-height gap always exceeded max_gap in sparse chains.
         //
-        // This applies to ALL networks (mainnet, testnet, devnet) for defense-in-depth.
+        // Thresholds:
+        // - Height < 10: max 3 blocks behind (tight - prevent orphan forks)
+        // - Height 10+:  max 5 blocks behind (allow propagation delay)
         // =========================================================================
-        // PEER-AWARE GAP CHECK: Only block production when the network is ahead
-        //
-        // Key insight: A large slot-height gap is only dangerous if the NETWORK
-        // has progressed beyond us. During startup, slots advance due to wall-clock
-        // time, but if no one has produced, there's no one to fork from.
-        //
-        // This replaces the previous wall-clock-based gap check that caused the
-        // "stuck at height 1" deadlock: once slots advanced past the gap threshold,
-        // no node could produce height 2, even though the network had only height 1.
-        //
-        // Algorithm:
-        // 1. Get the network tip slot (from peer status + gossip tracking)
-        // 2. Only apply gap check if there's evidence the network is ahead
-        // 3. If network tip <= our tip, allow production (we're not behind)
-        // =========================================================================
-        let (_network_tip_slot, network_tip_height) = {
+        let network_tip_height = {
             let sync = self.sync_manager.read().await;
-            (sync.best_peer_slot(), sync.best_peer_height())
+            sync.best_peer_height()
         };
 
-        // PEER-AWARE GAP CHECK: Only block production when the network HEIGHT is ahead
-        //
-        // Key insight: We only defer if peers have demonstrated a HIGHER HEIGHT than us.
-        // Slot differences alone don't indicate we're behind - slots advance with wall-clock.
-        // Height differences indicate actual chain progress we're missing.
-        //
-        // Without this check: After initial blocks, network_tip_slot stays at the last
-        // gossiped block's slot, causing perpetual gap check failures as slots advance.
-        //
-        // With this check: We only defer when there's concrete evidence (height) that
-        // we're missing blocks, not just that time has passed.
         let network_height_ahead = network_tip_height > height.saturating_sub(1);
 
         if height > 1 && network_height_ahead {
-            let slot_height_gap = current_slot.saturating_sub(height as u32);
-            let max_gap = if height < 10 {
-                5 // Moderate gap during early chain growth
+            let blocks_behind = network_tip_height.saturating_sub(height.saturating_sub(1));
+            let max_behind: u64 = if height < 10 {
+                3 // Tight during early chain - prevent orphan forks
             } else {
-                10 // Normal operation - allow for propagation delays
+                5 // Normal operation - allow some propagation delay
             };
 
-            if slot_height_gap > max_gap {
+            if blocks_behind > max_behind {
                 debug!(
-                    "Height-slot gap {} exceeds max {} at height {} (network ahead: tip_height={}) - deferring production",
-                    slot_height_gap, max_gap, height, network_tip_height
+                    "Behind network by {} blocks (next_height={}, network_tip={}) - deferring production",
+                    blocks_behind, height, network_tip_height
                 );
                 return Ok(());
             }
