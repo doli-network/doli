@@ -301,21 +301,21 @@ Options:
 ```
 
 **Bond Requirements:**
-- **Mainnet/Testnet**: Each bond = 100 DOLI (minimum 1 bond, maximum 100 bonds = 10,000 DOLI)
+- **Mainnet/Testnet**: Each bond = 10 DOLI (minimum 1 bond, maximum 10,000 bonds = 100,000 DOLI)
 - **Devnet**: Each bond = 1 DOLI (for testing)
 
 **Example:**
 ```bash
-# Register with 1 bond (100 DOLI on mainnet/testnet, 1 DOLI on devnet)
+# Register with 1 bond (10 DOLI on mainnet/testnet, 1 DOLI on devnet)
 doli producer register
 
-# Register with 5 bonds (500 DOLI on mainnet/testnet)
+# Register with 5 bonds (50 DOLI on mainnet/testnet)
 doli producer register --bonds 5
 ```
 
 **WHITEPAPER Reference:** Section 6 (Producer Registration)
 - Requires activation bond (Section 6.2)
-- Bond stacking up to 100x (Section 6.3)
+- Bond stacking up to 10,000x (Section 6.3)
 - Dynamic registration difficulty (Section 6.1)
 
 ---

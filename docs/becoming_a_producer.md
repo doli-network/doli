@@ -8,9 +8,9 @@ This guide covers how to become a block producer in the DOLI network.
 
 Block producers in DOLI:
 - Create new blocks at their assigned slots
-- Compute VDF proofs (~700ms per block)
+- Compute VDF proofs (~55ms per block)
 - Earn block rewards (1 DOLI per block in Era 1)
-- Require a bond (100 DOLI minimum per bond unit)
+- Require a bond (10 DOLI per bond unit)
 
 **Key differences from other systems:**
 - **Deterministic selection** - You know exactly when your blocks will be produced
@@ -40,10 +40,10 @@ Block producers in DOLI:
 
 | Requirement | Amount | Lock Period |
 |-------------|--------|-------------|
-| Bond unit | 100 DOLI | 4 years |
-| Maximum bonds | 100 bonds (10,000 DOLI) | 4 years |
+| Bond unit | 10 DOLI | 4 years |
+| Maximum bonds | 1000 bonds (10,000 DOLI) | 4 years |
 
-**Bond Stacking**: You can hold multiple bonds (up to 100), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
+**Bond Stacking**: You can hold multiple bonds (up to 10,000), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
 
 ### 2.3. Time Commitment
 
@@ -120,13 +120,13 @@ doli --wallet ~/.doli/keys/my_producer.json \
     balance
 
 # You need: bond amount + registration fee + operational buffer
-# Example: 100 DOLI bond + 0.01 fee + 1 DOLI buffer = 101.01 DOLI
+# Example: 10 DOLI bond + 0.01 fee + 1 DOLI buffer = 11.01 DOLI
 ```
 
 ### 3.4. Register as Producer
 
 ```bash
-# Register with minimum bond (100 DOLI = 1 bond)
+# Register with minimum bond (10 DOLI = 1 bond)
 doli --wallet ~/.doli/keys/my_producer.json \
     --rpc http://127.0.0.1:8545 \
     producer register
@@ -134,7 +134,7 @@ doli --wallet ~/.doli/keys/my_producer.json \
 # Register with multiple bonds for more slots
 doli --wallet ~/.doli/keys/my_producer.json \
     --rpc http://127.0.0.1:8545 \
-    producer register --bonds 5  # 500 DOLI = 5 bonds
+    producer register --bonds 5  # 50 DOLI = 5 bonds
 ```
 
 **What happens during registration:**
@@ -164,7 +164,7 @@ doli-node run \
     --network mainnet \
     --producer \
     --producer-key ~/.doli/keys/my_producer.json \
-    --bootstrap /ip4/SEED_IP/tcp/30303
+    --bootstrap /dns4/seed1.doli.network/tcp/30303
 ```
 
 ### 3.6. Verify Production
@@ -234,21 +234,22 @@ Your blocks per day = (your_bonds / total_bonds) × 8,640
 
 ### 4.3. Fallback Mechanism
 
-If the primary producer is offline, fallback producers become eligible in 1-second windows:
+If the primary producer is offline, fallback producers become eligible in exclusive 2-second windows:
 
-| Time in slot | Eligible producers |
-|--------------|-------------------|
-| 0-1 seconds | Rank 0 only (primary) |
-| 1-2 seconds | Rank 0-1 |
-| 2-3 seconds | Rank 0-2 |
-| 3-4 seconds | Rank 0-3 |
-| ... | ... |
-| 9-10 seconds | Rank 0-9 (all 10 ranks) |
+| Time in slot | Eligible rank |
+|--------------|---------------|
+| 0-2 seconds | Rank 0 only (primary) |
+| 2-4 seconds | Rank 1 (first fallback) |
+| 4-6 seconds | Rank 2 (second fallback) |
+| 6-8 seconds | Rank 3 (third fallback) |
+| 8-10 seconds | Rank 4 (fourth fallback) |
 
-**Fallback calculation:** Fallback producers at ranks 1-9 are selected by offsetting the primary ticket:
-`offset = total_bonds * rank / 10`
+5 ranks x 2,000ms = 10,000ms — fills the entire slot.
 
-Lower rank always wins if multiple valid blocks exist. Producers verify block existence before and after VDF computation to prevent duplicates.
+**Fallback calculation:** Fallback producers at ranks 1-4 are selected by offsetting the primary ticket:
+`offset = total_bonds * rank / MAX_FALLBACK_RANKS`
+
+Only one rank is eligible at any given time. Producers verify block existence before and after VDF computation to prevent duplicates.
 
 ---
 
@@ -295,13 +296,13 @@ Block produced by Alice at height 1000:
 
 ```
 ROI per block = reward / bond_unit
-ROI per block = 1 DOLI / 100 DOLI = 1%
+ROI per block = 1 DOLI / 10 DOLI = 10%
 
 Blocks per year (with 1 bond, 1000 total bonds):
 = 3,153,600 slots × (1/1000) = 3,153.6 blocks
 
 Annual return = 3,153.6 × 1 DOLI = 3,153.6 DOLI
-Annual ROI = 3,153.6 / 100 = 3,153.6%
+Annual ROI = 3,153.6 / 10 = 31,536%
 ```
 
 **Note:** ROI decreases as more producers join and rewards halve. This example assumes 1000 total bonds across all producers.
@@ -316,17 +317,17 @@ Producers also earn transaction fees from included transactions.
 
 ### 6.1. Bond Stacking
 
-You can hold multiple bonds (up to 100), each with its own vesting schedule:
-- Each bond = 100 DOLI = 1 ticket per cycle
-- Maximum: 100 bonds = 10,000 DOLI
+You can hold multiple bonds (up to 10,000), each with its own vesting schedule:
+- Each bond = 10 DOLI = 1 ticket per cycle
+- Maximum: 10,000 bonds = 100,000 DOLI
 - Bonds vest individually based on their creation time
 
 ### 6.2. Adding Bonds
 
-Increase your stake (up to 100 bonds / 10,000 DOLI):
+Increase your stake (up to 10,000 bonds / 100,000 DOLI):
 
 ```bash
-# Add 2 more bonds (200 DOLI)
+# Add 2 more bonds (20 DOLI)
 ./target/release/doli producer add-bond --count 2
 ```
 
@@ -335,7 +336,7 @@ Increase your stake (up to 100 bonds / 10,000 DOLI):
 Start the withdrawal process (7-day delay). **Withdrawals follow FIFO order** - oldest bonds are withdrawn first:
 
 ```bash
-# Request withdrawal of 1 bond (100 DOLI, oldest bond)
+# Request withdrawal of 1 bond (10 DOLI, oldest bond)
 ./target/release/doli producer request-withdrawal --count 1
 ```
 
@@ -371,9 +372,9 @@ Full exit from producer set:
 | Year 3+ | 0% (fully vested) |
 
 **Example:** If you have 3 bonds created at different times:
-- Bond 1 (created 3 years ago): 0% penalty, receive 100 DOLI
-- Bond 2 (created 18 months ago): 50% penalty, receive 50 DOLI
-- Bond 3 (created 6 months ago): 75% penalty, receive 25 DOLI
+- Bond 1 (created 3 years ago): 0% penalty, receive 10 DOLI
+- Bond 2 (created 18 months ago): 50% penalty, receive 5 DOLI
+- Bond 3 (created 6 months ago): 75% penalty, receive 2.5 DOLI
 
 FIFO withdrawal means oldest bonds (typically with lower penalties) are withdrawn first.
 
@@ -561,8 +562,8 @@ Updates have a 7-day veto period:
 
 | Metric | Value |
 |--------|-------|
-| Bond unit | 100 DOLI |
-| Maximum bonds | 100 per producer (10,000 DOLI) |
+| Bond unit | 10 DOLI |
+| Maximum bonds | 10,000 per producer (100,000 DOLI) |
 | Block reward (Era 1) | 1 DOLI |
 | Blocks per year (1 bond, 1000 total) | ~3,154 |
 | Annual rewards (1 bond, 1000 total) | ~3,154 DOLI |

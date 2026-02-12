@@ -91,7 +91,7 @@ DOLI is built on three fundamental security principles:
 
 **51% Attack:**
 - Requires controlling >50% of total bond tickets
-- Each bond requires 1,000 DOLI locked for 4 years
+- Each bond requires 10 DOLI locked for 4 years
 - Cannot accelerate through hardware (VDF is sequential)
 
 **Grinding Attack:**
@@ -124,8 +124,8 @@ Confirmations    Reorganization probability
 
 | Parameter | Value |
 |-----------|-------|
-| Minimum bond | 1,000 DOLI |
-| Maximum bonds per producer | 100 |
+| Minimum bond | 10 DOLI |
+| Maximum bonds per producer | 10,000 |
 | Lock period | 4 years |
 | Unbonding period | 7 days |
 | Withdrawal delay | 7 days |

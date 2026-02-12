@@ -6,11 +6,11 @@ Complete technical documentation for launching DOLI mainnet.
 
 | Component | Location | Configurable? |
 |-----------|----------|---------------|
-| Genesis producers (5) | Chainspec JSON | Yes - `--chainspec` flag |
+| Genesis producers | Self-register during genesis phase | No chainspec keys |
 | Maintainer keys (5) | Binary | No - recompile required |
 
-- **Genesis producers**: FREE, no bond, pubkeys in chainspec
-- **Regular producers**: 1000 DOLI bond, `doli producer register`
+- **Genesis producers**: FREE, no bond, self-register during 7-day genesis phase
+- **Regular producers**: 10 DOLI bond, `doli producer register`
 - **Maintainer keys**: Hardcoded in `crates/updater/src/lib.rs` for security
 
 ---
@@ -43,17 +43,9 @@ Complete technical documentation for launching DOLI mainnet.
 
 ### Chainspec Verification
 
-- [ ] Chainspec generated from wallet files using `generate_chainspec.sh` (NOT manually!)
-- [ ] Chainspec contains 5 genesis producers
-- [ ] Chainspec pubkeys match wallet file pubkeys (automatic if using script)
-- [ ] No placeholder keys (starting with `00000000`) in chainspec
-- [ ] Chainspec copied to `resources/chainspec/mainnet.json`
-
-```bash
-# Verify chainspec
-./scripts/generate_chainspec.sh mainnet ~/.doli/mainnet/producer_keys /dev/stdout | jq '.genesis_producers | length'
-# Expected: 5
-```
+- [ ] Chainspec at `resources/chainspec/mainnet.json` has `genesis_producers: []`
+- [ ] Genesis timestamp and consensus parameters are correct
+- [ ] Producers self-register during the 7-day genesis phase (no pre-generated keys)
 
 ### Parameter Verification
 
@@ -67,8 +59,8 @@ Complete technical documentation for launching DOLI mainnet.
 
 - [ ] DNS records `seed1.doli.network` and `seed2.doli.network` point to seed server IP
 - [ ] Firewall allows port 30303 (P2P) and 8545 (RPC)
-- [ ] 5 producer servers ready with wallet files
-- [ ] Binary AND chainspec deployed to all 5 servers
+- [ ] Producer servers ready with wallet files
+- [ ] Binary deployed to all servers
 
 ---
 
@@ -155,8 +147,8 @@ doli info -w maintainer.json  # Shows public key
 
 | Type | Bond | How |
 |------|------|-----|
-| Genesis producer | None | Pubkey in chainspec |
-| Regular producer | 1000 DOLI | `doli producer register` |
+| Genesis producer | None | Self-register during 7-day genesis phase |
+| Regular producer | 10 DOLI | `doli producer register` |
 
 ### Regular Producer (Joining After Genesis)
 
@@ -194,7 +186,7 @@ doli-node --network mainnet --chainspec mainnet.json run \
 | Slot Duration | 10 seconds | `consensus.rs:SLOT_DURATION` |
 | Epoch Length | 360 blocks (1 hour) | `consensus.rs:SLOTS_PER_EPOCH` |
 | Reward Epoch | 360 blocks (1 hour) | `consensus.rs:SLOTS_PER_REWARD_EPOCH` |
-| Bond Amount | 1000 DOLI | `network.rs:initial_bond()` |
+| Bond Amount | 10 DOLI | `consensus.rs:BOND_UNIT` |
 | Total Supply | 100,000,000 DOLI | `consensus.rs:TOTAL_SUPPLY` |
 
 ### Genesis Configuration
@@ -203,7 +195,8 @@ doli-node --network mainnet --chainspec mainnet.json run \
 |-----------|-------|
 | Timestamp | 2026-02-01T00:00:00Z (Unix: 1769904000) |
 | Message | "Time is the only fair currency. 01/Feb/2026" |
-| Genesis Producers | 5 (registered at height 0) |
+| Genesis Producers | None in chainspec — producers self-register during 7-day genesis phase |
+| Genesis Blocks | 60,480 (7 days of open registration) |
 
 ### Network Ports
 
@@ -220,8 +213,8 @@ doli-node --network mainnet --chainspec mainnet.json run \
 ### Required DNS Records
 
 ```
-seed1.doli.network    A       <seed_server_ip>
-seed2.doli.network    A       <seed_server_ip>
+seed1.doli.network    A       72.60.228.233
+seed2.doli.network    A       72.60.228.233
 ```
 
 ### Seed Server Requirements
@@ -318,10 +311,10 @@ curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 # Expected: height > 0, network = "mainnet"
 
-# 2. Verify 5 producers registered
+# 2. Verify producers registered
 curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
-# Expected: 5 producers with registrationHeight = 0
+# Expected: producers self-registered during genesis phase
 
 # 3. Check all nodes producing
 for i in 1 2 3 4 5; do
@@ -522,7 +515,7 @@ pub const SLOTS_PER_EPOCH: u32 = 360;       // 1 hour
 
 // Economics
 pub const INITIAL_REWARD: u64 = 100_000_000;  // 1 DOLI per block
-pub const BOND_UNIT: u64 = 100_000_000_000;   // 1000 DOLI per bond
+pub const BOND_UNIT: u64 = 1_000_000_000;     // 10 DOLI per bond
 pub const TOTAL_SUPPLY: u64 = 100_000_000 * DOLI; // 100M DOLI
 
 // Governance

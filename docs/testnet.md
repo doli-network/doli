@@ -92,7 +92,7 @@ To earn block rewards, you need to register as a producer with bonds:
 # Check your wallet balance
 doli balance -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
 
-# Register with 1 bond (1,000 tDOLI)
+# Register with 1 bond (10 tDOLI)
 doli producer register --bonds 1 -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
 
 # Check registration status
