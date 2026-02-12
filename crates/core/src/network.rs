@@ -894,13 +894,14 @@ mod tests {
 
     #[test]
     fn test_genesis_blocks_mainnet_testnet() {
-        // Mainnet and testnet have no genesis phase (pre-registered producers)
-        assert_eq!(Network::Mainnet.genesis_blocks(), 0);
-        assert_eq!(Network::Testnet.genesis_blocks(), 0);
+        // Mainnet has 7-day genesis phase (60,480 blocks at 10s slots)
+        assert_eq!(Network::Mainnet.genesis_blocks(), 60_480);
+        assert!(Network::Mainnet.is_in_genesis(1));
+        assert!(Network::Mainnet.is_in_genesis(60_480));
+        assert!(!Network::Mainnet.is_in_genesis(60_481));
 
-        // No height is in genesis for these networks
-        assert!(!Network::Mainnet.is_in_genesis(0));
-        assert!(!Network::Mainnet.is_in_genesis(1));
+        // Testnet has no genesis phase (pre-registered producers)
+        assert_eq!(Network::Testnet.genesis_blocks(), 0);
         assert!(!Network::Testnet.is_in_genesis(0));
         assert!(!Network::Testnet.is_in_genesis(1));
     }
