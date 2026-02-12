@@ -2968,11 +2968,6 @@ impl Node {
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
 
-        info!(
-            "[TRACE_A] slot={} height={} in_genesis={} active_producers={} total={}",
-            current_slot, height, in_genesis, active_with_weights.len(), total_producers
-        );
-
         let our_pk = producer_key.public_key();
         let _we_are_active = active_with_weights.iter().any(|(pk, _)| pk == our_pk);
 
@@ -3019,15 +3014,6 @@ impl Node {
                     return Ok(());
                 }
                 Network::Mainnet | Network::Testnet | Network::Devnet => {
-                    let has_bootstrap_nodes = !self.config.bootstrap_nodes.is_empty();
-                    info!(
-                        "[TRACE_B] Entering bootstrap: has_bootstrap={} last_producer_change={:?} known_producers={} peer_count={}",
-                        has_bootstrap_nodes,
-                        self.last_producer_list_change.map(|t| t.elapsed().as_secs()),
-                        self.known_producers.read().await.len(),
-                        self.sync_manager.read().await.peer_count(),
-                    );
-
                     // PRODUCER LIST STABILITY CHECK: Don't produce until the producer list
                     // has been stable for N seconds. This ensures anti-entropy has converged
                     // and all nodes have discovered all producers before production begins.
@@ -3134,7 +3120,10 @@ impl Node {
                             .map(|t| t.elapsed().as_secs() >= bootstrap_timeout_secs)
                             .unwrap_or(false);
 
-                        if height < BOOTSTRAP_MIN_HEIGHT && !past_bootstrap_timeout {
+                        if height < BOOTSTRAP_MIN_HEIGHT
+                            && best_peer_height > 0
+                            && !past_bootstrap_timeout
+                        {
                             debug!(
                                 "Joining node at height {}: waiting for seed to establish chain (min_height={}, peer_count={}, best_peer_height={})",
                                 height, BOOTSTRAP_MIN_HEIGHT, peer_count, best_peer_height
@@ -3381,14 +3370,6 @@ impl Node {
             }
             (eligible, None)
         };
-
-        info!(
-            "[BOOTSTRAP_TRACE] slot={} eligible={} bootstrap_rank={:?} in_genesis={}",
-            current_slot,
-            eligible.len(),
-            our_bootstrap_rank,
-            in_genesis,
-        );
 
         if eligible.is_empty() {
             return Ok(());
