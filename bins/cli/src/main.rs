@@ -1930,6 +1930,11 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
                             };
                             println!("  {}. {}", i + 1, short);
                         }
+                        println!();
+                        println!(
+                            "These maintainers also verify release signatures for auto-updates."
+                        );
+                        println!("Derived from the first 5 registered producers on-chain.");
                     } else {
                         println!("No maintainers found (or unsupported response format).");
                     }

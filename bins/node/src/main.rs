@@ -728,12 +728,32 @@ async fn run_node(
         }
     };
 
+    // Create closure to derive maintainer keys from on-chain producer set
+    // (first 5 registered producers, sorted by registration height)
+    let producers_for_maintainers = producer_set.clone();
+    let maintainer_keys_fn = move || -> Vec<String> {
+        use doli_core::maintainer::INITIAL_MAINTAINER_COUNT;
+        producers_for_maintainers
+            .try_read()
+            .map(|set| {
+                let mut sorted: Vec<_> = set.all_producers().into_iter().cloned().collect();
+                sorted.sort_by_key(|p| p.registered_at);
+                sorted
+                    .into_iter()
+                    .take(INITIAL_MAINTAINER_COUNT)
+                    .map(|p| p.public_key.to_hex())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
     // Spawn update service with real producer registry
     let (vote_tx, pending_update) = updater::spawn_update_service(
         update_config,
         data_dir.clone(),
         producer_count_fn,
         is_producer_fn,
+        maintainer_keys_fn,
     );
 
     // Create shared shutdown flag for graceful shutdown signaling
@@ -1234,7 +1254,7 @@ async fn handle_maintainer_command(
 ) -> Result<()> {
     use doli_core::maintainer::{
         MaintainerChangeData, MaintainerSignature, INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD,
-        MAX_MAINTAINERS, MIN_MAINTAINERS,
+        MAX_MAINTAINERS,
     };
 
     match action {
@@ -1243,37 +1263,69 @@ async fn handle_maintainer_command(
             println!("╔══════════════════════════════════════════════════════════════════╗");
             println!("║                    MAINTAINER SET                                ║");
             println!("╠══════════════════════════════════════════════════════════════════╣");
+            println!("║                                                                  ║");
+            println!(
+                "║  Threshold: {} of {} signatures required                        ║",
+                MAINTAINER_THRESHOLD, MAX_MAINTAINERS
+            );
+            println!("║                                                                  ║");
 
-            // Load maintainer set from storage or derive from chain
-            // For now, show the expected structure
+            // Try to derive on-chain maintainers from producer set
             let producers_path = data_dir.join("producers.bin");
             if producers_path.exists() {
-                // In a full implementation, we would derive the maintainer set
-                // from the blockchain by scanning registration transactions
-                println!("║                                                                  ║");
-                println!(
-                    "║  Maintainer set derived from first {} registrations            ║",
-                    INITIAL_MAINTAINER_COUNT
-                );
-                println!(
-                    "║  Threshold: {} of {} signatures required                        ║",
-                    MAINTAINER_THRESHOLD, MAX_MAINTAINERS
-                );
-                println!(
-                    "║  Min maintainers: {}                                             ║",
-                    MIN_MAINTAINERS
-                );
-                println!(
-                    "║  Max maintainers: {}                                             ║",
-                    MAX_MAINTAINERS
-                );
-                println!("║                                                                  ║");
-                println!("║  Note: Full maintainer list requires blockchain scan.           ║");
-                println!("║  Use RPC 'getMaintainerSet' for complete information.           ║");
+                match storage::ProducerSet::load(&producers_path) {
+                    Ok(set) => {
+                        let mut sorted: Vec<_> = set.all_producers().into_iter().cloned().collect();
+                        sorted.sort_by_key(|p| p.registered_at);
+                        let maintainers: Vec<_> =
+                            sorted.into_iter().take(INITIAL_MAINTAINER_COUNT).collect();
+
+                        if !maintainers.is_empty() {
+                            println!(
+                                "║  On-chain maintainers (from first {} registrations):      ║",
+                                INITIAL_MAINTAINER_COUNT
+                            );
+                            println!(
+                                "║  These keys are used for release signature verification.   ║"
+                            );
+                            println!("║                                                                  ║");
+                            for (i, p) in maintainers.iter().enumerate() {
+                                let hex = p.public_key.to_hex();
+                                println!(
+                                    "║  {}. {}...{} (reg height: {})      ║",
+                                    i + 1,
+                                    &hex[..16],
+                                    &hex[hex.len() - 8..],
+                                    p.registered_at
+                                );
+                            }
+                        } else {
+                            println!(
+                                "║  No producers registered yet. Using bootstrap keys.        ║"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        println!("║  Could not load producer data. Using bootstrap keys.        ║");
+                    }
+                }
             } else {
-                println!("║                                                                  ║");
-                println!("║  No producer data found. Start the node to sync.                ║");
+                println!("║  No producer data found. Using bootstrap keys.                ║");
             }
+
+            // Always show bootstrap keys as reference
+            println!("║                                                                  ║");
+            println!("║  Bootstrap keys (fallback before chain sync):                  ║");
+            for (i, key) in updater::BOOTSTRAP_MAINTAINER_KEYS.iter().enumerate() {
+                println!(
+                    "║  {}. {}...{}                          ║",
+                    i + 1,
+                    &key[..16],
+                    &key[key.len() - 8..]
+                );
+            }
+            println!("║                                                                  ║");
+            println!("║  Use RPC 'getMaintainerSet' for live on-chain status.          ║");
             println!("║                                                                  ║");
             println!("╚══════════════════════════════════════════════════════════════════╝");
         }

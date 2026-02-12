@@ -1304,9 +1304,20 @@ signature = {
 
 ### 9.2 Verification
 
+Maintainer keys for signature verification are derived from on-chain state:
+the first 5 registered producers (sorted by registration height) form the
+maintainer set. If on-chain state is unavailable (pre-sync, CLI), bootstrap
+keys hardcoded in `BOOTSTRAP_MAINTAINER_KEYS` are used as fallback.
+
 ```
+// Key selection
+if on_chain_keys is non-empty:
+    allowed_keys = on_chain_keys    // First 5 registered producers
+else:
+    allowed_keys = BOOTSTRAP_MAINTAINER_KEYS
+
 message = version + ":" + binary_sha256
-valid_sigs = count(verify(message, sig, maintainer_key) for sig in signatures)
+valid_sigs = count(verify(message, sig, key) for sig in signatures where key in allowed_keys)
 release_valid = valid_sigs >= 3
 ```
 

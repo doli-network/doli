@@ -438,7 +438,7 @@ impl Node {
         if self.config.network == Network::Mainnet && is_using_placeholder_keys() {
             error!("CRITICAL: Placeholder maintainer keys detected!");
             error!("This node is NOT suitable for mainnet operation.");
-            error!("Replace MAINTAINER_KEYS in doli-updater/src/lib.rs with real Ed25519 keys.");
+            error!("Replace BOOTSTRAP_MAINTAINER_KEYS in doli-updater/src/lib.rs with real Ed25519 keys.");
             return Err(anyhow::anyhow!(
                 "Cannot start mainnet node with placeholder maintainer keys"
             ));
