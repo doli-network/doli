@@ -222,7 +222,7 @@ impl NetworkService {
             behaviour,
             local_peer_id,
             libp2p::swarm::Config::with_tokio_executor()
-                .with_idle_connection_timeout(Duration::from_secs(60)),
+                .with_idle_connection_timeout(Duration::from_secs(86400)),
         );
 
         // Listen on configured address
