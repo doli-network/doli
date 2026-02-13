@@ -3,6 +3,7 @@
 //! Manages the libp2p swarm and provides high-level network operations.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ use crate::gossip::{
     TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
+use crate::peer_cache::PeerCache;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
 use crate::transport::build_transport;
 use crypto::PublicKey;
@@ -248,19 +250,49 @@ impl NetworkService {
 
         info!("Network service listening on {}", listen_addr);
 
+        // Load cached peers and dial them before bootstrap
+        let mut dialed_cached = false;
+        if let Some(ref cache_path) = config.peer_cache_path {
+            if let Some(cache) = PeerCache::load(cache_path) {
+                let addrs = cache.addresses();
+                if !addrs.is_empty() {
+                    info!(
+                        "Dialing {} cached peers from {}",
+                        addrs.len(),
+                        cache_path.display()
+                    );
+                    for addr in addrs {
+                        let _ = swarm.dial(addr);
+                    }
+                    dialed_cached = true;
+                }
+            }
+        }
+
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
         let event_tx_clone = event_tx.clone();
         let config_clone = config.clone();
+        let peer_cache_path = config.peer_cache_path.clone();
 
         tokio::spawn(async move {
-            run_swarm(swarm, command_rx, event_tx_clone, peers_clone, config_clone).await;
+            run_swarm(
+                swarm,
+                command_rx,
+                event_tx_clone,
+                peers_clone,
+                config_clone,
+                peer_cache_path,
+            )
+            .await;
         });
 
-        // Connect to bootstrap nodes
-        for addr in &config.bootstrap_nodes {
-            if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
-                let _ = command_tx.send(NetworkCommand::Connect(multiaddr)).await;
+        // Connect to bootstrap nodes (skip if we already dialed cached peers)
+        if !dialed_cached {
+            for addr in &config.bootstrap_nodes {
+                if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
+                    let _ = command_tx.send(NetworkCommand::Connect(multiaddr)).await;
+                }
             }
         }
 
@@ -490,12 +522,13 @@ async fn run_swarm(
     event_tx: mpsc::Sender<NetworkEvent>,
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: NetworkConfig,
+    peer_cache_path: Option<PathBuf>,
 ) {
     loop {
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path).await;
             }
 
             // Handle commands
@@ -513,6 +546,7 @@ async fn handle_swarm_event(
     event_tx: &mpsc::Sender<NetworkEvent>,
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
+    peer_cache_path: &Option<PathBuf>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -559,7 +593,15 @@ async fn handle_swarm_event(
         }
 
         SwarmEvent::Behaviour(behaviour_event) => {
-            handle_behaviour_event(behaviour_event, swarm, event_tx, peers, config).await;
+            handle_behaviour_event(
+                behaviour_event,
+                swarm,
+                event_tx,
+                peers,
+                config,
+                peer_cache_path,
+            )
+            .await;
         }
 
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -581,6 +623,7 @@ async fn handle_behaviour_event(
     event_tx: &mpsc::Sender<NetworkEvent>,
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
+    peer_cache_path: &Option<PathBuf>,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -712,6 +755,17 @@ async fn handle_behaviour_event(
                 "Received identify info from {}: {:?}",
                 peer_id, info.agent_version
             );
+
+            // Cache the peer's listen addresses for fast reconnection after restart
+            if let Some(ref path) = peer_cache_path {
+                if let Some(addr) = info.listen_addrs.first() {
+                    // Build a full multiaddr with the peer ID appended
+                    let full_addr = format!("{}/p2p/{}", addr, peer_id);
+                    let mut cache = PeerCache::load(path).unwrap_or_default();
+                    cache.add(&peer_id.to_string(), &full_addr);
+                    cache.save(path);
+                }
+            }
 
             // Add the peer's listen addresses to kademlia (unless DHT is disabled)
             if !config.no_dht {
