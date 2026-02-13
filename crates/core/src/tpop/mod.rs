@@ -3,7 +3,7 @@
 //! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
 //!
 //! Producer selection is determined by `consensus::select_producer_for_slot()` using
-//! bond-based round-robin. Block VDF (T_BLOCK = 10M iterations) provides anti-grinding.
+//! bond-based round-robin. Block VDF (T_BLOCK = 800K iterations, ~55ms) provides anti-grinding.
 //!
 //! This module provides network health monitoring via heartbeat proofs.
 //!
@@ -20,7 +20,7 @@
 //! │  └─────────────┘    └─────────────┘    └─────────────┘        │
 //! │                                                                 │
 //! │  Note: Actual block production uses bond-based selection       │
-//! │  and block VDF (10M iterations) for anti-grinding.             │
+//! │  and block VDF (800K iterations, ~55ms) for anti-grinding.     │
 //! │                                                                 │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
@@ -30,7 +30,7 @@
 //! TPoP uses 1-second micro-VDFs for heartbeat proofs (separate from block VDF):
 //!
 //! 1. **Heartbeat proofs** - 1s micro-VDF proves continuous presence
-//! 2. **Block VDF** - 10M iterations (~7s) provides anti-grinding
+//! 2. **Block VDF** - 800K iterations (~55ms) provides anti-grinding
 //! 3. **Registration VDF** - Long VDF for anti-Sybil protection
 //!
 //! ## Resource Efficiency
