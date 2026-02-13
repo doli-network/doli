@@ -22,3 +22,4 @@ prost.workspace = true
 
 [dev-dependencies]
 vdf = { workspace = true }
+tempfile = { workspace = true }

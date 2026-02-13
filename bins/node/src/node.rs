@@ -555,6 +555,7 @@ impl Node {
         network_config.max_peers = self.config.max_peers;
         network_config.no_dht = self.config.no_dht;
         network_config.node_key_path = Some(self.config.data_dir.join("node.key"));
+        network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
         // Gossip mesh params from NetworkParams (env vars / .env / chainspec / defaults)
         let net_params = self.config.network.params();

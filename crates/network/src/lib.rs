@@ -73,6 +73,7 @@ pub mod gossip;
 pub mod messages;
 pub mod nat;
 pub mod peer;
+pub mod peer_cache;
 pub mod protocols;
 pub mod rate_limit;
 pub mod scoring;
