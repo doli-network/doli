@@ -1481,6 +1481,9 @@ impl SyncManager {
                         "Genesis fallback: {} consecutive empty headers, syncing from genesis",
                         self.consecutive_empty_headers
                     );
+                    // Reset header downloader so it accepts headers from genesis
+                    // (otherwise expected_prev_hash would be local_hash, not genesis)
+                    self.header_downloader.clear();
                     self.genesis_hash
                 } else {
                     self.local_hash
