@@ -213,8 +213,16 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
+        // Build connection limits (1 connection per peer, max_peers total)
+        let limits = libp2p::connection_limits::ConnectionLimits::default()
+            .with_max_established_per_peer(Some(1))
+            .with_max_established_incoming(Some(config.max_peers as u32))
+            .with_max_established_outgoing(Some(config.max_peers as u32));
+        let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
+
         // Build behaviour
-        let behaviour = DoliBehaviour::new(gossipsub, kademlia, keypair.public());
+        let behaviour =
+            DoliBehaviour::new(gossipsub, kademlia, keypair.public(), connection_limits);
 
         // Build swarm
         let mut swarm = Swarm::new(
@@ -508,27 +516,46 @@ async fn handle_swarm_event(
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
-            peer_id, endpoint, ..
+            peer_id,
+            endpoint,
+            num_established,
+            ..
         } => {
-            info!("Connected to peer: {} via {:?}", peer_id, endpoint);
+            info!(
+                "Connected to peer: {} via {:?} (num_established={})",
+                peer_id, endpoint, num_established
+            );
 
-            // Add peer
-            let mut peers = peers.write().await;
-            if peers.len() < config.max_peers {
-                let addr = endpoint.get_remote_address().to_string();
-                peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
+            // Only register peer on first connection (dedup)
+            if num_established.get() == 1 {
+                let mut peers = peers.write().await;
+                if peers.len() < config.max_peers {
+                    let addr = endpoint.get_remote_address().to_string();
+                    peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
 
-                let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                    let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                }
             }
         }
 
-        SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-            info!("Disconnected from peer: {} cause: {:?}", peer_id, cause);
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            cause,
+            num_established,
+            ..
+        } => {
+            info!(
+                "Connection closed to peer: {} cause: {:?} (num_established={})",
+                peer_id, cause, num_established
+            );
 
-            let mut peers = peers.write().await;
-            peers.remove(&peer_id);
+            // Only remove peer when no connections remain
+            if num_established == 0 {
+                let mut peers = peers.write().await;
+                peers.remove(&peer_id);
 
-            let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
+                let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
+            }
         }
 
         SwarmEvent::Behaviour(behaviour_event) => {
@@ -882,7 +909,18 @@ async fn handle_command(
         }
 
         NetworkCommand::Connect(addr) => {
-            if let Err(e) = swarm.dial(addr.clone()) {
+            // Skip dial if we're already connected to this peer (defense-in-depth)
+            let already_connected = addr
+                .iter()
+                .find_map(|proto| match proto {
+                    libp2p::multiaddr::Protocol::P2p(peer_id) => Some(peer_id),
+                    _ => None,
+                })
+                .is_some_and(|peer_id| swarm.is_connected(&peer_id));
+
+            if already_connected {
+                debug!("Skipping dial to {} — already connected", addr);
+            } else if let Err(e) = swarm.dial(addr.clone()) {
                 warn!("Failed to dial {}: {}", addr, e);
             }
         }
