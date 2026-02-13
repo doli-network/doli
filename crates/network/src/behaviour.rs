@@ -3,6 +3,7 @@
 //! Combines all libp2p behaviours into a single network behaviour.
 
 use libp2p::{
+    connection_limits,
     gossipsub::{self, Behaviour as Gossipsub},
     identify::{self, Behaviour as Identify},
     kad::{self, store::MemoryStore, Behaviour as Kademlia},
@@ -23,6 +24,9 @@ pub const USER_AGENT: &str = concat!("doli-node/", env!("CARGO_PKG_VERSION"));
 /// Composite network behaviour for DOLI
 #[derive(NetworkBehaviour)]
 pub struct DoliBehaviour {
+    /// Connection limits (checked before other behaviours)
+    pub connection_limits: connection_limits::Behaviour,
+
     /// GossipSub for block and transaction propagation
     pub gossipsub: Gossipsub,
 
@@ -45,6 +49,7 @@ impl DoliBehaviour {
         gossipsub: Gossipsub,
         kademlia: Kademlia<MemoryStore>,
         local_public_key: libp2p::identity::PublicKey,
+        connection_limits: connection_limits::Behaviour,
     ) -> Self {
         // Identify behaviour configuration
         let identify = Identify::new(
@@ -71,6 +76,7 @@ impl DoliBehaviour {
         );
 
         Self {
+            connection_limits,
             gossipsub,
             kademlia,
             identify,
