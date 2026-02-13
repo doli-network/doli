@@ -159,13 +159,13 @@ Input: prev_hash || slot || producer_key
     │ BLAKE3  │ ◄──┐
     └────┬────┘    │
          │         │
-         └─────────┘  × 10,000,000 iterations
+         └─────────┘  × 800,000 iterations
          │
          ▼
       Output (hash chain result)
 ```
 
-**Verification:** Nodes verify by recomputing the hash chain. Since the computation is inherently sequential, verification requires the same work as computation. This is acceptable because the block VDF (~700ms) is short.
+**Verification:** Nodes verify by recomputing the hash chain. Since the computation is inherently sequential, verification requires the same work as computation. This is acceptable because the block VDF (~55ms) is short.
 
 The block VDF uses iterated BLAKE3 hashing (hash chain). This construction is simple, well-studied, and sufficient for the "heartbeat" proof of presence required per block.
 
@@ -194,17 +194,17 @@ An epoch is 360 slots (1 hour). At epoch boundaries, the active producer set upd
 
 ### 4.3. Dynamic Calibration
 
-To maintain consistent timing (~700ms) regardless of hardware, iterations adjust dynamically:
+To maintain consistent timing (~55ms) regardless of hardware, iterations adjust dynamically:
 
 ```
-TARGET_TIME    = 700ms
+TARGET_TIME    = 55ms
 TOLERANCE      = 10%
 MAX_ADJUSTMENT = 20% per cycle
 ```
 
 If measured VDF time deviates more than 10%, iterations adjust by up to 20% per cycle. This allows heterogeneous hardware to participate while maintaining consistent block times.
 
-With 10-second slots, the VDF takes ~700ms, leaving ~9 seconds for block construction and propagation.
+With 10-second slots, the VDF takes ~55ms, leaving the remainder for block construction and propagation.
 
 Every consensus system enforces a scarce resource. In DOLI, this resource is sequential time—analogous to energy in Proof of Work or capital in Proof of Stake. Nodes that cannot reliably supply sequential time and availability cannot earn rewards, just as offline miners or inactive validators cannot in existing systems.
 
@@ -280,21 +280,21 @@ Where `D_E` is the smoothed demand based on recent registrations. When demand is
 
 ### 6.2. Activation Bond
 
-Every producer registration must lock an activation bond: coins immobilized for a fixed period.
+Every producer registration must lock an activation bond of 10 DOLI (1 bond unit). The bond unit is fixed and does not change across eras.
 
 ```
-B(H) = B_initial × 0.7^era(H)
+BOND_UNIT = 10 DOLI (fixed across all eras)
 ```
 
-| Era | Years | Bond  | Reward  | Blocks equivalent |
-|-----|-------|-------|---------|-------------------|
-| 1   | 0-4   | 1,000 | 1.0     | 1,000             |
-| 2   | 4-8   | 700   | 0.5     | 1,400             |
-| 3   | 8-12  | 490   | 0.25    | 1,960             |
-| 4   | 12-16 | 343   | 0.125   | 2,744             |
-| 5   | 16-20 | 240   | 0.0625  | 3,840             |
+Block rewards halve each era (~4 years), making early participation more rewarding:
 
-The bond decays 30% per era while reward decays 50%. This makes joining as a producer progressively more expensive in relative terms.
+| Era | Years | Bond    | Reward  | Blocks to recover bond |
+|-----|-------|---------|---------|------------------------|
+| 1   | 0-4   | 10 DOLI | 1.0     | 10                     |
+| 2   | 4-8   | 10 DOLI | 0.5     | 20                     |
+| 3   | 8-12  | 10 DOLI | 0.25    | 40                     |
+| 4   | 12-16 | 10 DOLI | 0.125   | 80                     |
+| 5   | 16-20 | 10 DOLI | 0.0625  | 160                    |
 
 ### 6.3. Bond Stacking
 
@@ -340,16 +340,18 @@ T_commitment = 12,614,400 blocks (~4 years)
 T_unbonding  = 60,480 blocks (~7 days)
 ```
 
-After 4 years, the producer can exit without penalty or renew with a reduced bond at the current era rate.
+After 4 years, the producer can exit without penalty.
 
-Early exit incurs a proportional penalty:
+Early exit incurs a tiered penalty based on bond age:
 
-```
-penalty_pct = (time_remaining × 100) / T_commitment
-return = bond × (100 - penalty_pct) / 100
-```
+| Bond Age  | Penalty | Returned |
+|-----------|---------|----------|
+| < 1 year  | 75%     | 25%      |
+| 1-2 years | 50%     | 50%      |
+| 2-3 years | 25%     | 75%      |
+| 3+ years  | 0%      | 100%     |
 
-Early exit penalties recycle to the reward pool. Slashing penalties are burned.
+All penalties (early exit and slashing) are burned permanently, removing coins from circulation.
 
 ---
 
@@ -376,17 +378,17 @@ def select_producer(slot, active_producers):
 
 ### 7.1. Fallback Mechanism
 
-To avoid empty slots when the primary producer is offline:
+To avoid empty slots when the primary producer is offline, 5 fallback ranks activate in sequential 2-second windows:
 
 | Time in slot | Eligible producer |
 |--------------|-------------------|
-| 0s - 1s      | rank 0 only       |
-| 1s - 2s      | rank 0 or 1       |
-| 2s - 3s      | rank 0, 1, or 2   |
-| ...          | ...               |
-| 9s - 10s     | rank 0 through 9  |
+| 0s - 2s      | rank 0 only       |
+| 2s - 4s      | rank 1 only       |
+| 4s - 6s      | rank 2 only       |
+| 6s - 8s      | rank 3 only       |
+| 8s - 10s     | rank 4 only       |
 
-A block from rank *N* is valid only if `timestamp >= slot_start + N`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
+Each rank has an exclusive 2-second window. A block from rank *N* is valid only if `timestamp >= slot_start + N × 2s`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
 
 ### 7.2. Deterministic Rewards
 

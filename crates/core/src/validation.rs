@@ -2041,7 +2041,7 @@ fn check_internal_double_spend(block: &Block) -> Result<(), ValidationError> {
 /// The VDF serves as an anti-grinding mechanism to prevent producers from
 /// trying many block variations to find favorable randomness.
 ///
-/// Uses hash-chain VDF (10M SHA-256 iterations, ~700ms) which is:
+/// Uses hash-chain VDF (800K BLAKE3 iterations, ~55ms) which is:
 /// - Fast enough for block production on all networks
 /// - Self-verifying (just re-compute and compare)
 /// - Devnet: VDF disabled for rapid development
