@@ -117,7 +117,7 @@ pub struct Node {
 }
 
 /// How often to save state (every N blocks applied)
-const STATE_SAVE_INTERVAL: u64 = 10;
+const STATE_SAVE_INTERVAL: u64 = 1;
 
 impl Node {
     /// Create a new node
@@ -209,6 +209,26 @@ impl Node {
                     );
                     chain_state = ChainState::new(genesis_hash);
                 }
+            }
+        } else {
+            // Chain state at genesis — check if block store has blocks (e.g., chain_state.bin
+            // was not saved before shutdown). Recover to highest stored block.
+            let mut recovered_height = 0u64;
+            for h in 1..=1000 {
+                if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                    chain_state.best_hash = block.hash();
+                    chain_state.best_height = h;
+                    chain_state.best_slot = block.header.slot;
+                    recovered_height = h;
+                } else {
+                    break;
+                }
+            }
+            if recovered_height > 0 {
+                warn!(
+                    "Recovered chain state from block store: height {} (chain_state.bin was missing/stale)",
+                    recovered_height
+                );
             }
         }
 
