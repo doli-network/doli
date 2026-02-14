@@ -240,6 +240,27 @@ impl ProducerGSet {
         producers
     }
 
+    /// Get sorted producers filtered by announcement freshness.
+    ///
+    /// Only includes producers whose announcement timestamp is within
+    /// `max_age_secs` of the current time. This prevents ghost producers
+    /// (announced once but now offline) from inflating the round-robin denominator.
+    #[must_use]
+    pub fn active_producers(&self, max_age_secs: u64) -> Vec<PublicKey> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut producers: Vec<PublicKey> = self
+            .producers
+            .iter()
+            .filter(|(_, ann)| ann.timestamp + max_age_secs >= now)
+            .map(|(pk, _)| *pk)
+            .collect();
+        producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        producers
+    }
+
     /// Export non-stale announcements from the set.
     ///
     /// Filters out announcements older than `MAX_ANNOUNCEMENT_AGE_SECS` to prevent
