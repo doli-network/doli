@@ -23,8 +23,12 @@
 
         # Common build inputs for all platforms
         commonBuildInputs = with pkgs; [
-          # GMP for rug crate (VDF big integer operations)
+          # GMP + MPFR + MPC for rug/gmp-mpfr-sys crate (VDF big integer operations)
           gmp
+          gmp.dev
+          mpfr
+          mpfr.dev
+          libmpc
 
           # RocksDB dependencies
           rocksdb
