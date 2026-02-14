@@ -1772,8 +1772,14 @@ async fn handle_upgrade_command(version: Option<String>, yes: bool) -> Result<()
         .await
         .map_err(|e| anyhow!("Installation failed: {}", e))?;
 
-    println!("Upgrade complete. Restarting...");
-    updater::restart_node();
+    println!();
+    println!(
+        "Upgrade complete: v{} -> v{}",
+        current, release_info.version
+    );
+    println!("Restart your node to use the new version.");
+
+    Ok(())
 }
 
 fn init_data_dir(data_dir: &PathBuf, network: Network) -> Result<()> {
