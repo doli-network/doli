@@ -174,6 +174,12 @@ enum Commands {
         #[command(subcommand)]
         action: DevnetCommands,
     },
+
+    /// Release signing commands (for maintainers)
+    Release {
+        #[command(subcommand)]
+        action: ReleaseCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -313,6 +319,28 @@ enum DevnetCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Sign a release with a maintainer key
+    ///
+    /// Produces a JSON signature that can be fed into publish_release.sh.
+    /// Signs "version:sha256" using Ed25519 — same format verified by nodes.
+    Sign {
+        /// Path to maintainer/producer key file (JSON wallet format)
+        #[arg(long)]
+        key: PathBuf,
+
+        /// Version tag (e.g., v0.2.0)
+        #[arg(long)]
+        version: String,
+
+        /// SHA-256 hash of the canonical binary (linux-x64-musl).
+        /// If omitted, fetches CHECKSUMS.txt from the GitHub release.
+        #[arg(long)]
+        hash: Option<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -439,6 +467,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Devnet { action }) => {
             handle_devnet_command(action).await?;
+        }
+        Some(Commands::Release { action }) => {
+            handle_release_command(action).await?;
         }
         None => {
             // Default: run the node with auto-updates enabled
@@ -1570,6 +1601,90 @@ async fn handle_devnet_command(action: DevnetCommands) -> Result<()> {
             fund_amount,
         } => {
             devnet::add_producer(count, bonds, fund_amount).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_release_command(action: ReleaseCommands) -> Result<()> {
+    match action {
+        ReleaseCommands::Sign { key, version, hash } => {
+            // Strip 'v' prefix for internal version string
+            let version_str = version.strip_prefix('v').unwrap_or(&version);
+
+            // Load maintainer key
+            let keypair = load_producer_key(&key)?;
+            let pubkey_hex = keypair.public_key().to_hex();
+            eprintln!(
+                "Signing release {} with key {}...{}",
+                version,
+                &pubkey_hex[..16],
+                &pubkey_hex[pubkey_hex.len() - 8..]
+            );
+
+            // Get the binary hash
+            let binary_sha256 = match hash {
+                Some(h) => h,
+                None => {
+                    // Fetch CHECKSUMS.txt from GitHub release
+                    let checksums_url =
+                        format!("{}/{}/CHECKSUMS.txt", updater::GITHUB_RELEASES_URL, version);
+                    eprintln!("Fetching checksums from {}...", checksums_url);
+
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(30))
+                        .user_agent("doli-node")
+                        .build()?;
+
+                    let response = client
+                        .get(&checksums_url)
+                        .send()
+                        .await
+                        .map_err(|e| anyhow!("Failed to fetch CHECKSUMS.txt: {}", e))?;
+
+                    if !response.status().is_success() {
+                        return Err(anyhow!(
+                            "Failed to fetch CHECKSUMS.txt: HTTP {}. \
+                             Pass --hash manually if the release is not yet published.",
+                            response.status()
+                        ));
+                    }
+
+                    let body = response
+                        .text()
+                        .await
+                        .map_err(|e| anyhow!("Failed to read CHECKSUMS.txt: {}", e))?;
+
+                    // Parse CHECKSUMS.txt — format: "<hash>  <filename>"
+                    // Look for the linux musl binary (canonical platform for signing)
+                    let musl_hash = body
+                        .lines()
+                        .find(|line| line.contains("x86_64-unknown-linux-musl"))
+                        .and_then(|line| line.split_whitespace().next())
+                        .map(|h| h.to_string());
+
+                    match musl_hash {
+                        Some(h) => {
+                            eprintln!("Using linux-x64-musl hash: {}...", &h[..16.min(h.len())]);
+                            h
+                        }
+                        None => {
+                            return Err(anyhow!(
+                                "Could not find linux-x64-musl hash in CHECKSUMS.txt.\n\
+                                 Contents:\n{}\n\n\
+                                 Pass --hash manually to sign a specific hash.",
+                                body
+                            ));
+                        }
+                    }
+                }
+            };
+
+            // Sign the release
+            let sig = updater::sign_release_hash(&keypair, version_str, &binary_sha256);
+
+            // Output JSON to stdout (stderr had the progress messages)
+            println!("{}", serde_json::to_string_pretty(&sig)?);
         }
     }
     Ok(())
