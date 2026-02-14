@@ -1,6 +1,7 @@
 //! Node implementation
 //!
 //! Integrates all DOLI components: storage, networking, RPC, mempool, and sync.
+// v0.2.1-test: upgrade pipeline validation
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
