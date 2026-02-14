@@ -18,12 +18,13 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 pub use updater::{
-    apply_update, calculate_veto_result, check_production_allowed, current_version,
-    fetch_latest_release, is_newer_version, restart_node, rollback, sign_release_hash,
-    verify_release_signatures, verify_release_signatures_with_keys, veto_deadline,
-    veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement, Vote,
-    VoteMessage, VoteTracker, BOOTSTRAP_MAINTAINER_KEYS, GITHUB_RELEASES_URL,
-    VETO_THRESHOLD_PERCENT,
+    apply_update, backup_current, calculate_veto_result, check_production_allowed,
+    current_binary_path, current_version, download_from_url, extract_binary_from_tarball,
+    fetch_github_release, fetch_latest_release, install_binary, is_newer_version, restart_node,
+    rollback, sign_release_hash, verify_hash, verify_release_signatures,
+    verify_release_signatures_with_keys, veto_deadline, veto_period_ended, ProductionBlocked,
+    Release, UpdateConfig, VersionEnforcement, Vote, VoteMessage, VoteTracker,
+    BOOTSTRAP_MAINTAINER_KEYS, GITHUB_RELEASES_URL, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output

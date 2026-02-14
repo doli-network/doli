@@ -180,6 +180,20 @@ enum Commands {
         #[command(subcommand)]
         action: ReleaseCommands,
     },
+
+    /// Upgrade to the latest release from GitHub
+    ///
+    /// Downloads a pre-built binary, verifies SHA256, and replaces the
+    /// running binary via exec() — same PID, supervisor doesn't notice.
+    Upgrade {
+        /// Target version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -470,6 +484,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Release { action }) => {
             handle_release_command(action).await?;
+        }
+        Some(Commands::Upgrade { version, yes }) => {
+            handle_upgrade_command(version, yes).await?;
         }
         None => {
             // Default: run the node with auto-updates enabled
@@ -1688,6 +1705,75 @@ async fn handle_release_command(action: ReleaseCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn handle_upgrade_command(version: Option<String>, yes: bool) -> Result<()> {
+    println!("Checking for updates...");
+
+    let release_info = updater::fetch_github_release(version.as_deref())
+        .await
+        .map_err(|e| anyhow!("Failed to fetch release: {}", e))?;
+
+    let current = updater::current_version();
+    if !updater::is_newer_version(&release_info.version, current) {
+        println!("Already up to date (v{})", current);
+        return Ok(());
+    }
+
+    println!();
+    println!("  Current version:  v{}", current);
+    println!("  Available:        v{}", release_info.version);
+    if !release_info.changelog.is_empty() {
+        println!();
+        for line in release_info.changelog.lines().take(10) {
+            println!("  {}", line);
+        }
+    }
+    println!();
+
+    if !yes {
+        print!("Proceed with upgrade? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Upgrade cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Download tarball
+    println!("Downloading v{}...", release_info.version);
+    let tarball = updater::download_from_url(&release_info.tarball_url)
+        .await
+        .map_err(|e| anyhow!("Download failed: {}", e))?;
+
+    // Verify hash
+    println!("Verifying checksum...");
+    updater::verify_hash(&tarball, &release_info.expected_hash)
+        .map_err(|e| anyhow!("Checksum verification failed: {}", e))?;
+
+    // Extract binary
+    println!("Extracting binary...");
+    let binary = updater::extract_binary_from_tarball(&tarball)
+        .map_err(|e| anyhow!("Extraction failed: {}", e))?;
+
+    // Backup current
+    println!("Backing up current binary...");
+    updater::backup_current()
+        .await
+        .map_err(|e| anyhow!("Backup failed: {}", e))?;
+
+    // Install
+    println!("Installing v{}...", release_info.version);
+    let target =
+        updater::current_binary_path().map_err(|e| anyhow!("Failed to get binary path: {}", e))?;
+    updater::install_binary(&binary, &target)
+        .await
+        .map_err(|e| anyhow!("Installation failed: {}", e))?;
+
+    println!("Upgrade complete. Restarting...");
+    updater::restart_node();
 }
 
 fn init_data_dir(data_dir: &PathBuf, network: Network) -> Result<()> {

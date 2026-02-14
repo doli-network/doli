@@ -132,8 +132,8 @@ pub async fn apply_update(
     Ok(())
 }
 
-/// Install binary to target path
-async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
+/// Install binary to target path (temp write + atomic rename)
+pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     // On Unix, we need to handle the case where the binary is running
     // Strategy: write to temp, then atomic rename
 
@@ -156,6 +156,43 @@ async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
 
     debug!("Binary installed to {:?}", target);
     Ok(())
+}
+
+/// Extract the doli-node binary from a .tar.gz tarball
+///
+/// CI produces tarballs like `doli-node-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`
+/// containing `doli-node-v0.1.0-x86_64-unknown-linux-gnu/doli-node`.
+/// This function decompresses and finds the `doli-node` entry.
+pub fn extract_binary_from_tarball(tarball: &[u8]) -> Result<Vec<u8>> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    use tar::Archive;
+
+    let decoder = GzDecoder::new(tarball);
+    let mut archive = Archive::new(decoder);
+
+    for entry in archive
+        .entries()
+        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
+    {
+        let mut entry = entry.map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+
+        if path.file_name().map(|n| n == "doli-node").unwrap_or(false) {
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+            info!("Extracted doli-node binary ({} bytes)", bytes.len());
+            return Ok(bytes);
+        }
+    }
+
+    Err(UpdateError::InstallFailed(
+        "doli-node binary not found in tarball".into(),
+    ))
 }
 
 /// Rollback to the backup binary
