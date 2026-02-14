@@ -3314,7 +3314,7 @@ impl Node {
                     // Fallback: known_producers Vec (non-persistent, rebuilt from peer status).
                     let gset_producers = {
                         let gset = self.producer_gset.read().await;
-                        gset.sorted_producers()
+                        gset.active_producers(7200) // 2h liveness window
                     };
                     let mut known_producers: Vec<PublicKey> = if !gset_producers.is_empty() {
                         gset_producers
