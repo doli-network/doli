@@ -1276,6 +1276,35 @@ impl SyncManager {
         self.consecutive_sync_failures
     }
 
+    /// Get consecutive empty header response count (for shallow fork detection)
+    pub fn consecutive_empty_headers(&self) -> u32 {
+        self.consecutive_empty_headers
+    }
+
+    /// Reset sync state after a shallow fork rollback.
+    /// Clears the fork signal counters, resets downloaders, and returns to Idle
+    /// so sync can restart from the new (rolled-back) tip.
+    pub fn reset_sync_for_rollback(&mut self) {
+        self.consecutive_empty_headers = 0;
+        self.consecutive_sync_failures = 0;
+        self.state = SyncState::Idle;
+        self.pending_headers.clear();
+        self.pending_blocks.clear();
+        self.headers_needing_bodies.clear();
+        self.pending_requests.clear();
+        self.header_downloader = HeaderDownloader::new(
+            self.config.max_headers_per_request,
+            self.config.request_timeout,
+        );
+        self.body_downloader = BodyDownloader::new(
+            self.config.max_bodies_per_request,
+            self.config.max_concurrent_body_requests,
+            self.config.request_timeout,
+        );
+        self.last_block_seen = Instant::now();
+        self.last_block_applied = Instant::now();
+    }
+
     /// Human-readable sync state name for diagnostics
     pub fn sync_state_name(&self) -> &'static str {
         match &self.state {
