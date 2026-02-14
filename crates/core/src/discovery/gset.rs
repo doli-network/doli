@@ -209,6 +209,7 @@ impl ProducerGSet {
         let mut result = MergeResult::default();
 
         for ann in announcements {
+            let pubkey_prefix = hex::encode(&ann.pubkey.as_bytes()[..4]);
             match self.merge_one(ann) {
                 Ok(MergeOneResult::NewProducer) => {
                     result.added += 1;
@@ -218,7 +219,10 @@ impl ProducerGSet {
                     result.added += 1;
                 }
                 Ok(MergeOneResult::Duplicate) => result.duplicates += 1,
-                Err(_) => result.rejected += 1,
+                Err(e) => {
+                    warn!("GSet rejected announcement from {}: {}", pubkey_prefix, e);
+                    result.rejected += 1;
+                }
             }
         }
 
@@ -236,11 +240,29 @@ impl ProducerGSet {
         producers
     }
 
-    /// Export all announcements from the set.
+    /// Export non-stale announcements from the set.
     ///
-    /// This is useful for full synchronization with new peers.
+    /// Filters out announcements older than `MAX_ANNOUNCEMENT_AGE_SECS` to prevent
+    /// relaying stale entries that receiving nodes would reject. This ensures CRDT
+    /// convergence after restarts where persisted announcements have old timestamps.
     #[must_use]
     pub fn export(&self) -> Vec<ProducerAnnouncement> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.producers
+            .values()
+            .filter(|ann| ann.timestamp + MAX_ANNOUNCEMENT_AGE_SECS >= now)
+            .cloned()
+            .collect()
+    }
+
+    /// Export all announcements regardless of age.
+    ///
+    /// Use this when you need the full set (e.g., for diagnostics).
+    #[must_use]
+    pub fn export_all(&self) -> Vec<ProducerAnnouncement> {
         self.producers.values().cloned().collect()
     }
 
