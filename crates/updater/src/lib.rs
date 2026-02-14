@@ -29,6 +29,7 @@ pub mod watchdog;
 
 pub use apply::{apply_update, backup_current, restart_node, rollback};
 pub use download::{download_binary, fetch_latest_release, verify_hash};
+// sign_release_hash is exported directly from this module (defined below)
 pub use test_keys::{
     create_test_release_signatures, should_use_test_keys, sign_with_test_key,
     test_maintainer_pubkeys, TestMaintainerKey, TEST_MAINTAINER_KEYS,
@@ -538,6 +539,36 @@ pub fn in_grace_period_for_network(release: &Release, network: Network) -> bool 
 }
 
 // ============================================================================
+// Release Signing
+// ============================================================================
+
+/// Sign a release hash with a maintainer's private key
+///
+/// Signs the message `"version:sha256"` which matches the format verified by
+/// `verify_release_signatures_with_keys()`. Returns a `MaintainerSignature`
+/// containing the public key and hex-encoded signature.
+///
+/// # Usage
+///
+/// ```ignore
+/// let keypair = crypto::KeyPair::from_private_key(private_key);
+/// let sig = sign_release_hash(&keypair, "0.2.0", "abcdef1234...");
+/// println!("{}", serde_json::to_string(&sig).unwrap());
+/// ```
+pub fn sign_release_hash(
+    keypair: &crypto::KeyPair,
+    version: &str,
+    binary_sha256: &str,
+) -> MaintainerSignature {
+    let message = format!("{}:{}", version, binary_sha256);
+    let signature = crypto::signature::sign(message.as_bytes(), keypair.private_key());
+    MaintainerSignature {
+        public_key: keypair.public_key().to_hex(),
+        signature: signature.to_hex(),
+    }
+}
+
+// ============================================================================
 // Core Logic
 // ============================================================================
 
@@ -876,6 +907,25 @@ mod tests {
             tracker.veto_weight(),
             total_weight
         );
+    }
+
+    #[test]
+    fn test_sign_release_hash() {
+        // Generate a test keypair
+        let private_key = crypto::PrivateKey::from_bytes([42u8; 32]);
+        let keypair = crypto::KeyPair::from_private_key(private_key);
+
+        let sig = sign_release_hash(&keypair, "1.0.0", "abcdef1234567890");
+
+        // Verify the signature matches what verify_release_signatures expects
+        assert_eq!(sig.public_key, keypair.public_key().to_hex());
+        assert!(!sig.signature.is_empty());
+
+        // Manually verify the signature
+        let message = b"1.0.0:abcdef1234567890";
+        let pubkey = crypto::PublicKey::from_hex(&sig.public_key).unwrap();
+        let signature = crypto::Signature::from_hex(&sig.signature).unwrap();
+        assert!(crypto::signature::verify(message, &signature, &pubkey).is_ok());
     }
 
     #[test]

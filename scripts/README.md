@@ -786,6 +786,43 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 
 ---
 
+### publish_release.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/publish_release.sh` |
+| **Purpose** | Combine maintainer signatures and upload release.json to GitHub Release |
+| **What it does** | Validates signatures, downloads CHECKSUMS.txt, builds release.json, uploads via `gh` CLI |
+| **Dependencies** | `gh` CLI (authenticated), `jq`, `doli-node` (for signing) |
+| **Run time** | ~30 seconds (after GH Actions completes) |
+
+**Usage:**
+```bash
+# Sign with each maintainer key (on separate machines)
+doli-node release sign --key producer_1.json --version v0.2.0 > sig1.json
+doli-node release sign --key producer_2.json --version v0.2.0 > sig2.json
+doli-node release sign --key producer_3.json --version v0.2.0 > sig3.json
+
+# Combine and upload
+./scripts/publish_release.sh v0.2.0 sig1.json sig2.json sig3.json
+```
+
+**What it does:**
+1. Validates all signature files (JSON format, public_key + signature fields)
+2. Waits for GitHub release to be published (polls up to 10 minutes)
+3. Downloads CHECKSUMS.txt from the release
+4. Extracts the canonical hash (linux-x64-musl binary)
+5. Fetches release notes from GitHub
+6. Combines all signatures into `release.json`
+7. Uploads `release.json` to the GitHub release
+
+**Prerequisites:**
+- `gh auth login` completed
+- GitHub Actions release workflow finished for the version
+- At least 3 signature files from `doli-node release sign`
+
+---
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |
@@ -793,6 +830,7 @@ curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | b
 | `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
+| `publish_release.sh` | 0 | ~30 sec | **Combine sigs & upload release.json** |
 | `generate_chainspec.sh` | 0 | Instant | **Generate chainspec from wallet files** |
 | `deploy_producers.sh` | N | Interactive | **Deploy N producers interactively** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |

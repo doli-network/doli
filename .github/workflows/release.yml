@@ -182,9 +182,9 @@ jobs:
       - name: Generate checksums file
         run: |
           cd release
-          cat *.sha256 > CHECKSUMS.txt
-          echo "" >> CHECKSUMS.txt
-          echo "To verify: sha256sum -c CHECKSUMS.txt" >> CHECKSUMS.txt
+          for f in *.tar.gz; do
+            echo "$(cat "${f}.sha256")  $f" >> CHECKSUMS.txt
+          done
 
       - name: Generate release notes
         id: changelog
