@@ -935,19 +935,30 @@ impl Node {
                                 }
                             }
 
-                            // Log producer schedule for debugging convergence
-                            let producer_list = {
+                            // Log producer schedule and detect divergence between GSet and known_producers
+                            let gset_list = {
                                 let gset = self.producer_gset.read().await;
                                 gset.sorted_producers()
                             };
-                            if !producer_list.is_empty() {
-                                let hashes: Vec<String> = producer_list.iter()
+                            let known_list = self.known_producers.read().await.clone();
+                            if !gset_list.is_empty() || !known_list.is_empty() {
+                                let gset_hashes: Vec<String> = gset_list.iter()
                                     .map(|p| crypto_hash(p.as_bytes()).to_hex()[..8].to_string())
                                     .collect();
-                                info!(
-                                    "Producer schedule view: {:?} (count={})",
-                                    hashes, producer_list.len()
-                                );
+                                let known_hashes: Vec<String> = known_list.iter()
+                                    .map(|p| crypto_hash(p.as_bytes()).to_hex()[..8].to_string())
+                                    .collect();
+                                if gset_hashes != known_hashes {
+                                    warn!(
+                                        "Producer schedule DIVERGENCE: gset={:?} (count={}) vs known={:?} (count={})",
+                                        gset_hashes, gset_list.len(), known_hashes, known_list.len()
+                                    );
+                                } else {
+                                    info!(
+                                        "Producer schedule view: {:?} (count={}, source=gset)",
+                                        gset_hashes, gset_list.len()
+                                    );
+                                }
                             }
 
                             // Phase 1: Update gossip interval if adaptive gossip changed it
@@ -3298,11 +3309,19 @@ impl Node {
                     // This ensures truly equitable block production regardless of
                     // network latency or hash luck.
 
-                    // Build sorted list of known producers (us + peers we've seen produce)
-                    // Uses the persistent known_producers list that survives epoch resets
-                    let known = self.known_producers.read().await;
-                    let mut known_producers: Vec<PublicKey> = known.clone();
-                    drop(known);
+                    // Build sorted list of known producers.
+                    // Primary source: GSet CRDT (persistent, converges via signed gossip).
+                    // Fallback: known_producers Vec (non-persistent, rebuilt from peer status).
+                    let gset_producers = {
+                        let gset = self.producer_gset.read().await;
+                        gset.sorted_producers()
+                    };
+                    let mut known_producers: Vec<PublicKey> = if !gset_producers.is_empty() {
+                        gset_producers
+                    } else {
+                        let known = self.known_producers.read().await;
+                        known.clone()
+                    };
 
                     // During genesis, use the registered producer set (from chainspec)
                     // instead of relying on gossip discovery, which may not have
@@ -3366,15 +3385,22 @@ impl Node {
 
                     let is_our_turn = designated_leader == &our_pubkey;
 
-                    debug!(
-                        "Bootstrap round-robin: slot={}, {} known producers, leader_index={}, our_turn={}",
-                        current_slot, num_producers, leader_index, is_our_turn
-                    );
-
                     if !is_our_turn {
-                        // Not our slot - don't produce
+                        let leader_hash = crypto_hash(designated_leader.as_bytes()).to_hex();
+                        debug!(
+                            "SKIP_NOT_LEADER: slot={}, producers={}, leader_index={}, leader={}",
+                            current_slot,
+                            num_producers,
+                            leader_index,
+                            &leader_hash[..8]
+                        );
                         return Ok(());
                     }
+
+                    debug!(
+                        "Bootstrap round-robin: slot={}, {} known producers, leader_index={}, producing",
+                        current_slot, num_producers, leader_index
+                    );
 
                     // It's our turn - produce immediately (score 0)
                     (vec![our_pubkey], Some(0))
