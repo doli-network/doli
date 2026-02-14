@@ -71,6 +71,11 @@ impl PeerCache {
 
     /// Upsert a peer, update last_seen, trim to MAX_CACHED_PEERS.
     pub fn add(&mut self, peer_id: &str, address: &str) {
+        // Never cache loopback addresses — they cause self-dial loops on remote nodes
+        if address.contains("/ip4/127.") || address.contains("/ip6/::1") {
+            return;
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -176,5 +181,15 @@ mod tests {
         cache.add("peer_2", "invalid_addr");
         let addrs = cache.addresses();
         assert_eq!(addrs.len(), 1);
+    }
+
+    #[test]
+    fn test_reject_loopback() {
+        let mut cache = PeerCache::default();
+        cache.add("peer_1", "/ip4/127.0.0.1/tcp/30303/p2p/12D3KooWTest");
+        cache.add("peer_2", "/ip6/::1/tcp/30303/p2p/12D3KooWTest2");
+        cache.add("peer_3", "/ip4/72.60.228.233/tcp/30303/p2p/12D3KooWReal");
+        assert_eq!(cache.peers.len(), 1);
+        assert_eq!(cache.peers[0].peer_id, "peer_3");
     }
 }
