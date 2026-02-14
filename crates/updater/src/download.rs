@@ -67,7 +67,7 @@ pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
 }
 
 /// Download from a specific URL
-async fn download_from_url(url: &str) -> Result<Vec<u8>> {
+pub async fn download_from_url(url: &str) -> Result<Vec<u8>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 min timeout
         .build()?;
@@ -214,6 +214,134 @@ async fn fetch_release_from_url(url: &str) -> Result<Release> {
 
     let release: Release = response.json().await?;
     Ok(release)
+}
+
+/// Release info fetched directly from GitHub API (no release.json needed)
+pub struct GithubReleaseInfo {
+    /// Semantic version (without 'v' prefix)
+    pub version: String,
+    /// Direct download URL for the platform tarball
+    pub tarball_url: String,
+    /// Expected SHA-256 hash from CHECKSUMS.txt
+    pub expected_hash: String,
+    /// Release changelog (body from GitHub)
+    pub changelog: String,
+}
+
+/// Map platform_identifier() to Rust target triple for asset matching
+fn platform_target_triple() -> &'static str {
+    match platform_identifier() {
+        "linux-x64" => "x86_64-unknown-linux-gnu",
+        "linux-arm64" => "aarch64-unknown-linux-gnu",
+        "macos-x64" => "x86_64-apple-darwin",
+        "macos-arm64" => "aarch64-apple-darwin",
+        _ => "unknown",
+    }
+}
+
+/// Fetch release info directly from GitHub API
+///
+/// Works without release.json — parses the GitHub API response directly:
+/// 1. GET /releases/latest (or /releases/tags/v{version})
+/// 2. Parse tag_name, body (changelog), assets
+/// 3. Find CHECKSUMS.txt asset → download → parse hash for current platform
+/// 4. Find tarball asset for current platform
+pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubReleaseInfo> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("doli-node")
+        .build()?;
+
+    let api_url = match version {
+        Some(v) => {
+            let tag = if v.starts_with('v') {
+                v.to_string()
+            } else {
+                format!("v{}", v)
+            };
+            format!(
+                "https://api.github.com/repos/{}/releases/tags/{}",
+                crate::GITHUB_REPO,
+                tag
+            )
+        }
+        None => crate::GITHUB_API_URL.to_string(),
+    };
+
+    debug!("Fetching release from: {}", api_url);
+
+    let response = client.get(&api_url).send().await?;
+    if !response.status().is_success() {
+        return Err(UpdateError::DownloadFailed(format!(
+            "GitHub API returned HTTP {}",
+            response.status()
+        )));
+    }
+
+    let release: serde_json::Value = response.json().await?;
+
+    let tag = release["tag_name"]
+        .as_str()
+        .ok_or_else(|| UpdateError::DownloadFailed("No tag_name in response".into()))?;
+    let version_str = tag.strip_prefix('v').unwrap_or(tag);
+    let changelog = release["body"].as_str().unwrap_or("").to_string();
+
+    let assets = release["assets"]
+        .as_array()
+        .ok_or_else(|| UpdateError::DownloadFailed("No assets in release".into()))?;
+
+    // Find CHECKSUMS.txt asset
+    let checksums_url = assets
+        .iter()
+        .find(|a| a["name"].as_str() == Some("CHECKSUMS.txt"))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or_else(|| {
+            UpdateError::DownloadFailed("CHECKSUMS.txt not found in release assets".into())
+        })?;
+
+    // Download and parse CHECKSUMS.txt
+    let checksums_body = download_from_url(checksums_url).await?;
+    let checksums_text = String::from_utf8_lossy(&checksums_body);
+
+    let triple = platform_target_triple();
+    let expected_hash = checksums_text
+        .lines()
+        .find(|line| line.contains(triple))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| {
+            UpdateError::DownloadFailed(format!(
+                "No checksum for platform {} in CHECKSUMS.txt",
+                triple
+            ))
+        })?
+        .to_string();
+
+    // Find tarball asset for current platform
+    let tarball_url = assets
+        .iter()
+        .find(|a| {
+            a["name"]
+                .as_str()
+                .map(|n| n.contains(triple) && n.ends_with(".tar.gz"))
+                .unwrap_or(false)
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or_else(|| {
+            UpdateError::DownloadFailed(format!(
+                "No tarball for platform {} in release assets",
+                triple
+            ))
+        })?
+        .to_string();
+
+    info!("Found release v{} for {}", version_str, triple);
+
+    Ok(GithubReleaseInfo {
+        version: version_str.to_string(),
+        tarball_url,
+        expected_hash,
+        changelog,
+    })
 }
 
 #[cfg(test)]

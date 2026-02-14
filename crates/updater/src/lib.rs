@@ -27,8 +27,14 @@ pub mod test_keys;
 mod vote;
 pub mod watchdog;
 
-pub use apply::{apply_update, backup_current, restart_node, rollback};
-pub use download::{download_binary, fetch_latest_release, verify_hash};
+pub use apply::{
+    apply_update, backup_current, current_binary_path, extract_binary_from_tarball, install_binary,
+    restart_node, rollback,
+};
+pub use download::{
+    download_binary, download_from_url, fetch_github_release, fetch_latest_release, verify_hash,
+    GithubReleaseInfo,
+};
 // sign_release_hash is exported directly from this module (defined below)
 pub use test_keys::{
     create_test_release_signatures, should_use_test_keys, sign_with_test_key,
