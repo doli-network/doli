@@ -4048,6 +4048,147 @@ impl Node {
         }
     }
 
+    /// Detect and resolve shallow forks (1-block orphan tips from ungraceful shutdown).
+    ///
+    /// When a node is killed during block production, it may persist a block that
+    /// peers never received. On restart, peers don't recognize our tip hash, causing
+    /// consecutive empty header responses. If the gap to peers is small (<100 blocks),
+    /// this is a shallow fork — not a deep fork needing genesis resync.
+    ///
+    /// Fix: roll back one block at a time until we reach a tip peers recognize.
+    /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
+    async fn resolve_shallow_fork(&mut self) -> Result<bool> {
+        let (empty_headers, best_peer_height, local_height) = {
+            let sync = self.sync_manager.read().await;
+            (
+                sync.consecutive_empty_headers(),
+                sync.best_peer_height(),
+                sync.local_tip().0,
+            )
+        };
+
+        // Conditions: peers reject our tip (>=3 empty responses) AND gap is small
+        if empty_headers < 3 {
+            return Ok(false);
+        }
+        // If we're far behind peers, this is a deep fork — let genesis resync handle it
+        if best_peer_height > local_height + 100 {
+            return Ok(false);
+        }
+        // Nothing to roll back at genesis
+        if local_height == 0 {
+            return Ok(false);
+        }
+
+        warn!(
+            "Shallow fork detected: {} consecutive empty header responses, \
+             local_height={}, best_peer_height={}, rolling back 1 block",
+            empty_headers, local_height, best_peer_height
+        );
+
+        // Get parent block at (height - 1)
+        let target_height = local_height - 1;
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+
+        let (parent_hash, parent_slot) = if target_height == 0 {
+            (genesis_hash, 0u32)
+        } else {
+            match self.block_store.get_block_by_height(target_height)? {
+                Some(parent_block) => (parent_block.hash(), parent_block.header.slot),
+                None => {
+                    error!(
+                        "Cannot resolve shallow fork: no block at height {}",
+                        target_height
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+
+        // Rebuild UTXO set from blocks 1..=target_height
+        info!(
+            "Rebuilding UTXO set up to height {} for shallow fork recovery",
+            target_height
+        );
+        {
+            let mut utxo = self.utxo_set.write().await;
+            utxo.clear();
+            for height in 1..=target_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    for (tx_index, tx) in block.transactions.iter().enumerate() {
+                        let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                        if !is_reward_tx {
+                            let _ = utxo.spend_transaction(tx);
+                        }
+                        utxo.add_transaction(tx, height, is_reward_tx);
+                    }
+                }
+            }
+        }
+
+        // Rebuild producer set from blocks 1..=target_height
+        {
+            let mut producers = self.producer_set.write().await;
+            producers.clear();
+            for height in 1..=target_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    for tx in &block.transactions {
+                        if tx.tx_type == TxType::Registration {
+                            if let Some(reg_data) = tx.registration_data() {
+                                if let Some((bond_index, bond_output)) =
+                                    tx.outputs.iter().enumerate().find(|(_, o)| {
+                                        o.output_type == doli_core::transaction::OutputType::Bond
+                                    })
+                                {
+                                    let tx_hash = tx.hash();
+                                    let era = self.params.height_to_era(height);
+                                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                                        reg_data.public_key,
+                                        height,
+                                        bond_output.amount,
+                                        (tx_hash, bond_index as u32),
+                                        era,
+                                        reg_data.bond_count,
+                                    );
+                                    let _ = producers.register(producer_info, height);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update chain state to parent
+        {
+            let mut state = self.chain_state.write().await;
+            state.best_height = target_height;
+            state.best_hash = parent_hash;
+            state.best_slot = parent_slot;
+        }
+
+        // Update sync manager: local tip + reset fork signals
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(target_height, parent_hash, parent_slot);
+            sync.reset_sync_for_rollback();
+        }
+
+        // Reset node-level fork counter
+        self.consecutive_fork_blocks = 0;
+
+        // Save state to persist the rollback
+        self.save_state().await?;
+
+        info!(
+            "Shallow fork resolved: rolled back to height {} (hash {:.8}). \
+             Sync will restart from parent tip.",
+            target_height, parent_hash
+        );
+
+        Ok(true)
+    }
+
     /// Run periodic tasks
     async fn run_periodic_tasks(&mut self) -> Result<()> {
         // Apply pending sync blocks in correct order BEFORE cleanup.
@@ -4188,7 +4329,14 @@ impl Node {
             }
         }
 
-        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (3+ empty
+        // SHALLOW FORK RECOVERY: If peers reject our tip but the gap is small,
+        // roll back one block instead of a full genesis resync. This handles the
+        // common case of an orphan tip from ungraceful shutdown.
+        if self.resolve_shallow_fork().await? {
+            return Ok(());
+        }
+
+        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (10+ empty
         // header responses), normal sync and fork recovery can't bridge the gap.
         // Escalate to genesis resync — rebuild state from the canonical chain.
         {

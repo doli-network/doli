@@ -833,8 +833,20 @@ async fn run_node(
         }
     });
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
+    // Wait for shutdown signal (SIGINT via Ctrl+C or SIGTERM via kill)
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+    }
 
     info!("Shutting down gracefully...");
 
