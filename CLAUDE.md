@@ -1,4 +1,22 @@
 # CLAUDE.md - Project Brain
+
+## MANDATORY RULE: No unsupervised changes
+
+NEVER do any of the following without explicit approval from Ivan FIRST:
+
+1. **No code changes** — Do not modify, add, or delete any code without showing the exact diff and getting approval
+2. **No deployments** — Do not push, build, deploy, or restart any node without explicit "proceed" from Ivan
+3. **No destructive actions** — Do not kill processes, wipe data, delete files, or stop services without explicit permission
+4. **No design changes** — Do not change the approach (e.g., switching from exclusive windows to minimum-delay) without explaining why and getting approval
+
+When asked to implement something:
+1. Show the plan
+2. Show the exact code changes (diff)
+3. WAIT for approval
+4. Only then execute
+
+If something is broken after deployment, STOP and report. Do not attempt fixes autonomously.
+
 # FIRST PRINCIPLE:
 Elon Musk says: The best engine part is the one you can remove. In other words, less is more! Let this be our approach, even for the most complex problems: Always opt for the simplest solution without compromising safety.
 
