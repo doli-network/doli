@@ -420,6 +420,11 @@ pub struct ValidationContext {
     /// When non-empty, bootstrap validation uses deterministic fallback ranks instead of
     /// accepting any producer. Populated from GSet/known_producers in the node layer.
     pub bootstrap_producers: Vec<crypto::PublicKey>,
+    /// Live bootstrap producers (sorted by pubkey) for liveness-filtered scheduling.
+    /// Empty = no liveness filter active (use bootstrap_producers for all ranks).
+    pub live_bootstrap_producers: Vec<crypto::PublicKey>,
+    /// Stale bootstrap producers (sorted by pubkey) for re-entry slot scheduling.
+    pub stale_bootstrap_producers: Vec<crypto::PublicKey>,
     /// Registration chain state for chained VDF anti-Sybil verification.
     pub registration_chain: RegistrationChainState,
 }
@@ -444,6 +449,8 @@ impl ValidationContext {
             active_producers: Vec::new(),
             active_producers_weighted: Vec::new(),
             bootstrap_producers: Vec::new(),
+            live_bootstrap_producers: Vec::new(),
+            stale_bootstrap_producers: Vec::new(),
             registration_chain: RegistrationChainState::default(),
         }
     }
@@ -482,6 +489,20 @@ impl ValidationContext {
     #[must_use]
     pub fn with_bootstrap_producers(mut self, producers: Vec<crypto::PublicKey>) -> Self {
         self.bootstrap_producers = producers;
+        self
+    }
+
+    /// Set the liveness split for bootstrap producers.
+    /// Both lists must be sorted by pubkey. When `live` is non-empty,
+    /// liveness-aware scheduling is used (live for normal slots, stale for re-entry).
+    #[must_use]
+    pub fn with_bootstrap_liveness(
+        mut self,
+        live: Vec<crypto::PublicKey>,
+        stale: Vec<crypto::PublicKey>,
+    ) -> Self {
+        self.live_bootstrap_producers = live;
+        self.stale_bootstrap_producers = stale;
         self
     }
 
@@ -2114,6 +2135,77 @@ pub fn bootstrap_fallback_order(
     result
 }
 
+/// Build the eligible producer list for a bootstrap slot, applying liveness filter.
+///
+/// Normal slots: all ranks from `live_producers` only.
+/// Re-entry slots: one stale producer at rank 0, `live_producers` at ranks 1+.
+///
+/// Both `live_producers` and `stale_producers` must be sorted by pubkey.
+/// Returns the eligible list ordered by rank (index 0 = rank 0).
+///
+/// Re-entry slots are spread evenly: for stale producer `i`, re-entry fires when
+/// `slot % reentry_interval == i * (reentry_interval / effective_stale)`.
+/// Capped at `reentry_interval / 5` stale producers (20% max overhead).
+pub fn bootstrap_schedule_with_liveness(
+    slot: u32,
+    live_producers: &[crypto::PublicKey],
+    stale_producers: &[crypto::PublicKey],
+    reentry_interval: u32,
+) -> Vec<crypto::PublicKey> {
+    let max_ranks = crate::consensus::MAX_FALLBACK_RANKS;
+
+    // Cap stale count to avoid excessive re-entry overhead (max 20%)
+    let effective_stale = stale_producers.len().min((reentry_interval / 5) as usize);
+
+    // Determine if this is a re-entry slot for a stale producer
+    let reentry_producer = if effective_stale > 0 && reentry_interval > 0 {
+        let phase = slot % reentry_interval;
+        let spacing = reentry_interval / effective_stale as u32;
+        if spacing > 0 && phase.is_multiple_of(spacing) {
+            let idx = (phase / spacing) as usize;
+            if idx < effective_stale {
+                Some(stale_producers[idx])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut result = Vec::with_capacity(max_ranks);
+
+    if let Some(stale_pk) = reentry_producer {
+        // RE-ENTRY SLOT: stale producer at rank 0, live producers at ranks 1+
+        result.push(stale_pk);
+        if !live_producers.is_empty() {
+            for rank in 0..max_ranks.saturating_sub(1) {
+                let idx = ((slot as usize) + rank) % live_producers.len();
+                let pk = live_producers[idx];
+                if !result.contains(&pk) {
+                    result.push(pk);
+                }
+            }
+        }
+    } else {
+        // NORMAL SLOT: all ranks from live producers
+        if live_producers.is_empty() {
+            return Vec::new();
+        }
+        for rank in 0..max_ranks {
+            let idx = ((slot as usize) + rank) % live_producers.len();
+            let pk = live_producers[idx];
+            if !result.contains(&pk) {
+                result.push(pk);
+            }
+        }
+    }
+
+    result
+}
+
 /// Validate a block's producer during bootstrap using fallback rank windows.
 ///
 /// Same 2-second exclusive windows as the epoch scheduler:
@@ -2135,8 +2227,18 @@ fn validate_bootstrap_producer(
         return Err(ValidationError::InvalidProducer);
     }
 
-    // Compute fallback order for this slot
-    let eligible = bootstrap_fallback_order(header.slot, &ctx.bootstrap_producers);
+    // Compute fallback order for this slot.
+    // Use liveness-aware scheduling when live/stale split is available.
+    let eligible = if !ctx.live_bootstrap_producers.is_empty() {
+        bootstrap_schedule_with_liveness(
+            header.slot,
+            &ctx.live_bootstrap_producers,
+            &ctx.stale_bootstrap_producers,
+            crate::consensus::REENTRY_INTERVAL,
+        )
+    } else {
+        bootstrap_fallback_order(header.slot, &ctx.bootstrap_producers)
+    };
 
     if eligible.is_empty() {
         return Err(ValidationError::InvalidProducer);

@@ -133,6 +133,17 @@ pub const HALVING_INTERVAL: BlockHeight = SLOTS_PER_ERA;
 /// 7 days = 60,480 blocks
 pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 
+/// Liveness window: producers who haven't produced within this many blocks
+/// are excluded from primary scheduling (but eligible for re-entry slots).
+/// Dynamic formula: `max(LIVENESS_WINDOW_MIN, total_producers * 3)` ensures
+/// every producer gets ~3 primary opportunities before being classified stale.
+pub const LIVENESS_WINDOW_MIN: u64 = 500;
+
+/// Re-entry interval in slots. Every K slots per stale producer, that producer
+/// gets rank 0 (exclusive 2s window) to produce a block and rejoin the live rotation.
+/// K=50 → 2% overhead per stale producer. Capped at 20% total (K/5 stale max).
+pub const REENTRY_INTERVAL: u32 = 50;
+
 /// Bootstrap grace period in seconds.
 ///
 /// At genesis startup, when all peers are at height 0, the node waits this
