@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crypto::PublicKey;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{
     MergeResult, ProducerAnnouncement, ProducerBloomFilter, ProducerSetError,
@@ -139,8 +139,14 @@ impl ProducerGSet {
         &mut self,
         announcement: ProducerAnnouncement,
     ) -> Result<MergeOneResult, ProducerSetError> {
+        let pubkey_hex = hex::encode(&announcement.pubkey.as_bytes()[..8]);
+
         // Step 1: Verify signature
         if !announcement.verify() {
+            info!(
+                "GSet merge_one {}: REJECT invalid_signature",
+                pubkey_hex
+            );
             return Err(ProducerSetError::InvalidSignature);
         }
 
@@ -160,6 +166,11 @@ impl ProducerGSet {
 
         // Check for stale announcement (> 1 hour old)
         if announcement.timestamp + MAX_ANNOUNCEMENT_AGE_SECS < now {
+            info!(
+                "GSet merge_one {}: REJECT stale ts={} now={} age={}s",
+                pubkey_hex, announcement.timestamp, now,
+                now.saturating_sub(announcement.timestamp)
+            );
             return Err(ProducerSetError::StaleAnnouncement);
         }
 
@@ -173,9 +184,22 @@ impl ProducerGSet {
         if let Some(&current_sequence) = self.sequences.get(&announcement.pubkey) {
             // If we already have a higher or equal sequence, this is a duplicate
             if announcement.sequence <= current_sequence {
+                info!(
+                    "GSet merge_one {}: DUPLICATE incoming_seq={} stored_seq={} ts={}",
+                    pubkey_hex, announcement.sequence, current_sequence, announcement.timestamp
+                );
                 return Ok(MergeOneResult::Duplicate);
             }
         }
+
+        info!(
+            "GSet merge_one {}: {} incoming_seq={} stored_seq={:?} ts={}",
+            pubkey_hex,
+            if is_new_producer { "NEW" } else { "SEQ_UPDATE" },
+            announcement.sequence,
+            self.sequences.get(&announcement.pubkey),
+            announcement.timestamp
+        );
 
         // All checks passed - merge the announcement
         self.sequences
@@ -272,11 +296,37 @@ impl ProducerGSet {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.producers
+        let total = self.producers.len();
+        let result: Vec<ProducerAnnouncement> = self
+            .producers
             .values()
             .filter(|ann| ann.timestamp + MAX_ANNOUNCEMENT_AGE_SECS >= now)
             .cloned()
-            .collect()
+            .collect();
+        let exported_keys: Vec<String> = result
+            .iter()
+            .map(|ann| hex::encode(&ann.pubkey.as_bytes()[..8]))
+            .collect();
+        let filtered_keys: Vec<String> = self
+            .producers
+            .values()
+            .filter(|ann| ann.timestamp + MAX_ANNOUNCEMENT_AGE_SECS < now)
+            .map(|ann| {
+                format!(
+                    "{}(age={}s)",
+                    hex::encode(&ann.pubkey.as_bytes()[..8]),
+                    now.saturating_sub(ann.timestamp)
+                )
+            })
+            .collect();
+        info!(
+            "GSet export: total={} exported={} keys={:?} filtered_out={:?}",
+            total,
+            result.len(),
+            exported_keys,
+            filtered_keys
+        );
+        result
     }
 
     /// Export all announcements regardless of age.
