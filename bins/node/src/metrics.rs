@@ -10,7 +10,7 @@ use prometheus::{
     Encoder, Gauge, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, IntGaugeVec,
     Opts, Registry, TextEncoder,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 lazy_static! {
     /// Global metrics registry
@@ -294,13 +294,20 @@ pub async fn start_metrics_server(addr: SocketAddr) {
 
     info!("Starting metrics server on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("Failed to bind metrics server");
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            warn!(
+                "Failed to bind metrics server on {}: {} — continuing without metrics",
+                addr, e
+            );
+            return;
+        }
+    };
 
-    axum::serve(listener, app)
-        .await
-        .expect("Metrics server failed");
+    if let Err(e) = axum::serve(listener, app).await {
+        warn!("Metrics server stopped: {}", e);
+    }
 }
 
 /// Spawn the metrics server in a background task
