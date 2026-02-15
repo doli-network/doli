@@ -487,8 +487,21 @@ impl Node {
             {
                 let our_pubkey = *key.public_key();
 
-                // Create initial announcement with sequence 0
-                let announcement = ProducerAnnouncement::new(key, self.config.network.id(), 0);
+                // Read our stored sequence from the persisted GSet so we resume
+                // from where we left off. Without this, a restart resets to 0 and
+                // every peer silently rejects our announcements as Duplicate until
+                // our counter exceeds their stored sequence — causing us to vanish
+                // from their active_producers() for potentially hours.
+                let stored_seq = {
+                    let gset = self.producer_gset.read().await;
+                    gset.sequence_for(&our_pubkey)
+                };
+                let start_seq = stored_seq + 1;
+                self.announcement_sequence
+                    .store(start_seq, std::sync::atomic::Ordering::SeqCst);
+
+                let announcement =
+                    ProducerAnnouncement::new(key, self.config.network.id(), start_seq);
 
                 // Add to GSet (new format)
                 {
@@ -894,6 +907,18 @@ impl Node {
                                 {
                                     let mut gset = self.producer_gset.write().await;
                                     let _ = gset.merge_one(announcement.clone());
+
+                                    // Purge ghost producers: entries older than 4 hours
+                                    // (2x the active_producers liveness window of 7200s).
+                                    // Without this, nodes that announced once and disappeared
+                                    // persist forever, inflating the slot % n denominator.
+                                    let purged = gset.purge_stale(14400);
+                                    if purged > 0 {
+                                        info!("GSet: purged {} ghost producer(s)", purged);
+                                        if let Err(e) = gset.persist_to_disk() {
+                                            warn!("Failed to persist GSet after purge: {}", e);
+                                        }
+                                    }
                                 }
 
                                 *self.our_announcement.write().await = Some(announcement);

@@ -321,6 +321,36 @@ impl ProducerGSet {
         self.last_modified = Instant::now();
     }
 
+    /// Remove entries whose announcement timestamp is older than `max_age_secs`.
+    ///
+    /// Unlike `active_producers()` which only filters the view, this permanently
+    /// removes stale entries from the set and their sequence numbers. This prevents
+    /// ghost producers (nodes that announced once but are long gone) from persisting
+    /// indefinitely and inflating the `slot % n` round-robin denominator.
+    ///
+    /// Returns the number of entries purged.
+    pub fn purge_stale(&mut self, max_age_secs: u64) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let stale_keys: Vec<PublicKey> = self
+            .producers
+            .iter()
+            .filter(|(_, ann)| ann.timestamp + max_age_secs < now)
+            .map(|(pk, _)| *pk)
+            .collect();
+        let count = stale_keys.len();
+        for pk in &stale_keys {
+            self.producers.remove(pk);
+            self.sequences.remove(pk);
+        }
+        if count > 0 {
+            self.last_modified = Instant::now();
+        }
+        count
+    }
+
     /// Check if a producer is in the set.
     ///
     /// # Arguments
