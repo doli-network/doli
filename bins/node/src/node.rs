@@ -115,6 +115,10 @@ pub struct Node {
     pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
     /// Last time we attempted to redial bootstrap nodes (rate limiter)
     last_peer_redial: Option<Instant>,
+    /// Last height at which each producer produced a block (for liveness filter).
+    /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
+    /// Used by bootstrap scheduling to exclude stale producers from primary rotation.
+    producer_liveness: HashMap<PublicKey, u64>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -270,6 +274,30 @@ impl Node {
                 info!("Devnet genesis time initialized: {}", params.genesis_time);
             }
         }
+
+        // Rebuild producer liveness map from recent blocks in block_store.
+        // Scans the last LIVENESS_WINDOW_MIN blocks to determine which producers
+        // have been active recently. This is deterministic (same chain = same map).
+        let producer_liveness = {
+            let mut liveness: HashMap<PublicKey, u64> = HashMap::new();
+            let tip = chain_state.best_height;
+            let window = consensus::LIVENESS_WINDOW_MIN;
+            let start = tip.saturating_sub(window).max(1);
+            for h in start..=tip {
+                if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                    liveness.insert(block.header.producer, h);
+                }
+            }
+            if !liveness.is_empty() {
+                info!(
+                    "Rebuilt producer liveness from blocks {}-{}: {} producers tracked",
+                    start,
+                    tip,
+                    liveness.len()
+                );
+            }
+            liveness
+        };
 
         let chain_state = Arc::new(RwLock::new(chain_state));
 
@@ -438,6 +466,7 @@ impl Node {
             vote_tx: None,
             pending_update: None,
             last_peer_redial: None,
+            producer_liveness,
         })
     }
 
@@ -2213,6 +2242,34 @@ impl Node {
         }
         bootstrap_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
+        // Build liveness split for bootstrap validation (must match production side).
+        let num_bp = bootstrap_producers.len();
+        let liveness_window = std::cmp::max(
+            consensus::LIVENESS_WINDOW_MIN,
+            (num_bp as u64).saturating_mul(3),
+        );
+        let chain_height = height.saturating_sub(1);
+        let cutoff = chain_height.saturating_sub(liveness_window);
+        let (live_bp, stale_bp): (Vec<PublicKey>, Vec<PublicKey>) = {
+            let (live, stale): (Vec<_>, Vec<_>) = bootstrap_producers.iter().partition(|pk| {
+                match self.producer_liveness.get(pk) {
+                    Some(&last_h) => last_h >= cutoff,
+                    // No chain record: live if chain is young, stale otherwise
+                    None => chain_height < liveness_window,
+                }
+            });
+            (
+                live.into_iter().copied().collect(),
+                stale.into_iter().copied().collect(),
+            )
+        };
+        // Deadlock safety: if all stale, treat all as live (filter disabled)
+        let (live_bp, stale_bp) = if live_bp.is_empty() {
+            (bootstrap_producers.clone(), Vec::new())
+        } else {
+            (live_bp, stale_bp)
+        };
+
         let mut ctx = validation::ValidationContext::new(
             ConsensusParams::for_network(self.config.network),
             self.config.network,
@@ -2220,7 +2277,8 @@ impl Node {
             height,
         )
         .with_producers_weighted(weighted)
-        .with_bootstrap_producers(bootstrap_producers);
+        .with_bootstrap_producers(bootstrap_producers)
+        .with_bootstrap_liveness(live_bp, stale_bp);
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -2251,6 +2309,9 @@ impl Node {
 
         // Store the block
         self.block_store.put_block(&block, height)?;
+
+        // Update producer liveness tracker (for scheduling filter)
+        self.producer_liveness.insert(block.header.producer, height);
 
         // Track newly registered producers to add to known_producers after lock release
         let mut new_registrations: Vec<PublicKey> = Vec::new();
@@ -3421,12 +3482,54 @@ impl Node {
                         return Ok(());
                     }
 
-                    // Build fallback rank order: same 2-second windows as epoch scheduler.
-                    // rank 0 = slot % n, rank 1 = (slot+1) % n, etc.
-                    // Uses shared function from validation to guarantee consensus.
-                    let eligible = doli_core::validation::bootstrap_fallback_order(
+                    // Liveness filter: split producers into live vs stale.
+                    // Live = produced a block within the liveness window.
+                    // Stale = haven't produced recently (slots wasted waiting for them).
+                    let liveness_window = std::cmp::max(
+                        consensus::LIVENESS_WINDOW_MIN,
+                        (num_producers as u64).saturating_mul(3),
+                    );
+                    let chain_height = height.saturating_sub(1);
+                    let cutoff = chain_height.saturating_sub(liveness_window);
+                    let (live_producers, stale_producers): (Vec<PublicKey>, Vec<PublicKey>) = {
+                        let (live, stale): (Vec<_>, Vec<_>) =
+                            known_producers.iter().partition(|pk| {
+                                match self.producer_liveness.get(pk) {
+                                    Some(&last_h) => last_h >= cutoff,
+                                    // No chain record: live if chain is young, stale otherwise
+                                    None => chain_height < liveness_window,
+                                }
+                            });
+                        (
+                            live.into_iter().copied().collect(),
+                            stale.into_iter().copied().collect(),
+                        )
+                    };
+
+                    // Deadlock safety: if all stale, treat all as live
+                    let (live_producers, stale_producers) = if live_producers.is_empty() {
+                        (known_producers.clone(), Vec::new())
+                    } else {
+                        (live_producers, stale_producers)
+                    };
+
+                    if !stale_producers.is_empty() {
+                        debug!(
+                            "Liveness filter: {} live, {} stale (window={})",
+                            live_producers.len(),
+                            stale_producers.len(),
+                            liveness_window,
+                        );
+                    }
+
+                    // Build eligible list using liveness-aware scheduling.
+                    // Normal slots: all ranks from live producers only.
+                    // Re-entry slots: one stale producer at rank 0, live at ranks 1+.
+                    let eligible = doli_core::validation::bootstrap_schedule_with_liveness(
                         current_slot,
-                        &known_producers,
+                        &live_producers,
+                        &stale_producers,
+                        consensus::REENTRY_INTERVAL,
                     );
 
                     if !eligible.contains(&our_pubkey) {
