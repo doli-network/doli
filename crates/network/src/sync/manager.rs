@@ -307,6 +307,11 @@ pub struct SyncManager {
     /// When >= 3, we're on a deep fork and need genesis resync.
     consecutive_empty_headers: u32,
 
+    /// Retry counter for body download stalls (DownloadingBodies).
+    /// Reset when blocks are applied. After a few retries, we fall back
+    /// to the existing hard reset-to-Idle behavior to avoid infinite loops.
+    body_stall_retries: u32,
+
     /// Timestamp when all peers were lost (for peer loss timeout).
     /// After `peer_loss_timeout_secs`, production resumes solo.
     peers_lost_at: Option<Instant>,
@@ -373,6 +378,7 @@ impl SyncManager {
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             consecutive_empty_headers: 0,
+            body_stall_retries: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
             genesis_hash,
@@ -1822,6 +1828,7 @@ impl SyncManager {
         self.local_slot = slot;
         self.blocks_applied += 1;
         self.last_block_applied = Instant::now();
+        self.body_stall_retries = 0;
 
         // Applying a block means the chain is advancing — reset deep fork counter.
         self.consecutive_empty_headers = 0;
@@ -1932,6 +1939,7 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
+        self.body_stall_retries = 0;
 
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
@@ -2062,8 +2070,8 @@ impl SyncManager {
             }
         }
 
-        // Escape stuck sync states: if we're in Processing or DownloadingHeaders/Bodies
-        // and no blocks have been APPLIED for 30s, reset to Idle.
+        // Escape stuck sync states: if we're syncing and no blocks have been
+        // APPLIED for 30s, either soft-retry the missing bodies or hard-reset.
         //
         // CRITICAL: We check `last_block_applied` (not `last_block_seen`) because gossip
         // blocks keep resetting `last_block_seen` every few seconds, preventing the timeout
@@ -2073,26 +2081,108 @@ impl SyncManager {
         let stuck_threshold = Duration::from_secs(30);
         if self.state.is_syncing() && self.last_block_applied.elapsed() > stuck_threshold {
             let was_processing = matches!(self.state, SyncState::Processing { .. });
-            warn!(
-                "Sync stuck in {:?} for >30s with no blocks applied (last_applied={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
-                self.state, self.last_block_applied.elapsed(), self.local_height, self.network_tip_height
-            );
-            self.state = SyncState::Idle;
-            self.pending_headers.clear();
-            self.pending_blocks.clear();
-            self.headers_needing_bodies.clear();
-            self.pending_requests.clear();
-            // Reset header downloader so next sync starts from local_hash,
-            // not from a stale expected_prev_hash from a previous (failed) cycle.
-            self.header_downloader.clear();
-            // If stuck in Processing, count toward deep fork detection.
-            // The node downloaded a chain it can't apply — this is fork evidence.
-            if was_processing {
-                self.consecutive_empty_headers += 1;
-                info!(
-                    "Stuck Processing counted as fork signal (consecutive_empty_headers={})",
-                    self.consecutive_empty_headers
+            let is_downloading_bodies = matches!(self.state, SyncState::DownloadingBodies { .. });
+            let have_pending_headers = !self.pending_headers.is_empty();
+            let have_downloaded_bodies = !self.pending_blocks.is_empty();
+
+            // Soft recovery for the body-downloader stall:
+            // Bodies are arriving but not contiguous from our tip (parallel
+            // peer responses arrived out of order). Keep pending_headers and
+            // pending_blocks, rebuild the needed-bodies list to contain only
+            // what's actually missing, and let the body downloader retry.
+            if is_downloading_bodies
+                && have_pending_headers
+                && have_downloaded_bodies
+                && !was_processing
+                && self.body_stall_retries < 3
+            {
+                self.body_stall_retries += 1;
+
+                // Rebuild headers_needing_bodies: walk pending_headers from the
+                // local tip, skip bodies we already have, enqueue the rest.
+                let mut rebuilt = VecDeque::new();
+                let mut current = self.local_hash;
+                let mut gap_found = false;
+
+                for header in &self.pending_headers {
+                    if header.prev_hash != current {
+                        gap_found = true;
+                    }
+
+                    let h = header.hash();
+
+                    if !gap_found {
+                        if self.pending_blocks.contains_key(&h) {
+                            current = h;
+                            continue;
+                        } else {
+                            gap_found = true;
+                        }
+                    }
+
+                    if !self.pending_blocks.contains_key(&h) {
+                        rebuilt.push_back(h);
+                    }
+                    current = h;
+                }
+
+                self.headers_needing_bodies = rebuilt;
+
+                // Unwedge request bookkeeping so the missing bodies can be
+                // re-requested immediately (hashes may be stuck in in_flight).
+                for status in self.peers.values_mut() {
+                    status.pending_request = None;
+                }
+                self.pending_requests.clear();
+                self.body_downloader.clear();
+
+                // Reset timer and stay in DownloadingBodies.
+                self.last_block_applied = Instant::now();
+                let total = self.pending_headers.len();
+                let pending = self.headers_needing_bodies.len();
+                self.state = SyncState::DownloadingBodies { pending, total };
+
+                warn!(
+                    "Body stall retry {}/3: retained {} headers + {} downloaded bodies; \
+                     re-requesting {} missing bodies from h={}",
+                    self.body_stall_retries,
+                    total,
+                    self.pending_blocks.len(),
+                    pending,
+                    self.local_height + 1
                 );
+            } else {
+                // Hard reset (existing behavior).
+                warn!(
+                    "Sync stuck in {:?} for >30s with no blocks applied \
+                     (last_applied={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
+                    self.state,
+                    self.last_block_applied.elapsed(),
+                    self.local_height,
+                    self.network_tip_height
+                );
+                self.state = SyncState::Idle;
+                self.pending_headers.clear();
+                self.pending_blocks.clear();
+                self.headers_needing_bodies.clear();
+                self.pending_requests.clear();
+                for status in self.peers.values_mut() {
+                    status.pending_request = None;
+                }
+                self.body_downloader.clear();
+                self.body_stall_retries = 0;
+                // Reset header downloader so next sync starts from local_hash,
+                // not from a stale expected_prev_hash from a previous (failed) cycle.
+                self.header_downloader.clear();
+                // If stuck in Processing, count toward deep fork detection.
+                // The node downloaded a chain it can't apply — this is fork evidence.
+                if was_processing {
+                    self.consecutive_empty_headers += 1;
+                    info!(
+                        "Stuck Processing counted as fork signal (consecutive_empty_headers={})",
+                        self.consecutive_empty_headers
+                    );
+                }
             }
         }
 
