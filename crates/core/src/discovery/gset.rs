@@ -143,10 +143,7 @@ impl ProducerGSet {
 
         // Step 1: Verify signature
         if !announcement.verify() {
-            info!(
-                "GSet merge_one {}: REJECT invalid_signature",
-                pubkey_hex
-            );
+            info!("GSet merge_one {}: REJECT invalid_signature", pubkey_hex);
             return Err(ProducerSetError::InvalidSignature);
         }
 
@@ -168,7 +165,9 @@ impl ProducerGSet {
         if announcement.timestamp + MAX_ANNOUNCEMENT_AGE_SECS < now {
             info!(
                 "GSet merge_one {}: REJECT stale ts={} now={} age={}s",
-                pubkey_hex, announcement.timestamp, now,
+                pubkey_hex,
+                announcement.timestamp,
+                now,
                 now.saturating_sub(announcement.timestamp)
             );
             return Err(ProducerSetError::StaleAnnouncement);
