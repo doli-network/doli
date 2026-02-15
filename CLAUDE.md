@@ -17,6 +17,10 @@ When asked to implement something:
 
 If something is broken after deployment, STOP and report. Do not attempt fixes autonomously.
 
+## MANDATORY: Ops Runbook
+
+**Before ANY deployment, node management, upgrade, or infrastructure task**, read `.claude/skills/doli-ops/SKILL.md`. It contains exact CLI syntax (flag order matters!), node SSH details, deployment checklists, and troubleshooting procedures.
+
 # FIRST PRINCIPLE:
 Elon Musk says: The best engine part is the one you can remove. In other words, less is more! Let this be our approach, even for the most complex problems: Always opt for the simplest solution without compromising safety.
 
