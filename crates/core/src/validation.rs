@@ -416,6 +416,10 @@ pub struct ValidationContext {
     /// Active producers with their effective weights for weighted selection (Option C).
     /// If set, weighted selection is used for anti-grinding protection.
     pub active_producers_weighted: Vec<(crypto::PublicKey, u64)>,
+    /// Bootstrap producers (sorted by pubkey) for fallback rank validation during bootstrap.
+    /// When non-empty, bootstrap validation uses deterministic fallback ranks instead of
+    /// accepting any producer. Populated from GSet/known_producers in the node layer.
+    pub bootstrap_producers: Vec<crypto::PublicKey>,
     /// Registration chain state for chained VDF anti-Sybil verification.
     pub registration_chain: RegistrationChainState,
 }
@@ -439,6 +443,7 @@ impl ValidationContext {
             prev_hash: crypto::Hash::ZERO,
             active_producers: Vec::new(),
             active_producers_weighted: Vec::new(),
+            bootstrap_producers: Vec::new(),
             registration_chain: RegistrationChainState::default(),
         }
     }
@@ -469,6 +474,14 @@ impl ValidationContext {
         // Also populate legacy field for backward compatibility
         self.active_producers = producers.iter().map(|(pk, _)| *pk).collect();
         self.active_producers_weighted = producers;
+        self
+    }
+
+    /// Set bootstrap producers for fallback rank validation during bootstrap.
+    /// Producers must be sorted by pubkey (same order used by production side).
+    #[must_use]
+    pub fn with_bootstrap_producers(mut self, producers: Vec<crypto::PublicKey>) -> Self {
+        self.bootstrap_producers = producers;
         self
     }
 
@@ -2074,20 +2087,91 @@ fn validate_vdf(header: &BlockHeader, network: Network) -> Result<(), Validation
     Ok(())
 }
 
+/// Compute the bootstrap fallback rank order for a slot.
+///
+/// Returns a deduped list of producers in fallback rank order:
+/// rank 0 = `sorted_producers[slot % n]`, rank 1 = `sorted_producers[(slot+1) % n]`, etc.
+/// At most `MAX_FALLBACK_RANKS` entries, deduplicated (important when n < MAX_FALLBACK_RANKS).
+///
+/// Both the production and validation sides must use this same function to ensure consensus.
+pub fn bootstrap_fallback_order(
+    slot: u32,
+    sorted_producers: &[crypto::PublicKey],
+) -> Vec<crypto::PublicKey> {
+    let n = sorted_producers.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let max_ranks = crate::consensus::MAX_FALLBACK_RANKS;
+    let mut result = Vec::with_capacity(max_ranks.min(n));
+    for rank in 0..max_ranks {
+        let idx = ((slot as usize) + rank) % n;
+        let pk = sorted_producers[idx];
+        if !result.contains(&pk) {
+            result.push(pk);
+        }
+    }
+    result
+}
+
+/// Validate a block's producer during bootstrap using fallback rank windows.
+///
+/// Same 2-second exclusive windows as the epoch scheduler:
+/// rank 0 → 0-2s, rank 1 → 2-4s, rank 2 → 4-6s, etc.
+///
+/// If no bootstrap_producers are set, falls back to accepting any producer
+/// (backward compatibility for blocks produced before this fix).
+fn validate_bootstrap_producer(
+    header: &BlockHeader,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    // No bootstrap list → accept any producer (pre-fix blocks / early genesis)
+    if ctx.bootstrap_producers.is_empty() {
+        return Ok(());
+    }
+
+    // Producer must be in the known set
+    if !ctx.bootstrap_producers.contains(&header.producer) {
+        return Err(ValidationError::InvalidProducer);
+    }
+
+    // Compute fallback order for this slot
+    let eligible = bootstrap_fallback_order(header.slot, &ctx.bootstrap_producers);
+
+    if eligible.is_empty() {
+        return Err(ValidationError::InvalidProducer);
+    }
+
+    // Validate time window: producer's rank must match the block's timestamp offset
+    let slot_start = ctx.params.slot_to_timestamp(header.slot);
+    let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
+    let slot_offset_ms_low = slot_offset_secs * 1000;
+    let slot_offset_ms_high = slot_offset_ms_low + 999;
+
+    if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
+        && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
+    {
+        return Err(ValidationError::InvalidProducer);
+    }
+
+    Ok(())
+}
+
 /// Validate that the block producer is eligible for the slot.
 ///
 /// This checks that:
-/// 1. The producer is in the top 3 eligible producers for the slot
+/// 1. The producer is in the eligible fallback list for the slot
 /// 2. The block timestamp falls within the producer's allowed window
 ///
-/// During bootstrap (height < BOOTSTRAP_BLOCKS), any producer is allowed.
+/// During bootstrap, uses the same 2-second fallback rank windows as the epoch
+/// scheduler but with the GSet-derived producer list instead of bond-weighted tickets.
 pub fn validate_producer_eligibility(
     header: &BlockHeader,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
-    // During bootstrap, anyone can produce
+    // During bootstrap, validate using fallback ranks from GSet producer list
     if ctx.params.is_bootstrap(ctx.current_height) {
-        return Ok(());
+        return validate_bootstrap_producer(header, ctx);
     }
 
     // If no active producers are set, skip validation

@@ -2157,7 +2157,7 @@ impl Node {
     /// Check producer eligibility for a received block.
     ///
     /// Builds a lightweight ValidationContext and calls validate_producer_eligibility.
-    /// Returns Ok(()) during bootstrap (anyone can produce) or when no producers are known.
+    /// During bootstrap, validates using fallback rank windows from the GSet producer list.
     async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
         let state = self.chain_state.read().await;
         let height = state.best_height + 1;
@@ -2169,11 +2169,24 @@ impl Node {
             .iter()
             .map(|p| (p.public_key, p.bond_count as u64))
             .collect();
+        drop(producers);
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+
+        // Build bootstrap producer list from GSet (same source as production side).
+        // Must be sorted by pubkey for deterministic fallback rank order.
+        let mut bootstrap_producers = {
+            let gset = self.producer_gset.read().await;
+            gset.active_producers(7200) // 2h liveness window, same as production
+        };
+        if bootstrap_producers.is_empty() {
+            let known = self.known_producers.read().await;
+            bootstrap_producers = known.clone();
+        }
+        bootstrap_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
         let mut ctx = validation::ValidationContext::new(
             ConsensusParams::for_network(self.config.network),
@@ -2181,7 +2194,8 @@ impl Node {
             now,
             height,
         )
-        .with_producers_weighted(weighted);
+        .with_producers_weighted(weighted)
+        .with_bootstrap_producers(bootstrap_producers);
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -3381,30 +3395,30 @@ impl Node {
                         warn!("Bootstrap round-robin: no eligible producers after filtering, skipping slot {}", current_slot);
                         return Ok(());
                     }
-                    let leader_index = (current_slot as usize) % num_producers;
-                    let designated_leader = &known_producers[leader_index];
 
-                    let is_our_turn = designated_leader == &our_pubkey;
+                    // Build fallback rank order: same 2-second windows as epoch scheduler.
+                    // rank 0 = slot % n, rank 1 = (slot+1) % n, etc.
+                    // Uses shared function from validation to guarantee consensus.
+                    let eligible = doli_core::validation::bootstrap_fallback_order(
+                        current_slot,
+                        &known_producers,
+                    );
 
-                    if !is_our_turn {
-                        let leader_hash = crypto_hash(designated_leader.as_bytes()).to_hex();
-                        debug!(
-                            "SKIP_NOT_LEADER: slot={}, producers={}, leader_index={}, leader={}",
-                            current_slot,
-                            num_producers,
-                            leader_index,
-                            &leader_hash[..8]
-                        );
+                    if !eligible.contains(&our_pubkey) {
                         return Ok(());
                     }
 
                     debug!(
-                        "Bootstrap round-robin: slot={}, {} known producers, leader_index={}, producing",
-                        current_slot, num_producers, leader_index
+                        "Bootstrap fallback: slot={}, {} producers, eligible={}",
+                        current_slot,
+                        num_producers,
+                        eligible.len()
                     );
 
-                    // It's our turn - produce immediately (score 0)
-                    (vec![our_pubkey], Some(0))
+                    // Pass eligible list to the standard time-window check below.
+                    // our_bootstrap_rank = None means it uses is_producer_eligible_ms
+                    // (the same 2s exclusive windows as the epoch scheduler).
+                    (eligible, None::<u8>)
                 }
             }
         } else {
