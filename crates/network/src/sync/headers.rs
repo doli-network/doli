@@ -154,6 +154,11 @@ impl HeaderDownloader {
         self.expected_prev_hash = None;
     }
 
+    /// Set the expected prev_hash for the next batch of headers
+    pub fn set_expected_prev_hash(&mut self, hash: Hash) {
+        self.expected_prev_hash = Some(hash);
+    }
+
     /// Get the hash we expect next header to follow
     pub fn expected_prev_hash(&self) -> Option<Hash> {
         self.expected_prev_hash
