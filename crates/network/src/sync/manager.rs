@@ -307,6 +307,10 @@ pub struct SyncManager {
     /// When >= 3, we're on a deep fork and need genesis resync.
     consecutive_empty_headers: u32,
 
+    /// Flag set when genesis fallback confirms peers reject our chain —
+    /// node must call force_resync_from_genesis().
+    needs_genesis_resync: bool,
+
     /// Retry counter for body download stalls (DownloadingBodies).
     /// Reset when blocks are applied. After a few retries, we fall back
     /// to the existing hard reset-to-Idle behavior to avoid infinite loops.
@@ -317,9 +321,6 @@ pub struct SyncManager {
     peers_lost_at: Option<Instant>,
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
-    /// Genesis block hash — used as fallback start_hash when peer doesn't
-    /// recognize our chain tip (consecutive_empty_headers >= 3).
-    genesis_hash: Hash,
 }
 
 impl SyncManager {
@@ -378,10 +379,10 @@ impl SyncManager {
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             consecutive_empty_headers: 0,
+            needs_genesis_resync: false,
             body_stall_retries: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
-            genesis_hash,
         }
     }
 
@@ -1287,11 +1288,17 @@ impl SyncManager {
         self.consecutive_empty_headers
     }
 
+    /// Check if sync manager has signaled that a full genesis resync is needed
+    pub fn needs_genesis_resync(&self) -> bool {
+        self.needs_genesis_resync
+    }
+
     /// Reset sync state after a shallow fork rollback.
     /// Clears the fork signal counters, resets downloaders, and returns to Idle
     /// so sync can restart from the new (rolled-back) tip.
     pub fn reset_sync_for_rollback(&mut self) {
         self.consecutive_empty_headers = 0;
+        self.needs_genesis_resync = false;
         self.consecutive_sync_failures = 0;
         self.state = SyncState::Idle;
         self.pending_headers.clear();
@@ -1510,20 +1517,19 @@ impl SyncManager {
                 let peer = *peer;
 
                 // After 3+ consecutive empty responses, peer doesn't recognize our tip.
-                // Fall back to genesis hash so we can resync the full chain.
-                let start_hash = if self.consecutive_empty_headers >= 3 {
+                // Signal the node for a full genesis resync instead of trying to
+                // download headers from genesis (which fails because the downloaded
+                // chain can't be applied on top of the existing local state).
+                if self.consecutive_empty_headers >= 3 {
                     info!(
-                        "Genesis fallback: {} consecutive empty headers, syncing from genesis",
+                        "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
                         self.consecutive_empty_headers
                     );
-                    // Reset header downloader and set expected_prev_hash to genesis
-                    // so process_headers accepts headers starting from genesis
-                    self.header_downloader.clear();
-                    self.header_downloader.set_expected_prev_hash(self.genesis_hash);
-                    self.genesis_hash
-                } else {
-                    self.local_hash
-                };
+                    self.needs_genesis_resync = true;
+                    self.state = SyncState::Idle;
+                    return None;
+                }
+                let start_hash = self.local_hash;
                 let request = self.header_downloader.create_request(start_hash);
 
                 if let Some(req) = request {
@@ -1940,6 +1946,7 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
+        self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
 
         // Reset stale chain timers
