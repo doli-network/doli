@@ -4478,6 +4478,18 @@ impl Node {
             return Ok(());
         }
 
+        // GENESIS RESYNC: sync manager detected persistent chain rejection.
+        // Peers don't recognize our tip and the gap is too large for shallow fork recovery.
+        // Full state reset needed — force_resync_from_genesis() handles the 10-layer reset.
+        {
+            let needs_resync = self.sync_manager.read().await.needs_genesis_resync();
+            if needs_resync {
+                warn!("Genesis resync triggered: peers consistently reject our chain tip. Full state reset.");
+                self.force_resync_from_genesis().await?;
+                return Ok(());
+            }
+        }
+
         // DEEP FORK ESCALATION: If peers consistently reject our chain tip (10+ empty
         // header responses), normal sync and fork recovery can't bridge the gap.
         // Escalate to genesis resync — rebuild state from the canonical chain.
