@@ -1516,11 +1516,11 @@ impl SyncManager {
             SyncState::DownloadingHeaders { peer, .. } => {
                 let peer = *peer;
 
-                // After 3+ consecutive empty responses, peer doesn't recognize our tip.
+                // After 10+ consecutive empty responses, peer doesn't recognize our tip.
                 // Signal the node for a full genesis resync instead of trying to
                 // download headers from genesis (which fails because the downloaded
                 // chain can't be applied on top of the existing local state).
-                if self.consecutive_empty_headers >= 3 {
+                if self.consecutive_empty_headers >= 10 {
                     info!(
                         "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
                         self.consecutive_empty_headers
