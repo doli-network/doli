@@ -303,6 +303,11 @@ pub struct SyncManager {
     /// Unlike `last_block_seen` (reset by gossip), this only resets on actual chain advancement.
     last_block_applied: Instant,
 
+    /// Last time any sync progress occurred (headers received, bodies received, blocks applied).
+    /// Used by cleanup() to detect truly stuck sync — unlike `last_block_applied`, this covers
+    /// all phases of header-first sync, not just the final block-application phase.
+    last_sync_activity: Instant,
+
     /// Consecutive empty header responses (peers don't recognize our chain tip).
     /// When >= 10, we're on a deep fork and need genesis resync.
     /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
@@ -379,6 +384,7 @@ impl SyncManager {
             fork_recovery: super::fork_recovery::ForkRecoveryTracker::new(),
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
+            last_sync_activity: Instant::now(),
             consecutive_empty_headers: 0,
             needs_genesis_resync: false,
             body_stall_retries: 0,
@@ -1342,6 +1348,7 @@ impl SyncManager {
         );
         self.last_block_seen = Instant::now();
         self.last_block_applied = Instant::now();
+        self.last_sync_activity = Instant::now();
     }
 
     /// Human-readable sync state name for diagnostics
@@ -1518,10 +1525,11 @@ impl SyncManager {
                     headers_count: 0,
                 };
 
-                // Reset the stuck-sync timer so this new attempt gets a full 30s
-                // window before cleanup() declares it stuck. Without this, a node
+                // Reset the stuck-sync timer so this new attempt gets a full window
+                // before cleanup() declares it stuck. Without this, a node
                 // that hasn't applied blocks recently (e.g. after genesis resync)
                 // would have its sync attempt killed immediately by cleanup().
+                self.last_sync_activity = Instant::now();
                 self.last_block_applied = Instant::now();
             }
         }
@@ -1738,6 +1746,7 @@ impl SyncManager {
         if valid_count > 0 {
             // Successfully received valid headers — reset fork counter
             self.consecutive_empty_headers = 0;
+            self.last_sync_activity = Instant::now();
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -1783,6 +1792,7 @@ impl SyncManager {
         }
 
         info!("Received {} bodies from {}", bodies.len(), peer);
+        self.last_sync_activity = Instant::now();
 
         // Process through body_downloader to update its internal state
         let processed_bodies = self.body_downloader.process_response(peer, bodies);
@@ -1899,6 +1909,7 @@ impl SyncManager {
         self.local_slot = slot;
         self.blocks_applied += 1;
         self.last_block_applied = Instant::now();
+        self.last_sync_activity = Instant::now();
         self.body_stall_retries = 0;
 
         // Applying a block means the chain is advancing — reset fork counter.
@@ -2016,6 +2027,7 @@ impl SyncManager {
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
         self.last_block_applied = Instant::now();
+        self.last_sync_activity = Instant::now();
 
         // Reset downloaders
         self.header_downloader = HeaderDownloader::new(
@@ -2142,16 +2154,16 @@ impl SyncManager {
             }
         }
 
-        // Escape stuck sync states: if we're syncing and no blocks have been
-        // APPLIED for 30s, either soft-retry the missing bodies or hard-reset.
+        // Escape stuck sync states: if we're syncing and no sync progress for 30s,
+        // either soft-retry the missing bodies or hard-reset.
         //
-        // CRITICAL: We check `last_block_applied` (not `last_block_seen`) because gossip
-        // blocks keep resetting `last_block_seen` every few seconds, preventing the timeout
-        // from ever firing — even though those gossip blocks can't be applied because the
-        // node is stuck at a lower height. This was causing permanent deadlocks in Processing
-        // state where the node would receive gossip blocks indefinitely but never advance.
+        // We use `last_sync_activity` which tracks ALL phases of header-first sync:
+        // headers received, bodies received, and blocks applied. Previously this used
+        // `last_block_applied` which only tracked the final phase, causing false "stuck"
+        // detection during the header download phase (no blocks applied yet, but headers
+        // were streaming in). This nuked 20-30K downloaded headers every 30s.
         let stuck_threshold = Duration::from_secs(30);
-        if self.state.is_syncing() && self.last_block_applied.elapsed() > stuck_threshold {
+        if self.state.is_syncing() && self.last_sync_activity.elapsed() > stuck_threshold {
             let was_processing = matches!(self.state, SyncState::Processing { .. });
             let is_downloading_bodies = matches!(self.state, SyncState::DownloadingBodies { .. });
             let have_pending_headers = !self.pending_headers.is_empty();
@@ -2210,6 +2222,7 @@ impl SyncManager {
 
                 // Reset timer and stay in DownloadingBodies.
                 self.last_block_applied = Instant::now();
+                self.last_sync_activity = Instant::now();
                 let total = self.pending_headers.len();
                 let pending = self.headers_needing_bodies.len();
                 self.state = SyncState::DownloadingBodies { pending, total };
@@ -2226,10 +2239,10 @@ impl SyncManager {
             } else {
                 // Hard reset (existing behavior).
                 warn!(
-                    "Sync stuck in {:?} for >30s with no blocks applied \
-                     (last_applied={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
+                    "Sync stuck in {:?} for >30s with no progress \
+                     (last_activity={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
                     self.state,
-                    self.last_block_applied.elapsed(),
+                    self.last_sync_activity.elapsed(),
                     self.local_height,
                     self.network_tip_height
                 );
@@ -2834,8 +2847,9 @@ mod tests {
         manager.local_slot = 60;
         manager.network_tip_height = 65;
         manager.network_tip_slot = 70;
-        // Simulate stuck state: last block applied >30s ago
+        // Simulate stuck state: no sync activity for >30s
         manager.last_block_applied = Instant::now() - Duration::from_secs(60);
+        manager.last_sync_activity = Instant::now() - Duration::from_secs(60);
 
         let peer = PeerId::random();
         manager.peers.insert(
