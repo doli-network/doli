@@ -1769,17 +1769,34 @@ impl SyncManager {
             }
         } else {
             // CHAIN BREAK: Received headers but none chain to our expected_prev_hash.
-            // This is distinct from empty responses (peer rejects our tip).
-            // Common causes: stale/out-of-order response, or peer chain diverged.
-            // Recovery: clear stale downloader state, reset to Idle, try another peer.
+            // Most likely cause: stale response from an earlier request whose
+            // expected_prev_hash has since advanced.
+            //
+            // Key insight: process_headers() does NOT modify expected_prev_hash when
+            // valid_count == 0. So the downloader state is still correct — just skip
+            // this stale response and let the next (current) response continue.
+            //
+            // Only escalate if chain breaks persist beyond a threshold, which would
+            // indicate a real chain divergence rather than stale responses.
             self.consecutive_chain_breaks += 1;
             warn!(
                 "No valid headers from peer {} - header chain broken (consecutive_chain_breaks={}). \
-                 Clearing downloader and resetting to Idle.",
+                 Skipping stale response — expected_prev_hash is still valid.",
                 peer, self.consecutive_chain_breaks
             );
-            self.header_downloader.clear();
-            self.state = SyncState::Idle;
+
+            // After many consecutive breaks with NO valid headers in between,
+            // this is likely a real divergence, not stale responses. Reset.
+            if self.consecutive_chain_breaks >= 10 {
+                warn!(
+                    "Persistent chain breaks ({}) — clearing downloader and resetting to Idle",
+                    self.consecutive_chain_breaks
+                );
+                self.header_downloader.clear();
+                self.state = SyncState::Idle;
+            }
+            // Otherwise: do nothing. expected_prev_hash is preserved, state stays
+            // DownloadingHeaders, and the next valid response will continue the chain.
         }
     }
 
@@ -2941,8 +2958,10 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_break_clears_downloader_and_resets_to_idle() {
-        // Fix 2: "header chain broken" must clear downloader and go to Idle
+    fn test_chain_break_preserves_state_on_stale_response() {
+        // Fix 2: A single chain break (stale response) must NOT destroy progress.
+        // process_headers() doesn't modify expected_prev_hash when valid_count=0,
+        // so the downloader state is still correct — just skip and continue.
         let genesis = Hash::zero();
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
@@ -2950,26 +2969,66 @@ mod tests {
         manager.add_peer(peer, 1000, Hash::zero(), 1000);
         manager.start_sync();
 
-        // Send request so peer has pending_request
+        // First: download some valid headers to build up state
         let _ = manager.next_request();
+        let chain = build_header_chain(genesis, 5);
+        let expected_hash = chain[4].hash();
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(chain));
 
-        // Simulate response with headers that don't chain to our tip
+        // Verify we have progress
+        assert!(matches!(
+            manager.state,
+            SyncState::DownloadingHeaders {
+                headers_count: 5,
+                ..
+            }
+        ));
+
+        // Now: simulate a stale response (doesn't chain)
+        let _ = manager.next_request();
         let wrong_prev = Hash::from_bytes([0xAB; 32]);
         let bad_headers = vec![create_test_header(wrong_prev, 1)];
-
         let _blocks = manager.handle_response(peer, SyncResponse::Headers(bad_headers));
 
-        // Verify: state should be Idle (not stuck in DownloadingHeaders)
-        assert_eq!(
-            manager.state,
-            SyncState::Idle,
-            "Chain break must reset state to Idle"
+        // Verify: state STAYS in DownloadingHeaders (not reset to Idle)
+        assert!(
+            matches!(manager.state, SyncState::DownloadingHeaders { .. }),
+            "Single chain break must NOT reset state — got {:?}",
+            manager.state
         );
         // Verify: chain_breaks counter incremented
         assert_eq!(manager.consecutive_chain_breaks, 1);
-        // Verify: empty_headers NOT incremented (this is a chain break, not empty)
+        // Verify: empty_headers NOT incremented
         assert_eq!(manager.consecutive_empty_headers, 0);
-        // Verify: header downloader was cleared (expected_prev_hash is None)
+        // Verify: expected_prev_hash PRESERVED (not cleared)
+        assert_eq!(
+            manager.header_downloader.expected_prev_hash(),
+            Some(expected_hash),
+            "expected_prev_hash must be preserved after stale response"
+        );
+    }
+
+    #[test]
+    fn test_persistent_chain_breaks_escalate_to_reset() {
+        // Fix 2: After 10 consecutive chain breaks, escalate to full reset.
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.start_sync();
+
+        // Send 10 chain-breaking responses
+        for _ in 0..10 {
+            let _ = manager.next_request();
+            let wrong_prev = Hash::from_bytes([0xAB; 32]);
+            let bad_headers = vec![create_test_header(wrong_prev, 1)];
+            let _blocks = manager.handle_response(peer, SyncResponse::Headers(bad_headers));
+        }
+
+        // After 10 breaks, should escalate: clear downloader + Idle
+        assert_eq!(manager.consecutive_chain_breaks, 10);
+        assert_eq!(manager.state, SyncState::Idle);
         assert_eq!(manager.header_downloader.expected_prev_hash(), None);
     }
 
