@@ -3,10 +3,11 @@
 //! Combines all libp2p behaviours into a single network behaviour.
 
 use libp2p::{
-    connection_limits,
-    gossipsub::{self, Behaviour as Gossipsub},
+    autonat, connection_limits, dcutr,
+    gossipsub::Behaviour as Gossipsub,
     identify::{self, Behaviour as Identify},
-    kad::{self, store::MemoryStore, Behaviour as Kademlia},
+    kad::{store::MemoryStore, Behaviour as Kademlia},
+    relay,
     request_response::{self, Behaviour as RequestResponse, ProtocolSupport},
     swarm::NetworkBehaviour,
     StreamProtocol,
@@ -41,15 +42,32 @@ pub struct DoliBehaviour {
 
     /// Request-response for sync protocol
     pub sync: RequestResponse<SyncCodec>,
+
+    /// Relay client — use relays for NAT traversal
+    pub relay_client: relay::client::Behaviour,
+
+    /// Relay server — act as a relay for other nodes (bootstrap/public nodes)
+    pub relay_server: relay::Behaviour,
+
+    /// DCUtR — direct connection upgrade through relay (hole punching)
+    pub dcutr: dcutr::Behaviour,
+
+    /// AutoNAT — automatic NAT status detection
+    pub autonat: autonat::Behaviour,
 }
 
 impl DoliBehaviour {
     /// Create a new DOLI behaviour
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gossipsub: Gossipsub,
         kademlia: Kademlia<MemoryStore>,
         local_public_key: libp2p::identity::PublicKey,
         connection_limits: connection_limits::Behaviour,
+        relay_client: relay::client::Behaviour,
+        relay_server: relay::Behaviour,
+        dcutr: dcutr::Behaviour,
+        autonat: autonat::Behaviour,
     ) -> Self {
         // Identify behaviour configuration
         let identify = Identify::new(
@@ -82,68 +100,10 @@ impl DoliBehaviour {
             identify,
             status,
             sync,
+            relay_client,
+            relay_server,
+            dcutr,
+            autonat,
         }
-    }
-}
-
-/// Events from the network behaviour
-#[derive(Debug)]
-pub enum BehaviourEvent {
-    /// GossipSub event
-    Gossipsub(gossipsub::Event),
-    /// Kademlia event
-    Kademlia(kad::Event),
-    /// Identify event
-    Identify(identify::Event),
-    /// Status request-response event
-    Status(
-        request_response::Event<crate::protocols::StatusRequest, crate::protocols::StatusResponse>,
-    ),
-    /// Sync request-response event
-    Sync(request_response::Event<crate::protocols::SyncRequest, crate::protocols::SyncResponse>),
-}
-
-impl From<gossipsub::Event> for BehaviourEvent {
-    fn from(event: gossipsub::Event) -> Self {
-        BehaviourEvent::Gossipsub(event)
-    }
-}
-
-impl From<kad::Event> for BehaviourEvent {
-    fn from(event: kad::Event) -> Self {
-        BehaviourEvent::Kademlia(event)
-    }
-}
-
-impl From<identify::Event> for BehaviourEvent {
-    fn from(event: identify::Event) -> Self {
-        BehaviourEvent::Identify(event)
-    }
-}
-
-impl
-    From<request_response::Event<crate::protocols::StatusRequest, crate::protocols::StatusResponse>>
-    for BehaviourEvent
-{
-    fn from(
-        event: request_response::Event<
-            crate::protocols::StatusRequest,
-            crate::protocols::StatusResponse,
-        >,
-    ) -> Self {
-        BehaviourEvent::Status(event)
-    }
-}
-
-impl From<request_response::Event<crate::protocols::SyncRequest, crate::protocols::SyncResponse>>
-    for BehaviourEvent
-{
-    fn from(
-        event: request_response::Event<
-            crate::protocols::SyncRequest,
-            crate::protocols::SyncResponse,
-        >,
-    ) -> Self {
-        BehaviourEvent::Sync(event)
     }
 }
