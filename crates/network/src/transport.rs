@@ -1,12 +1,15 @@
 //! Transport layer configuration
 //!
 //! DNS/TCP + Noise encryption + Yamux multiplexing stack for DOLI P2P.
+//! Optionally composes a relay client transport for NAT traversal.
 
-use libp2p::{core::upgrade, dns, identity::Keypair, noise, tcp, yamux, PeerId, Transport};
+use libp2p::{core::upgrade, dns, identity::Keypair, noise, relay, tcp, yamux, PeerId, Transport};
 
-/// Build the transport stack: DNS/TCP + Noise + Yamux
+/// Build the transport stack: DNS/TCP + Noise + Yamux, optionally composed
+/// with a relay client transport for NAT traversal.
 pub fn build_transport(
     keypair: &Keypair,
+    relay_transport: Option<relay::client::Transport>,
 ) -> std::io::Result<libp2p::core::transport::Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>>
 {
     let tcp_config = tcp::Config::default().nodelay(true);
@@ -19,11 +22,31 @@ pub fn build_transport(
 
     let yamux_config = yamux::Config::default();
 
-    let transport = dns_transport
+    let base = dns_transport
         .upgrade(upgrade::Version::V1)
         .authenticate(noise_config)
         .multiplex(yamux_config)
         .boxed();
+
+    let transport = match relay_transport {
+        Some(relay) => {
+            let relay_boxed = relay
+                .upgrade(upgrade::Version::V1)
+                .authenticate(
+                    noise::Config::new(keypair)
+                        .expect("Noise config should be valid with ed25519 keypair"),
+                )
+                .multiplex(yamux::Config::default())
+                .boxed();
+            base.or_transport(relay_boxed)
+                .map(|either, _| match either {
+                    futures::future::Either::Left(v) => v,
+                    futures::future::Either::Right(v) => v,
+                })
+                .boxed()
+        }
+        None => base,
+    };
 
     Ok(transport)
 }
