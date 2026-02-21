@@ -237,6 +237,127 @@ impl BlockStore {
         Ok(())
     }
 
+    /// Rebuild canonical chain index from scratch by scanning the headers CF.
+    ///
+    /// Does NOT use height_index at all. Finds the true chain tip by scanning
+    /// all headers for the one with the highest slot, then walks backwards via
+    /// prev_hash assigning heights decrementally. Overwrites height_index and
+    /// hash_to_height completely.
+    ///
+    /// Use this when height_index is corrupt (e.g., fork blocks polluted it).
+    pub fn rebuild_canonical_index(&self) -> Result<(Hash, u64), StorageError> {
+        let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+
+        // Step 1: Scan ALL headers to find the one with the highest slot (true tip).
+        info!("[REINDEX] Scanning all headers to find chain tip...");
+        let mut best_slot = 0u32;
+        let mut best_hash = Hash::ZERO;
+        let mut total_headers = 0u64;
+
+        for (key_bytes, val_bytes) in self
+            .db
+            .iterator_cf(cf_headers, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            total_headers += 1;
+            let header: BlockHeader = bincode::deserialize(&val_bytes)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+            if header.slot > best_slot {
+                best_slot = header.slot;
+                if key_bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&key_bytes);
+                    best_hash = Hash::from_bytes(arr);
+                }
+            }
+        }
+
+        if best_hash == Hash::ZERO {
+            info!("[REINDEX] No headers found — nothing to index");
+            return Ok((Hash::ZERO, 0));
+        }
+
+        info!(
+            "[REINDEX] Found {} total headers. Tip: slot={}, hash={}...",
+            total_headers,
+            best_slot,
+            &best_hash.to_string()[..16]
+        );
+
+        // Step 2: Walk backwards from tip via prev_hash, collecting the canonical chain.
+        // We collect first, then write, because we don't know the height until we
+        // reach the genesis block (prev_hash == ZERO or no parent found).
+        let mut chain: Vec<Hash> = Vec::new();
+        let mut current = best_hash;
+
+        loop {
+            chain.push(current);
+            let header = self.get_header(&current)?.ok_or_else(|| {
+                StorageError::NotFound(format!("header {} missing during reindex", current))
+            })?;
+
+            if header.prev_hash == Hash::ZERO {
+                break; // Reached genesis
+            }
+
+            // Check parent exists — if not, this is the start of our chain
+            if !self.has_block(&header.prev_hash)? {
+                break;
+            }
+
+            current = header.prev_hash;
+        }
+
+        // chain is [tip, tip-1, ..., genesis] — reverse to get [genesis, ..., tip]
+        chain.reverse();
+        let tip_height = (chain.len() - 1) as u64;
+
+        info!(
+            "[REINDEX] Canonical chain: {} blocks (height 0..={})",
+            chain.len(),
+            tip_height
+        );
+
+        // Step 3: Clear old height_index and hash_to_height, write fresh entries.
+        // Clear height_index
+        let mut clear_batch = rocksdb::WriteBatch::default();
+        for (key, _) in self
+            .db
+            .iterator_cf(cf_height, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            clear_batch.delete_cf(cf_height, &key);
+        }
+        for (key, _) in self
+            .db
+            .iterator_cf(cf_h2h, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            clear_batch.delete_cf(cf_h2h, &key);
+        }
+        self.db.write(clear_batch)?;
+
+        // Write canonical entries
+        let mut write_batch = rocksdb::WriteBatch::default();
+        for (height, hash) in chain.iter().enumerate() {
+            let h = height as u64;
+            write_batch.put_cf(cf_height, h.to_le_bytes(), hash.as_bytes());
+            write_batch.put_cf(cf_h2h, hash.as_bytes(), h.to_le_bytes());
+        }
+        self.db.write(write_batch)?;
+
+        info!(
+            "[REINDEX] Canonical index rebuilt: {} entries, tip height={}",
+            chain.len(),
+            tip_height
+        );
+
+        Ok((best_hash, tip_height))
+    }
+
     /// Get a block by hash
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, StorageError> {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
