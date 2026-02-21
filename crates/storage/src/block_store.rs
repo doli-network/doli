@@ -14,6 +14,7 @@ const CF_BODIES: &str = "bodies";
 const CF_HEIGHT_INDEX: &str = "height_index";
 const CF_SLOT_INDEX: &str = "slot_index";
 const CF_PRESENCE: &str = "presence";
+const CF_HASH_TO_HEIGHT: &str = "hash_to_height";
 
 /// Block store
 pub struct BlockStore {
@@ -33,6 +34,7 @@ impl BlockStore {
             CF_HEIGHT_INDEX,
             CF_SLOT_INDEX,
             CF_PRESENCE,
+            CF_HASH_TO_HEIGHT,
         ];
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
@@ -52,6 +54,7 @@ impl BlockStore {
             CF_HEIGHT_INDEX,
             CF_SLOT_INDEX,
             CF_PRESENCE,
+            CF_HASH_TO_HEIGHT,
         ];
 
         for cf_name in &cf_names {
@@ -106,8 +109,10 @@ impl BlockStore {
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
         self.db.put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
 
-        // NOTE: Presence storage removed - deterministic scheduler model
-        // uses coinbase rewards (100% to producer), not presence-based rewards
+        // Update hash → height reverse index (O(1) lookup for GetHeaders)
+        let cf_hash_height = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        self.db
+            .put_cf(cf_hash_height, hash_bytes, height.to_le_bytes())?;
 
         Ok(())
     }
@@ -151,6 +156,21 @@ impl BlockStore {
             bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         Ok(Some(header))
+    }
+
+    /// Get block height by hash (O(1) reverse index lookup)
+    pub fn get_height_by_hash(&self, hash: &Hash) -> Result<Option<u64>, StorageError> {
+        let cf = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        let bytes = match self.db.get_cf(cf, hash.as_bytes())? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        if bytes.len() != 8 {
+            return Err(StorageError::Serialization("invalid height length".into()));
+        }
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&bytes);
+        Ok(Some(u64::from_le_bytes(arr)))
     }
 
     /// Get block hash by height

@@ -2768,21 +2768,28 @@ impl Node {
                 let best_height = state.best_height;
                 drop(state);
 
-                // Determine starting height
-                // If start_hash is genesis, start from height 1
-                // Otherwise, find the block with this hash via height index (O(1) per lookup)
+                // Determine starting height via O(1) hash→height index.
+                // Falls back to linear scan if the index entry is missing
+                // (blocks stored before the index was added).
                 let start_height = if start_hash == genesis_hash {
                     0
                 } else {
-                    let mut found_height = None;
-                    for h in 1..=best_height {
-                        if let Ok(Some(hash)) = self.block_store.get_hash_by_height(h) {
-                            if hash == start_hash {
-                                found_height = Some(h);
-                                break;
+                    let found_height = self
+                        .block_store
+                        .get_height_by_hash(&start_hash)
+                        .ok()
+                        .flatten()
+                        .or_else(|| {
+                            // Fallback: linear scan for blocks stored before hash_to_height index
+                            for h in 1..=best_height {
+                                if let Ok(Some(hash)) = self.block_store.get_hash_by_height(h) {
+                                    if hash == start_hash {
+                                        return Some(h);
+                                    }
+                                }
                             }
-                        }
-                    }
+                            None
+                        });
                     match found_height {
                         Some(h) => h,
                         None => {
