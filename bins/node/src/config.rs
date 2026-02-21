@@ -35,6 +35,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub no_dht: bool,
 
+    /// Enable relay server mode (allow NAT'd peers to relay through this node)
+    #[serde(default)]
+    pub relay_server: bool,
+
     /// Override genesis time from chainspec (for coordinated devnet startup)
     /// When set, this overrides the dynamic genesis time calculation.
     #[serde(default)]
@@ -73,6 +77,7 @@ impl NodeConfig {
             rpc: RpcConfig::for_network(network),
             producer: None,
             no_dht: false,
+            relay_server: false,
             genesis_time_override: None,
             chainspec: None,
             slot_duration_override: None,
