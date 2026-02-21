@@ -5,6 +5,16 @@
 
 use libp2p::{core::upgrade, dns, identity::Keypair, noise, relay, tcp, yamux, PeerId, Transport};
 
+/// 1MB yamux receive window (default 256KB). Sync responses carry up to 500
+/// serialized headers (~100KB) and must fit in the yamux window even when
+/// multiple peers download simultaneously.
+#[allow(deprecated)] // set_receive_window_size will be replaced in next yamux breaking release
+fn yamux_config() -> yamux::Config {
+    let mut cfg = yamux::Config::default();
+    cfg.set_receive_window_size(1_048_576);
+    cfg
+}
+
 /// Build the transport stack: DNS/TCP + Noise + Yamux, optionally composed
 /// with a relay client transport for NAT traversal.
 pub fn build_transport(
@@ -20,12 +30,10 @@ pub fn build_transport(
     let noise_config =
         noise::Config::new(keypair).expect("Noise config should be valid with ed25519 keypair");
 
-    let yamux_config = yamux::Config::default();
-
     let base = dns_transport
         .upgrade(upgrade::Version::V1)
         .authenticate(noise_config)
-        .multiplex(yamux_config)
+        .multiplex(yamux_config())
         .boxed();
 
     let transport = match relay_transport {
@@ -36,7 +44,7 @@ pub fn build_transport(
                     noise::Config::new(keypair)
                         .expect("Noise config should be valid with ed25519 keypair"),
                 )
-                .multiplex(yamux::Config::default())
+                .multiplex(yamux_config())
                 .boxed();
             base.or_transport(relay_boxed)
                 .map(|either, _| match either {
