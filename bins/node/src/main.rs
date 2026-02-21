@@ -174,6 +174,14 @@ enum Commands {
         yes: bool,
     },
 
+    /// Rebuild canonical chain index from block headers
+    ///
+    /// Scans all headers in the block store (by hash, NOT by height_index),
+    /// finds the true chain tip (highest slot), walks backwards via prev_hash
+    /// to assign heights. Fixes corrupt height_index caused by fork blocks.
+    /// Does NOT touch headers, bodies, UTXO, or producer data.
+    Reindex,
+
     /// Local devnet management commands
     Devnet {
         #[command(subcommand)]
@@ -485,6 +493,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
+        }
+        Some(Commands::Reindex) => {
+            reindex_canonical_chain(&data_dir)?;
         }
         Some(Commands::Devnet { action }) => {
             handle_devnet_command(action).await?;
@@ -1834,6 +1845,34 @@ fn init_data_dir(data_dir: &PathBuf, network: Network) -> Result<()> {
     Ok(())
 }
 
+fn reindex_canonical_chain(data_dir: &PathBuf) -> Result<()> {
+    use storage::BlockStore;
+
+    println!("=== DOLI Canonical Chain Reindex ===");
+    println!();
+    println!("Data directory: {:?}", data_dir);
+
+    let blocks_path = data_dir.join("blocks");
+    if !blocks_path.exists() {
+        return Err(anyhow!(
+            "Blocks directory not found: {:?}. Nothing to reindex.",
+            blocks_path
+        ));
+    }
+
+    let block_store = BlockStore::open(&blocks_path)?;
+    let (tip_hash, tip_height) = block_store.rebuild_canonical_index()?;
+
+    println!();
+    println!("=== Reindex Complete ===");
+    println!("  Tip hash:   {}", tip_hash);
+    println!("  Tip height: {}", tip_height);
+    println!();
+    println!("Run 'doli-node recover --yes' next to rebuild UTXO/producer state.");
+
+    Ok(())
+}
+
 fn show_status(data_dir: &PathBuf) -> Result<()> {
     info!("Showing status for: {:?}", data_dir);
 
@@ -1984,6 +2023,17 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
         }
     }
 
+    // Step 1: Rebuild canonical chain index from headers (fixes corrupt height_index)
+    println!();
+    println!("Rebuilding canonical chain index from headers...");
+    let (reindex_tip, reindex_height) = block_store.rebuild_canonical_index()?;
+    println!(
+        "  Canonical chain: {} blocks, tip={}",
+        reindex_height + 1,
+        &reindex_tip.to_string()[..16]
+    );
+
+    // Step 2: Replay blocks using the now-correct height_index
     println!();
     println!("Rebuilding state from blocks...");
 
@@ -2077,12 +2127,6 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
         }
     }
     println!();
-
-    // Rebuild canonical chain index (height_index + hash_to_height)
-    // This fixes any fork contamination in the height_index from prior runs.
-    println!("Rebuilding canonical chain index...");
-    block_store.set_canonical_chain(chain_state.best_hash, chain_state.best_height)?;
-    println!("  Canonical chain index rebuilt");
 
     // Save recovered state
     println!();
