@@ -198,6 +198,8 @@ struct PendingRequest {
     peer: PeerId,
     request: SyncRequest,
     sent_at: Instant,
+    /// Sync epoch when this request was created. Responses from old epochs are discarded.
+    epoch: u64,
 }
 
 /// Sync manager
@@ -317,6 +319,11 @@ pub struct SyncManager {
     /// node must call force_resync_from_genesis().
     needs_genesis_resync: bool,
 
+    /// Monotonic epoch counter incremented on every new sync cycle (start_sync).
+    /// Requests are tagged with the epoch they belong to; responses from old
+    /// epochs are discarded to prevent stale data from corrupting the current cycle.
+    sync_epoch: u64,
+
     /// Retry counter for body download stalls (DownloadingBodies).
     /// Reset when blocks are applied. After a few retries, we fall back
     /// to the existing hard reset-to-Idle behavior to avoid infinite loops.
@@ -387,6 +394,7 @@ impl SyncManager {
             last_sync_activity: Instant::now(),
             consecutive_empty_headers: 0,
             needs_genesis_resync: false,
+            sync_epoch: 0,
             body_stall_retries: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
@@ -1510,9 +1518,13 @@ impl SyncManager {
     fn start_sync(&mut self) {
         if let Some(peer) = self.best_peer() {
             if let Some(status) = self.peers.get(&peer) {
+                // New epoch: any in-flight responses from previous cycles will be
+                // discarded because their epoch won't match.
+                self.sync_epoch += 1;
+
                 info!(
-                    "Starting sync with peer {} (height {}, slot {})",
-                    peer, status.best_height, status.best_slot
+                    "Starting sync epoch {} with peer {} (height {}, slot {})",
+                    self.sync_epoch, peer, status.best_height, status.best_slot
                 );
 
                 // Clean slate: clear stale expected_prev_hash from any previous
@@ -1630,6 +1642,7 @@ impl SyncManager {
                 peer,
                 request,
                 sent_at: Instant::now(),
+                epoch: self.sync_epoch,
             },
         );
 
@@ -1646,18 +1659,25 @@ impl SyncManager {
         );
 
         // Clear pending request for this peer and remove from tracking map.
-        // If the peer has no pending_request, this response is stale (from an
-        // orphaned request whose ID was overwritten). Track this for the filter below.
-        let had_pending_request = if let Some(status) = self.peers.get_mut(&peer) {
+        // Check both: (1) a pending request exists, and (2) it belongs to the
+        // current sync epoch. Responses from old epochs are stale and must be
+        // discarded to prevent corrupting the current cycle's header chain.
+        let request_epoch = if let Some(status) = self.peers.get_mut(&peer) {
             if let Some(req_id) = status.pending_request.take() {
-                self.pending_requests.remove(&req_id);
-                true
+                let epoch = self
+                    .pending_requests
+                    .remove(&req_id)
+                    .map(|r| r.epoch)
+                    .unwrap_or(0);
+                Some(epoch)
             } else {
-                false
+                None
             }
         } else {
-            false
+            None
         };
+
+        let is_current_epoch = request_epoch == Some(self.sync_epoch);
 
         match response {
             SyncResponse::Headers(headers) => {
@@ -1665,13 +1685,17 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling headers response: count={}",
                     headers.len()
                 );
-                // Stale response filter: if the peer had no pending_request when
-                // this response arrived, it's from an orphaned request. Discard it
-                // to prevent stale data from corrupting the HeaderDownloader state.
-                if !had_pending_request {
+                // Discard responses from old sync epochs or orphaned requests.
+                // After a reset, stale responses from the previous cycle arrive
+                // with headers that don't chain from local_hash, poisoning the
+                // new cycle. The epoch check catches these definitively.
+                if !is_current_epoch {
                     debug!(
-                        "Discarding stale headers response from {} ({} headers) — no matching pending request",
-                        peer, headers.len()
+                        "Discarding stale headers from {} ({} headers) — epoch {:?} != current {}",
+                        peer,
+                        headers.len(),
+                        request_epoch,
+                        self.sync_epoch
                     );
                     return vec![];
                 }
@@ -1683,6 +1707,16 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling bodies response: count={}",
                     bodies.len()
                 );
+                if !is_current_epoch {
+                    debug!(
+                        "Discarding stale bodies from {} ({} bodies) — epoch {:?} != current {}",
+                        peer,
+                        bodies.len(),
+                        request_epoch,
+                        self.sync_epoch
+                    );
+                    return vec![];
+                }
                 self.handle_bodies_response(peer, bodies)
             }
             SyncResponse::Block(maybe_block) => {

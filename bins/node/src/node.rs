@@ -2770,15 +2770,14 @@ impl Node {
 
                 // Determine starting height
                 // If start_hash is genesis, start from height 1
-                // Otherwise, find the block with this hash and get its height
+                // Otherwise, find the block with this hash via height index (O(1) per lookup)
                 let start_height = if start_hash == genesis_hash {
                     0
                 } else {
-                    // Find the height of start_hash by iterating (suboptimal but works)
                     let mut found_height = None;
                     for h in 1..=best_height {
-                        if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
-                            if block.hash() == start_hash {
+                        if let Ok(Some(hash)) = self.block_store.get_hash_by_height(h) {
+                            if hash == start_hash {
                                 found_height = Some(h);
                                 break;
                             }
@@ -2804,10 +2803,15 @@ impl Node {
                 };
 
                 // Return headers from start_height+1 up to max_count
+                // Use get_hash_by_height → get_header to avoid deserializing full blocks
                 let end_height = (start_height + max_count as u64).min(best_height);
                 for height in (start_height + 1)..=end_height {
-                    if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
-                        headers.push(block.header.clone());
+                    if let Ok(Some(hash)) = self.block_store.get_hash_by_height(height) {
+                        if let Ok(Some(header)) = self.block_store.get_header(&hash) {
+                            headers.push(header);
+                        } else {
+                            break;
+                        }
                     } else {
                         break;
                     }
