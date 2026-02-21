@@ -546,7 +546,14 @@ async fn run_swarm(
             // Periodic DHT peer discovery
             _ = dht_refresh.tick() => {
                 if !config.no_dht {
-                    let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                    match swarm.behaviour_mut().kademlia.bootstrap() {
+                        Ok(query_id) => {
+                            info!("[DHT] Periodic bootstrap started (query={:?})", query_id);
+                        }
+                        Err(e) => {
+                            warn!("[DHT] Bootstrap failed: {:?} — no peers in routing table", e);
+                        }
+                    }
                 }
             }
         }
@@ -753,10 +760,10 @@ async fn handle_behaviour_event(
         }
 
         DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated { peer, .. }) => {
-            debug!("Kademlia routing updated for peer: {}", peer);
+            info!("[DHT] Routing updated for peer: {}", peer);
             // Dial the discovered peer to establish a connection
             if !swarm.is_connected(&peer) {
-                debug!("Dialing Kademlia-discovered peer {}", peer);
+                info!("[DHT] Dialing discovered peer {}", peer);
                 let _ = swarm.dial(peer);
             }
         }
@@ -783,12 +790,18 @@ async fn handle_behaviour_event(
 
             // Add the peer's listen addresses to kademlia (unless DHT is disabled)
             if !config.no_dht {
+                let addr_count = info.listen_addrs.len();
                 for addr in info.listen_addrs {
+                    info!("[DHT] Adding address for peer {}: {}", peer_id, addr);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                 }
-                // Trigger DHT bootstrap after adding peer addresses.
-                // This is idempotent — Kademlia ignores bootstrap if already running.
-                let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                match swarm.behaviour_mut().kademlia.bootstrap() {
+                    Ok(_) => info!(
+                        "[DHT] Bootstrap triggered after identify ({} addrs from {})",
+                        addr_count, peer_id
+                    ),
+                    Err(e) => warn!("[DHT] Bootstrap failed after identify: {:?}", e),
+                }
             }
         }
 
