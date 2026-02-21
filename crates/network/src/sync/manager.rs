@@ -1607,11 +1607,19 @@ impl SyncManager {
             }
 
             SyncState::DownloadingBodies { .. } => {
-                // Get next batch of bodies to request
-                if let Some((peer, request)) = self.body_downloader.next_request(
-                    &self.headers_needing_bodies,
-                    &self.peers.keys().cloned().collect::<Vec<_>>(),
-                ) {
+                // Only request bodies from peers that have data (height > 0).
+                // Peers at height 0 are still syncing and will respond empty,
+                // wasting time and pushing hashes to the failed retry queue.
+                let peers_with_data: Vec<PeerId> = self
+                    .peers
+                    .iter()
+                    .filter(|(_, s)| s.best_height > 0)
+                    .map(|(p, _)| *p)
+                    .collect();
+                if let Some((peer, request)) = self
+                    .body_downloader
+                    .next_request(&self.headers_needing_bodies, &peers_with_data)
+                {
                     let id = self.register_request(peer, request.clone());
                     if let Some(status) = self.peers.get_mut(&peer) {
                         status.pending_request = Some(id);
@@ -2196,7 +2204,13 @@ impl SyncManager {
         // `last_block_applied` which only tracked the final phase, causing false "stuck"
         // detection during the header download phase (no blocks applied yet, but headers
         // were streaming in). This nuked 20-30K downloaded headers every 30s.
-        let stuck_threshold = Duration::from_secs(30);
+        // Bodies are much larger than headers and N4 may be serving 4 peers
+        // simultaneously — give body download more time before declaring stuck.
+        let stuck_threshold = if matches!(self.state, SyncState::DownloadingBodies { .. }) {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(30)
+        };
         if self.state.is_syncing() && self.last_sync_activity.elapsed() > stuck_threshold {
             let was_processing = matches!(self.state, SyncState::Processing { .. });
             let is_downloading_bodies = matches!(self.state, SyncState::DownloadingBodies { .. });
