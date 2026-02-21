@@ -100,6 +100,11 @@ enum Commands {
         #[arg(long)]
         no_dht: bool,
 
+        /// Enable relay server mode (for public/bootstrap nodes).
+        /// Allows NAT'd peers to relay connections through this node.
+        #[arg(long)]
+        relay_server: bool,
+
         /// DANGEROUS: Skip duplicate key detection during producer startup.
         /// Only use if you are CERTAIN no other instance is running with this key.
         /// Using this incorrectly WILL cause slashing (100% bond loss).
@@ -430,6 +435,7 @@ async fn main() -> Result<()> {
             metrics_port,
             bootstrap,
             no_dht,
+            relay_server,
             force_start,
             yes,
             chainspec,
@@ -451,6 +457,7 @@ async fn main() -> Result<()> {
                 metrics_port,
                 bootstrap,
                 no_dht,
+                relay_server,
                 force_start,
                 yes,
                 chainspec,
@@ -501,6 +508,7 @@ async fn main() -> Result<()> {
                 9090,
                 None,
                 false,
+                false, // relay_server
                 false,
                 false, // yes
                 None,  // chainspec
@@ -524,6 +532,7 @@ async fn run_node(
     metrics_port: u16,
     bootstrap: Option<String>,
     no_dht: bool,
+    relay_server: bool,
     force_start: bool,
     yes: bool,
     chainspec_path: Option<PathBuf>,
@@ -616,6 +625,10 @@ async fn run_node(
         // Clear default bootstrap nodes - only use explicitly provided ones
         config.bootstrap_nodes.clear();
         info!("DHT discovery disabled - cleared default bootstrap nodes, only connecting to explicit bootstrap addresses");
+    }
+    if relay_server {
+        config.relay_server = true;
+        info!("Relay server enabled — NAT'd peers can relay through this node");
     }
     // Add explicit bootstrap after clearing defaults (so it's preserved with --no-dht)
     if let Some(ref addr) = bootstrap {
