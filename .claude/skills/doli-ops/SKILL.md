@@ -241,8 +241,55 @@ doli-node upgrade --version 0.2.0 --yes
 | Metrics | 9090 |
 | Logs | `/tmp/node3.log` |
 | Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
+| Git repo | **None** — standalone binary, updated via SCP from omegacortex.ai |
 
-### 2.2 Starting Nodes
+#### Server 3: 72.60.70.166 (Node 4 — "pro-KVM1")
+
+| Property | Value |
+|----------|-------|
+| SSH | `ssh -p 50790 ilozada@72.60.70.166` |
+| Hostname | pro-KVM1 |
+| IP | 72.60.70.166 |
+| User (node) | `isudoajl` |
+| Binary | `/opt/doli/target/release/doli-node` |
+| Git repo | `/opt/doli` (owner: `isudoajl`, pull with `sudo -u isudoajl`) |
+| Data | Default (`/home/isudoajl/.doli/mainnet/data`) |
+| Key | `/home/isudoajl/.doli/mainnet/producer.json` |
+| P2P | 30303 |
+| RPC | 8545 |
+| Metrics | 9090 |
+| Logs | `/var/log/doli-node.log` |
+| Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
+
+#### Server 4: 72.60.115.209 (Node 5 — "fpx")
+
+| Property | Value |
+|----------|-------|
+| SSH | `ssh -p 50790 ilozada@72.60.115.209` |
+| Hostname | fpx |
+| IP | 72.60.115.209 |
+| User (node) | `isudoajl` |
+| Binary | `/opt/doli/target/release/doli-node` |
+| Git repo | `/opt/doli` (owner: `isudoajl`, pull with `sudo -u isudoajl`) |
+| Data | Default (`/home/isudoajl/.doli/mainnet/data`) |
+| Key | `/home/isudoajl/.doli/mainnet/producer.json` |
+| P2P | 30303 |
+| RPC | 8545 |
+| Metrics | 9090 |
+| Logs | `/var/log/doli-node.log` |
+| Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
+
+### 2.2 Git Pull / Deploy Summary
+
+| Server | Git Repo | Remote | Pull Command |
+|--------|----------|--------|-------------|
+| Local (mac-001) | `~/repos/doli` | `git@github.com:e-weil/doli.git` (SSH) | `git pull` |
+| omegacortex.ai | `~/repos/doli` | `git@github.com:e-weil/doli.git` (SSH) | `ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull"` |
+| Node 4 (pro-KVM1) | `/opt/doli` | `https://github.com/e-weil/doli.git` | `ssh -p 50790 ilozada@72.60.70.166 "sudo -u isudoajl bash -c 'cd /opt/doli && git pull'"` |
+| Node 5 (fpx) | `/opt/doli` | `git@github.com:e-weil/doli.git` | `ssh -p 50790 ilozada@72.60.115.209 "sudo -u isudoajl bash -c 'cd /opt/doli && git pull'"` |
+| Partner (147.93.84.44) | **None** | N/A | Binary via SCP: `scp -P 50790 <binary> ilozada@147.93.84.44:~/doli-node` |
+
+### 2.3 Starting Nodes
 
 **Node 1 (omegacortex.ai):**
 ```bash
@@ -289,7 +336,7 @@ cargo build --release
 ./target/release/doli-node devnet start
 ```
 
-### 2.3 Stopping Nodes
+### 2.4 Stopping Nodes
 
 **Graceful shutdown (preferred):**
 ```bash
@@ -308,7 +355,7 @@ ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node"
 
 **NEVER use `kill -9` unless absolutely necessary** — it bypasses graceful shutdown and can create orphan blocks requiring shallow fork recovery.
 
-### 2.4 Checking Node Status
+### 2.5 Checking Node Status
 
 **RPC health check:**
 ```bash
@@ -365,7 +412,7 @@ ssh ilozada@omegacortex.ai "tail -f /tmp/node2.log"
 ssh -p 50790 ilozada@147.93.84.44 "tail -f /tmp/node3.log"
 ```
 
-### 2.5 Checking Balances and Production
+### 2.6 Checking Balances and Production
 
 ```bash
 # Balance
@@ -386,7 +433,7 @@ curl -s -X POST http://127.0.0.1:PORT \
     -d '{"jsonrpc":"2.0","method":"getBlockByHeight","params":{"height":123},"id":1}' | jq .
 ```
 
-### 2.6 Wipe and Resync
+### 2.7 Wipe and Resync
 
 **Partial wipe (keep keys, resync chain):**
 ```bash
@@ -400,7 +447,7 @@ rm -f ~/.doli/mainnet/node1/data/chain_state.bin
 rm -f ~/.doli/mainnet/node1/data/producers.bin
 rm -f ~/.doli/mainnet/node1/data/utxo_set.bin
 
-# Restart node — resyncs from peers (see Section 2.2 for exact command)
+# Restart node — resyncs from peers (see Section 2.3 for exact command)
 ```
 
 **State recovery (without wipe):**
@@ -416,7 +463,7 @@ doli-node --network mainnet recover --yes
 ./target/release/doli-node devnet clean --keep-keys
 ```
 
-### 2.7 RocksDB LOCK File Cleanup
+### 2.8 RocksDB LOCK File Cleanup
 
 After a `kill -9`, RocksDB may leave stale LOCK files:
 ```bash
@@ -481,7 +528,7 @@ sleep 5
 ssh ilozada@omegacortex.ai "pgrep -la doli-node || echo 'stopped'"
 ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node || echo 'stopped'"
 
-# 5. Start ALL nodes (see Section 2.2 for exact commands)
+# 5. Start ALL nodes (see Section 2.3 for exact commands)
 # Start node1 first (bootstrap), then node2, then node3
 
 # 6. Verify all nodes are on same chain — see 3.5
@@ -496,7 +543,7 @@ Network, sync, RPC, logging, or UI changes can be deployed one node at a time.
 # Example for node1:
 ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node1')"
 sleep 3
-# Restart node1 (see Section 2.2 for exact command)
+# Restart node1 (see Section 2.3 for exact command)
 # Verify node1 is healthy before proceeding to node2
 ```
 
@@ -542,7 +589,7 @@ ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && \
     source ~/.cargo/env && \
     cargo build --release --package doli-node && \
     pkill -f doli-node && sleep 3"
-# Then restart nodes per Section 2.2
+# Then restart nodes per Section 2.3
 ```
 
 ---
