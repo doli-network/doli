@@ -833,6 +833,13 @@ impl SyncManager {
         // forked nodes accumulate inflated block counts (height > slot). A single
         // forked peer with height=200 would block honest nodes at height=158.
         // Slots are time-based and can't be inflated by forks.
+        //
+        // GUARD: Skip this check when local_height >= best_peer_height.
+        // When peers are still syncing (height=0) they report valid best_slot from
+        // their clock, creating a false "behind" signal. A node whose height is at
+        // or ahead of every peer is definitionally NOT behind the network —
+        // its local_slot is only stale because it stopped producing, and it can't
+        // produce because this layer blocks it, creating a deadlock.
         let best_peer_slot = self.best_peer_slot();
 
         // Only check if we have peer data
@@ -841,11 +848,29 @@ impl SyncManager {
 
             if slot_diff > self.max_slots_behind {
                 let best_peer_height = self.best_peer_height();
-                return ProductionAuthorization::BlockedBehindPeers {
-                    local_height: self.local_height,
-                    peer_height: best_peer_height,
-                    height_diff: best_peer_height.saturating_sub(self.local_height),
-                };
+
+                // Guard: If we're at or ahead of all peers by height, slot lag
+                // is a stale artifact — we ARE the tip, just haven't produced
+                // recently. Don't block; let production advance local_slot.
+                if self.local_height >= best_peer_height && best_peer_height == 0 {
+                    info!(
+                        "[CAN_PRODUCE] Layer6: slot_diff={} exceeds max={}, but local_height={} >= best_peer_height={} (peers syncing) - allowing production",
+                        slot_diff, self.max_slots_behind, self.local_height, best_peer_height
+                    );
+                } else if self.local_height > 0 && best_peer_height == 0 {
+                    // Peers all at height 0 but claiming high slots — they know
+                    // the time but haven't synced the chain. Don't block.
+                    info!(
+                        "[CAN_PRODUCE] Layer6: peers at height 0 but slot {} - skipping slot check (local_h={})",
+                        best_peer_slot, self.local_height
+                    );
+                } else {
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: best_peer_height.saturating_sub(self.local_height),
+                    };
+                }
             }
         }
 
