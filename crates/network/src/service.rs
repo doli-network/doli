@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use libp2p::{
+    autonat, dcutr,
     gossipsub::{self, IdentTopic},
-    identify, kad,
+    identify, kad, relay,
     request_response::{self, ResponseChannel},
     swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm,
@@ -192,8 +193,11 @@ impl NetworkService {
         let local_peer_id = PeerId::from(keypair.public());
         info!("Local peer ID: {}", local_peer_id);
 
-        // Build transport
-        let transport = build_transport(&keypair)
+        // Create relay client (returns transport + behaviour pair)
+        let (relay_transport, relay_client) = relay::client::new(local_peer_id);
+
+        // Build transport WITH relay support for NAT traversal
+        let transport = build_transport(&keypair, Some(relay_transport))
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
         // Build gossipsub with mesh params from NetworkParams.
@@ -222,9 +226,41 @@ impl NetworkService {
             .with_max_established_outgoing(Some(config.max_peers as u32));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
+        // Build relay server — all nodes instantiate it, but reservation limits
+        // control whether it actively serves relay circuits.
+        let relay_server_config = if config.nat_config.enable_relay_server {
+            relay::Config {
+                max_reservations: config.nat_config.max_relay_reservations as usize,
+                max_circuits_per_peer: config.nat_config.max_circuits_per_peer as usize,
+                ..Default::default()
+            }
+        } else {
+            // Disabled: zero reservations means no peers can reserve
+            relay::Config {
+                max_reservations: 0,
+                max_circuits_per_peer: 0,
+                ..Default::default()
+            }
+        };
+        let relay_server = relay::Behaviour::new(local_peer_id, relay_server_config);
+
+        // DCUtR — hole punching via relay-coordinated upgrade
+        let dcutr = dcutr::Behaviour::new(local_peer_id);
+
+        // AutoNAT — detects whether we're behind NAT
+        let autonat = autonat::Behaviour::new(local_peer_id, autonat::Config::default());
+
         // Build behaviour
-        let behaviour =
-            DoliBehaviour::new(gossipsub, kademlia, keypair.public(), connection_limits);
+        let behaviour = DoliBehaviour::new(
+            gossipsub,
+            kademlia,
+            keypair.public(),
+            connection_limits,
+            relay_client,
+            relay_server,
+            dcutr,
+            autonat,
+        );
 
         // Build swarm
         let mut swarm = Swarm::new(
@@ -934,6 +970,27 @@ async fn handle_behaviour_event(
                 }
             }
         }
+
+        DoliBehaviourEvent::RelayClient(event) => {
+            info!("[RELAY] Client: {:?}", event);
+        }
+
+        DoliBehaviourEvent::RelayServer(event) => {
+            info!("[RELAY] Server: {:?}", event);
+        }
+
+        DoliBehaviourEvent::Dcutr(event) => {
+            info!("[DCUTR] {:?}", event);
+        }
+
+        DoliBehaviourEvent::Autonat(event) => match &event {
+            autonat::Event::StatusChanged { old, new } => {
+                info!("[NAT] Status changed: {:?} -> {:?}", old, new);
+            }
+            _ => {
+                debug!("[NAT] {:?}", event);
+            }
+        },
 
         _ => {}
     }

@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use crypto::Hash;
 use doli_core::Network;
 
+use crate::nat::NatConfig;
+
 /// Network configuration
 #[derive(Clone, Debug)]
 pub struct NetworkConfig {
@@ -34,6 +36,8 @@ pub struct NetworkConfig {
     pub mesh_n_high: usize,
     /// Number of peers to lazily gossip IHAVE messages to
     pub gossip_lazy: usize,
+    /// NAT traversal configuration (relay, DCUtR, AutoNAT)
+    pub nat_config: NatConfig,
 }
 
 impl Default for NetworkConfig {
@@ -61,6 +65,7 @@ impl NetworkConfig {
             mesh_n_low: 4,
             mesh_n_high: 12,
             gossip_lazy: 6,
+            nat_config: NatConfig::default(),
         }
     }
 
@@ -99,6 +104,12 @@ impl NetworkConfig {
     /// Disable DHT discovery (only connect to explicit bootstrap nodes)
     pub fn with_no_dht(mut self, no_dht: bool) -> Self {
         self.no_dht = no_dht;
+        self
+    }
+
+    /// Set NAT traversal configuration
+    pub fn with_nat_config(mut self, nat_config: NatConfig) -> Self {
+        self.nat_config = nat_config;
         self
     }
 }

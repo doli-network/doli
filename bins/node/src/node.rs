@@ -607,6 +607,11 @@ impl Node {
         network_config.mesh_n_high = net_params.mesh_n_high;
         network_config.gossip_lazy = net_params.gossip_lazy;
 
+        // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
+        if self.config.relay_server {
+            network_config.nat_config = network::NatConfig::relay_server();
+        }
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,
