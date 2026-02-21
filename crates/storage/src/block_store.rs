@@ -39,7 +39,55 @@ impl BlockStore {
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
-        Ok(Self { db })
+        // One-time migration: populate hash_to_height from height_index
+        // for blocks stored before this index was added.
+        let store = Self { db };
+        store.migrate_hash_to_height_index();
+
+        Ok(store)
+    }
+
+    /// Populate hash_to_height index from existing height_index entries.
+    /// Runs once on first startup after the index is added. No-op if already populated.
+    fn migrate_hash_to_height_index(&self) {
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+
+        // Check if index already has entries (skip migration)
+        if self
+            .db
+            .iterator_cf(cf_h2h, rocksdb::IteratorMode::Start)
+            .flatten()
+            .next()
+            .is_some()
+        {
+            return;
+        }
+
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut count = 0u64;
+
+        for (height_bytes, hash_bytes) in self
+            .db
+            .iterator_cf(cf_height, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            // height_index: height (u64 LE) → hash (32 bytes)
+            // hash_to_height: hash (32 bytes) → height (u64 LE)
+            batch.put_cf(cf_h2h, &hash_bytes, &height_bytes);
+            count += 1;
+        }
+
+        if count > 0 {
+            if let Err(e) = self.db.write(batch) {
+                warn!("Failed to migrate hash_to_height index: {}", e);
+            } else {
+                info!(
+                    "[BLOCK_STORE] Migrated hash_to_height index: {} entries",
+                    count
+                );
+            }
+        }
     }
 
     /// Clear all block data from the store.
