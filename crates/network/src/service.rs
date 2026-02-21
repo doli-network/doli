@@ -524,6 +524,13 @@ async fn run_swarm(
     config: NetworkConfig,
     peer_cache_path: Option<PathBuf>,
 ) {
+    // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
+    // discover each other through shared bootstrap nodes. Without this, a node
+    // only queries the DHT on initial connection (identify event), missing peers
+    // that join later.
+    let mut dht_refresh = tokio::time::interval(std::time::Duration::from_secs(60));
+    dht_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             // Handle swarm events
@@ -534,6 +541,13 @@ async fn run_swarm(
             // Handle commands
             Some(command) = command_rx.recv() => {
                 handle_command(command, &mut swarm, &config).await;
+            }
+
+            // Periodic DHT peer discovery
+            _ = dht_refresh.tick() => {
+                if !config.no_dht {
+                    let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                }
             }
         }
     }
