@@ -2078,6 +2078,12 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
     }
     println!();
 
+    // Rebuild canonical chain index (height_index + hash_to_height)
+    // This fixes any fork contamination in the height_index from prior runs.
+    println!("Rebuilding canonical chain index...");
+    block_store.set_canonical_chain(chain_state.best_hash, chain_state.best_height)?;
+    println!("  Canonical chain index rebuilt");
+
     // Save recovered state
     println!();
     println!("Saving recovered state...");

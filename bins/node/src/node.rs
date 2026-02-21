@@ -2312,8 +2312,9 @@ impl Node {
 
         info!("Applying block {} at height {}", block_hash, height);
 
-        // Store the block
+        // Store the block and update canonical chain index
         self.block_store.put_block(&block, height)?;
+        self.block_store.set_canonical_chain(block_hash, height)?;
 
         // Update producer liveness tracker (for scheduling filter)
         self.producer_liveness.insert(block.header.producer, height);
