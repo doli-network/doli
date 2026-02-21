@@ -45,7 +45,7 @@ pub struct SyncConfig {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
-            max_headers_per_request: 2000,
+            max_headers_per_request: 500,
             max_bodies_per_request: 128,
             max_concurrent_body_requests: 8,
             request_timeout: Duration::from_secs(30),
