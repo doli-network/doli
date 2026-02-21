@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crypto::Hash;
 use doli_core::BlockHeader;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::protocols::SyncRequest;
 
@@ -67,8 +67,8 @@ impl HeaderDownloader {
             // Check chain linkage
             if header.prev_hash != prev_hash {
                 warn!(
-                    "Header chain broken: expected prev_hash {}, got {}",
-                    prev_hash, header.prev_hash
+                    "[HEADER_DEBUG] Chain break: header.prev_hash={} expected={} header_slot={} valid_so_far={}",
+                    header.prev_hash, prev_hash, header.slot, valid_count
                 );
                 break;
             }
@@ -152,6 +152,9 @@ impl HeaderDownloader {
         self.validated_headers.clear();
         self.known_hashes.clear();
         self.expected_prev_hash = None;
+        info!(
+            "[HEADER_DEBUG] clear() called, expected_prev_hash=None (will use local_tip on next process)"
+        );
     }
 
     /// Get the hash we expect next header to follow

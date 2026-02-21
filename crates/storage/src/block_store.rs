@@ -289,7 +289,7 @@ impl BlockStore {
 
         // Step 2: Walk backwards from tip via prev_hash, collecting the canonical chain.
         // We collect first, then write, because we don't know the height until we
-        // reach the genesis block (prev_hash == ZERO or no parent found).
+        // reach the genesis block.
         let mut chain: Vec<Hash> = Vec::new();
         let mut current = best_hash;
 
@@ -300,18 +300,22 @@ impl BlockStore {
             })?;
 
             if header.prev_hash == Hash::ZERO {
-                break; // Reached genesis
+                break; // Block explicitly has no parent (unlikely in DOLI)
             }
 
-            // Check parent exists — if not, this is the start of our chain
+            // Check parent exists in the store
             if !self.has_block(&header.prev_hash)? {
+                // Parent hash is not stored as a block — it's the genesis hash
+                // (a virtual block). Include it as height 0 so the height
+                // assignment matches the original chain (genesis=0, first block=1).
+                chain.push(header.prev_hash);
                 break;
             }
 
             current = header.prev_hash;
         }
 
-        // chain is [tip, tip-1, ..., genesis] — reverse to get [genesis, ..., tip]
+        // chain is [tip, tip-1, ..., first_block, genesis_hash] — reverse
         chain.reverse();
         let tip_height = (chain.len() - 1) as u64;
 
