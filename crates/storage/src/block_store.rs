@@ -127,40 +127,112 @@ impl BlockStore {
         Ok(())
     }
 
-    /// Store a block
+    /// Store a block (header + body + slot index).
+    ///
+    /// Does NOT update height_index or hash_to_height — those are managed
+    /// exclusively by `set_canonical_chain()` to ensure they always reflect
+    /// the canonical chain, not fork blocks.
     pub fn put_block(&self, block: &Block, height: u64) -> Result<(), StorageError> {
         let hash = block.hash();
         let hash_bytes = hash.as_bytes();
         let slot = block.slot();
 
-        // Log block storage with slot info (info level for visibility)
         info!("[BLOCK_STORE] put_block: height={}, slot={}", height, slot);
 
-        // Store header
+        // Store header (keyed by hash — stores ALL blocks including forks)
         let header_bytes = bincode::serialize(&block.header)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
         self.db.put_cf(cf_headers, hash_bytes, &header_bytes)?;
 
-        // Store body
+        // Store body (keyed by hash)
         let body_bytes = bincode::serialize(&block.transactions)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
         self.db.put_cf(cf_bodies, hash_bytes, &body_bytes)?;
 
-        // Update height index
-        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
-        self.db
-            .put_cf(cf_height, height.to_le_bytes(), hash_bytes)?;
-
         // Update slot index
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
         self.db.put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
 
-        // Update hash → height reverse index (O(1) lookup for GetHeaders)
-        let cf_hash_height = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        Ok(())
+    }
+
+    /// Store a block and immediately mark it as canonical at the given height.
+    ///
+    /// Convenience method for simple chains (no forks). Equivalent to
+    /// `put_block()` + direct height_index/hash_to_height update.
+    /// For chains with forks, use `put_block()` + `set_canonical_chain()`.
+    pub fn put_block_canonical(&self, block: &Block, height: u64) -> Result<(), StorageError> {
+        let hash = block.hash();
+        self.put_block(block, height)?;
+
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
         self.db
-            .put_cf(cf_hash_height, hash_bytes, height.to_le_bytes())?;
+            .put_cf(cf_height, height.to_le_bytes(), hash.as_bytes())?;
+
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        self.db
+            .put_cf(cf_h2h, hash.as_bytes(), height.to_le_bytes())?;
+
+        Ok(())
+    }
+
+    /// Update canonical chain indexes (height_index + hash_to_height).
+    ///
+    /// Walks backwards from `tip_hash` at `tip_height` via prev_hash,
+    /// updating height_index and hash_to_height for each block. Stops
+    /// early at the common ancestor (where height_index already points
+    /// to this hash), so a 10-block reorg only writes 10 entries.
+    ///
+    /// This is the ONLY method that writes to height_index/hash_to_height.
+    /// Called after every block insertion that becomes the new tip.
+    pub fn set_canonical_chain(&self, tip_hash: Hash, tip_height: u64) -> Result<(), StorageError> {
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut current_hash = tip_hash;
+        let mut height = tip_height;
+        let mut updated = 0u64;
+
+        loop {
+            // Early exit: if height_index already points to this hash,
+            // the chain below is already canonical — no need to continue.
+            if let Some(existing) = self.get_hash_by_height(height)? {
+                if existing == current_hash {
+                    break;
+                }
+            }
+
+            // Update both indexes for this height
+            batch.put_cf(cf_height, height.to_le_bytes(), current_hash.as_bytes());
+            batch.put_cf(cf_h2h, current_hash.as_bytes(), height.to_le_bytes());
+            updated += 1;
+
+            if height == 0 {
+                break;
+            }
+
+            // Walk backwards via prev_hash
+            let header = self.get_header(&current_hash)?.ok_or_else(|| {
+                StorageError::NotFound(format!("header {} missing", current_hash))
+            })?;
+            current_hash = header.prev_hash;
+            height -= 1;
+        }
+
+        if updated > 0 {
+            self.db.write(batch)?;
+            if updated > 1 {
+                info!(
+                    "[BLOCK_STORE] Canonical chain updated: {} entries (tip={}, h={})",
+                    updated,
+                    &tip_hash.to_string()[..16],
+                    tip_height
+                );
+            }
+        }
 
         Ok(())
     }
@@ -535,7 +607,7 @@ mod tests {
 
         // Store a block at slot 42
         let block = create_test_block(42, &producer);
-        store.put_block(&block, 1).unwrap();
+        store.put_block_canonical(&block, 1).unwrap();
 
         // Retrieve by slot
         let retrieved = store.get_block_by_slot(42).unwrap();
@@ -564,7 +636,7 @@ mod tests {
         let slots = [10u32, 12, 15];
         for (height, &slot) in slots.iter().enumerate() {
             let block = create_test_block(slot, &producer);
-            store.put_block(&block, height as u64).unwrap();
+            store.put_block_canonical(&block, height as u64).unwrap();
         }
 
         // Query range 10..20
@@ -584,7 +656,7 @@ mod tests {
         // Store blocks in non-sequential order
         for (height, slot) in [(0, 5u32), (1, 3), (2, 7), (3, 1)] {
             let block = create_test_block(slot, &producer);
-            store.put_block(&block, height).unwrap();
+            store.put_block_canonical(&block, height).unwrap();
         }
 
         // Blocks should be returned in slot order
@@ -605,7 +677,7 @@ mod tests {
         // Store blocks without epoch rewards
         for height in 0..5 {
             let block = create_test_block(height as u32, &producer);
-            store.put_block(&block, height).unwrap();
+            store.put_block_canonical(&block, height).unwrap();
         }
 
         // Should return 0 when no rewards exist
@@ -621,7 +693,7 @@ mod tests {
 
         // Store a block with epoch reward for epoch 5
         let block = create_epoch_reward_block(360, &producer, 5);
-        store.put_block(&block, 0).unwrap();
+        store.put_block_canonical(&block, 0).unwrap();
 
         let last_epoch = store.get_last_rewarded_epoch().unwrap();
         assert_eq!(last_epoch, 5, "Should return epoch 5");
@@ -642,7 +714,7 @@ mod tests {
 
         for (height, (slot, epoch)) in reward_blocks.iter().enumerate() {
             let block = create_epoch_reward_block(*slot, &producer, *epoch);
-            store.put_block(&block, height as u64).unwrap();
+            store.put_block_canonical(&block, height as u64).unwrap();
         }
 
         // Should return the most recent (highest) epoch
@@ -659,27 +731,27 @@ mod tests {
         // Store a mix of regular blocks and epoch reward blocks
         // height 0: regular block
         store
-            .put_block(&create_test_block(1, &producer), 0)
+            .put_block_canonical(&create_test_block(1, &producer), 0)
             .unwrap();
 
         // height 1: epoch reward for epoch 1
         store
-            .put_block(&create_epoch_reward_block(360, &producer, 1), 1)
+            .put_block_canonical(&create_epoch_reward_block(360, &producer, 1), 1)
             .unwrap();
 
         // height 2: regular block
         store
-            .put_block(&create_test_block(361, &producer), 2)
+            .put_block_canonical(&create_test_block(361, &producer), 2)
             .unwrap();
 
         // height 3: epoch reward for epoch 2
         store
-            .put_block(&create_epoch_reward_block(720, &producer, 2), 3)
+            .put_block_canonical(&create_epoch_reward_block(720, &producer, 2), 3)
             .unwrap();
 
         // height 4: regular block (most recent)
         store
-            .put_block(&create_test_block(721, &producer), 4)
+            .put_block_canonical(&create_test_block(721, &producer), 4)
             .unwrap();
 
         // Should still find epoch 2 as the last rewarded
@@ -699,7 +771,7 @@ mod tests {
         // Store a block
         let block = create_test_block(42, &producer);
         let expected_hash = block.hash();
-        store.put_block(&block, 0).unwrap();
+        store.put_block_canonical(&block, 0).unwrap();
 
         // Retrieve hash by slot
         let hash = store.get_hash_by_slot(42).unwrap();
@@ -720,7 +792,7 @@ mod tests {
         // Store blocks at slots 100, 150, 200
         for (height, slot) in [(0, 100u32), (1, 150), (2, 200)] {
             let block = create_test_block(slot, &producer);
-            store.put_block(&block, height).unwrap();
+            store.put_block_canonical(&block, height).unwrap();
         }
 
         // Range with blocks
@@ -753,7 +825,7 @@ mod tests {
         let slots = [10u32, 12, 15];
         for (height, &slot) in slots.iter().enumerate() {
             let block = create_test_block(slot, &producer);
-            store.put_block(&block, height as u64).unwrap();
+            store.put_block_canonical(&block, height as u64).unwrap();
         }
 
         // Query empty slot 11 (between 10 and 12)
@@ -783,7 +855,7 @@ mod tests {
         // Store blocks at slots 5, 10, 15
         for (height, slot) in [(0, 5u32), (1, 10), (2, 15)] {
             let block = create_test_block(slot, &producer);
-            store.put_block(&block, height).unwrap();
+            store.put_block_canonical(&block, height).unwrap();
         }
 
         // Test: start == end (empty range)
@@ -824,7 +896,7 @@ mod tests {
         let epochs = [(360, 1u64), (1080, 3), (1800, 5)];
         for (height, (slot, epoch)) in epochs.iter().enumerate() {
             let block = create_epoch_reward_block(*slot, &producer, *epoch);
-            store.put_block(&block, height as u64).unwrap();
+            store.put_block_canonical(&block, height as u64).unwrap();
         }
 
         // Should return the highest epoch (5), not just the most recent by height
@@ -852,7 +924,7 @@ mod tests {
         // Epoch 0: producer1 at slots 5, 10, 15
         for slot in [5u32, 10, 15] {
             store
-                .put_block(&create_test_block(slot, &producer1), height)
+                .put_block_canonical(&create_test_block(slot, &producer1), height)
                 .unwrap();
             height += 1;
         }
@@ -860,7 +932,7 @@ mod tests {
         // Epoch 1: producer2 at slots 35, 40, 45
         for slot in [35u32, 40, 45] {
             store
-                .put_block(&create_test_block(slot, &producer2), height)
+                .put_block_canonical(&create_test_block(slot, &producer2), height)
                 .unwrap();
             height += 1;
         }
@@ -869,7 +941,7 @@ mod tests {
         for (i, slot) in [65u32, 70, 75, 80].iter().enumerate() {
             let producer = if i % 2 == 0 { &producer1 } else { &producer2 };
             store
-                .put_block(&create_test_block(*slot, producer), height)
+                .put_block_canonical(&create_test_block(*slot, producer), height)
                 .unwrap();
             height += 1;
         }
@@ -921,7 +993,7 @@ mod tests {
 
         // Store a single block at slot 100
         let block = create_test_block(100, &producer);
-        store.put_block(&block, 0).unwrap();
+        store.put_block_canonical(&block, 0).unwrap();
 
         // Query before first block
         assert!(store.get_block_by_slot(0).unwrap().is_none());
@@ -958,7 +1030,7 @@ mod tests {
         // Populate store with blocks (simulating a fork)
         for height in 0..10u64 {
             let block = create_test_block(height as u32 + 1, &producer);
-            store.put_block(&block, height).unwrap();
+            store.put_block_canonical(&block, height).unwrap();
         }
 
         // Verify data exists
@@ -1001,7 +1073,7 @@ mod tests {
         // Store "fork" blocks at heights 0-4, slots 100-104
         for i in 0..5u64 {
             let block = create_test_block(100 + i as u32, &producer);
-            store.put_block(&block, i).unwrap();
+            store.put_block_canonical(&block, i).unwrap();
         }
 
         // Clear (simulating resync)
@@ -1010,7 +1082,7 @@ mod tests {
         // Store "canonical" blocks at heights 0-2, slots 1-3
         for i in 0..3u64 {
             let block = create_test_block(i as u32 + 1, &producer);
-            store.put_block(&block, i).unwrap();
+            store.put_block_canonical(&block, i).unwrap();
         }
 
         // Canonical blocks exist
@@ -1035,5 +1107,95 @@ mod tests {
 
         // Only 3 entries in slot index
         assert_eq!(store.count_slot_index_entries().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_set_canonical_chain_reorg() {
+        // Insert chain A→B→C, then fork A→B'→C'→D' (longer).
+        // After set_canonical_chain(D'), height_index must point to B', C', D'.
+        let (store, _dir) = create_test_store();
+        let keypair = KeyPair::generate();
+        let producer = keypair.public_key().clone();
+
+        // Block A (genesis) at height 0
+        let block_a = create_test_block(1, &producer);
+        let hash_a = block_a.hash();
+        store.put_block(&block_a, 0).unwrap();
+        store.set_canonical_chain(hash_a, 0).unwrap();
+
+        // Block B (child of A) at height 1
+        let mut header_b = create_test_header(2, &producer);
+        header_b.prev_hash = hash_a;
+        let block_b = Block::new(header_b, vec![]);
+        let hash_b = block_b.hash();
+        store.put_block(&block_b, 1).unwrap();
+        store.set_canonical_chain(hash_b, 1).unwrap();
+
+        // Block C (child of B) at height 2
+        let mut header_c = create_test_header(3, &producer);
+        header_c.prev_hash = hash_b;
+        let block_c = Block::new(header_c, vec![]);
+        let hash_c = block_c.hash();
+        store.put_block(&block_c, 2).unwrap();
+        store.set_canonical_chain(hash_c, 2).unwrap();
+
+        // Verify canonical chain: A→B→C
+        assert_eq!(store.get_hash_by_height(0).unwrap(), Some(hash_a));
+        assert_eq!(store.get_hash_by_height(1).unwrap(), Some(hash_b));
+        assert_eq!(store.get_hash_by_height(2).unwrap(), Some(hash_c));
+
+        // Fork: B' (child of A, different block) at height 1
+        let mut header_b2 = create_test_header(4, &producer); // Different slot → different hash
+        header_b2.prev_hash = hash_a;
+        let block_b2 = Block::new(header_b2, vec![]);
+        let hash_b2 = block_b2.hash();
+        store.put_block(&block_b2, 1).unwrap(); // Store but DON'T set canonical yet
+
+        // C' (child of B') at height 2
+        let mut header_c2 = create_test_header(5, &producer);
+        header_c2.prev_hash = hash_b2;
+        let block_c2 = Block::new(header_c2, vec![]);
+        let hash_c2 = block_c2.hash();
+        store.put_block(&block_c2, 2).unwrap();
+
+        // D' (child of C') at height 3 — fork is now longer
+        let mut header_d2 = create_test_header(6, &producer);
+        header_d2.prev_hash = hash_c2;
+        let block_d2 = Block::new(header_d2, vec![]);
+        let hash_d2 = block_d2.hash();
+        store.put_block(&block_d2, 3).unwrap();
+
+        // Reorg: set canonical chain to the fork (longer chain)
+        store.set_canonical_chain(hash_d2, 3).unwrap();
+
+        // Verify: height_index now points to fork blocks
+        assert_eq!(
+            store.get_hash_by_height(0).unwrap(),
+            Some(hash_a),
+            "Height 0 unchanged (common ancestor)"
+        );
+        assert_eq!(
+            store.get_hash_by_height(1).unwrap(),
+            Some(hash_b2),
+            "Height 1 should point to B' after reorg"
+        );
+        assert_eq!(
+            store.get_hash_by_height(2).unwrap(),
+            Some(hash_c2),
+            "Height 2 should point to C' after reorg"
+        );
+        assert_eq!(
+            store.get_hash_by_height(3).unwrap(),
+            Some(hash_d2),
+            "Height 3 should point to D'"
+        );
+
+        // Old blocks still accessible by hash (stored but not canonical)
+        assert!(store.get_block(&hash_b).unwrap().is_some());
+        assert!(store.get_block(&hash_c).unwrap().is_some());
+
+        // hash_to_height reflects canonical chain
+        assert_eq!(store.get_height_by_hash(&hash_b2).unwrap(), Some(1));
+        assert_eq!(store.get_height_by_hash(&hash_d2).unwrap(), Some(3));
     }
 }
