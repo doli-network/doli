@@ -308,12 +308,6 @@ pub struct SyncManager {
     /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
     consecutive_empty_headers: u32,
 
-    /// Consecutive "header chain broken" responses (non-empty but unchainable).
-    /// This is distinct from empty headers: chain breaks indicate stale/out-of-order
-    /// responses or peer chain divergence, NOT that the peer rejects our tip.
-    /// Recovery: clear downloader, rotate peer, retry from clean state.
-    consecutive_chain_breaks: u32,
-
     /// Flag set when genesis fallback confirms peers reject our chain —
     /// node must call force_resync_from_genesis().
     needs_genesis_resync: bool,
@@ -386,7 +380,6 @@ impl SyncManager {
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             consecutive_empty_headers: 0,
-            consecutive_chain_breaks: 0,
             needs_genesis_resync: false,
             body_stall_retries: 0,
             peers_lost_at: None,
@@ -1331,7 +1324,6 @@ impl SyncManager {
     /// so sync can restart from the new (rolled-back) tip.
     pub fn reset_sync_for_rollback(&mut self) {
         self.consecutive_empty_headers = 0;
-        self.consecutive_chain_breaks = 0;
         self.needs_genesis_resync = false;
         self.consecutive_sync_failures = 0;
         self.state = SyncState::Idle;
@@ -1744,9 +1736,8 @@ impl SyncManager {
             .process_headers(&headers, self.local_hash);
 
         if valid_count > 0 {
-            // Successfully received valid headers — reset both counters
+            // Successfully received valid headers — reset fork counter
             self.consecutive_empty_headers = 0;
-            self.consecutive_chain_breaks = 0;
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -1768,35 +1759,13 @@ impl SyncManager {
                 };
             }
         } else {
-            // CHAIN BREAK: Received headers but none chain to our expected_prev_hash.
-            // Most likely cause: stale response from an earlier request whose
-            // expected_prev_hash has since advanced.
-            //
-            // Key insight: process_headers() does NOT modify expected_prev_hash when
-            // valid_count == 0. So the downloader state is still correct — just skip
-            // this stale response and let the next (current) response continue.
-            //
-            // Only escalate if chain breaks persist beyond a threshold, which would
-            // indicate a real chain divergence rather than stale responses.
-            self.consecutive_chain_breaks += 1;
+            // STALE RESPONSE: Received headers but none chain to expected_prev_hash.
+            // process_headers() does NOT modify expected_prev_hash when valid_count == 0,
+            // so the downloader state is still correct. Just skip and continue.
             warn!(
-                "No valid headers from peer {} - header chain broken (consecutive_chain_breaks={}). \
-                 Skipping stale response — expected_prev_hash is still valid.",
-                peer, self.consecutive_chain_breaks
+                "No valid headers from peer {} - header chain broken. Skipping stale response.",
+                peer
             );
-
-            // After many consecutive breaks with NO valid headers in between,
-            // this is likely a real divergence, not stale responses. Reset.
-            if self.consecutive_chain_breaks >= 10 {
-                warn!(
-                    "Persistent chain breaks ({}) — clearing downloader and resetting to Idle",
-                    self.consecutive_chain_breaks
-                );
-                self.header_downloader.clear();
-                self.state = SyncState::Idle;
-            }
-            // Otherwise: do nothing. expected_prev_hash is preserved, state stays
-            // DownloadingHeaders, and the next valid response will continue the chain.
         }
     }
 
@@ -1932,9 +1901,8 @@ impl SyncManager {
         self.last_block_applied = Instant::now();
         self.body_stall_retries = 0;
 
-        // Applying a block means the chain is advancing — reset all fork counters.
+        // Applying a block means the chain is advancing — reset fork counter.
         self.consecutive_empty_headers = 0;
-        self.consecutive_chain_breaks = 0;
 
         // Also update network tip - if we applied a block, the network has at least this height/slot
         // This helps the "behind peers" check work correctly even when peer status is stale
@@ -2042,7 +2010,6 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
-        self.consecutive_chain_breaks = 0;
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
 
@@ -2993,12 +2960,10 @@ mod tests {
         // Verify: state STAYS in DownloadingHeaders (not reset to Idle)
         assert!(
             matches!(manager.state, SyncState::DownloadingHeaders { .. }),
-            "Single chain break must NOT reset state — got {:?}",
+            "Stale response must NOT reset state — got {:?}",
             manager.state
         );
-        // Verify: chain_breaks counter incremented
-        assert_eq!(manager.consecutive_chain_breaks, 1);
-        // Verify: empty_headers NOT incremented
+        // Verify: empty_headers NOT incremented (this is a stale response, not empty)
         assert_eq!(manager.consecutive_empty_headers, 0);
         // Verify: expected_prev_hash PRESERVED (not cleared)
         assert_eq!(
@@ -3006,30 +2971,6 @@ mod tests {
             Some(expected_hash),
             "expected_prev_hash must be preserved after stale response"
         );
-    }
-
-    #[test]
-    fn test_persistent_chain_breaks_escalate_to_reset() {
-        // Fix 2: After 10 consecutive chain breaks, escalate to full reset.
-        let genesis = Hash::zero();
-        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
-
-        let peer = PeerId::random();
-        manager.add_peer(peer, 1000, Hash::zero(), 1000);
-        manager.start_sync();
-
-        // Send 10 chain-breaking responses
-        for _ in 0..10 {
-            let _ = manager.next_request();
-            let wrong_prev = Hash::from_bytes([0xAB; 32]);
-            let bad_headers = vec![create_test_header(wrong_prev, 1)];
-            let _blocks = manager.handle_response(peer, SyncResponse::Headers(bad_headers));
-        }
-
-        // After 10 breaks, should escalate: clear downloader + Idle
-        assert_eq!(manager.consecutive_chain_breaks, 10);
-        assert_eq!(manager.state, SyncState::Idle);
-        assert_eq!(manager.header_downloader.expected_prev_hash(), None);
     }
 
     #[test]
@@ -3077,17 +3018,9 @@ mod tests {
         let stale_chain = build_header_chain(genesis, 3);
         let _blocks = manager.handle_response(peer, SyncResponse::Headers(stale_chain));
 
-        // The stale response should have been discarded.
-        // If it was processed, the header downloader would be corrupted
-        // (expected_prev_hash pointing to header 3 instead of header 5).
-        // After start_sync cleared it and the first response advanced it to header 5,
-        // a stale response would break the chain. Verify downloader is clean.
-        // The key assertion: consecutive_chain_breaks should NOT have incremented
-        // from the stale response.
-        assert_eq!(
-            manager.consecutive_chain_breaks, 0,
-            "Stale response must be discarded, not cause a chain break"
-        );
+        // The stale response should have been discarded (no matching pending_request).
+        // Verify: consecutive_empty_headers unchanged (stale response never reached handler).
+        assert_eq!(manager.consecutive_empty_headers, 0);
     }
 
     #[test]
@@ -3138,8 +3071,7 @@ mod tests {
             panic!("Expected DownloadingHeaders state");
         }
 
-        // Verify: no chain breaks, no empty headers
-        assert_eq!(manager.consecutive_chain_breaks, 0);
+        // Verify: no empty headers (no fork detection triggered)
         assert_eq!(manager.consecutive_empty_headers, 0);
     }
 }
