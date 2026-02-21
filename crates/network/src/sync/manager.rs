@@ -304,8 +304,15 @@ pub struct SyncManager {
     last_block_applied: Instant,
 
     /// Consecutive empty header responses (peers don't recognize our chain tip).
-    /// When >= 3, we're on a deep fork and need genesis resync.
+    /// When >= 10, we're on a deep fork and need genesis resync.
+    /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
     consecutive_empty_headers: u32,
+
+    /// Consecutive "header chain broken" responses (non-empty but unchainable).
+    /// This is distinct from empty headers: chain breaks indicate stale/out-of-order
+    /// responses or peer chain divergence, NOT that the peer rejects our tip.
+    /// Recovery: clear downloader, rotate peer, retry from clean state.
+    consecutive_chain_breaks: u32,
 
     /// Flag set when genesis fallback confirms peers reject our chain —
     /// node must call force_resync_from_genesis().
@@ -379,6 +386,7 @@ impl SyncManager {
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             consecutive_empty_headers: 0,
+            consecutive_chain_breaks: 0,
             needs_genesis_resync: false,
             body_stall_retries: 0,
             peers_lost_at: None,
@@ -1298,6 +1306,7 @@ impl SyncManager {
     /// so sync can restart from the new (rolled-back) tip.
     pub fn reset_sync_for_rollback(&mut self) {
         self.consecutive_empty_headers = 0;
+        self.consecutive_chain_breaks = 0;
         self.needs_genesis_resync = false;
         self.consecutive_sync_failures = 0;
         self.state = SyncState::Idle;
@@ -1482,6 +1491,10 @@ impl SyncManager {
                     peer, status.best_height, status.best_slot
                 );
 
+                // Clean slate: clear stale expected_prev_hash from any previous
+                // failed cycle. Without this, a poisoned cycle contaminates the next.
+                self.header_downloader.clear();
+
                 self.state = SyncState::DownloadingHeaders {
                     target_slot: status.best_slot,
                     peer,
@@ -1515,6 +1528,19 @@ impl SyncManager {
 
             SyncState::DownloadingHeaders { peer, .. } => {
                 let peer = *peer;
+
+                // Guard: don't send a new request if the peer already has one in flight.
+                // Without this, cleanup() calls next_request() every ~1s, creating
+                // duplicate requests whose stale responses corrupt expected_prev_hash.
+                if let Some(status) = self.peers.get(&peer) {
+                    if status.pending_request.is_some() {
+                        debug!(
+                            "Skipping header request: peer {} already has pending request",
+                            peer
+                        );
+                        return None;
+                    }
+                }
 
                 // After 10+ consecutive empty responses, peer doesn't recognize our tip.
                 // Signal the node for a full genesis resync instead of trying to
@@ -1594,12 +1620,19 @@ impl SyncManager {
             self.state
         );
 
-        // Clear pending request for this peer and remove from tracking map
-        if let Some(status) = self.peers.get_mut(&peer) {
+        // Clear pending request for this peer and remove from tracking map.
+        // If the peer has no pending_request, this response is stale (from an
+        // orphaned request whose ID was overwritten). Track this for the filter below.
+        let had_pending_request = if let Some(status) = self.peers.get_mut(&peer) {
             if let Some(req_id) = status.pending_request.take() {
                 self.pending_requests.remove(&req_id);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
 
         match response {
             SyncResponse::Headers(headers) => {
@@ -1607,6 +1640,16 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling headers response: count={}",
                     headers.len()
                 );
+                // Stale response filter: if the peer had no pending_request when
+                // this response arrived, it's from an orphaned request. Discard it
+                // to prevent stale data from corrupting the HeaderDownloader state.
+                if !had_pending_request {
+                    debug!(
+                        "Discarding stale headers response from {} ({} headers) — no matching pending request",
+                        peer, headers.len()
+                    );
+                    return vec![];
+                }
                 self.handle_headers_response(peer, headers);
                 vec![]
             }
@@ -1676,8 +1719,9 @@ impl SyncManager {
             .process_headers(&headers, self.local_hash);
 
         if valid_count > 0 {
-            // Successfully received valid headers — reset deep fork counter
+            // Successfully received valid headers — reset both counters
             self.consecutive_empty_headers = 0;
+            self.consecutive_chain_breaks = 0;
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -1699,9 +1743,18 @@ impl SyncManager {
                 };
             }
         } else {
-            // FORK DETECTION: Received headers but none are valid
-            // This means "Header chain broken" - our chain diverged from peer's
-            warn!("No valid headers from peer {} - header chain broken", peer);
+            // CHAIN BREAK: Received headers but none chain to our expected_prev_hash.
+            // This is distinct from empty responses (peer rejects our tip).
+            // Common causes: stale/out-of-order response, or peer chain diverged.
+            // Recovery: clear stale downloader state, reset to Idle, try another peer.
+            self.consecutive_chain_breaks += 1;
+            warn!(
+                "No valid headers from peer {} - header chain broken (consecutive_chain_breaks={}). \
+                 Clearing downloader and resetting to Idle.",
+                peer, self.consecutive_chain_breaks
+            );
+            self.header_downloader.clear();
+            self.state = SyncState::Idle;
         }
     }
 
@@ -1837,8 +1890,9 @@ impl SyncManager {
         self.last_block_applied = Instant::now();
         self.body_stall_retries = 0;
 
-        // Applying a block means the chain is advancing — reset deep fork counter.
+        // Applying a block means the chain is advancing — reset all fork counters.
         self.consecutive_empty_headers = 0;
+        self.consecutive_chain_breaks = 0;
 
         // Also update network tip - if we applied a block, the network has at least this height/slot
         // This helps the "behind peers" check work correctly even when peer status is stale
@@ -1946,6 +2000,7 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
+        self.consecutive_chain_breaks = 0;
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
 
@@ -2797,5 +2852,210 @@ mod tests {
             "cleanup() must recover stuck Processing state (state={:?})",
             manager.state
         );
+    }
+
+    // =========================================================================
+    // Fix verification: concurrent requests and stale response handling
+    // =========================================================================
+
+    fn create_test_header(prev_hash: Hash, slot: u32) -> BlockHeader {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        BlockHeader {
+            version: 1,
+            prev_hash,
+            merkle_root: Hash::zero(),
+            presence_root: Hash::zero(),
+            timestamp: now,
+            slot,
+            producer: crypto::PublicKey::from_bytes([0u8; 32]),
+            vdf_output: vdf::VdfOutput { value: vec![0; 32] },
+            vdf_proof: vdf::VdfProof::empty(),
+        }
+    }
+
+    fn build_header_chain(genesis: Hash, count: usize) -> Vec<BlockHeader> {
+        let mut headers = Vec::with_capacity(count);
+        let mut prev = genesis;
+        for i in 0..count {
+            let h = create_test_header(prev, (i + 1) as u32);
+            prev = h.hash();
+            headers.push(h);
+        }
+        headers
+    }
+
+    #[test]
+    fn test_next_request_guard_prevents_duplicate_requests() {
+        // Fix 1: next_request() must return None when peer already has pending request
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+
+        // Trigger sync
+        manager.start_sync();
+        assert!(matches!(
+            manager.state,
+            SyncState::DownloadingHeaders { .. }
+        ));
+
+        // First request should succeed
+        let req1 = manager.next_request();
+        assert!(req1.is_some(), "First request should be generated");
+
+        // Second request should be blocked (peer has pending request)
+        let req2 = manager.next_request();
+        assert!(
+            req2.is_none(),
+            "Second request must be blocked — peer already has pending request"
+        );
+    }
+
+    #[test]
+    fn test_chain_break_clears_downloader_and_resets_to_idle() {
+        // Fix 2: "header chain broken" must clear downloader and go to Idle
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.start_sync();
+
+        // Send request so peer has pending_request
+        let _ = manager.next_request();
+
+        // Simulate response with headers that don't chain to our tip
+        let wrong_prev = Hash::from_bytes([0xAB; 32]);
+        let bad_headers = vec![create_test_header(wrong_prev, 1)];
+
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(bad_headers));
+
+        // Verify: state should be Idle (not stuck in DownloadingHeaders)
+        assert_eq!(
+            manager.state,
+            SyncState::Idle,
+            "Chain break must reset state to Idle"
+        );
+        // Verify: chain_breaks counter incremented
+        assert_eq!(manager.consecutive_chain_breaks, 1);
+        // Verify: empty_headers NOT incremented (this is a chain break, not empty)
+        assert_eq!(manager.consecutive_empty_headers, 0);
+        // Verify: header downloader was cleared (expected_prev_hash is None)
+        assert_eq!(manager.header_downloader.expected_prev_hash(), None);
+    }
+
+    #[test]
+    fn test_start_sync_clears_header_downloader() {
+        // Fix 3: start_sync() must clear stale expected_prev_hash
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+
+        // Poison the header downloader with a stale expected_prev_hash
+        let chain = build_header_chain(genesis, 5);
+        manager.header_downloader.process_headers(&chain, genesis);
+        assert!(
+            manager.header_downloader.expected_prev_hash().is_some(),
+            "Setup: expected_prev_hash should be set after processing headers"
+        );
+
+        // start_sync must clear it
+        manager.start_sync();
+        assert_eq!(
+            manager.header_downloader.expected_prev_hash(),
+            None,
+            "start_sync() must clear expected_prev_hash for a clean slate"
+        );
+    }
+
+    #[test]
+    fn test_stale_response_discarded_when_no_pending_request() {
+        // Fix 4: responses with no matching pending_request must be discarded
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.start_sync();
+
+        // Send request and consume response (clears pending_request)
+        let _ = manager.next_request();
+        let chain = build_header_chain(genesis, 5);
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(chain.clone()));
+
+        // Now send a second (stale) response — no pending_request exists
+        let stale_chain = build_header_chain(genesis, 3);
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(stale_chain));
+
+        // The stale response should have been discarded.
+        // If it was processed, the header downloader would be corrupted
+        // (expected_prev_hash pointing to header 3 instead of header 5).
+        // After start_sync cleared it and the first response advanced it to header 5,
+        // a stale response would break the chain. Verify downloader is clean.
+        // The key assertion: consecutive_chain_breaks should NOT have incremented
+        // from the stale response.
+        assert_eq!(
+            manager.consecutive_chain_breaks, 0,
+            "Stale response must be discarded, not cause a chain break"
+        );
+    }
+
+    #[test]
+    fn test_full_concurrent_scenario_no_corruption() {
+        // Integration test: simulates the exact production scenario that caused the bug.
+        // 1. Sync starts, peer has 100 blocks
+        // 2. Due to Fix 1, only ONE request goes out (not 10)
+        // 3. Response arrives with valid headers
+        // 4. Next request goes out for the continuation
+        // 5. Second response arrives — chain continues correctly
+        let genesis = Hash::zero();
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let peer = PeerId::random();
+        let full_chain = build_header_chain(genesis, 10);
+        let tip_hash = full_chain.last().unwrap().hash();
+        manager.add_peer(peer, 10, tip_hash, 100);
+        manager.start_sync();
+
+        // Round 1: request + response
+        let req1 = manager.next_request();
+        assert!(req1.is_some());
+        // Guard: no second request while first is pending
+        assert!(manager.next_request().is_none());
+
+        let batch1 = full_chain[..5].to_vec();
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(batch1));
+
+        // After response processed: state should still be DownloadingHeaders
+        // and expected_prev_hash should be at header 5
+        let expected_hash = full_chain[4].hash();
+        if let SyncState::DownloadingHeaders { headers_count, .. } = manager.state {
+            assert_eq!(headers_count, 5, "Should have 5 headers counted");
+        } else {
+            panic!("Expected DownloadingHeaders state");
+        }
+
+        // Round 2: continuation request
+        let req2 = manager.next_request();
+        assert!(req2.is_some(), "Should be able to request more headers");
+
+        let batch2 = full_chain[5..10].to_vec();
+        let _blocks = manager.handle_response(peer, SyncResponse::Headers(batch2));
+
+        if let SyncState::DownloadingHeaders { headers_count, .. } = manager.state {
+            assert_eq!(headers_count, 10, "Should have all 10 headers counted");
+        } else {
+            panic!("Expected DownloadingHeaders state");
+        }
+
+        // Verify: no chain breaks, no empty headers
+        assert_eq!(manager.consecutive_chain_breaks, 0);
+        assert_eq!(manager.consecutive_empty_headers, 0);
     }
 }
