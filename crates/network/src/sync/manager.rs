@@ -1517,33 +1517,43 @@ impl SyncManager {
     /// Start the sync process
     fn start_sync(&mut self) {
         if let Some(peer) = self.best_peer() {
-            if let Some(status) = self.peers.get(&peer) {
-                // New epoch: any in-flight responses from previous cycles will be
-                // discarded because their epoch won't match.
-                self.sync_epoch += 1;
+            let target_slot = match self.peers.get(&peer) {
+                Some(status) => status.best_slot,
+                None => return,
+            };
 
-                info!(
-                    "Starting sync epoch {} with peer {} (height {}, slot {})",
-                    self.sync_epoch, peer, status.best_height, status.best_slot
-                );
+            // New epoch: any in-flight responses from previous cycles will be
+            // discarded because their epoch won't match.
+            self.sync_epoch += 1;
 
-                // Clean slate: clear stale expected_prev_hash from any previous
-                // failed cycle. Without this, a poisoned cycle contaminates the next.
-                self.header_downloader.clear();
+            info!(
+                "Starting sync epoch {} with peer {} (target_slot={})",
+                self.sync_epoch, peer, target_slot
+            );
 
-                self.state = SyncState::DownloadingHeaders {
-                    target_slot: status.best_slot,
-                    peer,
-                    headers_count: 0,
-                };
-
-                // Reset the stuck-sync timer so this new attempt gets a full window
-                // before cleanup() declares it stuck. Without this, a node
-                // that hasn't applied blocks recently (e.g. after genesis resync)
-                // would have its sync attempt killed immediately by cleanup().
-                self.last_sync_activity = Instant::now();
-                self.last_block_applied = Instant::now();
+            // Clean slate for the new cycle. Clear ALL sync state from
+            // previous cycles to prevent contamination.
+            self.header_downloader.clear();
+            self.pending_headers.clear();
+            self.pending_blocks.clear();
+            self.headers_needing_bodies.clear();
+            self.pending_requests.clear();
+            self.body_downloader.clear();
+            self.body_stall_retries = 0;
+            for s in self.peers.values_mut() {
+                s.pending_request = None;
             }
+
+            self.state = SyncState::DownloadingHeaders {
+                target_slot,
+                peer,
+                headers_count: 0,
+            };
+
+            // Reset the stuck-sync timer so this new attempt gets a full window
+            // before cleanup() declares it stuck.
+            self.last_sync_activity = Instant::now();
+            self.last_block_applied = Instant::now();
         }
     }
 
@@ -1667,17 +1677,12 @@ impl SyncManager {
         );
 
         // Clear pending request for this peer and remove from tracking map.
-        // Check both: (1) a pending request exists, and (2) it belongs to the
-        // current sync epoch. Responses from old epochs are stale and must be
-        // discarded to prevent corrupting the current cycle's header chain.
+        // Clear pending request for this peer and extract the epoch.
+        // Only discard when the epoch is EXPLICITLY from a different (older) epoch.
+        // None (no tracking info, e.g. after soft retry cleared requests) is NOT stale.
         let request_epoch = if let Some(status) = self.peers.get_mut(&peer) {
             if let Some(req_id) = status.pending_request.take() {
-                let epoch = self
-                    .pending_requests
-                    .remove(&req_id)
-                    .map(|r| r.epoch)
-                    .unwrap_or(0);
-                Some(epoch)
+                self.pending_requests.remove(&req_id).map(|r| r.epoch)
             } else {
                 None
             }
@@ -1685,7 +1690,7 @@ impl SyncManager {
             None
         };
 
-        let is_current_epoch = request_epoch == Some(self.sync_epoch);
+        let is_stale_epoch = matches!(request_epoch, Some(e) if e != self.sync_epoch);
 
         match response {
             SyncResponse::Headers(headers) => {
@@ -1693,11 +1698,11 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling headers response: count={}",
                     headers.len()
                 );
-                // Discard responses from old sync epochs or orphaned requests.
-                // After a reset, stale responses from the previous cycle arrive
-                // with headers that don't chain from local_hash, poisoning the
-                // new cycle. The epoch check catches these definitively.
-                if !is_current_epoch {
+                // Discard responses from old sync epochs. Responses with no tracking
+                // (request_epoch=None, e.g. after soft retry cleared requests) are
+                // allowed through — the header chain linkage check in process_headers
+                // is the definitive validation.
+                if is_stale_epoch {
                     debug!(
                         "Discarding stale headers from {} ({} headers) — epoch {:?} != current {}",
                         peer,
@@ -1715,7 +1720,7 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling bodies response: count={}",
                     bodies.len()
                 );
-                if !is_current_epoch {
+                if is_stale_epoch {
                     debug!(
                         "Discarding stale bodies from {} ({} bodies) — epoch {:?} != current {}",
                         peer,
