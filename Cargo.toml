@@ -8,11 +8,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["DOLI Network <doli@protonmail.com>"]
 license = "MIT"
-repository = "https://github.com/doli-network/doli"
+repository = "https://github.com/e-weil/doli"
 homepage = "https://www.doli.network"
 rust-version = "1.85"
 
