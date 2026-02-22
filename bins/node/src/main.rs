@@ -416,7 +416,19 @@ async fn main() -> Result<()> {
                 if default.exists() {
                     Some(default)
                 } else {
-                    None
+                    // Write embedded mainnet chainspec to disk so it's available
+                    // for this run AND all future runs. Zero-config deployment.
+                    const EMBEDDED: &str = include_str!("../../../chainspec.mainnet.json");
+                    if let Err(e) = std::fs::write(&default, EMBEDDED) {
+                        eprintln!(
+                            "Warning: could not write embedded chainspec to {:?}: {}",
+                            default, e
+                        );
+                        None
+                    } else {
+                        eprintln!("Wrote embedded mainnet chainspec to {:?}", default);
+                        Some(default)
+                    }
                 }
             }
             _ => None,
@@ -695,7 +707,24 @@ async fn run_node(
                 }
             }
         } else {
-            None
+            // Fallback: use mainnet chainspec embedded in binary at compile time.
+            // This ensures every binary ships with correct consensus parameters
+            // (genesis_timestamp, slot_duration, etc.) — no separate file needed.
+            const EMBEDDED_MAINNET_CHAINSPEC: &str =
+                include_str!("../../../chainspec.mainnet.json");
+            match serde_json::from_str::<ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
+                Ok(spec) => {
+                    info!(
+                        "Using embedded chainspec: {} ({}) — no chainspec file found",
+                        spec.name, spec.id
+                    );
+                    Some(spec)
+                }
+                Err(e) => {
+                    error!("BUG: embedded chainspec is invalid: {}", e);
+                    None
+                }
+            }
         }
     };
 
