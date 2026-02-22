@@ -2770,32 +2770,22 @@ impl Node {
                 drop(state);
 
                 // Determine starting height via O(1) hash→height index.
-                // Falls back to linear scan if the index entry is missing
-                // (blocks stored before the index was added).
+                // The hash_to_height index is populated by:
+                // 1. rebuild_canonical_index (one-time migration on startup)
+                // 2. Normal block insertion during sync/production
+                // No linear fallback — avoids O(n) scans that caused timeouts.
                 let start_height = if start_hash == genesis_hash {
                     0
                 } else {
-                    let found_height = self
+                    match self
                         .block_store
                         .get_height_by_hash(&start_hash)
                         .ok()
                         .flatten()
-                        .or_else(|| {
-                            // Fallback: linear scan for blocks stored before hash_to_height index
-                            for h in 1..=best_height {
-                                if let Ok(Some(hash)) = self.block_store.get_hash_by_height(h) {
-                                    if hash == start_hash {
-                                        return Some(h);
-                                    }
-                                }
-                            }
-                            None
-                        });
-                    match found_height {
+                    {
                         Some(h) => h,
                         None => {
-                            // Unknown hash - MUST still send response to avoid timeout on requester
-                            // This fixes the sync timeout bug where missing response caused infinite loops
+                            // Unknown hash — respond empty so requester doesn't timeout
                             debug!(
                                 "GetHeaders: unknown start_hash {} (responding with empty)",
                                 start_hash
