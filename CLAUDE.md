@@ -17,6 +17,10 @@ When asked to implement something:
 
 If something is broken after deployment, STOP and report. Do not attempt fixes autonomously.
 
+## CRITICAL: Production Node Protection
+
+**NEVER stop, restart, kill, or deploy to N1 or N2 (omegacortex.ai) while any other node is syncing or broken.** N1 and N2 are the chain tip — if they go down while N3/N4/N5 are syncing, the entire network loses its only source of truth. Only touch N1/N2 when ALL nodes are fully synchronized and producing.
+
 ## MANDATORY: Ops Runbook
 
 **Before ANY deployment, node management, upgrade, or infrastructure task**, read `.claude/skills/doli-ops/SKILL.md`. It contains exact CLI syntax (flag order matters!), node SSH details, deployment checklists, and troubleshooting procedures.
@@ -298,19 +302,20 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 
 ### Mainnet Node Inventory
 
-| Node | Host | SSH | Data Dir | Binary |
-|------|------|----|----------|--------|
-| **N1** | omegacortex.ai | `ssh ilozada@omegacortex.ai` | `~/.doli/mainnet/node1/data` | `~/repos/doli/target/release/doli-node` |
-| **N2** | omegacortex.ai | same host | `~/.doli/mainnet/node2/data` | same binary |
-| **N3** | omegacortex.ai | same host | `~/.doli/mainnet/node3/data` | same binary |
-| **N4** | 72.60.70.166 | `ssh -J ilozada@omegacortex.ai -p 50790 ilozada@72.60.70.166` | `~/.doli/mainnet` (default) | `/opt/doli/target/release/doli-node` |
-| **N5** | 72.60.115.209 | `ssh -J ilozada@omegacortex.ai -p 50790 ilozada@72.60.115.209` | `~/.doli/mainnet` (default) | `/opt/doli/target/release/doli-node` |
+| Node | Host | IP | SSH | Ports (P2P/RPC/Metrics) | Data Dir | Binary | Logs |
+|------|------|----|-----|------------------------|----------|--------|------|
+| **N1** | omegacortex | 72.60.228.233 | `ssh ilozada@omegacortex.ai` | 30303 / 8545 / 9090 | `~/.doli/mainnet/node1/data` | `~/repos/doli/target/release/doli-node` | `/tmp/node1.log` |
+| **N2** | omegacortex | same | same host | 30304 / 8546 / 9091 | `~/.doli/mainnet/node2/data` | same binary | `/tmp/node2.log` |
+| **N3** | omegacortex | same | same host | 30305 / 8547 / 9092 | `~/.doli/mainnet/node3/data` | same binary | `/tmp/node3.log` |
+| **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `/var/log/doli-node.log` |
+| **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `/var/log/doli-node.log` |
 
 **Key differences:**
-- **N1/N2/N3** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works.
-- **N4/N5** (remote VMs): **No Rust toolchain, no repo.** Binary-only via SCP. Cannot compile.
-- **N4/N5 SSH**: Only reachable via omegacortex jump host. Direct SSH from local fails.
-- **N4/N5 user**: `isudoajl` (not `ilozada`). `sudo` required for process management.
+- **N1/N2/N3** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works. All share the same compiled binary. SSH user is `ilozada`.
+- **N4/N5** (remote VMs): **No Rust toolchain.** Binary deployed via SCP from omegacortex. Cannot compile locally.
+- **N4/N5 SSH**: Only reachable via omegacortex as jump host. Direct SSH from local machine fails.
+- **N4/N5 process user**: `isudoajl` (not `ilozada`). SSH as `ilozada`, use `sudo -u isudoajl` to run the node process.
+- **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory). Key file is `producer.json` (not in `keys/` subfolder).
 
 ### ⚠️ Chainspec Rules (CONSENSUS-CRITICAL)
 
@@ -323,73 +328,188 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 5. The **canonical chainspec** lives at repo root: `chainspec.mainnet.json`
 6. **NEVER** change `genesis.timestamp` or `consensus.slot_duration` — this breaks consensus
 
-### Deployment Checklist
+### DNS / Bootstrap
+
+| Record | Type | Resolves to | Purpose |
+|--------|------|-------------|---------|
+| `seed1.doli.network` | A | `72.60.228.233` | Default bootstrap (N1) |
+| `seed2.doli.network` | A | `72.60.228.233` | Default bootstrap (N1) |
+
+These are hardcoded in `crates/core/src/network_params.rs` as default mainnet bootstrap nodes. Nodes started without `--bootstrap` will use these automatically.
+
+### Deployment — Full Procedure
+
+#### Step 1: Build on omegacortex
 
 ```bash
-# 1. Build on omegacortex (N1/N2/N3 use this directly)
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
-
-# 2. Deploy to N4/N5 via compressed SCP (23MB → 8.6MB)
-ssh ilozada@omegacortex.ai "gzip -c ~/repos/doli/target/release/doli-node > /tmp/doli-node.gz"
-# N4:
-ssh ilozada@omegacortex.ai "scp -P 50790 /tmp/doli-node.gz ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'gunzip -f /tmp/doli-node.gz && sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'"
-# N5: same but replace 72.60.70.166 with 72.60.115.209
-
-# 3. Restart nodes (stop → start)
-# N1/N2/N3: pkill on omegacortex, then nohup start
-# N4/N5: via jump host: ssh -J omegacortex -p 50790 ...
-
-# 4. Verify: all nodes same height, chainspec loaded in logs
 ```
 
-### Node Start Commands
+This updates the binary for N1/N2/N3 (they share `~/repos/doli/target/release/doli-node`). Running nodes keep the old binary in memory until restarted.
 
-**N1** (omegacortex, relay server):
+#### Step 2: Deploy binary to N4/N5 via SCP
+
 ```bash
-nohup doli-node --data-dir ~/.doli/mainnet/node1/data run \
-  --producer --producer-key ~/.doli/mainnet/keys/producer_1.json \
-  --chainspec ~/.doli/mainnet/chainspec.json \
+# Compress (23MB → 8.6MB)
+ssh ilozada@omegacortex.ai "gzip -c ~/repos/doli/target/release/doli-node > /tmp/doli-node.gz"
+
+# Copy to N4
+ssh ilozada@omegacortex.ai "scp -P 50790 /tmp/doli-node.gz ilozada@72.60.70.166:/tmp/"
+# Copy to N5
+ssh ilozada@omegacortex.ai "scp -P 50790 /tmp/doli-node.gz ilozada@72.60.115.209:/tmp/"
+
+# Install on N4
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'gunzip -f /tmp/doli-node.gz && sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'"
+# Install on N5
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'gunzip -f /tmp/doli-node.gz && sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'"
+```
+
+#### Step 3: Stop nodes
+
+**N1/N2/N3** (omegacortex — kill by PID to avoid hitting other nodes):
+```bash
+# Find PIDs
+ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+
+# Kill specific node (replace PID)
+ssh ilozada@omegacortex.ai "kill <PID>"
+
+# Or kill by data-dir pattern:
+ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node3')"   # N3 only
+```
+
+**N4/N5** (via jump host):
+```bash
+# N4
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
+# N5
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
+```
+
+Wait 3s, then verify stopped:
+```bash
+ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node || echo stopped'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node || echo stopped'"
+```
+
+#### Step 4: Start nodes
+
+**N1** (omegacortex, relay server — start first, it's the bootstrap):
+```bash
+ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
+  --data-dir /home/ilozada/.doli/mainnet/node1/data run \
+  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_1.json \
+  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
   --no-auto-update --yes --force-start --relay-server \
-  </dev/null >/tmp/node1.log 2>&1 &
+  </dev/null >/tmp/node1.log 2>&1 &"
 ```
 
 **N2** (omegacortex, port offset):
 ```bash
-nohup doli-node --data-dir ~/.doli/mainnet/node2/data run \
-  --producer --producer-key ~/.doli/mainnet/keys/producer_2.json \
-  --chainspec ~/.doli/mainnet/chainspec.json \
+ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
+  --data-dir /home/ilozada/.doli/mainnet/node2/data run \
+  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_2.json \
+  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
   --no-auto-update --yes --force-start \
   --p2p-port 30304 --rpc-port 8546 --metrics-port 9091 \
   --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
-  </dev/null >/tmp/node2.log 2>&1 &
+  </dev/null >/tmp/node2.log 2>&1 &"
 ```
 
 **N3** (omegacortex, port offset):
 ```bash
-nohup doli-node --data-dir ~/.doli/mainnet/node3/data run \
-  --producer --producer-key ~/.doli/mainnet/keys/producer_3.json \
-  --chainspec ~/.doli/mainnet/chainspec.json \
+ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
+  --data-dir /home/ilozada/.doli/mainnet/node3/data run \
+  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_3.json \
+  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
   --no-auto-update --yes --force-start \
   --p2p-port 30305 --rpc-port 8547 --metrics-port 9092 \
   --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
-  </dev/null >/tmp/node3.log 2>&1 &
+  </dev/null >/tmp/node3.log 2>&1 &"
 ```
 
-**N4/N5** (remote VMs, default data dir):
+**N4** (remote VM):
 ```bash
-nohup /opt/doli/target/release/doli-node run \
-  --producer --producer-key ~/.doli/mainnet/producer.json \
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo -u isudoajl bash -c \"nohup /opt/doli/target/release/doli-node run \
+  --producer --producer-key /home/isudoajl/.doli/mainnet/producer.json \
   --bootstrap /ip4/72.60.228.233/tcp/30303 \
   --p2p-port 30303 --rpc-port 8545 --metrics-port 9090 --yes \
-  </dev/null >/tmp/node.log 2>&1 &
-# Note: chainspec auto-loaded from ~/.doli/mainnet/chainspec.json (or embedded)
+  </dev/null >/var/log/doli-node.log 2>&1 &\"'"
 ```
 
-### Snap Sync (Phase 1 — Foundation)
+**N5** (remote VM):
+```bash
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo -u isudoajl bash -c \"nohup /opt/doli/target/release/doli-node run \
+  --producer --producer-key /home/isudoajl/.doli/mainnet/producer.json \
+  --bootstrap /ip4/72.60.228.233/tcp/30303 \
+  --p2p-port 30303 --rpc-port 8545 --metrics-port 9090 --yes \
+  </dev/null >/var/log/doli-node.log 2>&1 &\"'"
+```
 
-State snapshot infrastructure is implemented (`snapshot.rs`):
-- `GetStateSnapshot` / `StateSnapshot` wire messages for full state transfer
-- `GetStateRoot` / `StateRoot` for cross-peer verification
-- `compute_state_root()`: deterministic `H(H(chain_state) || H(utxo_set) || H(producer_set))`
-- State machine orchestration (requesting roots from 3+ peers, consensus, download) is TODO
+#### Step 5: Verify
+
+```bash
+# All nodes running
+ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'"
+
+# All nodes same height and hash (run twice 15s apart, height should advance)
+ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do \
+  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
+  -H 'Content-Type: application/json' \
+  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
+  | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
+```
+
+### Wipe & Resync (When a Node is Forked)
+
+**N1/N2/N3** (omegacortex — replace `node3` with `node1`/`node2` as needed):
+```bash
+# 1. Stop the node
+ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node3')"
+
+# 2. Wipe chain state
+ssh ilozada@omegacortex.ai "rm -f ~/.doli/mainnet/node3/data/chain_state.bin \
+  ~/.doli/mainnet/node3/data/producers.bin \
+  ~/.doli/mainnet/node3/data/utxo.bin && \
+  rm -rf ~/.doli/mainnet/node3/data/blocks/ \
+  ~/.doli/mainnet/node3/data/signed_slots.db/"
+
+# 3. Restart (see Step 4 above)
+```
+
+**N4/N5** (remote VMs — data lives directly in `~/.doli/mainnet/`, no `data/` subdirectory):
+```bash
+# 1. Stop
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
+
+# 2. Wipe chain state (NOTE: path is /home/isudoajl/.doli/mainnet/ — no data/ subdir)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo rm -f \
+  /home/isudoajl/.doli/mainnet/chain_state.bin \
+  /home/isudoajl/.doli/mainnet/producers.bin \
+  /home/isudoajl/.doli/mainnet/utxo.bin; \
+  sudo rm -rf /home/isudoajl/.doli/mainnet/blocks/ \
+  /home/isudoajl/.doli/mainnet/signed_slots.db/; echo wiped'"
+
+# 3. Restart (see Step 4 above)
+```
+
+### Consensus-Critical vs Rolling Upgrades
+
+| Change type | Examples | Deploy strategy |
+|-------------|----------|----------------|
+| **Consensus-critical** | Block validation, scheduling, VDF, economics, tx processing | Stop ALL nodes simultaneously, replace binary, start all |
+| **Non-consensus** | Sync, networking, RPC, logging, metrics | Rolling: one node at a time, verify health before next |
+
+**For consensus-critical changes:** All nodes MUST run the same binary version simultaneously to prevent forks. Stop all 5, deploy, start N1 first (bootstrap), then N2, then N3/N4/N5.
+
+### Snap Sync
+
+When a node is >1000 blocks behind with 3+ peers, it uses snap sync: downloads a full state snapshot instead of replaying 40K+ blocks with VDF verification. Takes seconds instead of hours.
+
+- Wire protocol: `GetStateRoot`/`StateRoot` for quorum, `GetStateSnapshot`/`StateSnapshot` for download
+- State root: `H(H(chain_state) || H(utxo_set) || H(producer_set))` verified by 2+ peers
+- Falls back to header-first sync if <3 peers or quorum fails
+- Logs: `[SNAP_SYNC]` prefix
