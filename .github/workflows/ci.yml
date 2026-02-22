@@ -110,6 +110,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: docker/Dockerfile
           push: false
           tags: doli-node:ci
           cache-from: type=gha
