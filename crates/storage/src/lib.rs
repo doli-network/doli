@@ -88,6 +88,7 @@ pub mod block_store;
 pub mod chain_state;
 pub mod maintainer;
 pub mod producer;
+pub mod snapshot;
 pub mod update;
 pub mod utxo;
 
@@ -103,6 +104,7 @@ pub use producer::{
     EXIT_HISTORY_RETENTION, INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD,
     VETO_BOND_AMOUNT, VETO_THRESHOLD_PERCENT,
 };
+pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
 pub use update::UpdateState;
 pub use utxo::{Outpoint, UtxoEntry, UtxoSet};
 
