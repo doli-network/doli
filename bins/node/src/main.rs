@@ -699,6 +699,25 @@ async fn run_node(
         }
     };
 
+    // ======================== CONSENSUS-CRITICAL GUARD ========================
+    // Producer nodes MUST have a chainspec to ensure all nodes agree on:
+    // - genesis_timestamp (determines slot schedule)
+    // - slot_duration
+    // - bond_amount, initial_reward
+    //
+    // Without this, nodes derive their own genesis_timestamp, causing slot
+    // schedule divergence and chain forks when multiple nodes produce.
+    if producer && chainspec.is_none() {
+        error!("FATAL: --producer requires a chainspec file for consensus safety");
+        error!("Without chainspec, genesis_timestamp may differ between nodes,");
+        error!("causing slot schedule divergence and chain forks.");
+        error!("");
+        error!("Fix: place chainspec.json in your data directory:");
+        error!("  {:?}/chainspec.json", data_dir);
+        error!("Or specify explicitly: --chainspec /path/to/chainspec.json");
+        std::process::exit(1);
+    }
+
     // Pass chainspec to config so Node::new() can apply overrides
     config.chainspec = chainspec.clone();
 
