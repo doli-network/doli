@@ -14,8 +14,8 @@ use doli_core::{Block, BlockHeader};
 /// Protocol identifier for sync
 pub const SYNC_PROTOCOL: &str = "/doli/sync/1.0.0";
 
-/// Maximum message size for sync messages (16MB for block batches)
-const MAX_SYNC_SIZE: usize = 16 * 1024 * 1024;
+/// Maximum message size for sync messages (512MB for state snapshots)
+const MAX_SYNC_SIZE: usize = 512 * 1024 * 1024;
 
 /// Sync request types
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +45,18 @@ pub enum SyncRequest {
         /// Block hash
         hash: Hash,
     },
+
+    /// Request a complete state snapshot at a specific block (snap sync)
+    GetStateSnapshot {
+        /// Block hash to snapshot at (should be a recent finalized block)
+        block_hash: Hash,
+    },
+
+    /// Request only the state root hash for cross-peer verification (snap sync)
+    GetStateRoot {
+        /// Block hash to compute state root for
+        block_hash: Hash,
+    },
 }
 
 /// Sync response types
@@ -58,6 +70,30 @@ pub enum SyncResponse {
 
     /// Single block response
     Block(Option<Block>),
+
+    /// Complete state snapshot (snap sync)
+    StateSnapshot {
+        /// Block this snapshot is valid at
+        block_hash: Hash,
+        /// Block height at snapshot
+        block_height: u64,
+        /// Serialized ChainState (bincode)
+        chain_state: Vec<u8>,
+        /// Serialized UtxoSet (bincode)
+        utxo_set: Vec<u8>,
+        /// Serialized ProducerSet (bincode)
+        producer_set: Vec<u8>,
+        /// Merkle root: H(H(chain_state) || H(utxo_set) || H(producer_set))
+        state_root: Hash,
+    },
+
+    /// State root only, for cross-peer verification (snap sync)
+    StateRoot {
+        /// Block hash this root is for
+        block_hash: Hash,
+        /// The computed state root
+        state_root: Hash,
+    },
 
     /// Error response
     Error(String),
@@ -82,6 +118,14 @@ impl SyncRequest {
     pub fn get_block_by_hash(hash: Hash) -> Self {
         Self::GetBlockByHash { hash }
     }
+
+    pub fn get_state_snapshot(block_hash: Hash) -> Self {
+        Self::GetStateSnapshot { block_hash }
+    }
+
+    pub fn get_state_root(block_hash: Hash) -> Self {
+        Self::GetStateRoot { block_hash }
+    }
 }
 
 impl SyncResponse {
@@ -104,6 +148,8 @@ impl SyncResponse {
             }
             SyncResponse::Block(Some(_)) => "Block(Some)",
             SyncResponse::Block(None) => "Block(None)",
+            SyncResponse::StateSnapshot { .. } => "StateSnapshot",
+            SyncResponse::StateRoot { .. } => "StateRoot",
             SyncResponse::Error(_) => "Error",
         }
     }

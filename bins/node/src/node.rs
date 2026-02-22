@@ -2845,6 +2845,58 @@ impl Node {
                 Ok(Some(block)) => SyncResponse::Block(Some(block)),
                 _ => SyncResponse::Block(None),
             },
+
+            SyncRequest::GetStateRoot { block_hash } => {
+                let chain_state = self.chain_state.read().await;
+                if chain_state.best_hash != block_hash {
+                    SyncResponse::Error(format!(
+                        "State root only available for current tip {}",
+                        chain_state.best_hash
+                    ))
+                } else {
+                    let utxo_set = self.utxo_set.read().await;
+                    let ps = self.producer_set.read().await;
+                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
+                        Ok(root) => SyncResponse::StateRoot {
+                            block_hash,
+                            state_root: root,
+                        },
+                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
+                    }
+                }
+            }
+
+            SyncRequest::GetStateSnapshot { block_hash } => {
+                let chain_state = self.chain_state.read().await;
+                if chain_state.best_hash != block_hash {
+                    SyncResponse::Error(format!(
+                        "Snapshot only available for current tip {}",
+                        chain_state.best_hash
+                    ))
+                } else {
+                    let utxo_set = self.utxo_set.read().await;
+                    let ps = self.producer_set.read().await;
+                    match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
+                        Ok(snap) => {
+                            info!(
+                                "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
+                                snap.block_height,
+                                snap.total_bytes() / 1024,
+                                snap.state_root
+                            );
+                            SyncResponse::StateSnapshot {
+                                block_hash: snap.block_hash,
+                                block_height: snap.block_height,
+                                chain_state: snap.chain_state_bytes,
+                                utxo_set: snap.utxo_set_bytes,
+                                producer_set: snap.producer_set_bytes,
+                                state_root: snap.state_root,
+                            }
+                        }
+                        Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
+                    }
+                }
+            }
         };
 
         if let Some(ref network) = self.network {

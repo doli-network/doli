@@ -1772,6 +1772,30 @@ impl SyncManager {
                 warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
                 vec![]
             }
+            SyncResponse::StateSnapshot {
+                block_hash,
+                block_height,
+                state_root,
+                ..
+            } => {
+                info!(
+                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}",
+                    peer, block_hash, block_height, state_root
+                );
+                // TODO: snap sync state machine will process this
+                vec![]
+            }
+            SyncResponse::StateRoot {
+                block_hash,
+                state_root,
+            } => {
+                info!(
+                    "[SNAP_SYNC] Received state root from peer {}: hash={}, root={}",
+                    peer, block_hash, state_root
+                );
+                // TODO: snap sync state machine will collect votes
+                vec![]
+            }
         }
     }
 
