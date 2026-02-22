@@ -14,7 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/target/release-builds"
-BINARY_NAME="doli-node"
+NODE_BINARY="doli-node"
+CLI_BINARY="doli"
 
 # Get version from Cargo.toml
 VERSION=$(grep -m1 '^version' "$PROJECT_ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
@@ -82,7 +83,7 @@ check_tools() {
 # Build for a single target
 build_target() {
     local target="$1"
-    local artifact_name="${BINARY_NAME}-${VERSION}-${target}"
+    local artifact_name="doli-${VERSION}-${target}"
     local artifact_dir="$BUILD_DIR/$artifact_name"
 
     echo ""
@@ -98,17 +99,17 @@ build_target() {
             # Use cross for musl builds
             if command -v cross &> /dev/null; then
                 echo "Using cross for musl build..."
-                cross build --release --target "$target" --package doli-node
+                cross build --release --target "$target" --package doli-node --package doli-cli
             else
                 echo "Warning: cross not found, attempting native cargo build..."
-                cargo build --release --target "$target" --package doli-node
+                cargo build --release --target "$target" --package doli-node --package doli-cli
             fi
             ;;
         *-apple-darwin)
             # Native macOS build (requires macOS host or cross-compilation setup)
             if [[ "$(uname -s)" == "Darwin" ]]; then
                 rustup target add "$target" 2>/dev/null || true
-                cargo build --release --target "$target" --package doli-node
+                cargo build --release --target "$target" --package doli-node --package doli-cli
             else
                 echo "Skipping $target (not on macOS)"
                 return 0
@@ -116,30 +117,41 @@ build_target() {
             ;;
         *)
             # Standard cargo build
-            cargo build --release --target "$target" --package doli-node
+            cargo build --release --target "$target" --package doli-node --package doli-cli
             ;;
     esac
 
-    # Check if build succeeded
-    local binary_path="$PROJECT_ROOT/target/$target/release/$BINARY_NAME"
-    if [ ! -f "$binary_path" ]; then
-        echo "Error: Binary not found at $binary_path"
+    # Check if builds succeeded
+    local node_path="$PROJECT_ROOT/target/$target/release/$NODE_BINARY"
+    local cli_path="$PROJECT_ROOT/target/$target/release/$CLI_BINARY"
+    if [ ! -f "$node_path" ]; then
+        echo "Error: Binary not found at $node_path"
+        return 1
+    fi
+    if [ ! -f "$cli_path" ]; then
+        echo "Error: Binary not found at $cli_path"
         return 1
     fi
 
-    # Copy binary
-    cp "$binary_path" "$artifact_dir/$BINARY_NAME"
+    # Copy binaries
+    cp "$node_path" "$artifact_dir/$NODE_BINARY"
+    cp "$cli_path" "$artifact_dir/$CLI_BINARY"
 
     # Create README for the release
     cat > "$artifact_dir/README.txt" << EOF
-DOLI Node - Version $VERSION
+DOLI - Version $VERSION
 Target: $target
 
+Included binaries:
+  doli-node  — Full node
+  doli       — Wallet CLI
+
 Quick Start:
-  chmod +x $BINARY_NAME
-  ./$BINARY_NAME run                    # Start mainnet node
-  ./$BINARY_NAME --network testnet run  # Start testnet node
-  ./$BINARY_NAME --help                 # Show all options
+  chmod +x $NODE_BINARY $CLI_BINARY
+  ./$NODE_BINARY run                    # Start mainnet node
+  ./$NODE_BINARY --network testnet run  # Start testnet node
+  ./$NODE_BINARY --help                 # Show all options
+  ./$CLI_BINARY --help                  # Wallet commands
 
 Documentation: https://github.com/e-weil/doli/docs/running_a_node.md
 Support: https://github.com/e-weil/doli/issues

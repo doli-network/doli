@@ -1,6 +1,6 @@
 # DOLI Release Workflow
 # Triggers on version tags (v*)
-# Builds binaries for all platforms and creates GitHub release
+# Builds doli-node + doli (CLI) for 4 platforms, creates native installers, publishes GitHub Release
 
 name: Release
 
@@ -11,19 +11,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  BINARY_NAME: doli-node
 
 jobs:
-  # Build Linux binaries
-  build-linux:
-    name: Build Linux (${{ matrix.target }})
+  # ── Linux x86_64 ──────────────────────────────────────────────
+  build-linux-x64:
+    name: Build Linux x86_64
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            artifact: doli-node-linux-x64
+    env:
+      TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -35,44 +30,113 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: x86_64-unknown-linux-gnu
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --package doli-node
+        run: cargo build --release --target $TARGET --package doli-node --package doli-cli
 
-      - name: Package
+      - name: Package tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
-          ARTIFACT_NAME="${BINARY_NAME}-${VERSION}-${{ matrix.target }}"
-          mkdir -p "$ARTIFACT_NAME"
-          cp "target/${{ matrix.target }}/release/$BINARY_NAME" "$ARTIFACT_NAME/"
-          cp README.md LICENSE* "$ARTIFACT_NAME/" 2>/dev/null || true
-          tar -czf "$ARTIFACT_NAME.tar.gz" "$ARTIFACT_NAME"
-          sha256sum "$ARTIFACT_NAME.tar.gz" | cut -d' ' -f1 > "$ARTIFACT_NAME.tar.gz.sha256"
+          DIR="doli-${VERSION}-${TARGET}"
+          mkdir -p "$DIR"
+          cp "target/${TARGET}/release/doli-node" "$DIR/"
+          cp "target/${TARGET}/release/doli" "$DIR/"
+          cp README.md LICENSE* "$DIR/" 2>/dev/null || true
+          tar -czf "${DIR}.tar.gz" "$DIR"
 
-      - name: Upload artifact
+      - name: Build .deb
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cargo install cargo-deb
+          cargo deb -p doli-node --target $TARGET --no-build --no-strip
+          DEB_FILE=$(find target/${TARGET}/debian -name '*.deb' | head -1)
+          cp "$DEB_FILE" "doli-${VERSION}-${TARGET}.deb"
+
+      - name: Build .rpm
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cargo install cargo-generate-rpm
+          cargo generate-rpm -p bins/node --target $TARGET
+          RPM_FILE=$(find target/${TARGET}/generate-rpm -name '*.rpm' | head -1)
+          cp "$RPM_FILE" "doli-${VERSION}-${TARGET}.rpm"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: linux-x64
           path: |
-            *.tar.gz
-            *.sha256
+            doli-*.tar.gz
+            doli-*.deb
+            doli-*.rpm
 
-  # Build macOS binaries
-  build-macos:
-    name: Build macOS (${{ matrix.target }})
+  # ── Linux aarch64 ─────────────────────────────────────────────
+  build-linux-arm64:
+    name: Build Linux aarch64
+    runs-on: ubuntu-latest
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libmpfr-dev libclang-dev m4 protobuf-compiler
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-unknown-linux-gnu
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        run: cross build --release --target $TARGET --package doli-node --package doli-cli
+
+      - name: Package tarball
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          DIR="doli-${VERSION}-${TARGET}"
+          mkdir -p "$DIR"
+          cp "target/${TARGET}/release/doli-node" "$DIR/"
+          cp "target/${TARGET}/release/doli" "$DIR/"
+          cp README.md LICENSE* "$DIR/" 2>/dev/null || true
+          tar -czf "${DIR}.tar.gz" "$DIR"
+
+      - name: Build .deb
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cargo install cargo-deb
+          cargo deb -p doli-node --target $TARGET --no-build --no-strip
+          DEB_FILE=$(find target/${TARGET}/debian -name '*.deb' | head -1)
+          cp "$DEB_FILE" "doli-${VERSION}-${TARGET}.deb"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: |
+            doli-*.tar.gz
+            doli-*.deb
+
+  # ── macOS aarch64 (Apple Silicon) ─────────────────────────────
+  build-macos-arm64:
+    name: Build macOS aarch64
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            artifact: doli-node-macos-arm64
+    env:
+      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -82,38 +146,93 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: aarch64-apple-darwin
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --package doli-node
+        run: cargo build --release --target $TARGET --package doli-node --package doli-cli
 
-      - name: Package
+      - name: Package tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
-          ARTIFACT_NAME="${BINARY_NAME}-${VERSION}-${{ matrix.target }}"
-          mkdir -p "$ARTIFACT_NAME"
-          cp "target/${{ matrix.target }}/release/$BINARY_NAME" "$ARTIFACT_NAME/"
-          cp README.md LICENSE* "$ARTIFACT_NAME/" 2>/dev/null || true
-          tar -czf "$ARTIFACT_NAME.tar.gz" "$ARTIFACT_NAME"
-          shasum -a 256 "$ARTIFACT_NAME.tar.gz" | cut -d' ' -f1 > "$ARTIFACT_NAME.tar.gz.sha256"
+          DIR="doli-${VERSION}-${TARGET}"
+          mkdir -p "$DIR"
+          cp "target/${TARGET}/release/doli-node" "$DIR/"
+          cp "target/${TARGET}/release/doli" "$DIR/"
+          cp README.md LICENSE* "$DIR/" 2>/dev/null || true
+          tar -czf "${DIR}.tar.gz" "$DIR"
 
-      - name: Upload artifact
+      - name: Build .pkg
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION_NUM=${VERSION#v}
+          mkdir -p pkg-root/usr/local/bin
+          cp "target/${TARGET}/release/doli-node" pkg-root/usr/local/bin/
+          cp "target/${TARGET}/release/doli" pkg-root/usr/local/bin/
+          pkgbuild --root pkg-root \
+            --identifier network.doli.node \
+            --version "$VERSION_NUM" \
+            --install-location / \
+            "doli-${VERSION}-${TARGET}.pkg"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: macos-arm64
           path: |
-            *.tar.gz
-            *.sha256
+            doli-*.tar.gz
+            doli-*.pkg
 
-  # Create GitHub Release
+  # ── macOS x86_64 (Intel) ──────────────────────────────────────
+  build-macos-x64:
+    name: Build macOS x86_64
+    runs-on: macos-13
+    env:
+      TARGET: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: brew install gmp mpfr
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-apple-darwin
+
+      - name: Build
+        run: cargo build --release --target $TARGET --package doli-node --package doli-cli
+
+      - name: Package tarball
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          DIR="doli-${VERSION}-${TARGET}"
+          mkdir -p "$DIR"
+          cp "target/${TARGET}/release/doli-node" "$DIR/"
+          cp "target/${TARGET}/release/doli" "$DIR/"
+          cp README.md LICENSE* "$DIR/" 2>/dev/null || true
+          tar -czf "${DIR}.tar.gz" "$DIR"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64
+          path: |
+            doli-*.tar.gz
+
+  # ── Create GitHub Release ─────────────────────────────────────
   release:
     name: Create Release
-    needs: [build-linux]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-arm64, build-macos-x64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -130,55 +249,77 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" -o -name "*.pkg" \) -exec mv {} release/ \;
 
-      - name: Generate checksums file
+      - name: Generate checksums
         run: |
           cd release
-          for f in *.tar.gz; do
-            echo "$(cat "${f}.sha256")  $f" >> CHECKSUMS.txt
-          done
+          sha256sum * > CHECKSUMS.txt
 
       - name: Generate release notes
-        id: changelog
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
-          echo "## What's Changed" > RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
+          {
+            echo "## What's Changed"
+            echo ""
 
-          if [ -n "$PREV_TAG" ]; then
-            git log ${PREV_TAG}..HEAD --pretty=format:"* %s" >> RELEASE_NOTES.md
-          else
-            git log --pretty=format:"* %s" -20 >> RELEASE_NOTES.md
-          fi
-
-          echo "" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "## Downloads" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "| Platform | File | SHA256 |" >> RELEASE_NOTES.md
-          echo "|----------|------|--------|" >> RELEASE_NOTES.md
-
-          for f in release/*.tar.gz; do
-            if [ -f "$f" ]; then
-              NAME=$(basename "$f")
-              SHA=$(cat "$f.sha256" 2>/dev/null || echo "N/A")
-              echo "| ${NAME%.tar.gz} | $NAME | \`${SHA:0:16}...\` |" >> RELEASE_NOTES.md
+            if [ -n "$PREV_TAG" ]; then
+              git log "${PREV_TAG}..HEAD" --pretty=format:"* %s"
+            else
+              git log --pretty=format:"* %s" -20
             fi
-          done
 
-          echo "" >> RELEASE_NOTES.md
+            echo ""
+            echo ""
+            echo "## Downloads"
+            echo ""
+            echo "Each archive contains both \`doli-node\` (full node) and \`doli\` (wallet CLI)."
+            echo ""
+            echo "| Platform | File |"
+            echo "|----------|------|"
+
+            for f in release/*.tar.gz release/*.deb release/*.rpm release/*.pkg; do
+              [ -f "$f" ] && echo "| $(basename "${f%.*}" | sed "s/doli-${VERSION}-//") | $(basename "$f") |"
+            done
+
+            echo ""
+            echo "## Installation"
+            echo ""
+            echo "**Debian / Ubuntu:**"
+            echo '```bash'
+            echo "sudo dpkg -i doli-${VERSION}-*.deb"
+            echo '```'
+            echo ""
+            echo "**RHEL / Fedora:**"
+            echo '```bash'
+            echo "sudo rpm -i doli-${VERSION}-*.rpm"
+            echo '```'
+            echo ""
+            echo "**macOS:**"
+            echo '```bash'
+            echo "sudo installer -pkg doli-${VERSION}-*.pkg -target /"
+            echo '```'
+            echo ""
+            echo "**From tarball:**"
+            echo '```bash'
+            echo "tar -xzf doli-${VERSION}-*.tar.gz"
+            echo "sudo cp doli-${VERSION}-*/doli-node doli-${VERSION}-*/doli /usr/local/bin/"
+            echo '```'
+            echo ""
+            echo "## Checksums (SHA-256)"
+            echo ""
+            echo '```'
+            cat release/CHECKSUMS.txt
+            echo '```'
+          } > RELEASE_NOTES.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md
-          files: |
-            release/*.tar.gz
-            release/*.sha256
-            release/CHECKSUMS.txt
+          files: release/*
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
         env:

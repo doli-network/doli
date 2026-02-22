@@ -41,3 +41,20 @@ reqwest = { version = "0.11", features = ["json"] }  # HTTP client for devnet RP
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.deb]
+name = "doli"
+maintainer = "DOLI Network <doli@protonmail.com>"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/doli-node", "usr/bin/", "755"],
+    ["target/release/doli", "usr/bin/", "755"],
+]
+extended-description = "DOLI blockchain node and wallet CLI for the proof-of-time network."
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/doli-node", dest = "/usr/bin/doli-node", mode = "0755" },
+    { source = "target/release/doli", dest = "/usr/bin/doli", mode = "0755" },
+]
