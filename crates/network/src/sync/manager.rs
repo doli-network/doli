@@ -6,7 +6,7 @@
 //! 3. Downloads block bodies in parallel
 //! 4. Applies blocks to local chain
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
@@ -56,7 +56,7 @@ impl Default for SyncConfig {
 }
 
 /// Synchronization state
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum SyncState {
     /// Not syncing, waiting for peers
     Idle,
@@ -83,6 +83,57 @@ pub enum SyncState {
     },
     /// Fully synchronized
     Synchronized,
+    /// Snap sync: collecting state root votes from peers
+    SnapCollectingRoots {
+        /// Target block hash to snapshot at
+        target_hash: Hash,
+        /// Target block height
+        target_height: u64,
+        /// Collected (peer, state_root) votes
+        votes: Vec<(PeerId, Hash)>,
+        /// Peers already asked
+        asked: HashSet<PeerId>,
+        /// When this phase started
+        started_at: Instant,
+    },
+    /// Snap sync: downloading full snapshot from a peer
+    SnapDownloading {
+        /// Target block hash
+        target_hash: Hash,
+        /// Target block height
+        target_height: u64,
+        /// Quorum-agreed state root
+        quorum_root: Hash,
+        /// Peer serving the snapshot
+        peer: PeerId,
+        /// When download started
+        started_at: Instant,
+    },
+    /// Snap sync: snapshot ready for node to consume
+    SnapReady {
+        /// The verified snapshot
+        snapshot: VerifiedSnapshot,
+    },
+}
+
+/// A verified state snapshot ready for application by the node.
+///
+/// SyncManager collects this from the network; the Node verifies
+/// the state root and applies it.
+#[derive(Clone, Debug)]
+pub struct VerifiedSnapshot {
+    /// Block hash this snapshot is valid at
+    pub block_hash: Hash,
+    /// Block height
+    pub block_height: u64,
+    /// Serialized ChainState (bincode)
+    pub chain_state: Vec<u8>,
+    /// Serialized UtxoSet (bincode)
+    pub utxo_set: Vec<u8>,
+    /// Serialized ProducerSet (bincode)
+    pub producer_set: Vec<u8>,
+    /// Quorum-agreed state root (node re-verifies)
+    pub state_root: Hash,
 }
 
 /// Production authorization result - the single source of truth for whether block production is safe
@@ -334,6 +385,20 @@ pub struct SyncManager {
     peers_lost_at: Option<Instant>,
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
+
+    // === SNAP SYNC FIELDS ===
+    /// Height gap threshold to trigger snap sync instead of header-first
+    snap_sync_threshold: u64,
+    /// Number of peers that must agree on the same state root
+    snap_sync_quorum: usize,
+    /// Timeout for collecting state root votes
+    snap_root_timeout: Duration,
+    /// Timeout for downloading snapshot from a peer
+    snap_download_timeout: Duration,
+    /// Peers that served bad snapshots (blacklisted for this session)
+    snap_blacklisted_peers: HashSet<PeerId>,
+    /// Set after a snap sync failure to skip snap sync for one cycle
+    snap_sync_failed: bool,
 }
 
 impl SyncManager {
@@ -398,6 +463,13 @@ impl SyncManager {
             body_stall_retries: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
+            // Snap sync defaults
+            snap_sync_threshold: 1000,
+            snap_sync_quorum: 2,
+            snap_root_timeout: Duration::from_secs(10),
+            snap_download_timeout: Duration::from_secs(60),
+            snap_blacklisted_peers: HashSet::new(),
+            snap_sync_failed: false,
         }
     }
 
@@ -577,6 +649,20 @@ impl SyncManager {
                 if self.should_sync() {
                     self.start_sync();
                 }
+            }
+        }
+
+        // If snap downloading from this peer, fall back
+        if let SyncState::SnapDownloading {
+            peer: snap_peer, ..
+        } = &self.state
+        {
+            if snap_peer == peer {
+                warn!(
+                    "[SNAP_SYNC] Download peer {} disconnected — falling back",
+                    peer
+                );
+                self.snap_fallback_to_normal();
             }
         }
     }
@@ -1367,6 +1453,9 @@ impl SyncManager {
             SyncState::DownloadingBodies { .. } => "DownloadingBodies",
             SyncState::Processing { .. } => "Processing",
             SyncState::Synchronized => "Synchronized",
+            SyncState::SnapCollectingRoots { .. } => "SnapCollectingRoots",
+            SyncState::SnapDownloading { .. } => "SnapDownloading",
+            SyncState::SnapReady { .. } => "SnapReady",
         }
     }
 
@@ -1518,6 +1607,10 @@ impl SyncManager {
     /// Start the sync process
     fn start_sync(&mut self) {
         if let Some(peer) = self.best_peer() {
+            let best_height = match self.peers.get(&peer) {
+                Some(status) => status.best_height,
+                None => return,
+            };
             let target_slot = match self.peers.get(&peer) {
                 Some(status) => status.best_slot,
                 None => return,
@@ -1526,11 +1619,6 @@ impl SyncManager {
             // New epoch: any in-flight responses from previous cycles will be
             // discarded because their epoch won't match.
             self.sync_epoch += 1;
-
-            info!(
-                "Starting sync epoch {} with peer {} (target_slot={})",
-                self.sync_epoch, peer, target_slot
-            );
 
             // Clean slate for the new cycle. Clear ALL sync state from
             // previous cycles to prevent contamination.
@@ -1545,11 +1633,45 @@ impl SyncManager {
                 s.pending_request = None;
             }
 
-            self.state = SyncState::DownloadingHeaders {
-                target_slot,
-                peer,
-                headers_count: 0,
-            };
+            // Snap sync decision: use snap sync when far behind and enough peers
+            let gap = best_height.saturating_sub(self.local_height);
+            let enough_peers = self.peers.len() >= 3;
+            let should_snap = enough_peers
+                && !self.snap_sync_failed
+                && (self.local_height == 0 || gap > self.snap_sync_threshold);
+
+            if should_snap {
+                // Find the best hash that the most peers agree on
+                let target_hash = self
+                    .peers
+                    .get(&peer)
+                    .map(|s| s.best_hash)
+                    .unwrap_or_default();
+
+                info!(
+                    "[SNAP_SYNC] Starting snap sync epoch {} — gap={}, target_height={}, target_hash={:.16}",
+                    self.sync_epoch, gap, best_height, target_hash
+                );
+
+                self.state = SyncState::SnapCollectingRoots {
+                    target_hash,
+                    target_height: best_height,
+                    votes: Vec::new(),
+                    asked: HashSet::new(),
+                    started_at: Instant::now(),
+                };
+            } else {
+                info!(
+                    "Starting sync epoch {} with peer {} (target_slot={})",
+                    self.sync_epoch, peer, target_slot
+                );
+
+                self.state = SyncState::DownloadingHeaders {
+                    target_slot,
+                    peer,
+                    headers_count: 0,
+                };
+            }
 
             // Reset the stuck-sync timer so this new attempt gets a full window
             // before cleanup() declares it stuck.
@@ -1659,6 +1781,59 @@ impl SyncManager {
             }
 
             SyncState::Processing { .. } => None,
+
+            SyncState::SnapCollectingRoots {
+                target_hash, asked, ..
+            } => {
+                let target_hash = *target_hash;
+                let already_asked = asked.clone();
+                // Ask peers at the same best_hash that we haven't asked yet and aren't blacklisted
+                let candidate = self
+                    .peers
+                    .iter()
+                    .filter(|(pid, status)| {
+                        status.best_hash == target_hash
+                            && !already_asked.contains(pid)
+                            && !self.snap_blacklisted_peers.contains(pid)
+                    })
+                    .map(|(pid, _)| *pid)
+                    .next();
+
+                if let Some(pid) = candidate {
+                    if let SyncState::SnapCollectingRoots { asked, .. } = &mut self.state {
+                        asked.insert(pid);
+                    }
+                    let request = SyncRequest::get_state_root(target_hash);
+                    let id = self.register_request(pid, request.clone());
+                    if let Some(status) = self.peers.get_mut(&pid) {
+                        status.pending_request = Some(id);
+                    }
+                    Some((pid, request))
+                } else {
+                    None
+                }
+            }
+
+            SyncState::SnapDownloading {
+                target_hash, peer, ..
+            } => {
+                let target_hash = *target_hash;
+                let peer = *peer;
+                // Guard: don't send if peer already has a pending request
+                if let Some(status) = self.peers.get(&peer) {
+                    if status.pending_request.is_some() {
+                        return None;
+                    }
+                }
+                let request = SyncRequest::get_state_snapshot(target_hash);
+                let id = self.register_request(peer, request.clone());
+                if let Some(status) = self.peers.get_mut(&peer) {
+                    status.pending_request = Some(id);
+                }
+                Some((peer, request))
+            }
+
+            SyncState::SnapReady { .. } => None,
         }
     }
 
@@ -1775,14 +1950,24 @@ impl SyncManager {
             SyncResponse::StateSnapshot {
                 block_hash,
                 block_height,
+                chain_state,
+                utxo_set,
+                producer_set,
                 state_root,
-                ..
             } => {
                 info!(
-                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}",
-                    peer, block_hash, block_height, state_root
+                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}, size={}KB",
+                    peer, block_hash, block_height, state_root,
+                    (chain_state.len() + utxo_set.len() + producer_set.len()) / 1024
                 );
-                // TODO: snap sync state machine will process this
+                self.handle_snap_snapshot(
+                    peer,
+                    block_hash,
+                    block_height,
+                    chain_state,
+                    utxo_set,
+                    producer_set,
+                );
                 vec![]
             }
             SyncResponse::StateRoot {
@@ -1793,7 +1978,7 @@ impl SyncManager {
                     "[SNAP_SYNC] Received state root from peer {}: hash={}, root={}",
                     peer, block_hash, state_root
                 );
-                // TODO: snap sync state machine will collect votes
+                self.handle_snap_state_root(peer, block_hash, state_root);
                 vec![]
             }
         }
@@ -2038,6 +2223,7 @@ impl SyncManager {
                 height, slot, self.network_tip_height, self.network_tip_slot
             );
             self.state = SyncState::Synchronized;
+            self.snap_sync_failed = false; // Reset snap sync fallback flag
 
             // If we were in a resync, complete it now
             if self.resync_in_progress {
@@ -2164,6 +2350,126 @@ impl SyncManager {
             .check_reorg_weighted(&block, self.local_hash, producer_weight)
     }
 
+    // =========================================================================
+    // SNAP SYNC — state root voting, snapshot handling, fallback
+    // =========================================================================
+
+    /// Handle a StateRoot response: add vote and check quorum.
+    fn handle_snap_state_root(&mut self, peer: PeerId, _block_hash: Hash, state_root: Hash) {
+        if let SyncState::SnapCollectingRoots {
+            target_hash,
+            target_height,
+            votes,
+            ..
+        } = &mut self.state
+        {
+            votes.push((peer, state_root));
+
+            let target_hash = *target_hash;
+            let target_height = *target_height;
+            let quorum = self.snap_sync_quorum;
+
+            // Count votes per root
+            let votes_snapshot: Vec<(PeerId, Hash)> =
+                if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+                    votes.clone()
+                } else {
+                    return;
+                };
+
+            let mut root_counts: HashMap<Hash, Vec<PeerId>> = HashMap::new();
+            for (pid, root) in &votes_snapshot {
+                root_counts.entry(*root).or_default().push(*pid);
+            }
+
+            // Check if any root has reached quorum
+            if let Some((quorum_root, agreeing_peers)) =
+                root_counts.iter().find(|(_, peers)| peers.len() >= quorum)
+            {
+                let download_peer = agreeing_peers[0];
+                info!(
+                    "[SNAP_SYNC] Quorum reached: {} peers agree on root={:.16}, downloading from {}",
+                    agreeing_peers.len(),
+                    quorum_root,
+                    download_peer
+                );
+                let quorum_root = *quorum_root;
+                self.state = SyncState::SnapDownloading {
+                    target_hash,
+                    target_height,
+                    quorum_root,
+                    peer: download_peer,
+                    started_at: Instant::now(),
+                };
+            }
+        }
+    }
+
+    /// Handle a StateSnapshot response: store as SnapReady for node consumption.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_snap_snapshot(
+        &mut self,
+        peer: PeerId,
+        block_hash: Hash,
+        block_height: u64,
+        chain_state: Vec<u8>,
+        utxo_set: Vec<u8>,
+        producer_set: Vec<u8>,
+    ) {
+        if let SyncState::SnapDownloading { quorum_root, .. } = &self.state {
+            let quorum_root = *quorum_root;
+            info!(
+                "[SNAP_SYNC] Snapshot received from {} — height={}, storing as SnapReady (node will verify root)",
+                peer, block_height
+            );
+            self.state = SyncState::SnapReady {
+                snapshot: VerifiedSnapshot {
+                    block_hash,
+                    block_height,
+                    chain_state,
+                    utxo_set,
+                    producer_set,
+                    state_root: quorum_root,
+                },
+            };
+        } else {
+            warn!(
+                "[SNAP_SYNC] Unexpected snapshot from {} — not in SnapDownloading state, ignoring",
+                peer
+            );
+        }
+    }
+
+    /// Take the ready snapshot for node application. Transitions to Synchronized.
+    pub fn take_snap_snapshot(&mut self) -> Option<VerifiedSnapshot> {
+        if matches!(self.state, SyncState::SnapReady { .. }) {
+            let old = std::mem::replace(&mut self.state, SyncState::Synchronized);
+            if let SyncState::SnapReady { snapshot } = old {
+                Some(snapshot)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Fall back from snap sync to normal header-first sync.
+    pub fn snap_fallback_to_normal(&mut self) {
+        warn!("[SNAP_SYNC] Falling back to normal header-first sync");
+        self.snap_sync_failed = true; // Skip snap sync for one cycle
+        self.state = SyncState::Idle;
+        if self.should_sync() {
+            self.start_sync();
+        }
+    }
+
+    /// Blacklist a peer for snap sync (bad snapshot).
+    pub fn snap_blacklist_peer(&mut self, peer: PeerId) {
+        warn!("[SNAP_SYNC] Blacklisting peer {} for bad snapshot", peer);
+        self.snap_blacklisted_peers.insert(peer);
+    }
+
     /// Clean up stale requests and peers
     pub fn cleanup(&mut self) {
         let now = Instant::now();
@@ -2224,10 +2530,37 @@ impl SyncManager {
             self.remove_peer(&peer);
         }
 
+        // Snap sync timeouts
+        match &self.state {
+            SyncState::SnapCollectingRoots { started_at, .. } => {
+                if started_at.elapsed() > self.snap_root_timeout {
+                    warn!(
+                        "[SNAP_SYNC] State root collection timed out after {:?} — falling back",
+                        self.snap_root_timeout
+                    );
+                    self.snap_fallback_to_normal();
+                }
+            }
+            SyncState::SnapDownloading {
+                started_at, peer, ..
+            } => {
+                if started_at.elapsed() > self.snap_download_timeout {
+                    let peer = *peer;
+                    warn!(
+                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — blacklisting and falling back",
+                        peer, self.snap_download_timeout
+                    );
+                    self.snap_blacklisted_peers.insert(peer);
+                    self.snap_fallback_to_normal();
+                }
+            }
+            _ => {}
+        }
+
         // Stall recovery: if "Synchronized" but significantly behind in slots,
         // we're in a deadlock (height matches but slot lags). Reset to Idle
         // to allow re-evaluation and potential resync.
-        if self.state == SyncState::Synchronized && !self.peers.is_empty() {
+        if matches!(self.state, SyncState::Synchronized) && !self.peers.is_empty() {
             let best_slot = self.best_peer_slot();
             let slot_lag = best_slot.saturating_sub(self.local_slot);
             let stall_threshold = self.max_slots_behind.saturating_mul(5);
@@ -2400,7 +2733,7 @@ impl SyncManager {
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
         // from gossip race), reset to Idle, and never retried.
-        if self.state == SyncState::Idle && self.should_sync() {
+        if matches!(self.state, SyncState::Idle) && self.should_sync() {
             info!(
                 "Sync retry: Idle but behind peers (local_h={}, network_tip={}). Restarting sync.",
                 self.local_height, self.network_tip_height
@@ -2438,6 +2771,9 @@ impl SyncManager {
                     None
                 }
             }
+            SyncState::SnapCollectingRoots { .. } => Some(5.0),
+            SyncState::SnapDownloading { .. } => Some(50.0),
+            SyncState::SnapReady { .. } => Some(95.0),
         }
     }
 }
@@ -2467,7 +2803,7 @@ mod tests {
     #[test]
     fn test_sync_manager_creation() {
         let manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-        assert_eq!(*manager.state(), SyncState::Idle);
+        assert!(matches!(*manager.state(), SyncState::Idle));
         assert_eq!(manager.local_tip(), (0, Hash::zero(), 0));
     }
 
@@ -2787,17 +3123,17 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_should_sync_detects_slot_lag() {
-        // Reproduce the deadlock: local height=876/slot=261, peer height=834/slot=919
-        // Heights: peer is NOT ahead (834 < 876), but slots: peer is WAY ahead (919 >> 261)
-        // should_sync() must return true because of slot lag.
+    fn test_should_sync_uses_height_not_slot() {
+        // should_sync() uses HEIGHT only (not slot) to prevent forked peers
+        // with inflated slots from triggering unnecessary sync.
+        // Peer behind in height (834 < 876) but ahead in slot (919 > 261)
+        // should NOT trigger sync.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
 
         manager.local_height = 876;
         manager.local_slot = 261;
 
         let peer = PeerId::random();
-        // add_peer triggers should_sync internally, so set state manually after
         manager.peers.insert(
             peer,
             PeerSyncStatus {
@@ -2811,15 +3147,42 @@ mod tests {
         );
 
         assert!(
-            manager.should_sync(),
-            "should_sync() must detect slot lag: peer slot 919 >> local slot 261"
+            !manager.should_sync(),
+            "should_sync() must NOT sync when peer is behind in height (834 < 876), even with higher slot"
         );
     }
 
     #[test]
-    fn test_best_peer_returns_peer_ahead_in_slot() {
-        // Same scenario: peer behind in height but ahead in slot.
-        // best_peer() must return the peer (not None).
+    fn test_should_sync_triggers_when_peer_ahead_in_height() {
+        // should_sync() triggers when a peer has more blocks (higher height)
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+
+        manager.local_height = 100;
+        manager.local_slot = 100;
+
+        let peer = PeerId::random();
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 500,
+                best_hash: Hash::zero(),
+                best_slot: 500,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+
+        assert!(
+            manager.should_sync(),
+            "should_sync() must trigger when peer is ahead in height (500 > 100)"
+        );
+    }
+
+    #[test]
+    fn test_best_peer_ignores_peer_behind_in_height() {
+        // best_peer() only returns peers with MORE BLOCKS (higher height).
+        // A peer behind in height but ahead in slot should be ignored.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
 
         manager.local_height = 876;
@@ -2840,9 +3203,8 @@ mod tests {
 
         let result = manager.best_peer();
         assert_eq!(
-            result,
-            Some(peer),
-            "best_peer() must return peer that is ahead in slot time"
+            result, None,
+            "best_peer() must return None when peer is behind in height (834 < 876)"
         );
     }
 
@@ -2874,9 +3236,8 @@ mod tests {
         manager.cleanup();
 
         // State should no longer be Synchronized (either Idle or started sync)
-        assert_ne!(
-            manager.state,
-            SyncState::Synchronized,
+        assert!(
+            !matches!(manager.state, SyncState::Synchronized),
             "cleanup() must reset Synchronized state when slot lag ({}) exceeds stall threshold",
             920 - 261
         );
@@ -2912,9 +3273,8 @@ mod tests {
         manager.update_local_tip(100, Hash::zero(), 100);
 
         // Should NOT be Synchronized because slot lag = 500 - 100 = 400 >> max_slots_behind (2)
-        assert_ne!(
-            manager.state,
-            SyncState::Synchronized,
+        assert!(
+            !matches!(manager.state, SyncState::Synchronized),
             "update_local_tip must not mark Synchronized when slot lag is {} (max_slots_behind={})",
             400,
             manager.max_slots_behind

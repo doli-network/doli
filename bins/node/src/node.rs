@@ -1259,6 +1259,12 @@ impl Node {
                     // when we're on a fork), they get cached and trigger fork recovery.
                     self.handle_new_block(block).await?;
                 }
+
+                // Check if snap sync produced a ready snapshot
+                let snap = self.sync_manager.write().await.take_snap_snapshot();
+                if let Some(snapshot) = snap {
+                    self.apply_snap_snapshot(snapshot).await?;
+                }
             }
 
             NetworkEvent::NetworkMismatch {
@@ -2092,6 +2098,81 @@ impl Node {
         if let Err(e) = self.force_resync_from_genesis().await {
             error!("Fork recovery resync failed: {}", e);
         }
+    }
+
+    /// Apply a snap sync snapshot: verify state root, replace local state, save to disk.
+    async fn apply_snap_snapshot(&mut self, snapshot: network::VerifiedSnapshot) -> Result<()> {
+        info!(
+            "[SNAP_SYNC] Applying snapshot: height={}, hash={:.16}, root={:.16}",
+            snapshot.block_height, snapshot.block_hash, snapshot.state_root
+        );
+
+        // Step 1: Verify state root (node-side, since network crate has no storage dep)
+        let computed_root = storage::compute_state_root_from_bytes(
+            &snapshot.chain_state,
+            &snapshot.utxo_set,
+            &snapshot.producer_set,
+        );
+        if computed_root != snapshot.state_root {
+            error!(
+                "[SNAP_SYNC] State root mismatch! computed={}, expected={} — blacklisting peer",
+                computed_root, snapshot.state_root
+            );
+            // Can't easily get the peer here, but snap_fallback handles it
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
+        // Step 2: Deserialize via storage::StateSnapshot (avoids bincode dep in node)
+        let snap = storage::StateSnapshot {
+            block_hash: snapshot.block_hash,
+            block_height: snapshot.block_height,
+            chain_state_bytes: snapshot.chain_state,
+            utxo_set_bytes: snapshot.utxo_set,
+            producer_set_bytes: snapshot.producer_set,
+            state_root: snapshot.state_root,
+        };
+        let (new_chain_state, new_utxo_set, new_producer_set) = snap
+            .deserialize()
+            .map_err(|e| anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize snapshot: {}", e))?;
+
+        info!(
+            "[SNAP_SYNC] Deserialized: chain_state(height={}, hash={:.16})",
+            new_chain_state.best_height, new_chain_state.best_hash,
+        );
+
+        // Step 3: Replace local state (preserve genesis_hash from our chain)
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+        {
+            let mut cs = self.chain_state.write().await;
+            *cs = new_chain_state;
+            cs.genesis_hash = genesis_hash; // Preserve our genesis identity
+        }
+        {
+            let mut utxo = self.utxo_set.write().await;
+            *utxo = new_utxo_set;
+        }
+        {
+            let mut ps = self.producer_set.write().await;
+            *ps = new_producer_set;
+        }
+
+        // Step 4: Update sync manager local tip
+        {
+            let cs = self.chain_state.read().await;
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
+        }
+
+        // Step 5: Save to disk
+        self.save_state().await?;
+
+        info!(
+            "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
+            snapshot.block_height, snapshot.block_hash
+        );
+
+        Ok(())
     }
 
     /// - known_producers: cleared
