@@ -293,3 +293,103 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - Investigation reports for complex bugs (root cause, fix, test results)
 - **Naming**: `REPORT_<BUG_NAME>.md` (e.g., `REPORT_UTXO_ROCKSDB_CRASH.md`)
 - **Workflow**: Create `REPORT.md` at repo root during investigation → move here on resolution
+
+## 🖥 Node Operations & Deployment
+
+### Mainnet Node Inventory
+
+| Node | Host | SSH | Data Dir | Binary |
+|------|------|----|----------|--------|
+| **N1** | omegacortex.ai | `ssh ilozada@omegacortex.ai` | `~/.doli/mainnet/node1/data` | `~/repos/doli/target/release/doli-node` |
+| **N2** | omegacortex.ai | same host | `~/.doli/mainnet/node2/data` | same binary |
+| **N3** | omegacortex.ai | same host | `~/.doli/mainnet/node3/data` | same binary |
+| **N4** | 72.60.70.166 | `ssh -J ilozada@omegacortex.ai -p 50790 ilozada@72.60.70.166` | `~/.doli/mainnet` (default) | `/opt/doli/target/release/doli-node` |
+| **N5** | 72.60.115.209 | `ssh -J ilozada@omegacortex.ai -p 50790 ilozada@72.60.115.209` | `~/.doli/mainnet` (default) | `/opt/doli/target/release/doli-node` |
+
+**Key differences:**
+- **N1/N2/N3** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works.
+- **N4/N5** (remote VMs): **No Rust toolchain, no repo.** Binary-only via SCP. Cannot compile.
+- **N4/N5 SSH**: Only reachable via omegacortex jump host. Direct SSH from local fails.
+- **N4/N5 user**: `isudoajl` (not `ilozada`). `sudo` required for process management.
+
+### ⚠️ Chainspec Rules (CONSENSUS-CRITICAL)
+
+> **HARD LESSON (2026-02-22):** N4/N5 had no `chainspec.json` → different `genesis_timestamp` → slot schedule diverged → chain fork. N4 reorged from 37K to 19K blocks.
+
+1. **Chainspec is embedded in the binary** (`chainspec.mainnet.json` via `include_str!`)
+2. On first start, if no `chainspec.json` exists in data dir, the binary writes it from embedded
+3. Priority: `--chainspec /path` > `$DATA_DIR/chainspec.json` > embedded fallback
+4. **Producer nodes exit(1) without chainspec** — code guard in `main.rs`
+5. The **canonical chainspec** lives at repo root: `chainspec.mainnet.json`
+6. **NEVER** change `genesis.timestamp` or `consensus.slot_duration` — this breaks consensus
+
+### Deployment Checklist
+
+```bash
+# 1. Build on omegacortex (N1/N2/N3 use this directly)
+ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
+
+# 2. Deploy to N4/N5 via compressed SCP (23MB → 8.6MB)
+ssh ilozada@omegacortex.ai "gzip -c ~/repos/doli/target/release/doli-node > /tmp/doli-node.gz"
+# N4:
+ssh ilozada@omegacortex.ai "scp -P 50790 /tmp/doli-node.gz ilozada@72.60.70.166:/tmp/"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'gunzip -f /tmp/doli-node.gz && sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'"
+# N5: same but replace 72.60.70.166 with 72.60.115.209
+
+# 3. Restart nodes (stop → start)
+# N1/N2/N3: pkill on omegacortex, then nohup start
+# N4/N5: via jump host: ssh -J omegacortex -p 50790 ...
+
+# 4. Verify: all nodes same height, chainspec loaded in logs
+```
+
+### Node Start Commands
+
+**N1** (omegacortex, relay server):
+```bash
+nohup doli-node --data-dir ~/.doli/mainnet/node1/data run \
+  --producer --producer-key ~/.doli/mainnet/keys/producer_1.json \
+  --chainspec ~/.doli/mainnet/chainspec.json \
+  --no-auto-update --yes --force-start --relay-server \
+  </dev/null >/tmp/node1.log 2>&1 &
+```
+
+**N2** (omegacortex, port offset):
+```bash
+nohup doli-node --data-dir ~/.doli/mainnet/node2/data run \
+  --producer --producer-key ~/.doli/mainnet/keys/producer_2.json \
+  --chainspec ~/.doli/mainnet/chainspec.json \
+  --no-auto-update --yes --force-start \
+  --p2p-port 30304 --rpc-port 8546 --metrics-port 9091 \
+  --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
+  </dev/null >/tmp/node2.log 2>&1 &
+```
+
+**N3** (omegacortex, port offset):
+```bash
+nohup doli-node --data-dir ~/.doli/mainnet/node3/data run \
+  --producer --producer-key ~/.doli/mainnet/keys/producer_3.json \
+  --chainspec ~/.doli/mainnet/chainspec.json \
+  --no-auto-update --yes --force-start \
+  --p2p-port 30305 --rpc-port 8547 --metrics-port 9092 \
+  --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
+  </dev/null >/tmp/node3.log 2>&1 &
+```
+
+**N4/N5** (remote VMs, default data dir):
+```bash
+nohup /opt/doli/target/release/doli-node run \
+  --producer --producer-key ~/.doli/mainnet/producer.json \
+  --bootstrap /ip4/72.60.228.233/tcp/30303 \
+  --p2p-port 30303 --rpc-port 8545 --metrics-port 9090 --yes \
+  </dev/null >/tmp/node.log 2>&1 &
+# Note: chainspec auto-loaded from ~/.doli/mainnet/chainspec.json (or embedded)
+```
+
+### Snap Sync (Phase 1 — Foundation)
+
+State snapshot infrastructure is implemented (`snapshot.rs`):
+- `GetStateSnapshot` / `StateSnapshot` wire messages for full state transfer
+- `GetStateRoot` / `StateRoot` for cross-peer verification
+- `compute_state_root()`: deterministic `H(H(chain_state) || H(utxo_set) || H(producer_set))`
+- State machine orchestration (requesting roots from 3+ peers, consensus, download) is TODO
