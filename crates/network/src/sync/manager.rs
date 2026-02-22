@@ -1487,13 +1487,15 @@ impl SyncManager {
             return false;
         }
 
-        // Check if any peer is ahead of us in height OR significantly ahead in slot time.
-        // The slot check catches the deadlock where heights match but slots diverge:
-        // e.g., local height=876/slot=261, peer height=834/slot=919 → slot lag triggers sync.
-        let peer_ahead = self.peers.values().any(|p| {
-            p.best_height > self.local_height
-                || p.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
-        });
+        // CRITICAL: Only sync if a peer has MORE BLOCKS (higher height).
+        // Do NOT use slot comparison alone — peers with different genesis times
+        // can have much higher slots despite having far fewer blocks. This caused
+        // N4 (40K blocks) to sync from N3 (1,235 blocks, higher slot) and reorg
+        // its own chain down to 37K.
+        let peer_ahead = self
+            .peers
+            .values()
+            .any(|p| p.best_height > self.local_height);
 
         // Also check network_tip_height (updated by gossip) since peer best_height
         // in the HashMap can be stale if no status messages are received.
@@ -1504,12 +1506,11 @@ impl SyncManager {
 
     /// Get the best peer to sync from
     fn best_peer(&self) -> Option<PeerId> {
+        // CRITICAL: Only consider peers with MORE BLOCKS (higher height).
+        // Slot comparison alone is dangerous — see should_sync() comment.
         self.peers
             .iter()
-            .filter(|(_, status)| {
-                status.best_height > self.local_height
-                    || status.best_slot > self.local_slot.saturating_add(self.max_slots_behind)
-            })
+            .filter(|(_, status)| status.best_height > self.local_height)
             .max_by_key(|(_, status)| (status.best_height, status.best_slot))
             .map(|(peer, _)| *peer)
     }
@@ -2289,8 +2290,39 @@ impl SyncManager {
                     pending,
                     self.local_height + 1
                 );
+            } else if is_downloading_bodies && have_pending_headers {
+                // Body download exhausted all soft retries. Instead of nuking
+                // 40K+ downloaded headers and starting from scratch, keep the
+                // headers and restart ONLY the body download phase.
+                warn!(
+                    "Body download stuck after {}/3 retries — restarting body phase \
+                     (preserving {} headers, local_h={})",
+                    self.body_stall_retries,
+                    self.pending_headers.len(),
+                    self.local_height
+                );
+
+                // Reset body-related state only
+                self.pending_blocks.clear();
+                self.pending_requests.clear();
+                for status in self.peers.values_mut() {
+                    status.pending_request = None;
+                }
+                self.body_downloader.clear();
+                self.body_stall_retries = 0;
+
+                // Rebuild the needed-bodies list from pending_headers
+                self.headers_needing_bodies.clear();
+                for header in &self.pending_headers {
+                    self.headers_needing_bodies.push_back(header.hash());
+                }
+
+                let total = self.pending_headers.len();
+                let pending = self.headers_needing_bodies.len();
+                self.state = SyncState::DownloadingBodies { pending, total };
+                self.last_sync_activity = Instant::now();
             } else {
-                // Hard reset (existing behavior).
+                // Hard reset — only for header download failures or processing stuck.
                 warn!(
                     "Sync stuck in {:?} for >30s with no progress \
                      (last_activity={:.0?} ago, local_h={}, network_tip={}) — resetting to Idle",
