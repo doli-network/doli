@@ -1618,13 +1618,16 @@ impl SyncManager {
             }
 
             SyncState::DownloadingBodies { .. } => {
-                // Only request bodies from peers that have data (height > 0).
-                // Peers at height 0 are still syncing and will respond empty,
-                // wasting time and pushing hashes to the failed retry queue.
+                // Only request bodies from peers that actually HAVE the blocks
+                // we need. A peer at height 130 can't serve bodies for blocks
+                // 131-37000 — it'll return "Missing body" for everything,
+                // polluting the failed queue and stalling the download.
+                // We need peers whose height covers our pending_headers range.
+                let min_height_needed = self.local_height + self.pending_headers.len() as u64;
                 let peers_with_data: Vec<PeerId> = self
                     .peers
                     .iter()
-                    .filter(|(_, s)| s.best_height > 0)
+                    .filter(|(_, s)| s.best_height >= min_height_needed)
                     .map(|(p, _)| *p)
                     .collect();
                 if let Some((peer, request)) = self
