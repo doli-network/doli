@@ -1,0 +1,16 @@
+{
+  "name": "DOLI Mainnet",
+  "id": "mainnet",
+  "network": "Mainnet",
+  "genesis": {
+    "timestamp": 1770941923,
+    "message": "Resilience test v2",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 10,
+    "slots_per_epoch": 360,
+    "bond_amount": 1000000000
+  },
+  "genesis_producers": []
+}
