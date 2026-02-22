@@ -37,7 +37,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4
+          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -61,7 +61,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4
+          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -83,7 +83,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4
+          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
