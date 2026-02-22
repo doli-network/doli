@@ -1622,12 +1622,26 @@ impl SyncManager {
                 // we need. A peer at height 130 can't serve bodies for blocks
                 // 131-37000 — it'll return "Missing body" for everything,
                 // polluting the failed queue and stalling the download.
-                // We need peers whose height covers our pending_headers range.
-                let min_height_needed = self.local_height + self.pending_headers.len() as u64;
+                //
+                // Use the best peer's height as anchor: peers within 10% of
+                // the best are likely to have the data. This avoids filtering
+                // out N4 when its status height is slightly stale, while still
+                // excluding peers at height 130 when we need 37K blocks.
+                let best = self
+                    .peers
+                    .values()
+                    .map(|s| s.best_height)
+                    .max()
+                    .unwrap_or(0);
+                let threshold = if best > 1000 {
+                    best * 9 / 10 // Within 10% of best
+                } else {
+                    best.saturating_sub(10) // Small chain: within 10 blocks
+                };
                 let peers_with_data: Vec<PeerId> = self
                     .peers
                     .iter()
-                    .filter(|(_, s)| s.best_height >= min_height_needed)
+                    .filter(|(_, s)| s.best_height >= threshold)
                     .map(|(p, _)| *p)
                     .collect();
                 if let Some((peer, request)) = self
