@@ -52,6 +52,11 @@ pub struct NodeConfig {
     /// This is consensus-critical: different slot durations cause producer schedule divergence.
     #[serde(default)]
     pub slot_duration_override: Option<u64>,
+
+    /// External address to advertise to peers (e.g., /ip4/198.51.100.1/tcp/30303)
+    /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
+    #[serde(skip)]
+    pub external_address: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -81,6 +86,7 @@ impl NodeConfig {
             genesis_time_override: None,
             chainspec: None,
             slot_duration_override: None,
+            external_address: None,
         }
     }
 }
