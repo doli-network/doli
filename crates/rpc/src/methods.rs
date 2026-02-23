@@ -544,6 +544,22 @@ impl RpcContext {
         // Calculate current era
         let era = chain_state.best_height / self.params.blocks_per_era;
 
+        // Build pending withdrawals from ProducerStatus::Unbonding
+        let pending_withdrawals =
+            if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
+                let current_height = chain_state.best_height;
+                let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
+                let claimable = current_height >= started_at + unbonding_period;
+                vec![PendingWithdrawalResponse {
+                    bond_count: info.bond_count,
+                    request_slot: *started_at as u32,
+                    net_amount: info.bond_amount,
+                    claimable,
+                }]
+            } else {
+                Vec::new()
+            };
+
         let response = ProducerResponse {
             public_key: params.public_key,
             registration_height: info.registered_at,
@@ -551,7 +567,7 @@ impl RpcContext {
             bond_count: info.bond_count,
             status: status.to_string(),
             era,
-            pending_withdrawals: Vec::new(), // TODO: Add pending withdrawals when ProducerBonds is integrated
+            pending_withdrawals,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
@@ -577,6 +593,9 @@ impl RpcContext {
             producers.all_producers()
         };
 
+        let current_height = chain_state.best_height;
+        let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
+
         let responses: Vec<ProducerResponse> = producer_list
             .iter()
             .map(|info| {
@@ -587,6 +606,19 @@ impl RpcContext {
                     storage::ProducerStatus::Slashed { .. } => "slashed",
                 };
 
+                let pending_withdrawals =
+                    if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
+                        let claimable = current_height >= started_at + unbonding_period;
+                        vec![PendingWithdrawalResponse {
+                            bond_count: info.bond_count,
+                            request_slot: *started_at as u32,
+                            net_amount: info.bond_amount,
+                            claimable,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),
                     registration_height: info.registered_at,
@@ -594,7 +626,7 @@ impl RpcContext {
                     bond_count: info.bond_count,
                     status: status.to_string(),
                     era,
-                    pending_withdrawals: Vec::new(),
+                    pending_withdrawals,
                 }
             })
             .collect();
