@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 use doli_core::{
-    decode_producer_set, encode_producer_set, is_legacy_bincode_format, Block,
+    decode_producer_set, encode_producer_set, is_legacy_bincode_format, Block, BlockHeader,
     ProducerAnnouncement, ProducerBloomFilter, Transaction,
 };
 
@@ -28,12 +28,13 @@ use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::discovery::new_kademlia;
 use crate::gossip::{
-    new_gossipsub, subscribe_to_topics, BLOCKS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC,
-    TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    new_gossipsub, subscribe_to_topics, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
+    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
+use crate::rate_limit::{RateLimitConfig, RateLimiter};
 use crate::transport::build_transport;
 use crypto::PublicKey;
 
@@ -46,6 +47,8 @@ pub enum NetworkEvent {
     PeerDisconnected(PeerId),
     /// New block received via gossip
     NewBlock(Block),
+    /// New block header received via gossip (lightweight pre-announcement)
+    NewHeader(BlockHeader),
     /// New transaction received via gossip
     NewTransaction(Transaction),
     /// Status request received
@@ -104,6 +107,8 @@ pub enum NetworkEvent {
 pub enum NetworkCommand {
     /// Broadcast a block
     BroadcastBlock(Block),
+    /// Broadcast a block header (lightweight pre-announcement)
+    BroadcastHeader(BlockHeader),
     /// Broadcast a transaction
     BroadcastTransaction(Transaction),
     /// Request status from a peer
@@ -367,6 +372,15 @@ impl NetworkService {
         Ok(())
     }
 
+    /// Broadcast a block header to the network (lightweight pre-announcement)
+    pub async fn broadcast_header(&self, header: BlockHeader) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::BroadcastHeader(header))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
     /// Broadcast an attestation to the network (finality gadget)
     pub async fn broadcast_attestation(&self, data: Vec<u8>) -> Result<(), NetworkError> {
         self.command_tx
@@ -582,16 +596,52 @@ async fn run_swarm(
     let mut dht_refresh = tokio::time::interval(std::time::Duration::from_secs(60));
     dht_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Rate limiter: protects against excessive gossip from individual peers
+    let mut rate_limiter = RateLimiter::new(RateLimitConfig::default());
+
+    // Cleanup stale rate-limit entries every 5 minutes
+    let mut rate_limit_cleanup = tokio::time::interval(std::time::Duration::from_secs(300));
+    rate_limit_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // TX batching: buffer outbound transactions and flush every 100ms
+    let mut tx_batch: Vec<Transaction> = Vec::new();
+    let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
+    tx_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter).await;
             }
 
-            // Handle commands
+            // Handle commands — intercept BroadcastTransaction for batching
             Some(command) = command_rx.recv() => {
-                handle_command(command, &mut swarm, &config).await;
+                if let NetworkCommand::BroadcastTransaction(tx) = command {
+                    tx_batch.push(tx);
+                    if tx_batch.len() >= 50 {
+                        let batch = std::mem::take(&mut tx_batch);
+                        let data = crate::gossip::encode_tx_batch(&batch);
+                        let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                            warn!("Failed to flush tx batch: {}", e);
+                        }
+                    }
+                } else {
+                    handle_command(command, &mut swarm, &config).await;
+                }
+            }
+
+            // Flush buffered transactions every 100ms
+            _ = tx_flush.tick() => {
+                if !tx_batch.is_empty() {
+                    let batch = std::mem::take(&mut tx_batch);
+                    let data = crate::gossip::encode_tx_batch(&batch);
+                    let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
+                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                        warn!("Failed to flush tx batch: {}", e);
+                    }
+                }
             }
 
             // Periodic DHT peer discovery
@@ -607,6 +657,11 @@ async fn run_swarm(
                     }
                 }
             }
+
+            // Periodic rate limiter cleanup
+            _ = rate_limit_cleanup.tick() => {
+                rate_limiter.cleanup(Duration::from_secs(600));
+            }
         }
     }
 }
@@ -619,6 +674,7 @@ async fn handle_swarm_event(
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
+    rate_limiter: &mut RateLimiter,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -660,6 +716,9 @@ async fn handle_swarm_event(
                 let mut peers = peers.write().await;
                 peers.remove(&peer_id);
 
+                // Clean up rate limiter state for disconnected peer
+                rate_limiter.remove_peer(&peer_id);
+
                 let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
             }
         }
@@ -672,6 +731,7 @@ async fn handle_swarm_event(
                 peers,
                 config,
                 peer_cache_path,
+                rate_limiter,
             )
             .await;
         }
@@ -696,6 +756,7 @@ async fn handle_behaviour_event(
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
+    rate_limiter: &mut RateLimiter,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -704,6 +765,7 @@ async fn handle_behaviour_event(
             message,
         }) => {
             let topic = message.topic.as_str();
+            let msg_size = message.data.len();
             debug!(
                 "Received gossip message on topic {} from {}",
                 topic, propagation_source
@@ -711,15 +773,33 @@ async fn handle_behaviour_event(
 
             match topic {
                 BLOCKS_TOPIC => {
+                    if !rate_limiter.check_block(&propagation_source) {
+                        warn!(
+                            "Rate limit: dropping block from {} (block rate exceeded)",
+                            propagation_source
+                        );
+                        return;
+                    }
                     if let Some(block) = Block::deserialize(&message.data) {
+                        rate_limiter.record_block(&propagation_source, msg_size);
                         let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
                     } else {
                         warn!("Failed to deserialize block from {}", propagation_source);
                     }
                 }
                 TRANSACTIONS_TOPIC => {
-                    if let Some(tx) = Transaction::deserialize(&message.data) {
-                        let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                    if !rate_limiter.check_transaction(&propagation_source) {
+                        warn!(
+                            "Rate limit: dropping tx from {} (tx rate exceeded)",
+                            propagation_source
+                        );
+                        return;
+                    }
+                    if let Some(txs) = crate::gossip::decode_tx_message(&message.data) {
+                        rate_limiter.record_transaction(&propagation_source, msg_size);
+                        for tx in txs {
+                            let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                        }
                     } else {
                         warn!(
                             "Failed to deserialize transaction from {}",
@@ -728,6 +808,15 @@ async fn handle_behaviour_event(
                     }
                 }
                 PRODUCERS_TOPIC => {
+                    if !rate_limiter.check_request(&propagation_source) {
+                        warn!(
+                            "Rate limit: dropping producer msg from {} (request rate exceeded)",
+                            propagation_source
+                        );
+                        return;
+                    }
+                    rate_limiter.record_request(&propagation_source, msg_size);
+
                     // Try to detect format and decode appropriately
                     if is_legacy_bincode_format(&message.data) {
                         // Legacy bincode format: Vec<PublicKey>
@@ -774,37 +863,54 @@ async fn handle_behaviour_event(
                     }
                 }
                 VOTES_TOPIC => {
-                    // Forward raw vote data to the updater service
+                    if !rate_limiter.check_request(&propagation_source) {
+                        return;
+                    }
+                    rate_limiter.record_request(&propagation_source, msg_size);
                     debug!(
                         "Received vote message ({} bytes) from {}",
-                        message.data.len(),
-                        propagation_source
+                        msg_size, propagation_source
                     );
                     let _ = event_tx
                         .send(NetworkEvent::NewVote(message.data.clone()))
                         .await;
                 }
                 HEARTBEATS_TOPIC => {
-                    // Forward raw heartbeat data for presence tracking
+                    if !rate_limiter.check_request(&propagation_source) {
+                        return;
+                    }
+                    rate_limiter.record_request(&propagation_source, msg_size);
                     debug!(
                         "Received heartbeat ({} bytes) from {}",
-                        message.data.len(),
-                        propagation_source
+                        msg_size, propagation_source
                     );
                     let _ = event_tx
                         .send(NetworkEvent::NewHeartbeat(message.data.clone()))
                         .await;
                 }
                 topic if topic == crate::gossip::ATTESTATION_TOPIC => {
-                    // Forward attestation data for finality gadget
+                    if !rate_limiter.check_request(&propagation_source) {
+                        return;
+                    }
+                    rate_limiter.record_request(&propagation_source, msg_size);
                     debug!(
                         "Received attestation ({} bytes) from {}",
-                        message.data.len(),
-                        propagation_source
+                        msg_size, propagation_source
                     );
                     let _ = event_tx
                         .send(NetworkEvent::NewAttestation(message.data.clone()))
                         .await;
+                }
+                HEADERS_TOPIC => {
+                    if !rate_limiter.check_block(&propagation_source) {
+                        return;
+                    }
+                    if let Some(header) = BlockHeader::deserialize(&message.data) {
+                        rate_limiter.record_block(&propagation_source, msg_size);
+                        let _ = event_tx.send(NetworkEvent::NewHeader(header)).await;
+                    } else {
+                        warn!("Failed to deserialize header from {}", propagation_source);
+                    }
                 }
                 _ => {}
             }
@@ -1023,6 +1129,14 @@ async fn handle_command(
             let topic = IdentTopic::new(BLOCKS_TOPIC);
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
                 warn!("Failed to broadcast block: {}", e);
+            }
+        }
+
+        NetworkCommand::BroadcastHeader(header) => {
+            let data = header.serialize();
+            let topic = IdentTopic::new(HEADERS_TOPIC);
+            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                warn!("Failed to broadcast header: {}", e);
             }
         }
 

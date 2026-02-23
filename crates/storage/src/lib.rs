@@ -91,6 +91,7 @@ pub mod producer;
 pub mod snapshot;
 pub mod update;
 pub mod utxo;
+pub mod utxo_rocks;
 
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
@@ -106,7 +107,8 @@ pub use producer::{
 };
 pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
 pub use update::UpdateState;
-pub use utxo::{Outpoint, UtxoEntry, UtxoSet};
+pub use utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet};
+pub use utxo_rocks::RocksDbUtxoStore;
 
 use std::path::Path;
 use thiserror::Error;

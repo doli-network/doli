@@ -234,6 +234,11 @@ pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError>
         .subscribe(&heartbeats_topic)
         .map_err(|e| GossipError::Subscribe(format!("heartbeats: {}", e)))?;
 
+    let headers_topic = IdentTopic::new(HEADERS_TOPIC);
+    gossipsub
+        .subscribe(&headers_topic)
+        .map_err(|e| GossipError::Subscribe(format!("headers: {}", e)))?;
+
     Ok(())
 }
 
@@ -350,6 +355,69 @@ pub enum GossipError {
     Publish(String),
 }
 
+use doli_core::Transaction;
+
+/// Version prefix for batched transaction messages.
+/// Must not collide with the first byte of a bincode-serialized Transaction
+/// (version field: u32 LE, so 0x01 for v1, 0x02 for v2, etc.).
+const TX_MSG_BATCH: u8 = 0xBA;
+
+/// Encode a batch of transactions with version prefix.
+///
+/// Format: `[0x01][u32 count LE][u32 len1 LE][tx1 bytes][u32 len2 LE][tx2 bytes]...`
+pub fn encode_tx_batch(transactions: &[Transaction]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.push(TX_MSG_BATCH);
+    buf.extend_from_slice(&(transactions.len() as u32).to_le_bytes());
+    for tx in transactions {
+        let data = tx.serialize();
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&data);
+    }
+    buf
+}
+
+/// Decode a transaction message. Handles both single (legacy) and batched formats.
+///
+/// - If the first byte is `0x01`, decodes as a batch.
+/// - Otherwise, attempts legacy single-tx bincode deserialization.
+/// - Returns `None` on empty input or decode failure.
+pub fn decode_tx_message(data: &[u8]) -> Option<Vec<Transaction>> {
+    if data.is_empty() {
+        return None;
+    }
+
+    if data[0] == TX_MSG_BATCH {
+        // Batch format
+        if data.len() < 5 {
+            return None;
+        }
+        let count = u32::from_le_bytes(data[1..5].try_into().ok()?) as usize;
+        if count == 0 {
+            return None;
+        }
+        let mut txs = Vec::with_capacity(count);
+        let mut offset = 5;
+        for _ in 0..count {
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+            offset += 4;
+            if offset + len > data.len() {
+                return None;
+            }
+            let tx = Transaction::deserialize(&data[offset..offset + len])?;
+            txs.push(tx);
+            offset += len;
+        }
+        Some(txs)
+    } else {
+        // Legacy single-tx format
+        Transaction::deserialize(data).map(|tx| vec![tx])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +487,38 @@ mod tests {
         assert!(e.to_string().contains("bad config"));
         let e = GossipError::Subscribe("topic failed".into());
         assert!(e.to_string().contains("topic failed"));
+    }
+
+    #[test]
+    fn test_tx_batch_roundtrip() {
+        let tx1 = doli_core::Transaction::new_coinbase(100, crypto::Hash::ZERO, 0);
+        let tx2 = doli_core::Transaction::new_coinbase(200, crypto::Hash::ZERO, 1);
+
+        let encoded = encode_tx_batch(&[tx1.clone(), tx2.clone()]);
+        assert_eq!(encoded[0], TX_MSG_BATCH);
+
+        let decoded = decode_tx_message(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].hash(), tx1.hash());
+        assert_eq!(decoded[1].hash(), tx2.hash());
+    }
+
+    #[test]
+    fn test_tx_single_legacy_decode() {
+        let tx = doli_core::Transaction::new_coinbase(500, crypto::Hash::ZERO, 42);
+        let raw = tx.serialize();
+
+        let decoded = decode_tx_message(&raw).expect("legacy decode should succeed");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].hash(), tx.hash());
+    }
+
+    #[test]
+    fn test_tx_batch_empty_returns_none() {
+        assert!(decode_tx_message(&[]).is_none());
+        // Batch prefix with count=0
+        let mut data = vec![TX_MSG_BATCH];
+        data.extend_from_slice(&0u32.to_le_bytes());
+        assert!(decode_tx_message(&data).is_none());
     }
 }

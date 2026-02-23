@@ -16,7 +16,8 @@ use crate::StorageError;
 /// where H is the crypto hash function and || is concatenation.
 ///
 /// This is deterministic because:
-/// - `bincode::serialize` produces canonical byte sequences
+/// - ChainState and ProducerSet use `bincode::serialize` for canonical bytes
+/// - UtxoSet uses `serialize_canonical()` which sorts entries by outpoint key
 /// - The hash function is deterministic
 /// - The concatenation order is fixed
 pub fn compute_state_root(
@@ -26,8 +27,7 @@ pub fn compute_state_root(
 ) -> Result<Hash, StorageError> {
     let cs_bytes =
         bincode::serialize(chain_state).map_err(|e| StorageError::Serialization(e.to_string()))?;
-    let utxo_bytes =
-        bincode::serialize(utxo_set).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let utxo_bytes = utxo_set.serialize_canonical();
     let ps_bytes =
         bincode::serialize(producer_set).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -66,7 +66,7 @@ pub struct StateSnapshot {
     pub block_height: u64,
     /// Serialized ChainState (bincode)
     pub chain_state_bytes: Vec<u8>,
-    /// Serialized UtxoSet (bincode)
+    /// Serialized UtxoSet (canonical format)
     pub utxo_set_bytes: Vec<u8>,
     /// Serialized ProducerSet (bincode)
     pub producer_set_bytes: Vec<u8>,
@@ -83,8 +83,7 @@ impl StateSnapshot {
     ) -> Result<Self, StorageError> {
         let chain_state_bytes = bincode::serialize(chain_state)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let utxo_set_bytes =
-            bincode::serialize(utxo_set).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let utxo_set_bytes = utxo_set.serialize_canonical();
         let producer_set_bytes = bincode::serialize(producer_set)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -114,12 +113,14 @@ impl StateSnapshot {
     /// Deserialize the snapshot into live state objects.
     ///
     /// Returns (ChainState, UtxoSet, ProducerSet) or an error if
-    /// deserialization fails.
+    /// deserialization fails. The UtxoSet is reconstructed from canonical
+    /// bytes into an in-memory backend.
     pub fn deserialize(&self) -> Result<(ChainState, UtxoSet, ProducerSet), StorageError> {
         let chain_state: ChainState = bincode::deserialize(&self.chain_state_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let utxo_set: UtxoSet = bincode::deserialize(&self.utxo_set_bytes)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let utxo_set = deserialize_canonical_utxo(&self.utxo_set_bytes)?;
+
         let producer_set: ProducerSet = bincode::deserialize(&self.producer_set_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -130,6 +131,50 @@ impl StateSnapshot {
     pub fn total_bytes(&self) -> usize {
         self.chain_state_bytes.len() + self.utxo_set_bytes.len() + self.producer_set_bytes.len()
     }
+}
+
+/// Deserialize canonical UTXO bytes into an in-memory UtxoSet.
+///
+/// Format: `[8-byte LE count] [key1 (36 bytes)][value1 (bincode)] ...`
+fn deserialize_canonical_utxo(bytes: &[u8]) -> Result<UtxoSet, StorageError> {
+    use crate::utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry};
+
+    if bytes.len() < 8 {
+        return Err(StorageError::Serialization(
+            "canonical UTXO bytes too short".into(),
+        ));
+    }
+
+    let count = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+    let mut store = InMemoryUtxoStore::new();
+    let mut pos = 8;
+
+    for _ in 0..count {
+        // Read outpoint key (36 bytes)
+        if pos + 36 > bytes.len() {
+            return Err(StorageError::Serialization(
+                "truncated canonical UTXO key".into(),
+            ));
+        }
+        let outpoint = Outpoint::from_bytes(&bytes[pos..pos + 36]).ok_or_else(|| {
+            StorageError::Serialization("invalid outpoint in canonical UTXO".into())
+        })?;
+        pos += 36;
+
+        // Read bincode-encoded UtxoEntry (variable length)
+        let entry: UtxoEntry = bincode::deserialize(&bytes[pos..])
+            .map_err(|e| StorageError::Serialization(format!("canonical UTXO entry: {}", e)))?;
+
+        // Compute the serialized size to advance pos correctly
+        let entry_size = bincode::serialized_size(&entry)
+            .map_err(|e| StorageError::Serialization(format!("entry size: {}", e)))?
+            as usize;
+        pos += entry_size;
+
+        store.insert(outpoint, entry);
+    }
+
+    Ok(UtxoSet::InMemory(store))
 }
 
 #[cfg(test)]
@@ -201,10 +246,33 @@ mod tests {
         let root_struct = compute_state_root(&cs, &utxo, &ps).unwrap();
 
         let cs_bytes = bincode::serialize(&cs).unwrap();
-        let utxo_bytes = bincode::serialize(&utxo).unwrap();
+        let utxo_bytes = utxo.serialize_canonical();
         let ps_bytes = bincode::serialize(&ps).unwrap();
         let root_bytes = compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes);
 
         assert_eq!(root_struct, root_bytes);
+    }
+
+    #[test]
+    fn test_snapshot_with_utxos_roundtrip() {
+        use doli_core::transaction::Transaction;
+
+        let cs = ChainState::new(Hash::zero());
+        let mut utxo = UtxoSet::new();
+        let ps = ProducerSet::new();
+
+        // Add some UTXOs
+        let pk_hash = crypto::hash::hash(b"test");
+        let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0);
+        utxo.add_transaction(&tx, 0, true);
+
+        // Create and verify snapshot
+        let snapshot = StateSnapshot::create(&cs, &utxo, &ps).unwrap();
+        assert!(snapshot.verify(&snapshot.state_root));
+
+        // Deserialize and check UTXOs preserved
+        let (_cs_out, utxo_out, _ps_out) = snapshot.deserialize().unwrap();
+        assert_eq!(utxo_out.len(), 1);
+        assert_eq!(utxo_out.total_value(), 1_000_000);
     }
 }
