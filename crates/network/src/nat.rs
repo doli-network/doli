@@ -37,9 +37,23 @@ impl Default for NatConfig {
 }
 
 impl NatConfig {
+    /// Default mainnet relay servers (seed nodes act as relays)
+    fn mainnet_relay_servers() -> Vec<Multiaddr> {
+        [
+            "/dns4/seed1.doli.network/tcp/30303",
+            "/dns4/seed2.doli.network/tcp/30303",
+        ]
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+    }
+
     /// Create a config for a node behind NAT (client mode)
+    ///
+    /// Includes mainnet seed nodes as default relay servers.
     pub fn client() -> Self {
         Self {
+            relay_servers: Self::mainnet_relay_servers(),
             enable_autonat: true,
             enable_dcutr: true,
             enable_relay_server: false,
@@ -50,12 +64,12 @@ impl NatConfig {
     /// Create a config for a relay server (public node)
     pub fn relay_server() -> Self {
         Self {
+            relay_servers: Self::mainnet_relay_servers(),
             enable_autonat: true,
             enable_dcutr: true,
             enable_relay_server: true,
             max_relay_reservations: 256,
             max_circuits_per_peer: 8,
-            ..Default::default()
         }
     }
 
@@ -125,6 +139,7 @@ mod tests {
         assert!(config.enable_autonat);
         assert!(config.enable_dcutr);
         assert!(!config.enable_relay_server);
+        assert_eq!(config.relay_servers.len(), 2);
     }
 
     #[test]

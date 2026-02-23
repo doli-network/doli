@@ -465,7 +465,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync defaults
             snap_sync_threshold: 1000,
-            snap_sync_quorum: 2,
+            snap_sync_quorum: 3,
             snap_root_timeout: Duration::from_secs(10),
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
@@ -1379,6 +1379,11 @@ impl SyncManager {
             self.reorg_handler
                 .set_last_finality_height(checkpoint.height);
         }
+    }
+
+    /// Prune stale pending blocks from the finality tracker.
+    pub fn prune_finality(&mut self, current_slot: u32) {
+        self.finality_tracker.prune_old_pending(current_slot);
     }
 
     /// Get the last finalized height, if any.

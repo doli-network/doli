@@ -816,6 +816,12 @@ impl Node {
             if self.config.network.is_in_genesis(height) {
                 sync.set_min_peers_for_production(1);
             }
+            drop(sync);
+
+            // Reconfigure gossipsub topic subscriptions for the new tier
+            if let Some(ref network) = self.network {
+                let _ = network.reconfigure_tier(new_tier, None).await;
+            }
         }
 
         self.our_tier = new_tier;
@@ -4496,8 +4502,16 @@ impl Node {
             }
         }
 
-        // Clean up sync manager
-        self.sync_manager.write().await.cleanup();
+        // Clean up sync manager and prune stale finality entries
+        {
+            let current_slot = {
+                let state = self.chain_state.read().await;
+                state.best_slot
+            };
+            let mut sync = self.sync_manager.write().await;
+            sync.cleanup();
+            sync.prune_finality(current_slot);
+        }
 
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();

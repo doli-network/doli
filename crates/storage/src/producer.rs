@@ -951,6 +951,11 @@ pub struct ProducerSet {
     /// Invalidated on any mutation (register, exit, slash, etc.).
     #[serde(skip)]
     active_cache: Option<(u64, Vec<Hash>)>,
+    /// Index of unbonding producers by their unbonding start height.
+    /// Enables O(k) lookup in `process_unbonding()` instead of O(n) full scan.
+    /// Rebuilt on deserialization from `producers` map.
+    #[serde(skip)]
+    unbonding_index: std::collections::BTreeMap<u64, Vec<Hash>>,
 }
 
 impl ProducerSet {
@@ -960,6 +965,21 @@ impl ProducerSet {
             producers: HashMap::new(),
             exit_history: HashMap::new(),
             active_cache: None,
+            unbonding_index: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Rebuild the unbonding index from producers map.
+    /// Called after deserialization to restore the skip-serialized index.
+    pub fn rebuild_unbonding_index(&mut self) {
+        self.unbonding_index.clear();
+        for (key, info) in &self.producers {
+            if let ProducerStatus::Unbonding { started_at } = info.status {
+                self.unbonding_index
+                    .entry(started_at)
+                    .or_default()
+                    .push(*key);
+            }
         }
     }
 
@@ -977,7 +997,10 @@ impl ProducerSet {
         }
 
         let data = std::fs::read(path)?;
-        bincode::deserialize(&data).map_err(|e| StorageError::Serialization(e.to_string()))
+        let mut set: Self =
+            bincode::deserialize(&data).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        set.rebuild_unbonding_index();
+        Ok(set)
     }
 
     /// Save producer set to file
@@ -1376,10 +1399,16 @@ impl ProducerSet {
             .get_by_pubkey_mut(pubkey)
             .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
 
+        let key = crypto_hash(pubkey.as_bytes());
         match info.status {
             ProducerStatus::Active => {
                 info.start_unbonding(current_height);
                 self.active_cache = None;
+                // Maintain unbonding index
+                self.unbonding_index
+                    .entry(current_height)
+                    .or_default()
+                    .push(key);
                 Ok(())
             }
             ProducerStatus::Unbonding { .. } => Err(StorageError::AlreadyExists(
@@ -1409,14 +1438,22 @@ impl ProducerSet {
     /// - NotFound: Producer doesn't exist
     /// - InvalidState: Producer is not in unbonding (already active, exited, or slashed)
     pub fn cancel_exit(&mut self, pubkey: &PublicKey) -> Result<(), StorageError> {
+        let key = crypto_hash(pubkey.as_bytes());
         let info = self
             .get_by_pubkey_mut(pubkey)
             .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
 
         match info.status {
-            ProducerStatus::Unbonding { .. } => {
+            ProducerStatus::Unbonding { started_at } => {
                 info.status = ProducerStatus::Active;
                 self.active_cache = None;
+                // Remove from unbonding index
+                if let Some(entries) = self.unbonding_index.get_mut(&started_at) {
+                    entries.retain(|k| k != &key);
+                    if entries.is_empty() {
+                        self.unbonding_index.remove(&started_at);
+                    }
+                }
                 Ok(())
             }
             ProducerStatus::Active => Err(StorageError::AlreadyExists(
@@ -1431,7 +1468,10 @@ impl ProducerSet {
         }
     }
 
-    /// Process completed unbonding periods and mark as exited
+    /// Process completed unbonding periods and mark as exited.
+    ///
+    /// Uses the unbonding index for O(k) lookup where k = completed producers,
+    /// instead of O(n) scan of all producers.
     ///
     /// Returns producers that have completed unbonding and are ready for bond claim.
     /// Also records the exit in `exit_history` with the exit height for expiration tracking.
@@ -1440,22 +1480,35 @@ impl ProducerSet {
         current_height: u64,
         unbonding_duration: u64,
     ) -> Vec<ProducerInfo> {
-        let mut completed = Vec::new();
-        let mut exited_keys = Vec::new();
+        // Completion threshold: producers who started unbonding at or before this height are done
+        let threshold = current_height.saturating_sub(unbonding_duration);
 
-        for (key, info) in self.producers.iter_mut() {
-            if info.is_unbonding_complete(current_height, unbonding_duration) {
-                info.complete_exit();
-                completed.push(info.clone());
-                exited_keys.push(*key);
+        // Collect all keys from the index with started_at ≤ threshold
+        let mut candidate_keys: Vec<(u64, Hash)> = Vec::new();
+        for (&started_at, keys) in self.unbonding_index.range(..=threshold) {
+            for key in keys {
+                candidate_keys.push((started_at, *key));
             }
         }
 
-        // Record all exits in history with current height (anti-Sybil: maturity cooldown)
-        // Exit records expire after EXIT_HISTORY_RETENTION (~8 years)
-        for key in exited_keys {
-            self.exit_history.insert(key, current_height);
+        let mut completed = Vec::new();
+
+        for (started_at, key) in &candidate_keys {
+            if let Some(info) = self.producers.get_mut(key) {
+                if info.is_unbonding_complete(current_height, unbonding_duration) {
+                    info.complete_exit();
+                    completed.push(info.clone());
+                    self.exit_history.insert(*key, current_height);
+                }
+            }
+            // Remove from index
+            if let Some(entries) = self.unbonding_index.get_mut(started_at) {
+                entries.retain(|k| k != key);
+            }
         }
+
+        // Clean up empty index entries
+        self.unbonding_index.retain(|_, v| !v.is_empty());
 
         if !completed.is_empty() {
             self.active_cache = None;

@@ -149,6 +149,8 @@ pub enum NetworkCommand {
     BroadcastHeartbeat(Vec<u8>),
     /// Broadcast an attestation (finality gadget)
     BroadcastAttestation(Vec<u8>),
+    /// Reconfigure gossipsub topic subscriptions for a new tier
+    ReconfigureTier { tier: u8, region: Option<u32> },
 }
 
 /// Network service handle
@@ -520,6 +522,19 @@ impl NetworkService {
     pub async fn bootstrap(&self) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::Bootstrap)
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Reconfigure gossipsub topic subscriptions for a new tier
+    pub async fn reconfigure_tier(
+        &self,
+        tier: u8,
+        region: Option<u32>,
+    ) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::ReconfigureTier { tier, region })
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -1160,6 +1175,14 @@ async fn handle_command(
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to broadcast attestation: {}", e);
                 }
+            }
+        }
+
+        NetworkCommand::ReconfigureTier { tier, region } => {
+            info!("Reconfiguring gossipsub topics for tier {}", tier);
+            let gs = &mut swarm.behaviour_mut().gossipsub;
+            if let Err(e) = crate::gossip::subscribe_to_topics_for_tier(gs, tier, region) {
+                warn!("Failed to reconfigure tier topics: {}", e);
             }
         }
     }

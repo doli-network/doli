@@ -359,32 +359,40 @@ impl Mempool {
         self.policy.min_fee_rate
     }
 
-    /// Select transactions for a block
+    /// Select transactions for a block using CPFP-aware ordering.
+    ///
+    /// Sorts by `effective_fee_rate()` (package fee rate including ancestors)
+    /// so that high-fee children pull their low-fee parents into blocks.
     pub fn select_for_block(&self, max_size: usize) -> Vec<Transaction> {
         let mut selected = Vec::new();
         let mut selected_size = 0;
         let mut selected_hashes = HashSet::new();
 
-        // Iterate by descending fee rate
-        for &(_, tx_hash) in self.by_fee_rate.iter().rev() {
-            if let Some(entry) = self.entries.get(&tx_hash) {
-                // Check if we have room
-                if selected_size + entry.size > max_size {
-                    continue;
-                }
+        // Build a list sorted by effective fee rate (CPFP-aware)
+        let mut candidates: Vec<(&Hash, &MempoolEntry)> = self.entries.iter().collect();
+        candidates.sort_by(|a, b| b.1.effective_fee_rate().cmp(&a.1.effective_fee_rate()));
 
-                // Check if all ancestors are selected
-                if !entry.ancestors.iter().all(|a| selected_hashes.contains(a)) {
-                    continue;
-                }
+        for &(tx_hash, entry) in &candidates {
+            if selected_hashes.contains(tx_hash) {
+                continue;
+            }
 
-                selected.push(entry.tx.clone());
-                selected_size += entry.size;
-                selected_hashes.insert(tx_hash);
+            // Check if we have room
+            if selected_size + entry.size > max_size {
+                continue;
+            }
 
-                if selected_size >= max_size {
-                    break;
-                }
+            // Check if all ancestors are selected
+            if !entry.ancestors.iter().all(|a| selected_hashes.contains(a)) {
+                continue;
+            }
+
+            selected.push(entry.tx.clone());
+            selected_size += entry.size;
+            selected_hashes.insert(*tx_hash);
+
+            if selected_size >= max_size {
+                break;
             }
         }
 
