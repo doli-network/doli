@@ -315,7 +315,7 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **N4/N5** (remote VMs): **No Rust toolchain.** Binary deployed via SCP from omegacortex. Cannot compile locally.
 - **N4/N5 SSH**: Only reachable via omegacortex as jump host. Direct SSH from local machine fails.
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). SSH as `ilozada`, use `sudo -u isudoajl` to run the node process.
-- **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory). Key file is `producer.json` (not in `keys/` subfolder).
+- **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory). Key files are in `keys/producer_4.json` and `keys/producer_5.json`.
 
 ### Producer Key Registry (AUTHORITATIVE)
 
@@ -326,8 +326,8 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | **N1** | omegacortex | `~/.doli/mainnet/keys/producer_1.json` | `202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df` |
 | **N2** | omegacortex | `~/.doli/mainnet/keys/producer_2.json` | `effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b` |
 | **N3** | omegacortex | `~/.doli/mainnet/keys/producer_3.json` | `54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b` |
-| **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/producer.json` | `a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d` |
-| **N5** | fpx | `/home/isudoajl/.doli/mainnet/producer.json` | `c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9` |
+| **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d` |
+| **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9` |
 
 **Retired keys** (produced early blocks, no longer active — funds still held):
 
