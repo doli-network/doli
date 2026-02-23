@@ -87,7 +87,8 @@ impl Wallet {
         &self.addresses
     }
 
-    /// Get primary address (20-byte truncated hash)
+    /// Get primary address (20-byte truncated hash, hex)
+    #[allow(dead_code)]
     pub fn primary_address(&self) -> &str {
         &self.addresses[0].address
     }
@@ -105,6 +106,15 @@ impl Wallet {
     /// Get the primary public key hex string
     pub fn primary_public_key(&self) -> &str {
         &self.addresses[0].public_key
+    }
+
+    /// Get a bech32m-encoded address for the primary key.
+    ///
+    /// `network_prefix` should be `"doli"`, `"tdoli"`, or `"ddoli"`.
+    pub fn primary_bech32_address(&self, network_prefix: &str) -> String {
+        let pubkey_bytes =
+            hex::decode(&self.addresses[0].public_key).expect("invalid public key in wallet");
+        crypto::address::from_pubkey(&pubkey_bytes, network_prefix).expect("bech32 encoding failed")
     }
 
     /// Get the keypair for the primary address
