@@ -302,30 +302,33 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 
 ### Mainnet Node Inventory
 
-| Node | Host | IP | SSH | Ports (P2P/RPC/Metrics) | Data Dir | Binary | Logs |
-|------|------|----|-----|------------------------|----------|--------|------|
-| **N1** | omegacortex | 198.51.100.1 | `ssh ilozada@omegacortex.ai` | 30303 / 8545 / 9090 | `~/.doli/mainnet/node1/data` | `~/repos/doli/target/release/doli-node` | `/tmp/node1.log` |
-| **N2** | omegacortex | same | same host | 30304 / 8546 / 9091 | `~/.doli/mainnet/node2/data` | same binary | `/tmp/node2.log` |
-| **N3** | omegacortex | same | same host | 30305 / 8547 / 9092 | `~/.doli/mainnet/node3/data` | same binary | `/tmp/node3.log` |
-| **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `/var/log/doli-node.log` |
-| **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `/var/log/doli-node.log` |
+| Node | Host | IP | SSH | Ports (P2P/RPC/Metrics) | Data Dir | Binary | Service |
+|------|------|----|-----|------------------------|----------|--------|---------|
+| **N1** | omegacortex | 198.51.100.1 | `ssh ilozada@omegacortex.ai` | 30303 / 8545 / 9090 | `~/.doli/mainnet/node1/data` | `~/repos/doli/target/release/doli-node` | `doli-mainnet-node1` |
+| **N2** | omegacortex | same | same host | 30304 / 8546 / 9091 | `~/.doli/mainnet/node2/data` | same binary | `doli-mainnet-node2` |
+| **N3** | N3-VPS | 147.93.84.44 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@147.93.84.44` | 30303 / 8545 / 9090 | `/home/ilozada/.doli/mainnet/data` | `/home/ilozada/doli-node` | `doli-mainnet-node3` |
+| **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node4` |
+| **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node5` |
+
+**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`).
 
 **Key differences:**
-- **N1/N2/N3** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works. All share the same compiled binary. SSH user is `ilozada`.
+- **N1/N2** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works. Both share the same compiled binary. SSH user is `ilozada`.
+- **N3** (147.93.84.44): Own VPS. Binary deployed via SCP from omegacortex. SSH user is `ilozada`. Reachable via omegacortex as jump host.
 - **N4/N5** (remote VMs): **No Rust toolchain.** Binary deployed via SCP from omegacortex. Cannot compile locally.
-- **N4/N5 SSH**: Only reachable via omegacortex as jump host. Direct SSH from local machine fails.
+- **N3/N4/N5 SSH**: Only reachable via omegacortex as jump host (`ssh -p 50790`). Direct SSH from local machine fails.
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). SSH as `ilozada`, use `sudo -u isudoajl` to run the node process.
-- **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory). Key files are in `keys/producer_4.json` and `keys/producer_5.json`.
+- **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
 
 ### Producer Key Registry (AUTHORITATIVE)
 
-> **CRITICAL**: These are the ONLY valid producer keys. The `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs` are STALE and do NOT match these keys. See the warning below.
+> **CRITICAL**: These are the ONLY valid producer keys. They match the `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs` (updated 2026-02-22).
 
 | Node | Host | Key File | Public Key (Ed25519) |
 |------|------|----------|----------------------|
 | **N1** | omegacortex | `~/.doli/mainnet/keys/producer_1.json` | `202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df` |
 | **N2** | omegacortex | `~/.doli/mainnet/keys/producer_2.json` | `effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b` |
-| **N3** | omegacortex | `~/.doli/mainnet/keys/producer_3.json` | `54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b` |
+| **N3** | N3-VPS | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b` |
 | **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d` |
 | **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9` |
 
@@ -336,20 +339,6 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | U1 | `fd2f9af2d073c52a11c0994f0f3df607cb19f13cbabf1e30f1f02525d4cda691` | ~1,601 | 1,601 DOLI |
 | U2 | `805b7411209cca4465892c483131cec07390befae77d5bca6930f4d55b07eff5` | ~1,644 | 1,644 DOLI |
 | U3 | `a44df67f10564a221b9bd6f2e020556940b5bf7036cab7e896a52a2d69a4e272` | ~1,517 | 1,517 DOLI |
-
-### ⚠️ BOOTSTRAP_MAINTAINER_KEYS Mismatch (ACTION REQUIRED)
-
-The `BOOTSTRAP_MAINTAINER_KEYS` hardcoded in `crates/updater/src/lib.rs:84-96` do **NOT** match the current producer keys:
-
-```
-Bootstrap Key 1: 721d2bc74ced1842...  ≠  N1: 202047256a8072a8...
-Bootstrap Key 2: d0c62cb4e143d548...  ≠  N2: effe88fefb6d992a...
-Bootstrap Key 3: 9fac605a1ebf2acf...  ≠  N3: 54323cefd0eabac8...
-Bootstrap Key 4: 97bdb0a9a52d4ed1...  ≠  N4: a1596a36fd3344ba...
-Bootstrap Key 5: 82ed55afabfe38d8...  ≠  N5: c5acb5b359c7a209...
-```
-
-**Impact**: The auto-update system's fallback signature verification uses keys that nobody controls. Until these are updated, release signature verification against bootstrap keys will fail. On-chain maintainer derivation (first 5 registered producers) should work independently, but the fallback path is broken.
 
 ### ⚠️ Chainspec Rules (CONSENSUS-CRITICAL)
 
