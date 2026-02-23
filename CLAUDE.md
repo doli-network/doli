@@ -317,6 +317,40 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). SSH as `ilozada`, use `sudo -u isudoajl` to run the node process.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory). Key file is `producer.json` (not in `keys/` subfolder).
 
+### Producer Key Registry (AUTHORITATIVE)
+
+> **CRITICAL**: These are the ONLY valid producer keys. The `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs` are STALE and do NOT match these keys. See the warning below.
+
+| Node | Host | Key File | Public Key (Ed25519) |
+|------|------|----------|----------------------|
+| **N1** | omegacortex | `~/.doli/mainnet/keys/producer_1.json` | `202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df` |
+| **N2** | omegacortex | `~/.doli/mainnet/keys/producer_2.json` | `effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b` |
+| **N3** | omegacortex | `~/.doli/mainnet/keys/producer_3.json` | `54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b` |
+| **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/producer.json` | `a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d` |
+| **N5** | fpx | `/home/isudoajl/.doli/mainnet/producer.json` | `c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9` |
+
+**Retired keys** (produced early blocks, no longer active — funds still held):
+
+| Key | Public Key | Approx Blocks | Balance |
+|-----|------------|---------------|---------|
+| U1 | `fd2f9af2d073c52a11c0994f0f3df607cb19f13cbabf1e30f1f02525d4cda691` | ~1,601 | 1,601 DOLI |
+| U2 | `805b7411209cca4465892c483131cec07390befae77d5bca6930f4d55b07eff5` | ~1,644 | 1,644 DOLI |
+| U3 | `a44df67f10564a221b9bd6f2e020556940b5bf7036cab7e896a52a2d69a4e272` | ~1,517 | 1,517 DOLI |
+
+### ⚠️ BOOTSTRAP_MAINTAINER_KEYS Mismatch (ACTION REQUIRED)
+
+The `BOOTSTRAP_MAINTAINER_KEYS` hardcoded in `crates/updater/src/lib.rs:84-96` do **NOT** match the current producer keys:
+
+```
+Bootstrap Key 1: 721d2bc74ced1842...  ≠  N1: 202047256a8072a8...
+Bootstrap Key 2: d0c62cb4e143d548...  ≠  N2: effe88fefb6d992a...
+Bootstrap Key 3: 9fac605a1ebf2acf...  ≠  N3: 54323cefd0eabac8...
+Bootstrap Key 4: 97bdb0a9a52d4ed1...  ≠  N4: a1596a36fd3344ba...
+Bootstrap Key 5: 82ed55afabfe38d8...  ≠  N5: c5acb5b359c7a209...
+```
+
+**Impact**: The auto-update system's fallback signature verification uses keys that nobody controls. Until these are updated, release signature verification against bootstrap keys will fail. On-chain maintainer derivation (first 5 registered producers) should work independently, but the fallback path is broken.
+
 ### ⚠️ Chainspec Rules (CONSENSUS-CRITICAL)
 
 > **HARD LESSON (2026-02-22):** N4/N5 had no `chainspec.json` → different `genesis_timestamp` → slot schedule diverged → chain fork. N4 reorged from 37K to 19K blocks.
