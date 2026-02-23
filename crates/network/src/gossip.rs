@@ -2,14 +2,17 @@
 //!
 //! Implements efficient message propagation using libp2p GossipSub protocol.
 
-use libp2p::gossipsub::{
-    Behaviour as Gossipsub, ConfigBuilder, IdentTopic, Message, MessageAuthenticity, MessageId,
-    ValidationMode,
-};
-use libp2p::identity::Keypair;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
+
+use libp2p::gossipsub::{
+    Behaviour as Gossipsub, ConfigBuilder, IdentTopic, Message, MessageAuthenticity, MessageId,
+    TopicHash, ValidationMode,
+};
+use libp2p::identity::Keypair;
+use tracing::debug;
 
 /// GossipSub topic for new blocks
 pub const BLOCKS_TOPIC: &str = "/doli/blocks/1";
@@ -158,6 +161,84 @@ pub fn subscribe_to_topics_for_tier(
     }
 
     Ok(())
+}
+
+/// Return the set of topic strings appropriate for the given tier.
+///
+/// Single source of truth for tier→topic mapping. Used by
+/// `reconfigure_topics_for_tier()` to compute the subscription delta.
+pub fn topics_for_tier(tier: u8, region: Option<u32>) -> Vec<String> {
+    let mut topics = vec![PRODUCERS_TOPIC.to_string(), VOTES_TOPIC.to_string()];
+    match tier {
+        1 => {
+            topics.extend([
+                BLOCKS_TOPIC.to_string(),
+                TRANSACTIONS_TOPIC.to_string(),
+                HEARTBEATS_TOPIC.to_string(),
+                TIER1_BLOCKS_TOPIC.to_string(),
+                ATTESTATION_TOPIC.to_string(),
+                HEADERS_TOPIC.to_string(),
+            ]);
+        }
+        2 => {
+            topics.extend([
+                BLOCKS_TOPIC.to_string(),
+                TRANSACTIONS_TOPIC.to_string(),
+                HEARTBEATS_TOPIC.to_string(),
+                ATTESTATION_TOPIC.to_string(),
+                HEADERS_TOPIC.to_string(),
+            ]);
+            if let Some(r) = region {
+                topics.push(region_topic(r));
+            }
+        }
+        3 => {
+            topics.push(HEADERS_TOPIC.to_string());
+        }
+        _ => {
+            // Tier 0 / legacy
+            topics.extend([
+                BLOCKS_TOPIC.to_string(),
+                TRANSACTIONS_TOPIC.to_string(),
+                HEARTBEATS_TOPIC.to_string(),
+                HEADERS_TOPIC.to_string(),
+            ]);
+        }
+    }
+    topics
+}
+
+/// Reconfigure gossipsub subscriptions for a tier change.
+///
+/// Performs a delta operation:
+/// 1. Computes desired topic set for the new tier
+/// 2. Unsubscribes from topics not in the desired set
+/// 3. Subscribes to new topics via `subscribe_to_topics_for_tier()`
+///
+/// Safe to call multiple times with the same tier (idempotent).
+pub fn reconfigure_topics_for_tier(
+    gossipsub: &mut Gossipsub,
+    tier: u8,
+    region: Option<u32>,
+) -> Result<(), GossipError> {
+    // Build desired topic hashes
+    let desired: HashSet<TopicHash> = topics_for_tier(tier, region)
+        .iter()
+        .map(|s| IdentTopic::new(s).hash())
+        .collect();
+
+    // Unsubscribe from topics not in the desired set
+    let current: Vec<TopicHash> = gossipsub.topics().cloned().collect();
+    for topic_hash in &current {
+        if !desired.contains(topic_hash) {
+            debug!("Unsubscribing from topic: {}", topic_hash);
+            let topic = IdentTopic::new(topic_hash.as_str());
+            let _ = gossipsub.unsubscribe(&topic);
+        }
+    }
+
+    // Subscribe to desired topics (idempotent — already-subscribed is a no-op)
+    subscribe_to_topics_for_tier(gossipsub, tier, region)
 }
 
 /// Gossipsub mesh configuration
@@ -520,5 +601,56 @@ mod tests {
         let mut data = vec![TX_MSG_BATCH];
         data.extend_from_slice(&0u32.to_le_bytes());
         assert!(decode_tx_message(&data).is_none());
+    }
+
+    #[test]
+    fn test_topics_for_tier0_is_legacy() {
+        let topics = topics_for_tier(0, None);
+        assert!(topics.contains(&BLOCKS_TOPIC.to_string()));
+        assert!(topics.contains(&TRANSACTIONS_TOPIC.to_string()));
+        assert!(topics.contains(&HEARTBEATS_TOPIC.to_string()));
+        assert!(topics.contains(&HEADERS_TOPIC.to_string()));
+        assert!(topics.contains(&PRODUCERS_TOPIC.to_string()));
+        assert!(topics.contains(&VOTES_TOPIC.to_string()));
+        // Tier 0 should NOT have tier1-specific topics
+        assert!(!topics.contains(&TIER1_BLOCKS_TOPIC.to_string()));
+        assert!(!topics.contains(&ATTESTATION_TOPIC.to_string()));
+    }
+
+    #[test]
+    fn test_topics_for_tier1_includes_tier1_blocks() {
+        let topics = topics_for_tier(1, None);
+        assert!(topics.contains(&TIER1_BLOCKS_TOPIC.to_string()));
+        assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
+        assert!(topics.contains(&BLOCKS_TOPIC.to_string()));
+        assert_eq!(topics.len(), 8); // producers, votes, blocks, txs, heartbeats, t1_blocks, attestations, headers
+    }
+
+    #[test]
+    fn test_topics_for_tier3_headers_only() {
+        let topics = topics_for_tier(3, None);
+        assert!(topics.contains(&HEADERS_TOPIC.to_string()));
+        assert!(topics.contains(&PRODUCERS_TOPIC.to_string()));
+        assert!(topics.contains(&VOTES_TOPIC.to_string()));
+        assert!(!topics.contains(&BLOCKS_TOPIC.to_string()));
+        assert!(!topics.contains(&TRANSACTIONS_TOPIC.to_string()));
+        assert!(!topics.contains(&HEARTBEATS_TOPIC.to_string()));
+        assert_eq!(topics.len(), 3);
+    }
+
+    #[test]
+    fn test_reconfigure_tier_unsubscribes() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
+
+        // Start with Tier 0 (legacy) subscriptions
+        subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
+        let initial_count = gs.topics().count();
+        assert_eq!(initial_count, 6); // blocks, txs, heartbeats, headers, producers, votes
+
+        // Reconfigure to Tier 3 (header-only)
+        reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
+        let final_count = gs.topics().count();
+        assert_eq!(final_count, 3); // headers, producers, votes
     }
 }
