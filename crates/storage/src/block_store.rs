@@ -27,6 +27,12 @@ impl BlockStore {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+
+        // Bloom filter: speeds up negative lookups (e.g., "does this hash exist?")
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_bloom_filter(10.0, false);
+        opts.set_block_based_table_factory(&block_opts);
 
         let cfs = vec![
             CF_HEADERS,
@@ -43,6 +49,7 @@ impl BlockStore {
         // for blocks stored before this index was added.
         let store = Self { db };
         store.migrate_hash_to_height_index();
+        store.cleanup_presence_cf();
 
         Ok(store)
     }
@@ -88,6 +95,114 @@ impl BlockStore {
                 );
             }
         }
+    }
+
+    /// One-time cleanup of the deprecated `presence` column family.
+    ///
+    /// Presence tracking was removed in the deterministic scheduler model
+    /// (rewards go 100% to block producer via coinbase). Any leftover data
+    /// in CF_PRESENCE is wasted disk space.
+    fn cleanup_presence_cf(&self) {
+        let cf = self.db.cf_handle(CF_PRESENCE).unwrap();
+
+        // Quick check: skip if already empty
+        if self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+            .next()
+            .is_none()
+        {
+            return;
+        }
+
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut count = 0u64;
+        for (key, _) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            batch.delete_cf(cf, &key);
+            count += 1;
+        }
+
+        if count > 0 {
+            if let Err(e) = self.db.write(batch) {
+                warn!("Failed to cleanup presence CF: {}", e);
+            } else {
+                info!(
+                    "[BLOCK_STORE] Cleaned up deprecated presence CF: {} entries removed",
+                    count
+                );
+            }
+        }
+    }
+
+    /// Remove non-canonical (fork) blocks from the store.
+    ///
+    /// Iterates all headers and checks if each hash exists in the
+    /// canonical chain index (hash_to_height). Blocks not in the
+    /// canonical chain are deleted from headers, bodies, and slot_index.
+    ///
+    /// Returns the number of fork blocks removed.
+    pub fn cleanup_fork_blocks(&self) -> Result<u64, StorageError> {
+        let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
+        let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
+        let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut removed = 0u64;
+        let mut total = 0u64;
+
+        for (key_bytes, _) in self
+            .db
+            .iterator_cf(cf_headers, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            total += 1;
+            // Check if this hash is in the canonical index
+            if self.db.get_cf(cf_h2h, &key_bytes)?.is_none() {
+                // Not canonical — delete header + body
+                batch.delete_cf(cf_headers, &key_bytes);
+                batch.delete_cf(cf_bodies, &key_bytes);
+
+                // Also try to remove from slot_index if this block has a slot entry
+                // pointing to this non-canonical hash
+                if key_bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&key_bytes);
+                    let hash = Hash::from_bytes(arr);
+                    if let Ok(Some(header)) = self.get_header(&hash) {
+                        let slot_bytes = header.slot.to_le_bytes();
+                        // Only delete slot entry if it points to this fork block
+                        if let Ok(Some(slot_hash_bytes)) = self.db.get_cf(cf_slot, slot_bytes) {
+                            if slot_hash_bytes[..] == key_bytes[..] {
+                                batch.delete_cf(cf_slot, slot_bytes);
+                            }
+                        }
+                    }
+                }
+
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            self.db.write(batch)?;
+            info!(
+                "[BLOCK_STORE] Fork cleanup: removed {} non-canonical blocks ({} total scanned)",
+                removed, total
+            );
+        } else {
+            debug!(
+                "[BLOCK_STORE] Fork cleanup: no fork blocks found ({} total scanned)",
+                total
+            );
+        }
+
+        Ok(removed)
     }
 
     /// Clear all block data from the store.
