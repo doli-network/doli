@@ -629,9 +629,80 @@ doli verify "Hello, world!" 3045... c455c65d3e17...
 
 ---
 
-## 7. Complete Workflow Examples
+## 7. Producer Keys as Wallets
 
-### 7.1 New User Workflow
+Producer key files (`.json`) have the same format as wallet files and can be used with `-w` to query balances, send coins, or perform any wallet operation.
+
+### 7.1 Key File Locations
+
+| Node | Host | Key Path |
+|------|------|----------|
+| N1 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_1.json` |
+| N2 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_2.json` |
+| N3 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_3.json` |
+| N4 | pro-KVM1 | `/home/isudoajl/.doli/mainnet/producer.json` |
+| N5 | fpx | `/home/isudoajl/.doli/mainnet/producer.json` |
+
+### 7.2 Key File Format
+
+```json
+{
+  "name": "producer_1",
+  "version": 1,
+  "addresses": [
+    {
+      "address": "f66686eb...",
+      "public_key": "202047256a8072a8...",
+      "private_key": "3f34d5fda9877fba..."
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `address` | Truncated 20-byte address (40 hex chars) |
+| `public_key` | Ed25519 public key (64 hex chars) — used as producer identity |
+| `private_key` | Ed25519 private key — **never share this** |
+
+The **pubkey hash** used for balance queries is derived from `public_key` via domain-separated BLAKE3: `BLAKE3(le32(12) || "DOLI_ADDR_V1" || pubkey_bytes)`.
+
+### 7.3 Querying Producer Balances
+
+```bash
+# Query balance using a producer key file as wallet
+doli -w /path/to/producer.json balance
+
+# Query from a remote node
+doli -w /path/to/producer.json -r http://127.0.0.1:8546 balance
+
+# Query a specific address by pubkey hash (no wallet file needed on disk,
+# but a default wallet must exist at ~/.doli/wallet.json)
+doli balance --address <64-char-pubkey-hash>
+```
+
+**Example — check all producers from omegacortex:**
+
+```bash
+for i in 1 2 3; do
+  echo "=== P$i ==="
+  doli -w ~/.doli/mainnet/keys/producer_$i.json balance
+done
+```
+
+### 7.4 Sending From a Producer Wallet
+
+Producer keys are full wallets. You can send coins directly:
+
+```bash
+doli -w ~/.doli/mainnet/keys/producer_1.json send <recipient-pubkey-hash> 100
+```
+
+---
+
+## 8. Complete Workflow Examples
+
+### 8.1 New User Workflow
 
 ```bash
 # 1. Create wallet
@@ -647,7 +718,7 @@ doli addresses
 doli balance
 ```
 
-### 7.2 Becoming a Producer
+### 8.2 Becoming a Producer
 
 ```bash
 # 1. Ensure you have enough DOLI (100+ per bond on mainnet/testnet)
@@ -663,7 +734,7 @@ doli producer status
 doli producer add-bond --count 4
 ```
 
-### 7.3 Exiting as a Producer
+### 8.3 Exiting as a Producer
 
 ```bash
 # 1. Check current status and pending withdrawals
@@ -682,7 +753,7 @@ doli producer claim-withdrawal
 doli producer exit
 ```
 
-### 7.4 Reporting Equivocation
+### 8.4 Reporting Equivocation
 
 If you observe double production (same producer, same slot, different blocks):
 
@@ -700,11 +771,11 @@ doli producer slash \
 
 ---
 
-## 8. Node Commands (doli-node)
+## 9. Node Commands (doli-node)
 
 The `doli-node` binary provides node management, update voting, and maintainer operations.
 
-### 8.1 Running the Node
+### 11.1 Running the Node
 
 ```bash
 doli-node run [OPTIONS]
@@ -730,7 +801,7 @@ doli-node --network testnet run
 doli-node --network testnet run --producer --producer-key wallet.json
 ```
 
-### 8.2 Node Management
+### 11.2 Node Management
 
 ```bash
 # Initialize data directory
@@ -751,23 +822,23 @@ doli-node recover [--yes]
 
 ---
 
-## 9. Update Commands (doli-node update)
+## 10. Update Commands (doli-node update)
 
 The update system uses 3/5 maintainer multisig with a 7-day veto period and 40% threshold.
 
-### 9.1 Check for Updates
+### 11.1 Check for Updates
 
 ```bash
 doli-node update check
 ```
 
-### 9.2 View Update Status
+### 11.2 View Update Status
 
 ```bash
 doli-node update status
 ```
 
-### 9.3 Vote on Updates
+### 11.3 Vote on Updates
 
 Producers can vote to approve or veto pending updates.
 
@@ -778,25 +849,25 @@ doli-node update vote --veto --key <producer-key.json>
 
 **WHITEPAPER Reference:** Section 15 (Governance) - 40% weighted veto threshold.
 
-### 9.4 View Vote Status
+### 11.4 View Vote Status
 
 ```bash
 doli-node update votes [--version <VERSION>]
 ```
 
-### 9.5 Apply Update
+### 11.5 Apply Update
 
 ```bash
 doli-node update apply [--force]
 ```
 
-### 9.6 Rollback
+### 10.6 Rollback
 
 ```bash
 doli-node update rollback
 ```
 
-### 9.7 Verify Release
+### 10.7 Verify Release
 
 ```bash
 doli-node update verify --version <VERSION>
@@ -804,17 +875,17 @@ doli-node update verify --version <VERSION>
 
 ---
 
-## 10. Maintainer Commands (doli-node maintainer)
+## 11. Maintainer Commands (doli-node maintainer)
 
 Maintainers are the first 5 registered producers. Changes require 3/5 multisig.
 
-### 10.1 List Maintainers
+### 11.1 List Maintainers
 
 ```bash
 doli-node maintainer list
 ```
 
-### 10.2 Add Maintainer
+### 11.2 Add Maintainer
 
 Propose adding a new maintainer (requires 3/5 signatures).
 
@@ -822,7 +893,7 @@ Propose adding a new maintainer (requires 3/5 signatures).
 doli-node maintainer add --target <PUBKEY> --key <maintainer-key.json>
 ```
 
-### 10.3 Remove Maintainer
+### 11.3 Remove Maintainer
 
 Propose removing a maintainer (requires 3/5 signatures).
 
@@ -830,7 +901,7 @@ Propose removing a maintainer (requires 3/5 signatures).
 doli-node maintainer remove --target <PUBKEY> --key <maintainer-key.json> [--reason "reason"]
 ```
 
-### 10.4 Sign Proposal
+### 11.4 Sign Proposal
 
 Sign a pending maintainer change proposal.
 
@@ -838,7 +909,7 @@ Sign a pending maintainer change proposal.
 doli-node maintainer sign --proposal-id <ID> --key <maintainer-key.json>
 ```
 
-### 10.5 Verify Maintainer Status
+### 11.5 Verify Maintainer Status
 
 ```bash
 doli-node maintainer verify --pubkey <PUBKEY>
@@ -848,7 +919,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-## 11. WHITEPAPER Operations Mapping
+## 12. WHITEPAPER Operations Mapping
 
 | WHITEPAPER Section | CLI Command |
 |--------------------|-------------|
@@ -866,7 +937,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-## 12. Environment Variables
+## 13. Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -875,7 +946,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-## 13. Exit Codes
+## 14. Exit Codes
 
 | Code | Meaning |
 |------|---------|
