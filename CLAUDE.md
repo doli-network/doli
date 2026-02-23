@@ -349,12 +349,28 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 
 **All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`).
 
+**Service files**: `/etc/systemd/system/doli-mainnet-nodeN.service`
+
+**Logs**: `/var/log/doli/nodeN.log` — circular via logrotate (5MB max, 1 rotation). Config: `/etc/logrotate.d/doli`.
+
+```bash
+# Check logs
+tail -f /var/log/doli/node1.log                              # N1/N2 (omegacortex)
+ssh -p 50790 ilozada@147.93.84.44 'tail -f /var/log/doli/node3.log'  # N3 (via jump)
+ssh -p 50790 ilozada@72.60.70.166 'tail -f /var/log/doli/node4.log'  # N4 (via jump)
+
+# Manage service
+sudo systemctl status doli-mainnet-node1
+sudo systemctl restart doli-mainnet-node1
+sudo systemctl stop doli-mainnet-node1
+```
+
 **Key differences:**
 - **N1/N2** (omegacortex): Have Rust toolchain, full repo clone. `cargo build --release` works. Both share the same compiled binary. SSH user is `ilozada`.
 - **N3** (147.93.84.44): Own VPS. Binary deployed via SCP from omegacortex. SSH user is `ilozada`. Reachable via omegacortex as jump host.
 - **N4/N5** (remote VMs): **No Rust toolchain.** Binary deployed via SCP from omegacortex. Cannot compile locally.
 - **N3/N4/N5 SSH**: Only reachable via omegacortex as jump host (`ssh -p 50790`). Direct SSH from local machine fails.
-- **N4/N5 process user**: `isudoajl` (not `ilozada`). SSH as `ilozada`, use `sudo -u isudoajl` to run the node process.
+- **N4/N5 process user**: `isudoajl` (not `ilozada`). Systemd service runs as `isudoajl`. SSH as `ilozada`.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
 
 ### Producer Key Registry (AUTHORITATIVE)
@@ -428,85 +444,38 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'gunzip -f /tmp/d
 
 #### Step 3: Stop nodes
 
-**N1/N2/N3** (omegacortex — kill by PID to avoid hitting other nodes):
 ```bash
-# Find PIDs
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+# N1/N2 (omegacortex)
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node1"
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node2"
 
-# Kill specific node (replace PID)
-ssh ilozada@omegacortex.ai "kill <PID>"
+# N3 (via jump)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl stop doli-mainnet-node3'"
 
-# Or kill by data-dir pattern:
-ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node3')"   # N3 only
-```
-
-**N4/N5** (via jump host):
-```bash
-# N4
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
-# N5
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
-```
-
-Wait 3s, then verify stopped:
-```bash
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node || echo stopped'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node || echo stopped'"
+# N4/N5 (via jump)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
 ```
 
 #### Step 4: Start nodes
 
-**N1** (omegacortex, relay server — start first, it's the bootstrap):
-```bash
-ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
-  --data-dir /home/ilozada/.doli/mainnet/node1/data run \
-  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_1.json \
-  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-  --no-auto-update --yes --force-start --relay-server \
-  </dev/null >/tmp/node1.log 2>&1 &"
-```
+Start N1 first (bootstrap), then the rest:
 
-**N2** (omegacortex, port offset):
 ```bash
-ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
-  --data-dir /home/ilozada/.doli/mainnet/node2/data run \
-  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_2.json \
-  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-  --no-auto-update --yes --force-start \
-  --p2p-port 30304 --rpc-port 8546 --metrics-port 9091 \
-  --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
-  </dev/null >/tmp/node2.log 2>&1 &"
-```
+# N1 (start first — it's the bootstrap)
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node1"
 
-**N3** (omegacortex, port offset):
-```bash
-ssh ilozada@omegacortex.ai "nohup /home/ilozada/repos/doli/target/release/doli-node \
-  --data-dir /home/ilozada/.doli/mainnet/node3/data run \
-  --producer --producer-key /home/ilozada/.doli/mainnet/keys/producer_3.json \
-  --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-  --no-auto-update --yes --force-start \
-  --p2p-port 30305 --rpc-port 8547 --metrics-port 9092 \
-  --bootstrap /ip4/127.0.0.1/tcp/30303 --relay-server \
-  </dev/null >/tmp/node3.log 2>&1 &"
-```
+# N2
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node2"
 
-**N4** (remote VM):
-```bash
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo -u isudoajl bash -c \"nohup /opt/doli/target/release/doli-node run \
-  --producer --producer-key /home/isudoajl/.doli/mainnet/producer.json \
-  --bootstrap /ip4/72.60.228.233/tcp/30303 \
-  --p2p-port 30303 --rpc-port 8545 --metrics-port 9090 --yes \
-  </dev/null >/var/log/doli-node.log 2>&1 &\"'"
-```
+# N3
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl start doli-mainnet-node3'"
 
-**N5** (remote VM):
-```bash
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo -u isudoajl bash -c \"nohup /opt/doli/target/release/doli-node run \
-  --producer --producer-key /home/isudoajl/.doli/mainnet/producer.json \
-  --bootstrap /ip4/72.60.228.233/tcp/30303 \
-  --p2p-port 30303 --rpc-port 8545 --metrics-port 9090 --yes \
-  </dev/null >/var/log/doli-node.log 2>&1 &\"'"
+# N4
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl start doli-mainnet-node4'"
+
+# N5
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
 ```
 
 #### Step 5: Verify
@@ -527,36 +496,24 @@ ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do \
 
 ### Wipe & Resync (When a Node is Forked)
 
-**N1/N2/N3** (omegacortex — replace `node3` with `node1`/`node2` as needed):
 ```bash
 # 1. Stop the node
-ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node3')"
+sudo systemctl stop doli-mainnet-nodeN
 
-# 2. Wipe chain state
-ssh ilozada@omegacortex.ai "rm -f ~/.doli/mainnet/node3/data/chain_state.bin \
-  ~/.doli/mainnet/node3/data/producers.bin \
-  ~/.doli/mainnet/node3/data/utxo.bin && \
-  rm -rf ~/.doli/mainnet/node3/data/blocks/ \
-  ~/.doli/mainnet/node3/data/signed_slots.db/"
+# 2. Wipe chain state (keep keys and chainspec!)
+rm -f chain_state.bin producers.bin utxo.bin
+rm -rf blocks/ signed_slots.db/
 
-# 3. Restart (see Step 4 above)
+# 3. Restart
+sudo systemctl start doli-mainnet-nodeN
 ```
 
-**N4/N5** (remote VMs — data lives directly in `~/.doli/mainnet/`, no `data/` subdirectory):
-```bash
-# 1. Stop
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
-
-# 2. Wipe chain state (NOTE: path is /home/isudoajl/.doli/mainnet/ — no data/ subdir)
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo rm -f \
-  /home/isudoajl/.doli/mainnet/chain_state.bin \
-  /home/isudoajl/.doli/mainnet/producers.bin \
-  /home/isudoajl/.doli/mainnet/utxo.bin; \
-  sudo rm -rf /home/isudoajl/.doli/mainnet/blocks/ \
-  /home/isudoajl/.doli/mainnet/signed_slots.db/; echo wiped'"
-
-# 3. Restart (see Step 4 above)
-```
+**Data dir paths** (where to run the wipe):
+- **N1**: `~/.doli/mainnet/node1/data/` (omegacortex)
+- **N2**: `~/.doli/mainnet/node2/data/` (omegacortex)
+- **N3**: `/home/ilozada/.doli/mainnet/data/` (147.93.84.44)
+- **N4**: `/home/isudoajl/.doli/mainnet/` (72.60.70.166, no `data/` subdir)
+- **N5**: `/home/isudoajl/.doli/mainnet/` (72.60.115.209, no `data/` subdir)
 
 ### Consensus-Critical vs Rolling Upgrades
 
