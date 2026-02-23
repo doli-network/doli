@@ -635,6 +635,18 @@ impl Node {
             network_config.nat_config = network::NatConfig::relay_server();
         }
 
+        // External address: advertise a specific public address to peers
+        if let Some(ref addr_str) = self.config.external_address {
+            match addr_str.parse::<network::Multiaddr>() {
+                Ok(addr) => {
+                    network_config.external_address = Some(addr);
+                }
+                Err(e) => {
+                    warn!("Invalid --external-address '{}': {}", addr_str, e);
+                }
+            }
+        }
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,
