@@ -596,13 +596,11 @@ impl Node {
             }
         }
 
-        // Early tier computation: assign correct tier at startup instead of waiting
-        // up to 1 hour for the first epoch boundary. With 5 producers (< 500 threshold),
-        // all nodes get Tier 1 immediately.
-        {
-            let current_height = self.chain_state.read().await.best_height;
-            self.recompute_tier(current_height).await;
-        }
+        // NOTE: Do NOT call recompute_tier() here. At startup the on-chain ProducerSet
+        // is incomplete (not synced yet). producer_tier() would default to Tier 3
+        // (header-only), causing reconfigure_topics_for_tier(3) to unsubscribe from
+        // BLOCKS_TOPIC — the node would stop receiving blocks and get stuck.
+        // Tier computation runs safely at epoch boundaries (after sync completes).
 
         // Start RPC server if enabled
         if self.config.rpc.enabled {
