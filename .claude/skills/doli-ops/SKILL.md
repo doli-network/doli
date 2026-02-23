@@ -153,6 +153,8 @@ doli-node run --network testnet --data-dir /path --producer
 | `--force-start` | off | Skip duplicate key check (DANGEROUS) |
 | `--yes` | off | Skip confirmations |
 | `--chainspec <PATH>` | | Custom chainspec JSON |
+| `--external-address <MULTIADDR>` | | Public address to advertise (e.g., `/ip4/72.60.228.233/tcp/30303`) |
+| `--relay-server` | off | Enable relay server for NAT'd peers |
 
 **`recover` subcommand:**
 ```bash
@@ -201,83 +203,96 @@ doli-node upgrade --version 0.2.0 --yes
 | IP | 72.60.228.233 |
 | Binary | `/home/ilozada/repos/doli/target/release/doli-node` |
 | Chainspec | `/home/ilozada/.doli/mainnet/chainspec.json` |
-| Started with | `nohup` (NOT systemd) |
+| Managed by | **systemd** |
 
 **Node 1:**
 
 | Property | Value |
 |----------|-------|
+| Service | `doli-mainnet-node1` |
+| Service file | `/etc/systemd/system/doli-mainnet-node1.service` |
 | Data | `/home/ilozada/.doli/mainnet/node1/data` |
 | Key | `/home/ilozada/.doli/mainnet/keys/producer_1.json` |
 | P2P | 30303 |
 | RPC | 8545 |
 | Metrics | 9090 |
-| Logs | `/tmp/node1.log` |
+| Logs | `/var/log/doli/node1.log` |
 
 **Node 2:**
 
 | Property | Value |
 |----------|-------|
+| Service | `doli-mainnet-node2` |
+| Service file | `/etc/systemd/system/doli-mainnet-node2.service` |
 | Data | `/home/ilozada/.doli/mainnet/node2/data` |
 | Key | `/home/ilozada/.doli/mainnet/keys/producer_2.json` |
 | P2P | 30304 |
 | RPC | 8546 |
 | Metrics | 9091 |
-| Logs | `/tmp/node2.log` |
+| Logs | `/var/log/doli/node2.log` |
 | Bootstrap | Node 1 via `/ip4/127.0.0.1/tcp/30303` |
 
 #### Server 2: 147.93.84.44 (Node 3 — partner)
 
 | Property | Value |
 |----------|-------|
-| SSH | `ssh -p 50790 ilozada@147.93.84.44` |
+| SSH | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@147.93.84.44` |
 | IP | 147.93.84.44 |
 | Specs | 1 CPU, 3.8GB RAM, Ubuntu 24.04 |
 | Binary | `/home/ilozada/doli-node` |
+| Service | `doli-mainnet-node3` |
+| Service file | `/etc/systemd/system/doli-mainnet-node3.service` |
 | Data | `/home/ilozada/.doli/mainnet/data` |
 | Key | `/home/ilozada/.doli/mainnet/keys/producer_3.json` |
 | P2P | 30303 |
 | RPC | 8545 |
 | Metrics | 9090 |
-| Logs | `/tmp/node3.log` |
+| Logs | `/var/log/doli/node3.log` |
 | Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
 | Git repo | **None** — standalone binary, updated via SCP from omegacortex.ai |
+| Managed by | **systemd** |
 
 #### Server 3: 72.60.70.166 (Node 4 — "pro-KVM1")
 
 | Property | Value |
 |----------|-------|
-| SSH | `ssh -p 50790 ilozada@72.60.70.166` |
+| SSH | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` |
 | Hostname | pro-KVM1 |
 | IP | 72.60.70.166 |
 | User (node) | `isudoajl` |
 | Binary | `/opt/doli/target/release/doli-node` |
+| Service | `doli-mainnet-node4` |
+| Service file | `/etc/systemd/system/doli-mainnet-node4.service` |
 | Git repo | `/opt/doli` (owner: `isudoajl`, pull with `sudo -u isudoajl`) |
-| Data | Default (`/home/isudoajl/.doli/mainnet/data`) |
+| Data | `/home/isudoajl/.doli/mainnet/` (no `data/` subdir) |
 | Key | `/home/isudoajl/.doli/mainnet/producer.json` |
 | P2P | 30303 |
 | RPC | 8545 |
 | Metrics | 9090 |
-| Logs | `/var/log/doli-node.log` |
+| Logs | `/var/log/doli/node4.log` |
 | Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
+| Managed by | **systemd** |
 
 #### Server 4: 72.60.115.209 (Node 5 — "fpx")
 
 | Property | Value |
 |----------|-------|
-| SSH | `ssh -p 50790 ilozada@72.60.115.209` |
+| SSH | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` |
 | Hostname | fpx |
 | IP | 72.60.115.209 |
 | User (node) | `isudoajl` |
 | Binary | `/opt/doli/target/release/doli-node` |
+| Service | `doli-mainnet-node5` |
+| Service file | `/etc/systemd/system/doli-mainnet-node5.service` |
 | Git repo | `/opt/doli` (owner: `isudoajl`, pull with `sudo -u isudoajl`) |
-| Data | Default (`/home/isudoajl/.doli/mainnet/data`) |
+| Data | `/home/isudoajl/.doli/mainnet/` (no `data/` subdir) |
 | Key | `/home/isudoajl/.doli/mainnet/producer.json` |
 | P2P | 30303 |
 | RPC | 8545 |
 | Metrics | 9090 |
-| Logs | `/var/log/doli-node.log` |
+| Logs | `/var/log/doli/node5.log` |
 | Bootstrap | Node 1 via `/ip4/72.60.228.233/tcp/30303` |
+| Managed by | **systemd** |
 
 ### 2.2 Git Pull / Deploy Summary
 
@@ -291,42 +306,31 @@ doli-node upgrade --version 0.2.0 --yes
 
 ### 2.3 Starting Nodes
 
+**ALL nodes are managed by systemd.** Never use `nohup` — it bypasses restart-on-failure, log rotation, and proper service lifecycle.
+
 **Node 1 (omegacortex.ai):**
 ```bash
-ssh ilozada@omegacortex.ai
-nohup /home/ilozada/repos/doli/target/release/doli-node \
-    --data-dir /home/ilozada/.doli/mainnet/node1/data run \
-    --producer \
-    --producer-key /home/ilozada/.doli/mainnet/keys/producer_1.json \
-    --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-    --no-auto-update --yes --force-start \
-    > /tmp/node1.log 2>&1 &
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node1"
 ```
 
-**Node 2 (omegacortex.ai — same server, different ports):**
+**Node 2 (omegacortex.ai):**
 ```bash
-nohup /home/ilozada/repos/doli/target/release/doli-node \
-    --data-dir /home/ilozada/.doli/mainnet/node2/data run \
-    --producer \
-    --producer-key /home/ilozada/.doli/mainnet/keys/producer_2.json \
-    --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-    --no-auto-update --yes --force-start \
-    --p2p-port 30304 --rpc-port 8546 --metrics-port 9091 \
-    --bootstrap /ip4/127.0.0.1/tcp/30303 \
-    > /tmp/node2.log 2>&1 &
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node2"
 ```
 
-**Node 3 (partner server):**
+**Node 3 (partner — via jump host):**
 ```bash
-ssh -p 50790 ilozada@147.93.84.44
-nohup /home/ilozada/doli-node \
-    --data-dir /home/ilozada/.doli/mainnet/data run \
-    --producer \
-    --producer-key /home/ilozada/.doli/mainnet/keys/producer_3.json \
-    --chainspec /home/ilozada/.doli/mainnet/chainspec.json \
-    --no-auto-update --yes --force-start \
-    --bootstrap /ip4/72.60.228.233/tcp/30303 \
-    > /tmp/node3.log 2>&1 &
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl start doli-mainnet-node3'"
+```
+
+**Node 4 (pro-KVM1 — via jump host):**
+```bash
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl start doli-mainnet-node4'"
+```
+
+**Node 5 (fpx — via jump host):**
+```bash
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
 ```
 
 **Local devnet (for testing):**
@@ -338,19 +342,31 @@ cargo build --release
 
 ### 2.4 Stopping Nodes
 
-**Graceful shutdown (preferred):**
+**ALL nodes are managed by systemd.** `systemctl stop` sends SIGTERM for graceful shutdown.
+
 ```bash
-# Sends SIGTERM — node finishes current block, saves state, exits
-kill <pid>
+# Node 1 (omegacortex.ai)
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node1"
 
-# Find PIDs on omegacortex.ai
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+# Node 2 (omegacortex.ai)
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node2"
 
-# Find PID on node3
-ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node"
+# Node 3 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl stop doli-mainnet-node3'"
 
-# Devnet
+# Node 4 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
+
+# Node 5 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
+
+# Devnet (local only)
 ./target/release/doli-node devnet stop
+```
+
+**Restart a node:**
+```bash
+sudo systemctl restart doli-mainnet-nodeN
 ```
 
 **NEVER use `kill -9` unless absolutely necessary** — it bypasses graceful shutdown and can create orphan blocks requiring shallow fork recovery.
@@ -375,41 +391,59 @@ curl -s -X POST http://127.0.0.1:PORT \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{},"id":1}' | jq .
 ```
 
-**Process check:**
+**Service status (preferred):**
 ```bash
 # omegacortex.ai (node1 + node2)
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+ssh ilozada@omegacortex.ai "sudo systemctl status doli-mainnet-node1 --no-pager | head -10"
+ssh ilozada@omegacortex.ai "sudo systemctl status doli-mainnet-node2 --no-pager | head -10"
 
-# node3
-ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node"
+# node3 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl status doli-mainnet-node3 --no-pager | head -10'"
+
+# node4 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl status doli-mainnet-node4 --no-pager | head -10'"
+
+# node5 (via jump host)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl status doli-mainnet-node5 --no-pager | head -10'"
 ```
 
-**Remote — quick status all 3 nodes:**
+**Remote — quick chain status all 5 nodes:**
 ```bash
-# Node 1 chain info
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'"
+# N1+N2 on omegacortex
+ssh ilozada@omegacortex.ai "for p in 8545 8546; do \
+  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
+  -H 'Content-Type: application/json' \
+  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
+  | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
 
-# Node 2 chain info
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8546 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'"
+# N3
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'curl -s -X POST http://127.0.0.1:8545 \
+    -H \"Content-Type: application/json\" \
+    -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"'"
 
-# Node 3 chain info
-ssh -p 50790 ilozada@147.93.84.44 "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'"
+# N4
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 \
+    -H \"Content-Type: application/json\" \
+    -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"'"
+
+# N5
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 \
+    -H \"Content-Type: application/json\" \
+    -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"'"
 ```
 
 **Tail logs:**
 ```bash
 # Node 1
-ssh ilozada@omegacortex.ai "tail -f /tmp/node1.log"
+ssh ilozada@omegacortex.ai "tail -f /var/log/doli/node1.log"
 # Node 2
-ssh ilozada@omegacortex.ai "tail -f /tmp/node2.log"
-# Node 3
-ssh -p 50790 ilozada@147.93.84.44 "tail -f /tmp/node3.log"
+ssh ilozada@omegacortex.ai "tail -f /var/log/doli/node2.log"
+# Node 3 (via jump)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'tail -f /var/log/doli/node3.log'"
+# Node 4 (via jump)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'tail -f /var/log/doli/node4.log'"
+# Node 5 (via jump)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'tail -f /var/log/doli/node5.log'"
 ```
 
 ### 2.6 Checking Balances and Production
@@ -438,7 +472,7 @@ curl -s -X POST http://127.0.0.1:PORT \
 **Partial wipe (keep keys, resync chain):**
 ```bash
 # Stop node first
-sudo systemctl stop doli-testnet
+sudo systemctl stop doli-mainnet-node1
 
 # Remove chain data only (example for node1 on omegacortex.ai)
 rm -rf ~/.doli/mainnet/node1/data/blocks/
@@ -515,23 +549,24 @@ Changes to block validation, scheduling, VDF, economics, or transaction processi
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && \
     source ~/.cargo/env && cargo build --release --package doli-node"
 
-# 2. Copy binary to node3
-scp -P 50790 ilozada@omegacortex.ai:~/repos/doli/target/release/doli-node \
-    ilozada@147.93.84.44:~/doli-node
+# 2. Copy binary to N3 (via SCP from omegacortex)
+ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ilozada@147.93.84.44:~/doli-node"
 
-# 3. Stop ALL nodes (kill gracefully)
-ssh ilozada@omegacortex.ai "pkill -f doli-node"
-ssh -p 50790 ilozada@147.93.84.44 "pkill -f doli-node"
+# 3. Stop ALL nodes via systemd
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node1 doli-mainnet-node2"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl stop doli-mainnet-node3'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
 
-# 4. Wait for graceful shutdown (check processes are gone)
-sleep 5
-ssh ilozada@omegacortex.ai "pgrep -la doli-node || echo 'stopped'"
-ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node || echo 'stopped'"
+# 4. Start ALL nodes via systemd (N1 first = bootstrap)
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node1"
+sleep 3
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node2"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl start doli-mainnet-node3'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl start doli-mainnet-node4'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
 
-# 5. Start ALL nodes (see Section 2.3 for exact commands)
-# Start node1 first (bootstrap), then node2, then node3
-
-# 6. Verify all nodes are on same chain — see 3.5
+# 5. Verify all nodes are on same chain — see 3.5
 ```
 
 ### 3.4 Non-Consensus: Rolling Upgrade
@@ -539,46 +574,42 @@ ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node || echo 'stopped'"
 Network, sync, RPC, logging, or UI changes can be deployed one node at a time.
 
 ```bash
-# For each node: stop, replace binary, restart
+# For each node: restart via systemd (binary already replaced by build)
 # Example for node1:
-ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node1')"
-sleep 3
-# Restart node1 (see Section 2.3 for exact command)
-# Verify node1 is healthy before proceeding to node2
+ssh ilozada@omegacortex.ai "sudo systemctl restart doli-mainnet-node1"
+# Verify node1 is healthy before proceeding to node2 (see 3.5)
+sleep 15
+ssh ilozada@omegacortex.ai "sudo systemctl restart doli-mainnet-node2"
+# Continue with N3, N4, N5...
 ```
 
 ### 3.5 Post-Deploy Verification
 
 ```bash
-# 1. All nodes running
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
-ssh -p 50790 ilozada@147.93.84.44 "pgrep -la doli-node"
+# 1. All services active
+ssh ilozada@omegacortex.ai "sudo systemctl is-active doli-mainnet-node1 doli-mainnet-node2"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl is-active doli-mainnet-node3'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl is-active doli-mainnet-node4'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl is-active doli-mainnet-node5'"
 
 # 2. Chain is advancing (run twice, 15s apart, height should increase)
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'"
+ssh ilozada@omegacortex.ai "for p in 8545 8546; do \
+  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
+  -H 'Content-Type: application/json' \
+  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
+  | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
 
-# 3. Peers connected (each node should see 2 peers)
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getNetworkInfo\",\"params\":{},\"id\":1}'"
+# 3. No errors in recent logs
+ssh ilozada@omegacortex.ai "tail -50 /var/log/doli/node1.log | grep -iE 'error|panic|fatal'"
+ssh ilozada@omegacortex.ai "tail -50 /var/log/doli/node2.log | grep -iE 'error|panic|fatal'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'tail -50 /var/log/doli/node3.log | grep -iE \"error|panic|fatal\"'"
 
-# 4. No errors in recent logs
-ssh ilozada@omegacortex.ai "tail -50 /tmp/node1.log | grep -iE 'error|panic|fatal'"
-ssh ilozada@omegacortex.ai "tail -50 /tmp/node2.log | grep -iE 'error|panic|fatal'"
-ssh -p 50790 ilozada@147.93.84.44 "tail -50 /tmp/node3.log | grep -iE 'error|panic|fatal'"
-
-# 5. All nodes agree on chain tip (compare bestHash across nodes)
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep bestHash"
-ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8546 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep bestHash"
-ssh -p 50790 ilozada@147.93.84.44 "curl -s -X POST http://127.0.0.1:8545 \
-    -H 'Content-Type: application/json' \
-    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep bestHash"
+# 4. All nodes agree on chain tip
+ssh ilozada@omegacortex.ai "for p in 8545 8546; do \
+  curl -s -X POST http://127.0.0.1:\$p \
+  -H 'Content-Type: application/json' \
+  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
+  | jq -c '.result.bestHash[0:16]'; done"
 ```
 
 ### 3.6 Remote Build + Deploy (Single Command)
@@ -588,8 +619,8 @@ ssh -p 50790 ilozada@147.93.84.44 "curl -s -X POST http://127.0.0.1:8545 \
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && \
     source ~/.cargo/env && \
     cargo build --release --package doli-node && \
-    pkill -f doli-node && sleep 3"
-# Then restart nodes per Section 2.3
+    sudo systemctl restart doli-mainnet-node1 && sleep 3 && \
+    sudo systemctl restart doli-mainnet-node2"
 ```
 
 ---
@@ -849,7 +880,7 @@ doli -r http://127.0.0.1:PORT producer exit --force
 
 **Fix:**
 - The sync manager has built-in stall recovery (`body_stall_retries`). After a few retries with no progress, it resets to Idle and restarts sync.
-- If stuck > 5 minutes: restart the node. Graceful `kill <pid>` is safe.
+- If stuck > 5 minutes: restart the node via `sudo systemctl restart doli-mainnet-nodeN`.
 
 ### 7.2 GSet Divergence
 
@@ -883,7 +914,7 @@ doli -r http://127.0.0.1:PORT producer exit --force
 **Manual resolution if auto-recovery fails:**
 ```bash
 # 1. Stop node
-kill <pid>
+sudo systemctl stop doli-mainnet-nodeN
 
 # 2. Wipe chain state (keeps blocks)
 rm -f ~/.doli/<NETWORK>/data/*/chain_state.bin
