@@ -819,8 +819,14 @@ impl Node {
             drop(sync);
 
             // Reconfigure gossipsub topic subscriptions for the new tier
+            // Tier 2 nodes get a deterministic region assignment
+            let region = if new_tier == 2 {
+                Some(doli_core::consensus::producer_region(&our_pubkey))
+            } else {
+                None
+            };
             if let Some(ref network) = self.network {
-                let _ = network.reconfigure_tier(new_tier, None).await;
+                let _ = network.reconfigure_tier(new_tier, region).await;
             }
         }
 
