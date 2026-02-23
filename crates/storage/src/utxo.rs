@@ -1,4 +1,11 @@
 //! UTXO set management
+//!
+//! Provides two backends:
+//! - `InMemoryUtxoStore`: HashMap-based (original, used for migration and testing)
+//! - `RocksDbUtxoStore`: Disk-backed via RocksDB (production, scales to millions of UTXOs)
+//!
+//! The `UtxoSet` enum dispatches to the active backend. Consumers don't need
+//! to know which backend is active — all methods work identically.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -6,17 +13,18 @@ use std::path::Path;
 use crypto::Hash;
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
-use doli_core::transaction::{Output, Transaction};
+use doli_core::transaction::Transaction;
 use doli_core::types::{Amount, BlockHeight};
 use serde::{Deserialize, Serialize};
 
+use crate::utxo_rocks::RocksDbUtxoStore;
 use crate::StorageError;
 
 /// An entry in the UTXO set
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UtxoEntry {
     /// The output
-    pub output: Output,
+    pub output: doli_core::transaction::Output,
     /// Block height when created
     pub height: BlockHeight,
     /// Whether this is a coinbase output
@@ -109,33 +117,34 @@ impl Outpoint {
     }
 }
 
-/// In-memory UTXO set
+// ============================================================================
+// InMemoryUtxoStore — original HashMap-based backend
+// ============================================================================
+
+/// In-memory UTXO store (HashMap-based)
 #[derive(Serialize, Deserialize)]
-pub struct UtxoSet {
-    /// UTXOs indexed by outpoint
+pub struct InMemoryUtxoStore {
     utxos: HashMap<Outpoint, UtxoEntry>,
 }
 
-impl UtxoSet {
-    /// Create a new empty UTXO set
+impl InMemoryUtxoStore {
     pub fn new() -> Self {
         Self {
             utxos: HashMap::new(),
         }
     }
 
-    /// Clear all UTXOs (used during chain reorganization)
     pub fn clear(&mut self) {
         self.utxos.clear();
     }
 
-    /// Load from disk
+    /// Load from bincode file (legacy utxo.bin format)
     pub fn load(path: &Path) -> Result<Self, StorageError> {
         let bytes = std::fs::read(path)?;
         bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))
     }
 
-    /// Save to disk
+    /// Save to bincode file (legacy utxo.bin format)
     pub fn save(&self, path: &Path) -> Result<(), StorageError> {
         let bytes =
             bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -143,17 +152,14 @@ impl UtxoSet {
         Ok(())
     }
 
-    /// Get a UTXO by outpoint
-    pub fn get(&self, outpoint: &Outpoint) -> Option<&UtxoEntry> {
-        self.utxos.get(outpoint)
+    pub fn get(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+        self.utxos.get(outpoint).cloned()
     }
 
-    /// Check if a UTXO exists
     pub fn contains(&self, outpoint: &Outpoint) -> bool {
         self.utxos.contains_key(outpoint)
     }
 
-    /// Add outputs from a transaction
     pub fn add_transaction(&mut self, tx: &Transaction, height: BlockHeight, is_coinbase: bool) {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
@@ -170,7 +176,6 @@ impl UtxoSet {
         }
     }
 
-    /// Remove inputs spent by a transaction
     pub fn spend_transaction(&mut self, tx: &Transaction) -> Result<Amount, StorageError> {
         let mut total_input = 0;
 
@@ -190,28 +195,214 @@ impl UtxoSet {
         Ok(total_input)
     }
 
-    /// Get total value in the UTXO set
     pub fn total_value(&self) -> Amount {
         self.utxos.values().map(|e| e.output.amount).sum()
     }
 
-    /// Get number of UTXOs
     pub fn len(&self) -> usize {
         self.utxos.len()
     }
 
-    /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.utxos.is_empty()
     }
 
-    /// Get all UTXOs for a given pubkey hash
-    pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, &UtxoEntry)> {
+    pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         self.utxos
             .iter()
             .filter(|(_, entry)| &entry.output.pubkey_hash == pubkey_hash)
-            .map(|(op, entry)| (*op, entry))
+            .map(|(op, entry)| (*op, entry.clone()))
             .collect()
+    }
+
+    #[allow(deprecated)]
+    pub fn get_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
+        self.get_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
+    }
+
+    pub fn get_balance_with_maturity(
+        &self,
+        pubkey_hash: &Hash,
+        height: BlockHeight,
+        maturity: BlockHeight,
+    ) -> Amount {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
+    #[allow(deprecated)]
+    pub fn get_immature_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
+        self.get_immature_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
+    }
+
+    pub fn get_immature_balance_with_maturity(
+        &self,
+        pubkey_hash: &Hash,
+        height: BlockHeight,
+        maturity: BlockHeight,
+    ) -> Amount {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| {
+                (entry.is_coinbase || entry.is_epoch_reward)
+                    && !entry.is_spendable_at_with_maturity(height, maturity)
+            })
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
+    pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
+        self.utxos.insert(outpoint, entry);
+    }
+
+    pub fn remove(&mut self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+        self.utxos.remove(outpoint)
+    }
+
+    /// Iterate over all entries (for migration to RocksDB)
+    pub fn iter(&self) -> impl Iterator<Item = (&Outpoint, &UtxoEntry)> {
+        self.utxos.iter()
+    }
+
+    /// Produce canonical bytes for deterministic state root computation.
+    ///
+    /// Output: `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
+    ///
+    /// Keys are sorted lexicographically (by outpoint bytes).
+    pub fn serialize_canonical(&self) -> Vec<u8> {
+        let mut entries: Vec<(&Outpoint, &UtxoEntry)> = self.utxos.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
+
+        let count = entries.len() as u64;
+        let mut buf = Vec::with_capacity(8 + entries.len() * 140);
+        buf.extend_from_slice(&count.to_le_bytes());
+
+        for (outpoint, entry) in entries {
+            buf.extend_from_slice(&outpoint.to_bytes());
+            let value = bincode::serialize(entry).expect("UtxoEntry serialization");
+            buf.extend_from_slice(&value);
+        }
+
+        buf
+    }
+}
+
+impl Default for InMemoryUtxoStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// UtxoSet — enum dispatch between backends
+// ============================================================================
+
+/// UTXO set with pluggable backend (in-memory or RocksDB)
+pub enum UtxoSet {
+    /// HashMap-based (original). Used during migration and testing.
+    InMemory(InMemoryUtxoStore),
+    /// RocksDB-backed (production). Durable, scales to millions of entries.
+    RocksDb(RocksDbUtxoStore),
+}
+
+impl UtxoSet {
+    /// Create a new empty in-memory UTXO set (default for backward compatibility)
+    pub fn new() -> Self {
+        UtxoSet::InMemory(InMemoryUtxoStore::new())
+    }
+
+    /// Open a RocksDB-backed UTXO set at the given path
+    pub fn open_rocksdb(path: &Path) -> Result<Self, StorageError> {
+        Ok(UtxoSet::RocksDb(RocksDbUtxoStore::open(path)?))
+    }
+
+    /// Load from legacy bincode file (utxo.bin). Returns InMemory backend.
+    pub fn load(path: &Path) -> Result<Self, StorageError> {
+        Ok(UtxoSet::InMemory(InMemoryUtxoStore::load(path)?))
+    }
+
+    /// Save to legacy bincode file. Only works for InMemory backend.
+    /// RocksDB backend is already durable — this is a no-op.
+    pub fn save(&self, path: &Path) -> Result<(), StorageError> {
+        match self {
+            UtxoSet::InMemory(store) => store.save(path),
+            UtxoSet::RocksDb(_) => Ok(()), // RocksDB is always durable
+        }
+    }
+
+    /// Clear all UTXOs
+    pub fn clear(&mut self) {
+        match self {
+            UtxoSet::InMemory(store) => store.clear(),
+            UtxoSet::RocksDb(store) => store.clear(),
+        }
+    }
+
+    /// Get a UTXO by outpoint (returns owned value)
+    pub fn get(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+        match self {
+            UtxoSet::InMemory(store) => store.get(outpoint),
+            UtxoSet::RocksDb(store) => store.get(outpoint),
+        }
+    }
+
+    /// Check if a UTXO exists
+    pub fn contains(&self, outpoint: &Outpoint) -> bool {
+        match self {
+            UtxoSet::InMemory(store) => store.contains(outpoint),
+            UtxoSet::RocksDb(store) => store.contains(outpoint),
+        }
+    }
+
+    /// Add outputs from a transaction
+    pub fn add_transaction(&mut self, tx: &Transaction, height: BlockHeight, is_coinbase: bool) {
+        match self {
+            UtxoSet::InMemory(store) => store.add_transaction(tx, height, is_coinbase),
+            UtxoSet::RocksDb(store) => store.add_transaction(tx, height, is_coinbase),
+        }
+    }
+
+    /// Remove inputs spent by a transaction
+    pub fn spend_transaction(&mut self, tx: &Transaction) -> Result<Amount, StorageError> {
+        match self {
+            UtxoSet::InMemory(store) => store.spend_transaction(tx),
+            UtxoSet::RocksDb(store) => store.spend_transaction(tx),
+        }
+    }
+
+    /// Get total value in the UTXO set
+    pub fn total_value(&self) -> Amount {
+        match self {
+            UtxoSet::InMemory(store) => store.total_value(),
+            UtxoSet::RocksDb(store) => store.total_value(),
+        }
+    }
+
+    /// Get number of UTXOs
+    pub fn len(&self) -> usize {
+        match self {
+            UtxoSet::InMemory(store) => store.len(),
+            UtxoSet::RocksDb(store) => store.len(),
+        }
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        match self {
+            UtxoSet::InMemory(store) => store.is_empty(),
+            UtxoSet::RocksDb(store) => store.is_empty(),
+        }
+    }
+
+    /// Get all UTXOs for a given pubkey hash (returns owned entries)
+    pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
+        match self {
+            UtxoSet::InMemory(store) => store.get_by_pubkey_hash(pubkey_hash),
+            UtxoSet::RocksDb(store) => store.get_by_pubkey_hash(pubkey_hash),
+        }
     }
 
     /// Get spendable balance for a pubkey hash at a given height with default maturity
@@ -227,15 +418,17 @@ impl UtxoSet {
         height: BlockHeight,
         maturity: BlockHeight,
     ) -> Amount {
-        self.get_by_pubkey_hash(pubkey_hash)
-            .iter()
-            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
-            .map(|(_, entry)| entry.output.amount)
-            .sum()
+        match self {
+            UtxoSet::InMemory(store) => {
+                store.get_balance_with_maturity(pubkey_hash, height, maturity)
+            }
+            UtxoSet::RocksDb(store) => {
+                store.get_balance_with_maturity(pubkey_hash, height, maturity)
+            }
+        }
     }
 
     /// Get immature balance for a pubkey hash at a given height with default maturity
-    /// Returns the sum of coinbase/epoch reward outputs that haven't matured yet
     #[allow(deprecated)]
     pub fn get_immature_balance(&self, pubkey_hash: &Hash, height: BlockHeight) -> Amount {
         self.get_immature_balance_with_maturity(pubkey_hash, height, DEFAULT_REWARD_MATURITY)
@@ -248,25 +441,46 @@ impl UtxoSet {
         height: BlockHeight,
         maturity: BlockHeight,
     ) -> Amount {
-        self.get_by_pubkey_hash(pubkey_hash)
-            .iter()
-            .filter(|(_, entry)| {
-                // Only coinbase and epoch rewards have maturity requirements
-                (entry.is_coinbase || entry.is_epoch_reward)
-                    && !entry.is_spendable_at_with_maturity(height, maturity)
-            })
-            .map(|(_, entry)| entry.output.amount)
-            .sum()
+        match self {
+            UtxoSet::InMemory(store) => {
+                store.get_immature_balance_with_maturity(pubkey_hash, height, maturity)
+            }
+            UtxoSet::RocksDb(store) => {
+                store.get_immature_balance_with_maturity(pubkey_hash, height, maturity)
+            }
+        }
     }
 
     /// Insert a UTXO entry directly (for testing and reorgs)
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
-        self.utxos.insert(outpoint, entry);
+        match self {
+            UtxoSet::InMemory(store) => store.insert(outpoint, entry),
+            UtxoSet::RocksDb(store) => store.insert(outpoint, entry),
+        }
     }
 
     /// Remove a UTXO entry directly (for testing and reorgs)
     pub fn remove(&mut self, outpoint: &Outpoint) -> Option<UtxoEntry> {
-        self.utxos.remove(outpoint)
+        match self {
+            UtxoSet::InMemory(store) => store.remove(outpoint),
+            UtxoSet::RocksDb(store) => store.remove(outpoint),
+        }
+    }
+
+    /// Produce canonical bytes for deterministic state root computation.
+    ///
+    /// Both backends produce identical output for the same UTXO set:
+    /// `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
+    pub fn serialize_canonical(&self) -> Vec<u8> {
+        match self {
+            UtxoSet::InMemory(store) => store.serialize_canonical(),
+            UtxoSet::RocksDb(store) => store.serialize_canonical(),
+        }
+    }
+
+    /// Check if this is the RocksDB backend
+    pub fn is_rocksdb(&self) -> bool {
+        matches!(self, UtxoSet::RocksDb(_))
     }
 }
 
@@ -299,8 +513,11 @@ mod tests {
 
         // Check coinbase maturity
         let entry = utxo_set.get(&outpoint).unwrap();
-        assert!(!entry.is_spendable_at(50)); // Not mature
-        assert!(entry.is_spendable_at(100)); // Mature
+        #[allow(deprecated)]
+        {
+            assert!(!entry.is_spendable_at(50)); // Not mature
+            assert!(entry.is_spendable_at(100)); // Mature
+        }
     }
 
     #[test]
@@ -334,11 +551,14 @@ mod tests {
         assert!(!entry.is_coinbase);
 
         // Check maturity: needs REWARD_MATURITY (100) confirmations
-        assert!(!entry.is_spendable_at(100)); // 0 confirmations
-        assert!(!entry.is_spendable_at(150)); // 50 confirmations
-        assert!(!entry.is_spendable_at(199)); // 99 confirmations
-        assert!(entry.is_spendable_at(200)); // 100 confirmations (mature)
-        assert!(entry.is_spendable_at(300)); // 200 confirmations (mature)
+        #[allow(deprecated)]
+        {
+            assert!(!entry.is_spendable_at(100)); // 0 confirmations
+            assert!(!entry.is_spendable_at(150)); // 50 confirmations
+            assert!(!entry.is_spendable_at(199)); // 99 confirmations
+            assert!(entry.is_spendable_at(200)); // 100 confirmations (mature)
+            assert!(entry.is_spendable_at(300)); // 200 confirmations (mature)
+        }
     }
 
     #[test]
@@ -358,9 +578,12 @@ mod tests {
         assert!(!entry.is_epoch_reward);
 
         // Check maturity
-        assert!(!entry.is_spendable_at(100)); // 50 confirmations
-        assert!(!entry.is_spendable_at(149)); // 99 confirmations
-        assert!(entry.is_spendable_at(150)); // 100 confirmations (mature)
+        #[allow(deprecated)]
+        {
+            assert!(!entry.is_spendable_at(100)); // 50 confirmations
+            assert!(!entry.is_spendable_at(149)); // 99 confirmations
+            assert!(entry.is_spendable_at(150)); // 100 confirmations (mature)
+        }
     }
 
     #[test]
@@ -388,8 +611,11 @@ mod tests {
         assert!(!entry.is_epoch_reward);
 
         // Regular tx should be spendable immediately
-        assert!(entry.is_spendable_at(50)); // Same height
-        assert!(entry.is_spendable_at(51)); // Next height
+        #[allow(deprecated)]
+        {
+            assert!(entry.is_spendable_at(50)); // Same height
+            assert!(entry.is_spendable_at(51)); // Next height
+        }
     }
 
     #[test]
@@ -442,12 +668,38 @@ mod tests {
         let entry = utxo_set.get(&outpoint).unwrap();
 
         // Serialize and deserialize
-        let serialized = bincode::serialize(entry).unwrap();
+        let serialized = bincode::serialize(&entry).unwrap();
         let deserialized: UtxoEntry = bincode::deserialize(&serialized).unwrap();
 
         assert_eq!(entry.height, deserialized.height);
         assert_eq!(entry.is_coinbase, deserialized.is_coinbase);
         assert_eq!(entry.is_epoch_reward, deserialized.is_epoch_reward);
         assert_eq!(entry.output.amount, deserialized.output.amount);
+    }
+
+    #[test]
+    fn test_serialize_canonical_matches_between_backends() {
+        let pk_hash = crypto::hash::hash(b"alice");
+
+        // Create InMemory store with some entries
+        let mut mem_store = InMemoryUtxoStore::new();
+        let tx1 = Transaction::new_coinbase(100_000, pk_hash, 0);
+        let tx2 = Transaction::new_coinbase(200_000, pk_hash, 1);
+        mem_store.add_transaction(&tx1, 0, true);
+        mem_store.add_transaction(&tx2, 1, true);
+
+        // Create RocksDB store with same entries
+        let dir = tempfile::TempDir::new().unwrap();
+        let rocks_store = RocksDbUtxoStore::open(dir.path()).unwrap();
+        rocks_store.add_transaction(&tx1, 0, true);
+        rocks_store.add_transaction(&tx2, 1, true);
+
+        // Canonical bytes must match
+        let mem_bytes = mem_store.serialize_canonical();
+        let rocks_bytes = rocks_store.serialize_canonical();
+        assert_eq!(
+            mem_bytes, rocks_bytes,
+            "Canonical serialization must match between InMemory and RocksDB backends"
+        );
     }
 }
