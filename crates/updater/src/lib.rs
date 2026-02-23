@@ -84,16 +84,16 @@ pub const REQUIRED_SIGNATURES: usize = 3;
 pub const BOOTSTRAP_MAINTAINER_KEYS: [&str; 5] = [
     // Bootstrap keys (first 5 registered producers on mainnet)
     // These are overridden by on-chain state once the node is synced
-    // Key 1
-    "721d2bc74ced1842eb77754dac75dc78d8cf7a47e10c83a7dc588c82187b70b9",
-    // Key 2
-    "d0c62cb4e143d548271eb97c4651e77b6cf52909a016bda6fb500c3bc022298d",
-    // Key 3
-    "9fac605a1ebf2acfa54ef8406ab66d604df97d63da1f1ab6a45561c7e51be697",
-    // Key 4
-    "97bdb0a9a52d4ed178c2307e3eb17e316b57d098af095b9cefc0c69d73e8817f",
-    // Key 5
-    "82ed55afabfe38d826c1e2b870aefcc9ed0de45e5620adb4f858e6f47c8d4096",
+    // N1 — omegacortex — producer_1.json
+    "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
+    // N2 — omegacortex — producer_2.json
+    "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
+    // N3 — omegacortex — producer_3.json
+    "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
+    // N4 — pro-KVM1 — producer.json
+    "a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d",
+    // N5 — fpx — producer.json
+    "c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9",
 ];
 
 /// Check if the bootstrap maintainer keys are still placeholders
