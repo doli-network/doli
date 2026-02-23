@@ -349,6 +349,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Default address prefix (mainnet). Used when no node connection is available.
+const DEFAULT_PREFIX: &str = "doli";
+
 fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     let name = name.unwrap_or_else(|| "default".to_string());
     println!("Creating new wallet: {}", name);
@@ -356,13 +359,13 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     let wallet = Wallet::new(&name);
     wallet.save(wallet_path)?;
 
+    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+
     println!("Wallet created at: {:?}", wallet_path);
     println!();
-    println!("Primary Address:");
-    println!("  Address (20-byte):    {}", wallet.primary_address());
-    println!("  Pubkey Hash (32-byte): {}", wallet.primary_pubkey_hash());
+    println!("  Address: {}", bech32_addr);
     println!();
-    println!("Use the Pubkey Hash for RPC queries and sending coins.");
+    println!("Back up your wallet!");
 
     Ok(())
 }
@@ -370,10 +373,15 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
 fn cmd_address(wallet_path: &Path, label: Option<String>) -> Result<()> {
     let mut wallet = Wallet::load(wallet_path)?;
 
-    let address = wallet.generate_address(label.as_deref())?;
+    let _hex_address = wallet.generate_address(label.as_deref())?;
     wallet.save(wallet_path)?;
 
-    println!("New address: {}", address);
+    // Display bech32m for the newly generated address (last in list)
+    let new_addr = wallet.addresses().last().expect("just added");
+    let pubkey_bytes = hex::decode(&new_addr.public_key)?;
+    let bech32 = crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("New address: {}", bech32);
 
     Ok(())
 }
@@ -384,7 +392,15 @@ fn cmd_addresses(wallet_path: &Path) -> Result<()> {
     println!("Addresses:");
     for (i, addr) in wallet.addresses().iter().enumerate() {
         let label = addr.label.as_deref().unwrap_or("");
-        println!("  {}. {} {}", i + 1, addr.address, label);
+        let pubkey_bytes = hex::decode(&addr.public_key)?;
+        let bech32 = crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let label_str = if label.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", label)
+        };
+        println!("  {}. {}{}", i + 1, bech32, label_str);
     }
 
     Ok(())
@@ -413,12 +429,17 @@ async fn cmd_balance(
 
     let mut total_immature: u64 = 0;
 
-    // Use pubkey_hash (32-byte) for RPC queries instead of address (20-byte)
     if let Some(addr) = &address {
-        // If user provided an address, use it directly (assume it's already a pubkey_hash)
-        match rpc.get_balance(addr).await {
+        // Resolve user-supplied address (doli1... or hex)
+        let pubkey_hash =
+            crypto::address::resolve(addr, None).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let pubkey_hash_hex = pubkey_hash.to_hex();
+        let display_addr = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
+            .unwrap_or_else(|_| pubkey_hash_hex.clone());
+
+        match rpc.get_balance(&pubkey_hash_hex).await {
             Ok(balance) => {
-                println!("{}", addr);
+                println!("{}", display_addr);
                 println!("  Confirmed:   {}", format_balance(balance.confirmed));
                 println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
                 println!("  Immature:    {}", format_balance(balance.immature));
@@ -430,32 +451,30 @@ async fn cmd_balance(
                 total_immature += balance.immature;
             }
             Err(e) => {
-                println!("{}: Error - {}", addr, e);
+                println!("{}: Error - {}", display_addr, e);
             }
         }
     } else {
-        // Query balance for each wallet address using pubkey_hash
         for wallet_addr in wallet.addresses() {
-            // Compute pubkey_hash from the public key using domain separation
-            // This must match the address format used by epoch rewards
             let pubkey_bytes = hex::decode(&wallet_addr.public_key)?;
-            let pubkey_hash =
-                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes).to_hex();
+            let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+            let pubkey_hash_hex = pubkey_hash.to_hex();
 
             let label = wallet_addr.label.as_deref().unwrap_or("");
+            let bech32 = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
+                .unwrap_or_else(|_| pubkey_hash_hex.clone());
 
-            match rpc.get_balance(&pubkey_hash).await {
+            match rpc.get_balance(&pubkey_hash_hex).await {
                 Ok(balance) => {
                     println!(
                         "{} {}",
-                        &pubkey_hash[..16],
+                        bech32,
                         if !label.is_empty() {
                             format!("({})", label)
                         } else {
                             String::new()
                         }
                     );
-                    println!("  Pubkey Hash: {}", pubkey_hash);
                     println!("  Confirmed:   {}", format_balance(balance.confirmed));
                     println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
                     println!("  Immature:    {}", format_balance(balance.immature));
@@ -467,7 +486,7 @@ async fn cmd_balance(
                     total_immature += balance.immature;
                 }
                 Err(e) => {
-                    println!("{}: Error - {}", &pubkey_hash[..16], e);
+                    println!("{}: Error - {}", bech32, e);
                 }
             }
         }
@@ -506,10 +525,9 @@ async fn cmd_send(
         return Ok(());
     }
 
-    // Parse recipient address (should be a 32-byte pubkey_hash)
-    let recipient_hash = Hash::from_hex(to).ok_or_else(|| {
-        anyhow::anyhow!("Invalid recipient address: expected 64-character hex pubkey_hash")
-    })?;
+    // Parse recipient address (doli1... or 64-char hex pubkey_hash)
+    let recipient_hash = crypto::address::resolve(to, None)
+        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
 
     // Parse amount
     let amount_coins: f64 = amount
@@ -527,8 +545,11 @@ async fn cmd_send(
         1000 // Default fee
     };
 
+    let recipient_display = crypto::address::encode(&recipient_hash, DEFAULT_PREFIX)
+        .unwrap_or_else(|_| recipient_hash.to_hex());
+
     println!("Preparing transaction:");
-    println!("  To:     {}", to);
+    println!("  To:     {}", recipient_display);
     println!("  Amount: {} DOLI", amount_coins);
     println!("  Fee:    {}", format_balance(fee_units));
 
@@ -720,15 +741,16 @@ fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
 fn cmd_info(wallet_path: &Path) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
+    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+
     println!("Wallet: {}", wallet.name());
     println!("Addresses: {}", wallet.addresses().len());
     println!();
     println!("Primary Address:");
-    println!("  Address (20-byte):    {}", wallet.primary_address());
-    println!("  Pubkey Hash (32-byte): {}", wallet.primary_pubkey_hash());
-    println!("  Public Key:           {}", wallet.primary_public_key());
+    println!("  Address:    {}", bech32_addr);
+    println!("  Public Key: {}", wallet.primary_public_key());
     println!();
-    println!("Note: Use the Pubkey Hash for RPC queries (balance, UTXOs, send).");
+    println!("Use the address above for sending and receiving DOLI.");
 
     Ok(())
 }
@@ -901,11 +923,17 @@ async fn cmd_producer(
 
             match rpc.get_producer(&pk).await {
                 Ok(info) => {
-                    println!(
-                        "Public Key:    {}...{}",
-                        &info.public_key[..16],
-                        &info.public_key[info.public_key.len() - 8..]
-                    );
+                    let addr_display = hex::decode(&info.public_key)
+                        .ok()
+                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "{}...{}",
+                                &info.public_key[..16],
+                                &info.public_key[info.public_key.len() - 8..]
+                            )
+                        });
+                    println!("Address:       {}", addr_display);
                     println!("Status:        {}", info.status);
                     println!("Registered at: block {}", info.registration_height);
                     println!("Bond Count:    {}", info.bond_count);
@@ -931,11 +959,15 @@ async fn cmd_producer(
                 }
                 Err(e) => {
                     if e.to_string().contains("not found") {
-                        println!(
-                            "Producer not found: {}...{}",
-                            &pk[..16],
-                            &pk[pk.len().saturating_sub(8)..]
-                        );
+                        let pk_display = hex::decode(&pk)
+                            .ok()
+                            .and_then(|bytes| {
+                                crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok()
+                            })
+                            .unwrap_or_else(|| {
+                                format!("{}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..])
+                            });
+                        println!("Producer not found: {}", pk_display);
                         println!();
                         println!("This key is not registered as a producer.");
                         println!("Use 'doli producer register' to register.");
@@ -957,20 +989,33 @@ async fn cmd_producer(
                         println!("No producers found.");
                     } else {
                         println!(
-                            "{:<10} {:<18} {:<10} {:<10}",
-                            "Status", "Public Key", "Bonds", "Era"
+                            "{:<10} {:<20} {:<10} {:<10}",
+                            "Status", "Address", "Bonds", "Era"
                         );
-                        println!("{:-<50}", "");
+                        println!("{:-<52}", "");
 
                         for p in &producers {
-                            let pk_short = format!(
-                                "{}...{}",
-                                &p.public_key[..8],
-                                &p.public_key[p.public_key.len() - 4..]
-                            );
+                            let addr_display = if let Ok(pubkey_bytes) = hex::decode(&p.public_key)
+                            {
+                                crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+                                    .map(|a| format!("{}...", &a[..16]))
+                                    .unwrap_or_else(|_| {
+                                        format!(
+                                            "{}...{}",
+                                            &p.public_key[..8],
+                                            &p.public_key[p.public_key.len() - 4..]
+                                        )
+                                    })
+                            } else {
+                                format!(
+                                    "{}...{}",
+                                    &p.public_key[..8],
+                                    &p.public_key[p.public_key.len() - 4..]
+                                )
+                            };
                             println!(
-                                "{:<10} {:<18} {:<10} {:<10}",
-                                p.status, pk_short, p.bond_count, p.era
+                                "{:<10} {:<20} {:<10} {:<10}",
+                                p.status, addr_display, p.bond_count, p.era
                             );
                         }
 
@@ -1093,16 +1138,19 @@ async fn cmd_producer(
                 return Ok(());
             }
 
-            // Destination defaults to wallet address
+            // Destination defaults to wallet address (accept doli1... or hex)
             let dest_hash = match &destination {
-                Some(d) => Hash::from_hex(d)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid destination address"))?,
+                Some(d) => crypto::address::resolve(d, None)
+                    .map_err(|e| anyhow::anyhow!("Invalid destination address: {}", e))?,
                 None => Hash::from_hex(&pubkey_hash)
                     .ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?,
             };
 
+            let dest_display = crypto::address::encode(&dest_hash, DEFAULT_PREFIX)
+                .unwrap_or_else(|_| dest_hash.to_hex());
+
             println!("Requesting withdrawal of {} bond(s)", count);
-            println!("Destination: {}", dest_hash.to_hex());
+            println!("Destination: {}", dest_display);
             println!();
             println!("Note: Withdrawals have a 7-day delay period.");
             println!("      Use 'doli producer claim-withdrawal' after delay.");
@@ -1331,9 +1379,14 @@ async fn cmd_producer(
                 return Ok(());
             }
 
+            let producer_addr = hex::decode(&block1_resp.producer)
+                .ok()
+                .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
+                .unwrap_or_else(|| block1_resp.producer.clone());
+
             println!();
             println!("Equivocation confirmed!");
-            println!("  Producer: {}", block1_resp.producer);
+            println!("  Producer: {}", producer_addr);
             println!("  Slot:     {}", block1_resp.slot);
             println!(
                 "  Block 1:  {} (height {})",
@@ -1345,9 +1398,6 @@ async fn cmd_producer(
             );
             println!();
 
-            // Note: Full slashing requires raw block headers with VDF proofs.
-            // This is handled automatically by nodes that detect equivocation.
-            // The CLI command is for manual submission when evidence is obtained.
             println!(
                 "Note: Slashing evidence submission requires full block headers with VDF proofs."
             );
@@ -1356,10 +1406,7 @@ async fn cmd_producer(
             println!("receive conflicting blocks for the same slot. If you have raw block");
             println!("data with VDF proofs, use the node's internal submission mechanism.");
             println!();
-            println!(
-                "The equivocating producer ({}) will be:",
-                &block1_resp.producer[..16]
-            );
+            println!("The equivocating producer ({}) will be:", producer_addr);
             println!("  - Have their entire bond burned (100% penalty)");
             println!("  - Excluded from the producer set immediately");
             println!("  - Can re-register like any new producer (standard registration VDF)");
@@ -1420,11 +1467,17 @@ async fn cmd_rewards(
 
             match rpc.get_claimable_rewards(producer_pubkey).await {
                 Ok(info) => {
-                    println!(
-                        "Producer: {}...{}",
-                        &producer_pubkey[..16],
-                        &producer_pubkey[producer_pubkey.len() - 8..]
-                    );
+                    let producer_addr = hex::decode(producer_pubkey)
+                        .ok()
+                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "{}...{}",
+                                &producer_pubkey[..16],
+                                &producer_pubkey[producer_pubkey.len() - 8..]
+                            )
+                        });
+                    println!("Producer: {}", producer_addr);
                     println!("Current Height: {}", info.current_height);
                     println!("Current Epoch:  {}", info.current_epoch);
                     println!();

@@ -18,6 +18,19 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
 
+/// Map a network name string to its bech32m address prefix.
+///
+/// Returns `Some` for known networks, `None` otherwise (which makes
+/// `resolve` accept any valid prefix).
+fn network_name_to_prefix(name: &str) -> Option<&str> {
+    match name {
+        "mainnet" => Some("doli"),
+        "testnet" => Some("tdoli"),
+        "devnet" => Some("ddoli"),
+        _ => None,
+    }
+}
+
 /// Sync status information
 #[derive(Debug, Clone, Default)]
 pub struct SyncStatus {
@@ -357,13 +370,18 @@ impl RpcContext {
         Ok(Value::String(tx_hash.to_hex()))
     }
 
+    /// Resolve an address string (bech32m `doli1...` or 64-char hex) to a Hash.
+    fn resolve_address(&self, addr: &str) -> Result<Hash, RpcError> {
+        let prefix = network_name_to_prefix(&self.network);
+        crypto::address::resolve(addr, prefix).map_err(|e| RpcError::invalid_params(e.to_string()))
+    }
+
     /// Get balance for address
     async fn get_balance(&self, params: Value) -> Result<Value, RpcError> {
         let params: GetBalanceParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        let pubkey_hash = Hash::from_hex(&params.address)
-            .ok_or_else(|| RpcError::invalid_params("Invalid address format"))?;
+        let pubkey_hash = self.resolve_address(&params.address)?;
 
         let utxo_set = self.utxo_set.read().await;
         let chain_state = self.chain_state.read().await;
@@ -417,8 +435,7 @@ impl RpcContext {
         let params: GetUtxosParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        let pubkey_hash = Hash::from_hex(&params.address)
-            .ok_or_else(|| RpcError::invalid_params("Invalid address format"))?;
+        let pubkey_hash = self.resolve_address(&params.address)?;
 
         let utxo_set = self.utxo_set.read().await;
         let chain_state = self.chain_state.read().await;
@@ -590,8 +607,7 @@ impl RpcContext {
         let params: GetHistoryParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        let pubkey_hash = Hash::from_hex(&params.address)
-            .ok_or_else(|| RpcError::invalid_params("Invalid address format"))?;
+        let pubkey_hash = self.resolve_address(&params.address)?;
 
         let chain_state = self.chain_state.read().await;
         let best_height = chain_state.best_height;
