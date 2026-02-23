@@ -2029,15 +2029,12 @@ pub fn producer_region(pubkey: &crypto::PublicKey) -> u32 {
 ///
 /// - Tier 1: In the tier1_set (top validators by weight)
 /// - Tier 2: Not in tier1, but within tier2_count (attestors)
-/// - Tier 3: Everyone else (stakers, header-only validation)
+/// - Tier 3: Beyond tier2 threshold (header-only validation)
+/// - Tier 0: Producer not found in on-chain set (safe default — keeps all topics)
 ///
-/// # Arguments
-/// * `pubkey` - Producer to check
-/// * `tier1_set` - Pre-computed Tier 1 validator set
-/// * `all_producers_sorted` - All producers sorted by weight desc (same ordering as compute_tier1_set)
-///
-/// # Returns
-/// 1, 2, or 3
+/// Returns 0 (not 3) when the producer is unknown. Tier 3 would cause
+/// `reconfigure_topics_for_tier(3)` to unsubscribe from BLOCKS_TOPIC,
+/// starving the node of blocks. Tier 0 keeps all topics subscribed.
 pub fn producer_tier(
     pubkey: &crypto::PublicKey,
     tier1_set: &[crypto::PublicKey],
@@ -2046,13 +2043,14 @@ pub fn producer_tier(
     if tier1_set.contains(pubkey) {
         return 1;
     }
-    // Find position in the sorted list (after tier1)
     if let Some(pos) = all_producers_sorted.iter().position(|p| p == pubkey) {
         if pos < TIER1_MAX_VALIDATORS + TIER2_MAX_ATTESTORS {
             return 2;
         }
+        return 3;
     }
-    3
+    // Not found in on-chain set: stay Tier 0 (all topics, safe during sync)
+    0
 }
 
 // =============================================================================
@@ -4090,5 +4088,10 @@ mod tests {
 
         // Producer at index 499 (last in tier1) should be Tier 1
         assert_eq!(producer_tier(&all_sorted[499], &tier1_set, &all_sorted), 1);
+
+        // Unknown producer (not in the sorted list) should be Tier 0, NOT Tier 3.
+        // Tier 3 would unsubscribe from BLOCKS_TOPIC, starving the node.
+        let unknown_key = crypto::PublicKey::from_bytes([0xFF; 32]);
+        assert_eq!(producer_tier(&unknown_key, &tier1_set, &all_sorted), 0);
     }
 }
