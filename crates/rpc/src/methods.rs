@@ -643,16 +643,32 @@ impl RpcContext {
 
         let chain_state = self.chain_state.read().await;
         let best_height = chain_state.best_height;
-        let _utxo_set = self.utxo_set.read().await;
+        drop(chain_state);
 
         let mut history: Vec<HistoryEntryResponse> = Vec::new();
-        let limit = params.limit.min(100); // Cap at 100 entries
-        let max_blocks_to_scan = 1000; // Limit scanning for performance
+        let limit = params.limit.min(100);
+        let max_blocks_to_scan: u64 = 1000;
 
-        // Scan backwards through blocks
         let start_height = best_height;
         let end_height = start_height.saturating_sub(max_blocks_to_scan);
 
+        // Build a tx output cache as we scan: tx_hash -> Vec<Output>
+        // This allows resolving inputs to their original outputs for amount_sent/fee
+        let mut tx_output_cache: std::collections::HashMap<
+            crypto::Hash,
+            Vec<doli_core::transaction::Output>,
+        > = std::collections::HashMap::new();
+
+        // First pass: collect all tx outputs in the scan range
+        for height in end_height..=start_height {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
+                for tx in &block.transactions {
+                    tx_output_cache.insert(tx.hash(), tx.outputs.clone());
+                }
+            }
+        }
+
+        // Second pass: build history entries
         for height in (end_height..=start_height).rev() {
             if history.len() >= limit {
                 break;
@@ -670,7 +686,8 @@ impl RpcContext {
 
             for tx in &block.transactions {
                 let mut amount_received: u64 = 0;
-                let amount_sent: u64 = 0;
+                let mut amount_sent: u64 = 0;
+                let mut total_input: u64 = 0;
                 let mut is_relevant = false;
 
                 // Check outputs for received amounts
@@ -681,35 +698,27 @@ impl RpcContext {
                     }
                 }
 
-                // Check inputs for sent amounts (by looking up spent UTXOs)
-                // For inputs, we need to check if the spent output belonged to this address
+                // Check inputs for sent amounts
                 for input in &tx.inputs {
-                    // Look up the spent output in our UTXO set or block store
-                    // Since the UTXO is already spent, we need to look at the original tx
-                    if let Ok(Some(_prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
-                        // The input.prev_tx_hash is actually a tx hash, not block hash
-                        // We need a different approach - check if any input signature matches
-                        continue;
+                    if let Some(prev_outputs) = tx_output_cache.get(&input.prev_tx_hash) {
+                        if let Some(prev_output) = prev_outputs.get(input.output_index as usize) {
+                            total_input += prev_output.amount;
+                            if prev_output.pubkey_hash == pubkey_hash {
+                                amount_sent += prev_output.amount;
+                                is_relevant = true;
+                            }
+                        }
                     }
-
-                    // Alternative: scan for the transaction that created this output
-                    // This is expensive, so for now we rely on the output check
                 }
 
-                // For sent transactions, also check if any output goes back to us (change)
-                // and calculate what was sent to others
                 if !is_relevant {
-                    // Check if this tx has inputs from our address by checking outputs
-                    // This is a heuristic - if we have outputs to this address and it's a transfer,
-                    // it might be relevant
                     continue;
                 }
 
-                // Calculate fee for outgoing transactions
-                let fee = if amount_sent > 0 {
-                    // Fee calculation would require summing input values
-                    // For now, report 0 unless we can calculate it
-                    0
+                // Fee = total inputs - total outputs (only for txs where we know all inputs)
+                let total_output: u64 = tx.outputs.iter().map(|o| o.amount).sum();
+                let fee = if total_input > 0 && total_input >= total_output {
+                    total_input - total_output
                 } else {
                     0
                 };
