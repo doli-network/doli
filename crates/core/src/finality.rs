@@ -4,6 +4,8 @@
 //! has reached finality (2/3+ of total weight). Once finalized,
 //! blocks cannot be reverted by any fork choice rule.
 
+use std::collections::HashMap;
+
 use crypto::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +48,9 @@ struct PendingBlock {
     total_weight: u64,
 }
 
+/// Maximum number of early attestations to buffer before any block is tracked.
+const MAX_EARLY_ATTESTATIONS: usize = 100;
+
 /// Tracks blocks awaiting finality and maintains the last finalized checkpoint.
 #[derive(Clone, Debug)]
 pub struct FinalityTracker {
@@ -53,6 +58,9 @@ pub struct FinalityTracker {
     pub last_finalized: Option<FinalityCheckpoint>,
     /// Blocks awaiting sufficient attestation weight.
     pending: Vec<PendingBlock>,
+    /// Buffered attestation weight for blocks not yet tracked.
+    /// When `track_block()` is called, any buffered weight is applied.
+    early_attestations: HashMap<Hash, u64>,
 }
 
 impl FinalityTracker {
@@ -61,6 +69,7 @@ impl FinalityTracker {
         Self {
             last_finalized: None,
             pending: Vec::new(),
+            early_attestations: HashMap::new(),
         }
     }
 
@@ -70,21 +79,40 @@ impl FinalityTracker {
         if self.pending.iter().any(|p| p.block_hash == hash) {
             return;
         }
+
+        // Check for any buffered early attestations
+        let early_weight = self.early_attestations.remove(&hash).unwrap_or(0);
+
         self.pending.push(PendingBlock {
             block_hash: hash,
             height,
             slot,
-            attestation_weight: 0,
+            attestation_weight: early_weight,
             total_weight,
         });
     }
 
     /// Add attestation weight to a pending block.
+    ///
+    /// If the block is not yet tracked, the weight is buffered and will be
+    /// applied when `track_block()` is called.
     pub fn add_attestation_weight(&mut self, block_hash: Hash, weight: u64) {
         for pending in &mut self.pending {
             if pending.block_hash == block_hash {
                 pending.attestation_weight = pending.attestation_weight.saturating_add(weight);
                 return;
+            }
+        }
+
+        // Block not yet tracked — buffer the attestation
+        let entry = self.early_attestations.entry(block_hash).or_insert(0);
+        *entry = entry.saturating_add(weight);
+
+        // Evict oldest entry if buffer is full (simple size cap)
+        if self.early_attestations.len() > MAX_EARLY_ATTESTATIONS {
+            // Remove an arbitrary entry (HashMap iteration order)
+            if let Some(&key) = self.early_attestations.keys().next() {
+                self.early_attestations.remove(&key);
             }
         }
     }
@@ -254,6 +282,26 @@ mod tests {
         tracker.track_block(h, 100, 10, 100);
         tracker.track_block(h, 100, 10, 100); // duplicate
         assert_eq!(tracker.pending.len(), 1);
+    }
+
+    #[test]
+    fn test_early_attestation_applied_on_track() {
+        let mut tracker = FinalityTracker::new();
+        let h = make_hash(1);
+
+        // Attestation arrives before block is tracked
+        tracker.add_attestation_weight(h, 70);
+        assert!(tracker.pending.is_empty());
+
+        // Now track the block — buffered weight should be applied
+        tracker.track_block(h, 100, 10, 100);
+        assert_eq!(tracker.pending.len(), 1);
+        assert_eq!(tracker.pending[0].attestation_weight, 70);
+
+        // Should reach finality immediately
+        let cp = tracker.check_finality();
+        assert!(cp.is_some());
+        assert_eq!(cp.unwrap().block_hash, h);
     }
 
     #[test]
