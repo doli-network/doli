@@ -525,4 +525,101 @@ mod tests {
         assert_eq!(parsed.current_epoch, 4);
         assert_eq!(parsed.blocks_remaining, 60);
     }
+
+    #[test]
+    fn test_json_rpc_request_parsing() {
+        let raw = r#"{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}"#;
+        let req: JsonRpcRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.method, "getChainInfo");
+        assert_eq!(req.jsonrpc, "2.0");
+    }
+
+    #[test]
+    fn test_json_rpc_response_success() {
+        let resp =
+            JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({"height": 100}));
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+        assert_eq!(resp.jsonrpc, "2.0");
+    }
+
+    #[test]
+    fn test_json_rpc_response_error() {
+        let err = crate::error::RpcError::block_not_found();
+        let resp = JsonRpcResponse::error(serde_json::json!(1), err);
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32000);
+    }
+
+    #[test]
+    fn test_balance_response_serialization() {
+        let resp = BalanceResponse {
+            confirmed: 1_000_000,
+            unconfirmed: 50_000,
+            immature: 200_000,
+            total: 1_250_000,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["confirmed"], 1_000_000);
+        assert_eq!(json["total"], 1_250_000);
+    }
+
+    #[test]
+    fn test_chain_info_response_camel_case() {
+        let resp = ChainInfoResponse {
+            network: "mainnet".into(),
+            best_hash: "abc".into(),
+            best_height: 42000,
+            best_slot: 100,
+            genesis_hash: "000".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"bestHeight\""));
+        assert!(json.contains("\"bestSlot\""));
+        assert!(json.contains("\"genesisHash\""));
+    }
+
+    #[test]
+    fn test_mempool_info_response() {
+        let resp = MempoolInfoResponse {
+            tx_count: 42,
+            total_size: 8192,
+            min_fee_rate: 1,
+            max_size: 10_485_760,
+            max_count: 5000,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["txCount"], 42);
+        assert_eq!(json["minFeeRate"], 1);
+    }
+
+    #[test]
+    fn test_history_params_default_limit() {
+        let raw = r#"{"address":"doli1abc"}"#;
+        let params: GetHistoryParams = serde_json::from_str(raw).unwrap();
+        assert_eq!(params.limit, 10); // default
+    }
+
+    #[test]
+    fn test_producer_response_pending_withdrawals() {
+        let resp = ProducerResponse {
+            public_key: "abcd".into(),
+            registration_height: 100,
+            bond_amount: 10_000_000_000,
+            bond_count: 1,
+            status: "active".into(),
+            era: 0,
+            pending_withdrawals: vec![PendingWithdrawalResponse {
+                bond_count: 1,
+                request_slot: 500,
+                net_amount: 2_500_000_000,
+                claimable: false,
+            }],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let withdrawals = json["pendingWithdrawals"].as_array().unwrap();
+        assert_eq!(withdrawals.len(), 1);
+        assert_eq!(withdrawals[0]["bondCount"], 1);
+    }
 }

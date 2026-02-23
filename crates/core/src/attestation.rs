@@ -293,4 +293,75 @@ mod tests {
         let result = RegionAggregate::from_attestations(vec![att1, att2], 0);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_attestation_serialization_roundtrip() {
+        let kp = KeyPair::generate();
+        let block_hash = crypto::hash::hash(b"roundtrip");
+
+        let att = Attestation::new(block_hash, 99, 500, 10, kp.private_key(), *kp.public_key());
+        let bytes = att.to_bytes();
+        assert!(!bytes.is_empty());
+
+        let recovered = Attestation::from_bytes(&bytes).expect("deserialization failed");
+        assert_eq!(recovered.block_hash, att.block_hash);
+        assert_eq!(recovered.slot, att.slot);
+        assert_eq!(recovered.height, att.height);
+        assert_eq!(recovered.attester_weight, att.attester_weight);
+        assert!(recovered.verify().is_ok());
+    }
+
+    #[test]
+    fn test_attestation_from_invalid_bytes() {
+        assert!(Attestation::from_bytes(&[0, 1, 2]).is_none());
+        assert!(Attestation::from_bytes(&[]).is_none());
+    }
+
+    #[test]
+    fn test_aggregate_weight_accumulation() {
+        let keys: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
+        let block_hash = crypto::hash::hash(b"weights");
+
+        let attestations: Vec<Attestation> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, kp)| {
+                Attestation::new(
+                    block_hash,
+                    1,
+                    10,
+                    (i as u64 + 1) * 100,
+                    kp.private_key(),
+                    *kp.public_key(),
+                )
+            })
+            .collect();
+
+        let agg = RegionAggregate::from_attestations(attestations, 5).unwrap();
+        assert_eq!(agg.attestation_weight(), 600);
+        assert_eq!(agg.attester_count, 3);
+        assert_eq!(agg.region, 5);
+    }
+
+    #[test]
+    fn test_region_assignment_deterministic() {
+        use crate::consensus::{producer_region, NUM_REGIONS};
+        let kp = KeyPair::generate();
+        let r1 = producer_region(kp.public_key());
+        let r2 = producer_region(kp.public_key());
+        assert_eq!(r1, r2);
+        assert!(r1 < NUM_REGIONS);
+    }
+
+    #[test]
+    fn test_region_assignment_distribution() {
+        use crate::consensus::{producer_region, NUM_REGIONS};
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..500 {
+            let kp = KeyPair::generate();
+            seen.insert(producer_region(kp.public_key()));
+        }
+        // With 15 regions and 500 keys, all regions should appear
+        assert_eq!(seen.len(), NUM_REGIONS as usize);
+    }
 }

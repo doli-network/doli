@@ -104,3 +104,147 @@ impl MempoolEntry {
         now.saturating_sub(self.added_time)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use doli_core::transaction::{Input, Output};
+    use doli_core::{OutputType, TxType};
+
+    /// Helper: create a minimal transfer transaction
+    fn make_tx(num_inputs: usize, num_outputs: usize, amount: u64) -> Transaction {
+        let inputs: Vec<Input> = (0..num_inputs)
+            .map(|i| Input::new(crypto::hash::hash(&[i as u8]), 0))
+            .collect();
+        let outputs: Vec<Output> = (0..num_outputs)
+            .map(|_| Output::normal(amount, crypto::hash::hash(b"addr")))
+            .collect();
+        Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs,
+            outputs,
+            extra_data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_entry_fee_rate_calculation() {
+        let tx = make_tx(1, 1, 1000);
+        let size = tx.size();
+        let entry = MempoolEntry::new(tx, 500);
+        assert_eq!(entry.fee, 500);
+        assert_eq!(entry.fee_rate, 500 / size as u64);
+        assert_eq!(entry.size, size);
+    }
+
+    #[test]
+    fn test_effective_fee_rate_no_ancestors() {
+        let tx = make_tx(1, 1, 1000);
+        let entry = MempoolEntry::new(tx, 500);
+        // Without ancestors, effective == individual
+        assert_eq!(entry.effective_fee_rate(), entry.fee_rate);
+    }
+
+    #[test]
+    fn test_cpfp_effective_fee_rate() {
+        // Parent: low fee (10 units)
+        let parent_tx = make_tx(1, 1, 1000);
+        let parent_fee = 10u64;
+        let parent_size = parent_tx.size();
+        let parent = MempoolEntry::new(parent_tx, parent_fee);
+
+        // Child: high fee (1000 units) — "pays for parent"
+        let child_tx = make_tx(1, 1, 500);
+        let child_fee = 1000u64;
+        let mut child = MempoolEntry::new(child_tx, child_fee);
+
+        child.add_ancestor(parent.tx_hash, parent_fee, parent_size);
+
+        // Package rate = (child_fee + parent_fee) / (child_size + parent_size)
+        let expected = (child_fee + parent_fee) / (child.size + parent_size) as u64;
+        assert_eq!(child.effective_fee_rate(), expected);
+
+        // CPFP: package rate must be higher than parent's individual rate
+        assert!(child.effective_fee_rate() > parent.fee_rate);
+    }
+
+    #[test]
+    fn test_add_ancestor_idempotent() {
+        let tx = make_tx(1, 1, 100);
+        let mut entry = MempoolEntry::new(tx, 50);
+        let initial_fee = entry.ancestor_fee;
+        let initial_size = entry.ancestor_size;
+
+        let hash = crypto::hash::hash(b"ancestor");
+        entry.add_ancestor(hash, 30, 200);
+        assert_eq!(entry.ancestors.len(), 1);
+        assert_eq!(entry.ancestor_fee, initial_fee + 30);
+        assert_eq!(entry.ancestor_size, initial_size + 200);
+
+        // Second insert of same hash — must be a no-op
+        entry.add_ancestor(hash, 30, 200);
+        assert_eq!(entry.ancestors.len(), 1);
+        assert_eq!(entry.ancestor_fee, initial_fee + 30); // NOT doubled
+    }
+
+    #[test]
+    fn test_remove_ancestor() {
+        let tx = make_tx(1, 1, 100);
+        let mut entry = MempoolEntry::new(tx, 50);
+        let base_fee = entry.ancestor_fee;
+        let base_size = entry.ancestor_size;
+
+        let hash = crypto::hash::hash(b"anc");
+        entry.add_ancestor(hash, 40, 300);
+        entry.remove_ancestor(&hash, 40, 300);
+        assert!(entry.ancestors.is_empty());
+        assert_eq!(entry.ancestor_fee, base_fee);
+        assert_eq!(entry.ancestor_size, base_size);
+    }
+
+    #[test]
+    fn test_remove_nonexistent_ancestor_is_noop() {
+        let tx = make_tx(1, 1, 100);
+        let mut entry = MempoolEntry::new(tx, 50);
+        let fee_before = entry.ancestor_fee;
+
+        let hash = crypto::hash::hash(b"ghost");
+        entry.remove_ancestor(&hash, 999, 999);
+        assert_eq!(entry.ancestor_fee, fee_before); // Unchanged
+    }
+
+    #[test]
+    fn test_descendants_add_remove() {
+        let tx = make_tx(1, 1, 100);
+        let mut entry = MempoolEntry::new(tx, 50);
+
+        let d1 = crypto::hash::hash(b"d1");
+        let d2 = crypto::hash::hash(b"d2");
+
+        entry.add_descendant(d1);
+        entry.add_descendant(d2);
+        assert_eq!(entry.descendants.len(), 2);
+
+        entry.remove_descendant(&d1);
+        assert_eq!(entry.descendants.len(), 1);
+        assert!(entry.descendants.contains(&d2));
+    }
+
+    #[test]
+    fn test_zero_fee_entry() {
+        let tx = make_tx(0, 1, 100);
+        let entry = MempoolEntry::new(tx, 0);
+        assert_eq!(entry.fee, 0);
+        assert_eq!(entry.fee_rate, 0);
+        assert_eq!(entry.effective_fee_rate(), 0);
+    }
+
+    #[test]
+    fn test_age_is_non_negative() {
+        let tx = make_tx(1, 1, 100);
+        let entry = MempoolEntry::new(tx, 10);
+        // Just created — age should be very small
+        assert!(entry.age() < 2);
+    }
+}

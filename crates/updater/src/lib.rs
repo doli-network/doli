@@ -947,4 +947,56 @@ mod tests {
             (params.seniority_multiplier(params.seniority_maturity_blocks) - 4.0).abs() < 0.001
         );
     }
+
+    #[test]
+    fn test_version_comparison_v_prefix() {
+        assert!(is_newer_version("v2.0.0", "v1.0.0"));
+        assert!(!is_newer_version("v1.0.0", "v2.0.0"));
+        assert!(is_newer_version("v1.1.0", "1.0.0"));
+        assert!(is_newer_version("1.1.0", "v1.0.0"));
+    }
+
+    #[test]
+    fn test_version_comparison_edge_cases() {
+        assert!(!is_newer_version("0.0.0", "0.0.0"));
+        assert!(is_newer_version("0.0.1", "0.0.0"));
+        assert!(is_newer_version("100.200.300", "100.200.299"));
+        assert!(is_newer_version("1", "0"));
+        assert!(is_newer_version("1.0", "0.9"));
+    }
+
+    #[test]
+    fn test_version_enforcement_meets_requirement() {
+        let enf = VersionEnforcement {
+            min_version: "1.0.0".into(),
+            enforcement_time: 0,
+            active: false,
+        };
+        assert!(enf.version_meets_requirement("1.0.0"));
+        assert!(enf.version_meets_requirement("1.0.1"));
+        assert!(enf.version_meets_requirement("2.0.0"));
+        assert!(!enf.version_meets_requirement("0.9.9"));
+    }
+
+    #[test]
+    fn test_no_placeholder_keys() {
+        assert!(!is_using_placeholder_keys());
+    }
+
+    #[test]
+    fn test_update_params_per_network() {
+        let mainnet = UpdateParams::for_network(Network::Mainnet);
+        let devnet = UpdateParams::for_network(Network::Devnet);
+        assert!(devnet.veto_period_secs < mainnet.veto_period_secs);
+        assert!(mainnet.crash_threshold > 0);
+        assert!(devnet.crash_threshold > 0);
+    }
+
+    #[test]
+    fn test_voting_eligibility() {
+        let params = UpdateParams::for_network(Network::Devnet);
+        assert!(!params.is_eligible_to_vote(0));
+        assert!(params.is_eligible_to_vote(params.min_voting_age_blocks));
+        assert!(params.is_eligible_to_vote(params.min_voting_age_blocks + 1));
+    }
 }

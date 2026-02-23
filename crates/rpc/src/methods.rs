@@ -638,7 +638,7 @@ impl RpcContext {
 
             for tx in &block.transactions {
                 let mut amount_received: u64 = 0;
-                let amount_sent: u64 = 0;
+                let mut amount_sent: u64 = 0;
                 let mut is_relevant = false;
 
                 // Check outputs for received amounts
@@ -649,38 +649,54 @@ impl RpcContext {
                     }
                 }
 
-                // Check inputs for sent amounts (by looking up spent UTXOs)
-                // For inputs, we need to check if the spent output belonged to this address
+                // Check inputs for sent amounts by scanning the referenced
+                // transaction's outputs in previous blocks.
                 for input in &tx.inputs {
-                    // Look up the spent output in our UTXO set or block store
-                    // Since the UTXO is already spent, we need to look at the original tx
-                    if let Ok(Some(_prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
-                        // The input.prev_tx_hash is actually a tx hash, not block hash
-                        // We need a different approach - check if any input signature matches
-                        continue;
+                    // Try to find the previous tx in the block store
+                    if let Ok(Some(prev_block)) = self.block_store.get_block(&input.prev_tx_hash) {
+                        // prev_tx_hash is a tx hash; get_block returns None for
+                        // non-block hashes, so this path rarely hits. Skip.
+                        let _ = prev_block;
                     }
 
-                    // Alternative: scan for the transaction that created this output
-                    // This is expensive, so for now we rely on the output check
+                    // Scan backwards through recent blocks to find the tx that
+                    // created this output.  Limited to a small window to avoid
+                    // unbounded scanning.
+                    let scan_start = height;
+                    let scan_end = scan_start.saturating_sub(200);
+                    for scan_h in (scan_end..scan_start).rev() {
+                        if let Ok(Some(scan_block)) = self.block_store.get_block_by_height(scan_h) {
+                            for scan_tx in &scan_block.transactions {
+                                if scan_tx.hash() == input.prev_tx_hash {
+                                    if let Some(spent_output) =
+                                        scan_tx.outputs.get(input.output_index as usize)
+                                    {
+                                        if spent_output.pubkey_hash == pubkey_hash {
+                                            amount_sent += spent_output.amount;
+                                            is_relevant = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // For sent transactions, also check if any output goes back to us (change)
-                // and calculate what was sent to others
                 if !is_relevant {
-                    // Check if this tx has inputs from our address by checking outputs
-                    // This is a heuristic - if we have outputs to this address and it's a transfer,
-                    // it might be relevant
                     continue;
                 }
 
-                // Calculate fee for outgoing transactions
+                // For outgoing transactions, fee = total_sent - total_outputs
+                // (Only meaningful when amount_sent > 0)
+                let total_output: u64 = tx.outputs.iter().map(|o| o.amount).sum();
                 let fee = if amount_sent > 0 {
-                    // Fee calculation would require summing input values
-                    // For now, report 0 unless we can calculate it
-                    0
+                    amount_sent.saturating_sub(total_output)
                 } else {
                     0
                 };
+
+                // Adjust amount_sent to exclude change returned to self
+                let net_sent = amount_sent.saturating_sub(amount_received);
 
                 let tx_type = match tx.tx_type {
                     doli_core::TxType::Transfer => "transfer",
@@ -707,7 +723,7 @@ impl RpcContext {
                     height,
                     timestamp,
                     amount_received,
-                    amount_sent,
+                    amount_sent: net_sent,
                     fee,
                     confirmations,
                 });

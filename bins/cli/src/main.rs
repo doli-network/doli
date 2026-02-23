@@ -1964,13 +1964,83 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
         }
 
         UpdateCommands::Apply => {
-            println!("Manual update apply is not yet supported via CLI.");
-            println!("Updates are applied automatically by the node after the grace period.");
+            println!("Update Apply");
+            println!("{:-<60}", "");
+            println!();
+
+            // Get status to find pending update
+            match rpc.get_update_status().await {
+                Ok(status) => {
+                    let pending = status.get("pending_update");
+                    if pending.is_none() || pending.unwrap().is_null() {
+                        println!("No pending update to apply.");
+                        return Ok(());
+                    }
+
+                    let veto_active = status
+                        .get("veto_period_active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+
+                    if veto_active {
+                        println!("Error: Veto period is still active. Cannot apply yet.");
+                        println!("Wait for the veto period to end before applying.");
+                        return Ok(());
+                    }
+
+                    let veto_pct = status
+                        .get("veto_percent")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+
+                    if veto_pct >= 40.0 {
+                        println!(
+                            "Error: Update was rejected by community ({:.1}% veto >= 40% threshold).",
+                            veto_pct
+                        );
+                        return Ok(());
+                    }
+
+                    let version = pending
+                        .unwrap()
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+
+                    println!("Approved update v{} found. Applying...", version);
+
+                    match updater::backup_current().await {
+                        Ok(backup) => {
+                            println!("Backup created at: {}", backup.display());
+                            println!("Update will be applied on next node restart.");
+                            println!();
+                            println!("To complete the update, restart your node:");
+                            println!("  sudo systemctl restart doli-mainnet-nodeN");
+                        }
+                        Err(e) => println!("Error creating backup: {}", e),
+                    }
+                }
+                Err(e) => println!("Error fetching update status: {}", e),
+            }
         }
 
         UpdateCommands::Rollback => {
-            println!("Manual rollback is not yet supported via CLI.");
-            println!("The watchdog automatically rolls back after 3 crashes.");
+            println!("Update Rollback");
+            println!("{:-<60}", "");
+            println!();
+
+            match updater::rollback().await {
+                Ok(()) => {
+                    println!("Rollback completed successfully.");
+                    println!("Restart your node to use the previous version:");
+                    println!("  sudo systemctl restart doli-mainnet-nodeN");
+                }
+                Err(e) => {
+                    println!("Rollback failed: {}", e);
+                    println!();
+                    println!("If no backup exists, you may need to manually redeploy.");
+                }
+            }
         }
     }
 

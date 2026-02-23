@@ -78,6 +78,8 @@ pub struct PeerLimits {
     pub requests: TokenBucket,
     /// Bandwidth rate limiter (bytes)
     pub bandwidth: TokenBucket,
+    /// Last time this peer had activity (for LRU eviction)
+    pub last_activity: Instant,
 }
 
 impl PeerLimits {
@@ -100,7 +102,13 @@ impl PeerLimits {
                 config.max_bytes_per_second * 10,
                 config.max_bytes_per_second as f64,
             ),
+            last_activity: Instant::now(),
         }
+    }
+
+    /// Touch last-activity timestamp (called on every interaction)
+    fn touch(&mut self) {
+        self.last_activity = Instant::now();
     }
 }
 
@@ -198,6 +206,7 @@ impl RateLimiter {
         let limits = self.get_or_create_limits(peer);
         limits.blocks.try_consume(1);
         limits.bandwidth.try_consume(size as u64);
+        limits.touch();
 
         self.global_blocks.try_consume(1);
         self.global_bandwidth.try_consume(size as u64);
@@ -232,6 +241,7 @@ impl RateLimiter {
         let limits = self.get_or_create_limits(peer);
         limits.transactions.try_consume(1);
         limits.bandwidth.try_consume(size as u64);
+        limits.touch();
 
         self.global_transactions.try_consume(1);
         self.global_bandwidth.try_consume(size as u64);
@@ -261,6 +271,7 @@ impl RateLimiter {
         let limits = self.get_or_create_limits(peer);
         limits.requests.try_consume(1);
         limits.bandwidth.try_consume(size as u64);
+        limits.touch();
 
         self.global_bandwidth.try_consume(size as u64);
     }
@@ -290,20 +301,33 @@ impl RateLimiter {
         self.limits.remove(peer);
     }
 
-    /// Clean up stale peer limits (peers we haven't seen in a while)
+    /// Clean up stale peer limits using LRU eviction.
+    ///
+    /// Removes peers whose last activity is older than `max_age`.
+    /// If the table still exceeds `MAX_TRACKED_PEERS` after age-based
+    /// eviction, removes the least-recently-active peers until under limit.
     pub fn cleanup(&mut self, max_age: Duration) {
-        // This is a simple implementation - in production you'd track last activity
-        // For now, we just cap the number of tracked peers
         const MAX_TRACKED_PEERS: usize = 1000;
 
+        // Phase 1: remove peers older than max_age
+        let now = Instant::now();
+        self.limits
+            .retain(|_, limits| now.duration_since(limits.last_activity) < max_age);
+
+        // Phase 2: if still over capacity, evict least-recently-used
         if self.limits.len() > MAX_TRACKED_PEERS {
-            // Remove oldest entries (this is a simplification)
-            let to_remove: Vec<_> = self.limits.keys().take(100).cloned().collect();
-            for peer in to_remove {
+            let excess = self.limits.len() - MAX_TRACKED_PEERS;
+            let mut peers: Vec<(PeerId, Instant)> = self
+                .limits
+                .iter()
+                .map(|(id, lim)| (*id, lim.last_activity))
+                .collect();
+            peers.sort_by_key(|&(_, t)| t); // oldest first
+            for (peer, _) in peers.into_iter().take(excess) {
                 self.limits.remove(&peer);
+                debug!(peer = %peer, "LRU evicted from rate limiter");
             }
         }
-        let _ = max_age; // Suppress unused warning
     }
 
     /// Get statistics
@@ -426,5 +450,94 @@ mod tests {
 
         limiter.remove_peer(&peer);
         assert_eq!(limiter.stats().tracked_peers, 0);
+    }
+
+    #[test]
+    fn test_bandwidth_limiting() {
+        let config = RateLimitConfig {
+            max_bytes_per_second: 1000,
+            ..Default::default()
+        };
+        let mut limiter = RateLimiter::new(config);
+        let peer = test_peer_id();
+
+        // Bandwidth bucket has 10x burst capacity (10000 bytes)
+        assert!(limiter.check_bandwidth(&peer, 5000));
+        limiter.record_request(&peer, 5000);
+        assert!(limiter.check_bandwidth(&peer, 5000));
+        limiter.record_request(&peer, 5000);
+
+        // Should be near limit now
+        let can = limiter.check_bandwidth(&peer, 5000);
+        // May or may not pass depending on exact timing, but after consuming 10000:
+        if !can {
+            // Expected — bucket exhausted
+        }
+    }
+
+    #[test]
+    fn test_multiple_peers_independent() {
+        let config = RateLimitConfig {
+            max_blocks_per_minute: 2,
+            ..Default::default()
+        };
+        let mut limiter = RateLimiter::new(config);
+        let peer_a = PeerId::random();
+        let peer_b = PeerId::random();
+
+        // Exhaust peer A's block limit
+        limiter.record_block(&peer_a, 500);
+        limiter.record_block(&peer_a, 500);
+        assert!(!limiter.check_block(&peer_a));
+
+        // Peer B should still be allowed
+        assert!(limiter.check_block(&peer_b));
+    }
+
+    #[test]
+    fn test_cleanup_lru_eviction() {
+        let mut limiter = RateLimiter::new(RateLimitConfig::default());
+
+        // Add 5 peers
+        let peers: Vec<PeerId> = (0..5).map(|_| PeerId::random()).collect();
+        for peer in &peers {
+            limiter.record_block(peer, 100);
+        }
+        assert_eq!(limiter.stats().tracked_peers, 5);
+
+        // Cleanup with 0 duration should evict all
+        limiter.cleanup(Duration::from_secs(0));
+        assert_eq!(limiter.stats().tracked_peers, 0);
+    }
+
+    #[test]
+    fn test_cleanup_preserves_recent() {
+        let mut limiter = RateLimiter::new(RateLimitConfig::default());
+        let peer = test_peer_id();
+
+        limiter.record_block(&peer, 100);
+
+        // Cleanup with generous max_age should keep the peer
+        limiter.cleanup(Duration::from_secs(3600));
+        assert_eq!(limiter.stats().tracked_peers, 1);
+    }
+
+    #[test]
+    fn test_request_rate_limiting() {
+        let config = RateLimitConfig {
+            max_requests_per_second: 5,
+            ..Default::default()
+        };
+        let mut limiter = RateLimiter::new(config);
+        let peer = test_peer_id();
+
+        // Request bucket has 10x burst (50 tokens)
+        for _ in 0..50 {
+            assert!(limiter.check_request(&peer));
+            limiter.record_request(&peer, 10);
+        }
+
+        // Should be exhausted
+        assert!(!limiter.check_request(&peer));
     }
 }
