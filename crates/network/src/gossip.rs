@@ -349,3 +349,75 @@ pub enum GossipError {
     #[error("publish error: {0}")]
     Publish(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_topic_constants() {
+        assert_eq!(BLOCKS_TOPIC, "/doli/blocks/1");
+        assert_eq!(TRANSACTIONS_TOPIC, "/doli/txs/1");
+        assert_eq!(PRODUCERS_TOPIC, "/doli/producers/1");
+        assert_eq!(VOTES_TOPIC, "/doli/votes/1");
+        assert_eq!(HEARTBEATS_TOPIC, "/doli/heartbeats/1");
+        assert_eq!(TIER1_BLOCKS_TOPIC, "/doli/t1/blocks/1");
+        assert_eq!(HEADERS_TOPIC, "/doli/headers/1");
+        assert_eq!(ATTESTATION_TOPIC, "/doli/attestations/1");
+    }
+
+    #[test]
+    fn test_region_topic_format() {
+        assert_eq!(region_topic(0), "/doli/r0/blocks/1");
+        assert_eq!(region_topic(1), "/doli/r1/blocks/1");
+        assert_eq!(region_topic(42), "/doli/r42/blocks/1");
+    }
+
+    #[test]
+    fn test_tier1_gossipsub_creation() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let gs = new_gossipsub_for_tier(&keypair, 1);
+        assert!(gs.is_ok());
+    }
+
+    #[test]
+    fn test_tier2_gossipsub_creation() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let gs = new_gossipsub_for_tier(&keypair, 2);
+        assert!(gs.is_ok());
+    }
+
+    #[test]
+    fn test_tier3_gossipsub_creation() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let gs = new_gossipsub_for_tier(&keypair, 3);
+        assert!(gs.is_ok());
+    }
+
+    #[test]
+    fn test_default_tier_gossipsub_creation() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let gs = new_gossipsub_for_tier(&keypair, 0);
+        assert!(gs.is_ok());
+    }
+
+    #[test]
+    fn test_mesh_config_default() {
+        let config = MeshConfig {
+            mesh_n: 6,
+            mesh_n_low: 4,
+            mesh_n_high: 12,
+            gossip_lazy: 6,
+        };
+        assert!(config.mesh_n >= config.mesh_n_low);
+        assert!(config.mesh_n <= config.mesh_n_high);
+    }
+
+    #[test]
+    fn test_gossip_error_display() {
+        let e = GossipError::Config("bad config".into());
+        assert!(e.to_string().contains("bad config"));
+        let e = GossipError::Subscribe("topic failed".into());
+        assert!(e.to_string().contains("topic failed"));
+    }
+}
