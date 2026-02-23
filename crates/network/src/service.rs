@@ -944,6 +944,28 @@ async fn handle_behaviour_event(
                         warn!("Failed to deserialize header from {}", propagation_source);
                     }
                 }
+                topic if topic == crate::gossip::TIER1_BLOCKS_TOPIC => {
+                    // Tier 1 dense-mesh block: same payload as regular blocks
+                    if !rate_limiter.check_block(&propagation_source) {
+                        return;
+                    }
+                    if let Some(block) = Block::deserialize(&message.data) {
+                        rate_limiter.record_block(&propagation_source, msg_size);
+                        let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
+                    } else {
+                        warn!("Failed to deserialize t1 block from {}", propagation_source);
+                    }
+                }
+                topic if topic.starts_with("/doli/r") && topic.ends_with("/blocks/1") => {
+                    // Regional block (Tier 2 sharding): same payload as regular blocks
+                    if !rate_limiter.check_block(&propagation_source) {
+                        return;
+                    }
+                    if let Some(block) = Block::deserialize(&message.data) {
+                        rate_limiter.record_block(&propagation_source, msg_size);
+                        let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
+                    }
+                }
                 _ => {}
             }
         }
@@ -1340,7 +1362,7 @@ async fn handle_command(
         NetworkCommand::ReconfigureTier { tier, region } => {
             info!("Reconfiguring gossipsub topics for tier {}", tier);
             let gs = &mut swarm.behaviour_mut().gossipsub;
-            if let Err(e) = crate::gossip::subscribe_to_topics_for_tier(gs, tier, region) {
+            if let Err(e) = crate::gossip::reconfigure_topics_for_tier(gs, tier, region) {
                 warn!("Failed to reconfigure tier topics: {}", e);
             }
         }
