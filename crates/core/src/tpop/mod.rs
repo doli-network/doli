@@ -46,13 +46,11 @@
 //!
 //! - [`heartbeat`] - Micro-VDF presence proofs (1 second)
 //! - [`presence`] - Checkpoints and state management
-//! - [`producer`] - Block production with TPoP
 //! - [`calibration`] - Dynamic VDF calibration for consistent timing
 
 pub mod calibration;
 pub mod heartbeat;
 pub mod presence;
-pub mod producer;
 
 // Re-export calibration types (VDF tuning)
 #[allow(deprecated)]
@@ -75,11 +73,6 @@ pub use presence::{
     producer_eligibility_offset, rank_producers_by_presence, select_producer_by_presence,
     EpochPresenceRecords, PresenceCheckpoint, PresenceProof, ProducerPresenceState, VdfLink,
     CHECKPOINT_INTERVAL, MAX_PRESENCE_SCORE, PRESENCE_WINDOWS,
-};
-
-// Re-export producer types
-pub use producer::{
-    BootstrapPresenceProducer, PresenceMessage, PresenceMessageHandler, PresenceProducer,
 };
 
 // =============================================================================
