@@ -278,7 +278,6 @@ pub use tpop::{
     can_produce_at_time,
     rank_producers_by_presence,
     validate_heartbeat_timing,
-    BootstrapPresenceProducer,
     HeartbeatCollector,
     HeartbeatError,
     PresenceCheckpoint,
@@ -286,10 +285,6 @@ pub use tpop::{
     PresenceConsensus,
     // Heartbeat types (primary API for micro-VDF)
     PresenceHeartbeat,
-    PresenceMessage,
-    PresenceMessageHandler,
-    // Producer types
-    PresenceProducer,
     PresenceProof,
     ProducerPresenceState,
     // Simplified presence state

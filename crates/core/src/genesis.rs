@@ -86,59 +86,39 @@ pub const GENESIS_PUBKEY: [u8; 32] = [0u8; 32];
 
 /// Mainnet genesis producers (pubkey hex, bond_count)
 ///
-/// **CRITICAL**: These pubkeys MUST match the actual wallet files!
-/// See docs/GENESIS.md for the correct procedure to generate these.
-///
 /// These 5 producers are registered at genesis with 1 bond each.
+/// Keys match BOOTSTRAP_MAINTAINER_KEYS in `crates/updater/src/lib.rs`.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
-///
-/// **BEFORE MAINNET**: Replace with actual pubkeys from producer wallet files!
 pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
-    // PLACEHOLDER - Replace with actual mainnet producer pubkeys before launch!
-    // Generate wallets first, then copy pubkeys here.
-    // See docs/GENESIS.md Section 4 for instructions.
+    // N1 — omegacortex — producer_1.json
     (
-        "0000000000000000000000000000000000000000000000000000000000000001",
+        "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
         1,
-    ), // producer_1 - REPLACE!
+    ),
+    // N2 — omegacortex — producer_2.json
     (
-        "0000000000000000000000000000000000000000000000000000000000000002",
+        "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
         1,
-    ), // producer_2 - REPLACE!
+    ),
+    // N3 — N3-VPS — producer_3.json
     (
-        "0000000000000000000000000000000000000000000000000000000000000003",
+        "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
         1,
-    ), // producer_3 - REPLACE!
+    ),
+    // N4 — pro-KVM1 — producer_4.json
     (
-        "0000000000000000000000000000000000000000000000000000000000000004",
+        "a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d",
         1,
-    ), // producer_4 - REPLACE!
+    ),
+    // N5 — fpx — producer_5.json
     (
-        "0000000000000000000000000000000000000000000000000000000000000005",
+        "c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9",
         1,
-    ), // producer_5 - REPLACE!
+    ),
 ];
 
-/// Check if mainnet genesis producers are still placeholders
-pub fn mainnet_using_placeholder_producers() -> bool {
-    MAINNET_GENESIS_PRODUCERS
-        .iter()
-        .any(|(hex, _)| hex.starts_with("00000000"))
-}
-
 /// Parse mainnet genesis producers into (PublicKey, bond_count) pairs
-///
-/// **WARNING**: Will panic in debug builds if placeholder keys detected!
 pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
-    #[cfg(debug_assertions)]
-    if mainnet_using_placeholder_producers() {
-        panic!(
-            "MAINNET_GENESIS_PRODUCERS contains placeholder keys! \
-             Replace with actual pubkeys before mainnet launch. \
-             See docs/GENESIS.md for instructions."
-        );
-    }
-
     MAINNET_GENESIS_PRODUCERS
         .iter()
         .filter_map(|(hex, bonds)| {
@@ -545,6 +525,23 @@ mod tests {
 
         let result = verify_genesis_block(&genesis, Network::Mainnet);
         assert!(matches!(result, Err(GenesisError::InvalidReward { .. })));
+    }
+
+    #[test]
+    fn test_mainnet_genesis_keys_are_real() {
+        // Ensure no placeholder keys (all zeros)
+        for (hex, _) in MAINNET_GENESIS_PRODUCERS {
+            assert!(
+                !hex.starts_with("00000000"),
+                "MAINNET_GENESIS_PRODUCERS still contains placeholder key: {}",
+                hex
+            );
+        }
+        // Ensure we have exactly 5 producers
+        assert_eq!(MAINNET_GENESIS_PRODUCERS.len(), 5);
+        // Ensure all keys parse successfully
+        let producers = mainnet_genesis_producers();
+        assert_eq!(producers.len(), 5);
     }
 
     #[test]
