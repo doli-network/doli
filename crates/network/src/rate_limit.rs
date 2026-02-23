@@ -78,6 +78,8 @@ pub struct PeerLimits {
     pub requests: TokenBucket,
     /// Bandwidth rate limiter (bytes)
     pub bandwidth: TokenBucket,
+    /// Last time this peer was active (for LRU eviction)
+    pub last_activity: Instant,
 }
 
 impl PeerLimits {
@@ -100,7 +102,13 @@ impl PeerLimits {
                 config.max_bytes_per_second * 10,
                 config.max_bytes_per_second as f64,
             ),
+            last_activity: Instant::now(),
         }
+    }
+
+    /// Touch the last activity timestamp
+    pub fn touch(&mut self) {
+        self.last_activity = Instant::now();
     }
 }
 
@@ -161,12 +169,15 @@ impl RateLimiter {
         }
     }
 
-    /// Get or create limits for a peer
+    /// Get or create limits for a peer, updating last activity
     fn get_or_create_limits(&mut self, peer: &PeerId) -> &mut PeerLimits {
         let config = &self.config;
-        self.limits
+        let limits = self
+            .limits
             .entry(*peer)
-            .or_insert_with(|| PeerLimits::new(config))
+            .or_insert_with(|| PeerLimits::new(config));
+        limits.touch();
+        limits
     }
 
     /// Check if a block can be received from a peer
@@ -290,20 +301,32 @@ impl RateLimiter {
         self.limits.remove(peer);
     }
 
-    /// Clean up stale peer limits (peers we haven't seen in a while)
+    /// Clean up stale peer limits using LRU eviction.
+    ///
+    /// Removes peers inactive longer than `max_age`, and if still over capacity,
+    /// evicts the least recently active peers.
     pub fn cleanup(&mut self, max_age: Duration) {
-        // This is a simple implementation - in production you'd track last activity
-        // For now, we just cap the number of tracked peers
         const MAX_TRACKED_PEERS: usize = 1000;
 
+        // Remove peers inactive longer than max_age
+        let now = Instant::now();
+        self.limits
+            .retain(|_, limits| now.duration_since(limits.last_activity) < max_age);
+
+        // If still over capacity, evict least recently active
         if self.limits.len() > MAX_TRACKED_PEERS {
-            // Remove oldest entries (this is a simplification)
-            let to_remove: Vec<_> = self.limits.keys().take(100).cloned().collect();
-            for peer in to_remove {
+            let mut by_activity: Vec<(PeerId, Instant)> = self
+                .limits
+                .iter()
+                .map(|(peer, limits)| (*peer, limits.last_activity))
+                .collect();
+            by_activity.sort_by_key(|(_, t)| *t);
+
+            let to_remove = self.limits.len() - MAX_TRACKED_PEERS;
+            for (peer, _) in by_activity.into_iter().take(to_remove) {
                 self.limits.remove(&peer);
             }
         }
-        let _ = max_age; // Suppress unused warning
     }
 
     /// Get statistics
