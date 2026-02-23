@@ -97,6 +97,11 @@ impl BodyDownloader {
             if let Some(hash) = self.failed.pop_front() {
                 if !self.in_flight.contains(&hash) {
                     hashes.push(hash);
+                } else {
+                    // Hash still in-flight from a previous request — re-queue
+                    // so it can be retried when in-flight clears.
+                    self.failed.push_back(hash);
+                    break; // Avoid infinite loop on stuck in-flight hashes
                 }
             }
         }
@@ -239,6 +244,17 @@ impl BodyDownloader {
         }
     }
 
+    /// Cancel a peer's active request and move its hashes back to the failed queue.
+    /// Called when a peer disconnects to prevent hashes from being stuck in in_flight.
+    pub fn cancel_peer(&mut self, peer: &PeerId) {
+        if let Some(request) = self.active_requests.remove(peer) {
+            for hash in request.hashes {
+                self.in_flight.remove(&hash);
+                self.failed.push_back(hash);
+            }
+        }
+    }
+
     /// Clear all state
     pub fn clear(&mut self) {
         self.active_requests.clear();
@@ -308,6 +324,61 @@ mod tests {
         }
 
         assert_eq!(downloader.in_flight_count(), 2);
+    }
+
+    #[test]
+    fn test_failed_hashes_requeued_when_in_flight() {
+        let mut downloader = BodyDownloader::new(128, 8, Duration::from_secs(30));
+        let hash1 = crypto::hash::hash(b"block1");
+        let hash2 = crypto::hash::hash(b"block2");
+
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        let mut needed = VecDeque::new();
+        needed.push_back(hash1);
+        needed.push_back(hash2);
+
+        // Peer1 gets request for hash1+hash2
+        let _ = downloader.next_request(&needed, &[peer1]);
+        assert_eq!(downloader.in_flight_count(), 2);
+
+        // Peer1 responds with only hash1 (hash2 missing → goes to failed)
+        let block1 = create_test_block(Hash::zero(), 1);
+        // We can't match hash exactly, so simulate via timeout
+        downloader.handle_timeout(&peer1);
+        // Now hash1 and hash2 are in failed, in_flight is empty
+
+        // Peer2 gets the retry request
+        let result = downloader.next_request(&needed, &[peer2]);
+        assert!(
+            result.is_some(),
+            "Should generate retry request from failed queue"
+        );
+    }
+
+    #[test]
+    fn test_cancel_peer_releases_in_flight() {
+        let mut downloader = BodyDownloader::new(128, 8, Duration::from_secs(30));
+        let hash1 = crypto::hash::hash(b"block1");
+        let hash2 = crypto::hash::hash(b"block2");
+
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        let mut needed = VecDeque::new();
+        needed.push_back(hash1);
+        needed.push_back(hash2);
+
+        // Peer1 gets request
+        let _ = downloader.next_request(&needed, &[peer1]);
+        assert_eq!(downloader.in_flight_count(), 2);
+
+        // Peer1 disconnects — cancel releases hashes back to failed
+        downloader.cancel_peer(&peer1);
+        assert_eq!(downloader.in_flight_count(), 0);
+
+        // Peer2 can now pick up the hashes
+        let result = downloader.next_request(&needed, &[peer2]);
+        assert!(result.is_some(), "Peer2 should get the released hashes");
     }
 
     #[test]

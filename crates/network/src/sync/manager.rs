@@ -636,6 +636,11 @@ impl SyncManager {
             self.peers_lost_at = Some(Instant::now());
         }
 
+        // Release body downloader hashes back to failed queue so they
+        // can be re-requested from another peer. Without this, hashes
+        // stay in in_flight forever and the body downloader stalls.
+        self.body_downloader.cancel_peer(peer);
+
         // Cancel any pending requests from this peer
         self.pending_requests.retain(|_, req| &req.peer != peer);
 
