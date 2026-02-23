@@ -157,11 +157,34 @@ impl Node {
         let block_store = Arc::new(BlockStore::open(&blocks_path)?);
 
         // Load or create UTXO set
+        // Priority: RocksDB dir > legacy utxo.bin (auto-migrate) > empty
+        let utxo_rocks_path = config.data_dir.join("utxo_rocks");
         let utxo_path = config.data_dir.join("utxo.bin");
-        let utxo_set = if utxo_path.exists() {
-            UtxoSet::load(&utxo_path)?
+        let utxo_set = if utxo_rocks_path.exists() {
+            // RocksDB backend already exists — open it
+            info!("[UTXO] Opening RocksDB backend at {:?}", utxo_rocks_path);
+            UtxoSet::open_rocksdb(&utxo_rocks_path)?
+        } else if utxo_path.exists() {
+            // Legacy utxo.bin exists — migrate to RocksDB
+            info!("[UTXO] Migrating legacy utxo.bin → RocksDB...");
+            let legacy = storage::InMemoryUtxoStore::load(&utxo_path)?;
+            let rocks = storage::RocksDbUtxoStore::open(&utxo_rocks_path)?;
+            rocks.import_from(legacy.iter());
+            info!(
+                "[UTXO] Migration complete: {} entries. Backing up utxo.bin",
+                rocks.len()
+            );
+            // Rename old file so we don't re-migrate
+            let backup_path = config.data_dir.join("utxo.bin.backup");
+            std::fs::rename(&utxo_path, &backup_path)?;
+            UtxoSet::RocksDb(rocks)
         } else {
-            UtxoSet::new()
+            // Fresh node — create RocksDB backend
+            info!(
+                "[UTXO] Creating new RocksDB backend at {:?}",
+                utxo_rocks_path
+            );
+            UtxoSet::open_rocksdb(&utxo_rocks_path)?
         };
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
@@ -1123,6 +1146,15 @@ impl Node {
                     sync.note_block_received_via_gossip();
                 }
                 self.handle_new_block(block).await?;
+            }
+
+            NetworkEvent::NewHeader(header) => {
+                debug!(
+                    "Header pre-announcement: slot={} producer={:.16} hash={:.16}",
+                    header.slot,
+                    hex::encode(header.producer.as_bytes()),
+                    hex::encode(header.hash().as_bytes()),
+                );
             }
 
             NetworkEvent::NewTransaction(tx) => {
@@ -4147,7 +4179,9 @@ impl Node {
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks
         // are already on the network and don't need to be re-broadcast.
+        // Header is sent first so peers can pre-validate before the full block arrives.
         if let Some(ref network) = self.network {
+            let _ = network.broadcast_header(block.header.clone()).await;
             let _ = network.broadcast_block(block).await;
         }
 
