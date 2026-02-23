@@ -640,8 +640,8 @@ Producer key files (`.json`) have the same format as wallet files and can be use
 | N1 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_1.json` |
 | N2 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_2.json` |
 | N3 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_3.json` |
-| N4 | pro-KVM1 | `/home/isudoajl/.doli/mainnet/producer.json` |
-| N5 | fpx | `/home/isudoajl/.doli/mainnet/producer.json` |
+| N4 | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` |
+| N5 | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` |
 
 ### 7.2 Key File Format
 
