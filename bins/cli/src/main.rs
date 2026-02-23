@@ -1964,13 +1964,25 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
         }
 
         UpdateCommands::Apply => {
-            println!("Manual update apply is not yet supported via CLI.");
-            println!("Updates are applied automatically by the node after the grace period.");
+            println!("Manual update apply requires a running node with an approved release.");
+            println!("Updates are applied automatically after the 7-day veto period.");
+            println!("Use 'doli update status' to check the current update state.");
         }
 
         UpdateCommands::Rollback => {
-            println!("Manual rollback is not yet supported via CLI.");
-            println!("The watchdog automatically rolls back after 3 crashes.");
+            // Check common backup locations
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let backup = PathBuf::from(&home).join(".doli").join("doli-node.backup");
+            if backup.exists() {
+                println!("Backup binary found at: {}", backup.display());
+                println!("To rollback manually, stop the node and run:");
+                println!("  cp {} $(which doli-node)", backup.display());
+                println!("  systemctl restart doli-mainnet-nodeN");
+            } else {
+                println!("No backup binary found at {}", backup.display());
+                println!("The watchdog automatically rolls back after 3 crashes.");
+                println!("Use 'doli update status' to check the current update state.");
+            }
         }
     }
 
@@ -2022,4 +2034,67 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_new_wallet() {
+        let cli = Cli::try_parse_from(["doli", "new"]);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        assert!(matches!(cli.command, Commands::New { .. }));
+    }
+
+    #[test]
+    fn test_parse_balance() {
+        let cli = Cli::try_parse_from(["doli", "balance"]);
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn test_parse_send_with_args() {
+        let cli = Cli::try_parse_from(["doli", "send", "doli1abc123", "100"]);
+        assert!(cli.is_ok());
+        if let Commands::Send { to, amount, .. } = &cli.unwrap().command {
+            assert_eq!(to, "doli1abc123");
+            assert_eq!(amount, "100");
+        } else {
+            panic!("Expected Send command");
+        }
+    }
+
+    #[test]
+    fn test_parse_custom_wallet_and_rpc() {
+        let cli = Cli::try_parse_from([
+            "doli",
+            "-w",
+            "/tmp/test_wallet.json",
+            "-r",
+            "http://localhost:9999",
+            "balance",
+        ]);
+        assert!(cli.is_ok());
+        let cli = cli.unwrap();
+        assert_eq!(cli.wallet, PathBuf::from("/tmp/test_wallet.json"));
+        assert_eq!(cli.rpc, "http://localhost:9999");
+    }
+
+    #[test]
+    fn test_parse_producer_subcommands() {
+        let cli = Cli::try_parse_from(["doli", "producer", "list"]);
+        assert!(cli.is_ok());
+
+        let cli = Cli::try_parse_from(["doli", "producer", "register", "--bonds", "5"]);
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn test_parse_missing_subcommand_fails() {
+        let cli = Cli::try_parse_from(["doli"]);
+        assert!(cli.is_err());
+    }
 }
