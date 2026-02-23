@@ -11,7 +11,9 @@ use futures::StreamExt;
 use libp2p::{
     autonat, dcutr,
     gossipsub::{self, IdentTopic},
-    identify, kad, relay,
+    identify, kad,
+    multiaddr::Protocol,
+    relay,
     request_response::{self, ResponseChannel},
     swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm,
@@ -290,6 +292,13 @@ impl NetworkService {
         swarm
             .listen_on(listen_addr.clone())
             .map_err(|_| NetworkError::BindError)?;
+
+        // Register explicit external address so Identify advertises it instead of
+        // non-routable local addresses (e.g., 127.0.0.1 on multi-node hosts).
+        if let Some(ref ext_addr) = config.external_address {
+            swarm.add_external_address(ext_addr.clone());
+            info!("Registered external address: {}", ext_addr);
+        }
 
         info!("Network service listening on {}", listen_addr);
 
@@ -578,6 +587,29 @@ impl NetworkService {
     pub fn command_sender(&self) -> mpsc::Sender<NetworkCommand> {
         self.command_tx.clone()
     }
+}
+
+/// Check if a multiaddr contains only routable (non-local) IP addresses.
+///
+/// Filters out loopback (127.x), unspecified (0.0.0.0), and link-local (169.254.x)
+/// addresses that should not be advertised to remote peers via Identify/Kademlia.
+fn is_routable_address(addr: &Multiaddr) -> bool {
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                    return false;
+                }
+            }
+            Protocol::Ip6(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// Run the swarm event loop
@@ -934,10 +966,23 @@ async fn handle_behaviour_event(
                 peer_id, info.agent_version
             );
 
-            // Cache the peer's listen addresses for fast reconnection after restart
+            // Filter out non-routable addresses (loopback, unspecified, link-local)
+            // so remote peers don't learn 127.0.0.1 from multi-node hosts.
+            let routable_addrs: Vec<Multiaddr> = info
+                .listen_addrs
+                .into_iter()
+                .filter(|addr| {
+                    let routable = is_routable_address(addr);
+                    if !routable {
+                        debug!("Filtered non-routable address from {}: {}", peer_id, addr);
+                    }
+                    routable
+                })
+                .collect();
+
+            // Cache the peer's routable addresses for fast reconnection after restart
             if let Some(ref path) = peer_cache_path {
-                if let Some(addr) = info.listen_addrs.first() {
-                    // Build a full multiaddr with the peer ID appended
+                if let Some(addr) = routable_addrs.first() {
                     let full_addr = format!("{}/p2p/{}", addr, peer_id);
                     let mut cache = PeerCache::load(path).unwrap_or_default();
                     cache.add(&peer_id.to_string(), &full_addr);
@@ -945,10 +990,10 @@ async fn handle_behaviour_event(
                 }
             }
 
-            // Add the peer's listen addresses to kademlia (unless DHT is disabled)
+            // Add the peer's routable addresses to kademlia (unless DHT is disabled)
             if !config.no_dht {
-                let addr_count = info.listen_addrs.len();
-                for addr in info.listen_addrs {
+                let addr_count = routable_addrs.len();
+                for addr in routable_addrs {
                     info!("[DHT] Adding address for peer {}: {}", peer_id, addr);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                 }
@@ -1474,5 +1519,38 @@ mod tests {
         let ann = ProducerAnnouncement::new(&keypair, 1, 0);
         let proto_bytes = encode_producer_set(&[ann]);
         assert!(!is_legacy_bincode_format(&proto_bytes));
+    }
+
+    #[test]
+    fn test_is_routable_rejects_loopback() {
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/30303".parse().unwrap();
+        assert!(!is_routable_address(&addr));
+
+        let addr6: Multiaddr = "/ip6/::1/tcp/30303".parse().unwrap();
+        assert!(!is_routable_address(&addr6));
+    }
+
+    #[test]
+    fn test_is_routable_accepts_public() {
+        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/30303".parse().unwrap();
+        assert!(is_routable_address(&addr));
+
+        let addr2: Multiaddr = "/ip4/147.93.84.44/tcp/30303".parse().unwrap();
+        assert!(is_routable_address(&addr2));
+    }
+
+    #[test]
+    fn test_is_routable_rejects_unspecified() {
+        let addr: Multiaddr = "/ip4/0.0.0.0/tcp/30303".parse().unwrap();
+        assert!(!is_routable_address(&addr));
+
+        let addr6: Multiaddr = "/ip6/::/tcp/30303".parse().unwrap();
+        assert!(!is_routable_address(&addr6));
+    }
+
+    #[test]
+    fn test_is_routable_rejects_link_local() {
+        let addr: Multiaddr = "/ip4/169.254.1.1/tcp/30303".parse().unwrap();
+        assert!(!is_routable_address(&addr));
     }
 }

@@ -82,6 +82,11 @@ enum Commands {
         #[arg(long)]
         p2p_port: Option<u16>,
 
+        /// External address to advertise to peers (e.g., /ip4/198.51.100.1/tcp/30303).
+        /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
+        #[arg(long)]
+        external_address: Option<String>,
+
         /// RPC listen port (overrides network default)
         #[arg(long)]
         rpc_port: Option<u16>,
@@ -451,6 +456,7 @@ async fn main() -> Result<()> {
             update_notify_only,
             no_auto_rollback,
             p2p_port,
+            external_address,
             rpc_port,
             metrics_port,
             bootstrap,
@@ -473,6 +479,7 @@ async fn main() -> Result<()> {
                 producer_key,
                 update_config,
                 p2p_port,
+                external_address,
                 rpc_port,
                 metrics_port,
                 bootstrap,
@@ -527,6 +534,7 @@ async fn main() -> Result<()> {
                 None,
                 UpdateConfig::default(),
                 None,
+                None, // external_address
                 None,
                 9090,
                 None,
@@ -551,6 +559,7 @@ async fn run_node(
     producer_key_path: Option<PathBuf>,
     update_config: UpdateConfig,
     p2p_port: Option<u16>,
+    external_address: Option<String>,
     rpc_port: Option<u16>,
     metrics_port: u16,
     bootstrap: Option<String>,
@@ -652,6 +661,10 @@ async fn run_node(
     if relay_server {
         config.relay_server = true;
         info!("Relay server enabled — NAT'd peers can relay through this node");
+    }
+    if let Some(ref addr) = external_address {
+        config.external_address = Some(addr.clone());
+        info!("External address: {}", addr);
     }
     // Add explicit bootstrap after clearing defaults (so it's preserved with --no-dht)
     if let Some(ref addr) = bootstrap {
