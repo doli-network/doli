@@ -181,17 +181,20 @@ DOLI uses **bech32m** (BIP-350) human-readable addresses. The prefix matches `Ne
 
 **CLI usage**:
 ```bash
-# Send using doli1... address
-doli -w ~/.doli/mainnet/keys/producer_1.json send doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc 20 --fee 0.001
+# Send (fee is auto-calculated, no --fee needed)
+doli send doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc 20
 
-# Check balance with doli1...
-doli -w ~/.doli/mainnet/keys/producer_1.json balance --address doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+# Check balance
+doli balance --address doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
 
 # Old hex still works
-doli -w ~/.doli/mainnet/keys/producer_1.json balance --address f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf64200311ca8957
+doli balance --address f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf64200311ca8957
+
+# Producer nodes: use -w to point to the producer key file
+doli -w ~/.doli/mainnet/keys/producer_1.json send doli1recipient... 20
 ```
 
-**Fee note**: Default fee (0.00001 DOLI) is too low when consolidating many small UTXOs. Use `--fee 0.001` for transactions with 10+ inputs.
+**Fee**: Auto-calculated as `max(1000, inputs * 500)` units. Override with `--fee` if needed.
 
 **Code**: `crates/crypto/src/address.rs` (encode, decode, from_pubkey, resolve)
 **Dependency**: `bech32 = "0.11"` (pure Rust, zero transitive deps)
