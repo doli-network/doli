@@ -596,6 +596,14 @@ impl Node {
             }
         }
 
+        // Early tier computation: assign correct tier at startup instead of waiting
+        // up to 1 hour for the first epoch boundary. With 5 producers (< 500 threshold),
+        // all nodes get Tier 1 immediately.
+        {
+            let current_height = self.chain_state.read().await.best_height;
+            self.recompute_tier(current_height).await;
+        }
+
         // Start RPC server if enabled
         if self.config.rpc.enabled {
             self.start_rpc().await?;
