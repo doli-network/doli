@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use crypto::Hash;
 use doli_core::Network;
 
+use libp2p::Multiaddr;
+
 use crate::nat::NatConfig;
 
 /// Network configuration
@@ -38,6 +40,8 @@ pub struct NetworkConfig {
     pub gossip_lazy: usize,
     /// NAT traversal configuration (relay, DCUtR, AutoNAT)
     pub nat_config: NatConfig,
+    /// External address to advertise (e.g., public IP for multi-node hosts)
+    pub external_address: Option<Multiaddr>,
 }
 
 impl Default for NetworkConfig {
@@ -66,6 +70,7 @@ impl NetworkConfig {
             mesh_n_high: 12,
             gossip_lazy: 6,
             nat_config: NatConfig::default(),
+            external_address: None,
         }
     }
 
