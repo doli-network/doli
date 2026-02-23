@@ -51,6 +51,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod address;
 pub mod hash;
 pub mod keys;
 pub mod merkle;
