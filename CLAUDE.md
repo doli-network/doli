@@ -179,6 +179,20 @@ DOLI uses **bech32m** (BIP-350) human-readable addresses. The prefix matches `Ne
 2. 64-char hex → raw pubkey_hash (backward compat)
 3. Anything else → error with format guidance
 
+**CLI usage**:
+```bash
+# Send using doli1... address
+doli -w ~/.doli/mainnet/keys/producer_1.json send doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc 20 --fee 0.001
+
+# Check balance with doli1...
+doli -w ~/.doli/mainnet/keys/producer_1.json balance --address doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+
+# Old hex still works
+doli -w ~/.doli/mainnet/keys/producer_1.json balance --address f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf64200311ca8957
+```
+
+**Fee note**: Default fee (0.00001 DOLI) is too low when consolidating many small UTXOs. Use `--fee 0.001` for transactions with 10+ inputs.
+
 **Code**: `crates/crypto/src/address.rs` (encode, decode, from_pubkey, resolve)
 **Dependency**: `bech32 = "0.11"` (pure Rust, zero transitive deps)
 
@@ -344,13 +358,15 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 
 > **CRITICAL**: These are the ONLY valid producer keys. They match the `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs` (updated 2026-02-22).
 
-| Node | Host | Key File | Public Key (Ed25519) |
-|------|------|----------|----------------------|
-| **N1** | omegacortex | `~/.doli/mainnet/keys/producer_1.json` | `202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df` |
-| **N2** | omegacortex | `~/.doli/mainnet/keys/producer_2.json` | `effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b` |
-| **N3** | N3-VPS | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b` |
-| **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d` |
-| **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9` |
+| Node | Host | Key File | Address (`doli1...`) | Public Key (Ed25519) |
+|------|------|----------|---------------------|----------------------|
+| **N1** | omegacortex | `~/.doli/mainnet/keys/producer_1.json` | `doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef` | `202047256a...c3e6d3df` |
+| **N2** | omegacortex | `~/.doli/mainnet/keys/producer_2.json` | `doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz` | `effe88fefb...9926272b` |
+| **N3** | N3-VPS | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql` | `54323cefd0...25c48c2b` |
+| **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6` | `a1596a36fd...e9beda1d` |
+| **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
+
+**Producer key files are wallet-compatible** — use directly with `doli -w <key_file>` for balance queries, sends, and producer operations.
 
 **Retired keys** (produced early blocks, no longer active — funds still held):
 
