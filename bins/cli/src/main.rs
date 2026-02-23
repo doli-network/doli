@@ -535,23 +535,18 @@ async fn cmd_send(
         .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
     let amount_units = coins_to_units(amount_coins);
 
-    // Parse fee if provided (default: 1000 units = 0.00001 DOLI)
-    let fee_units = if let Some(f) = &fee {
+    // Parse explicit fee if provided; otherwise auto-calculate after UTXO selection
+    let explicit_fee: Option<u64> = if let Some(f) = &fee {
         let fee_coins: f64 = f
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
-        coins_to_units(fee_coins)
+        Some(coins_to_units(fee_coins))
     } else {
-        1000 // Default fee
+        None
     };
 
     let recipient_display = crypto::address::encode(&recipient_hash, DEFAULT_PREFIX)
         .unwrap_or_else(|_| recipient_hash.to_hex());
-
-    println!("Preparing transaction:");
-    println!("  To:     {}", recipient_display);
-    println!("  Amount: {} DOLI", amount_coins);
-    println!("  Fee:    {}", format_balance(fee_units));
 
     // Get the sender's pubkey_hash for UTXO lookup
     let from_pubkey_hash = wallet.primary_pubkey_hash();
@@ -565,8 +560,36 @@ async fn cmd_send(
         return Ok(());
     }
 
-    // Calculate total available
+    // Select UTXOs with a preliminary fee estimate, then recalculate
+    let preliminary_fee = explicit_fee.unwrap_or(1000);
     let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
+
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    for utxo in &utxos {
+        if total_input >= amount_units + preliminary_fee {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+
+    // Auto-calculate fee: max(1000, inputs * 500)
+    let fee_units = explicit_fee.unwrap_or_else(|| 1000u64.max(selected_utxos.len() as u64 * 500));
+
+    // Re-select if auto fee increased the requirement
+    if explicit_fee.is_none() && total_input < amount_units + fee_units {
+        selected_utxos.clear();
+        total_input = 0;
+        for utxo in &utxos {
+            if total_input >= amount_units + fee_units {
+                break;
+            }
+            selected_utxos.push(utxo.clone());
+            total_input += utxo.amount;
+        }
+    }
+
     let required = amount_units + fee_units;
 
     if total_available < required {
@@ -576,16 +599,17 @@ async fn cmd_send(
         return Ok(());
     }
 
-    // Select UTXOs (greedy selection)
-    let mut selected_utxos = Vec::new();
-    let mut total_input = 0u64;
-    for utxo in &utxos {
-        if total_input >= required {
-            break;
-        }
-        selected_utxos.push(utxo.clone());
-        total_input += utxo.amount;
+    if total_input < required {
+        println!("Error: Insufficient balance");
+        println!("  Selected:  {}", format_balance(total_input));
+        println!("  Required:  {}", format_balance(required));
+        return Ok(());
     }
+
+    println!("Preparing transaction:");
+    println!("  To:     {}", recipient_display);
+    println!("  Amount: {} DOLI", amount_coins);
+    println!("  Fee:    {}", format_balance(fee_units));
 
     println!();
     println!("Using {} UTXO(s):", selected_utxos.len());
