@@ -132,7 +132,7 @@ All commands implicitly wrapped in Nix develop shell.
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `core` | Consensus, Types, Scheduler | `consensus.rs`, `scheduler.rs`, `validation.rs`, `discovery/` |
-| `crypto` | BLAKE3, Ed25519, Merkle | `hash.rs`, `keys.rs`, `merkle.rs` (Domain separated) |
+| `crypto` | BLAKE3, Ed25519, Merkle, Bech32m Addresses | `hash.rs`, `keys.rs`, `merkle.rs`, `address.rs` (Domain separated) |
 | `vdf` | Wesolowski (Reg) & Hash-Chain (Block) | `vdf.rs`, `proof.rs` (GMP/Rug) |
 | `network` | Gossipsub, Sync, Equivocation | `service.rs`, `sync/`, `gossip.rs` |
 | `storage` | RocksDB (Headers, Bodies, UTXO) | `block_store.rs`, `utxo.rs`, `producer.rs` |
@@ -161,6 +161,26 @@ All commands implicitly wrapped in Nix develop shell.
 | Main | 1 | 30303 / 8545 | `D0 11 00 01` | `doli` | 2026-02-01 |
 | Test | 2 | 40303 / 18545 | `D0 11 00 02` | `tdoli` | 2026-01-29 |
 | Dev | 99 | 50303 / 28545 | `D0 11 00 63` | `ddoli` | Dynamic |
+
+### 🏷 Address Format (Bech32m)
+
+DOLI uses **bech32m** (BIP-350) human-readable addresses. The prefix matches `Network::address_prefix()`.
+
+| Network | Prefix | Example |
+|---------|--------|---------|
+| Mainnet | `doli1` | `doli1qpzry9x8gf2tvdw0s3jn54khce6mua7l...` |
+| Testnet | `tdoli1` | `tdoli1qpzry9x8gf2tvdw0s3jn54khce6mua7l...` |
+| Devnet | `ddoli1` | `ddoli1qpzry9x8gf2tvdw0s3jn54khce6mua7l...` |
+
+**Derivation**: `pubkey_hash = BLAKE3(ADDRESS_DOMAIN ∥ public_key)` → bech32m-encode with network prefix.
+
+**Key rule**: All CLI commands and RPC methods accept **both** `doli1...` and 64-char hex. The `crypto::address::resolve()` function handles parsing:
+1. `doli1...` → bech32m decode → 32-byte pubkey_hash
+2. 64-char hex → raw pubkey_hash (backward compat)
+3. Anything else → error with format guidance
+
+**Code**: `crates/crypto/src/address.rs` (encode, decode, from_pubkey, resolve)
+**Dependency**: `bech32 = "0.11"` (pure Rust, zero transitive deps)
 
 ### 🔧 Environment Configuration
 
