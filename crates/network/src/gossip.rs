@@ -208,12 +208,21 @@ pub fn topics_for_tier(tier: u8, region: Option<u32>) -> Vec<String> {
     topics
 }
 
+/// Safety-critical topics that must NEVER be unsubscribed on a producing node.
+/// Unsubscribing from BLOCKS_TOPIC causes the node to stop receiving blocks
+/// via gossip, leading to permanent desync.
+const PROTECTED_TOPICS: &[&str] = &[BLOCKS_TOPIC, TRANSACTIONS_TOPIC];
+
 /// Reconfigure gossipsub subscriptions for a tier change.
 ///
 /// Performs a delta operation:
 /// 1. Computes desired topic set for the new tier
-/// 2. Unsubscribes from topics not in the desired set
+/// 2. Unsubscribes from topics not in the desired set (except protected topics)
 /// 3. Subscribes to new topics via `subscribe_to_topics_for_tier()`
+///
+/// SAFETY: BLOCKS_TOPIC and TRANSACTIONS_TOPIC are never unsubscribed regardless
+/// of tier. A node without blocks is a dead node. Tier 3 header-only mode is only
+/// safe for non-producing light clients (not yet supported).
 ///
 /// Safe to call multiple times with the same tier (idempotent).
 pub fn reconfigure_topics_for_tier(
@@ -227,10 +236,16 @@ pub fn reconfigure_topics_for_tier(
         .map(|s| IdentTopic::new(s).hash())
         .collect();
 
-    // Unsubscribe from topics not in the desired set
+    // Build protected set
+    let protected: HashSet<TopicHash> = PROTECTED_TOPICS
+        .iter()
+        .map(|s| IdentTopic::new(*s).hash())
+        .collect();
+
+    // Unsubscribe from topics not in the desired set, but NEVER unsubscribe protected topics
     let current: Vec<TopicHash> = gossipsub.topics().cloned().collect();
     for topic_hash in &current {
-        if !desired.contains(topic_hash) {
+        if !desired.contains(topic_hash) && !protected.contains(topic_hash) {
             debug!("Unsubscribing from topic: {}", topic_hash);
             let topic = IdentTopic::new(topic_hash.as_str());
             let _ = gossipsub.unsubscribe(&topic);
@@ -649,8 +664,32 @@ mod tests {
         assert_eq!(initial_count, 6); // blocks, txs, heartbeats, headers, producers, votes
 
         // Reconfigure to Tier 3 (header-only)
+        // BLOCKS_TOPIC and TRANSACTIONS_TOPIC are protected — never unsubscribed
         reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
         let final_count = gs.topics().count();
-        assert_eq!(final_count, 3); // headers, producers, votes
+        // headers + producers + votes + blocks(protected) + txs(protected) = 5
+        assert_eq!(final_count, 5);
+    }
+
+    #[test]
+    fn test_protected_topics_never_unsubscribed() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
+
+        // Subscribe to all Tier 0 topics
+        subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
+
+        // Even reconfiguring to Tier 3 must keep blocks and txs
+        reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
+
+        let subscribed: Vec<String> = gs.topics().map(|t| t.to_string()).collect();
+        assert!(
+            subscribed.contains(&BLOCKS_TOPIC.to_string()),
+            "BLOCKS_TOPIC must never be unsubscribed"
+        );
+        assert!(
+            subscribed.contains(&TRANSACTIONS_TOPIC.to_string()),
+            "TRANSACTIONS_TOPIC must never be unsubscribed"
+        );
     }
 }
