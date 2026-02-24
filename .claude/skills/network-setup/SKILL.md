@@ -150,18 +150,18 @@ for port_range in "9090-9099" "28545-28554" "50303-50312"; do
   fi
 done
 
-# 4. Kill zombies (choose one method)
-# Method A: Kill ALL doli-node processes (use when doing fresh deploy)
-pkill -f "doli-node" 2>/dev/null && echo "Killed all doli-node processes" || echo "No doli-node processes found"
+# 4. Stop nodes via systemd (NEVER use kill/pkill on production nodes)
+# Production (mainnet/testnet):
+sudo systemctl stop doli-mainnet-nodeN
 
-# Method B: Kill specific port (surgical, for adding nodes to running network)
-# pid=$(lsof -ti :9095 2>/dev/null); [ -n "$pid" ] && kill $pid
+# Devnet (local testing only — pkill is acceptable here):
+pkill -f "doli-node.*devnet" 2>/dev/null || true
 
 # 5. Wait and verify
 sleep 2
 remaining=$(pgrep -f "doli-node" 2>/dev/null)
 if [ -n "$remaining" ]; then
-  echo "❌ Still running: $remaining — use kill -9 if needed"
+  echo "❌ Still running: $remaining"
 else
   echo "✅ All ports clear — safe to deploy"
 fi
@@ -540,8 +540,8 @@ sleep 10
   -w ~/.doli/devnet/keys/producer_N.json producer status
 # Should show "exiting" or "exited"
 
-# 3. THEN kill the node process
-pkill -f "doli-node.*50309"  # use the node's P2P port
+# 3. THEN stop the node (devnet: pkill is acceptable; production: use systemctl)
+pkill -f "doli-node.*50309"  # devnet only — use the node's P2P port
 
 # 4. THEN clean up data and keys
 rm -rf ~/.doli/devnet/data/nodeN
