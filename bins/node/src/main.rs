@@ -96,9 +96,10 @@ enum Commands {
         #[arg(long, default_value = "9090")]
         metrics_port: u16,
 
-        /// Bootstrap node to connect to (e.g., /ip4/127.0.0.1/tcp/50303)
+        /// Bootstrap node(s) to connect to (e.g., /ip4/127.0.0.1/tcp/50303).
+        /// Can be specified multiple times for mesh redundancy.
         #[arg(long)]
-        bootstrap: Option<String>,
+        bootstrap: Vec<String>,
 
         /// Disable DHT discovery (only connect to explicitly provided bootstrap nodes)
         /// Use this to isolate test networks from external peers
@@ -537,7 +538,7 @@ async fn main() -> Result<()> {
                 None, // external_address
                 None,
                 9090,
-                None,
+                vec![],
                 false,
                 false, // relay_server
                 false,
@@ -562,7 +563,7 @@ async fn run_node(
     external_address: Option<String>,
     rpc_port: Option<u16>,
     metrics_port: u16,
-    bootstrap: Option<String>,
+    bootstrap: Vec<String>,
     no_dht: bool,
     relay_server: bool,
     force_start: bool,
@@ -666,8 +667,8 @@ async fn run_node(
         config.external_address = Some(addr.clone());
         info!("External address: {}", addr);
     }
-    // Add explicit bootstrap after clearing defaults (so it's preserved with --no-dht)
-    if let Some(ref addr) = bootstrap {
+    // Add explicit bootstrap(s) after clearing defaults (so they're preserved with --no-dht)
+    for addr in &bootstrap {
         config.bootstrap_nodes.push(addr.clone());
     }
 
