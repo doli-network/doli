@@ -2675,36 +2675,35 @@ impl SyncManager {
                     self.local_height + 1
                 );
             } else if is_downloading_bodies && have_pending_headers {
-                // Body download exhausted all soft retries. Instead of nuking
-                // 40K+ downloaded headers and starting from scratch, keep the
-                // headers and restart ONLY the body download phase.
+                // Body download exhausted all soft retries. Reset to Idle so
+                // start_sync() can re-evaluate: if the gap is still >1000 blocks
+                // with 3+ peers, snap sync will activate instead of repeating
+                // the slow header-first path that already failed.
                 warn!(
-                    "Body download stuck after {}/3 retries — restarting body phase \
-                     (preserving {} headers, local_h={})",
+                    "Body download stuck after {}/3 retries — resetting to Idle \
+                     (gap={}, local_h={}, snap sync will re-evaluate)",
                     self.body_stall_retries,
-                    self.pending_headers.len(),
+                    self.network_tip_height.saturating_sub(self.local_height),
                     self.local_height
                 );
 
-                // Reset body-related state only
+                // Full reset — let start_sync() decide header-first vs snap sync
+                self.pending_headers.clear();
                 self.pending_blocks.clear();
+                self.headers_needing_bodies.clear();
                 self.pending_requests.clear();
                 for status in self.peers.values_mut() {
                     status.pending_request = None;
                 }
                 self.body_downloader.clear();
                 self.body_stall_retries = 0;
+                self.header_downloader.clear();
 
-                // Rebuild the needed-bodies list from pending_headers
-                self.headers_needing_bodies.clear();
-                for header in &self.pending_headers {
-                    self.headers_needing_bodies.push_back(header.hash());
-                }
-
-                let total = self.pending_headers.len();
-                let pending = self.headers_needing_bodies.len();
-                self.state = SyncState::DownloadingBodies { pending, total };
+                self.state = SyncState::Idle;
                 self.last_sync_activity = Instant::now();
+                if self.should_sync() {
+                    self.start_sync();
+                }
             } else {
                 // Hard reset — only for header download failures or processing stuck.
                 warn!(
