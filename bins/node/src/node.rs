@@ -25,7 +25,7 @@ use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::TxType;
 use doli_core::types::UNITS_PER_COIN;
-use doli_core::validation;
+use doli_core::validation::{self, ValidationMode};
 use doli_core::{
     AdaptiveGossip, Attestation, Block, BlockHeader, Network, ProducerAnnouncement, ProducerGSet,
     Transaction,
@@ -122,6 +122,10 @@ pub struct Node {
     /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
     /// Used by bootstrap scheduling to exclude stale producers from primary rotation.
     producer_liveness: HashMap<PublicKey, u64>,
+    /// Height at which snap sync last completed. Used to determine validation mode:
+    /// blocks near the tip (within 1 epoch / 360 blocks) get full VDF verification,
+    /// older blocks get light validation (VDF skipped — already trusted via state root quorum).
+    snap_sync_height: Option<u64>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -494,6 +498,7 @@ impl Node {
             pending_update: None,
             last_peer_redial: None,
             producer_liveness,
+            snap_sync_height: None,
         })
     }
 
@@ -2233,6 +2238,9 @@ impl Node {
         // Step 5: Save to disk
         self.save_state().await?;
 
+        // Step 6: Track snap sync height for validation mode selection
+        self.snap_sync_height = Some(snapshot.block_height);
+
         info!(
             "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
             snapshot.block_height, snapshot.block_hash
@@ -2441,6 +2449,99 @@ impl Node {
         Ok(())
     }
 
+    /// Validate a block before applying it to the chain.
+    ///
+    /// Builds a full ValidationContext and calls `validate_block_with_mode`.
+    /// In `Light` mode (gap blocks after snap sync), VDF is skipped.
+    /// In `Full` mode (recent blocks near tip), VDF is verified.
+    async fn validate_block_for_apply(
+        &self,
+        block: &Block,
+        height: u64,
+        mode: ValidationMode,
+    ) -> Result<(), validation::ValidationError> {
+        let state = self.chain_state.read().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Build weighted producer list
+        let producers = self.producer_set.read().await;
+        let active = producers.active_producers_at_height(height);
+        let weighted: Vec<(PublicKey, u64)> = active
+            .iter()
+            .map(|p| (p.public_key, p.bond_count as u64))
+            .collect();
+        drop(producers);
+
+        // Build bootstrap producer list (same as check_producer_eligibility)
+        let mut bootstrap_producers = {
+            let gset = self.producer_gset.read().await;
+            gset.active_producers(7200)
+        };
+        if bootstrap_producers.is_empty() {
+            let known = self.known_producers.read().await;
+            bootstrap_producers = known.clone();
+        }
+        bootstrap_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        // Build liveness split
+        let num_bp = bootstrap_producers.len();
+        let liveness_window = std::cmp::max(
+            consensus::LIVENESS_WINDOW_MIN,
+            (num_bp as u64).saturating_mul(3),
+        );
+        let chain_height = height.saturating_sub(1);
+        let cutoff = chain_height.saturating_sub(liveness_window);
+        let (live_bp, stale_bp): (Vec<PublicKey>, Vec<PublicKey>) = {
+            let (live, stale): (Vec<_>, Vec<_>) =
+                bootstrap_producers
+                    .iter()
+                    .partition(|pk| match self.producer_liveness.get(pk) {
+                        Some(&last_h) => last_h >= cutoff,
+                        None => chain_height < liveness_window,
+                    });
+            (
+                live.into_iter().copied().collect(),
+                stale.into_iter().copied().collect(),
+            )
+        };
+        let (live_bp, stale_bp) = if live_bp.is_empty() {
+            (bootstrap_producers.clone(), Vec::new())
+        } else {
+            (live_bp, stale_bp)
+        };
+
+        // Get previous block timestamp from block store for header validation
+        let prev_timestamp = self
+            .block_store
+            .get_header(&state.best_hash)
+            .ok()
+            .flatten()
+            .map(|h| h.timestamp)
+            .unwrap_or(0);
+
+        let mut ctx = validation::ValidationContext::new(
+            ConsensusParams::for_network(self.config.network),
+            self.config.network,
+            now,
+            height,
+        )
+        .with_prev_block(state.best_slot, prev_timestamp, state.best_hash)
+        .with_producers_weighted(weighted)
+        .with_bootstrap_producers(bootstrap_producers)
+        .with_bootstrap_liveness(live_bp, stale_bp);
+
+        if let Some(ref spec) = self.config.chainspec {
+            ctx.params.apply_chainspec(spec);
+        }
+
+        drop(state);
+
+        validation::validate_block_with_mode(block, &ctx, mode)
+    }
+
     /// Apply a block to the chain
     async fn apply_block(&mut self, block: Block) -> Result<()> {
         let block_hash = block.hash();
@@ -2456,6 +2557,33 @@ impl Node {
         }
 
         let height = self.chain_state.read().await.best_height + 1;
+
+        // Validate block before applying. Determine validation mode:
+        // - Full (with VDF): for blocks within 1 epoch of the tip
+        // - Light (no VDF): for gap blocks after snap sync (state root already verified by quorum)
+        let peer_tip = self.sync_manager.read().await.best_peer_height();
+        let vdf_threshold = peer_tip.saturating_sub(SLOTS_PER_EPOCH as u64);
+        let mode = if height > vdf_threshold {
+            ValidationMode::Full
+        } else {
+            ValidationMode::Light
+        };
+
+        // Build validation context (reuses check_producer_eligibility pattern)
+        if let Err(e) = self.validate_block_for_apply(&block, height, mode).await {
+            warn!(
+                "Block {} at height {} failed {} validation: {}",
+                block_hash,
+                height,
+                if mode == ValidationMode::Full {
+                    "full"
+                } else {
+                    "light"
+                },
+                e
+            );
+            return Err(e.into());
+        }
 
         info!("Applying block {} at height {}", block_hash, height);
 

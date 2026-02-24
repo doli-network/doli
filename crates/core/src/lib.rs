@@ -263,9 +263,9 @@ pub use transaction::{
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
-    bootstrap_fallback_order, validate_block, validate_header, validate_producer_eligibility,
-    validate_transaction, validate_transaction_with_utxos, UtxoInfo, UtxoProvider,
-    ValidationContext, ValidationError,
+    bootstrap_fallback_order, validate_block, validate_block_with_mode, validate_header,
+    validate_producer_eligibility, validate_transaction, validate_transaction_with_utxos, UtxoInfo,
+    UtxoProvider, ValidationContext, ValidationError, ValidationMode,
 };
 
 // TPoP (Temporal Proof of Presence) exports - telemetry module, not consensus
