@@ -102,6 +102,9 @@ pub struct Node {
     /// Consecutive slots where production was blocked due to fork detection
     /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
     consecutive_fork_blocks: u32,
+    /// Number of shallow fork rollbacks performed since last successful sync.
+    /// Capped at MAX_SHALLOW_ROLLBACKS to prevent rolling back the entire chain.
+    shallow_rollback_count: u32,
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
     cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
@@ -483,6 +486,7 @@ impl Node {
             signed_slots_db,
             blocks_since_save: 0,
             consecutive_fork_blocks: 0,
+            shallow_rollback_count: 0,
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,
@@ -3113,6 +3117,7 @@ impl Node {
         match auth_result {
             ProductionAuthorization::Authorized => {
                 self.consecutive_fork_blocks = 0;
+                self.shallow_rollback_count = 0;
                 info!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot
@@ -4402,8 +4407,11 @@ impl Node {
     /// this is a shallow fork — not a deep fork needing genesis resync.
     ///
     /// Fix: roll back one block at a time until we reach a tip peers recognize.
+    /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     async fn resolve_shallow_fork(&mut self) -> Result<bool> {
+        const MAX_SHALLOW_ROLLBACKS: u32 = 10;
+
         let (empty_headers, best_peer_height, local_height) = {
             let sync = self.sync_manager.read().await;
             (
@@ -4423,6 +4431,16 @@ impl Node {
         }
         // Nothing to roll back at genesis
         if local_height == 0 {
+            return Ok(false);
+        }
+        // Cap: stop rolling back after MAX_SHALLOW_ROLLBACKS. If peers still reject
+        // our tip after 10 rollbacks, this is NOT a shallow fork. Let the deep fork
+        // detector handle it instead of rolling back the entire chain block-by-block.
+        if self.shallow_rollback_count >= MAX_SHALLOW_ROLLBACKS {
+            warn!(
+                "Shallow fork rollback limit reached ({}/{}). Stopping rollback loop.",
+                self.shallow_rollback_count, MAX_SHALLOW_ROLLBACKS
+            );
             return Ok(false);
         }
 
@@ -4520,6 +4538,9 @@ impl Node {
             sync.reset_sync_for_rollback();
         }
 
+        // Track rollback count (capped at MAX_SHALLOW_ROLLBACKS)
+        self.shallow_rollback_count += 1;
+
         // Reset node-level fork counter
         self.consecutive_fork_blocks = 0;
 
@@ -4528,8 +4549,8 @@ impl Node {
 
         info!(
             "Shallow fork resolved: rolled back to height {} (hash {:.8}). \
-             Sync will restart from parent tip.",
-            target_height, parent_hash
+             Rollback {}/10. Sync will restart from parent tip.",
+            target_height, parent_hash, self.shallow_rollback_count
         );
 
         Ok(true)
