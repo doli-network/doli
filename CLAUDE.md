@@ -100,6 +100,69 @@ Always imagine **thousands of producer nodes** in **10-second slot windows** bef
 Apply always outour redirection to a /tmp/ folder to avoid polluting the console to later apply filters.
   command > /tmp/cmd_output.log 2>&1 && grep -iE "error|warn|fail|pass" /tmp/cmd_output.log | head -20
 
+## 🔄 Implicit Workflow Routing
+
+When a task is requested, automatically detect the type and follow the appropriate agent pipeline. Explicit `/workflow-*` commands are still available but never required.
+
+### Detection Rules
+
+| Task Signal | Pipeline | Agent Chain |
+|---|---|---|
+| New functionality: "add X", "implement Y", "create Z" | **feature** | analyst → architect → test-writer → developer → compiler → reviewer |
+| Bug/error: "fix", "bug", "broken", "crash", error report | **bugfix** | analyst → test-writer → developer → compiler → reviewer |
+| Improvement: "refactor", "optimize", "improve", "clean up" | **improve** | analyst → test-writer → developer → compiler → reviewer |
+| Code review: "audit", "review code", "security check" | **audit** | reviewer (read-only) |
+| Documentation: "update docs", "document", "write specs" | **docs** | architect (docs mode) |
+| Drift fix: "sync", "drift", "specs outdated" | **sync** | architect (sync mode) |
+| New project from scratch | **new** | analyst → architect → test-writer → developer → compiler → reviewer |
+
+### Compiler Gate (Automatic)
+
+Between Developer and Reviewer, always run the Pre-Commit Gate (Rule 3, steps 4-5):
+```
+cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test
+```
+If any step fails → return to Developer. Never pass broken code to Reviewer.
+
+### Skip Conditions
+
+Do NOT activate the pipeline for:
+- **Trivial changes**: typo fix, 1-3 line edit, config tweak, single constant change
+- **Questions / research / exploration**: reading code, explaining behavior, investigating
+- **Ops tasks**: deployment, node management, monitoring (use ops runbook instead)
+- **Ambiguous requests**: ask for clarification first, then route
+
+### Agent Execution
+
+Each agent runs as a Claude Code subagent (via Task tool) with its own context window:
+- Agents defined in `.claude/agents/` — each has scoped tools and model
+- Workflows defined in `.claude/commands/` — each specifies the agent chain
+- `--scope` parameter limits context to a specific crate/module
+- When no scope is provided, the analyst determines the minimal scope needed
+- All agents follow the Source of Truth hierarchy: Codebase > specs/ > docs/
+
+### Pipeline Flow
+
+```
+Task detected
+  ↓
+🔍 Analyst       → Questions, scopes, reads code, generates requirements
+  ↓
+🏗️ Architect     → Designs architecture, updates specs/ and docs/
+  ↓
+🧪 Test Writer   → Writes failing tests (TDD red phase)
+  ↓
+💻 Developer     → Implements until green, commits each module
+  ↓
+🔨 Compiler      → cargo build + clippy + fmt + test (automatic gate)
+  ↓
+👁️ Reviewer      → Audits code, security, performance, specs drift
+  ↓
+📦 Git           → Conventional commit after approval
+```
+
+Shorter pipelines (bugfix, improve) skip Architect. Audit/docs/sync use single agents.
+
 ## 🛠 Commands (Wrapped)
 
 All commands implicitly wrapped in Nix develop shell.
