@@ -33,13 +33,15 @@
   --no-auto-update --yes --force-start
 ```
 
-### Background (nohup)
+### Production (systemd)
+
+All production nodes are managed by systemd. **NEVER use nohup.**
 
 ```bash
-nohup ./target/release/doli-node --data-dir ~/.doli/mainnet/data run \
-  --producer --producer-key ~/.doli/mainnet/keys/producer.json \
-  --yes --force-start \
-  </dev/null >/tmp/doli-node.log 2>&1 &
+sudo systemctl start doli-mainnet-nodeN
+sudo systemctl stop doli-mainnet-nodeN
+sudo systemctl restart doli-mainnet-nodeN
+sudo systemctl status doli-mainnet-nodeN
 ```
 
 ## Node Configuration

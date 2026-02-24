@@ -349,8 +349,9 @@ curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
 ### Node Restart Test (Critical!)
 
 ```bash
-# Stop a node
-pkill -f "doli-node.*node3"
+# Stop a node (production: systemd; devnet: pkill acceptable)
+sudo systemctl stop doli-mainnet-node3  # production
+# pkill -f "doli-node.*node3"           # devnet only
 
 # Wait 30 seconds
 sleep 30
