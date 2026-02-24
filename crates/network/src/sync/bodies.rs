@@ -89,20 +89,34 @@ impl BodyDownloader {
             return None;
         }
 
+        // Invariant: in_flight must only contain hashes with an active request.
+        // Without this, hashes can get orphaned in in_flight (e.g., if a response
+        // is lost or cleanup_timeouts races with the manager), blocking all future
+        // requests permanently.
+        if self.active_requests.is_empty() && !self.in_flight.is_empty() {
+            let orphaned = self.in_flight.len();
+            for hash in self.in_flight.drain() {
+                self.failed.push_back(hash);
+            }
+            if orphaned > 0 {
+                warn!(
+                    "Released {} orphaned in-flight hashes (no active requests)",
+                    orphaned
+                );
+            }
+        }
+
         // Collect hashes to request (not already in flight)
         let mut hashes = Vec::new();
 
-        // First try failed hashes
+        // First try failed hashes (skip any still in-flight)
         while hashes.len() < self.max_bodies_per_request && !self.failed.is_empty() {
             if let Some(hash) = self.failed.pop_front() {
                 if !self.in_flight.contains(&hash) {
                     hashes.push(hash);
-                } else {
-                    // Hash still in-flight from a previous request — re-queue
-                    // so it can be retried when in-flight clears.
-                    self.failed.push_back(hash);
-                    break; // Avoid infinite loop on stuck in-flight hashes
                 }
+                // If in-flight, silently drop — the invariant check above
+                // guarantees orphaned hashes get reclaimed.
             }
         }
 
