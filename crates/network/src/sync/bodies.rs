@@ -89,19 +89,34 @@ impl BodyDownloader {
             return None;
         }
 
-        // Invariant: in_flight must only contain hashes with an active request.
-        // Without this, hashes can get orphaned in in_flight (e.g., if a response
-        // is lost or cleanup_timeouts races with the manager), blocking all future
-        // requests permanently.
-        if self.active_requests.is_empty() && !self.in_flight.is_empty() {
-            let orphaned = self.in_flight.len();
-            for hash in self.in_flight.drain() {
-                self.failed.push_back(hash);
+        // Invariant: in_flight should only contain hashes tracked by active_requests.
+        // Compute the expected in-flight count from active requests and release any excess.
+        // This handles all stall scenarios: peer disconnect, lost responses, timeout races.
+        let expected_in_flight: usize = self.active_requests.values().map(|r| r.hashes.len()).sum();
+        let actual_in_flight = self.in_flight.len();
+        if actual_in_flight > expected_in_flight {
+            // Rebuild in_flight from active_requests to drop orphaned hashes
+            let valid: HashSet<Hash> = self
+                .active_requests
+                .values()
+                .flat_map(|r| r.hashes.iter().copied())
+                .collect();
+            let orphaned: Vec<Hash> = self
+                .in_flight
+                .iter()
+                .filter(|h| !valid.contains(h))
+                .copied()
+                .collect();
+            for hash in &orphaned {
+                self.in_flight.remove(hash);
+                self.failed.push_back(*hash);
             }
-            if orphaned > 0 {
+            if !orphaned.is_empty() {
                 warn!(
-                    "Released {} orphaned in-flight hashes (no active requests)",
-                    orphaned
+                    "Released {} orphaned in-flight hashes ({} active, {} were in-flight)",
+                    orphaned.len(),
+                    expected_in_flight,
+                    actual_in_flight
                 );
             }
         }
