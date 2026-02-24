@@ -88,14 +88,15 @@ done
 **Fix**: Wipe the forked node and resync:
 
 ```bash
-# Stop forked node
-kill $(pgrep -f 'data-dir.*nodeN')
+# Stop forked node via systemd (NEVER use kill/pkill on production nodes)
+sudo systemctl stop doli-mainnet-nodeN
 
 # Delete state (keep keys!)
 rm -f chain_state.bin producers.bin utxo.bin
 rm -rf blocks/ signed_slots.db/
 
 # Restart — will resync from peers
+sudo systemctl start doli-mainnet-nodeN
 ```
 
 ## Sync Problems
