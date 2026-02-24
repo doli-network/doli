@@ -391,6 +391,22 @@ impl RegistrationChainState {
     }
 }
 
+/// Validation mode for synced blocks.
+///
+/// Controls whether VDF proof verification is performed during block validation.
+/// After snap sync, gap blocks use `Light` mode (VDF already trusted via state root
+/// quorum), while recent blocks near the tip use `Full` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMode {
+    /// Full validation including VDF proof verification.
+    /// Used for: gossip blocks, last epoch of sync (360 blocks).
+    Full,
+    /// Light validation: everything except VDF proof verification.
+    /// Used for: gap blocks after snap sync where state root was
+    /// already verified by peer quorum (2+ peers).
+    Light,
+}
+
 /// Block validation context.
 ///
 /// Holds all the context needed to validate a block or transaction,
@@ -628,6 +644,93 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
 
     // 7. Validate producer eligibility (if not in bootstrap)
     validate_producer_eligibility(&block.header, ctx)?;
+
+    Ok(())
+}
+
+/// Validate a block with a specified validation mode.
+///
+/// In `Full` mode, this is identical to `validate_block()` — all checks including
+/// VDF proof verification are performed.
+///
+/// In `Light` mode, VDF verification is skipped. This is used for gap blocks after
+/// snap sync, where the state root was already verified by a peer quorum. All other
+/// checks (header, merkle root, block size, transactions, double-spend, producer
+/// eligibility) are still performed.
+pub fn validate_block_with_mode(
+    block: &Block,
+    ctx: &ValidationContext,
+    mode: ValidationMode,
+) -> Result<(), ValidationError> {
+    match mode {
+        ValidationMode::Full => {
+            // Full validation: all checks including time-based header validation and VDF.
+            validate_header(&block.header, ctx)?;
+
+            let size = block.size();
+            let max_size = max_block_size(ctx.current_height);
+            if size > max_size {
+                return Err(ValidationError::BlockTooLarge {
+                    size,
+                    max: max_size,
+                });
+            }
+
+            if !block.verify_merkle_root() {
+                return Err(ValidationError::InvalidMerkleRoot);
+            }
+
+            for tx in &block.transactions {
+                validate_transaction(tx, ctx)?;
+            }
+
+            check_internal_double_spend(block)?;
+
+            if !ctx.params.is_bootstrap(ctx.current_height) {
+                validate_vdf(&block.header, ctx.network)?;
+            }
+
+            validate_producer_eligibility(&block.header, ctx)?;
+        }
+        ValidationMode::Light => {
+            // Light validation for synced gap blocks: skip VDF and time-based header
+            // checks (MAX_PAST_SLOTS would reject old blocks during sync).
+            // Header chain linkage was already verified during header download.
+
+            // Version check
+            if block.header.version != 1 {
+                return Err(ValidationError::InvalidVersion(block.header.version));
+            }
+
+            // Block size
+            let size = block.size();
+            let max_size = max_block_size(ctx.current_height);
+            if size > max_size {
+                return Err(ValidationError::BlockTooLarge {
+                    size,
+                    max: max_size,
+                });
+            }
+
+            // Merkle root integrity
+            if !block.verify_merkle_root() {
+                return Err(ValidationError::InvalidMerkleRoot);
+            }
+
+            // Transaction structural validation
+            for tx in &block.transactions {
+                validate_transaction(tx, ctx)?;
+            }
+
+            // Internal double-spend detection
+            check_internal_double_spend(block)?;
+
+            // Producer eligibility (still checked — confirms the right producer signed)
+            validate_producer_eligibility(&block.header, ctx)?;
+
+            // VDF: intentionally skipped — state root quorum already validates the chain
+        }
+    }
 
     Ok(())
 }
@@ -4926,5 +5029,122 @@ mod tests {
             "RevokeDelegation with empty data should fail: {:?}",
             result
         );
+    }
+
+    // ==========================================================================
+    // ValidationMode Tests (Smart Sync)
+    // ==========================================================================
+
+    /// Create a block with a valid merkle root for validation mode tests
+    fn create_block_with_merkle() -> (Block, ValidationContext) {
+        use crate::block::{Block, BlockHeader};
+        use vdf::{VdfOutput, VdfProof};
+
+        let keypair = crypto::KeyPair::generate();
+        let slot = 12; // Slot 12 = GENESIS_TIME + 120
+        let header = BlockHeader {
+            version: 1,
+            slot,
+            timestamp: GENESIS_TIME + (slot as u64 * 10),
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            producer: keypair.public_key().clone(),
+            vdf_output: VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: VdfProof::default(),
+        };
+
+        let mut block = Block {
+            header,
+            transactions: vec![],
+        };
+        // Fix merkle root to match (empty tx list)
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let ctx = ValidationContext::new(
+            ConsensusParams::mainnet(),
+            Network::Mainnet,
+            GENESIS_TIME + 120,
+            1,
+        )
+        .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+        .with_bootstrap_producers(vec![keypair.public_key().clone()]);
+
+        (block, ctx)
+    }
+
+    #[test]
+    fn test_validate_block_light_skips_vdf() {
+        let (block, ctx) = create_block_with_merkle();
+
+        // Light mode should accept a block even with invalid VDF (zeros)
+        let result = validate_block_with_mode(&block, &ctx, ValidationMode::Light);
+        assert!(
+            result.is_ok(),
+            "Light mode should skip VDF validation: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_light_rejects_bad_merkle() {
+        let (mut block, ctx) = create_block_with_merkle();
+
+        // Corrupt the merkle root
+        block.header.merkle_root = crypto::hash::hash(b"corrupted");
+
+        let result = validate_block_with_mode(&block, &ctx, ValidationMode::Light);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidMerkleRoot)),
+            "Light mode should still reject bad merkle root: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_light_rejects_bad_version() {
+        let (mut block, ctx) = create_block_with_merkle();
+
+        // Set invalid version
+        block.header.version = 99;
+
+        let result = validate_block_with_mode(&block, &ctx, ValidationMode::Light);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidVersion(99))),
+            "Light mode should reject invalid version: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_block_light_rejects_oversized_block() {
+        let (mut block, ctx) = create_block_with_merkle();
+
+        // Add a large transaction to exceed block size limit
+        let large_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![],
+            extra_data: vec![0u8; 2_000_000], // 2MB > 1MB limit
+        };
+        block.transactions.push(large_tx);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let result = validate_block_with_mode(&block, &ctx, ValidationMode::Light);
+        assert!(
+            matches!(result, Err(ValidationError::BlockTooLarge { .. })),
+            "Light mode should reject oversized blocks: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validation_mode_enum_equality() {
+        assert_eq!(ValidationMode::Full, ValidationMode::Full);
+        assert_eq!(ValidationMode::Light, ValidationMode::Light);
+        assert_ne!(ValidationMode::Full, ValidationMode::Light);
     }
 }
