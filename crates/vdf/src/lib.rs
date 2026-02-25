@@ -54,7 +54,7 @@
 //! | Discriminant bits | 2048 | Security (infeasible to factor) |
 //! | Challenge bits | 128 | Proof soundness |
 //! | T_BLOCK | 10M | ~700ms anti-grinding VDF |
-//! | T_REGISTER_BASE | 600M | ~10 minutes for registration (anti-Sybil) |
+//! | T_REGISTER_BASE | 5M | ~30 seconds for registration (anti-flash-attack) |
 //!
 //! ## Time-Based Consensus
 //!
@@ -155,21 +155,15 @@ use crypto::Hash;
 /// Registration VDF (T_REGISTER_BASE) remains long for anti-Sybil protection.
 pub const T_BLOCK: u64 = 800_000;
 
-/// Base VDF parameter for producer registration - MAINNET DEFAULT (~10 minutes).
+/// Fixed VDF parameter for producer registration (~30 seconds).
 ///
-/// **Note**: This is the mainnet default value. For network-aware code, use
-/// `doli_core::network_params::NetworkParams::load(network).vdf_register_iterations` instead.
-/// Devnet uses 5M iterations (~5 seconds) for fast testing.
-///
-/// Registration VDF difficulty scales with the number of registered producers
-/// to maintain Sybil resistance as the network grows.
-pub const T_REGISTER_BASE: u64 = 600_000_000;
+/// No longer scales with producer count. The economic bond (10 DOLI)
+/// provides Sybil protection at scale; this VDF is a lightweight
+/// anti-flash-attack barrier preventing instant mass registration.
+pub const T_REGISTER_BASE: u64 = 5_000_000;
 
-/// Maximum VDF parameter for registration (~24 hours).
-///
-/// This caps the registration difficulty to prevent the network from
-/// becoming completely closed to new participants.
-pub const T_REGISTER_CAP: u64 = 86_400_000_000;
+/// Maximum VDF parameter for registration — same as base (no escalation).
+pub const T_REGISTER_CAP: u64 = 5_000_000;
 
 /// Size of the discriminant in bits.
 ///
@@ -302,17 +296,12 @@ pub fn selection_seed(prev_hash: &Hash, slot: u32) -> Hash {
 
 /// Calculate registration VDF difficulty based on network size.
 ///
-/// The difficulty scales with the number of registered producers to
-/// maintain Sybil resistance. More producers = harder to register.
-///
-/// # Formula
-///
-/// t = min(T_REGISTER_CAP, T_REGISTER_BASE * (1 + registered_count / 100))
+/// Registration VDF difficulty — fixed at T_REGISTER_BASE (~30 seconds).
+/// No longer scales with producer count. The economic bond provides
+/// Sybil protection at scale; the VDF is a lightweight anti-flash-attack barrier.
 #[must_use]
-pub fn registration_difficulty(registered_count: u64) -> u64 {
-    let multiplier = 1 + registered_count / 100;
-    let difficulty = T_REGISTER_BASE.saturating_mul(multiplier);
-    std::cmp::min(difficulty, T_REGISTER_CAP)
+pub fn registration_difficulty(_registered_count: u64) -> u64 {
+    T_REGISTER_BASE
 }
 
 #[cfg(test)]
@@ -417,19 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn test_registration_difficulty_scaling() {
-        // Base case
+    fn test_registration_difficulty_fixed() {
+        // Registration difficulty is now fixed regardless of producer count
         assert_eq!(registration_difficulty(0), T_REGISTER_BASE);
-
-        // With 100 producers
-        assert_eq!(registration_difficulty(100), T_REGISTER_BASE * 2);
-
-        // With 1000 producers
-        assert_eq!(registration_difficulty(1000), T_REGISTER_BASE * 11);
-
-        // Should cap at T_REGISTER_CAP
-        let large_count = 1_000_000_000;
-        assert_eq!(registration_difficulty(large_count), T_REGISTER_CAP);
+        assert_eq!(registration_difficulty(100), T_REGISTER_BASE);
+        assert_eq!(registration_difficulty(1000), T_REGISTER_BASE);
+        assert_eq!(registration_difficulty(1_000_000), T_REGISTER_BASE);
     }
 
     #[test]

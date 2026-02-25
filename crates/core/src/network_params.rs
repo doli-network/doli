@@ -384,7 +384,7 @@ impl NetworkParams {
                 // VDF (800K iterations ~= 55ms for 2s sequential fallback windows)
                 vdf_iterations: 800_000,
                 heartbeat_vdf_iterations: 800_000,
-                vdf_register_iterations: 600_000_000,
+                vdf_register_iterations: 5_000_000, // Fixed ~30s, no escalation
 
                 // Time structure
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
@@ -444,7 +444,7 @@ impl NetworkParams {
                 // VDF (800K iterations ~= 55ms, same as mainnet)
                 vdf_iterations: 800_000,
                 heartbeat_vdf_iterations: 800_000,
-                vdf_register_iterations: 600_000_000,
+                vdf_register_iterations: 5_000_000, // Fixed ~30s, same as mainnet
 
                 // Time structure (same as mainnet)
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
