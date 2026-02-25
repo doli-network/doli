@@ -91,6 +91,8 @@ pub enum SyncResponse {
     StateRoot {
         /// Block hash this root is for
         block_hash: Hash,
+        /// Block height this root is for (for grouping votes by height)
+        block_height: u64,
         /// The computed state root
         state_root: Hash,
     },

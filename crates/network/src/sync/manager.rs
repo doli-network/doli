@@ -87,12 +87,12 @@ pub enum SyncState {
     Synchronized,
     /// Snap sync: collecting state root votes from peers
     SnapCollectingRoots {
-        /// Target block hash to snapshot at
+        /// Target block hash to snapshot at (initial estimate, may differ from quorum)
         target_hash: Hash,
-        /// Target block height
+        /// Target block height (initial estimate)
         target_height: u64,
-        /// Collected (peer, state_root) votes
-        votes: Vec<(PeerId, Hash)>,
+        /// Collected (peer, block_hash, block_height, state_root) votes
+        votes: Vec<(PeerId, Hash, u64, Hash)>,
         /// Peers already asked
         asked: HashSet<PeerId>,
         /// When this phase started
@@ -467,7 +467,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync defaults
             snap_sync_threshold: 1000,
-            snap_sync_quorum: 3,
+            snap_sync_quorum: 2, // 2 peers agreeing on (height, root) is sufficient
             snap_root_timeout: Duration::from_secs(10),
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
@@ -1743,14 +1743,14 @@ impl SyncManager {
             } => {
                 let target_hash = *target_hash;
                 let already_asked = asked.clone();
-                // Ask peers at the same best_hash that we haven't asked yet and aren't blacklisted
+                // Ask ALL peers we haven't asked yet (not filtered by best_hash).
+                // Each peer returns its current state root + height.
+                // Quorum is found by grouping votes by (height, root).
                 let candidate = self
                     .peers
                     .iter()
-                    .filter(|(pid, status)| {
-                        status.best_hash == target_hash
-                            && !already_asked.contains(pid)
-                            && !self.snap_blacklisted_peers.contains(pid)
+                    .filter(|(pid, _)| {
+                        !already_asked.contains(pid) && !self.snap_blacklisted_peers.contains(pid)
                     })
                     .map(|(pid, _)| *pid)
                     .next();
@@ -1928,13 +1928,14 @@ impl SyncManager {
             }
             SyncResponse::StateRoot {
                 block_hash,
+                block_height,
                 state_root,
             } => {
                 info!(
-                    "[SNAP_SYNC] Received state root from peer {}: hash={}, root={}",
-                    peer, block_hash, state_root
+                    "[SNAP_SYNC] Received state root from peer {}: hash={}, height={}, root={}",
+                    peer, block_hash, block_height, state_root
                 );
-                self.handle_snap_state_root(peer, block_hash, state_root);
+                self.handle_snap_state_root(peer, block_hash, block_height, state_root);
                 vec![]
             }
         }
@@ -2311,53 +2312,58 @@ impl SyncManager {
     // =========================================================================
 
     /// Handle a StateRoot response: add vote and check quorum.
-    fn handle_snap_state_root(&mut self, peer: PeerId, _block_hash: Hash, state_root: Hash) {
-        if let SyncState::SnapCollectingRoots {
-            target_hash,
-            target_height,
-            votes,
-            ..
-        } = &mut self.state
+    /// Votes are grouped by (height, root) — peers at the same height with the
+    /// same state root form a quorum. This works even on a live chain where
+    /// different peers may be at slightly different heights.
+    fn handle_snap_state_root(
+        &mut self,
+        peer: PeerId,
+        block_hash: Hash,
+        block_height: u64,
+        state_root: Hash,
+    ) {
+        if let SyncState::SnapCollectingRoots { votes, .. } = &mut self.state {
+            votes.push((peer, block_hash, block_height, state_root));
+        } else {
+            return;
+        }
+
+        let quorum = self.snap_sync_quorum;
+
+        let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
+            if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+                votes.clone()
+            } else {
+                return;
+            };
+
+        // Group votes by (height, state_root) — peers must agree on both
+        let mut groups: HashMap<(u64, Hash), Vec<(PeerId, Hash)>> = HashMap::new();
+        for (pid, bhash, bheight, sroot) in &votes_snapshot {
+            groups
+                .entry((*bheight, *sroot))
+                .or_default()
+                .push((*pid, *bhash));
+        }
+
+        // Find any group with quorum
+        if let Some(((height, quorum_root), peers_with_hash)) =
+            groups.iter().find(|(_, peers)| peers.len() >= quorum)
         {
-            votes.push((peer, state_root));
-
-            let target_hash = *target_hash;
-            let target_height = *target_height;
-            let quorum = self.snap_sync_quorum;
-
-            // Count votes per root
-            let votes_snapshot: Vec<(PeerId, Hash)> =
-                if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
-                    votes.clone()
-                } else {
-                    return;
-                };
-
-            let mut root_counts: HashMap<Hash, Vec<PeerId>> = HashMap::new();
-            for (pid, root) in &votes_snapshot {
-                root_counts.entry(*root).or_default().push(*pid);
-            }
-
-            // Check if any root has reached quorum
-            if let Some((quorum_root, agreeing_peers)) =
-                root_counts.iter().find(|(_, peers)| peers.len() >= quorum)
-            {
-                let download_peer = agreeing_peers[0];
-                info!(
-                    "[SNAP_SYNC] Quorum reached: {} peers agree on root={:.16}, downloading from {}",
-                    agreeing_peers.len(),
-                    quorum_root,
-                    download_peer
-                );
-                let quorum_root = *quorum_root;
-                self.state = SyncState::SnapDownloading {
-                    target_hash,
-                    target_height,
-                    quorum_root,
-                    peer: download_peer,
-                    started_at: Instant::now(),
-                };
-            }
+            let (download_peer, download_hash) = peers_with_hash[0];
+            info!(
+                "[SNAP_SYNC] Quorum reached: {} peers agree on height={}, root={:.16}, downloading from {}",
+                peers_with_hash.len(), height, quorum_root, download_peer
+            );
+            let quorum_root = *quorum_root;
+            let target_height = *height;
+            self.state = SyncState::SnapDownloading {
+                target_hash: download_hash,
+                target_height,
+                quorum_root,
+                peer: download_peer,
+                started_at: Instant::now(),
+            };
         }
     }
 

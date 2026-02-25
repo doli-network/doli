@@ -3105,23 +3105,21 @@ impl Node {
                 _ => SyncResponse::Block(None),
             },
 
-            SyncRequest::GetStateRoot { block_hash } => {
+            SyncRequest::GetStateRoot { block_hash: _ } => {
+                // Return current state root regardless of requested hash.
+                // The requester groups votes by (height, root) to find quorum.
                 let chain_state = self.chain_state.read().await;
-                if chain_state.best_hash != block_hash {
-                    SyncResponse::Error(format!(
-                        "State root only available for current tip {}",
-                        chain_state.best_hash
-                    ))
-                } else {
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
-                        Ok(root) => SyncResponse::StateRoot {
-                            block_hash,
-                            state_root: root,
-                        },
-                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
-                    }
+                let current_hash = chain_state.best_hash;
+                let current_height = chain_state.best_height;
+                let utxo_set = self.utxo_set.read().await;
+                let ps = self.producer_set.read().await;
+                match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
+                    Ok(root) => SyncResponse::StateRoot {
+                        block_hash: current_hash,
+                        block_height: current_height,
+                        state_root: root,
+                    },
+                    Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
                 }
             }
 
