@@ -904,17 +904,20 @@ pub fn construct_vdf_input(
     ])
 }
 
-/// Base registration VDF time (10 minutes in iterations)
-pub const T_REGISTER_BASE: u64 = 600_000_000;
+/// Registration VDF iterations (~30 seconds on reference hardware).
+/// Fixed value — does NOT scale with producer count.
+/// At scale, the bond (10 DOLI) provides Sybil protection via economic dilution.
+/// The VDF is a lightweight anti-flash-attack barrier, not the primary defense.
+pub const T_REGISTER_BASE: u64 = 5_000_000;
 
-/// Target registrations per epoch
+/// Target registrations per epoch (used for fee calculation)
 pub const R_TARGET: u32 = 10;
 
-/// Maximum registrations per epoch
+/// Maximum registrations per epoch (used for fee calculation)
 pub const R_CAP: u32 = 100;
 
-/// Maximum registration VDF time (24 hours)
-pub const T_REGISTER_CAP: u64 = 86_400_000_000;
+/// Maximum registration VDF time — same as base (no escalation)
+pub const T_REGISTER_CAP: u64 = 5_000_000;
 
 // ==================== Registration Queue Anti-DoS ====================
 
