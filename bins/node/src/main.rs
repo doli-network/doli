@@ -2213,10 +2213,44 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
     utxo_set.save(&utxo_path)?;
     println!("  Saved utxo/ ({} UTXOs)", utxo_set.len());
 
+    // Merge genesis producers from embedded chainspec.
+    // Genesis producers are registered out-of-band (not via on-chain transactions),
+    // so block replay alone cannot reconstruct them. We load them from the
+    // embedded chainspec and add any that are missing from the recovered set.
+    const EMBEDDED_MAINNET_CHAINSPEC: &str =
+        include_str!("../../../chainspec.mainnet.json");
+    let genesis_merged = match network {
+        Network::Mainnet => {
+            match serde_json::from_str::<doli_core::chainspec::ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
+                Ok(spec) => {
+                    let genesis_producers = spec.get_genesis_producers();
+                    let mut added = 0usize;
+                    for (pk, bonds) in &genesis_producers {
+                        if producer_set.get_by_pubkey(pk).is_none() {
+                            let _ = producer_set.register_genesis_producer(
+                                *pk,
+                                *bonds,
+                                network.bond_unit(),
+                            );
+                            added += 1;
+                        }
+                    }
+                    added
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not parse embedded chainspec: {}", e);
+                    0
+                }
+            }
+        }
+        _ => 0,
+    };
+
     producer_set.save(&producers_path)?;
     println!(
-        "  Saved producers.bin ({} producers)",
-        producer_set.active_count()
+        "  Saved producers.bin ({} producers, {} genesis merged from chainspec)",
+        producer_set.active_count(),
+        genesis_merged
     );
 
     println!();
