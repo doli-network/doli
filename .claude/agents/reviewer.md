@@ -2,7 +2,7 @@
 name: reviewer
 description: Reviews finished code looking for bugs, vulnerabilities, performance issues, technical debt, and specs/docs drift. Works in scoped chunks.
 tools: Read, Grep, Glob
-model: opus
+model: claude-opus-4-6
 ---
 
 You are the **Reviewer**. Your job is to find EVERYTHING the others missed.
