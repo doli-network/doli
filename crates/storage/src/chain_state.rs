@@ -44,6 +44,16 @@ pub struct ChainState {
     /// the TOTAL_SUPPLY cap: `total_minted + reward <= TOTAL_SUPPLY`.
     #[serde(default)]
     pub total_minted: Amount,
+    /// Height at which snap sync last completed, if any.
+    ///
+    /// `Some(h)` means this chain state was produced by snap sync at height `h`
+    /// and the block store is intentionally empty below that height.
+    /// `None` means the chain state was built from full block replay.
+    ///
+    /// NOT included in `serialize_canonical()` — local bookkeeping only,
+    /// not part of the consensus state root.
+    #[serde(default)]
+    pub snap_sync_height: Option<u64>,
 }
 
 impl ChainState {
@@ -59,6 +69,7 @@ impl ChainState {
             last_registration_hash: Hash::ZERO,
             registration_sequence: 0,
             total_minted: 0,
+            snap_sync_height: None,
         }
     }
 
@@ -221,6 +232,31 @@ impl ChainState {
     /// Get total minted coins
     pub fn total_minted(&self) -> Amount {
         self.total_minted
+    }
+}
+
+// ==================== Snap Sync State ====================
+//
+// `snap_sync_height` is persisted so the startup integrity check can
+// distinguish "block store empty because snap sync, which is correct"
+// from "block store empty because corruption, which is wrong".
+// Cleared on the first successful `apply_block` after snap sync.
+
+impl ChainState {
+    /// Mark this chain state as having been snap-synced to the given height.
+    /// Persists so the next restart knows not to reset to genesis.
+    pub fn mark_snap_synced(&mut self, height: u64) {
+        self.snap_sync_height = Some(height);
+    }
+
+    /// Clear the snap sync marker after the first post-snap-sync block is applied.
+    pub fn clear_snap_sync(&mut self) {
+        self.snap_sync_height = None;
+    }
+
+    /// Whether this chain state was loaded from a snap sync (block store may be empty).
+    pub fn is_snap_synced(&self) -> bool {
+        self.snap_sync_height.is_some()
     }
 }
 

@@ -352,6 +352,29 @@ impl BlockStore {
         Ok(())
     }
 
+    /// Seed the canonical chain index with a single anchor entry.
+    ///
+    /// Called after snap sync to establish the invariant that `height_index`
+    /// contains an entry for the snap-synced tip. Without this, the very first
+    /// `set_canonical_chain` call after snap sync walks backwards into an empty
+    /// store and crashes with "header N missing".
+    ///
+    /// Two writes: `height_index[height] = hash` and `hash_to_height[hash] = height`.
+    /// This is enough for `set_canonical_chain` to exit early at the snap height.
+    pub fn seed_canonical_index(&self, hash: Hash, height: u64) -> Result<(), StorageError> {
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(cf_height, height.to_le_bytes(), hash.as_bytes());
+        batch.put_cf(cf_h2h, hash.as_bytes(), height.to_le_bytes());
+        self.db.write(batch)?;
+        info!(
+            "[BLOCK_STORE] Snap sync anchor seeded: height={}, hash={:.16}",
+            height, hash
+        );
+        Ok(())
+    }
+
     /// Rebuild canonical chain index from scratch by scanning the headers CF.
     ///
     /// Does NOT use height_index at all. Finds the true chain tip by scanning
