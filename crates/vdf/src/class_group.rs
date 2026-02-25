@@ -710,7 +710,7 @@ pub fn div_2pow_by_l(t: u64, l: &Integer) -> Integer {
     // 2^t = 2 * 2^(t-1)
     // floor(2^t / l) = floor(2 * 2^(t-1) / l) = 2*floor(2^(t-1)/l) + correction
 
-    let mut q = Integer::from(1); // Start with 2^0 / l = 0, but we track the cumulative
+    let mut q = Integer::from(0); // floor(2^1 / l) = 0 for any prime l > 2
     let mut r = Integer::from(2); // 2^1 mod l initially
 
     for _ in 1..t {
@@ -876,5 +876,64 @@ mod tests {
             prop_assert!(recovered.is_ok());
             prop_assert_eq!(elem, recovered.unwrap());
         }
+    }
+
+    #[test]
+    fn test_div_2pow_by_l_small_t() {
+        // For small t, verify against direct computation
+        let l = Integer::from(17);
+        // 2^3 = 8, floor(8/17) = 0
+        assert_eq!(div_2pow_by_l(3, &l), Integer::from(0));
+        // 2^5 = 32, floor(32/17) = 1
+        assert_eq!(div_2pow_by_l(5, &l), Integer::from(1));
+        // 2^10 = 1024, floor(1024/17) = 60
+        assert_eq!(div_2pow_by_l(10, &l), Integer::from(60));
+    }
+
+    #[test]
+    fn test_div_2pow_by_l_large_t_matches_direct() {
+        // Verify iterative path (t > 128) matches direct computation
+        let l = Integer::from(17);
+
+        // Direct: 2^200 / 17
+        let two_200 = Integer::from(2).pow(200);
+        let expected = Integer::from(&two_200 / &l);
+
+        let result = div_2pow_by_l(200, &l);
+        assert_eq!(result, expected, "t=200: iterative must match direct");
+    }
+
+    #[test]
+    fn test_div_2pow_by_l_boundary_128() {
+        // Test at the boundary between direct and iterative paths
+        let l = Integer::from(31);
+
+        let two_128 = Integer::from(2).pow(128);
+        let expected_128 = Integer::from(&two_128 / &l);
+        assert_eq!(div_2pow_by_l(128, &l), expected_128);
+
+        let two_129 = Integer::from(2).pow(129);
+        let expected_129 = Integer::from(&two_129 / &l);
+        assert_eq!(
+            div_2pow_by_l(129, &l),
+            expected_129,
+            "t=129 (first iterative) must match direct"
+        );
+    }
+
+    #[test]
+    fn test_div_2pow_by_l_large_prime() {
+        // Use a large prime similar to what Wesolowski VDF uses
+        let l = Integer::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF43",
+            16,
+        )
+        .unwrap();
+
+        // t=200: verify iterative matches direct
+        let two_200 = Integer::from(2).pow(200);
+        let expected = Integer::from(&two_200 / &l);
+        let result = div_2pow_by_l(200, &l);
+        assert_eq!(result, expected, "Large prime: iterative must match direct");
     }
 }
