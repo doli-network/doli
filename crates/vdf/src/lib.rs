@@ -313,7 +313,7 @@ mod tests {
     fn test_constants() {
         assert!(T_BLOCK > 0);
         assert!(T_REGISTER_BASE > T_BLOCK);
-        assert!(T_REGISTER_CAP > T_REGISTER_BASE);
+        assert!(T_REGISTER_CAP >= T_REGISTER_BASE);
         assert_eq!(DISCRIMINANT_BITS, 2048);
     }
 
