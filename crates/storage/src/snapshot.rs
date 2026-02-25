@@ -16,16 +16,16 @@ use crate::StorageError;
 /// where H is the crypto hash function and || is concatenation.
 ///
 /// Deterministic because all three components use canonical serialization:
-/// - ChainState: bincode (only scalar fields, no collections)
-/// - UtxoSet: `serialize_canonical()` — entries sorted by outpoint key
+/// - ChainState: `serialize_canonical()` — 140-byte fixed encoding, immune to struct evolution
+/// - UtxoSet: `serialize_canonical()` — entries sorted by outpoint key, 59-byte canonical values
 /// - ProducerSet: `serialize_canonical()` — entries sorted by pubkey hash
 pub fn compute_state_root(
     chain_state: &ChainState,
     utxo_set: &UtxoSet,
     producer_set: &ProducerSet,
 ) -> Result<Hash, StorageError> {
-    let cs_bytes =
-        bincode::serialize(chain_state).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    // Canonical fixed-byte encodings — immune to bincode struct evolution.
+    let cs_bytes = chain_state.serialize_canonical();
     let utxo_bytes = utxo_set.serialize_canonical();
     let ps_bytes = producer_set.serialize_canonical();
 
@@ -38,45 +38,36 @@ pub fn compute_state_root(
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
     combined.extend_from_slice(ps_hash.as_bytes());
-    let final_root = crypto::hash::hash(&combined);
 
-    // TEMPORARY FORENSIC LOGGING — identifies which component diverges across nodes.
-    // Compare [STATE_ROOT_FORENSICS] lines at the same height across N1-N5.
-    // Remove once root cause is confirmed and fixed.
-    tracing::info!(
-        "[STATE_ROOT_FORENSICS] h={} slot={} total_work={} genesis_ts={} \
-         last_reg={:.8} reg_seq={} total_minted={} | \
-         cs={:.16} utxo={:.16} ps={:.16} root={:.16}",
-        chain_state.best_height,
-        chain_state.best_slot,
-        chain_state.total_work,
-        chain_state.genesis_timestamp,
-        chain_state.last_registration_hash,
-        chain_state.registration_sequence,
-        chain_state.total_minted,
-        cs_hash,
-        utxo_hash,
-        ps_hash,
-        final_root,
-    );
-
-    Ok(final_root)
+    Ok(crypto::hash::hash(&combined))
 }
 
-/// Compute state root from pre-serialized byte slices.
+/// Compute state root from wire-format byte slices.
 ///
-/// Used when we already have the serialized components (e.g., during
-/// snapshot verification).
+/// Used during snap sync to verify a received snapshot's state root matches
+/// the quorum-agreed root. Wire bytes are bincode for ChainState and ProducerSet;
+/// utxo_set_bytes is already in canonical format.
+///
+/// Canonicalizes each component before hashing to match `compute_state_root()`.
 pub fn compute_state_root_from_bytes(
     chain_state_bytes: &[u8],
     utxo_set_bytes: &[u8],
     producer_set_bytes: &[u8],
 ) -> Hash {
-    let cs_hash = crypto::hash::hash(chain_state_bytes);
-    let utxo_hash = crypto::hash::hash(utxo_set_bytes);
-    let ps_hash = crypto::hash::hash(producer_set_bytes);
+    // Deserialize from wire format (bincode), then re-encode canonically.
+    let cs_canonical = bincode::deserialize::<ChainState>(chain_state_bytes)
+        .map(|cs| cs.serialize_canonical().to_vec())
+        .unwrap_or_else(|_| chain_state_bytes.to_vec());
+    let ps_canonical = bincode::deserialize::<ProducerSet>(producer_set_bytes)
+        .map(|ps| ps.serialize_canonical())
+        .unwrap_or_else(|_| producer_set_bytes.to_vec());
 
-    let mut combined = Vec::with_capacity(96); // 3 * 32 bytes
+    // utxo_set_bytes is already in canonical format from UtxoSet::serialize_canonical()
+    let cs_hash = crypto::hash::hash(&cs_canonical);
+    let utxo_hash = crypto::hash::hash(utxo_set_bytes);
+    let ps_hash = crypto::hash::hash(&ps_canonical);
+
+    let mut combined = Vec::with_capacity(96);
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
     combined.extend_from_slice(ps_hash.as_bytes());
@@ -165,7 +156,7 @@ impl StateSnapshot {
 
 /// Deserialize canonical UTXO bytes into an in-memory UtxoSet.
 ///
-/// Format: `[8-byte LE count] [key1 (36 bytes)][value1 (bincode)] ...`
+/// Format: `[8-byte LE count] [key1 (36 bytes)][value1 (59 bytes canonical)] ...`
 fn deserialize_canonical_utxo(bytes: &[u8]) -> Result<UtxoSet, StorageError> {
     use crate::utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry};
 
@@ -191,15 +182,15 @@ fn deserialize_canonical_utxo(bytes: &[u8]) -> Result<UtxoSet, StorageError> {
         })?;
         pos += 36;
 
-        // Read bincode-encoded UtxoEntry (variable length)
-        let entry: UtxoEntry = bincode::deserialize(&bytes[pos..])
-            .map_err(|e| StorageError::Serialization(format!("canonical UTXO entry: {}", e)))?;
-
-        // Compute the serialized size to advance pos correctly
-        let entry_size = bincode::serialized_size(&entry)
-            .map_err(|e| StorageError::Serialization(format!("entry size: {}", e)))?
-            as usize;
-        pos += entry_size;
+        // Read canonical 59-byte UtxoEntry
+        if pos + 59 > bytes.len() {
+            return Err(StorageError::Serialization(
+                "truncated canonical UTXO entry".into(),
+            ));
+        }
+        let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + 59])
+            .ok_or_else(|| StorageError::Serialization("invalid entry in canonical UTXO".into()))?;
+        pos += 59;
 
         store.insert(outpoint, entry);
     }

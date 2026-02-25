@@ -81,7 +81,33 @@ impl ChainState {
         self.best_hash = hash;
         self.best_height = height;
         self.best_slot = slot;
-        self.total_work += 1;
+        // In PoT every block adds exactly 1 unit of work, so total_work == height.
+        // Using assignment (not +=1) prevents divergence between nodes that started
+        // from different chain_state.bin snapshots.
+        self.total_work = height;
+    }
+
+    /// Serialize ChainState to canonical bytes for state root computation.
+    ///
+    /// Uses a fixed-field, version-independent encoding immune to bincode
+    /// struct evolution. Never changes regardless of future field additions.
+    ///
+    /// Format (140 bytes):
+    /// `[32B best_hash][8B best_height][4B best_slot][8B total_work]`
+    /// `[32B genesis_hash][8B genesis_timestamp][32B last_registration_hash]`
+    /// `[8B registration_sequence][8B total_minted]`
+    pub fn serialize_canonical(&self) -> [u8; 140] {
+        let mut buf = [0u8; 140];
+        buf[0..32].copy_from_slice(self.best_hash.as_bytes());
+        buf[32..40].copy_from_slice(&self.best_height.to_le_bytes());
+        buf[40..44].copy_from_slice(&self.best_slot.to_le_bytes());
+        buf[44..52].copy_from_slice(&self.total_work.to_le_bytes());
+        buf[52..84].copy_from_slice(self.genesis_hash.as_bytes());
+        buf[84..92].copy_from_slice(&self.genesis_timestamp.to_le_bytes());
+        buf[92..124].copy_from_slice(self.last_registration_hash.as_bytes());
+        buf[124..132].copy_from_slice(&self.registration_sequence.to_le_bytes());
+        buf[132..140].copy_from_slice(&self.total_minted.to_le_bytes());
+        buf
     }
 
     /// Check if this is the genesis state

@@ -13,7 +13,7 @@ use std::path::Path;
 use crypto::Hash;
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
-use doli_core::transaction::Transaction;
+use doli_core::transaction::{Output, OutputType, Transaction};
 use doli_core::types::{Amount, BlockHeight};
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,52 @@ pub fn reward_maturity_for_network(network: Network) -> BlockHeight {
 }
 
 impl UtxoEntry {
+    /// Canonical 59-byte serialization for state root computation.
+    ///
+    /// Fixed-field encoding immune to bincode struct evolution.
+    /// Adding/removing fields from `UtxoEntry` will never affect this encoding.
+    ///
+    /// Format:
+    /// `[1B output_type][8B amount][32B pubkey_hash][8B lock_until][8B height][1B is_coinbase][1B is_epoch_reward]`
+    pub fn serialize_canonical_bytes(&self) -> [u8; 59] {
+        let mut buf = [0u8; 59];
+        buf[0] = self.output.output_type as u8;
+        buf[1..9].copy_from_slice(&self.output.amount.to_le_bytes());
+        buf[9..41].copy_from_slice(self.output.pubkey_hash.as_bytes());
+        buf[41..49].copy_from_slice(&self.output.lock_until.to_le_bytes());
+        buf[49..57].copy_from_slice(&self.height.to_le_bytes());
+        buf[57] = self.is_coinbase as u8;
+        buf[58] = self.is_epoch_reward as u8;
+        buf
+    }
+
+    /// Reconstruct a `UtxoEntry` from canonical 59-byte encoding.
+    ///
+    /// Returns `None` if the bytes are too short or the output type is unknown.
+    pub fn deserialize_canonical_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 59 {
+            return None;
+        }
+        let output_type = OutputType::from_u8(bytes[0])?;
+        let amount = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
+        let pubkey_hash = Hash::from_bytes(bytes[9..41].try_into().ok()?);
+        let lock_until = u64::from_le_bytes(bytes[41..49].try_into().ok()?);
+        let height = u64::from_le_bytes(bytes[49..57].try_into().ok()?);
+        let is_coinbase = bytes[57] != 0;
+        let is_epoch_reward = bytes[58] != 0;
+        Some(UtxoEntry {
+            output: Output {
+                output_type,
+                amount,
+                pubkey_hash,
+                lock_until,
+            },
+            height,
+            is_coinbase,
+            is_epoch_reward,
+        })
+    }
+
     /// Check if the UTXO is spendable at the given height for a specific network
     pub fn is_spendable_at_for_network(&self, height: BlockHeight, network: Network) -> bool {
         self.is_spendable_at_with_maturity(height, reward_maturity_for_network(network))
@@ -277,13 +323,13 @@ impl InMemoryUtxoStore {
         entries.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
 
         let count = entries.len() as u64;
-        let mut buf = Vec::with_capacity(8 + entries.len() * 140);
+        // 36 bytes outpoint key + 59 bytes canonical entry value + 8 bytes header
+        let mut buf = Vec::with_capacity(8 + entries.len() * 95);
         buf.extend_from_slice(&count.to_le_bytes());
 
         for (outpoint, entry) in entries {
             buf.extend_from_slice(&outpoint.to_bytes());
-            let value = bincode::serialize(entry).expect("UtxoEntry serialization");
-            buf.extend_from_slice(&value);
+            buf.extend_from_slice(&entry.serialize_canonical_bytes());
         }
 
         buf
