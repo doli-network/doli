@@ -215,29 +215,45 @@ impl Node {
                     // Tip hash exists in store — chain state is consistent
                 }
                 Ok(None) => {
-                    warn!(
-                        "Chain state tip {} at height {} not found in block store. Recovering...",
-                        chain_state.best_hash, chain_state.best_height
-                    );
-                    // Walk backwards through height index to find highest valid block
-                    let mut recovered = false;
-                    for h in (1..chain_state.best_height).rev() {
-                        if let Ok(Some(block)) = block_store.get_block_by_height(h) {
-                            info!(
-                                "Recovered chain state to height {} (hash {})",
-                                h,
-                                block.hash()
-                            );
-                            chain_state.best_hash = block.hash();
-                            chain_state.best_height = h;
-                            chain_state.best_slot = block.header.slot;
-                            recovered = true;
-                            break;
+                    if chain_state.is_snap_synced() {
+                        // Block store is intentionally empty after snap sync —
+                        // this is NOT corruption. Re-seed the canonical index so
+                        // set_canonical_chain can exit cleanly on the first
+                        // post-snap-sync block, then proceed normally.
+                        info!(
+                            "Chain state from snap sync at height {} — block store empty by design, re-seeding index.",
+                            chain_state.best_height
+                        );
+                        if let Err(e) = block_store
+                            .seed_canonical_index(chain_state.best_hash, chain_state.best_height)
+                        {
+                            warn!("Failed to re-seed canonical index after snap sync: {}", e);
                         }
-                    }
-                    if !recovered {
-                        warn!("No valid blocks found in store. Resetting to genesis.");
-                        chain_state = ChainState::new(genesis_hash);
+                    } else {
+                        warn!(
+                            "Chain state tip {} at height {} not found in block store. Recovering...",
+                            chain_state.best_hash, chain_state.best_height
+                        );
+                        // Walk backwards through height index to find highest valid block
+                        let mut recovered = false;
+                        for h in (1..chain_state.best_height).rev() {
+                            if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                                info!(
+                                    "Recovered chain state to height {} (hash {})",
+                                    h,
+                                    block.hash()
+                                );
+                                chain_state.best_hash = block.hash();
+                                chain_state.best_height = h;
+                                chain_state.best_slot = block.header.slot;
+                                recovered = true;
+                                break;
+                            }
+                        }
+                        if !recovered {
+                            warn!("No valid blocks found in store. Resetting to genesis.");
+                            chain_state = ChainState::new(genesis_hash);
+                        }
                     }
                 }
                 Err(e) => {
@@ -2221,6 +2237,7 @@ impl Node {
             let mut cs = self.chain_state.write().await;
             *cs = new_chain_state;
             cs.genesis_hash = genesis_hash; // Preserve our genesis identity
+            cs.mark_snap_synced(snapshot.block_height); // Survives restart: block store empty by design
         }
         {
             let mut utxo = self.utxo_set.write().await;
@@ -2238,10 +2255,15 @@ impl Node {
             sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
         }
 
-        // Step 5: Save to disk
+        // Step 5: Save to disk (includes snap_sync_height flag)
         self.save_state().await?;
 
-        // Step 6: Track snap sync height for validation mode selection
+        // Step 6: Seed the canonical index so the first post-snap-sync block can
+        // call set_canonical_chain without walking into an empty block store.
+        self.block_store
+            .seed_canonical_index(snapshot.block_hash, snapshot.block_height)?;
+
+        // Step 7: Track snap sync height in-memory for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
 
         info!(
@@ -2790,6 +2812,9 @@ impl Node {
         {
             let mut state = self.chain_state.write().await;
             state.update(block_hash, height, block.header.slot);
+            // Clear snap sync marker: block store now has at least one real block,
+            // so the next restart's integrity check will find it normally.
+            state.clear_snap_sync();
 
             // For devnet: set genesis_timestamp from first block if not already set from chainspec
             // When chainspec has a fixed genesis time, we MUST use it (all nodes must agree)
