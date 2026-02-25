@@ -2879,10 +2879,11 @@ impl Node {
         }
 
         // GENESIS END: Derive and register producers from the blockchain
-        // This transition happens when we move from genesis_blocks to genesis_blocks + 1
-        // The blockchain is the source of truth - we scan block headers to find genesis producers
+        // Trigger at the LAST genesis block so producers are registered BEFORE
+        // post-genesis production checks. Without this, height genesis_blocks+1
+        // has no registered producers → production deadlock.
         let genesis_blocks = self.config.network.genesis_blocks();
-        if genesis_blocks > 0 && height == genesis_blocks + 1 {
+        if genesis_blocks > 0 && height == genesis_blocks {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
             // Derive genesis producers from the blockchain (source of truth)
