@@ -2879,11 +2879,10 @@ impl Node {
         }
 
         // GENESIS END: Derive and register producers from the blockchain
-        // Trigger at the LAST genesis block so producers are registered BEFORE
-        // post-genesis production checks. Without this, height genesis_blocks+1
-        // has no registered producers → production deadlock.
+        // This runs when applying the FIRST post-genesis block (60,481).
+        // The transition block itself is produced via bootstrap mode (see try_produce_block).
         let genesis_blocks = self.config.network.genesis_blocks();
-        if genesis_blocks > 0 && height == genesis_blocks {
+        if genesis_blocks > 0 && height == genesis_blocks + 1 {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
             // Derive genesis producers from the blockchain (source of truth)
@@ -3487,12 +3486,15 @@ impl Node {
 
         // Use bootstrap mode if:
         // 1. Still in genesis phase (no bond required), OR
-        // 2. No active producers registered (testnet/devnet only)
+        // 2. No active producers registered (transition block or testnet/devnet)
         let our_pubkey = *producer_key.public_key();
+        let genesis_blocks = self.config.network.genesis_blocks();
         let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
             match self.config.network {
-                Network::Mainnet if !in_genesis => {
-                    // Outside genesis, mainnet requires registered producers
+                Network::Mainnet if !in_genesis && height > genesis_blocks + 1 => {
+                    // After the transition block, mainnet requires registered producers.
+                    // Height genesis_blocks+1 is the transition block — produced via bootstrap,
+                    // and its apply_block triggers genesis producer registration.
                     return Ok(());
                 }
                 Network::Mainnet | Network::Testnet | Network::Devnet => {
