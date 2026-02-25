@@ -429,4 +429,95 @@ mod tests {
         // Should never exceed cap
         assert!(state.total_minted <= TOTAL_SUPPLY);
     }
+
+    // ==================== serialize_canonical Tests ====================
+
+    #[test]
+    fn test_serialize_canonical_fixed_size() {
+        let state = ChainState::new(Hash::zero());
+        let bytes = state.serialize_canonical();
+        assert_eq!(bytes.len(), 140, "canonical bytes must be exactly 140");
+    }
+
+    #[test]
+    fn test_serialize_canonical_deterministic() {
+        let mut state = ChainState::new(crypto::hash::hash(b"genesis"));
+        state.update(crypto::hash::hash(b"block42"), 42, 100);
+        state.total_minted = 999_000_000;
+        state.genesis_timestamp = 1_700_000_000;
+
+        let b1 = state.serialize_canonical();
+        let b2 = state.serialize_canonical();
+        assert_eq!(b1, b2, "canonical serialization must be deterministic");
+    }
+
+    #[test]
+    fn test_serialize_canonical_different_states_differ() {
+        let s1 = ChainState::new(Hash::zero());
+        let mut s2 = ChainState::new(Hash::zero());
+        s2.update(crypto::hash::hash(b"block1"), 1, 1);
+
+        assert_ne!(
+            s1.serialize_canonical(),
+            s2.serialize_canonical(),
+            "different state must produce different canonical bytes"
+        );
+    }
+
+    #[test]
+    fn test_serialize_canonical_total_work_equals_height() {
+        let mut state = ChainState::new(Hash::zero());
+        // Simulate a node that was restarted at height 1000 and then processed 50 more blocks
+        // Old bug: total_work would be 50 (counted from restart)
+        // Fix: total_work = height always
+        state.update(crypto::hash::hash(b"block1050"), 1050, 2100);
+        assert_eq!(state.total_work, 1050, "total_work must equal height");
+
+        // Two nodes with the same best block but different restart histories
+        // must produce identical canonical bytes
+        let mut node_a = ChainState::new(Hash::zero());
+        let mut node_b = ChainState::new(Hash::zero());
+        let block_hash = crypto::hash::hash(b"block5000");
+        node_a.update(block_hash, 5000, 10000);
+        node_b.total_work = 999; // simulate stale value from old code
+        node_b.update(block_hash, 5000, 10000); // update overwrites with = height
+        assert_eq!(node_a.total_work, node_b.total_work);
+        assert_eq!(node_a.serialize_canonical(), node_b.serialize_canonical());
+    }
+
+    #[test]
+    fn test_serialize_canonical_field_layout() {
+        let best_hash = crypto::hash::hash(b"best");
+        let genesis_hash = crypto::hash::hash(b"genesis");
+        let last_reg = crypto::hash::hash(b"reg");
+        let mut state = ChainState::new(genesis_hash);
+        state.best_hash = best_hash;
+        state.best_height = 0x0102030405060708u64;
+        state.best_slot = 0x090A0B0Cu32;
+        state.total_work = 0x0102030405060708u64; // equals height after fix
+        state.genesis_timestamp = 0x1122334455667788u64;
+        state.last_registration_hash = last_reg;
+        state.registration_sequence = 0xAABBCCDDEEFF0011u64;
+        state.total_minted = 0x1234567890ABCDEFu64;
+
+        let bytes = state.serialize_canonical();
+        // best_hash at [0..32]
+        assert_eq!(&bytes[0..32], best_hash.as_bytes());
+        // best_height at [32..40] LE
+        assert_eq!(&bytes[32..40], &0x0102030405060708u64.to_le_bytes());
+        // best_slot at [40..44] LE
+        assert_eq!(&bytes[40..44], &0x090A0B0Cu32.to_le_bytes());
+        // total_work at [44..52] LE
+        assert_eq!(&bytes[44..52], &0x0102030405060708u64.to_le_bytes());
+        // genesis_hash at [52..84]
+        assert_eq!(&bytes[52..84], genesis_hash.as_bytes());
+        // genesis_timestamp at [84..92] LE
+        assert_eq!(&bytes[84..92], &0x1122334455667788u64.to_le_bytes());
+        // last_registration_hash at [92..124]
+        assert_eq!(&bytes[92..124], last_reg.as_bytes());
+        // registration_sequence at [124..132] LE
+        assert_eq!(&bytes[124..132], &0xAABBCCDDEEFF0011u64.to_le_bytes());
+        // total_minted at [132..140] LE
+        assert_eq!(&bytes[132..140], &0x1234567890ABCDEFu64.to_le_bytes());
+    }
 }
