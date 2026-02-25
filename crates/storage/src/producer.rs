@@ -1011,6 +1011,41 @@ impl ProducerSet {
         Ok(())
     }
 
+    /// Serialize the producer set in canonical (deterministic) order.
+    ///
+    /// HashMap iteration order is non-deterministic in Rust. This method
+    /// sorts entries by key (Hash) to produce identical bytes on every node
+    /// for the same logical state. Used for state root computation.
+    ///
+    /// Format: `[8-byte LE producer_count][sorted (key, info) pairs][8-byte LE exit_count][sorted (key, height) pairs]`
+    pub fn serialize_canonical(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Producers: sort by key hash for deterministic order
+        let mut producers: Vec<(&Hash, &ProducerInfo)> = self.producers.iter().collect();
+        producers.sort_by_key(|(k, _)| *k);
+
+        buf.extend_from_slice(&(producers.len() as u64).to_le_bytes());
+        for (key, info) in &producers {
+            buf.extend_from_slice(key.as_bytes());
+            let info_bytes = bincode::serialize(info).unwrap_or_default();
+            buf.extend_from_slice(&(info_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&info_bytes);
+        }
+
+        // Exit history: sort by key hash for deterministic order
+        let mut exits: Vec<(&Hash, &u64)> = self.exit_history.iter().collect();
+        exits.sort_by_key(|(k, _)| *k);
+
+        buf.extend_from_slice(&(exits.len() as u64).to_le_bytes());
+        for (key, height) in &exits {
+            buf.extend_from_slice(key.as_bytes());
+            buf.extend_from_slice(&height.to_le_bytes());
+        }
+
+        buf
+    }
+
     /// Register a new producer
     ///
     /// If the producer has previously exited (in exit_history and not expired),
