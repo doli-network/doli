@@ -2213,42 +2213,32 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
     utxo_set.save(&utxo_path)?;
     println!("  Saved utxo/ ({} UTXOs)", utxo_set.len());
 
-    // Merge genesis producers from embedded chainspec.
+    // Merge genesis producers from hardcoded genesis constants.
     // Genesis producers are registered out-of-band (not via on-chain transactions),
     // so block replay alone cannot reconstruct them. We load them from the
-    // embedded chainspec and add any that are missing from the recovered set.
-    const EMBEDDED_MAINNET_CHAINSPEC: &str =
-        include_str!("../../../chainspec.mainnet.json");
+    // hardcoded MAINNET_GENESIS_PRODUCERS and add any missing from the recovered set.
     let genesis_merged = match network {
         Network::Mainnet => {
-            match serde_json::from_str::<doli_core::chainspec::ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
-                Ok(spec) => {
-                    let genesis_producers = spec.get_genesis_producers();
-                    let mut added = 0usize;
-                    for (pk, bonds) in &genesis_producers {
-                        if producer_set.get_by_pubkey(pk).is_none() {
-                            let _ = producer_set.register_genesis_producer(
-                                *pk,
-                                *bonds,
-                                network.bond_unit(),
-                            );
-                            added += 1;
-                        }
-                    }
-                    added
-                }
-                Err(e) => {
-                    eprintln!("Warning: could not parse embedded chainspec: {}", e);
-                    0
+            let genesis_producers = doli_core::genesis::mainnet_genesis_producers();
+            let mut added = 0usize;
+            for (pk, bonds) in &genesis_producers {
+                if producer_set.get_by_pubkey(pk).is_none() {
+                    let _ = producer_set.register_genesis_producer(
+                        *pk,
+                        *bonds,
+                        network.bond_unit(),
+                    );
+                    added += 1;
                 }
             }
+            added
         }
         _ => 0,
     };
 
     producer_set.save(&producers_path)?;
     println!(
-        "  Saved producers.bin ({} producers, {} genesis merged from chainspec)",
+        "  Saved producers.bin ({} producers, {} genesis merged)",
         producer_set.active_count(),
         genesis_merged
     );
