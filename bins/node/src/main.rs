@@ -2223,11 +2223,8 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
             let mut added = 0usize;
             for (pk, bonds) in &genesis_producers {
                 if producer_set.get_by_pubkey(pk).is_none() {
-                    let _ = producer_set.register_genesis_producer(
-                        *pk,
-                        *bonds,
-                        network.bond_unit(),
-                    );
+                    let _ =
+                        producer_set.register_genesis_producer(*pk, *bonds, network.bond_unit());
                     added += 1;
                 }
             }
