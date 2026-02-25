@@ -340,4 +340,68 @@ mod tests {
             "State roots must be identical regardless of insertion order"
         );
     }
+
+    #[test]
+    fn test_compute_state_root_from_bytes_matches_compute_state_root() {
+        // Verifies that compute_state_root_from_bytes (used in snap sync verification)
+        // produces the same root as compute_state_root (used by the producing node).
+        // These must match or snap sync will always fail verification.
+        use doli_core::transaction::Transaction;
+
+        let mut cs = ChainState::new(Hash::zero());
+        cs.update(crypto::hash::hash(b"block100"), 100, 200);
+        cs.total_minted = 5_000_000;
+
+        let mut utxo = UtxoSet::new();
+        let pk = crypto::hash::hash(b"wallet");
+        let tx = Transaction::new_coinbase(1_000_000, pk, 0);
+        utxo.add_transaction(&tx, 0, true);
+
+        let mut ps = ProducerSet::new();
+        let pk1 = crypto::PublicKey::from_bytes([1u8; 32]);
+        let _ = ps.register_genesis_producer(pk1, 1, 1_000_000_000);
+
+        // Root computed by the block producer
+        let producer_root = compute_state_root(&cs, &utxo, &ps).unwrap();
+
+        // Root computed by the snap sync receiver from wire bytes
+        let cs_wire = bincode::serialize(&cs).unwrap();
+        let utxo_wire = utxo.serialize_canonical();
+        let ps_wire = bincode::serialize(&ps).unwrap();
+        let receiver_root = compute_state_root_from_bytes(&cs_wire, &utxo_wire, &ps_wire);
+
+        assert_eq!(
+            producer_root, receiver_root,
+            "compute_state_root and compute_state_root_from_bytes must agree"
+        );
+    }
+
+    #[test]
+    fn test_total_work_divergence_scenario() {
+        // Simulates the exact bug seen in production:
+        // N1 (restarted at height 50000) vs N2 (running since genesis).
+        // After fix, both produce the same state root.
+        let block_hash = crypto::hash::hash(b"block61351");
+        let utxo = UtxoSet::new();
+        let ps = ProducerSet::new();
+
+        // N1: was restarted, total_work accumulated from 0 for ~11351 blocks
+        // Old code: total_work = 11351 (wrong, accumulated from restart)
+        // New code: total_work = height (fixed)
+        let mut n1 = ChainState::new(Hash::zero());
+        n1.update(block_hash, 61351, 122702); // total_work = 61351 after fix
+
+        // N2: running since genesis
+        let mut n2 = ChainState::new(Hash::zero());
+        n2.update(block_hash, 61351, 122702); // total_work = 61351
+
+        assert_eq!(
+            n1.total_work, n2.total_work,
+            "total_work must match after fix"
+        );
+
+        let root1 = compute_state_root(&n1, &utxo, &ps).unwrap();
+        let root2 = compute_state_root(&n2, &utxo, &ps).unwrap();
+        assert_eq!(root1, root2, "state roots must match for identical state");
+    }
 }

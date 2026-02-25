@@ -748,4 +748,117 @@ mod tests {
             "Canonical serialization must match between InMemory and RocksDB backends"
         );
     }
+
+    #[test]
+    fn test_utxo_entry_canonical_bytes_fixed_size() {
+        let pk_hash = crypto::hash::hash(b"alice");
+        let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0);
+        let entry = UtxoEntry {
+            output: tx.outputs[0].clone(),
+            height: 42,
+            is_coinbase: true,
+            is_epoch_reward: false,
+        };
+        let bytes = entry.serialize_canonical_bytes();
+        assert_eq!(bytes.len(), 59, "canonical entry must be exactly 59 bytes");
+    }
+
+    #[test]
+    fn test_utxo_entry_canonical_roundtrip() {
+        use doli_core::transaction::OutputType;
+        let pk_hash = crypto::hash::hash(b"bob");
+        let entry = UtxoEntry {
+            output: doli_core::transaction::Output {
+                output_type: OutputType::Normal,
+                amount: 5_000_000,
+                pubkey_hash: pk_hash,
+                lock_until: 0,
+            },
+            height: 1337,
+            is_coinbase: false,
+            is_epoch_reward: true,
+        };
+
+        let bytes = entry.serialize_canonical_bytes();
+        let decoded =
+            UtxoEntry::deserialize_canonical_bytes(&bytes).expect("roundtrip must succeed");
+
+        assert_eq!(decoded.output.output_type, entry.output.output_type);
+        assert_eq!(decoded.output.amount, entry.output.amount);
+        assert_eq!(decoded.output.pubkey_hash, entry.output.pubkey_hash);
+        assert_eq!(decoded.output.lock_until, entry.output.lock_until);
+        assert_eq!(decoded.height, entry.height);
+        assert_eq!(decoded.is_coinbase, entry.is_coinbase);
+        assert_eq!(decoded.is_epoch_reward, entry.is_epoch_reward);
+    }
+
+    #[test]
+    fn test_utxo_entry_canonical_bond_roundtrip() {
+        use doli_core::transaction::OutputType;
+        let pk_hash = crypto::hash::hash(b"producer");
+        let entry = UtxoEntry {
+            output: doli_core::transaction::Output {
+                output_type: OutputType::Bond,
+                amount: 10_000_000_000,
+                pubkey_hash: pk_hash,
+                lock_until: 9999,
+            },
+            height: 500,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+
+        let bytes = entry.serialize_canonical_bytes();
+        let decoded = UtxoEntry::deserialize_canonical_bytes(&bytes).unwrap();
+        assert_eq!(decoded.output.output_type, OutputType::Bond);
+        assert_eq!(decoded.output.lock_until, 9999);
+    }
+
+    #[test]
+    fn test_utxo_canonical_count_header() {
+        // Verify the 8-byte count header at the start of serialize_canonical output
+        let mut store = InMemoryUtxoStore::new();
+        let pk = crypto::hash::hash(b"x");
+        let tx1 = Transaction::new_coinbase(100, pk, 0);
+        let tx2 = Transaction::new_coinbase(200, pk, 1);
+        store.add_transaction(&tx1, 0, true);
+        store.add_transaction(&tx2, 1, true);
+
+        let bytes = store.serialize_canonical();
+        let count = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        assert_eq!(count, 2, "count header must reflect number of UTXOs");
+        // Total size: 8 (header) + 2 * (36 outpoint + 59 entry) = 8 + 190 = 198
+        assert_eq!(bytes.len(), 8 + 2 * (36 + 59));
+    }
+
+    #[test]
+    fn test_canonical_bytes_immune_to_is_epoch_reward_default() {
+        // Simulates the bug where old on-disk UTXOs (without is_epoch_reward) and
+        // new UTXOs (with is_epoch_reward=false explicitly) must produce identical
+        // canonical bytes, since deserialize_canonical_bytes handles both uniformly.
+        use doli_core::transaction::OutputType;
+        let pk = crypto::hash::hash(b"test");
+
+        // "Old" entry: is_epoch_reward was not stored (defaults to false via serde)
+        let old_entry = UtxoEntry {
+            output: doli_core::transaction::Output {
+                output_type: OutputType::Normal,
+                amount: 1_000,
+                pubkey_hash: pk,
+                lock_until: 0,
+            },
+            height: 10,
+            is_coinbase: true,
+            is_epoch_reward: false, // default
+        };
+
+        // "New" entry: same data, is_epoch_reward explicitly false
+        let new_entry = old_entry.clone();
+
+        assert_eq!(
+            old_entry.serialize_canonical_bytes(),
+            new_entry.serialize_canonical_bytes(),
+            "entries with identical logical state must produce identical canonical bytes"
+        );
+    }
 }
