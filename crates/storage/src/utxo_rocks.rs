@@ -313,12 +313,14 @@ impl RocksDbUtxoStore {
     /// Output: `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
     ///
     /// RocksDB iterates in lexicographic key order, so no sorting needed.
+    /// Values are re-encoded to the canonical 59-byte format (immune to RocksDB
+    /// on-disk bincode format variations from struct evolution).
     pub fn serialize_canonical(&self) -> Vec<u8> {
         let cf = self.db.cf_handle(CF_UTXO).unwrap();
         let count = self.len() as u64;
 
-        // Estimate: 36 bytes key + ~100 bytes value per entry + 8 bytes header
-        let mut buf = Vec::with_capacity(8 + (count as usize) * 140);
+        // 36 bytes outpoint key + 59 bytes canonical entry value + 8 bytes header
+        let mut buf = Vec::with_capacity(8 + (count as usize) * 95);
         buf.extend_from_slice(&count.to_le_bytes());
 
         for (key, value) in self
@@ -326,8 +328,12 @@ impl RocksDbUtxoStore {
             .iterator_cf(cf, rocksdb::IteratorMode::Start)
             .flatten()
         {
-            buf.extend_from_slice(&key);
-            buf.extend_from_slice(&value);
+            // Deserialize from on-disk bincode (handles backward compat via #[serde(default)]),
+            // then re-encode to canonical 59-byte format for deterministic state root.
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                buf.extend_from_slice(&key);
+                buf.extend_from_slice(&entry.serialize_canonical_bytes());
+            }
         }
 
         buf
