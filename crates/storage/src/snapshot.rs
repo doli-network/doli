@@ -44,16 +44,20 @@ pub fn compute_state_root(
     // Compare [STATE_ROOT_FORENSICS] lines at the same height across N1-N5.
     // Remove once root cause is confirmed and fixed.
     tracing::info!(
-        "[STATE_ROOT_FORENSICS] h={} cs={:.16} utxo={:.16} ps={:.16} root={:.16} \
-         cs_bytes={} utxo_bytes={} ps_bytes={}",
+        "[STATE_ROOT_FORENSICS] h={} slot={} total_work={} genesis_ts={} \
+         last_reg={:.8} reg_seq={} total_minted={} | \
+         cs={:.16} utxo={:.16} ps={:.16} root={:.16}",
         chain_state.best_height,
+        chain_state.best_slot,
+        chain_state.total_work,
+        chain_state.genesis_timestamp,
+        chain_state.last_registration_hash,
+        chain_state.registration_sequence,
+        chain_state.total_minted,
         cs_hash,
         utxo_hash,
         ps_hash,
         final_root,
-        cs_bytes.len(),
-        utxo_bytes.len(),
-        ps_bytes.len(),
     );
 
     Ok(final_root)
