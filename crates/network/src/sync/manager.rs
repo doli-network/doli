@@ -2312,9 +2312,10 @@ impl SyncManager {
     // =========================================================================
 
     /// Handle a StateRoot response: add vote and check quorum.
-    /// Votes are grouped by (height, root) — peers at the same height with the
-    /// same state root form a quorum. This works even on a live chain where
-    /// different peers may be at slightly different heights.
+    /// Votes are grouped by (height, root) — peers must agree on both to form
+    /// a quorum. Votes from peers too far below the target height are rejected
+    /// to prevent freshly-wiped peers (at height=0) from contaminating quorum
+    /// with empty-state votes and triggering cascading snap sync failures.
     fn handle_snap_state_root(
         &mut self,
         peer: PeerId,
@@ -2322,6 +2323,25 @@ impl SyncManager {
         block_height: u64,
         state_root: Hash,
     ) {
+        // Extract target_height before taking a mutable borrow below.
+        let target_height = match &self.state {
+            SyncState::SnapCollectingRoots { target_height, .. } => *target_height,
+            _ => return,
+        };
+
+        // Reject votes from peers whose reported height is far below the
+        // target. A peer at height=0 when our target is height=61849 has
+        // an empty/stale state and must not contribute to quorum.
+        let min_acceptable = target_height.saturating_sub(self.snap_sync_threshold);
+        if block_height < min_acceptable {
+            warn!(
+                "[SNAP_SYNC] Rejecting stale state root vote from {} at height={} \
+                 (target={}, min_acceptable={})",
+                peer, block_height, target_height, min_acceptable
+            );
+            return;
+        }
+
         if let SyncState::SnapCollectingRoots { votes, .. } = &mut self.state {
             votes.push((peer, block_hash, block_height, state_root));
         } else {
