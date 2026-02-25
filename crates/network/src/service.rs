@@ -257,7 +257,12 @@ impl NetworkService {
         let dcutr = dcutr::Behaviour::new(local_peer_id);
 
         // AutoNAT — detects whether we're behind NAT
-        let autonat = autonat::Behaviour::new(local_peer_id, autonat::Config::default());
+        let autonat_config = autonat::Config {
+            boot_delay: std::time::Duration::from_secs(15),
+            refresh_interval: std::time::Duration::from_secs(60),
+            ..Default::default()
+        };
+        let autonat = autonat::Behaviour::new(local_peer_id, autonat_config);
 
         // Build behaviour
         let behaviour = DoliBehaviour::new(
@@ -1171,14 +1176,18 @@ async fn handle_behaviour_event(
             info!("[DCUTR] {:?}", event);
         }
 
-        DoliBehaviourEvent::Autonat(event) => match &event {
-            autonat::Event::StatusChanged { old, new } => {
-                info!("[NAT] Status changed: {:?} -> {:?}", old, new);
+        DoliBehaviourEvent::Autonat(autonat::Event::StatusChanged { new, .. }) => match new {
+            autonat::NatStatus::Public(addr) => {
+                info!("[NAT] Public address detected: {}", addr);
             }
-            _ => {
-                debug!("[NAT] {:?}", event);
+            autonat::NatStatus::Private => {
+                warn!("[NAT] Behind NAT — relying on relay for connectivity");
+            }
+            autonat::NatStatus::Unknown => {
+                debug!("[NAT] NAT status unknown, waiting for probes");
             }
         },
+        DoliBehaviourEvent::Autonat(_) => {}
 
         _ => {}
     }
