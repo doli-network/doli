@@ -15,11 +15,10 @@ use crate::StorageError;
 /// The state root is: `H(H(chain_state) || H(utxo_set) || H(producer_set))`
 /// where H is the crypto hash function and || is concatenation.
 ///
-/// This is deterministic because:
-/// - ChainState and ProducerSet use `bincode::serialize` for canonical bytes
-/// - UtxoSet uses `serialize_canonical()` which sorts entries by outpoint key
-/// - The hash function is deterministic
-/// - The concatenation order is fixed
+/// Deterministic because all three components use canonical serialization:
+/// - ChainState: bincode (only scalar fields, no collections)
+/// - UtxoSet: `serialize_canonical()` — entries sorted by outpoint key
+/// - ProducerSet: `serialize_canonical()` — entries sorted by pubkey hash
 pub fn compute_state_root(
     chain_state: &ChainState,
     utxo_set: &UtxoSet,
@@ -28,14 +27,18 @@ pub fn compute_state_root(
     let cs_bytes =
         bincode::serialize(chain_state).map_err(|e| StorageError::Serialization(e.to_string()))?;
     let utxo_bytes = utxo_set.serialize_canonical();
-    let ps_bytes =
-        bincode::serialize(producer_set).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let ps_bytes = producer_set.serialize_canonical();
 
-    Ok(compute_state_root_from_bytes(
-        &cs_bytes,
-        &utxo_bytes,
-        &ps_bytes,
-    ))
+    // Hash each component individually, then combine
+    let cs_hash = crypto::hash::hash(&cs_bytes);
+    let utxo_hash = crypto::hash::hash(&utxo_bytes);
+    let ps_hash = crypto::hash::hash(&ps_bytes);
+
+    let mut combined = Vec::with_capacity(96);
+    combined.extend_from_slice(cs_hash.as_bytes());
+    combined.extend_from_slice(utxo_hash.as_bytes());
+    combined.extend_from_slice(ps_hash.as_bytes());
+    Ok(crypto::hash::hash(&combined))
 }
 
 /// Compute state root from pre-serialized byte slices.
@@ -84,11 +87,12 @@ impl StateSnapshot {
         let chain_state_bytes = bincode::serialize(chain_state)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let utxo_set_bytes = utxo_set.serialize_canonical();
+        // Wire format uses bincode for ProducerSet (deserializable).
+        // State root uses serialize_canonical() (deterministic).
         let producer_set_bytes = bincode::serialize(producer_set)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        let state_root =
-            compute_state_root_from_bytes(&chain_state_bytes, &utxo_set_bytes, &producer_set_bytes);
+        let state_root = compute_state_root(chain_state, utxo_set, producer_set)?;
 
         Ok(Self {
             block_hash: chain_state.best_hash,
@@ -101,13 +105,17 @@ impl StateSnapshot {
     }
 
     /// Verify the snapshot's state root matches the expected root.
+    ///
+    /// Deserializes the snapshot to compute the canonical state root,
+    /// ensuring it matches regardless of wire serialization format.
     pub fn verify(&self, expected_root: &Hash) -> bool {
-        let computed = compute_state_root_from_bytes(
-            &self.chain_state_bytes,
-            &self.utxo_set_bytes,
-            &self.producer_set_bytes,
-        );
-        &computed == expected_root
+        match self.deserialize() {
+            Ok((cs, utxo, ps)) => match compute_state_root(&cs, &utxo, &ps) {
+                Ok(computed) => &computed == expected_root,
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
     }
 
     /// Deserialize the snapshot into live state objects.
@@ -238,19 +246,18 @@ mod tests {
     }
 
     #[test]
-    fn test_state_root_from_bytes_matches_struct() {
+    fn test_state_root_deterministic_across_calls() {
         let cs = ChainState::new(Hash::zero());
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
-        let root_struct = compute_state_root(&cs, &utxo, &ps).unwrap();
+        // Multiple calls must produce identical roots
+        let root1 = compute_state_root(&cs, &utxo, &ps).unwrap();
+        let root2 = compute_state_root(&cs, &utxo, &ps).unwrap();
+        let root3 = compute_state_root(&cs, &utxo, &ps).unwrap();
 
-        let cs_bytes = bincode::serialize(&cs).unwrap();
-        let utxo_bytes = utxo.serialize_canonical();
-        let ps_bytes = bincode::serialize(&ps).unwrap();
-        let root_bytes = compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes);
-
-        assert_eq!(root_struct, root_bytes);
+        assert_eq!(root1, root2);
+        assert_eq!(root2, root3);
     }
 
     #[test]
@@ -274,5 +281,50 @@ mod tests {
         let (_cs_out, utxo_out, _ps_out) = snapshot.deserialize().unwrap();
         assert_eq!(utxo_out.len(), 1);
         assert_eq!(utxo_out.total_value(), 1_000_000);
+    }
+
+    #[test]
+    fn test_producer_set_canonical_deterministic_insertion_order() {
+        use crate::producer::ProducerInfo;
+
+        // Create two ProducerSets with same producers inserted in different order
+        let pk1 = crypto::PublicKey::from_bytes([1u8; 32]);
+        let pk2 = crypto::PublicKey::from_bytes([2u8; 32]);
+        let pk3 = crypto::PublicKey::from_bytes([3u8; 32]);
+
+        let mut ps_a = ProducerSet::new();
+        let mut ps_b = ProducerSet::new();
+
+        let bond_unit = 1_000_000_000u64;
+
+        // Insert in order 1, 2, 3
+        let _ = ps_a.register_genesis_producer(pk1, 1, bond_unit);
+        let _ = ps_a.register_genesis_producer(pk2, 1, bond_unit);
+        let _ = ps_a.register_genesis_producer(pk3, 1, bond_unit);
+
+        // Insert in order 3, 1, 2
+        let _ = ps_b.register_genesis_producer(pk3, 1, bond_unit);
+        let _ = ps_b.register_genesis_producer(pk1, 1, bond_unit);
+        let _ = ps_b.register_genesis_producer(pk2, 1, bond_unit);
+
+        let bytes_a = ps_a.serialize_canonical();
+        let bytes_b = ps_b.serialize_canonical();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "ProducerSets with same data in different insertion order must produce identical canonical bytes"
+        );
+
+        // State roots must also match
+        let cs = ChainState::new(Hash::zero());
+        let utxo = UtxoSet::new();
+
+        let root_a = compute_state_root(&cs, &utxo, &ps_a).unwrap();
+        let root_b = compute_state_root(&cs, &utxo, &ps_b).unwrap();
+
+        assert_eq!(
+            root_a, root_b,
+            "State roots must be identical regardless of insertion order"
+        );
     }
 }
