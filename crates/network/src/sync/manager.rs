@@ -21,9 +21,11 @@ use super::reorg::ReorgHandler;
 use crate::protocols::{SyncRequest, SyncResponse};
 
 /// Minimum peers required for block production, by tier.
-const MIN_PEERS_TIER1: usize = 10;
-const MIN_PEERS_TIER2: usize = 5;
-const MIN_PEERS_TIER3: usize = 2;
+/// Sane defaults for small-to-medium networks. The cap in set_tier()
+/// ensures min_peers <= active_producers - 1, preventing deadlock.
+const MIN_PEERS_TIER1: usize = 3;
+const MIN_PEERS_TIER2: usize = 2;
+const MIN_PEERS_TIER3: usize = 1;
 
 /// Sync configuration
 #[derive(Clone, Debug)]
@@ -1578,6 +1580,21 @@ impl SyncManager {
             let should_snap = enough_peers
                 && !self.snap_sync_failed
                 && (self.local_height == 0 || gap > self.snap_sync_threshold);
+
+            // Fresh node optimization: don't start slow header-first sync.
+            // Wait for 3 peers so snap sync can activate — it downloads state
+            // in seconds instead of replaying 60K+ blocks over hours.
+            if self.local_height == 0
+                && !enough_peers
+                && !self.snap_sync_failed
+                && gap > self.snap_sync_threshold
+            {
+                info!(
+                    "[SNAP_SYNC] Fresh node: waiting for {} more peer(s) for snap sync ({}/3, gap={})",
+                    3 - self.peers.len(), self.peers.len(), gap
+                );
+                return;
+            }
 
             if should_snap {
                 // Find the best hash that the most peers agree on
