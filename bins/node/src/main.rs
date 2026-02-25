@@ -91,6 +91,10 @@ enum Commands {
         #[arg(long)]
         rpc_port: Option<u16>,
 
+        /// RPC bind address (default: 127.0.0.1, use 0.0.0.0 for public access)
+        #[arg(long)]
+        rpc_bind: Option<String>,
+
         /// Metrics server port (mainnet default: 9090, testnet: 19090, devnet: 29090)
         /// Note: Override with network-specific port if needed
         #[arg(long, default_value = "9090")]
@@ -459,6 +463,7 @@ async fn main() -> Result<()> {
             p2p_port,
             external_address,
             rpc_port,
+            rpc_bind,
             metrics_port,
             bootstrap,
             no_dht,
@@ -482,6 +487,7 @@ async fn main() -> Result<()> {
                 p2p_port,
                 external_address,
                 rpc_port,
+                rpc_bind,
                 metrics_port,
                 bootstrap,
                 no_dht,
@@ -537,6 +543,7 @@ async fn main() -> Result<()> {
                 None,
                 None, // external_address
                 None,
+                None, // rpc_bind
                 9090,
                 vec![],
                 false,
@@ -562,6 +569,7 @@ async fn run_node(
     p2p_port: Option<u16>,
     external_address: Option<String>,
     rpc_port: Option<u16>,
+    rpc_bind: Option<String>,
     metrics_port: u16,
     bootstrap: Vec<String>,
     no_dht: bool,
@@ -650,8 +658,10 @@ async fn run_node(
     if let Some(port) = p2p_port {
         config.listen_addr = format!("0.0.0.0:{}", port);
     }
-    if let Some(port) = rpc_port {
-        config.rpc.listen_addr = format!("127.0.0.1:{}", port);
+    {
+        let bind = rpc_bind.as_deref().unwrap_or("127.0.0.1");
+        let port = rpc_port.unwrap_or(config.network.default_rpc_port());
+        config.rpc.listen_addr = format!("{}:{}", bind, port);
     }
     if no_dht {
         config.no_dht = true;
