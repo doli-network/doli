@@ -820,17 +820,14 @@ mod tests {
     }
 
     #[test]
-    fn test_vdf_iterations_scale_by_network() {
-        // Mainnet and Testnet have same iterations
+    fn test_vdf_register_iterations_fixed() {
+        // All networks use same fixed registration VDF (~30s)
         assert_eq!(
             Network::Mainnet.vdf_register_iterations(),
             Network::Testnet.vdf_register_iterations()
         );
-        assert!(
-            Network::Testnet.vdf_register_iterations() > Network::Devnet.vdf_register_iterations()
-        );
-
-        // Devnet should be fast enough for testing
+        // All should be fast (5M iterations)
+        assert!(Network::Mainnet.vdf_register_iterations() <= 10_000_000);
         assert!(Network::Devnet.vdf_register_iterations() <= 10_000_000);
     }
 
