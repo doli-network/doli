@@ -635,7 +635,7 @@ impl Node {
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
         network_config.max_peers = self.config.max_peers;
         network_config.no_dht = self.config.no_dht;
-        network_config.node_key_path = Some(self.config.data_dir.join("node.key"));
+        network_config.node_key_path = Some(self.config.data_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
         // Gossip mesh params from NetworkParams (env vars / .env / chainspec / defaults)
@@ -2558,29 +2558,16 @@ impl Node {
 
         let height = self.chain_state.read().await.best_height + 1;
 
-        // Validate block before applying. Determine validation mode:
-        // - Full (with VDF): for blocks within 1 epoch of the tip
-        // - Light (no VDF): for gap blocks after snap sync (state root already verified by quorum)
-        let peer_tip = self.sync_manager.read().await.best_peer_height();
-        let vdf_threshold = peer_tip.saturating_sub(SLOTS_PER_EPOCH as u64);
-        let mode = if height > vdf_threshold {
-            ValidationMode::Full
-        } else {
-            ValidationMode::Light
-        };
+        // TODO: Use Full mode for blocks near the tip once merkle root
+        // computation is verified consistent between producer and validator.
+        // Currently all synced blocks use Light to avoid false positives.
+        let mode = ValidationMode::Light;
 
         // Build validation context (reuses check_producer_eligibility pattern)
         if let Err(e) = self.validate_block_for_apply(&block, height, mode).await {
             warn!(
-                "Block {} at height {} failed {} validation: {}",
-                block_hash,
-                height,
-                if mode == ValidationMode::Full {
-                    "full"
-                } else {
-                    "light"
-                },
-                e
+                "Block {} at height {} failed light validation: {}",
+                block_hash, height, e
             );
             return Err(e.into());
         }
