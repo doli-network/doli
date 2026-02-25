@@ -891,14 +891,47 @@ async fn cmd_producer(
             };
             let lock_until = chain_info.best_height + blocks_per_era;
 
-            // Create registration transaction with bonds
-            let mut tx = Transaction::new_registration(
-                inputs,
-                producer_pubkey,
-                required_amount,
-                lock_until,
-                bonds,
+            // Compute hash-chain VDF proof for registration (~5 seconds)
+            let current_epoch = (chain_info.best_slot / 360) as u32;
+            let vdf_input = vdf::registration_input(&producer_pubkey, current_epoch);
+            let vdf_iterations = vdf::T_REGISTER_BASE;
+            println!(
+                "Computing registration VDF ({} iterations)...",
+                vdf_iterations
             );
+            let vdf_output = doli_core::tpop::heartbeat::hash_chain_vdf(&vdf_input, vdf_iterations);
+            println!("VDF proof computed.");
+            println!();
+
+            // Create registration transaction with bonds and hash-chain VDF output
+            // Hash-chain VDF is self-verifying (recompute to verify), no separate proof needed
+            let reg_data = doli_core::transaction::RegistrationData {
+                public_key: producer_pubkey,
+                epoch: current_epoch,
+                vdf_output: vdf_output.to_vec(),
+                vdf_proof: vec![], // Hash-chain VDF: no separate proof, output IS the proof
+                prev_registration_hash: crypto::Hash::ZERO,
+                sequence_number: 0,
+                bond_count: bonds,
+            };
+            let extra_data = bincode::serialize(&reg_data)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize registration data: {}", e))?;
+
+            // Create bond output
+            let pubkey_hash_for_bond = crypto::hash::hash(producer_pubkey.as_bytes());
+            let bond_output = doli_core::transaction::Output::bond(
+                required_amount,
+                pubkey_hash_for_bond,
+                lock_until,
+            );
+
+            let mut tx = Transaction {
+                version: 1,
+                tx_type: doli_core::transaction::TxType::Registration,
+                inputs,
+                outputs: vec![bond_output],
+                extra_data,
+            };
 
             // Add change output if needed
             let change = total_input - required_amount - fee;

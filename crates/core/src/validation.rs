@@ -1477,8 +1477,10 @@ fn validate_registration_chain(
 
 /// Validate the VDF proof in registration data.
 ///
+/// Validate registration VDF using hash-chain (same as block VDF).
+/// Hash-chain is fast to compute (~5s for 5M iterations) and self-verifying
+/// (recompute and compare output). No separate proof needed.
 /// For devnet, VDF validation is skipped to allow quick testing.
-/// For mainnet/testnet, full VDF verification is required.
 fn validate_registration_vdf(
     reg_data: &RegistrationData,
     network: Network,
@@ -1491,19 +1493,25 @@ fn validate_registration_vdf(
     // Create VDF input using the standard function
     let input = vdf::registration_input(&reg_data.public_key, reg_data.epoch);
 
-    // Parse VDF output and proof
-    let vdf_output = vdf::VdfOutput {
-        value: reg_data.vdf_output.clone(),
-    };
+    // Hash-chain VDF output must be exactly 32 bytes
+    if reg_data.vdf_output.len() != 32 {
+        return Err(ValidationError::InvalidRegistration(
+            "invalid VDF output: expected 32 bytes".to_string(),
+        ));
+    }
 
-    let vdf_proof = vdf::VdfProof::from_bytes(&reg_data.vdf_proof).ok_or_else(|| {
-        ValidationError::InvalidRegistration("invalid VDF proof format".to_string())
+    let expected_output: [u8; 32] = reg_data.vdf_output.as_slice().try_into().map_err(|_| {
+        ValidationError::InvalidRegistration("invalid VDF output format".to_string())
     })?;
 
-    // Verify the VDF proof using base registration difficulty
-    // Note: In production, the difficulty should be looked up based on current network size
-    vdf::verify(&input, &vdf_output, &vdf_proof, vdf::T_REGISTER_BASE)
-        .map_err(|_| ValidationError::InvalidRegistration("VDF verification failed".to_string()))
+    // Verify by recomputing the hash-chain VDF
+    if !verify_hash_chain_vdf(&input, &expected_output, network.vdf_register_iterations()) {
+        return Err(ValidationError::InvalidRegistration(
+            "VDF verification failed".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Validate exit transaction data.
