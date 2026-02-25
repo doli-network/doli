@@ -972,92 +972,21 @@ impl SyncManager {
             }
         }
 
+        // Layer 7: REMOVED — Satoshi principle: always extend your best chain.
+        //  Fork detection via AheadOfPeers caused chain deadlock (2026-02-25).
+        //  When the tip node's peers are syncing behind, AheadOfPeers blocks
+        //  production, which prevents peers from catching up, creating a
+        //  permanent deadlock where nobody produces.
+        //  Forks are resolved by: (1) longest chain reorg, (2) sync failures (Layer 8),
+        //  (3) chain mismatch detection (Layer 9).
         let best_peer_height = self.best_peer_height();
-
-        // Layer 7: "Ahead of network" detection (P0 #2) - FORK DETECTION
-        //
-        // If we're far AHEAD of peers, we're likely on a fork:
-        // - Forked nodes keep producing blocks, so local_height > peer_height
-        // - The saturating_sub in Layer 6 makes them appear "not behind"
-        // - This check catches the opposite case: suspiciously ahead
-        //
-        // TWO CHECKS (2026-02-04):
-        // 1. Ahead of best_peer_height (includes network_tip) - catches isolated nodes
-        // 2. Ahead of LOWEST peer height - catches echo chambers where some peers forked
-        //
-        // Example echo chamber:
-        // - Node 2 has peers: {bootstrap: 93, node4: 136}
-        // - best_peer_height = max(93, 136) = 136
-        // - Node 2 local_height = 136
-        // - Check 1: 136 - 136 = 0 → NOT ahead (echo chamber hides fork!)
-        // - Check 2: 136 - 93 = 43 > 5 → ahead of LOWEST peer → BLOCKED ✓
-        let height_ahead = self.local_height.saturating_sub(best_peer_height);
-        let lowest_peer = self.lowest_peer_height();
-        let height_ahead_of_lowest = lowest_peer
-            .map(|h| self.local_height.saturating_sub(h))
-            .unwrap_or(0);
         info!(
-            "[CAN_PRODUCE] Layer7: peers={} best_peer={} lowest_peer={:?} network_tip={} local={} ahead_of_best={} ahead_of_lowest={} max={}",
-            self.peers.len(), best_peer_height, lowest_peer, self.network_tip_height,
-            self.local_height, height_ahead, height_ahead_of_lowest, self.max_heights_ahead
+            "[CAN_PRODUCE] Layer7: SKIPPED (removed) — peers={} best_peer={} local={} ahead={}",
+            self.peers.len(),
+            best_peer_height,
+            self.local_height,
+            self.local_height.saturating_sub(best_peer_height)
         );
-        // BUG FIX (2026-02-04): Previously required `self.peers.len() > 0` which skipped
-        // the check when peers disconnected but network_tip_height was still valid.
-        // Now we trust best_peer_height() which already combines peers + network_tip_height.
-        if best_peer_height > 0 {
-            // Check 1: Ahead of best (catches isolated nodes with only network_tip)
-            if height_ahead > self.max_heights_ahead {
-                warn!(
-                    "FORK DETECTION: Local height {} is {} blocks ahead of best peer height {} (network_tip={}, peers={}) - blocking production",
-                    self.local_height, height_ahead, best_peer_height, self.network_tip_height, self.peers.len()
-                );
-                return ProductionAuthorization::BlockedAheadOfPeers {
-                    local_height: self.local_height,
-                    peer_height: best_peer_height,
-                    height_ahead,
-                };
-            }
-            // Check 2: Echo chamber detection (DISABLED - see comment)
-            //
-            // The "lowest peer" echo chamber check was causing chain deadlock:
-            // - When some peers legitimately fall behind (syncing, network issues)
-            // - Healthy nodes would be blocked because "ahead of lowest peer"
-            // - This created a cascading failure stopping all production
-            //
-            // Echo chambers are better detected by:
-            // - P0 #4: Sync failures (if we can't sync, our chain is divergent)
-            // - P0 #5: InsufficientPeers (require multiple peers to avoid isolation)
-            // - Check 1 above: Being ahead of ALL peers (including network_tip)
-            //
-            // The original echo chamber scenario (forked nodes peering together)
-            // is caught by sync failures when they try to sync with the main chain.
-            //
-            // REMOVED (2026-02-04): lowest peer check caused more harm than good
-            if false {
-                // Keep code for reference but disabled
-                if let Some(lowest) = lowest_peer {
-                    if height_ahead_of_lowest > self.max_heights_ahead {
-                        warn!(
-                            "FORK DETECTION (echo chamber): Local height {} is {} blocks ahead of lowest peer {} - blocking production",
-                            self.local_height, height_ahead_of_lowest, lowest
-                        );
-                        return ProductionAuthorization::BlockedAheadOfPeers {
-                            local_height: self.local_height,
-                            peer_height: lowest,
-                            height_ahead: height_ahead_of_lowest,
-                        };
-                    }
-                }
-            }
-        } else {
-            // Only skip if we have NO network data at all (peers empty AND network_tip_height == 0)
-            // This is legitimate at genesis or before first peer connection
-            info!(
-                "[CAN_PRODUCE] Layer7 SKIPPED: no network data (peers={}, network_tip_height={})",
-                self.peers.len(),
-                self.network_tip_height
-            );
-        }
 
         // Layer 9: Chain Hash Verification — INFORMATIONAL ONLY
         //
@@ -2818,38 +2747,29 @@ mod tests {
 
     // =========================================================================
     // P0 #2: "Ahead of network" detection tests
+    // Layer 7 (AheadOfPeers) was REMOVED (2026-02-25) — Satoshi principle.
+    // These tests now verify that production is ALLOWED even when ahead.
     // =========================================================================
 
     #[test]
-    fn test_fork_detection_blocks_production_when_ahead_of_peers() {
-        // Scenario: Forked node at height 992, peers report height 910
-        // The forked node should be BLOCKED because it's >5 blocks ahead
+    fn test_production_allowed_when_ahead_of_peers() {
+        // Layer 7 removed: node at height 992, peers at 910 — should still produce.
+        // Forks are resolved by longest chain reorg, not by stopping production.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
 
-        // Set local height to 992 (forked node)
         manager.local_height = 992;
         manager.local_slot = 992;
 
-        // Add TWO peers at height 910 (main chain) to satisfy min_peers_for_production
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
         manager.add_peer(peer1, 910, Hash::zero(), 910);
         manager.add_peer(peer2, 910, Hash::zero(), 910);
 
-        // Verify: Should be blocked as "ahead of peers"
+        manager.has_connected_to_peer = true;
+        manager.first_peer_status_received = Some(std::time::Instant::now());
+
         let result = manager.can_produce(993);
-        match result {
-            ProductionAuthorization::BlockedAheadOfPeers {
-                local_height,
-                peer_height,
-                height_ahead,
-            } => {
-                assert_eq!(local_height, 992);
-                assert_eq!(peer_height, 910);
-                assert_eq!(height_ahead, 82); // 992 - 910 = 82
-            }
-            other => panic!("Expected BlockedAheadOfPeers, got {:?}", other),
-        }
+        assert_eq!(result, ProductionAuthorization::Authorized);
     }
 
     #[test]
@@ -2878,27 +2798,24 @@ mod tests {
     }
 
     #[test]
-    fn test_max_heights_ahead_is_configurable() {
+    fn test_max_heights_ahead_no_longer_blocks() {
+        // Layer 7 removed: configurable threshold no longer blocks production.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
-
-        // Set a very strict threshold
         manager.set_max_heights_ahead(2);
-
         manager.local_height = 915;
         manager.local_slot = 915;
 
-        // Add TWO peers to satisfy min_peers_for_production
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
         manager.add_peer(peer1, 910, Hash::zero(), 910);
         manager.add_peer(peer2, 910, Hash::zero(), 910);
 
-        // 5 blocks ahead should now be blocked with threshold of 2
+        manager.has_connected_to_peer = true;
+        manager.first_peer_status_received = Some(std::time::Instant::now());
+
+        // Even 5 blocks ahead should be authorized now
         let result = manager.can_produce(916);
-        assert!(matches!(
-            result,
-            ProductionAuthorization::BlockedAheadOfPeers { .. }
-        ));
+        assert_eq!(result, ProductionAuthorization::Authorized);
     }
 
     // =========================================================================
@@ -2906,37 +2823,27 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_forked_node_scenario_from_report() {
-        // Reproduce the exact scenario from REPORT.md:
-        // - Main chain: height 910
-        // - Node15 (forked): height 992
-        // - The bug: saturating_sub(910, 992) = 0 → "not behind" → authorized
-        // - The fix: detect 992 - 910 = 82 > 5 → "ahead of peers" → blocked
-
+    fn test_forked_node_scenario_produces_on_best_chain() {
+        // Layer 7 removed (2026-02-25): A node ahead of peers should still produce.
+        // If it's truly forked, the longest chain rule will resolve it via reorg.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
 
-        // Forked node state
         manager.local_height = 992;
         manager.local_slot = 992;
 
-        // Add TWO peers from main chain to satisfy min_peers_for_production
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
         manager.add_peer(peer1, 910, Hash::zero(), 910);
         manager.add_peer(peer2, 910, Hash::zero(), 910);
 
-        // The OLD bug would return Authorized here because:
-        // height_diff = 910.saturating_sub(992) = 0
-        // 0 <= max_heights_behind (2) → not behind → authorized
-
-        // The FIX checks:
-        // height_ahead = 992.saturating_sub(910) = 82
-        // 82 > max_heights_ahead (5) → ahead of peers → BLOCKED
+        manager.has_connected_to_peer = true;
+        manager.first_peer_status_received = Some(std::time::Instant::now());
 
         let result = manager.can_produce(993);
-        assert!(
-            matches!(result, ProductionAuthorization::BlockedAheadOfPeers { .. }),
-            "Forked node should be blocked, got: {:?}",
+        assert_eq!(
+            result,
+            ProductionAuthorization::Authorized,
+            "Node should produce on its best chain, got: {:?}",
             result
         );
     }
@@ -3025,55 +2932,27 @@ mod tests {
     }
 
     #[test]
-    fn test_ahead_of_peers_with_no_connected_peers_but_network_tip() {
-        // BUG REGRESSION TEST (2026-02-04):
-        // Scenario: Node has NO connected peers but network_tip_height is valid
-        // This happens when node applied blocks (from sync) but never established peer connections.
-        //
-        // BEFORE FIX: Layer 7 check required peers.len() > 0, so check was SKIPPED
-        // AFTER FIX: Layer 7 uses best_peer_height() which includes network_tip_height
-        //
-        // Test setup: We set has_connected_to_peer = false to bypass the bootstrap gate
-        // (which would otherwise catch "lost all peers"). This isolates Layer 7 testing.
+    fn test_ahead_of_network_tip_still_produces() {
+        // Layer 7 removed (2026-02-25): Node ahead of network_tip should still produce.
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
 
-        // Forked node at height 136
         manager.local_height = 136;
         manager.local_slot = 136;
 
-        // No peers connected
         assert!(manager.peers.is_empty());
-
-        // network_tip_height is valid (e.g., from block_applied_with_weight during sync)
         manager.network_tip_height = 93;
         manager.network_tip_slot = 93;
 
-        // Set min_peers to 0 to isolate Layer 7 test (bypass Layer 5.5)
         manager.set_min_peers_for_production(0);
-
-        // KEY: has_connected_to_peer = false bypasses bootstrap gate
-        // (is_in_bootstrap_phase() returns false, so bootstrap checks skipped)
         manager.has_connected_to_peer = false;
-        // Don't set first_peer_status_received - not needed with has_connected_to_peer = false
 
         let result = manager.can_produce(140);
-
-        // Should be BLOCKED because 136 - 93 = 43 > 5 (max_heights_ahead)
-        match result {
-            ProductionAuthorization::BlockedAheadOfPeers {
-                local_height,
-                peer_height,
-                height_ahead,
-            } => {
-                assert_eq!(local_height, 136);
-                assert_eq!(peer_height, 93); // From network_tip_height, not peers!
-                assert_eq!(height_ahead, 43);
-            }
-            other => panic!(
-                "Expected BlockedAheadOfPeers (no peers but network_tip valid), got: {:?}",
-                other
-            ),
-        }
+        // With Layer 7 removed, this should be authorized
+        assert!(
+            !matches!(result, ProductionAuthorization::BlockedAheadOfPeers { .. }),
+            "Layer 7 removed: should not block as AheadOfPeers, got: {:?}",
+            result
+        );
     }
 
     #[test]
