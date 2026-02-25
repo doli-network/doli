@@ -38,7 +38,25 @@ pub fn compute_state_root(
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
     combined.extend_from_slice(ps_hash.as_bytes());
-    Ok(crypto::hash::hash(&combined))
+    let final_root = crypto::hash::hash(&combined);
+
+    // TEMPORARY FORENSIC LOGGING — identifies which component diverges across nodes.
+    // Compare [STATE_ROOT_FORENSICS] lines at the same height across N1-N5.
+    // Remove once root cause is confirmed and fixed.
+    tracing::info!(
+        "[STATE_ROOT_FORENSICS] h={} cs={:.16} utxo={:.16} ps={:.16} root={:.16} \
+         cs_bytes={} utxo_bytes={} ps_bytes={}",
+        chain_state.best_height,
+        cs_hash,
+        utxo_hash,
+        ps_hash,
+        final_root,
+        cs_bytes.len(),
+        utxo_bytes.len(),
+        ps_bytes.len(),
+    );
+
+    Ok(final_root)
 }
 
 /// Compute state root from pre-serialized byte slices.
