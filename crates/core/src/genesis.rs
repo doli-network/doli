@@ -30,7 +30,7 @@ pub struct GenesisConfig {
 impl GenesisConfig {
     /// Mainnet genesis configuration
     ///
-    /// Genesis time: 2026-02-01T00:00:00Z
+    /// Genesis time: 2026-02-25T00:00:00Z
     /// Message references the whitepaper philosophy
     pub fn mainnet() -> Self {
         let params = NetworkParams::load(Network::Mainnet);
@@ -38,7 +38,7 @@ impl GenesisConfig {
             network: Network::Mainnet,
             timestamp: params.genesis_time,
             reward: params.initial_reward,
-            message: "Time is the only fair currency. 01/Feb/2026",
+            message: "Time is the only fair currency. 25/Feb/2026",
         }
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let message = String::from_utf8_lossy(&genesis.transactions[0].extra_data);
 
         assert!(message.contains("Time is the only fair currency"));
-        assert!(message.contains("01/Feb/2026"));
+        assert!(message.contains("25/Feb/2026"));
     }
 
     #[test]
