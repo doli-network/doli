@@ -360,7 +360,12 @@ impl ReorgHandler {
 
             new_chain.push(hash);
 
-            if let Some(parent) = get_parent(&hash) {
+            if let Some(parent) = self
+                .block_parents
+                .get(&hash)
+                .copied()
+                .or_else(|| get_parent(&hash))
+            {
                 if parent.is_zero() {
                     break;
                 }
