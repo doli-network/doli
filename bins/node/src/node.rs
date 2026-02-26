@@ -2186,21 +2186,20 @@ impl Node {
             return;
         }
 
-        // Mainnet: attempt shallow rollback first, fall back to genesis resync
+        // Mainnet: direct 1-block rollback (bypasses resolve_shallow_fork's
+        // empty_headers precondition which is always 0 in same-height forks)
         if self.config.network == Network::Mainnet {
             warn!(
-                "FORK RECOVERY: {} consecutive fork-blocked slots on mainnet — \
-                 attempting shallow rollback",
+                "FORK RECOVERY: {} consecutive fork-blocked slots on mainnet — rolling back 1 block",
                 self.consecutive_fork_blocks
             );
-            match self.resolve_shallow_fork().await {
+            match self.rollback_one_block().await {
                 Ok(true) => {
-                    info!("Mainnet fork recovery: shallow rollback succeeded");
+                    info!("Mainnet fork recovery: 1-block rollback succeeded");
                 }
                 Ok(false) => {
                     warn!(
-                        "Mainnet fork recovery: shallow rollback not applicable, \
-                         triggering genesis resync"
+                        "Mainnet fork recovery: rollback not possible, triggering genesis resync"
                     );
                     if let Err(e) = self.force_resync_from_genesis().await {
                         error!("Mainnet fork recovery resync failed: {}", e);
@@ -3303,8 +3302,17 @@ impl Node {
                 info!("[NODE_PRODUCE] slot={} BLOCKED: Resync", current_slot);
                 return Ok(());
             }
-            ProductionAuthorization::BlockedBehindPeers { .. } => {
-                info!("[NODE_PRODUCE] slot={} BLOCKED: BehindPeers", current_slot);
+            ProductionAuthorization::BlockedBehindPeers {
+                local_height,
+                peer_height,
+                height_diff,
+            } => {
+                self.consecutive_fork_blocks += 1;
+                warn!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (consecutive={})",
+                    current_slot, local_height, peer_height, height_diff, self.consecutive_fork_blocks
+                );
+                self.maybe_auto_resync(current_slot).await;
                 return Ok(());
             }
             ProductionAuthorization::BlockedAheadOfPeers {
@@ -4572,6 +4580,120 @@ impl Node {
                 );
             }
         }
+    }
+
+    /// Unconditionally roll back 1 block for fork recovery.
+    ///
+    /// Unlike `resolve_shallow_fork()`, this has no `empty_headers` or
+    /// `shallow_rollback_count` preconditions — it just rolls back. Used by
+    /// `maybe_auto_resync()` on mainnet where same-height forks never trigger
+    /// empty header responses (peers are at the same height, not ahead).
+    ///
+    /// Returns `Ok(true)` if rollback succeeded, `Ok(false)` if at height 0.
+    async fn rollback_one_block(&mut self) -> Result<bool> {
+        let local_height = {
+            let sync = self.sync_manager.read().await;
+            sync.local_tip().0
+        };
+
+        if local_height == 0 {
+            return Ok(false);
+        }
+
+        let target_height = local_height - 1;
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+
+        let (parent_hash, parent_slot) = if target_height == 0 {
+            (genesis_hash, 0u32)
+        } else {
+            match self.block_store.get_block_by_height(target_height)? {
+                Some(parent_block) => (parent_block.hash(), parent_block.header.slot),
+                None => {
+                    error!("Cannot rollback: no block at height {}", target_height);
+                    return Ok(false);
+                }
+            }
+        };
+
+        info!(
+            "Rolling back from height {} to {} for fork recovery",
+            local_height, target_height
+        );
+
+        // Rebuild UTXO set from blocks 1..=target_height
+        {
+            let mut utxo = self.utxo_set.write().await;
+            utxo.clear();
+            for height in 1..=target_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    for (tx_index, tx) in block.transactions.iter().enumerate() {
+                        let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                        if !is_reward_tx {
+                            let _ = utxo.spend_transaction(tx);
+                        }
+                        utxo.add_transaction(tx, height, is_reward_tx);
+                    }
+                }
+            }
+        }
+
+        // Rebuild producer set from blocks 1..=target_height
+        {
+            let mut producers = self.producer_set.write().await;
+            producers.clear();
+            for height in 1..=target_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    for tx in &block.transactions {
+                        if tx.tx_type == TxType::Registration {
+                            if let Some(reg_data) = tx.registration_data() {
+                                if let Some((bond_index, bond_output)) =
+                                    tx.outputs.iter().enumerate().find(|(_, o)| {
+                                        o.output_type == doli_core::transaction::OutputType::Bond
+                                    })
+                                {
+                                    let tx_hash = tx.hash();
+                                    let era = self.params.height_to_era(height);
+                                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                                        reg_data.public_key,
+                                        height,
+                                        bond_output.amount,
+                                        (tx_hash, bond_index as u32),
+                                        era,
+                                        reg_data.bond_count,
+                                    );
+                                    let _ = producers.register(producer_info, height);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update chain state to parent
+        {
+            let mut state = self.chain_state.write().await;
+            state.best_height = target_height;
+            state.best_hash = parent_hash;
+            state.best_slot = parent_slot;
+        }
+
+        // Update sync manager: local tip + reset fork signals
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(target_height, parent_hash, parent_slot);
+            sync.reset_sync_for_rollback();
+        }
+
+        // Save state to persist the rollback
+        self.save_state().await?;
+
+        info!(
+            "Fork recovery rollback complete: now at height {} (hash {:.8})",
+            target_height, parent_hash
+        );
+
+        Ok(true)
     }
 
     /// Detect and resolve shallow forks (1-block orphan tips from ungraceful shutdown).
