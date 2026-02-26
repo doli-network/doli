@@ -1017,6 +1017,7 @@ impl SyncManager {
         let mut first_mismatch_hash = self.local_hash;
         for (peer_id, status) in &self.peers {
             if status.best_height == self.local_height {
+                // Same height: compare hashes directly
                 if status.best_hash == self.local_hash {
                     agree += 1;
                 } else {
@@ -1025,6 +1026,16 @@ impl SyncManager {
                         first_mismatch_peer = Some(*peer_id);
                         first_mismatch_hash = status.best_hash;
                     }
+                }
+            } else if status.best_height > self.local_height
+                && status.best_height <= self.local_height + 2
+            {
+                // Peer is 1-2 blocks ahead — if we were on the same chain,
+                // gossip would have delivered their blocks by now. Diverged.
+                disagree += 1;
+                if first_mismatch_peer.is_none() {
+                    first_mismatch_peer = Some(*peer_id);
+                    first_mismatch_hash = status.best_hash;
                 }
             }
         }
