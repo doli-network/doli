@@ -2132,10 +2132,9 @@ impl Node {
         // Threshold: trigger resync after 10 consecutive fork-blocked slots
         // This gives the node enough time for normal recovery (reorg, sync)
         // before escalating to a full resync.
-        let fork_resync_threshold: u32 = if self.config.network == Network::Devnet {
-            10
-        } else {
-            20
+        let fork_resync_threshold: u32 = match self.config.network {
+            Network::Devnet => 5,
+            _ => 10,
         };
 
         if self.consecutive_fork_blocks < fork_resync_threshold {
@@ -2187,9 +2186,32 @@ impl Node {
             return;
         }
 
-        // Only auto-resync on devnet/testnet
+        // Mainnet: attempt shallow rollback first, fall back to genesis resync
         if self.config.network == Network::Mainnet {
-            warn!("Fork detected on mainnet — manual intervention required");
+            warn!(
+                "FORK RECOVERY: {} consecutive fork-blocked slots on mainnet — \
+                 attempting shallow rollback",
+                self.consecutive_fork_blocks
+            );
+            match self.resolve_shallow_fork().await {
+                Ok(true) => {
+                    info!("Mainnet fork recovery: shallow rollback succeeded");
+                }
+                Ok(false) => {
+                    warn!(
+                        "Mainnet fork recovery: shallow rollback not applicable, \
+                         triggering genesis resync"
+                    );
+                    if let Err(e) = self.force_resync_from_genesis().await {
+                        error!("Mainnet fork recovery resync failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Mainnet fork recovery rollback failed: {}", e);
+                }
+            }
+            self.consecutive_fork_blocks = 0;
+            self.last_resync_time = Some(Instant::now());
             return;
         }
 

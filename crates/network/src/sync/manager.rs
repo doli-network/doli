@@ -1014,19 +1014,37 @@ impl SyncManager {
 
         // Layer 9: Chain Hash Verification (P0 #1)
         //
-        // Iterate through peers. If any peer is at the same height (or higher)
-        // but reports a DIFFERENT hash, we are on a fork.
-        // This catches the case explicitly where heights match but chains differ.
+        // Count peers at same height that agree (same hash) vs disagree (different hash).
+        // Only block production if we're in the clear minority — the majority keeps
+        // producing so the heaviest chain rule resolves the fork naturally.
+        let mut agree = 0u32;
+        let mut disagree = 0u32;
+        let mut first_mismatch_peer = None;
+        let mut first_mismatch_hash = self.local_hash;
         for (peer_id, status) in &self.peers {
-            if status.best_height == self.local_height && status.best_hash != self.local_hash {
+            if status.best_height == self.local_height {
+                if status.best_hash == self.local_hash {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                    if first_mismatch_peer.is_none() {
+                        first_mismatch_peer = Some(*peer_id);
+                        first_mismatch_hash = status.best_hash;
+                    }
+                }
+            }
+        }
+        // Only block if we're in the minority — majority keeps producing
+        if disagree > 0 && agree < disagree {
+            if let Some(peer_id) = first_mismatch_peer {
                 warn!(
-                    "FORK DETECTION: Chain mismatch with peer {} at height {} (local_hash={}, peer_hash={})",
-                    peer_id, self.local_height, self.local_hash, status.best_hash
-                 );
+                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree)",
+                    self.local_height, agree, disagree
+                );
                 return ProductionAuthorization::BlockedChainMismatch {
-                    peer_id: *peer_id,
+                    peer_id,
                     local_hash: self.local_hash,
-                    peer_hash: status.best_hash,
+                    peer_hash: first_mismatch_hash,
                     local_height: self.local_height,
                 };
             }
