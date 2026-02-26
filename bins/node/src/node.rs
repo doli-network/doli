@@ -1937,6 +1937,86 @@ impl Node {
         Ok(())
     }
 
+    /// Execute a fork sync reorg: the binary search found the common ancestor,
+    /// canonical blocks have been downloaded. Build a ReorgResult and call execute_reorg.
+    async fn execute_fork_sync_reorg(
+        &mut self,
+        result: network::sync::ForkSyncResult,
+    ) -> Result<()> {
+        let current_height = self.chain_state.read().await.best_height;
+        let rollback_depth = current_height.saturating_sub(result.ancestor_height);
+
+        info!(
+            "Fork sync reorg: rolling back {} blocks (height {} → {}), \
+             applying {} canonical blocks",
+            rollback_depth,
+            current_height,
+            result.ancestor_height,
+            result.canonical_blocks.len()
+        );
+
+        if result.canonical_blocks.is_empty() {
+            warn!("Fork sync: no canonical blocks to apply — aborting reorg");
+            // Still reset sync so we can try again
+            let mut sync = self.sync_manager.write().await;
+            sync.reset_sync_for_rollback();
+            return Ok(());
+        }
+
+        // Build rollback list: our blocks from current_height down to ancestor+1
+        let mut rollback = Vec::new();
+        for height in (result.ancestor_height + 1..=current_height).rev() {
+            if let Some(hash) = self.block_store.get_hash_by_height(height)? {
+                rollback.push(hash);
+            }
+        }
+
+        // Insert canonical blocks into fork_block_cache so execute_reorg can find them
+        let new_block_hashes: Vec<crypto::Hash> =
+            result.canonical_blocks.iter().map(|b| b.hash()).collect();
+        {
+            let mut cache = self.fork_block_cache.write().await;
+            for block in &result.canonical_blocks {
+                cache.insert(block.hash(), block.clone());
+            }
+        }
+
+        // Use the last canonical block as the triggering block
+        let trigger_block = result.canonical_blocks.last().unwrap().clone();
+
+        let reorg_result = network::sync::ReorgResult {
+            rollback,
+            common_ancestor: result.ancestor_hash,
+            new_blocks: new_block_hashes,
+            weight_delta: 1, // Positive = new chain is preferred (peers chose it)
+        };
+
+        // Execute the reorg using the existing atomic reorg path
+        self.execute_reorg(reorg_result, trigger_block).await?;
+
+        // Reset sync state so normal sync can resume from the new tip
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.reset_sync_for_rollback();
+            let (height, hash, slot) = {
+                let state = self.chain_state.read().await;
+                (state.best_height, state.best_hash, state.best_slot)
+            };
+            sync.update_local_tip(height, hash, slot);
+        }
+
+        // Reset shallow rollback counter since we successfully recovered
+        self.shallow_rollback_count = 0;
+        self.consecutive_fork_blocks = 0;
+
+        info!(
+            "Fork sync reorg complete: now at height {}",
+            self.chain_state.read().await.best_height
+        );
+
+        Ok(())
+    }
+
     /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
     ///
     /// Called when the parent chain walk connects to a block in our block_store.
@@ -4745,150 +4825,35 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        const MAX_SHALLOW_ROLLBACKS: u32 = 10;
-
-        let (empty_headers, best_peer_height, local_height) = {
+        let (empty_headers, local_height, fork_sync_active) = {
             let sync = self.sync_manager.read().await;
             (
                 sync.consecutive_empty_headers(),
-                sync.best_peer_height(),
                 sync.local_tip().0,
+                sync.is_fork_sync_active(),
             )
         };
 
-        // Conditions: peers reject our tip (>=3 empty responses) AND gap is small
-        if empty_headers < 3 {
+        // Don't start a new fork sync if one is already running
+        if fork_sync_active {
             return Ok(false);
         }
-        // If we're far behind peers, this is a deep fork — let genesis resync handle it
-        if best_peer_height > local_height + 100 {
+
+        // Need at least 3 fork evidence signals before activating
+        if empty_headers < 3 || local_height == 0 {
             return Ok(false);
         }
-        // Nothing to roll back at genesis
-        if local_height == 0 {
-            return Ok(false);
-        }
-        // Cap: stop rolling back after MAX_SHALLOW_ROLLBACKS. If peers still reject
-        // our tip after 10 rollbacks, this is NOT a shallow fork. Let the deep fork
-        // detector handle it instead of rolling back the entire chain block-by-block.
-        if self.shallow_rollback_count >= MAX_SHALLOW_ROLLBACKS {
-            warn!(
-                "Shallow fork rollback limit reached ({}/{}). Stopping rollback loop.",
-                self.shallow_rollback_count, MAX_SHALLOW_ROLLBACKS
+
+        let started = self.sync_manager.write().await.start_fork_sync();
+        if started {
+            info!(
+                "Fork sync: binary search for common ancestor initiated \
+                 (empty_headers={}, local_height={})",
+                empty_headers, local_height
             );
-            return Ok(false);
+            return Ok(true);
         }
-
-        warn!(
-            "Shallow fork detected: {} consecutive empty header responses, \
-             local_height={}, best_peer_height={}, rolling back 1 block",
-            empty_headers, local_height, best_peer_height
-        );
-
-        // Get parent block at (height - 1)
-        let target_height = local_height - 1;
-        let genesis_hash = self.chain_state.read().await.genesis_hash;
-
-        let (parent_hash, parent_slot) = if target_height == 0 {
-            (genesis_hash, 0u32)
-        } else {
-            match self.block_store.get_block_by_height(target_height)? {
-                Some(parent_block) => (parent_block.hash(), parent_block.header.slot),
-                None => {
-                    error!(
-                        "Cannot resolve shallow fork: no block at height {}",
-                        target_height
-                    );
-                    return Ok(false);
-                }
-            }
-        };
-
-        // Rebuild UTXO set from blocks 1..=target_height
-        info!(
-            "Rebuilding UTXO set up to height {} for shallow fork recovery",
-            target_height
-        );
-        {
-            let mut utxo = self.utxo_set.write().await;
-            utxo.clear();
-            for height in 1..=target_height {
-                if let Some(block) = self.block_store.get_block_by_height(height)? {
-                    for (tx_index, tx) in block.transactions.iter().enumerate() {
-                        let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                        if !is_reward_tx {
-                            let _ = utxo.spend_transaction(tx);
-                        }
-                        utxo.add_transaction(tx, height, is_reward_tx);
-                    }
-                }
-            }
-        }
-
-        // Rebuild producer set from blocks 1..=target_height
-        {
-            let mut producers = self.producer_set.write().await;
-            producers.clear();
-            for height in 1..=target_height {
-                if let Some(block) = self.block_store.get_block_by_height(height)? {
-                    for tx in &block.transactions {
-                        if tx.tx_type == TxType::Registration {
-                            if let Some(reg_data) = tx.registration_data() {
-                                if let Some((bond_index, bond_output)) =
-                                    tx.outputs.iter().enumerate().find(|(_, o)| {
-                                        o.output_type == doli_core::transaction::OutputType::Bond
-                                    })
-                                {
-                                    let tx_hash = tx.hash();
-                                    let era = self.params.height_to_era(height);
-                                    let producer_info = storage::ProducerInfo::new_with_bonds(
-                                        reg_data.public_key,
-                                        height,
-                                        bond_output.amount,
-                                        (tx_hash, bond_index as u32),
-                                        era,
-                                        reg_data.bond_count,
-                                    );
-                                    let _ = producers.register(producer_info, height);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Update chain state to parent
-        {
-            let mut state = self.chain_state.write().await;
-            state.best_height = target_height;
-            state.best_hash = parent_hash;
-            state.best_slot = parent_slot;
-        }
-
-        // Update sync manager: local tip + reset fork signals
-        {
-            let mut sync = self.sync_manager.write().await;
-            sync.update_local_tip(target_height, parent_hash, parent_slot);
-            sync.reset_sync_for_rollback();
-        }
-
-        // Track rollback count (capped at MAX_SHALLOW_ROLLBACKS)
-        self.shallow_rollback_count += 1;
-
-        // Reset node-level fork counter
-        self.consecutive_fork_blocks = 0;
-
-        // Save state to persist the rollback
-        self.save_state().await?;
-
-        info!(
-            "Shallow fork resolved: rolled back to height {} (hash {:.8}). \
-             Rollback {}/10. Sync will restart from parent tip.",
-            target_height, parent_hash, self.shallow_rollback_count
-        );
-
-        Ok(true)
+        Ok(false)
     }
 
     /// Run periodic tasks
@@ -5039,11 +5004,49 @@ impl Node {
             }
         }
 
-        // SHALLOW FORK RECOVERY: If peers reject our tip but the gap is small,
-        // roll back one block instead of a full genesis resync. This handles the
-        // common case of an orphan tip from ungraceful shutdown.
+        // FORK SYNC: Binary search for common ancestor when on a dead fork.
+        // Triggers after 3+ consecutive empty header responses. O(log N) recovery.
         if self.resolve_shallow_fork().await? {
+            // Fork sync was just initiated, don't do anything else this tick
             return Ok(());
+        }
+
+        // Drive active fork sync: compare probes with block_store, handle transitions
+        {
+            // Phase 1: Binary search — compare peer's block hash with ours
+            let probe = self.sync_manager.read().await.fork_sync_pending_probe();
+            if let Some((height, peer_hash)) = probe {
+                let our_hash = self.block_store.get_hash_by_height(height).ok().flatten();
+                let matches = our_hash.map(|h| h == peer_hash).unwrap_or(false);
+                self.sync_manager
+                    .write()
+                    .await
+                    .fork_sync_handle_probe(matches);
+            }
+
+            // Transition: search complete — provide ancestor hash from our block_store
+            let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
+            if let Some(height) = ancestor_height {
+                let ancestor_hash = self
+                    .block_store
+                    .get_hash_by_height(height)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(self.chain_state.read().await.genesis_hash);
+                self.sync_manager
+                    .write()
+                    .await
+                    .fork_sync_set_ancestor(height, ancestor_hash);
+            }
+
+            // Phase 2/3 complete: take result and execute reorg
+            let result = self.sync_manager.write().await.fork_sync_take_result();
+            if let Some(result) = result {
+                if let Err(e) = self.execute_fork_sync_reorg(result).await {
+                    warn!("Fork sync reorg failed: {}", e);
+                }
+                return Ok(());
+            }
         }
 
         // GENESIS RESYNC: sync manager detected persistent chain rejection.
