@@ -815,31 +815,52 @@ async fn run_node(
             }
             ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
         } else {
-            info!("Chainspec has no genesis producers, using bootstrap mode");
-            ProducerSet::new()
-        }
-    } else {
-        // Legacy fallback: use hardcoded genesis producers
-        // This path is deprecated - prefer chainspec files
-        match network {
-            Network::Mainnet => {
-                warn!("No chainspec provided for mainnet - using bootstrap mode");
-                warn!("For production, use --chainspec with a validated chainspec file");
-                ProducerSet::new()
-            }
-            Network::Testnet => {
-                // Legacy testnet support - fall back to hardcoded producers
-                use doli_core::genesis::testnet_genesis_producers;
-                let genesis_producers = testnet_genesis_producers();
-                if !genesis_producers.is_empty() {
+            // Chainspec has no genesis producers — fall back to hardcoded constants
+            match network {
+                Network::Mainnet => {
+                    use doli_core::genesis::mainnet_genesis_producers;
+                    let genesis_producers = mainnet_genesis_producers();
                     info!(
-                        "Initializing testnet with {} genesis producers (legacy mode)",
+                        "Chainspec has no genesis producers, using {} hardcoded mainnet producers",
                         genesis_producers.len()
                     );
                     ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-                } else {
+                }
+                Network::Testnet => {
+                    use doli_core::genesis::testnet_genesis_producers;
+                    let genesis_producers = testnet_genesis_producers();
+                    info!(
+                        "Chainspec has no genesis producers, using {} hardcoded testnet producers",
+                        genesis_producers.len()
+                    );
+                    ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
+                }
+                _ => {
+                    info!("Chainspec has no genesis producers, using bootstrap mode");
                     ProducerSet::new()
                 }
+            }
+        }
+    } else {
+        // No chainspec at all — fall back to hardcoded genesis producers
+        match network {
+            Network::Mainnet => {
+                use doli_core::genesis::mainnet_genesis_producers;
+                let genesis_producers = mainnet_genesis_producers();
+                info!(
+                    "No chainspec provided, using {} hardcoded mainnet genesis producers",
+                    genesis_producers.len()
+                );
+                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
+            }
+            Network::Testnet => {
+                use doli_core::genesis::testnet_genesis_producers;
+                let genesis_producers = testnet_genesis_producers();
+                info!(
+                    "No chainspec provided, using {} hardcoded testnet genesis producers",
+                    genesis_producers.len()
+                );
+                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
             }
             Network::Devnet => ProducerSet::new(),
         }
