@@ -1356,6 +1356,24 @@ fn validate_registration_data(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
+    // During genesis, Registration TXs are VDF proof containers only.
+    // No bond required (bond is handled at GENESIS PHASE COMPLETE).
+    // No registration chain validation (bootstrap producers can't be Sybil-attacked).
+    // VDF proof is still validated — that's the whole point.
+    if ctx.network.is_in_genesis(ctx.current_height) {
+        if tx.extra_data.is_empty() {
+            return Err(ValidationError::InvalidRegistration(
+                "missing registration data".to_string(),
+            ));
+        }
+        let reg_data: RegistrationData = bincode::deserialize(&tx.extra_data).map_err(|e| {
+            ValidationError::InvalidRegistration(format!("invalid registration data: {}", e))
+        })?;
+        // Validate VDF proof (the only requirement for genesis registrations)
+        validate_registration_vdf(&reg_data, ctx.network)?;
+        return Ok(());
+    }
+
     // Registration must have at least one input (for bond)
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidRegistration(
