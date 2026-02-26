@@ -262,9 +262,10 @@ impl Node {
                                 chain_state.best_height
                             );
                             chain_state.mark_snap_synced(chain_state.best_height);
-                            if let Err(e) = block_store
-                                .seed_canonical_index(chain_state.best_hash, chain_state.best_height)
-                            {
+                            if let Err(e) = block_store.seed_canonical_index(
+                                chain_state.best_hash,
+                                chain_state.best_height,
+                            ) {
                                 warn!("Failed to seed canonical index: {}", e);
                             }
                         }

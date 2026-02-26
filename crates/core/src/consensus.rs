@@ -63,8 +63,8 @@ use crate::network::Network;
 use crate::types::{Amount, BlockHeight, Epoch, Era, Slot};
 use serde::{Deserialize, Serialize};
 
-/// Genesis timestamp: 2026-02-01T00:00:00Z
-pub const GENESIS_TIME: u64 = 1769904000;
+/// Genesis timestamp: 2026-02-25T00:00:00Z
+pub const GENESIS_TIME: u64 = 1771977600;
 
 // ==================== Proof of Time Parameters ====================
 
