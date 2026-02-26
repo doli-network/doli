@@ -47,8 +47,8 @@ pub enum NetworkEvent {
     PeerConnected(PeerId),
     /// Peer disconnected
     PeerDisconnected(PeerId),
-    /// New block received via gossip
-    NewBlock(Block),
+    /// New block received via gossip (block, propagation source peer)
+    NewBlock(Block, PeerId),
     /// New block header received via gossip (lightweight pre-announcement)
     NewHeader(BlockHeader),
     /// New transaction received via gossip
@@ -819,7 +819,9 @@ async fn handle_behaviour_event(
                     }
                     if let Some(block) = Block::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
+                        let _ = event_tx
+                            .send(NetworkEvent::NewBlock(block, propagation_source))
+                            .await;
                     } else {
                         warn!("Failed to deserialize block from {}", propagation_source);
                     }
@@ -956,7 +958,9 @@ async fn handle_behaviour_event(
                     }
                     if let Some(block) = Block::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
+                        let _ = event_tx
+                            .send(NetworkEvent::NewBlock(block, propagation_source))
+                            .await;
                     } else {
                         warn!("Failed to deserialize t1 block from {}", propagation_source);
                     }
@@ -968,7 +972,9 @@ async fn handle_behaviour_event(
                     }
                     if let Some(block) = Block::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx.send(NetworkEvent::NewBlock(block)).await;
+                        let _ = event_tx
+                            .send(NetworkEvent::NewBlock(block, propagation_source))
+                            .await;
                     }
                 }
                 _ => {}

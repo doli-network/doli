@@ -36,7 +36,7 @@ use doli_core::{
 use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
-    NetworkService, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
+    NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
@@ -1193,8 +1193,8 @@ impl Node {
                 }
             }
 
-            NetworkEvent::NewBlock(block) => {
-                debug!("Received new block: {}", block.hash());
+            NetworkEvent::NewBlock(block, source_peer) => {
+                debug!("Received new block: {} from {}", block.hash(), source_peer);
                 // Update network tip slot from gossip - this tells us what slot the network has reached
                 // even if we don't know which specific peer sent the block.
                 // This is critical for the "behind peers" production safety check.
@@ -1206,7 +1206,7 @@ impl Node {
                     sync.update_network_tip_slot(block.header.slot);
                     sync.note_block_received_via_gossip();
                 }
-                self.handle_new_block(block).await?;
+                self.handle_new_block(block, source_peer).await?;
             }
 
             NetworkEvent::NewHeader(header) => {
@@ -1362,7 +1362,7 @@ impl Node {
                     // For normal sync blocks that build on tip, this falls through
                     // to apply_block unchanged. For orphan blocks (e.g., peer's tip
                     // when we're on a fork), they get cached and trigger fork recovery.
-                    self.handle_new_block(block).await?;
+                    self.handle_new_block(block, peer_id).await?;
                 }
 
                 // Check if snap sync produced a ready snapshot
@@ -1557,7 +1557,7 @@ impl Node {
     }
 
     /// Handle a new block from the network
-    async fn handle_new_block(&mut self, block: Block) -> Result<()> {
+    async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
 
         // Check if we already have this block
@@ -1638,22 +1638,20 @@ impl Node {
                 // Reorg detection failed (parent not in our recent blocks).
                 // Try active fork recovery: walk backward through parent chain
                 // from this orphan block until we connect to our chain.
+                // Use source_peer (who gossiped this block) — they have the fork chain.
                 let can_start = self.sync_manager.read().await.can_start_fork_recovery();
                 if can_start {
-                    let peer = self.sync_manager.read().await.best_peer_for_recovery();
-                    if let Some(peer) = peer {
-                        let started = self
-                            .sync_manager
-                            .write()
-                            .await
-                            .start_fork_recovery(block.clone(), peer);
-                        if started {
-                            info!(
-                                "Fork recovery started: walking parents from block {}",
-                                block_hash
-                            );
-                            return Ok(());
-                        }
+                    let started = self
+                        .sync_manager
+                        .write()
+                        .await
+                        .start_fork_recovery(block.clone(), source_peer);
+                    if started {
+                        info!(
+                            "Fork recovery started: walking parents from block {} (asking source peer {})",
+                            block_hash, source_peer
+                        );
+                        return Ok(());
                     }
                 }
 
@@ -4215,7 +4213,7 @@ impl Node {
             if !pending_events.is_empty() {
                 let mut block_count = 0;
                 for event in pending_events {
-                    if matches!(event, NetworkEvent::NewBlock(_)) {
+                    if matches!(event, NetworkEvent::NewBlock(_, _)) {
                         block_count += 1;
                     }
                     if let Err(e) = self.handle_network_event(event).await {
@@ -5055,11 +5053,8 @@ impl Node {
         // Request status every ~2 seconds during bootstrap, ~5 seconds during normal ops
         let status_interval = if is_bootstrap {
             2 // Aggressive during bootstrap
-        } else if self.config.network == Network::Devnet || self.config.network == Network::Testnet
-        {
-            5
         } else {
-            30
+            5 // All networks: 5s keeps peer status fresh for fork detection
         };
 
         if now_secs.is_multiple_of(status_interval) {
