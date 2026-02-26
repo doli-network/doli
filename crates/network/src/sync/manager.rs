@@ -709,9 +709,10 @@ impl SyncManager {
     /// This considers both individual peer statuses and blocks received via gossip
     /// Returns 0 if no network data is available
     pub fn best_peer_slot(&self) -> u32 {
-        let peer_max = self.peers.values().map(|p| p.best_slot).max().unwrap_or(0);
-        // Return the higher of peer data or network gossip tip
-        peer_max.max(self.network_tip_slot)
+        // Only use actual peer status data, not gossip-inflated network_tip_slot.
+        // network_tip_slot can be permanently inflated by orphan/fork blocks
+        // received via gossip before validation.
+        self.peers.values().map(|p| p.best_slot).max().unwrap_or(0)
     }
 
     /// Update the network tip slot from a received block via gossip
@@ -952,17 +953,10 @@ impl SyncManager {
                 // Guard: If we're at or ahead of all peers by height, slot lag
                 // is a stale artifact — we ARE the tip, just haven't produced
                 // recently. Don't block; let production advance local_slot.
-                if self.local_height >= best_peer_height && best_peer_height == 0 {
+                if self.local_height >= best_peer_height {
                     info!(
-                        "[CAN_PRODUCE] Layer6: slot_diff={} exceeds max={}, but local_height={} >= best_peer_height={} (peers syncing) - allowing production",
+                        "[CAN_PRODUCE] Layer6: slot_diff={} exceeds max={}, but local_height={} >= peer_height={} - allowing",
                         slot_diff, self.max_slots_behind, self.local_height, best_peer_height
-                    );
-                } else if self.local_height > 0 && best_peer_height == 0 {
-                    // Peers all at height 0 but claiming high slots — they know
-                    // the time but haven't synced the chain. Don't block.
-                    info!(
-                        "[CAN_PRODUCE] Layer6: peers at height 0 but slot {} - skipping slot check (local_h={})",
-                        best_peer_slot, self.local_height
                     );
                 } else {
                     return ProductionAuthorization::BlockedBehindPeers {
@@ -1017,7 +1011,7 @@ impl SyncManager {
         // Count peers at same height that agree (same hash) vs disagree (different hash).
         // Only block production if we're in the clear minority — the majority keeps
         // producing so the heaviest chain rule resolves the fork naturally.
-        let mut agree = 0u32;
+        let mut agree = 1u32; // Count ourselves — we agree with our own chain
         let mut disagree = 0u32;
         let mut first_mismatch_peer = None;
         let mut first_mismatch_hash = self.local_hash;
