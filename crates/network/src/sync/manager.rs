@@ -1451,6 +1451,13 @@ impl SyncManager {
         if best_peer_height <= self.local_height + 5 {
             return false;
         }
+        // If snap sync can handle this gap, don't escalate to deep fork.
+        // next_request() will attempt snap sync first.
+        let gap = best_peer_height.saturating_sub(self.local_height);
+        let enough_peers = self.peers.len() >= 3;
+        if enough_peers && gap > self.snap_sync_threshold {
+            return false;
+        }
         // Require at least one peer whose height is close to ours (within 100 blocks).
         // If ALL peers are far ahead, empty headers likely mean they snap-synced
         // and lack our block range — not that we're on a fork.
@@ -1682,10 +1689,29 @@ impl SyncManager {
                 }
 
                 // After 10+ consecutive empty responses, peer doesn't recognize our tip.
-                // Signal the node for a full genesis resync instead of trying to
-                // download headers from genesis (which fails because the downloaded
-                // chain can't be applied on top of the existing local state).
+                // Try snap sync first (seconds) before falling back to genesis resync (hours).
                 if self.consecutive_empty_headers >= 10 {
+                    let best_height = self
+                        .peers
+                        .values()
+                        .map(|p| p.best_height)
+                        .max()
+                        .unwrap_or(0);
+                    let gap = best_height.saturating_sub(self.local_height);
+                    let enough_peers = self.peers.len() >= 3;
+                    if enough_peers && gap > self.snap_sync_threshold {
+                        info!(
+                            "[SNAP_SYNC] Deep fork with {} consecutive empty headers — \
+                             attempting snap sync before genesis resync (gap={})",
+                            self.consecutive_empty_headers, gap
+                        );
+                        self.snap_sync_failed = false;
+                        self.consecutive_empty_headers = 0;
+                        self.state = SyncState::Idle;
+                        self.start_sync();
+                        return None;
+                    }
+                    // Not enough peers or gap too small — fall back to genesis resync
                     info!(
                         "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
                         self.consecutive_empty_headers
