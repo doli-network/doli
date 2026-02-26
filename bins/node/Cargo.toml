@@ -28,6 +28,7 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+bincode.workspace = true
 anyhow.workspace = true
 prometheus.workspace = true
 lazy_static.workspace = true
