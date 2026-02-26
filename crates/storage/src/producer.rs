@@ -1003,11 +1003,13 @@ impl ProducerSet {
         Ok(set)
     }
 
-    /// Save producer set to file
+    /// Save producer set to file (atomic: write to temp file, then rename)
     pub fn save(&self, path: &Path) -> Result<(), StorageError> {
         let data =
             bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        std::fs::write(path, data)?;
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::write(&tmp, &data)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
