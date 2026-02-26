@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772145659,
-    "message": "Genesis - 27/Feb/2026 - real bond migration",
+    "timestamp": 1772148900,
+    "message": "Genesis - 27/Feb/2026 - VDF proof required for genesis producers",
     "initial_reward": 100000000
   },
   "consensus": {
