@@ -1537,6 +1537,15 @@ impl SyncManager {
             .record_block_with_weight(hash, prev_hash, weight);
     }
 
+    /// Seed the reorg handler with the snap sync tip so fork detection works immediately.
+    /// Called once after snap sync completes — the snap tip becomes the root of recent_blocks.
+    pub fn record_block_applied_after_snap(&mut self, hash: Hash, height: u64) {
+        self.reorg_handler
+            .record_block_with_weight(hash, Hash::ZERO, 1);
+        self.local_height = height;
+        self.local_hash = hash;
+    }
+
     /// Get read-only access to the reorg handler (for plan_reorg from Node).
     pub fn reorg_handler(&self) -> &super::reorg::ReorgHandler {
         &self.reorg_handler
