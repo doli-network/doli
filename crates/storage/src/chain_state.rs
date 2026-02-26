@@ -73,10 +73,20 @@ impl ChainState {
         }
     }
 
-    /// Load from disk
+    /// Load from disk (handles old format without snap_sync_height)
     pub fn load(path: &Path) -> Result<Self, StorageError> {
         let bytes = std::fs::read(path)?;
-        bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))
+        match bincode::deserialize(&bytes) {
+            Ok(state) => Ok(state),
+            Err(_) => {
+                // Old format lacks snap_sync_height (Option<u64>).
+                // Bincode v1 needs explicit bytes — append None marker (0x00) and retry.
+                let mut extended = bytes;
+                extended.push(0x00); // Option::None in bincode
+                bincode::deserialize(&extended)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))
+            }
+        }
     }
 
     /// Save to disk (atomic: write to temp file, then rename)
