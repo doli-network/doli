@@ -1859,41 +1859,10 @@ impl Node {
             }
         }
 
-        // Rebuild producer set to match common ancestor state
+        // Rebuild producer set to match common ancestor state (all TX types)
         {
             let mut producers = self.producer_set.write().await;
-            producers.clear();
-            // Re-apply producer registrations from genesis to common ancestor
-            for height in 1..=target_height {
-                if let Some(block) = self.block_store.get_block_by_height(height)? {
-                    for tx in &block.transactions {
-                        if tx.tx_type == TxType::Registration {
-                            if let Some(reg_data) = tx.registration_data() {
-                                // Find the bond output
-                                if let Some((bond_index, bond_output)) =
-                                    tx.outputs.iter().enumerate().find(|(_, o)| {
-                                        o.output_type == doli_core::transaction::OutputType::Bond
-                                    })
-                                {
-                                    let tx_hash = tx.hash();
-                                    let era = self.params.height_to_era(height);
-
-                                    let producer_info = storage::ProducerInfo::new_with_bonds(
-                                        reg_data.public_key,
-                                        height,
-                                        bond_output.amount,
-                                        (tx_hash, bond_index as u32),
-                                        era,
-                                        reg_data.bond_count,
-                                    );
-
-                                    let _ = producers.register(producer_info, height);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
         }
 
         // Now apply the new blocks through normal path
@@ -3058,58 +3027,72 @@ impl Node {
         }
 
         // GENESIS END: Derive and register producers from the blockchain
-        // This runs when applying the FIRST post-genesis block (60,481).
+        // This runs when applying the FIRST post-genesis block (genesis_blocks + 1).
         // The transition block itself is produced via bootstrap mode (see try_produce_block).
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks > 0 && height == genesis_blocks + 1 {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
-            // Derive genesis producers from the blockchain (source of truth)
-            // This works for both original nodes and syncing nodes
-            let genesis_producers = self.derive_genesis_producers_from_chain();
-            let producer_count = genesis_producers.len();
+            // Idempotency guard: skip if producers already registered
+            // (e.g., after rollback rebuilt the producer set correctly via
+            // rebuild_producer_set_from_blocks, then re-applied this block)
+            let already_registered = {
+                let producers = self.producer_set.read().await;
+                !producers.active_producers().is_empty()
+            };
 
-            if producer_count > 0 {
+            if already_registered {
                 info!(
-                    "Derived {} genesis producers from blockchain (blocks 1-{})...",
-                    producer_count, genesis_blocks
-                );
-
-                // Register each producer with 1 bond unit
-                let mut producers = self.producer_set.write().await;
-                let bond_unit = self.config.network.bond_unit();
-
-                for pubkey in genesis_producers {
-                    match producers.register_genesis_producer(pubkey, 1, bond_unit) {
-                        Ok(()) => {
-                            info!(
-                                "  Registered genesis producer: {}",
-                                hex::encode(&pubkey.as_bytes()[..8])
-                            );
-                        }
-                        Err(e) => {
-                            // Already registered is fine (shouldn't happen but safe)
-                            debug!(
-                                "  Producer {} already registered: {}",
-                                hex::encode(&pubkey.as_bytes()[..8]),
-                                e
-                            );
-                        }
-                    }
-                }
-
-                // Save producer set immediately
-                let producers_path = self.config.data_dir.join("producers.bin");
-                if let Err(e) = producers.save(&producers_path) {
-                    warn!("Failed to save producer set after genesis: {}", e);
-                }
-
-                info!(
-                    "Genesis complete: {} producers now active in scheduler",
-                    producers.active_producers().len()
+                    "Genesis producers already registered (idempotency guard), skipping re-registration"
                 );
             } else {
-                warn!("Genesis ended with no producers found in blockchain!");
+                // Derive genesis producers from the blockchain (source of truth)
+                // This works for both original nodes and syncing nodes
+                let genesis_producers = self.derive_genesis_producers_from_chain();
+                let producer_count = genesis_producers.len();
+
+                if producer_count > 0 {
+                    info!(
+                        "Derived {} genesis producers from blockchain (blocks 1-{})...",
+                        producer_count, genesis_blocks
+                    );
+
+                    // Register each producer with 1 bond unit
+                    let mut producers = self.producer_set.write().await;
+                    let bond_unit = self.config.network.bond_unit();
+
+                    for pubkey in genesis_producers {
+                        match producers.register_genesis_producer(pubkey, 1, bond_unit) {
+                            Ok(()) => {
+                                info!(
+                                    "  Registered genesis producer: {}",
+                                    hex::encode(&pubkey.as_bytes()[..8])
+                                );
+                            }
+                            Err(e) => {
+                                // Already registered is fine (shouldn't happen but safe)
+                                debug!(
+                                    "  Producer {} already registered: {}",
+                                    hex::encode(&pubkey.as_bytes()[..8]),
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // Save producer set immediately
+                    let producers_path = self.config.data_dir.join("producers.bin");
+                    if let Err(e) = producers.save(&producers_path) {
+                        warn!("Failed to save producer set after genesis: {}", e);
+                    }
+
+                    info!(
+                        "Genesis complete: {} producers now active in scheduler",
+                        producers.active_producers().len()
+                    );
+                } else {
+                    warn!("Genesis ended with no producers found in blockchain!");
+                }
             }
         }
 
@@ -4700,6 +4683,93 @@ impl Node {
         }
     }
 
+    /// Rebuild the producer set by replaying all producer-modifying transactions
+    /// from blocks 1 through `target_height`. Called by rollback/reorg paths.
+    ///
+    /// Processes: Registration, Exit, SlashProducer, AddBond, DelegateBond,
+    /// RevokeDelegation, and unbonding transitions — mirroring `apply_block()`.
+    fn rebuild_producer_set_from_blocks(
+        &self,
+        producers: &mut ProducerSet,
+        target_height: u64,
+    ) -> Result<()> {
+        producers.clear();
+        let bond_unit = self.config.network.bond_unit();
+
+        for height in 1..=target_height {
+            if let Some(block) = self.block_store.get_block_by_height(height)? {
+                for tx in &block.transactions {
+                    match tx.tx_type {
+                        TxType::Registration => {
+                            if let Some(reg_data) = tx.registration_data() {
+                                if let Some((bond_index, bond_output)) =
+                                    tx.outputs.iter().enumerate().find(|(_, o)| {
+                                        o.output_type == doli_core::transaction::OutputType::Bond
+                                    })
+                                {
+                                    let tx_hash = tx.hash();
+                                    let era = self.params.height_to_era(height);
+                                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                                        reg_data.public_key,
+                                        height,
+                                        bond_output.amount,
+                                        (tx_hash, bond_index as u32),
+                                        era,
+                                        reg_data.bond_count,
+                                    );
+                                    let _ = producers.register(producer_info, height);
+                                }
+                            }
+                        }
+                        TxType::Exit => {
+                            if let Some(exit_data) = tx.exit_data() {
+                                let _ = producers.request_exit(&exit_data.public_key, height);
+                            }
+                        }
+                        TxType::SlashProducer => {
+                            if let Some(slash_data) = tx.slash_data() {
+                                let _ =
+                                    producers.slash_producer(&slash_data.producer_pubkey, height);
+                            }
+                        }
+                        TxType::AddBond => {
+                            if let Some(add_bond_data) = tx.add_bond_data() {
+                                let tx_hash = tx.hash();
+                                let bond_outpoints: Vec<(crypto::Hash, u32)> = (0..add_bond_data
+                                    .bond_count)
+                                    .map(|i| (tx_hash, i))
+                                    .collect();
+                                if let Some(producer_info) =
+                                    producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
+                                {
+                                    producer_info.add_bonds(bond_outpoints, bond_unit);
+                                }
+                            }
+                        }
+                        TxType::DelegateBond => {
+                            if let Some(data) = tx.delegate_bond_data() {
+                                let _ = producers.delegate_bonds(
+                                    &data.delegator,
+                                    &data.delegate,
+                                    data.bond_count,
+                                );
+                            }
+                        }
+                        TxType::RevokeDelegation => {
+                            if let Some(data) = tx.revoke_delegation_data() {
+                                let _ = producers.revoke_delegation(&data.delegator);
+                            }
+                        }
+                        _ => {} // Other TX types don't modify producer set
+                    }
+                }
+                // Process completed unbonding periods after each block
+                producers.process_unbonding(height, UNBONDING_PERIOD);
+            }
+        }
+        Ok(())
+    }
+
     /// Unconditionally roll back 1 block for fork recovery.
     ///
     /// Unlike `resolve_shallow_fork()`, this has no `empty_headers` or
@@ -4755,37 +4825,10 @@ impl Node {
             }
         }
 
-        // Rebuild producer set from blocks 1..=target_height
+        // Rebuild producer set from blocks 1..=target_height (all TX types)
         {
             let mut producers = self.producer_set.write().await;
-            producers.clear();
-            for height in 1..=target_height {
-                if let Some(block) = self.block_store.get_block_by_height(height)? {
-                    for tx in &block.transactions {
-                        if tx.tx_type == TxType::Registration {
-                            if let Some(reg_data) = tx.registration_data() {
-                                if let Some((bond_index, bond_output)) =
-                                    tx.outputs.iter().enumerate().find(|(_, o)| {
-                                        o.output_type == doli_core::transaction::OutputType::Bond
-                                    })
-                                {
-                                    let tx_hash = tx.hash();
-                                    let era = self.params.height_to_era(height);
-                                    let producer_info = storage::ProducerInfo::new_with_bonds(
-                                        reg_data.public_key,
-                                        height,
-                                        bond_output.amount,
-                                        (tx_hash, bond_index as u32),
-                                        era,
-                                        reg_data.bond_count,
-                                    );
-                                    let _ = producers.register(producer_info, height);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
         }
 
         // Update chain state to parent
