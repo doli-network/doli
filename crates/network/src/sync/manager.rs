@@ -351,6 +351,9 @@ pub struct SyncManager {
     /// Fork recovery tracker — active parent chain download for automatic reorg.
     fork_recovery: super::fork_recovery::ForkRecoveryTracker,
 
+    /// Fork sync — binary search for common ancestor when on a dead fork.
+    fork_sync: Option<super::fork_sync::ForkSync>,
+
     /// Last time we received ANY block (gossip or sync). Used for stale chain detection.
     last_block_seen: Instant,
 
@@ -456,6 +459,7 @@ impl SyncManager {
             tier: 0,
             finality_tracker: doli_core::FinalityTracker::new(),
             fork_recovery: super::fork_recovery::ForkRecoveryTracker::new(),
+            fork_sync: None,
             last_block_seen: Instant::now(),
             last_block_applied: Instant::now(),
             last_sync_activity: Instant::now(),
@@ -1390,6 +1394,7 @@ impl SyncManager {
         self.consecutive_empty_headers = 0;
         self.needs_genesis_resync = false;
         self.consecutive_sync_failures = 0;
+        self.fork_sync = None;
         self.state = SyncState::Idle;
         self.pending_headers.clear();
         self.pending_blocks.clear();
@@ -1563,6 +1568,85 @@ impl SyncManager {
     // END FORK RECOVERY
     // =========================================================================
 
+    // =========================================================================
+    // FORK SYNC (binary search for common ancestor)
+    // =========================================================================
+
+    /// Start fork sync: binary search for common ancestor with best peer.
+    /// Returns true if fork sync was started, false if conditions aren't met.
+    pub fn start_fork_sync(&mut self) -> bool {
+        if self.fork_sync.is_some() {
+            return false; // Already active
+        }
+        let peer = match self.best_peer_for_recovery() {
+            Some(p) => p,
+            None => {
+                warn!("Fork sync: no peer available");
+                return false;
+            }
+        };
+        if self.local_height == 0 {
+            return false; // Nothing to search at genesis
+        }
+        self.fork_sync = Some(super::fork_sync::ForkSync::new(peer, self.local_height));
+        // Pause normal sync so requests don't conflict
+        self.state = SyncState::Idle;
+        true
+    }
+
+    /// Returns the pending probe for Node to compare with block_store.
+    /// (height, peer_hash) — Node checks if block_store has the same hash at that height.
+    pub fn fork_sync_pending_probe(&self) -> Option<(u64, Hash)> {
+        self.fork_sync.as_ref()?.pending_probe()
+    }
+
+    /// Feed the binary search comparison result from Node.
+    pub fn fork_sync_handle_probe(&mut self, matches: bool) {
+        if let Some(ref mut fs) = self.fork_sync {
+            fs.handle_probe_result(matches);
+        }
+    }
+
+    /// Check if fork sync search is complete and needs the ancestor hash.
+    /// Returns Some(ancestor_height) when Node should look up the hash from block_store.
+    pub fn fork_sync_ancestor_height(&self) -> Option<u64> {
+        self.fork_sync.as_ref()?.search_complete_ancestor_height()
+    }
+
+    /// Set the ancestor hash to complete the search→download transition.
+    pub fn fork_sync_set_ancestor(&mut self, ancestor_height: u64, ancestor_hash: Hash) {
+        if let Some(ref mut fs) = self.fork_sync {
+            fs.set_ancestor(ancestor_height, ancestor_hash);
+        }
+    }
+
+    /// Take the completed fork sync result. Returns None if not yet complete.
+    pub fn fork_sync_take_result(&mut self) -> Option<super::fork_sync::ForkSyncResult> {
+        let result = self.fork_sync.as_mut()?.take_result();
+        if result.is_some() {
+            self.fork_sync = None; // Clear after taking result
+        }
+        result
+    }
+
+    /// Is fork sync active?
+    pub fn is_fork_sync_active(&self) -> bool {
+        self.fork_sync.is_some()
+    }
+
+    /// Cancel fork sync (timeout, state change, etc.)
+    #[allow(dead_code)]
+    fn cancel_fork_sync(&mut self, reason: &str) {
+        if self.fork_sync.is_some() {
+            warn!("Fork sync cancelled: {}", reason);
+            self.fork_sync = None;
+        }
+    }
+
+    // =========================================================================
+    // END FORK SYNC
+    // =========================================================================
+
     /// Check if we should start syncing
     fn should_sync(&self) -> bool {
         if self.peers.len() < self.config.min_peers_for_sync {
@@ -1690,6 +1774,30 @@ impl SyncManager {
 
     /// Get the next sync request to send
     pub fn next_request(&mut self) -> Option<(PeerId, SyncRequest)> {
+        // Fork sync takes priority when active (runs in Idle state)
+        if let Some(ref mut fs) = self.fork_sync {
+            if fs.is_timed_out() {
+                warn!("Fork sync timed out — cancelling");
+                self.fork_sync = None;
+            } else {
+                let peer = fs.peer();
+                // Guard: don't send if peer already has a pending request
+                if let Some(status) = self.peers.get(&peer) {
+                    if status.pending_request.is_some() {
+                        return None;
+                    }
+                }
+                if let Some(request) = fs.next_request() {
+                    let id = self.register_request(peer, request.clone());
+                    if let Some(status) = self.peers.get_mut(&peer) {
+                        status.pending_request = Some(id);
+                    }
+                    return Some((peer, request));
+                }
+                return None; // Fork sync active but no request needed right now
+            }
+        }
+
         match &self.state {
             SyncState::Idle | SyncState::Synchronized => {
                 // Serve fork recovery requests when main sync is idle
@@ -1918,6 +2026,13 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling headers response: count={}",
                     headers.len()
                 );
+                // Fork sync intercept: route headers to fork sync when active
+                if let Some(ref mut fs) = self.fork_sync {
+                    if fs.peer() == peer {
+                        fs.handle_headers_response(headers);
+                        return vec![];
+                    }
+                }
                 // Discard responses from old sync epochs. Responses with no tracking
                 // (request_epoch=None, e.g. after soft retry cleared requests) are
                 // allowed through — the header chain linkage check in process_headers
@@ -1940,6 +2055,13 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling bodies response: count={}",
                     bodies.len()
                 );
+                // Fork sync intercept: route bodies to fork sync when active
+                if let Some(ref mut fs) = self.fork_sync {
+                    if fs.peer() == peer {
+                        fs.handle_bodies_response(bodies);
+                        return vec![];
+                    }
+                }
                 if is_stale_epoch {
                     debug!(
                         "Discarding stale bodies from {} ({} bodies) — epoch {:?} != current {}",
@@ -1957,6 +2079,13 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
                 );
+                // Fork sync intercept: consume block responses during binary search
+                if let Some(ref mut fs) = self.fork_sync {
+                    if fs.peer() == peer {
+                        fs.handle_block_response(maybe_block);
+                        return vec![];
+                    }
+                }
                 // Fork recovery intercept: consume blocks during active recovery
                 if self.fork_recovery.is_active()
                     && self.fork_recovery.handle_block(peer, maybe_block.clone())
@@ -2029,22 +2158,15 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                if gap > 50 {
-                    // Peer is far ahead — likely snap-synced without our block range.
-                    debug!(
-                        "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                         peer likely lacks our block range. Not counting as fork evidence.",
-                        peer, peer_height, self.local_height, gap
-                    );
-                } else {
-                    // Peer is at similar height — genuine fork evidence.
-                    self.consecutive_empty_headers += 1;
-                    warn!(
-                        "Empty headers from {} (peer_h={}) with no pending work — \
-                         likely on fork (consecutive={}). Resetting to Idle.",
-                        peer, peer_height, self.consecutive_empty_headers
-                    );
-                }
+                // Empty response = peer doesn't recognize our chain tip.
+                // This is fork evidence regardless of gap size. A snap-synced peer
+                // far ahead still proves our tip is on a dead fork.
+                self.consecutive_empty_headers += 1;
+                warn!(
+                    "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
+                     fork evidence (consecutive={}). Resetting to Idle.",
+                    peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
+                );
                 self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;
@@ -2085,12 +2207,15 @@ impl SyncManager {
                 };
             }
         } else {
-            // STALE RESPONSE: Received headers but none chain to expected_prev_hash.
+            // CHAIN BREAK: Received headers but none chain to expected_prev_hash.
+            // This is fork evidence — the peer has a different chain at our tip height.
             // process_headers() does NOT modify expected_prev_hash when valid_count == 0,
-            // so the downloader state is still correct. Just skip and continue.
+            // so the downloader state is still correct.
+            self.consecutive_empty_headers += 1;
             warn!(
-                "No valid headers from peer {} - header chain broken. Skipping stale response.",
-                peer
+                "No valid headers from peer {} - header chain broken (consecutive={}). \
+                 Peer has different chain at our tip.",
+                peer, self.consecutive_empty_headers
             );
         }
     }
@@ -3480,8 +3605,8 @@ mod tests {
             "Stale response must NOT reset state — got {:?}",
             manager.state
         );
-        // Verify: empty_headers NOT incremented (this is a stale response, not empty)
-        assert_eq!(manager.consecutive_empty_headers, 0);
+        // Chain break correctly incremented as fork evidence
+        assert_eq!(manager.consecutive_empty_headers, 1);
         // Verify: expected_prev_hash PRESERVED (not cleared)
         assert_eq!(
             manager.header_downloader.expected_prev_hash(),
@@ -3535,9 +3660,9 @@ mod tests {
         let stale_chain = build_header_chain(genesis, 3);
         let _blocks = manager.handle_response(peer, SyncResponse::Headers(stale_chain));
 
-        // The stale response should have been discarded (no matching pending_request).
-        // Verify: consecutive_empty_headers unchanged (stale response never reached handler).
-        assert_eq!(manager.consecutive_empty_headers, 0);
+        // The stale response reached the handler but its headers don't chain to our tip.
+        // This correctly counts as fork evidence (chain break path).
+        assert_eq!(manager.consecutive_empty_headers, 1);
     }
 
     #[test]
