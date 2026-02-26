@@ -2382,41 +2382,54 @@ pub fn validate_producer_eligibility(
     header: &BlockHeader,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
-    // During bootstrap, validate using fallback ranks from GSet producer list
+    // During genesis phase, use bootstrap validation (aligned with production mode).
+    // Production switches to bond-weighted scheduler at genesis_blocks + 1,
+    // so validation must use the same threshold — not bootstrap_blocks.
+    if ctx.network.is_in_genesis(ctx.current_height) {
+        return validate_bootstrap_producer(header, ctx);
+    }
+
+    // Post-genesis: use bond-weighted scheduler if producer data available.
+    // This is the normal path once GENESIS PHASE COMPLETE has populated the
+    // producer set with bond-weighted entries.
+    if !ctx.active_producers_weighted.is_empty() {
+        let eligible = select_producer_for_slot(header.slot, &ctx.active_producers_weighted);
+
+        if eligible.is_empty() {
+            return Err(ValidationError::InvalidProducer);
+        }
+
+        // Calculate time offset within the slot (in ms for sequential 2s windows).
+        // Block timestamps have second precision, but eligibility uses 2s windows.
+        // Check if the producer is eligible at any point within the timestamp's second bucket
+        // [offset_secs * 1000, (offset_secs + 1) * 1000) to avoid false rejections.
+        let slot_start = ctx.params.slot_to_timestamp(header.slot);
+        let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
+        let slot_offset_ms_low = slot_offset_secs * 1000;
+        let slot_offset_ms_high = slot_offset_ms_low + 999;
+
+        if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
+            && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
+        {
+            return Err(ValidationError::InvalidProducer);
+        }
+
+        return Ok(());
+    }
+
+    // Fallback: syncing node without producer set — use bootstrap validation
+    // if still within bootstrap window (allows catching up without producer data)
     if ctx.params.is_bootstrap(ctx.current_height) {
         return validate_bootstrap_producer(header, ctx);
     }
 
-    // If no active producers are set, skip validation
-    // (this allows backward compatibility during testing)
+    // No weighted producers and not in bootstrap — skip if no producers at all
+    // (backward compatibility during testing)
     if ctx.active_producers.is_empty() {
         return Ok(());
     }
 
-    // Select eligible producers for this slot using consecutive tickets
-    // Selection is independent of prev_hash (anti-grinding protection)
-    let eligible = select_producer_for_slot(header.slot, &ctx.active_producers_weighted);
-
-    if eligible.is_empty() {
-        return Err(ValidationError::InvalidProducer);
-    }
-
-    // Calculate time offset within the slot (in ms for sequential 2s windows).
-    // Block timestamps have second precision, but eligibility uses 2s windows.
-    // Check if the producer is eligible at any point within the timestamp's second bucket
-    // [offset_secs * 1000, (offset_secs + 1) * 1000) to avoid false rejections.
-    let slot_start = ctx.params.slot_to_timestamp(header.slot);
-    let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
-    let slot_offset_ms_low = slot_offset_secs * 1000;
-    let slot_offset_ms_high = slot_offset_ms_low + 999;
-
-    if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
-        && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
-    {
-        return Err(ValidationError::InvalidProducer);
-    }
-
-    Ok(())
+    Err(ValidationError::InvalidProducer)
 }
 
 #[cfg(test)]
