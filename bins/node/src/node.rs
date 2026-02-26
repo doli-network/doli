@@ -23,7 +23,8 @@ use doli_core::consensus::{
 use doli_core::rewards::WeightedRewardCalculator;
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
-use doli_core::transaction::TxType;
+use doli_core::tpop::heartbeat::verify_hash_chain_vdf;
+use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 // ValidationMode is ready for use once merkle root computation is fixed
@@ -129,6 +130,11 @@ pub struct Node {
     /// blocks near the tip (within 1 epoch / 360 blocks) get full VDF verification,
     /// older blocks get light validation (VDF skipped — already trusted via state root quorum).
     snap_sync_height: Option<u64>,
+    /// Cached genesis VDF proof output (computed in background at startup during genesis).
+    /// Used to create a zero-bond Registration TX that proves VDF work on-chain.
+    genesis_vdf_output: Option<[u8; 32]>,
+    /// Whether the genesis VDF Registration TX has been included in a produced block.
+    genesis_vdf_submitted: bool,
 }
 
 /// How often to save state (every N blocks applied)
@@ -533,6 +539,8 @@ impl Node {
             last_peer_redial: None,
             producer_liveness,
             snap_sync_height: None,
+            genesis_vdf_output: None,
+            genesis_vdf_submitted: false,
         })
     }
 
@@ -636,6 +644,33 @@ impl Node {
                             .await;
                     }
                 }
+            }
+        }
+
+        // Compute genesis VDF proof in background during genesis phase.
+        // This takes ~30s for 5M iterations. The proof will be embedded in a
+        // Registration TX in the next block this producer creates.
+        if let Some(ref key) = self.producer_key {
+            let genesis_active = {
+                let state = self.chain_state.read().await;
+                self.config.network.is_in_genesis(state.best_height + 1)
+            };
+            if genesis_active {
+                let our_pubkey = *key.public_key();
+                let iterations = self.config.network.vdf_register_iterations();
+                let vdf_input = vdf::registration_input(&our_pubkey, 0);
+                info!(
+                    "Computing genesis registration VDF proof ({} iterations)...",
+                    iterations
+                );
+                let output =
+                    tokio::task::spawn_blocking(move || hash_chain_vdf(&vdf_input, iterations))
+                        .await?;
+                self.genesis_vdf_output = Some(output);
+                info!(
+                    "Genesis VDF proof computed for {}",
+                    hex::encode(&our_pubkey.as_bytes()[..8])
+                );
             }
         }
 
@@ -2740,7 +2775,18 @@ impl Node {
 
                 // Process registration transactions
                 if tx.tx_type == TxType::Registration {
-                    if let Some(reg_data) = tx.registration_data() {
+                    // During genesis, Registration TXs are VDF proof containers only.
+                    // Actual producer registration happens at GENESIS PHASE COMPLETE (block 361).
+                    if self.config.network.is_in_genesis(height) {
+                        if let Some(reg_data) = tx.registration_data() {
+                            info!(
+                                "Genesis VDF proof submitted by {} (block {})",
+                                hex::encode(&reg_data.public_key.as_bytes()[..8]),
+                                height
+                            );
+                        }
+                        // Skip immediate registration — handled at genesis end
+                    } else if let Some(reg_data) = tx.registration_data() {
                         // Find the bond output
                         if let Some((bond_index, bond_output)) =
                             tx.outputs.iter().enumerate().find(|(_, o)| {
@@ -4528,6 +4574,40 @@ impl Node {
         if let Some(coinbase) = epoch_coinbase {
             transactions.push(coinbase);
         }
+
+        // During genesis: include VDF proof Registration TX (zero-bond, VDF-only)
+        if self.config.network.is_in_genesis(height)
+            && self.genesis_vdf_output.is_some()
+            && !self.genesis_vdf_submitted
+        {
+            let vdf_output_bytes = self.genesis_vdf_output.unwrap();
+            let reg_data = RegistrationData {
+                public_key: our_pubkey,
+                epoch: 0,
+                vdf_output: vdf_output_bytes.to_vec(),
+                vdf_proof: vec![],
+                prev_registration_hash: Hash::ZERO,
+                sequence_number: 0,
+                bond_count: 0, // Zero bond — handled at genesis end
+            };
+            let extra_data =
+                bincode::serialize(&reg_data).expect("RegistrationData serialization cannot fail");
+            let reg_tx = Transaction {
+                version: 1,
+                tx_type: TxType::Registration,
+                inputs: vec![],
+                outputs: vec![],
+                extra_data,
+            };
+            transactions.push(reg_tx);
+            self.genesis_vdf_submitted = true;
+            info!(
+                "Included genesis VDF proof Registration TX in block {} for {}",
+                height,
+                hex::encode(&our_pubkey.as_bytes()[..8])
+            );
+        }
+
         transactions.extend(mempool_txs);
 
         let block = Block {
@@ -4765,12 +4845,19 @@ impl Node {
     ) -> Result<()> {
         producers.clear();
         let bond_unit = self.config.network.bond_unit();
+        let genesis_blocks = self.config.network.genesis_blocks();
 
         for height in 1..=target_height {
             if let Some(block) = self.block_store.get_block_by_height(height)? {
                 for tx in &block.transactions {
                     match tx.tx_type {
                         TxType::Registration => {
+                            // During genesis, Registration TXs are VDF proof containers
+                            // (zero-bond). Skip — genesis producers are registered below
+                            // when crossing the genesis boundary.
+                            if genesis_blocks > 0 && height <= genesis_blocks {
+                                continue;
+                            }
                             if let Some(reg_data) = tx.registration_data() {
                                 if let Some((bond_index, bond_output)) =
                                     tx.outputs.iter().enumerate().find(|(_, o)| {
@@ -4833,6 +4920,26 @@ impl Node {
                         _ => {} // Other TX types don't modify producer set
                     }
                 }
+
+                // Replicate GENESIS PHASE COMPLETE: register VDF-proven producers
+                // when crossing the genesis boundary during rebuild.
+                if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                    let genesis_producers = self.derive_genesis_producers_from_chain();
+                    let era = self.params.height_to_era(height);
+                    for pubkey in &genesis_producers {
+                        let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+                        let producer_info = storage::ProducerInfo::new_with_bonds(
+                            *pubkey,
+                            height,
+                            bond_unit,
+                            (bond_hash, 0),
+                            era,
+                            1,
+                        );
+                        let _ = producers.register(producer_info, height);
+                    }
+                }
+
                 // Process completed unbonding periods after each block
                 producers.process_unbonding(height, UNBONDING_PERIOD);
             }
@@ -5316,24 +5423,58 @@ impl Node {
     /// This is the source of truth for genesis producers - no gossip or
     /// external configuration required. Any node can verify this by
     /// examining the blockchain.
+    /// Derive genesis producers from on-chain VDF proof Registration TXs.
+    ///
+    /// Scans genesis blocks for Registration TXs, validates VDF proofs,
+    /// and returns only producers with valid proofs. Producers who produced
+    /// blocks but did NOT submit a VDF proof are NOT registered.
     fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks == 0 {
             return Vec::new();
         }
 
+        let iterations = self.config.network.vdf_register_iterations();
         let mut seen = std::collections::HashSet::new();
-        let mut producers = Vec::new();
+        let mut proven_producers = Vec::new();
 
         for height in 1..=genesis_blocks {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
-                if seen.insert(block.header.producer) {
-                    producers.push(block.header.producer);
+                for tx in &block.transactions {
+                    if tx.tx_type == TxType::Registration {
+                        if let Some(reg_data) = tx.registration_data() {
+                            if reg_data.vdf_output.len() == 32 {
+                                let vdf_input = vdf::registration_input(&reg_data.public_key, 0);
+                                let output: [u8; 32] =
+                                    reg_data.vdf_output.as_slice().try_into().unwrap();
+                                if verify_hash_chain_vdf(&vdf_input, &output, iterations) {
+                                    if seen.insert(reg_data.public_key) {
+                                        info!(
+                                            "  VDF proof valid for genesis producer {}",
+                                            hex::encode(&reg_data.public_key.as_bytes()[..8])
+                                        );
+                                        proven_producers.push(reg_data.public_key);
+                                    }
+                                } else {
+                                    warn!(
+                                        "  VDF proof INVALID for {} in block {}",
+                                        hex::encode(&reg_data.public_key.as_bytes()[..8]),
+                                        height
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        producers
+        info!(
+            "Derived {} genesis producers with valid VDF proofs (from {} genesis blocks)",
+            proven_producers.len(),
+            genesis_blocks
+        );
+        proven_producers
     }
 
     /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
