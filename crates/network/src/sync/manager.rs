@@ -1428,9 +1428,12 @@ impl SyncManager {
     }
 
     /// Returns true if peers consistently reject our chain tip (deep fork).
-    /// Requires BOTH conditions:
+    /// Requires ALL conditions:
     /// 1. Many consecutive empty header responses (peers don't recognize our chain)
     /// 2. We are significantly behind peers (not just a 1-block fork)
+    /// 3. At least one peer is at a similar height (within 100 blocks) — proving
+    ///    they SHOULD have our block range. Peers far ahead may be snap-synced
+    ///    without old blocks; empty responses from them are history gaps, not forks.
     ///
     /// Short forks (1-2 blocks) are normal and resolve naturally via heaviest chain.
     /// Only trigger genesis resync for genuine deep forks where we're stuck.
@@ -1445,7 +1448,17 @@ impl SyncManager {
             .map(|p| p.best_height)
             .max()
             .unwrap_or(0);
-        best_peer_height > self.local_height + 5
+        if best_peer_height <= self.local_height + 5 {
+            return false;
+        }
+        // Require at least one peer whose height is close to ours (within 100 blocks).
+        // If ALL peers are far ahead, empty headers likely mean they snap-synced
+        // and lack our block range — not that we're on a fork.
+        let has_close_peer = self
+            .peers
+            .values()
+            .any(|p| p.best_height <= self.local_height + 100);
+        has_close_peer
     }
 
     // =========================================================================
@@ -1952,13 +1965,28 @@ impl SyncManager {
                 self.state = SyncState::DownloadingBodies { pending: 0, total };
                 info!("Starting body download for {} blocks", total);
             } else if self.pending_headers.is_empty() {
-                // Empty headers with no pending work = peer doesn't recognize our chain.
-                // This means we're on a fork. Reset to Idle so we can try a different peer.
-                self.consecutive_empty_headers += 1;
-                warn!(
-                    "Empty headers from {} with no pending work — likely on fork (consecutive={}). Resetting to Idle.",
-                    peer, self.consecutive_empty_headers
-                );
+                // Empty headers with no pending work — but check WHY it's empty.
+                // Snap-synced peers lack old blocks: their empty response means
+                // "I don't have that range", NOT "your chain is invalid".
+                let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
+                let gap = peer_height.saturating_sub(self.local_height);
+
+                if gap > 50 {
+                    // Peer is far ahead — likely snap-synced without our block range.
+                    debug!(
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
+                         peer likely lacks our block range. Not counting as fork evidence.",
+                        peer, peer_height, self.local_height, gap
+                    );
+                } else {
+                    // Peer is at similar height — genuine fork evidence.
+                    self.consecutive_empty_headers += 1;
+                    warn!(
+                        "Empty headers from {} (peer_h={}) with no pending work — \
+                         likely on fork (consecutive={}). Resetting to Idle.",
+                        peer, peer_height, self.consecutive_empty_headers
+                    );
+                }
                 self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;

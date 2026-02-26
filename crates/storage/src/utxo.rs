@@ -190,11 +190,13 @@ impl InMemoryUtxoStore {
         bincode::deserialize(&bytes).map_err(|e| StorageError::Serialization(e.to_string()))
     }
 
-    /// Save to bincode file (legacy utxo.bin format)
+    /// Save to bincode file (atomic: write to temp file, then rename)
     pub fn save(&self, path: &Path) -> Result<(), StorageError> {
         let bytes =
             bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        std::fs::write(path, bytes)?;
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
