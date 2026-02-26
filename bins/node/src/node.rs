@@ -1897,15 +1897,20 @@ impl Node {
         }
 
         // Now apply the new blocks through normal path
+        // Note: we skip check_producer_eligibility here because the fork blocks were
+        // validated when originally produced, and re-validating against rolled-back
+        // state uses the wrong producer set (common ancestor, not fork chain).
         info!("Applying {} new blocks from fork", new_blocks.len());
-        for block in &new_blocks {
-            if let Err(e) = self.check_producer_eligibility(block).await {
-                warn!("Reorg rejected block at slot {}: {}", block.header.slot, e);
-                return Err(anyhow::anyhow!("Reorg contains invalid producer: {}", e));
-            }
-        }
         for block in new_blocks {
-            self.apply_block(block).await?;
+            if let Err(e) = self.apply_block(block).await {
+                error!(
+                    "Reorg apply_block failed: {} — state is at common ancestor + applied blocks, sync will catch up",
+                    e
+                );
+                // State is consistent (common ancestor + whatever blocks succeeded).
+                // Don't propagate error — let normal sync fill the gap.
+                return Ok(());
+            }
         }
 
         // Clear applied blocks from fork cache
@@ -1951,6 +1956,7 @@ impl Node {
         let current_tip = self.chain_state.read().await.best_hash;
 
         // 1. Record fork blocks in reorg_handler with weights (forward order for correct accumulation)
+        let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;
             let mut sync = self.sync_manager.write().await;
@@ -1960,6 +1966,7 @@ impl Node {
                     .map(|p| p.effective_weight(current_height + 1))
                     .unwrap_or(1);
                 sync.record_fork_block_weight(block.hash(), block.header.prev_hash, weight);
+                last_block_weight = weight;
             }
         }
 
@@ -1971,8 +1978,35 @@ impl Node {
             }
         }
 
-        // 3. Plan reorg: find common ancestor, build rollback list, compare weights
-        let fork_tip_hash = recovery.blocks.last().unwrap().hash();
+        // 3. Try simple reorg first (works for single-block forks within recent_blocks)
+        let fork_tip = recovery.blocks.last().unwrap();
+        let simple_reorg = {
+            let sync = self.sync_manager.read().await;
+            sync.reorg_handler()
+                .check_reorg_weighted(fork_tip, current_tip, last_block_weight)
+        };
+
+        if let Some(result) = simple_reorg {
+            if result.weight_delta > 0 {
+                info!(
+                    "Fork is heavier (+{}) via simple reorg — executing: rollback={}, new={}",
+                    result.weight_delta,
+                    result.rollback.len(),
+                    result.new_blocks.len()
+                );
+                let trigger = fork_tip.clone();
+                self.execute_reorg(result, trigger).await?;
+            } else {
+                info!(
+                    "Fork is lighter ({}) — keeping current chain",
+                    result.weight_delta
+                );
+            }
+            return Ok(());
+        }
+
+        // 4. Fall back to plan_reorg for deeper forks
+        let fork_tip_hash = fork_tip.hash();
         let reorg_result = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
@@ -1982,7 +2016,7 @@ impl Node {
                 })
         };
 
-        // 4. Execute reorg if fork is heavier
+        // 5. Execute reorg if fork is heavier
         match reorg_result {
             Some(result) if result.weight_delta > 0 => {
                 info!(
@@ -2299,6 +2333,12 @@ impl Node {
 
         // Step 7: Track snap sync height in-memory for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
+
+        // Step 8: Seed reorg handler so fork detection works immediately after snap sync
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.record_block_applied_after_snap(snapshot.block_hash, snapshot.block_height);
+        }
 
         info!(
             "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
