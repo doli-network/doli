@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1770941923,
-    "message": "Resilience test v2",
+    "timestamp": 1771977600,
+    "message": "Genesis - 25/Feb/2026",
     "initial_reward": 100000000
   },
   "consensus": {
