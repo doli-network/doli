@@ -251,8 +251,22 @@ impl Node {
                             }
                         }
                         if !recovered {
-                            warn!("No valid blocks found in store. Resetting to genesis.");
-                            chain_state = ChainState::new(genesis_hash);
+                            // Block store is empty but chain state has valid data.
+                            // This can happen after crash recovery or force-resync when
+                            // state files survived but block history was lost.
+                            // Treat as snap-synced state: preserve balances/producers,
+                            // blocks will rebuild from peers.
+                            warn!(
+                                "No blocks in store but chain state at height {}. \
+                                 Marking as snap-synced to preserve state.",
+                                chain_state.best_height
+                            );
+                            chain_state.mark_snap_synced(chain_state.best_height);
+                            if let Err(e) = block_store
+                                .seed_canonical_index(chain_state.best_hash, chain_state.best_height)
+                            {
+                                warn!("Failed to seed canonical index: {}", e);
+                            }
                         }
                     }
                 }
