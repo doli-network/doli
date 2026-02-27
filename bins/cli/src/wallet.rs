@@ -26,18 +26,16 @@ pub struct WalletAddress {
 pub struct Wallet {
     /// Wallet name
     name: String,
-    /// Version (1 = legacy, 2 = BIP-39 seed phrase)
+    /// Version (1 = legacy, 2 = BIP-39 derived key)
     version: u32,
-    /// BIP-39 seed phrase (24 words). Present in version 2+ wallets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    seed_phrase: Option<String>,
     /// Addresses
     addresses: Vec<WalletAddress>,
 }
 
 impl Wallet {
     /// Create a new wallet with a BIP-39 seed phrase.
-    /// Returns (wallet, seed_phrase) — the phrase is returned for display.
+    /// Returns (wallet, seed_phrase) — the phrase is returned for external storage.
+    /// The seed phrase is NOT stored in the wallet file.
     pub fn new(name: &str) -> (Self, String) {
         let mnemonic = Mnemonic::generate(24).expect("mnemonic generation failed");
         let phrase = mnemonic.to_string();
@@ -60,7 +58,6 @@ impl Wallet {
         let wallet = Self {
             name: name.to_string(),
             version: 2,
-            seed_phrase: Some(phrase.clone()),
             addresses: vec![primary],
         };
 
@@ -99,12 +96,6 @@ impl Wallet {
     /// Get wallet name
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Get the seed phrase, if this wallet has one.
-    /// Returns None for legacy (version 1) wallets.
-    pub fn seed_phrase(&self) -> Option<&str> {
-        self.seed_phrase.as_deref()
     }
 
     /// Get all addresses
@@ -214,14 +205,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_wallet_v2_has_seed_phrase() {
+    fn test_new_wallet_v2_returns_seed_phrase() {
         let (wallet, phrase) = Wallet::new("test");
         assert_eq!(wallet.name(), "test");
         assert_eq!(wallet.version, 2);
-        assert!(wallet.seed_phrase().is_some());
-        assert_eq!(wallet.seed_phrase().unwrap(), phrase);
         assert_eq!(phrase.split_whitespace().count(), 24);
         assert_eq!(wallet.addresses().len(), 1);
+    }
+
+    #[test]
+    fn test_v2_wallet_json_has_no_seed() {
+        let (wallet, _phrase) = Wallet::new("test");
+        let json = serde_json::to_string_pretty(&wallet).unwrap();
+        assert!(!json.contains("seed_phrase"));
     }
 
     #[test]
@@ -237,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_wallet_loads_without_seed() {
+    fn test_legacy_wallet_loads() {
         let json = r#"{
             "name": "legacy",
             "version": 1,
@@ -250,7 +246,6 @@ mod tests {
         }"#;
         let wallet: Wallet = serde_json::from_str(json).unwrap();
         assert_eq!(wallet.version, 1);
-        assert!(wallet.seed_phrase().is_none());
     }
 
     #[test]
@@ -258,7 +253,6 @@ mod tests {
         let (wallet, _phrase) = Wallet::new("test");
         let json = serde_json::to_string_pretty(&wallet).unwrap();
         let loaded: Wallet = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.seed_phrase(), wallet.seed_phrase());
         assert_eq!(loaded.primary_public_key(), wallet.primary_public_key());
     }
 
