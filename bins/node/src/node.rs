@@ -3080,19 +3080,7 @@ impl Node {
         if genesis_blocks > 0 && height == genesis_blocks + 1 {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
-            // Idempotency guard: skip if producers already registered
-            // (e.g., after rollback rebuilt the producer set correctly via
-            // rebuild_producer_set_from_blocks, then re-applied this block)
-            let already_registered = {
-                let producers = self.producer_set.read().await;
-                !producers.active_producers().is_empty()
-            };
-
-            if already_registered {
-                info!(
-                    "Genesis producers already registered (idempotency guard), skipping re-registration"
-                );
-            } else {
+            {
                 let genesis_producers = self.derive_genesis_producers_from_chain();
                 let producer_count = genesis_producers.len();
 
@@ -3106,6 +3094,10 @@ impl Node {
                     let era = self.params.height_to_era(height);
                     let mut utxo = self.utxo_set.write().await;
                     let mut producers = self.producer_set.write().await;
+
+                    // Clear bootstrap phantom entries so we register fresh
+                    // with real VDF-proven, bond-backed registrations.
+                    producers.clear();
 
                     for pubkey in &genesis_producers {
                         let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
