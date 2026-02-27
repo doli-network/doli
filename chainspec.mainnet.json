@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772159912,
+    "timestamp": 1772160446,
     "message": "Genesis - 27/Feb/2026 - VDF proof + ACTIVATION_DELAY fix",
     "initial_reward": 100000000
   },
