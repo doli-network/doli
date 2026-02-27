@@ -1030,7 +1030,15 @@ impl ProducerSet {
         buf.extend_from_slice(&(producers.len() as u64).to_le_bytes());
         for (key, info) in &producers {
             buf.extend_from_slice(key.as_bytes());
-            let info_bytes = bincode::serialize(info).unwrap_or_default();
+            // Clone and sort Vec fields for deterministic serialization.
+            // Insertion order should already be consistent (same chain = same order),
+            // but explicit sorting is defense-in-depth against non-determinism.
+            let mut info_sorted = (*info).clone();
+            info_sorted.additional_bonds.sort_by_key(|(h, i)| (*h, *i));
+            info_sorted
+                .received_delegations
+                .sort_by_key(|(h, c)| (*h, *c));
+            let info_bytes = bincode::serialize(&info_sorted).unwrap_or_default();
             buf.extend_from_slice(&(info_bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(&info_bytes);
         }
