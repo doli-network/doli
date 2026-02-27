@@ -120,7 +120,7 @@ source ~/.cargo/env
 # Install system dependencies (Ubuntu/Debian)
 sudo apt install build-essential pkg-config libssl-dev libgmp-dev librocksdb-dev
 
-# Clone and build
+# Clone and build (--release is MANDATORY)
 git clone https://github.com/e-weil/doli.git
 cd doli
 cargo build --release
@@ -128,6 +128,8 @@ cargo build --release
 # Install binaries
 sudo cp target/release/doli-node target/release/doli /usr/local/bin/
 ```
+
+> **WARNING: `--release` is mandatory.** Debug builds (`cargo build` without `--release`) are ~10x slower for VDF computation, causing block production timeouts, sync failures, and fork divergence. Debug binaries are also ~2x larger (~17MB vs ~8MB). If your binary is larger than 10MB, you have a debug build — rebuild with `--release`.
 
 **Using Nix (for development):**
 
