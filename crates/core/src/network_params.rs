@@ -379,7 +379,7 @@ impl NetworkParams {
                 registration_base_fee: 100_000,      // 0.001 DOLI
                 max_registration_fee: 1_000_000_000, // 10 DOLI
                 automatic_genesis_bond: consensus::BOND_UNIT,
-                genesis_blocks: 20, // TEST: short genesis for validation
+                genesis_blocks: 360, // 1 hour (open registration period)
 
                 // VDF (800K iterations ~= 55ms for 2s sequential fallback windows)
                 vdf_iterations: 800_000,
