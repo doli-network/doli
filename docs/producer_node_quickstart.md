@@ -32,6 +32,8 @@ cd doli
 cargo build --release
 ```
 
+> **WARNING: `--release` is mandatory.** Debug builds (`cargo build` without `--release`) produce a binary that is ~10x slower for VDF computation, causing block production timeouts, sync failures, and fork divergence. Debug binaries are also ~2x larger (~17MB vs ~8MB). If your binary is larger than 10MB, you have a debug build — rebuild with `--release`.
+
 Binaries are in `target/release/`:
 - `doli-node` — full node
 - `doli` — wallet CLI
