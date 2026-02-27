@@ -425,13 +425,13 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | **N3** | N3-VPS | 147.93.84.44 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@147.93.84.44` | 30303 / 8545 / 9090 | `/home/ilozada/.doli/mainnet/data` | `/home/ilozada/doli-node` | `doli-mainnet-node3` |
 | **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node4` |
 | **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node5` |
-| **N6** | macOS (local) | — | local | — | `~/.doli/mainnet/` | `target/release/doli-node` | — (no node yet) |
+| **N6** | macOS (local) | — | local | 30303 / 8545 / 9090 | `~/.doli/mainnet/data` | `~/repos/doli/target/release/doli-node` | `network.doli.mainnet.node6` (launchd) |
 
-**N6 note**: Registered on-chain (block 3236, 10 bonds = 100 DOLI) but no dedicated node host assigned yet. Producer key lives on Ivan's macOS at `~/.doli/mainnet/keys/producer_6.json`.
+**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`), **except N6** which uses macOS launchd.
 
-**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`).
-
-**Service files**: `/etc/systemd/system/doli-mainnet-nodeN.service`
+**Service files**:
+- N1-N5: `/etc/systemd/system/doli-mainnet-nodeN.service`
+- N6: `~/Library/LaunchAgents/network.doli.mainnet.node6.plist`
 
 **Logs**: `/var/log/doli/nodeN.log` — circular via logrotate (5MB max, 1 rotation). Config: `/etc/logrotate.d/doli`.
 
@@ -440,11 +440,19 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 tail -f /var/log/doli/node1.log                              # N1/N2 (omegacortex)
 ssh -p 50790 ilozada@147.93.84.44 'tail -f /var/log/doli/node3.log'  # N3 (via jump)
 ssh -p 50790 ilozada@72.60.70.166 'tail -f /var/log/doli/node4.log'  # N4 (via jump)
+tail -f ~/.doli/mainnet/node6.log                            # N6 (macOS local)
 
-# Manage service
+# Manage service (N1-N5: systemd)
 sudo systemctl status doli-mainnet-node1
 sudo systemctl restart doli-mainnet-node1
 sudo systemctl stop doli-mainnet-node1
+
+# Manage service (N6: macOS launchd)
+launchctl list network.doli.mainnet.node6                    # status
+launchctl stop network.doli.mainnet.node6                    # stop
+launchctl start network.doli.mainnet.node6                   # start
+launchctl unload ~/Library/LaunchAgents/network.doli.mainnet.node6.plist  # disable
+launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enable
 ```
 
 **Key differences:**
@@ -454,6 +462,7 @@ sudo systemctl stop doli-mainnet-node1
 - **N3/N4/N5 SSH**: Only reachable via omegacortex as jump host (`ssh -p 50790`). Direct SSH from local machine fails.
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). Systemd service runs as `isudoajl`. SSH as `ilozada`.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
+- **N6** (macOS local): Rust toolchain available, builds locally. Managed by launchd (not systemd). Registered post-genesis at block 3236 with 10 bonds (100 DOLI). Not a maintainer.
 
 ### Producer Key Registry (AUTHORITATIVE)
 
@@ -468,7 +477,7 @@ sudo systemctl stop doli-mainnet-node1
 | **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
 | **N6** | macOS (local) | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
 
-**N6 is NOT a genesis producer** — registered post-genesis at block 3236 with 10 bonds. Not a maintainer (governance stays 5/5 with N1-N5).
+**N6 is NOT a genesis producer** — registered post-genesis at block 3236 with 10 bonds. Not a maintainer (governance stays 5/5 with N1-N5). Has ACTIVATION_DELAY of 10 blocks.
 
 **Producer key files are wallet-compatible** — use directly with `doli -w <key_file>` for balance queries, sends, and producer operations.
 
@@ -599,6 +608,7 @@ sudo systemctl start doli-mainnet-nodeN
 - **N3**: `/home/ilozada/.doli/mainnet/data/` (147.93.84.44)
 - **N4**: `/home/isudoajl/.doli/mainnet/` (72.60.70.166, no `data/` subdir)
 - **N5**: `/home/isudoajl/.doli/mainnet/` (72.60.115.209, no `data/` subdir)
+- **N6**: `~/.doli/mainnet/data/` (macOS local, stop via `launchctl stop network.doli.mainnet.node6`)
 
 ### Consensus-Critical vs Rolling Upgrades
 
