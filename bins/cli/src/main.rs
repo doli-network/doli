@@ -42,9 +42,6 @@ enum Commands {
         name: Option<String>,
     },
 
-    /// Show seed phrase for this wallet
-    Seed,
-
     /// Generate a new address
     Address {
         /// Label for the address
@@ -298,9 +295,6 @@ async fn main() -> Result<()> {
         Commands::New { name } => {
             cmd_new(&cli.wallet, name)?;
         }
-        Commands::Seed => {
-            cmd_seed(&cli.wallet)?;
-        }
         Commands::Address { label } => {
             cmd_address(&cli.wallet, label)?;
         }
@@ -371,6 +365,15 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     let (wallet, phrase) = Wallet::new(&name);
     wallet.save(wallet_path)?;
 
+    // Write seed phrase to a separate file
+    let seed_path = wallet_path.with_extension("seed.txt");
+    let mut seed_content = String::new();
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        seed_content.push_str(&format!("{}. {}\n", i + 1, word));
+    }
+    std::fs::write(&seed_path, &seed_content)?;
+
     let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
 
     println!();
@@ -378,8 +381,6 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     println!();
     println!("  Recovery phrase:");
     println!();
-    // Display words in rows of 6 for readability
-    let words: Vec<&str> = phrase.split_whitespace().collect();
     for (i, chunk) in words.chunks(6).enumerate() {
         let numbered: Vec<String> = chunk
             .iter()
@@ -392,40 +393,11 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     println!("  Address: {}", bech32_addr);
     println!();
     println!("  Wallet saved to: {:?}", wallet_path);
+    println!("  Seed phrase saved to: {:?}", seed_path);
     println!();
-    println!("  This file contains your private key.");
-    println!("  Store it in a safe place. Anyone with this file can spend your DOLI.");
-    println!("  If you lose it, use the 24 words above to recover.");
+    println!("  Write down the 24 words above, then delete the seed file:");
+    println!("    rm {:?}", seed_path);
     println!();
-
-    Ok(())
-}
-
-fn cmd_seed(wallet_path: &Path) -> Result<()> {
-    let wallet = Wallet::load(wallet_path)?;
-
-    match wallet.seed_phrase() {
-        Some(phrase) => {
-            println!();
-            println!("  Recovery phrase:");
-            println!();
-            let words: Vec<&str> = phrase.split_whitespace().collect();
-            for (i, chunk) in words.chunks(6).enumerate() {
-                let numbered: Vec<String> = chunk
-                    .iter()
-                    .enumerate()
-                    .map(|(j, w)| format!("{:>2}. {}", i * 6 + j + 1, w))
-                    .collect();
-                println!("    {}", numbered.join("  "));
-            }
-            println!();
-            println!("  Anyone with these words can access your funds.");
-            println!();
-        }
-        None => {
-            println!("This wallet has no seed phrase (legacy format).");
-        }
-    }
 
     Ok(())
 }

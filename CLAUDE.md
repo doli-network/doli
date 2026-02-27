@@ -269,11 +269,12 @@ DOLI wallets use JSON files with two versions:
 | Version | Description | Seed Phrase |
 |---------|-------------|-------------|
 | v1 | Legacy (existing producer keys) | No |
-| v2 | BIP-39 seed phrase (new wallets) | 24 words |
+| v2 | BIP-39 derived key (new wallets) | Separate `.seed.txt` file |
 
 **v2 key derivation**: `Ed25519_seed = BIP39_PBKDF2("")[:32]` → `KeyPair::from_seed()`
-**CLI commands**: `doli new` (create v2 wallet), `doli seed` (view recovery phrase)
-**Backward compat**: v1 files load unchanged, `seed_phrase` field defaults to `None`
+**Seed storage**: NOT in wallet JSON — written to `<wallet>.seed.txt` at creation, user deletes after backup
+**CLI commands**: `doli new` (create v2 wallet + seed file)
+**Backward compat**: v1 files load unchanged
 **Code**: `bins/cli/src/wallet.rs`
 **Dependencies**: `bip39 = "2.1"`, `zeroize` (workspace)
 
