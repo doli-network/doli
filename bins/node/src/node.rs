@@ -2402,36 +2402,27 @@ impl Node {
             *cs = new_chain_state;
             cs.genesis_hash = genesis_hash; // Preserve our genesis identity
             cs.mark_snap_synced(snapshot.block_height); // Survives restart: block store empty by design
-        }
-        {
+
             let mut utxo = self.utxo_set.write().await;
             *utxo = new_utxo_set;
-        }
-        {
+
             let mut ps = self.producer_set.write().await;
             *ps = new_producer_set;
-        }
 
-        // Step 4: Update sync manager local tip
-        {
-            let cs = self.chain_state.read().await;
-            let mut sync = self.sync_manager.write().await;
-            sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
-        }
-
-        // Step 5: Save to disk (includes snap_sync_height flag)
-        self.save_state().await?;
-
-        // Step 5b: Cache state root (all state consistent after snap sync replacement)
-        {
-            let cs = self.chain_state.read().await;
-            let utxo = self.utxo_set.read().await;
-            let ps = self.producer_set.read().await;
+            // Cache state root atomically while all three write locks are held.
+            // No TOCTOU race window possible.
             if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
                 let mut cache = self.cached_state_root.write().await;
                 *cache = Some((root, cs.best_hash, cs.best_height));
             }
+
+            // Update sync manager local tip while chain_state is still locked
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
         }
+
+        // Step 4: Save to disk (includes snap_sync_height flag)
+        self.save_state().await?;
 
         // Step 6: Seed the canonical index so the first post-snap-sync block can
         // call set_canonical_chain without walking into an empty block store.
@@ -3044,6 +3035,16 @@ impl Node {
                     }
                 }
             }
+
+            // Cache state root atomically: chain_state is still write-locked,
+            // utxo and producer_set were already updated earlier in apply_block.
+            // No TOCTOU race window possible.
+            let utxo = self.utxo_set.read().await;
+            let ps = self.producer_set.read().await;
+            if let Ok(root) = storage::compute_state_root(&state, &utxo, &ps) {
+                let mut cache = self.cached_state_root.write().await;
+                *cache = Some((root, state.best_hash, state.best_height));
+            }
         }
 
         // Track this block for finality (attestation-based finality gadget).
@@ -3256,20 +3257,6 @@ impl Node {
         // Periodic state save for crash resilience
         // This ensures state is persisted even if the node crashes before graceful shutdown
         self.maybe_save_state().await?;
-
-        // Cache state root while all state is consistent (same height).
-        // GetStateRoot reads this cache instead of acquiring 3 separate locks,
-        // which avoids the race condition where UTXO/ProducerSet are at height N+1
-        // but ChainState is still at height N.
-        {
-            let cs = self.chain_state.read().await;
-            let utxo = self.utxo_set.read().await;
-            let ps = self.producer_set.read().await;
-            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
-                let mut cache = self.cached_state_root.write().await;
-                *cache = Some((root, cs.best_hash, cs.best_height));
-            }
-        }
 
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks

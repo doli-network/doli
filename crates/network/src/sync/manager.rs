@@ -2573,9 +2573,11 @@ impl SyncManager {
             return;
         }
 
-        // Scale quorum with peer count: max(2, peers/2 + 1)
-        // With 6 peers: max(2, 4) = 4. With 3 peers: max(2, 2) = 2.
-        let quorum = self.snap_sync_quorum.max(self.peers.len() / 2 + 1);
+        // Fixed quorum (default 2). Scaling by peer count caused failures when
+        // ±1 block height divergence split votes across heights (e.g., 6 peers,
+        // quorum=4, but only 3 agree on same height). Safety is ensured by
+        // verifying compute_state_root(snapshot) == quorum_root after download.
+        let quorum = self.snap_sync_quorum;
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
