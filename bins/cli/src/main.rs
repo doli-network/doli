@@ -395,7 +395,10 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     println!("  Wallet saved to: {:?}", wallet_path);
     println!("  Seed phrase saved to: {:?}", seed_path);
     println!();
-    println!("  Write down the 24 words above, then delete the seed file:");
+    println!("  WARNING: This is the ONLY time your recovery phrase is shown.");
+    println!("  If you lose both the wallet file and these 24 words, your DOLI is gone forever.");
+    println!("  Write them down on paper and store in a safe place.");
+    println!("  Then delete the seed file:");
     println!("    rm {:?}", seed_path);
     println!();
 
