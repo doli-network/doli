@@ -426,12 +426,14 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node4` |
 | **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node5` |
 | **N6** | macOS (local) | — | local | 30303 / 8545 / 9090 | `~/.doli/mainnet/data` | `~/repos/doli/target/release/doli-node` | `network.doli.mainnet.node6` (launchd) |
+| **N8** | macOS (local) | — | local | 30305 / 8547 / — | `~/.doli/mainnet/node8/data` | `/usr/local/bin/doli-node` | `network.doli.mainnet.node8` (launchd) |
 
-**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`), **except N6** which uses macOS launchd.
+**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`), **except N6/N8** which use macOS launchd.
 
 **Service files**:
 - N1-N5: `/etc/systemd/system/doli-mainnet-nodeN.service`
 - N6: `~/Library/LaunchAgents/network.doli.mainnet.node6.plist`
+- N8: `~/Library/LaunchAgents/network.doli.mainnet.node8.plist`
 
 **Logs**: `/var/log/doli/nodeN.log` — circular via logrotate (5MB max, 1 rotation). Config: `/etc/logrotate.d/doli`.
 
@@ -441,18 +443,20 @@ tail -f /var/log/doli/node1.log                              # N1/N2 (omegacorte
 ssh -p 50790 ilozada@147.93.84.44 'tail -f /var/log/doli/node3.log'  # N3 (via jump)
 ssh -p 50790 ilozada@72.60.70.166 'tail -f /var/log/doli/node4.log'  # N4 (via jump)
 tail -f ~/.doli/mainnet/node6.log                            # N6 (macOS local)
+tail -f ~/.doli/mainnet/node8.log                            # N8 (macOS local)
 
 # Manage service (N1-N5: systemd)
 sudo systemctl status doli-mainnet-node1
 sudo systemctl restart doli-mainnet-node1
 sudo systemctl stop doli-mainnet-node1
 
-# Manage service (N6: macOS launchd)
+# Manage service (N6/N8: macOS launchd)
 launchctl list network.doli.mainnet.node6                    # status
 launchctl stop network.doli.mainnet.node6                    # stop
 launchctl start network.doli.mainnet.node6                   # start
 launchctl unload ~/Library/LaunchAgents/network.doli.mainnet.node6.plist  # disable
 launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enable
+# N8: same pattern — replace "node6" with "node8" in commands above
 ```
 
 **Key differences:**
@@ -463,6 +467,7 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enab
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). Systemd service runs as `isudoajl`. SSH as `ilozada`.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
 - **N6** (macOS local): Rust toolchain available, builds locally. Managed by launchd (not systemd). Registered post-genesis at block 3236 with 10 bonds (100 DOLI). Not a maintainer.
+- **N8** (macOS local): Binary from `/usr/local/bin/doli-node` (updated manually from repo build or GitHub release). Managed by launchd. Uses P2P port 30305, RPC port 8547. Not a maintainer. `KeepAlive: true` — must `launchctl unload` (not just `stop`) before wiping data.
 
 ### Producer Key Registry (AUTHORITATIVE)
 
@@ -476,8 +481,9 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enab
 | **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6` | `a1596a36fd...e9beda1d` |
 | **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
 | **N6** | macOS (local) | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
+| **N8** | macOS (local) | `~/.doli/mainnet/keys/producer_8.json` | `doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma` | `3303a23595...77b4b88` |
 
-**N6 is NOT a genesis producer** — registered post-genesis at block 3236 with 10 bonds. Not a maintainer (governance stays 5/5 with N1-N5). Has ACTIVATION_DELAY of 10 blocks.
+**N6/N8 are NOT genesis producers** — N6 registered post-genesis at block 3236 with 10 bonds. N8 is a v2 (BIP-39) wallet registered post-genesis. Neither is a maintainer (governance stays 5/5 with N1-N5).
 
 **Producer key files are wallet-compatible** — use directly with `doli -w <key_file>` for balance queries, sends, and producer operations.
 
@@ -554,8 +560,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl st
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
 
-# N6 (macOS local)
+# N6/N8 (macOS local)
 launchctl stop network.doli.mainnet.node6
+launchctl stop network.doli.mainnet.node8
 ```
 
 #### Step 4: Start nodes
@@ -578,8 +585,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl st
 # N5
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
 
-# N6 (macOS local)
+# N6/N8 (macOS local)
 launchctl start network.doli.mainnet.node6
+launchctl start network.doli.mainnet.node8
 ```
 
 #### Step 5: Verify
@@ -589,13 +597,15 @@ launchctl start network.doli.mainnet.node6
 ssh ilozada@omegacortex.ai "pgrep -la doli-node"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'"
-pgrep -la doli-node  # N6 (macOS local)
+pgrep -la doli-node  # N6/N8 (macOS local)
 
 # All nodes same height and hash (run twice 15s apart, height should advance)
 # N1-N5 (remote)
 ssh ilozada@omegacortex.ai "for p in 8545 8546; do echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done; echo \"N3: \$(ssh -p 50790 ilozada@147.93.84.44 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N4: \$(ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N5: \$(ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\""
 # N6 (macOS local)
 curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'
+# N8 (macOS local, RPC port 8547)
+curl -s -X POST http://127.0.0.1:8547 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'
 ```
 
 ### Wipe & Resync (When a Node is Forked)
@@ -619,6 +629,7 @@ sudo systemctl start doli-mainnet-nodeN
 - **N4**: `/home/isudoajl/.doli/mainnet/` (72.60.70.166, no `data/` subdir)
 - **N5**: `/home/isudoajl/.doli/mainnet/` (72.60.115.209, no `data/` subdir)
 - **N6**: `~/.doli/mainnet/data/` (macOS local, stop via `launchctl stop network.doli.mainnet.node6`)
+- **N8**: `~/.doli/mainnet/node8/data/` (macOS local, **must `launchctl unload`** — `KeepAlive: true` auto-restarts on stop)
 
 ### Consensus-Critical vs Rolling Upgrades
 
