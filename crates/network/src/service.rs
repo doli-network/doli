@@ -775,6 +775,17 @@ async fn handle_swarm_event(
 
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("Listening on: {}", address);
+            // If no explicit --external-address was configured, register routable
+            // listen addresses as external so Identify only advertises public IPs.
+            // Without this, Identify announces 127.0.0.1 to remote peers via DHT,
+            // causing them to self-dial instead of connecting to us.
+            if config.external_address.is_none() && is_routable_address(&address) {
+                swarm.add_external_address(address.clone());
+                info!(
+                    "Auto-registered routable listen address as external: {}",
+                    address
+                );
+            }
         }
 
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
