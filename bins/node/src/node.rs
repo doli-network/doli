@@ -1832,21 +1832,28 @@ impl Node {
 
         // Re-apply all blocks from 1 to target_height
         for height in 1..=target_height {
-            if let Some(block) = self.block_store.get_block_by_height(height)? {
-                for (tx_index, tx) in block.transactions.iter().enumerate() {
-                    let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                    // For non-reward-minting txs, spend inputs first
-                    if !is_reward_tx {
-                        if let Err(e) = new_utxo.spend_transaction(tx) {
-                            error!(
-                                "Reorg UTXO rebuild failed at height {}: {} - aborting reorg",
-                                height, e
-                            );
-                            return Err(anyhow::anyhow!("UTXO rebuild failed: {}", e));
-                        }
+            let block = self
+                .block_store
+                .get_block_by_height(height)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Reorg UTXO rebuild: missing block at height {} (store corrupted)",
+                        height
+                    )
+                })?;
+            for (tx_index, tx) in block.transactions.iter().enumerate() {
+                let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                // For non-reward-minting txs, spend inputs first
+                if !is_reward_tx {
+                    if let Err(e) = new_utxo.spend_transaction(tx) {
+                        error!(
+                            "Reorg UTXO rebuild failed at height {}: {} - aborting reorg",
+                            height, e
+                        );
+                        return Err(anyhow::anyhow!("UTXO rebuild failed: {}", e));
                     }
-                    new_utxo.add_transaction(tx, height, is_reward_tx);
                 }
+                new_utxo.add_transaction(tx, height, is_reward_tx);
             }
         }
 
@@ -4882,102 +4889,108 @@ impl Node {
         let genesis_blocks = self.config.network.genesis_blocks();
 
         for height in 1..=target_height {
-            if let Some(block) = self.block_store.get_block_by_height(height)? {
-                for tx in &block.transactions {
-                    match tx.tx_type {
-                        TxType::Registration => {
-                            // During genesis, Registration TXs are VDF proof containers
-                            // (zero-bond). Skip — genesis producers are registered below
-                            // when crossing the genesis boundary.
-                            if genesis_blocks > 0 && height <= genesis_blocks {
-                                continue;
-                            }
-                            if let Some(reg_data) = tx.registration_data() {
-                                if let Some((bond_index, bond_output)) =
-                                    tx.outputs.iter().enumerate().find(|(_, o)| {
-                                        o.output_type == doli_core::transaction::OutputType::Bond
-                                    })
-                                {
-                                    let tx_hash = tx.hash();
-                                    let era = self.params.height_to_era(height);
-                                    let producer_info = storage::ProducerInfo::new_with_bonds(
-                                        reg_data.public_key,
-                                        height,
-                                        bond_output.amount,
-                                        (tx_hash, bond_index as u32),
-                                        era,
-                                        reg_data.bond_count,
-                                    );
-                                    let _ = producers.register(producer_info, height);
-                                }
-                            }
+            let block = self
+                .block_store
+                .get_block_by_height(height)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Producer set rebuild: missing block at height {} (store corrupted)",
+                        height
+                    )
+                })?;
+            for tx in &block.transactions {
+                match tx.tx_type {
+                    TxType::Registration => {
+                        // During genesis, Registration TXs are VDF proof containers
+                        // (zero-bond). Skip — genesis producers are registered below
+                        // when crossing the genesis boundary.
+                        if genesis_blocks > 0 && height <= genesis_blocks {
+                            continue;
                         }
-                        TxType::Exit => {
-                            if let Some(exit_data) = tx.exit_data() {
-                                let _ = producers.request_exit(&exit_data.public_key, height);
-                            }
-                        }
-                        TxType::SlashProducer => {
-                            if let Some(slash_data) = tx.slash_data() {
-                                let _ =
-                                    producers.slash_producer(&slash_data.producer_pubkey, height);
-                            }
-                        }
-                        TxType::AddBond => {
-                            if let Some(add_bond_data) = tx.add_bond_data() {
+                        if let Some(reg_data) = tx.registration_data() {
+                            if let Some((bond_index, bond_output)) =
+                                tx.outputs.iter().enumerate().find(|(_, o)| {
+                                    o.output_type == doli_core::transaction::OutputType::Bond
+                                })
+                            {
                                 let tx_hash = tx.hash();
-                                let bond_outpoints: Vec<(crypto::Hash, u32)> = (0..add_bond_data
-                                    .bond_count)
-                                    .map(|i| (tx_hash, i))
-                                    .collect();
-                                if let Some(producer_info) =
-                                    producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
-                                {
-                                    producer_info.add_bonds(bond_outpoints, bond_unit);
-                                }
-                            }
-                        }
-                        TxType::DelegateBond => {
-                            if let Some(data) = tx.delegate_bond_data() {
-                                let _ = producers.delegate_bonds(
-                                    &data.delegator,
-                                    &data.delegate,
-                                    data.bond_count,
+                                let era = self.params.height_to_era(height);
+                                let producer_info = storage::ProducerInfo::new_with_bonds(
+                                    reg_data.public_key,
+                                    height,
+                                    bond_output.amount,
+                                    (tx_hash, bond_index as u32),
+                                    era,
+                                    reg_data.bond_count,
                                 );
+                                let _ = producers.register(producer_info, height);
                             }
                         }
-                        TxType::RevokeDelegation => {
-                            if let Some(data) = tx.revoke_delegation_data() {
-                                let _ = producers.revoke_delegation(&data.delegator);
+                    }
+                    TxType::Exit => {
+                        if let Some(exit_data) = tx.exit_data() {
+                            let _ = producers.request_exit(&exit_data.public_key, height);
+                        }
+                    }
+                    TxType::SlashProducer => {
+                        if let Some(slash_data) = tx.slash_data() {
+                            let _ = producers.slash_producer(&slash_data.producer_pubkey, height);
+                        }
+                    }
+                    TxType::AddBond => {
+                        if let Some(add_bond_data) = tx.add_bond_data() {
+                            let tx_hash = tx.hash();
+                            let bond_outpoints: Vec<(crypto::Hash, u32)> = (0..add_bond_data
+                                .bond_count)
+                                .map(|i| (tx_hash, i))
+                                .collect();
+                            if let Some(producer_info) =
+                                producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
+                            {
+                                producer_info.add_bonds(bond_outpoints, bond_unit);
                             }
                         }
-                        _ => {} // Other TX types don't modify producer set
                     }
-                }
-
-                // Replicate GENESIS PHASE COMPLETE: register VDF-proven producers
-                // when crossing the genesis boundary during rebuild.
-                if genesis_blocks > 0 && height == genesis_blocks + 1 {
-                    let genesis_producers = self.derive_genesis_producers_from_chain();
-                    let era = self.params.height_to_era(height);
-                    for pubkey in &genesis_producers {
-                        let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
-                        // registered_at = 0: Genesis producers exempt from ACTIVATION_DELAY
-                        let producer_info = storage::ProducerInfo::new_with_bonds(
-                            *pubkey,
-                            0,
-                            bond_unit,
-                            (bond_hash, 0),
-                            era,
-                            1,
-                        );
-                        let _ = producers.register(producer_info, height);
+                    TxType::DelegateBond => {
+                        if let Some(data) = tx.delegate_bond_data() {
+                            let _ = producers.delegate_bonds(
+                                &data.delegator,
+                                &data.delegate,
+                                data.bond_count,
+                            );
+                        }
                     }
+                    TxType::RevokeDelegation => {
+                        if let Some(data) = tx.revoke_delegation_data() {
+                            let _ = producers.revoke_delegation(&data.delegator);
+                        }
+                    }
+                    _ => {} // Other TX types don't modify producer set
                 }
-
-                // Process completed unbonding periods after each block
-                producers.process_unbonding(height, UNBONDING_PERIOD);
             }
+
+            // Replicate GENESIS PHASE COMPLETE: register VDF-proven producers
+            // when crossing the genesis boundary during rebuild.
+            if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                let genesis_producers = self.derive_genesis_producers_from_chain();
+                let era = self.params.height_to_era(height);
+                for pubkey in &genesis_producers {
+                    let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+                    // registered_at = 0: Genesis producers exempt from ACTIVATION_DELAY
+                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                        *pubkey,
+                        0,
+                        bond_unit,
+                        (bond_hash, 0),
+                        era,
+                        1,
+                    );
+                    let _ = producers.register(producer_info, height);
+                }
+            }
+
+            // Process completed unbonding periods after each block
+            producers.process_unbonding(height, UNBONDING_PERIOD);
         }
         Ok(())
     }
@@ -5025,14 +5038,21 @@ impl Node {
             let mut utxo = self.utxo_set.write().await;
             utxo.clear();
             for height in 1..=target_height {
-                if let Some(block) = self.block_store.get_block_by_height(height)? {
-                    for (tx_index, tx) in block.transactions.iter().enumerate() {
-                        let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                        if !is_reward_tx {
-                            let _ = utxo.spend_transaction(tx);
-                        }
-                        utxo.add_transaction(tx, height, is_reward_tx);
+                let block = self
+                    .block_store
+                    .get_block_by_height(height)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Rollback UTXO rebuild: missing block at height {} (store corrupted)",
+                            height
+                        )
+                    })?;
+                for (tx_index, tx) in block.transactions.iter().enumerate() {
+                    let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                    if !is_reward_tx {
+                        let _ = utxo.spend_transaction(tx);
                     }
+                    utxo.add_transaction(tx, height, is_reward_tx);
                 }
             }
         }

@@ -404,6 +404,8 @@ pub struct SyncManager {
     snap_blacklisted_peers: HashSet<PeerId>,
     /// Set after a snap sync failure to skip snap sync for one cycle
     snap_sync_failed: bool,
+    /// When a fresh node first started waiting for 3 peers (for snap sync timeout)
+    fresh_node_wait_start: Option<Instant>,
 }
 
 impl SyncManager {
@@ -476,6 +478,7 @@ impl SyncManager {
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
             snap_sync_failed: false,
+            fresh_node_wait_start: None,
         }
     }
 
@@ -1431,6 +1434,7 @@ impl SyncManager {
     /// Note that we received a block via gossip network (P0 #3)
     pub fn note_block_received_via_gossip(&mut self) {
         self.last_block_seen = Instant::now();
+        self.last_block_received_via_gossip = Some(Instant::now());
         // NOTE: We intentionally do NOT reset consecutive_empty_headers here.
         // Receiving gossip blocks proves the *network* is alive, but NOT that we're on
         // the canonical chain. If we're on a fork, we receive gossip blocks from the
@@ -1720,16 +1724,26 @@ impl SyncManager {
             // Fresh node optimization: don't start slow header-first sync.
             // Wait for 3 peers so snap sync can activate — it downloads state
             // in seconds instead of replaying 60K+ blocks over hours.
+            // BUT: timeout after 60s to avoid deadlock when <3 peers are discoverable.
             if self.local_height == 0
                 && !enough_peers
                 && !self.snap_sync_failed
                 && gap > self.snap_sync_threshold
             {
-                info!(
-                    "[SNAP_SYNC] Fresh node: waiting for {} more peer(s) for snap sync ({}/3, gap={})",
-                    3 - self.peers.len(), self.peers.len(), gap
+                let wait_start = self.fresh_node_wait_start.get_or_insert(Instant::now());
+                let waited = wait_start.elapsed();
+                if waited.as_secs() < 60 {
+                    info!(
+                        "[SNAP_SYNC] Fresh node: waiting for {} more peer(s) for snap sync ({}/3, gap={}, waited={}s)",
+                        3 - self.peers.len(), self.peers.len(), gap, waited.as_secs()
+                    );
+                    return;
+                }
+                warn!(
+                    "[SNAP_SYNC] Fresh node waited {}s for 3 peers but only have {} — falling back to header-first sync",
+                    waited.as_secs(), self.peers.len()
                 );
-                return;
+                self.fresh_node_wait_start = None;
             }
 
             if should_snap {
@@ -2559,7 +2573,9 @@ impl SyncManager {
             return;
         }
 
-        let quorum = self.snap_sync_quorum;
+        // Scale quorum with peer count: max(2, peers/2 + 1)
+        // With 6 peers: max(2, 4) = 4. With 3 peers: max(2, 2) = 2.
+        let quorum = self.snap_sync_quorum.max(self.peers.len() / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
