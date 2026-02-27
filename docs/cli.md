@@ -30,11 +30,8 @@ doli-node <command>
 ## Quick Start
 
 ```bash
-# Create a wallet (displays 24-word recovery phrase)
+# Create a wallet (displays 24-word recovery phrase + saves to .seed.txt)
 doli new
-
-# View your seed phrase again
-doli seed
 
 # Generate an address
 doli address
@@ -104,29 +101,19 @@ doli new --name my_wallet
   Address: doli1qpzry9x8gf2tvdw0s3jn54khce6mua7l...
 
   Wallet saved to: "/home/user/.doli/wallet.json"
+  Seed phrase saved to: "/home/user/.doli/wallet.seed.txt"
 
-  This file contains your private key.
-  Store it in a safe place. Anyone with this file can spend your DOLI.
-  If you lose it, use the 24 words above to recover.
+  Write down the 24 words above, then delete the seed file:
+    rm "/home/user/.doli/wallet.seed.txt"
 ```
+
+The seed phrase is written to a separate `.seed.txt` file and is **not stored in the wallet JSON**. Write down the 24 words on paper, then delete the seed file. If you lose both the wallet file and the seed words, your funds are unrecoverable.
 
 Legacy wallets (version 1, e.g. existing producer keys) continue to work unchanged.
 
 ---
 
-### 1.2. Show Seed Phrase
-
-Display the recovery phrase for an existing wallet. Can be viewed at any time.
-
-```bash
-doli seed
-```
-
-For legacy (v1) wallets that predate BIP-39 support, this reports "no seed phrase (legacy format)".
-
----
-
-### 1.4. Generate New Address
+### 1.2. Generate New Address
 
 Generate a new address in the wallet. Note: additional addresses are random keypairs, not derived from the seed phrase.
 
@@ -144,7 +131,7 @@ doli address --label "savings"
 
 ---
 
-### 1.5. List Addresses
+### 1.3. List Addresses
 
 Display all addresses in the wallet.
 
@@ -154,7 +141,7 @@ doli addresses
 
 ---
 
-### 1.6. Show Wallet Info
+### 1.4. Show Wallet Info
 
 Display wallet metadata and summary.
 
@@ -164,7 +151,7 @@ doli info
 
 ---
 
-### 1.7. Export Wallet
+### 1.5. Export Wallet
 
 Export wallet to a file (backup).
 
@@ -182,7 +169,7 @@ doli export ~/backup/wallet-backup.json
 
 ---
 
-### 1.8. Import Wallet
+### 1.6. Import Wallet
 
 Import wallet from a file.
 
@@ -691,12 +678,11 @@ Producer key files (`.json`) have the same format as wallet files and can be use
 }
 ```
 
-**Version 2 (new wallets — BIP-39 seed phrase):**
+**Version 2 (new wallets — BIP-39 derived key):**
 ```json
 {
   "name": "default",
   "version": 2,
-  "seed_phrase": "abandon ability able about above absent ...",
   "addresses": [
     {
       "address": "a1b2c3d4...",
@@ -709,13 +695,12 @@ Producer key files (`.json`) have the same format as wallet files and can be use
 
 | Field | Description |
 |-------|-------------|
-| `version` | 1 = legacy (no seed), 2 = BIP-39 seed phrase |
-| `seed_phrase` | 24-word BIP-39 mnemonic (v2 only, absent in v1) |
+| `version` | 1 = legacy, 2 = BIP-39 derived key |
 | `address` | Truncated 20-byte address (40 hex chars) |
 | `public_key` | Ed25519 public key (64 hex chars) — used as producer identity |
 | `private_key` | Ed25519 private key — **never share this** |
 
-In v2 wallets, the primary key is derived from the seed phrase: `Ed25519_seed = BIP39_seed("")[:32]`. Additional addresses are random (not seed-derived).
+In v2 wallets, the primary key is derived from a BIP-39 seed phrase: `Ed25519_seed = BIP39_seed("")[:32]`. The seed phrase is **not stored** in the wallet file — it is written to a separate `.seed.txt` file at creation time. Write it down on paper, then delete the file. Additional addresses are random (not seed-derived).
 
 The **pubkey hash** used for balance queries is derived from `public_key` via domain-separated BLAKE3: `BLAKE3(le32(12) || "DOLI_ADDR_V1" || pubkey_bytes)`.
 
@@ -760,8 +745,8 @@ doli -w ~/.doli/mainnet/keys/producer_1.json send <recipient-pubkey-hash> 100
 # 1. Create wallet (write down the 24 recovery words!)
 doli new --name "my_doli_wallet"
 
-# 2. View seed phrase again if needed
-doli seed
+# 2. Write down the seed phrase, then delete the seed file
+rm ~/.doli/wallet.seed.txt
 
 # 3. Generate receiving address
 doli address --label "main"
@@ -987,7 +972,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 | 7. Producer Selection | `doli producer status`, `doli producer list` |
 | 9.1 Emission/Rewards | `doli wallet balance` (rewards are automatic via coinbase) |
 | 10.3 Double Production | `doli producer slash` |
-| 14. Privacy (new keys) | `doli address`, `doli seed` |
+| 14. Privacy (new keys) | `doli address` |
 | 15. Governance | `doli-node update vote`, `doli-node maintainer` |
 
 ---
