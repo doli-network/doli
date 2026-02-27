@@ -262,6 +262,21 @@ doli -w ~/.doli/mainnet/keys/producer_1.json send doli1recipient... 20
 **Code**: `crates/crypto/src/address.rs` (encode, decode, from_pubkey, resolve)
 **Dependency**: `bech32 = "0.11"` (pure Rust, zero transitive deps)
 
+### 💼 Wallet File Format
+
+DOLI wallets use JSON files with two versions:
+
+| Version | Description | Seed Phrase |
+|---------|-------------|-------------|
+| v1 | Legacy (existing producer keys) | No |
+| v2 | BIP-39 seed phrase (new wallets) | 24 words |
+
+**v2 key derivation**: `Ed25519_seed = BIP39_PBKDF2("")[:32]` → `KeyPair::from_seed()`
+**CLI commands**: `doli new` (create v2 wallet), `doli seed` (view recovery phrase)
+**Backward compat**: v1 files load unchanged, `seed_phrase` field defaults to `None`
+**Code**: `bins/cli/src/wallet.rs`
+**Dependencies**: `bip39 = "2.1"`, `zeroize` (workspace)
+
 ### 🔧 Environment Configuration
 
 Network parameters configurable via `~/.doli/{network}/.env`:
