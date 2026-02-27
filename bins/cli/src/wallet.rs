@@ -64,6 +64,33 @@ impl Wallet {
         (wallet, phrase)
     }
 
+    /// Restore a wallet from a BIP-39 seed phrase.
+    /// Uses the same derivation as `new()`: first 32 bytes of BIP-39 seed → Ed25519 key.
+    pub fn from_seed_phrase(name: &str, phrase: &str) -> Result<Self> {
+        let mnemonic: Mnemonic = phrase
+            .parse()
+            .map_err(|e| anyhow!("Invalid seed phrase: {}", e))?;
+        let bip39_seed = mnemonic.to_seed("");
+        let mut ed25519_seed = [0u8; 32];
+        ed25519_seed.copy_from_slice(&bip39_seed[..32]);
+
+        let kp = KeyPair::from_seed(ed25519_seed);
+        ed25519_seed.zeroize();
+
+        let primary = WalletAddress {
+            address: kp.address().to_hex(),
+            public_key: kp.public_key().to_hex(),
+            private_key: kp.private_key().to_hex(),
+            label: Some("primary".to_string()),
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            version: 2,
+            addresses: vec![primary],
+        })
+    }
+
     /// Load wallet from file
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
@@ -295,5 +322,18 @@ mod tests {
 
         let keypair = wallet.primary_keypair().unwrap();
         assert_eq!(keypair.public_key().to_hex(), wallet.primary_public_key());
+    }
+
+    #[test]
+    fn test_restore_from_seed_phrase() {
+        let (original, phrase) = Wallet::new("test");
+        let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
+        assert_eq!(original.primary_public_key(), restored.primary_public_key());
+    }
+
+    #[test]
+    fn test_restore_invalid_phrase() {
+        let result = Wallet::from_seed_phrase("test", "not a valid seed phrase");
+        assert!(result.is_err());
     }
 }
