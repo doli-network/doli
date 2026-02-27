@@ -3,8 +3,10 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
+use bip39::Mnemonic;
 use crypto::{hash::hash_with_domain, signature, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// A wallet address with optional label
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -13,7 +15,7 @@ pub struct WalletAddress {
     pub address: String,
     /// Public key (hex)
     pub public_key: String,
-    /// Private key (hex, encrypted in real implementation)
+    /// Private key (hex)
     private_key: String,
     /// Optional label
     pub label: Option<String>,
@@ -24,16 +26,28 @@ pub struct WalletAddress {
 pub struct Wallet {
     /// Wallet name
     name: String,
-    /// Version
+    /// Version (1 = legacy, 2 = BIP-39 derived key)
     version: u32,
     /// Addresses
     addresses: Vec<WalletAddress>,
 }
 
 impl Wallet {
-    /// Create a new wallet with a primary address
-    pub fn new(name: &str) -> Self {
-        let kp = KeyPair::generate();
+    /// Create a new wallet with a BIP-39 seed phrase.
+    /// Returns (wallet, seed_phrase) — the phrase is returned for external storage.
+    /// The seed phrase is NOT stored in the wallet file.
+    pub fn new(name: &str) -> (Self, String) {
+        let mnemonic = Mnemonic::generate(24).expect("mnemonic generation failed");
+        let phrase = mnemonic.to_string();
+
+        // Derive Ed25519 key from first 32 bytes of BIP-39 seed (empty passphrase)
+        let bip39_seed = mnemonic.to_seed("");
+        let mut ed25519_seed = [0u8; 32];
+        ed25519_seed.copy_from_slice(&bip39_seed[..32]);
+
+        let kp = KeyPair::from_seed(ed25519_seed);
+        ed25519_seed.zeroize();
+
         let primary = WalletAddress {
             address: kp.address().to_hex(),
             public_key: kp.public_key().to_hex(),
@@ -41,11 +55,13 @@ impl Wallet {
             label: Some("primary".to_string()),
         };
 
-        Self {
+        let wallet = Self {
             name: name.to_string(),
-            version: 1,
+            version: 2,
             addresses: vec![primary],
-        }
+        };
+
+        (wallet, phrase)
     }
 
     /// Load wallet from file
@@ -189,15 +205,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_wallet() {
-        let wallet = Wallet::new("test");
+    fn test_new_wallet_v2_returns_seed_phrase() {
+        let (wallet, phrase) = Wallet::new("test");
         assert_eq!(wallet.name(), "test");
+        assert_eq!(wallet.version, 2);
+        assert_eq!(phrase.split_whitespace().count(), 24);
         assert_eq!(wallet.addresses().len(), 1);
     }
 
     #[test]
+    fn test_v2_wallet_json_has_no_seed() {
+        let (wallet, _phrase) = Wallet::new("test");
+        let json = serde_json::to_string_pretty(&wallet).unwrap();
+        assert!(!json.contains("seed_phrase"));
+    }
+
+    #[test]
+    fn test_seed_phrase_deterministic_key() {
+        let (wallet, phrase) = Wallet::new("test");
+
+        // Re-derive key from same phrase
+        let mnemonic: Mnemonic = phrase.parse().unwrap();
+        let bip39_seed = mnemonic.to_seed("");
+        let kp = KeyPair::from_seed(bip39_seed[..32].try_into().unwrap());
+
+        assert_eq!(kp.public_key().to_hex(), wallet.primary_public_key());
+    }
+
+    #[test]
+    fn test_legacy_wallet_loads() {
+        let json = r#"{
+            "name": "legacy",
+            "version": 1,
+            "addresses": [{
+                "address": "0000000000000000000000000000000000000000",
+                "public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+                "private_key": "0000000000000000000000000000000000000000000000000000000000000001",
+                "label": "primary"
+            }]
+        }"#;
+        let wallet: Wallet = serde_json::from_str(json).unwrap();
+        assert_eq!(wallet.version, 1);
+    }
+
+    #[test]
+    fn test_v2_wallet_roundtrip() {
+        let (wallet, _phrase) = Wallet::new("test");
+        let json = serde_json::to_string_pretty(&wallet).unwrap();
+        let loaded: Wallet = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.primary_public_key(), wallet.primary_public_key());
+    }
+
+    #[test]
     fn test_generate_address() {
-        let mut wallet = Wallet::new("test");
+        let (mut wallet, _) = Wallet::new("test");
         let addr = wallet.generate_address(Some("secondary")).unwrap();
 
         assert_eq!(wallet.addresses().len(), 2);
@@ -206,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_sign_verify() {
-        let wallet = Wallet::new("test");
+        let (wallet, _) = Wallet::new("test");
         let message = "Hello, DOLI!";
 
         let sig = wallet.sign_message(message, None).unwrap();
@@ -218,13 +279,11 @@ mod tests {
 
     #[test]
     fn test_primary_pubkey_hash() {
-        let wallet = Wallet::new("test");
+        let (wallet, _) = Wallet::new("test");
 
-        // pubkey_hash should be 32 bytes (64 hex chars)
         let pubkey_hash = wallet.primary_pubkey_hash();
         assert_eq!(pubkey_hash.len(), 64);
 
-        // Verify it's the domain-separated BLAKE3 hash of the public key
         let pubkey_bytes = hex::decode(wallet.primary_public_key()).unwrap();
         let expected_hash = hash_with_domain(ADDRESS_DOMAIN, &pubkey_bytes);
         assert_eq!(pubkey_hash, expected_hash.to_hex());
@@ -232,12 +291,9 @@ mod tests {
 
     #[test]
     fn test_primary_keypair() {
-        let wallet = Wallet::new("test");
+        let (wallet, _) = Wallet::new("test");
 
-        // Should be able to get keypair
         let keypair = wallet.primary_keypair().unwrap();
-
-        // Public key from keypair should match wallet's public key
         assert_eq!(keypair.public_key().to_hex(), wallet.primary_public_key());
     }
 }
