@@ -56,7 +56,31 @@ rm -f $DD/data/node3/signed_slots.db/LOCK
 
 ---
 
-### 1.3. Node Not Syncing
+### 1.3. Debug Build (Wrong Binary)
+
+**Symptom:** Node syncs slowly, VDF timeouts, block production misses slots, binary is ~17MB instead of ~8MB.
+
+**Cause:** Built with `cargo build` instead of `cargo build --release`. Debug builds are ~10x slower for VDF computation.
+
+**Diagnosis:**
+```bash
+# Check binary size — release should be ~8-9MB, debug is ~15-20MB
+ls -lh $(which doli-node || echo ./target/release/doli-node)
+```
+
+**Fix:**
+```bash
+cargo build --release
+# Replace old binary
+sudo cp target/release/doli-node /usr/local/bin/
+sudo systemctl restart doli-node
+```
+
+> `--release` is mandatory for production. Debug builds will cause fork divergence because VDF proofs take too long to compute within the 10-second slot window.
+
+---
+
+### 1.4. Node Not Syncing
 
 **Symptom:** Chain height not increasing, stuck at old block.
 
@@ -89,7 +113,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-### 1.4. Low Peer Count
+### 1.5. Low Peer Count
 
 **Symptom:** Fewer than 5 peers connected.
 
@@ -117,7 +141,7 @@ nc -zv your-node-ip 30303
 
 ---
 
-### 1.5. High Memory Usage
+### 1.6. High Memory Usage
 
 **Symptom:** Node consuming excessive RAM.
 
@@ -134,7 +158,7 @@ nc -zv your-node-ip 30303
 
 ---
 
-### 1.6. Database Corruption
+### 1.7. Database Corruption
 
 **Symptom:** Node crashes with database errors.
 
