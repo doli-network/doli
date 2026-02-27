@@ -425,6 +425,9 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | **N3** | N3-VPS | 147.93.84.44 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@147.93.84.44` | 30303 / 8545 / 9090 | `/home/ilozada/.doli/mainnet/data` | `/home/ilozada/doli-node` | `doli-mainnet-node3` |
 | **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node4` |
 | **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node5` |
+| **N6** | macOS (local) | — | local | — | `~/.doli/mainnet/` | `target/release/doli-node` | — (no node yet) |
+
+**N6 note**: Registered on-chain (block 3236, 10 bonds = 100 DOLI) but no dedicated node host assigned yet. Producer key lives on Ivan's macOS at `~/.doli/mainnet/keys/producer_6.json`.
 
 **All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`).
 
@@ -463,6 +466,9 @@ sudo systemctl stop doli-mainnet-node1
 | **N3** | N3-VPS | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql` | `54323cefd0...25c48c2b` |
 | **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6` | `a1596a36fd...e9beda1d` |
 | **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
+| **N6** | macOS (local) | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
+
+**N6 is NOT a genesis producer** — registered post-genesis at block 3236 with 10 bonds. Not a maintainer (governance stays 5/5 with N1-N5).
 
 **Producer key files are wallet-compatible** — use directly with `doli -w <key_file>` for balance queries, sends, and producer operations.
 
