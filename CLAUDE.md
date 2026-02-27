@@ -514,10 +514,14 @@ These are hardcoded in `crates/core/src/network_params.rs` as default mainnet bo
 #### Step 1: Build on omegacortex
 
 ```bash
+# Linux nodes (omegacortex)
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
+
+# macOS (N6 — local)
+cd ~/repos/doli && git pull && cargo build --release
 ```
 
-This updates the binary for N1/N2/N3 (they share `~/repos/doli/target/release/doli-node`). Running nodes keep the old binary in memory until restarted.
+This updates the binary for N1/N2/N3 (they share `~/repos/doli/target/release/doli-node`). N6 builds locally on macOS. Running nodes keep the old binary in memory until restarted.
 
 #### Step 2: Deploy binary to N4/N5 via SCP
 
@@ -549,6 +553,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl st
 # N4/N5 (via jump)
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
+
+# N6 (macOS local)
+launchctl stop network.doli.mainnet.node6
 ```
 
 #### Step 4: Start nodes
@@ -570,6 +577,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl st
 
 # N5
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
+
+# N6 (macOS local)
+launchctl start network.doli.mainnet.node6
 ```
 
 #### Step 5: Verify
@@ -579,13 +589,13 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl s
 ssh ilozada@omegacortex.ai "pgrep -la doli-node"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'"
+pgrep -la doli-node  # N6 (macOS local)
 
 # All nodes same height and hash (run twice 15s apart, height should advance)
-ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do \
-  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
-  -H 'Content-Type: application/json' \
-  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
-  | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
+# N1-N5 (remote)
+ssh ilozada@omegacortex.ai "for p in 8545 8546; do echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done; echo \"N3: \$(ssh -p 50790 ilozada@147.93.84.44 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N4: \$(ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N5: \$(ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\""
+# N6 (macOS local)
+curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'
 ```
 
 ### Wipe & Resync (When a Node is Forked)
@@ -617,7 +627,7 @@ sudo systemctl start doli-mainnet-nodeN
 | **Consensus-critical** | Block validation, scheduling, VDF, economics, tx processing | Stop ALL nodes simultaneously, replace binary, start all |
 | **Non-consensus** | Sync, networking, RPC, logging, metrics | Rolling: one node at a time, verify health before next |
 
-**For consensus-critical changes:** All nodes MUST run the same binary version simultaneously to prevent forks. Stop all 5, deploy, start N1 first (bootstrap), then N2, then N3/N4/N5.
+**For consensus-critical changes:** All nodes MUST run the same binary version simultaneously to prevent forks. Stop all 6, deploy, start N1 first (bootstrap), then N2, then N3/N4/N5/N6.
 
 ### Snap Sync
 
