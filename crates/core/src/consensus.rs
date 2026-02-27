@@ -64,7 +64,7 @@ use crate::types::{Amount, BlockHeight, Epoch, Era, Slot};
 use serde::{Deserialize, Serialize};
 
 /// Genesis timestamp — must match chainspec.mainnet.json
-pub const GENESIS_TIME: u64 = 1772165723;
+pub const GENESIS_TIME: u64 = 1772167070;
 
 // ==================== Proof of Time Parameters ====================
 
@@ -217,7 +217,7 @@ pub const COINBASE_MATURITY: BlockHeight = 100;
 /// With 10 DOLI per bond unit:
 /// - Producer with 100 DOLI = 10 slots per cycle
 /// - Maximum 10,000 bonds = 100,000 DOLI maximum per producer
-pub const BOND_UNIT: Amount = 100_000_000; // TEST: 1 DOLI in base units
+pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
