@@ -135,6 +135,10 @@ pub struct Node {
     genesis_vdf_output: Option<[u8; 32]>,
     /// Whether the genesis VDF Registration TX has been included in a produced block.
     genesis_vdf_submitted: bool,
+    /// Cached state root, updated atomically after each block application.
+    /// Avoids race conditions when GetStateRoot reads during apply_block.
+    /// Tuple: (state_root, block_hash, block_height)
+    cached_state_root: Arc<RwLock<Option<(Hash, Hash, u64)>>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -541,6 +545,7 @@ impl Node {
             snap_sync_height: None,
             genesis_vdf_output: None,
             genesis_vdf_submitted: false,
+            cached_state_root: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -2410,6 +2415,17 @@ impl Node {
         // Step 5: Save to disk (includes snap_sync_height flag)
         self.save_state().await?;
 
+        // Step 5b: Cache state root (all state consistent after snap sync replacement)
+        {
+            let cs = self.chain_state.read().await;
+            let utxo = self.utxo_set.read().await;
+            let ps = self.producer_set.read().await;
+            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
+                let mut cache = self.cached_state_root.write().await;
+                *cache = Some((root, cs.best_hash, cs.best_height));
+            }
+        }
+
         // Step 6: Seed the canonical index so the first post-snap-sync block can
         // call set_canonical_chain without walking into an empty block store.
         self.block_store
@@ -3234,6 +3250,20 @@ impl Node {
         // This ensures state is persisted even if the node crashes before graceful shutdown
         self.maybe_save_state().await?;
 
+        // Cache state root while all state is consistent (same height).
+        // GetStateRoot reads this cache instead of acquiring 3 separate locks,
+        // which avoids the race condition where UTXO/ProducerSet are at height N+1
+        // but ChainState is still at height N.
+        {
+            let cs = self.chain_state.read().await;
+            let utxo = self.utxo_set.read().await;
+            let ps = self.producer_set.read().await;
+            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
+                let mut cache = self.cached_state_root.write().await;
+                *cache = Some((root, cs.best_hash, cs.best_height));
+            }
+        }
+
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
         // should be broadcast explicitly by the caller (produce_block).
@@ -3375,20 +3405,33 @@ impl Node {
             },
 
             SyncRequest::GetStateRoot { block_hash: _ } => {
-                // Return current state root regardless of requested hash.
-                // The requester groups votes by (height, root) to find quorum.
-                let chain_state = self.chain_state.read().await;
-                let current_hash = chain_state.best_hash;
-                let current_height = chain_state.best_height;
-                let utxo_set = self.utxo_set.read().await;
-                let ps = self.producer_set.read().await;
-                match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
-                    Ok(root) => SyncResponse::StateRoot {
-                        block_hash: current_hash,
-                        block_height: current_height,
+                // Use cached state root to avoid race conditions.
+                // The cache is updated atomically after each apply_block, so all
+                // three components (ChainState, UTXO, ProducerSet) are guaranteed
+                // to be at the same height.
+                let cache = self.cached_state_root.read().await;
+                if let Some((root, hash, height)) = *cache {
+                    SyncResponse::StateRoot {
+                        block_hash: hash,
+                        block_height: height,
                         state_root: root,
-                    },
-                    Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
+                    }
+                } else {
+                    // Fallback: compute on-the-fly if cache not yet populated (pre-first-block)
+                    drop(cache);
+                    let chain_state = self.chain_state.read().await;
+                    let current_hash = chain_state.best_hash;
+                    let current_height = chain_state.best_height;
+                    let utxo_set = self.utxo_set.read().await;
+                    let ps = self.producer_set.read().await;
+                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
+                        Ok(root) => SyncResponse::StateRoot {
+                            block_hash: current_hash,
+                            block_height: current_height,
+                            state_root: root,
+                        },
+                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
+                    }
                 }
             }
 
