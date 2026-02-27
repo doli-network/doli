@@ -25,8 +25,8 @@ struct Cli {
     #[arg(short, long, default_value = "~/.doli/wallet.json")]
     wallet: PathBuf,
 
-    /// Node RPC endpoint
-    #[arg(short, long, default_value = "http://127.0.0.1:8545")]
+    /// Node RPC endpoint (default: seed1.doli.network for mainnet)
+    #[arg(short, long, default_value = "http://seed1.doli.network:8545")]
     rpc: String,
 
     #[command(subcommand)]
