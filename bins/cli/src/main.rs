@@ -42,6 +42,13 @@ enum Commands {
         name: Option<String>,
     },
 
+    /// Restore a wallet from a 24-word seed phrase
+    Restore {
+        /// Wallet name
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
     /// Generate a new address
     Address {
         /// Label for the address
@@ -295,6 +302,9 @@ async fn main() -> Result<()> {
         Commands::New { name } => {
             cmd_new(&cli.wallet, name)?;
         }
+        Commands::Restore { name } => {
+            cmd_restore(&cli.wallet, name)?;
+        }
         Commands::Address { label } => {
             cmd_address(&cli.wallet, label)?;
         }
@@ -400,6 +410,41 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     println!("  Write them down on paper and store in a safe place.");
     println!("  Then delete the seed file:");
     println!("    rm {:?}", seed_path);
+    println!();
+
+    Ok(())
+}
+
+fn cmd_restore(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
+    if wallet_path.exists() {
+        anyhow::bail!(
+            "Wallet already exists at {:?}. Use a different path with -w.",
+            wallet_path
+        );
+    }
+
+    let name = name.unwrap_or_else(|| "default".to_string());
+
+    // Read phrase from stdin to avoid shell history exposure
+    println!("Enter your 24-word recovery phrase:");
+    let mut phrase = String::new();
+    std::io::stdin().read_line(&mut phrase)?;
+    let phrase = phrase.trim();
+
+    if phrase.is_empty() {
+        anyhow::bail!("No seed phrase provided.");
+    }
+
+    let wallet = Wallet::from_seed_phrase(&name, phrase)?;
+    wallet.save(wallet_path)?;
+
+    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+
+    println!();
+    println!("  Wallet restored successfully.");
+    println!();
+    println!("  Address: {}", bech32_addr);
+    println!("  Wallet saved to: {:?}", wallet_path);
     println!();
 
     Ok(())
