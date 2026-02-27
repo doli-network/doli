@@ -3080,137 +3080,126 @@ impl Node {
         if genesis_blocks > 0 && height == genesis_blocks + 1 {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
-            // Idempotency guard: skip if producers already registered
-            // (e.g., after rollback rebuilt the producer set correctly via
-            // rebuild_producer_set_from_blocks, then re-applied this block)
-            let already_registered = {
-                let producers = self.producer_set.read().await;
-                !producers.active_producers().is_empty()
-            };
+            let genesis_producers = self.derive_genesis_producers_from_chain();
+            let producer_count = genesis_producers.len();
 
-            if already_registered {
+            if producer_count > 0 {
                 info!(
-                    "Genesis producers already registered (idempotency guard), skipping re-registration"
+                    "Derived {} genesis producers from blockchain (blocks 1-{})...",
+                    producer_count, genesis_blocks
                 );
-            } else {
-                let genesis_producers = self.derive_genesis_producers_from_chain();
-                let producer_count = genesis_producers.len();
 
-                if producer_count > 0 {
-                    info!(
-                        "Derived {} genesis producers from blockchain (blocks 1-{})...",
-                        producer_count, genesis_blocks
-                    );
+                let bond_unit = self.config.network.bond_unit();
+                let era = self.params.height_to_era(height);
+                let mut utxo = self.utxo_set.write().await;
+                let mut producers = self.producer_set.write().await;
 
-                    let bond_unit = self.config.network.bond_unit();
-                    let era = self.params.height_to_era(height);
-                    let mut utxo = self.utxo_set.write().await;
-                    let mut producers = self.producer_set.write().await;
+                // Clear bootstrap phantom producers — replace with real bond-backed ones
+                producers.clear();
 
-                    for pubkey in &genesis_producers {
-                        let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
+                for pubkey in &genesis_producers {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
 
-                        // Find all UTXOs belonging to this producer
-                        let mut producer_utxos = utxo.get_by_pubkey_hash(&pubkey_hash);
-                        // Sort by (height, tx_hash, index) for deterministic selection
-                        producer_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
-                            a_entry
-                                .height
-                                .cmp(&b_entry.height)
-                                .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
-                                .then_with(|| a_op.index.cmp(&b_op.index))
-                        });
+                    // Find all UTXOs belonging to this producer
+                    let mut producer_utxos = utxo.get_by_pubkey_hash(&pubkey_hash);
+                    // Sort by (height, tx_hash, index) for deterministic selection
+                    producer_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
+                        a_entry
+                            .height
+                            .cmp(&b_entry.height)
+                            .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
+                            .then_with(|| a_op.index.cmp(&b_op.index))
+                    });
 
-                        let total_available: u64 =
-                            producer_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                    let total_available: u64 =
+                        producer_utxos.iter().map(|(_, e)| e.output.amount).sum();
 
-                        if total_available < bond_unit {
-                            warn!(
+                    if total_available < bond_unit {
+                        warn!(
                                 "Genesis producer {} has insufficient balance ({} < {} bond_unit), skipping bond migration",
                                 hex::encode(&pubkey.as_bytes()[..8]),
                                 total_available,
                                 bond_unit
                             );
-                            continue;
+                        continue;
+                    }
+
+                    // Select UTXOs to consume for the bond (oldest first)
+                    let mut consumed_amount: u64 = 0;
+                    let mut consumed_outpoints = Vec::new();
+                    for (outpoint, entry) in &producer_utxos {
+                        if consumed_amount >= bond_unit {
+                            break;
                         }
+                        consumed_amount += entry.output.amount;
+                        consumed_outpoints.push(*outpoint);
+                    }
 
-                        // Select UTXOs to consume for the bond (oldest first)
-                        let mut consumed_amount: u64 = 0;
-                        let mut consumed_outpoints = Vec::new();
-                        for (outpoint, entry) in &producer_utxos {
-                            if consumed_amount >= bond_unit {
-                                break;
-                            }
-                            consumed_amount += entry.output.amount;
-                            consumed_outpoints.push(*outpoint);
-                        }
+                    // Remove consumed UTXOs from the set
+                    for outpoint in &consumed_outpoints {
+                        utxo.remove(outpoint);
+                    }
 
-                        // Remove consumed UTXOs from the set
-                        for outpoint in &consumed_outpoints {
-                            utxo.remove(outpoint);
-                        }
+                    // Create deterministic bond hash for tracking
+                    let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
 
-                        // Create deterministic bond hash for tracking
-                        let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+                    // Return change if we consumed more than bond_unit
+                    let change = consumed_amount.saturating_sub(bond_unit);
+                    if change > 0 {
+                        let change_outpoint = storage::Outpoint::new(bond_hash, 1);
+                        let change_entry = storage::UtxoEntry {
+                            output: doli_core::transaction::Output::normal(change, pubkey_hash),
+                            height,
+                            is_coinbase: false,
+                            is_epoch_reward: false,
+                        };
+                        utxo.insert(change_outpoint, change_entry);
+                    }
 
-                        // Return change if we consumed more than bond_unit
-                        let change = consumed_amount.saturating_sub(bond_unit);
-                        if change > 0 {
-                            let change_outpoint = storage::Outpoint::new(bond_hash, 1);
-                            let change_entry = storage::UtxoEntry {
-                                output: doli_core::transaction::Output::normal(change, pubkey_hash),
-                                height,
-                                is_coinbase: false,
-                                is_epoch_reward: false,
-                            };
-                            utxo.insert(change_outpoint, change_entry);
-                        }
+                    // Register producer with real bond outpoint
+                    // registered_at = 0: Genesis producers are exempt from ACTIVATION_DELAY
+                    // (they've been producing since block 1, no propagation delay needed)
+                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                        *pubkey,
+                        0,
+                        bond_unit,
+                        (bond_hash, 0),
+                        era,
+                        1, // 1 bond
+                    );
 
-                        // Register producer with real bond outpoint
-                        // registered_at = 0: Genesis producers are exempt from ACTIVATION_DELAY
-                        // (they've been producing since block 1, no propagation delay needed)
-                        let producer_info = storage::ProducerInfo::new_with_bonds(
-                            *pubkey,
-                            0,
-                            bond_unit,
-                            (bond_hash, 0),
-                            era,
-                            1, // 1 bond
-                        );
-
-                        match producers.register(producer_info, height) {
-                            Ok(()) => {
-                                info!(
+                    match producers.register(producer_info, height) {
+                        Ok(()) => {
+                            info!(
                                     "  Registered genesis producer {} with real bond ({} UTXOs consumed, {} DOLI bonded, {} DOLI change)",
                                     hex::encode(&pubkey.as_bytes()[..8]),
                                     consumed_outpoints.len(),
                                     bond_unit / UNITS_PER_COIN,
                                     change / UNITS_PER_COIN,
                                 );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "  Failed to register genesis producer {}: {}",
-                                    hex::encode(&pubkey.as_bytes()[..8]),
-                                    e
-                                );
-                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "  Failed to register genesis producer {}: {}",
+                                hex::encode(&pubkey.as_bytes()[..8]),
+                                e
+                            );
                         }
                     }
-
-                    // Save producer set immediately
-                    let producers_path = self.config.data_dir.join("producers.bin");
-                    if let Err(e) = producers.save(&producers_path) {
-                        warn!("Failed to save producer set after genesis: {}", e);
-                    }
-
-                    info!(
-                        "Genesis complete: {} producers now active in scheduler (real bonds)",
-                        producers.active_producers().len()
-                    );
-                } else {
-                    warn!("Genesis ended with no producers found in blockchain!");
                 }
+
+                // Save producer set immediately
+                let producers_path = self.config.data_dir.join("producers.bin");
+                if let Err(e) = producers.save(&producers_path) {
+                    warn!("Failed to save producer set after genesis: {}", e);
+                }
+
+                info!(
+                    "Genesis complete: {} producers now active in scheduler (real bonds)",
+                    producers.active_producers().len()
+                );
+            } else {
+                warn!("Genesis ended with no producers found in blockchain!");
             }
         }
 
