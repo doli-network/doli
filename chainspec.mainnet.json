@@ -3,14 +3,14 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772148900,
-    "message": "Genesis - 27/Feb/2026 - VDF proof required for genesis producers",
+    "timestamp": 1772158800,
+    "message": "Genesis TEST - 32 blocks, 1 DOLI bond - ACTIVATION_DELAY fix verification",
     "initial_reward": 100000000
   },
   "consensus": {
     "slot_duration": 10,
     "slots_per_epoch": 360,
-    "bond_amount": 1000000000
+    "bond_amount": 100000000
   },
   "genesis_producers": []
 }

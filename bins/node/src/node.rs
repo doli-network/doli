@@ -3167,9 +3167,10 @@ impl Node {
                         }
 
                         // Register producer with real bond outpoint
+                        // registered_at = 0: exempt from ACTIVATION_DELAY (producing since block 1)
                         let producer_info = storage::ProducerInfo::new_with_bonds(
                             *pubkey,
-                            height,
+                            0,
                             bond_unit,
                             (bond_hash, 0),
                             era,
@@ -4928,9 +4929,10 @@ impl Node {
                     let era = self.params.height_to_era(height);
                     for pubkey in &genesis_producers {
                         let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+                        // registered_at = 0: exempt from ACTIVATION_DELAY (producing since block 1)
                         let producer_info = storage::ProducerInfo::new_with_bonds(
                             *pubkey,
-                            height,
+                            0,
                             bond_unit,
                             (bond_hash, 0),
                             era,
