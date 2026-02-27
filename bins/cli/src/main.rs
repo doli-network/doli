@@ -353,19 +353,54 @@ async fn main() -> Result<()> {
 const DEFAULT_PREFIX: &str = "doli";
 
 fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
-    let name = name.unwrap_or_else(|| "default".to_string());
-    println!("Creating new wallet: {}", name);
+    if wallet_path.exists() {
+        anyhow::bail!(
+            "Wallet already exists at {:?}. Use a different path with -w.",
+            wallet_path
+        );
+    }
 
-    let wallet = Wallet::new(&name);
+    let name = name.unwrap_or_else(|| "default".to_string());
+
+    let (wallet, phrase) = Wallet::new(&name);
     wallet.save(wallet_path)?;
+
+    // Write seed phrase to a separate file
+    let seed_path = wallet_path.with_extension("seed.txt");
+    let mut seed_content = String::new();
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        seed_content.push_str(&format!("{}. {}\n", i + 1, word));
+    }
+    std::fs::write(&seed_path, &seed_content)?;
 
     let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
 
-    println!("Wallet created at: {:?}", wallet_path);
+    println!();
+    println!("  Your wallet has been created.");
+    println!();
+    println!("  Recovery phrase:");
+    println!();
+    for (i, chunk) in words.chunks(6).enumerate() {
+        let numbered: Vec<String> = chunk
+            .iter()
+            .enumerate()
+            .map(|(j, w)| format!("{:>2}. {}", i * 6 + j + 1, w))
+            .collect();
+        println!("    {}", numbered.join("  "));
+    }
     println!();
     println!("  Address: {}", bech32_addr);
     println!();
-    println!("Back up your wallet!");
+    println!("  Wallet saved to: {:?}", wallet_path);
+    println!("  Seed phrase saved to: {:?}", seed_path);
+    println!();
+    println!("  WARNING: This is the ONLY time your recovery phrase is shown.");
+    println!("  If you lose both the wallet file and these 24 words, your DOLI is gone forever.");
+    println!("  Write them down on paper and store in a safe place.");
+    println!("  Then delete the seed file:");
+    println!("    rm {:?}", seed_path);
+    println!();
 
     Ok(())
 }
