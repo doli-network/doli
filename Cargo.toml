@@ -36,6 +36,7 @@ rand_core = "0.6"
 zeroize = { version = "1.7", features = ["derive"] }
 subtle = "2.5"  # Constant-time operations
 sha2 = "0.10"   # For compatibility and cross-verification
+bip39 = { version = "2.1", features = ["rand", "zeroize"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
