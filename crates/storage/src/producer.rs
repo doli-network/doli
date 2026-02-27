@@ -1398,7 +1398,9 @@ impl ProducerSet {
             .producers
             .iter()
             .filter(|(_, p)| {
-                p.is_active() && current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY)
+                p.is_active()
+                    && (p.registered_at == 0
+                        || current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY))
             })
             .map(|(k, _)| *k)
             .collect();
