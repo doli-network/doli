@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     libssl-dev \
     pkg-config \
+    protobuf-compiler \
     m4 \
     && rm -rf /var/lib/apt/lists/*
 

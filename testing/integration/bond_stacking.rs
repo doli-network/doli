@@ -35,8 +35,9 @@ use doli_core::{
 /// Test bond unit constant
 #[test]
 fn test_bond_unit_constant() {
-    // 1 bond = 10 DOLI = 1_000_000_000 base units
-    assert_eq!(BOND_UNIT, 1_000_000_000);
+    // PRODUCTION: 1 bond = 10 DOLI = 1_000_000_000 base units
+    // TEST: 1 bond = 1 DOLI = 100_000_000 base units
+    assert_eq!(BOND_UNIT, 100_000_000);
 }
 
 /// Test max bonds constant

@@ -88,8 +88,8 @@ if [ "$DOLI_NO_DHT" = "true" ]; then
     ARGS="$ARGS --no-dht"
 fi
 
-# Custom chainspec
-if [ -n "$DOLI_CHAINSPEC" ]; then
+# Custom chainspec (ignored for mainnet — embedded chainspec is authoritative)
+if [ -n "$DOLI_CHAINSPEC" ] && [ "${DOLI_NETWORK:-mainnet}" != "mainnet" ]; then
     ARGS="$ARGS --chainspec $DOLI_CHAINSPEC"
 fi
 

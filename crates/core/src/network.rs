@@ -891,11 +891,11 @@ mod tests {
 
     #[test]
     fn test_genesis_blocks_mainnet_testnet() {
-        // Mainnet has 1-hour genesis phase (360 blocks at 10s slots)
-        assert_eq!(Network::Mainnet.genesis_blocks(), 360);
+        // PRODUCTION: 360 blocks (1 hour), TEST: 32 blocks (~5 min)
+        assert_eq!(Network::Mainnet.genesis_blocks(), 32);
         assert!(Network::Mainnet.is_in_genesis(1));
-        assert!(Network::Mainnet.is_in_genesis(360));
-        assert!(!Network::Mainnet.is_in_genesis(361));
+        assert!(Network::Mainnet.is_in_genesis(32));
+        assert!(!Network::Mainnet.is_in_genesis(33));
 
         // Testnet has no genesis phase (pre-registered producers)
         assert_eq!(Network::Testnet.genesis_blocks(), 0);
@@ -905,10 +905,10 @@ mod tests {
 
     #[test]
     fn test_automatic_genesis_bond() {
-        // All networks use 10 DOLI (1 bond unit) for automatic genesis bonds
-        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 1_000_000_000);
-        assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000_000);
-        assert_eq!(Network::Devnet.automatic_genesis_bond(), 1_000_000_000);
+        // PRODUCTION: 10 DOLI, TEST: 1 DOLI
+        assert_eq!(Network::Mainnet.automatic_genesis_bond(), 100_000_000);
+        assert_eq!(Network::Testnet.automatic_genesis_bond(), 100_000_000);
+        assert_eq!(Network::Devnet.automatic_genesis_bond(), 100_000_000);
     }
 
     #[test]
