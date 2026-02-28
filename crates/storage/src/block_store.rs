@@ -829,6 +829,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 1000 + slot as u64 * 10,
             slot,
             producer: *producer,

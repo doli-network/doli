@@ -17,7 +17,7 @@ use crate::types::{BlockHeight, Slot};
 /// Block header
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockHeader {
-    /// Protocol version
+    /// Protocol version (2 = genesis_hash added)
     pub version: u32,
     /// Hash of the previous block header
     pub prev_hash: Hash,
@@ -29,6 +29,11 @@ pub struct BlockHeader {
     /// In the deterministic scheduler model, presence commitments are no longer used.
     #[serde(default)]
     pub presence_root: Hash,
+    /// Chain identity — BLAKE3 hash of genesis parameters (timestamp, network, slot_duration, message).
+    /// Blocks with a mismatched genesis_hash are rejected immediately.
+    /// Defaults to ZERO for deserialization of pre-v2 blocks (which are then rejected by validation).
+    #[serde(default)]
+    pub genesis_hash: Hash,
     /// Block timestamp (Unix seconds)
     pub timestamp: u64,
     /// Slot number (derived from timestamp)
@@ -52,6 +57,7 @@ impl BlockHeader {
         hasher.update(self.prev_hash.as_bytes());
         hasher.update(self.merkle_root.as_bytes());
         hasher.update(self.presence_root.as_bytes()); // Commit to presence data
+        hasher.update(self.genesis_hash.as_bytes()); // Commit to chain identity
         hasher.update(&self.timestamp.to_le_bytes());
         hasher.update(&self.slot.to_le_bytes());
         hasher.update(self.producer.as_bytes());
@@ -222,22 +228,27 @@ pub struct BlockBuilder {
     producer: PublicKey,
     transactions: Vec<Transaction>,
     params: ConsensusParams,
+    genesis_hash: Hash,
 }
 
 impl BlockBuilder {
     /// Create a new block builder
     pub fn new(prev_hash: Hash, prev_slot: Slot, producer: PublicKey) -> Self {
+        let params = ConsensusParams::mainnet();
+        let genesis_hash = params.genesis_hash;
         Self {
             prev_hash,
             prev_slot,
             producer,
             transactions: Vec::new(),
-            params: ConsensusParams::mainnet(),
+            params,
+            genesis_hash,
         }
     }
 
-    /// Set consensus params
+    /// Set consensus params (also updates genesis_hash from params)
     pub fn with_params(mut self, params: ConsensusParams) -> Self {
+        self.genesis_hash = params.genesis_hash;
         self.params = params;
         self
     }
@@ -256,11 +267,14 @@ impl BlockBuilder {
         self
     }
 
-    /// Build the block (without VDF - that must be computed separately)
+    /// Build the block header and return the finalized transaction list.
+    ///
+    /// The merkle root is computed from exactly the transactions returned,
+    /// guaranteeing consistency between header and block body.
     ///
     /// Returns `None` if the timestamp would produce a slot <= prev_slot
     /// (slot monotonicity violation).
-    pub fn build(self, timestamp: u64) -> Option<BlockHeader> {
+    pub fn build(self, timestamp: u64) -> Option<(BlockHeader, Vec<Transaction>)> {
         let slot = self.params.timestamp_to_slot(timestamp);
 
         // Enforce slot monotonicity: new slot must be > prev_slot
@@ -271,17 +285,20 @@ impl BlockBuilder {
 
         let merkle_root = compute_merkle_root(&self.transactions);
 
-        Some(BlockHeader {
-            version: 1,
+        let header = BlockHeader {
+            version: 2,
             prev_hash: self.prev_hash,
             merkle_root,
             presence_root: Hash::ZERO, // Always ZERO in deterministic scheduler model
+            genesis_hash: self.genesis_hash,
             timestamp,
             slot,
             producer: self.producer,
             vdf_output: VdfOutput { value: Vec::new() },
             vdf_proof: VdfProof::empty(),
-        })
+        };
+
+        Some((header, self.transactions))
     }
 }
 
@@ -320,6 +337,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 1000,
             slot: 0,
             producer: PublicKey::from_bytes([0u8; 32]),
@@ -342,6 +360,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 1000,
             slot: 0,
             producer: PublicKey::from_bytes([0u8; 32]),
@@ -371,29 +390,31 @@ mod tests {
 
         // Genesis case: prev_slot=0, slot=0 should work
         let builder = BlockBuilder::new(Hash::ZERO, 0, producer);
-        let header = builder.build(params.genesis_time);
-        assert!(header.is_some());
-        assert_eq!(header.unwrap().slot, 0);
+        let result = builder.build(params.genesis_time);
+        assert!(result.is_some());
+        let (header, _txs) = result.unwrap();
+        assert_eq!(header.slot, 0);
 
         // Normal case: slot > prev_slot should work
         let builder = BlockBuilder::new(Hash::ZERO, 5, producer);
         // 6 slots after genesis = 6 * 60 seconds
         let timestamp = params.genesis_time + 6 * params.slot_duration;
-        let header = builder.build(timestamp);
-        assert!(header.is_some());
-        assert!(header.unwrap().slot > 5);
+        let result = builder.build(timestamp);
+        assert!(result.is_some());
+        let (header, _txs) = result.unwrap();
+        assert!(header.slot > 5);
 
         // Violation: slot <= prev_slot should return None
         let builder = BlockBuilder::new(Hash::ZERO, 10, producer);
         // Only 5 slots after genesis, but prev_slot is 10
         let timestamp = params.genesis_time + 5 * params.slot_duration;
-        let header = builder.build(timestamp);
-        assert!(header.is_none(), "Should reject slot <= prev_slot");
+        let result = builder.build(timestamp);
+        assert!(result.is_none(), "Should reject slot <= prev_slot");
 
         // Violation: same slot should return None
         let builder = BlockBuilder::new(Hash::ZERO, 10, producer);
         let timestamp = params.genesis_time + 10 * params.slot_duration;
-        let header = builder.build(timestamp);
-        assert!(header.is_none(), "Should reject slot == prev_slot");
+        let result = builder.build(timestamp);
+        assert!(result.is_none(), "Should reject slot == prev_slot");
     }
 }

@@ -133,7 +133,6 @@ pub const HALVING_INTERVAL: BlockHeight = SLOTS_PER_ERA;
 /// 7 days = 60,480 blocks
 pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 
-
 /// Liveness window: producers who haven't produced within this many blocks
 /// are excluded from primary scheduling (but eligible for re-entry slots).
 /// Dynamic formula: `max(LIVENESS_WINDOW_MIN, total_producers * 3)` ensures
@@ -1350,12 +1349,17 @@ pub struct ConsensusParams {
     pub max_block_size_cap: usize,
     /// Reward distribution mode (DirectCoinbase or EpochPool)
     pub reward_mode: RewardMode,
+    /// Genesis hash — chain identity fingerprint. Blocks with a different
+    /// genesis_hash are rejected immediately. Set from chainspec at startup.
+    pub genesis_hash: crypto::Hash,
 }
 
 impl ConsensusParams {
     /// Create mainnet parameters
     #[allow(deprecated)]
     pub fn mainnet() -> Self {
+        // Compute genesis_hash from the embedded mainnet chainspec
+        let spec = crate::chainspec::ChainSpec::mainnet();
         Self {
             genesis_time: GENESIS_TIME,
             slot_duration: SLOT_DURATION,
@@ -1371,6 +1375,7 @@ impl ConsensusParams {
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
+            genesis_hash: spec.genesis_hash(),
         }
     }
 
@@ -1382,6 +1387,7 @@ impl ConsensusParams {
     /// realistic testing of the Proof of Time consensus with VDF.
     #[allow(deprecated)]
     pub fn testnet() -> Self {
+        let spec = crate::chainspec::ChainSpec::testnet();
         Self {
             genesis_time: 0,                                // Will be set at testnet launch
             slot_duration: SLOT_DURATION,                   // Same as mainnet (10 seconds)
@@ -1397,6 +1403,7 @@ impl ConsensusParams {
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
+            genesis_hash: spec.genesis_hash(),
         }
     }
 
@@ -1411,6 +1418,7 @@ impl ConsensusParams {
     ///
     /// This allows testing the full tokenomics lifecycle in ~1 hour (6 eras).
     pub fn devnet() -> Self {
+        let spec = crate::chainspec::ChainSpec::devnet();
         Self {
             genesis_time: 0,            // Will be set at devnet start
             slot_duration: 1,           // 1 second (fast)
@@ -1426,27 +1434,17 @@ impl ConsensusParams {
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
+            genesis_hash: spec.genesis_hash(),
         }
     }
 
     /// Create consensus parameters for a specific network
     #[allow(deprecated)]
     pub fn for_network(network: Network) -> Self {
-        Self {
-            genesis_time: network.genesis_time(),
-            slot_duration: network.slot_duration(),
-            slots_per_epoch: SLOTS_PER_EPOCH,
-            slots_per_reward_epoch: network.slots_per_reward_epoch(),
-            attestation_interval: ATTESTATION_INTERVAL,
-            min_attestation_rate: MIN_ATTESTATION_RATE,
-            blocks_per_era: network.blocks_per_era(),
-            bootstrap_blocks: network.bootstrap_blocks(),
-            bootstrap_grace_period_secs: network.bootstrap_grace_period_secs(),
-            initial_reward: network.initial_reward(),
-            initial_bond: network.initial_bond(),
-            base_block_size: BASE_BLOCK_SIZE,
-            max_block_size_cap: MAX_BLOCK_SIZE_CAP,
-            reward_mode: RewardMode::EpochPool,
+        match network {
+            Network::Mainnet => Self::mainnet(),
+            Network::Testnet => Self::testnet(),
+            Network::Devnet => Self::devnet(),
         }
     }
 
@@ -1465,6 +1463,7 @@ impl ConsensusParams {
         if spec.genesis.timestamp != 0 {
             self.genesis_time = spec.genesis.timestamp;
         }
+        self.genesis_hash = spec.genesis_hash();
     }
 
     /// Calculate max block size for a given height.
@@ -1781,6 +1780,7 @@ impl ConsensusParams {
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
+            genesis_hash: crypto::Hash::ZERO, // Stress tests don't validate genesis_hash
         }
     }
 }

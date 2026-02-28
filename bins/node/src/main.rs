@@ -416,33 +416,32 @@ async fn main() -> Result<()> {
 
         // Apply chainspec consensus defaults (lowest priority: only sets vars not already set)
         // Must happen BEFORE any code triggers NetworkParams OnceLock
-        let chainspec_for_defaults = match &cli.command {
-            Some(Commands::Run {
-                chainspec: Some(ref path),
-                ..
-            }) => Some(path.clone()),
-            Some(Commands::Run { .. }) => {
-                let default = data_dir.join("chainspec.json");
-                if default.exists() {
-                    Some(default)
-                } else {
-                    // Write embedded mainnet chainspec to disk so it's available
-                    // for this run AND all future runs. Zero-config deployment.
-                    const EMBEDDED: &str = include_str!("../../../chainspec.mainnet.json");
-                    if let Err(e) = std::fs::write(&default, EMBEDDED) {
-                        eprintln!(
-                            "Warning: could not write embedded chainspec to {:?}: {}",
-                            default, e
-                        );
-                        None
-                    } else {
-                        eprintln!("Wrote embedded mainnet chainspec to {:?}", default);
-                        Some(default)
+        //
+        // SECURITY: For mainnet, ALWAYS use the embedded chainspec compiled into the binary.
+        // Never read from disk, never write to disk. A stale or tampered chainspec.json
+        // on disk could change genesis_timestamp, causing slot schedule divergence and
+        // chain forks. The embedded chainspec is the single source of truth.
+        let chainspec_for_defaults: Option<std::path::PathBuf> =
+            if matches!(network, Network::Mainnet) {
+                // Mainnet: skip disk entirely — embedded chainspec applied later in run_node()
+                None
+            } else {
+                match &cli.command {
+                    Some(Commands::Run {
+                        chainspec: Some(ref path),
+                        ..
+                    }) => Some(path.clone()),
+                    Some(Commands::Run { .. }) => {
+                        let default = data_dir.join("chainspec.json");
+                        if default.exists() {
+                            Some(default)
+                        } else {
+                            None
+                        }
                     }
+                    _ => None,
                 }
-            }
-            _ => None,
-        };
+            };
         if let Some(ref path) = chainspec_for_defaults {
             network_params::apply_chainspec_defaults(path);
         }
@@ -701,7 +700,40 @@ async fn run_node(
     // Previously this was inside the first-init branch, causing slot_duration divergence on restarts
     use doli_core::chainspec::ChainSpec;
 
-    let chainspec: Option<ChainSpec> = if let Some(ref path) = chainspec_path {
+    // SECURITY: For mainnet, ALWAYS use the embedded chainspec. The genesis_timestamp,
+    // slot_duration, and other consensus parameters are compiled into the binary and
+    // cannot be overridden by disk files or CLI flags. This prevents:
+    // - Stale chainspec.json from a previous binary causing slot schedule divergence
+    // - Malicious modification of chainspec.json to hijack genesis time
+    // - Accidental deployment with mismatched parameters
+    //
+    // For testnet/devnet, disk files and CLI flags are allowed for flexibility.
+    let chainspec: Option<ChainSpec> = if matches!(network, Network::Mainnet) {
+        const EMBEDDED_MAINNET_CHAINSPEC: &str = include_str!("../../../chainspec.mainnet.json");
+        match serde_json::from_str::<ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
+            Ok(spec) => {
+                info!(
+                    "Mainnet chainspec: embedded (genesis={}, slot={}s) — disk/CLI overrides disabled",
+                    spec.genesis.timestamp, spec.consensus.slot_duration
+                );
+                if chainspec_path.is_some() {
+                    warn!("SECURITY: --chainspec flag ignored for mainnet — embedded chainspec is authoritative");
+                }
+                let disk_path = data_dir.join("chainspec.json");
+                if disk_path.exists() {
+                    warn!(
+                        "SECURITY: Ignoring {:?} — mainnet uses embedded chainspec only",
+                        disk_path
+                    );
+                }
+                Some(spec)
+            }
+            Err(e) => {
+                error!("BUG: embedded mainnet chainspec is invalid: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(ref path) = chainspec_path {
         info!("Loading chainspec from {:?}", path);
         match ChainSpec::load(path) {
             Ok(spec) => {
@@ -714,7 +746,7 @@ async fn run_node(
             }
         }
     } else {
-        // Try default chainspec location
+        // Testnet/Devnet: try disk, then embedded fallback
         let default_path = data_dir.join("chainspec.json");
         if default_path.exists() {
             match ChainSpec::load(&default_path) {
@@ -731,24 +763,7 @@ async fn run_node(
                 }
             }
         } else {
-            // Fallback: use mainnet chainspec embedded in binary at compile time.
-            // This ensures every binary ships with correct consensus parameters
-            // (genesis_timestamp, slot_duration, etc.) — no separate file needed.
-            const EMBEDDED_MAINNET_CHAINSPEC: &str =
-                include_str!("../../../chainspec.mainnet.json");
-            match serde_json::from_str::<ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
-                Ok(spec) => {
-                    info!(
-                        "Using embedded chainspec: {} ({}) — no chainspec file found",
-                        spec.name, spec.id
-                    );
-                    Some(spec)
-                }
-                Err(e) => {
-                    error!("BUG: embedded chainspec is invalid: {}", e);
-                    None
-                }
-            }
+            None
         }
     };
 
@@ -758,16 +773,14 @@ async fn run_node(
     // - slot_duration
     // - bond_amount, initial_reward
     //
-    // Without this, nodes derive their own genesis_timestamp, causing slot
-    // schedule divergence and chain forks when multiple nodes produce.
+    // For mainnet this is always satisfied (embedded chainspec).
+    // For testnet/devnet, a disk file or --chainspec flag is required.
     if producer && chainspec.is_none() {
         error!("FATAL: --producer requires a chainspec file for consensus safety");
         error!("Without chainspec, genesis_timestamp may differ between nodes,");
         error!("causing slot schedule divergence and chain forks.");
         error!("");
-        error!("Fix: place chainspec.json in your data directory:");
-        error!("  {:?}/chainspec.json", data_dir);
-        error!("Or specify explicitly: --chainspec /path/to/chainspec.json");
+        error!("Fix: specify --chainspec /path/to/chainspec.json");
         std::process::exit(1);
     }
 

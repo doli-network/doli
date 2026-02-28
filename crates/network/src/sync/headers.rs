@@ -181,6 +181,7 @@ mod tests {
             prev_hash,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: now,
             slot,
             producer: PublicKey::from_bytes([0u8; 32]),

@@ -575,15 +575,30 @@ add_maintainer_tx = {
 
 ```
 block_header = {
-    version:       uint32,       // Currently 1
+    version:       uint32,       // Currently 2
     prev_hash:     32 bytes,     // Hash of previous block header
     merkle_root:   32 bytes,     // Merkle root of transactions
+    presence_root: 32 bytes,     // Presence commitment hash (ZERO in deterministic model)
+    genesis_hash:  32 bytes,     // Chain identity: BLAKE3(genesis_time || network_id || slot_duration || message)
     timestamp:     uint64,       // Unix timestamp (seconds)
     slot:          uint32,       // Derived from timestamp
     producer:      32 bytes,     // Producer's public key
     vdf_output:    bytes,        // VDF computation result (~256 bytes)
     vdf_proof:     bytes         // VDF proof (~256 bytes)
 }
+```
+
+**genesis_hash** is a cryptographic fingerprint of the chain's genesis parameters. It ensures
+that blocks from nodes with different genesis configurations (even 1 second difference in
+timestamp) are rejected immediately. Computed as:
+
+```
+genesis_hash = BLAKE3(
+    genesis_timestamp (8 bytes LE) ||
+    network_id (4 bytes LE) ||
+    slot_duration (8 bytes LE) ||
+    genesis_message (variable bytes)
+)
 ```
 
 ### 4.2 Block Body
@@ -690,8 +705,12 @@ A block B is valid if ALL conditions hold.
 - `validate_producer_eligibility()` (line 1971) - producer checks
 
 ```
+0. CHAIN IDENTITY (checked FIRST):
+   B.genesis_hash == local_genesis_hash
+   Rejects blocks from nodes with different genesis parameters.
+
 1. FORMAT:
-   B.version == 1
+   B.version == 2
    B.prev_hash references a known valid block
 
 2. TIMING:
@@ -1092,11 +1111,17 @@ This fallback ensures that nodes started with custom `--data-dir` paths (e.g., `
 Attempting to override locked parameters on mainnet logs a warning and uses hardcoded values.
 
 **Precedence** (highest to lowest):
-1. **CLI flags** (e.g., `--p2p-port`)
-2. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — applied via `ConsensusParams::apply_chainspec()` in `Node::new()`, overriding OnceLock values
-3. **Parent process environment variables**
-4. **`.env` file variables**
-5. **Network defaults** (hardcoded in `consensus.rs`)
+1. **Embedded binary** (mainnet ONLY — chainspec is compiled in, disk/CLI overrides disabled)
+2. **CLI flags** (e.g., `--p2p-port`)
+3. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — testnet/devnet only
+4. **Parent process environment variables**
+5. **`.env` file variables**
+6. **Network defaults** (hardcoded in `consensus.rs`)
+
+**SECURITY (mainnet)**: The mainnet chainspec is always loaded from the embedded binary via
+`include_str!`. The `--chainspec` flag and disk `chainspec.json` files are ignored. This
+prevents genesis-time-hijack attacks where a tampered chainspec on disk could cause slot
+schedule divergence and chain forks.
 
 Chainspec parameters are applied in two phases:
 - **Phase 1 (env defaults)**: Before the OnceLock initializes, chainspec fields are set as lowest-priority env var defaults (backward compatibility).
@@ -1235,7 +1260,8 @@ Result:
 
 | Parameter          | Value                    |
 |--------------------|--------------------------|
-| GENESIS_TIME       | 1769904000               |
+| BLOCK_VERSION      | 2                        |
+| GENESIS_TIME       | Set at chain launch      |
 | SLOT_DURATION      | 10 (all networks)      |
 | SLOTS_PER_EPOCH    | 360                      |
 | SLOTS_PER_ERA      | 12,614,400               |

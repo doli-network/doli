@@ -43,6 +43,16 @@ use crypto::{Hash, PublicKey};
 /// enabling precise error reporting and debugging.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ValidationError {
+    /// Block genesis_hash doesn't match our chain identity.
+    /// This means the block was produced by a node with different genesis parameters.
+    #[error("genesis hash mismatch: got={got}, expected={expected}")]
+    GenesisHashMismatch {
+        /// Genesis hash in the block header.
+        got: crypto::Hash,
+        /// Expected genesis hash from our consensus params.
+        expected: crypto::Hash,
+    },
+
     /// Block or transaction version is unsupported.
     #[error("invalid version: {0}")]
     InvalidVersion(u32),
@@ -535,8 +545,17 @@ pub fn validate_header(
     header: &BlockHeader,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
+    // 0. Chain identity — reject blocks from different genesis FIRST.
+    // This is O(1) and catches all genesis-time-hijack attacks with zero tolerance.
+    if header.genesis_hash != ctx.params.genesis_hash {
+        return Err(ValidationError::GenesisHashMismatch {
+            got: header.genesis_hash,
+            expected: ctx.params.genesis_hash,
+        });
+    }
+
     // 1. Version check
-    if header.version != 1 {
+    if header.version != 2 {
         return Err(ValidationError::InvalidVersion(header.version));
     }
 
@@ -697,9 +716,34 @@ pub fn validate_block_with_mode(
             // checks (MAX_PAST_SLOTS would reject old blocks during sync).
             // Header chain linkage was already verified during header download.
 
+            // Chain identity — reject blocks from different genesis FIRST.
+            if block.header.genesis_hash != ctx.params.genesis_hash {
+                return Err(ValidationError::GenesisHashMismatch {
+                    got: block.header.genesis_hash,
+                    expected: ctx.params.genesis_hash,
+                });
+            }
+
             // Version check
-            if block.header.version != 1 {
+            if block.header.version != 2 {
                 return Err(ValidationError::InvalidVersion(block.header.version));
+            }
+
+            // Slot derivation from genesis — rejects blocks with wrong slot calculation.
+            let expected_slot = ctx.params.timestamp_to_slot(block.header.timestamp);
+            if block.header.slot != expected_slot {
+                return Err(ValidationError::InvalidSlot {
+                    got: block.header.slot,
+                    expected: expected_slot,
+                });
+            }
+
+            // Slot must advance from previous block
+            if block.header.slot <= ctx.prev_slot {
+                return Err(ValidationError::SlotNotAdvancing {
+                    got: block.header.slot,
+                    prev: ctx.prev_slot,
+                });
             }
 
             // Block size
@@ -728,7 +772,9 @@ pub fn validate_block_with_mode(
             // Producer eligibility (still checked — confirms the right producer signed)
             validate_producer_eligibility(&block.header, ctx)?;
 
-            // VDF: intentionally skipped — state root quorum already validates the chain
+            // Skipped: VDF (trusted via state root quorum)
+            // Skipped: MAX_FUTURE_SLOTS / MAX_PAST_SLOTS (time-based, breaks sync)
+            // Skipped: timestamp-not-too-future (time-based)
         }
     }
 
@@ -2507,10 +2553,11 @@ mod tests {
 
         // With 10-second slots, slot 1 is at GENESIS_TIME + 10
         let header = BlockHeader {
-            version: 1,
+            version: 2,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: ctx.params.genesis_hash,
             timestamp: GENESIS_TIME + 10,
             slot: 1,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -2526,10 +2573,11 @@ mod tests {
         let ctx = test_context();
 
         let header = BlockHeader {
-            version: 1,
+            version: 2,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: ctx.params.genesis_hash,
             timestamp: GENESIS_TIME - 1,
             slot: 0,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -2550,10 +2598,11 @@ mod tests {
         // With 10-second slots, timestamp GENESIS_TIME + 60 = slot 6
         // Claiming slot 5 should be invalid (actual slot should be 6)
         let header = BlockHeader {
-            version: 1,
+            version: 2,
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: ctx.params.genesis_hash,
             timestamp: GENESIS_TIME + 60,
             slot: 5, // Should be 6 with 10-second slots
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -3223,6 +3272,7 @@ mod tests {
                     prev_hash: Hash::ZERO,
                     merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
                     timestamp: 0,
                     slot: 0,
                     producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -3836,6 +3886,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO, // Will be invalid, but we're testing rewards logic
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             producer: *keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::default(),
@@ -4056,6 +4107,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             producer: *producer,
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::default(),
@@ -5081,15 +5133,17 @@ mod tests {
         use crate::block::{Block, BlockHeader};
         use vdf::{VdfOutput, VdfProof};
 
+        let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
         let slot = 12; // Slot 12 = GENESIS_TIME + 120
         let header = BlockHeader {
-            version: 1,
+            version: 2,
             slot,
             timestamp: GENESIS_TIME + (slot as u64 * 10),
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: params.genesis_hash,
             producer: *keypair.public_key(),
             vdf_output: VdfOutput {
                 value: vec![0u8; 32],

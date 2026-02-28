@@ -14,10 +14,11 @@ use vdf::{VdfOutput, VdfProof};
 /// Create a test block header with given presence_root
 fn create_header_with_presence(slot: u32, presence_root: Hash) -> BlockHeader {
     BlockHeader {
-        version: 1,
+        version: 2,
         prev_hash: Hash::ZERO,
         merkle_root: Hash::ZERO,
         presence_root,
+        genesis_hash: Hash::ZERO,
         timestamp: 1700000000 + (slot as u64 * 10),
         slot,
         producer: PublicKey::from_bytes([1u8; 32]),
