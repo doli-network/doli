@@ -1047,7 +1047,9 @@ impl Node {
                     }
                 } => {
                     if let Some(event) = event {
-                        self.handle_network_event(event).await?;
+                        if let Err(e) = self.handle_network_event(event).await {
+                            warn!("Error handling network event: {}", e);
+                        }
                     }
                 }
 
