@@ -95,6 +95,7 @@ pub const VDF_DOMAIN: &[u8] = b"DOLI_VDF_V1";
 pub const ATTESTATION_DOMAIN: &[u8] = b"DOLI_ATTEST_V1";
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -421,6 +421,7 @@ pub fn verify_with_params(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crypto::hash::hash;

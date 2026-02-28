@@ -727,6 +727,7 @@ pub fn div_2pow_by_l(t: u64, l: &Integer) -> Integer {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

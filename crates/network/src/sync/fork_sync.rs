@@ -382,7 +382,7 @@ mod tests {
             match req {
                 Some(SyncRequest::GetBlockByHeight { height }) => {
                     // Simulate: peer has a block at every height
-                    let fake_hash = crypto::hash::hash(format!("block_{}", height).as_bytes());
+                    let _fake_hash = crypto::hash::hash(format!("block_{}", height).as_bytes());
                     fs.handle_block_response(Some(doli_core::Block::new(
                         doli_core::BlockHeader {
                             version: 1,

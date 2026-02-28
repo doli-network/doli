@@ -3366,6 +3366,7 @@ mod tests {
     proptest! {
         /// Scaled windows maintain correct ordering
         #[test]
+        #[allow(deprecated)]
         fn prop_scaled_windows_ordering(slot_duration in 1u64..120) {
             let (primary, secondary, tertiary) = scaled_fallback_windows(slot_duration);
             prop_assert!(primary <= secondary);
@@ -3503,9 +3504,9 @@ mod tests {
         let producer_c = crypto::PublicKey::from_bytes([3u8; 32]);
 
         let producers = vec![
-            (producer_a.clone(), 10), // 10 bonds
-            (producer_b.clone(), 5),  // 5 bonds
-            (producer_c.clone(), 3),  // 3 bonds
+            (producer_a, 10), // 10 bonds
+            (producer_b, 5),  // 5 bonds
+            (producer_c, 3),  // 3 bonds
         ];
 
         // Selection for any slot should be deterministic based only on slot + producers
@@ -3535,9 +3536,9 @@ mod tests {
 
         // Sort order by pubkey: producer_a, producer_b, producer_c
         let producers = vec![
-            (producer_a.clone(), 3), // 3 bonds -> tickets 0, 1, 2
-            (producer_b.clone(), 2), // 2 bonds -> tickets 3, 4
-            (producer_c.clone(), 1), // 1 bond  -> ticket 5
+            (producer_a, 3), // 3 bonds -> tickets 0, 1, 2
+            (producer_b, 2), // 2 bonds -> tickets 3, 4
+            (producer_c, 1), // 1 bond  -> ticket 5
         ];
         // Total tickets = 6
 
@@ -3679,7 +3680,7 @@ mod tests {
         // No presence score, no telemetry data
 
         let producer_a = crypto::PublicKey::from_bytes([1u8; 32]);
-        let producers = vec![(producer_a.clone(), 5)];
+        let producers = vec![(producer_a, 5)];
 
         // Selection is deterministic and doesn't depend on any external state
         let selection_1 = select_producer_for_slot(100, &producers);

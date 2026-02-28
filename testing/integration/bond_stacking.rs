@@ -19,7 +19,6 @@ use doli_core::{
     // Bond types
     BondEntry,
     BondError,
-    BondsMaturitySummary,
     ClaimWithdrawalData,
     PendingWithdrawal,
     ProducerBonds,
@@ -312,16 +311,17 @@ fn test_total_withdrawal_penalty() {
 
 /// Test AddBondData serialization
 #[test]
+#[allow(deprecated)]
 fn test_add_bond_data_serialization() {
     let keypair = KeyPair::generate();
-    let data = AddBondData::new(keypair.public_key().clone(), 5);
+    let data = AddBondData::new(*keypair.public_key(), 5);
 
     let bytes = data.to_bytes();
     let decoded = AddBondData::from_bytes(&bytes).unwrap();
 
     assert_eq!(decoded.producer_pubkey, *keypair.public_key());
     assert_eq!(decoded.bond_count, 5);
-    #[allow(deprecated)]
+
     assert_eq!(decoded.total_amount(), 5 * BOND_UNIT);
 }
 
@@ -330,7 +330,7 @@ fn test_add_bond_data_serialization() {
 fn test_withdrawal_request_data_serialization() {
     let keypair = KeyPair::generate();
     let destination = hash(b"destination");
-    let data = WithdrawalRequestData::new(keypair.public_key().clone(), 3, destination);
+    let data = WithdrawalRequestData::new(*keypair.public_key(), 3, destination);
 
     let bytes = data.to_bytes();
     let decoded = WithdrawalRequestData::from_bytes(&bytes).unwrap();
@@ -344,7 +344,7 @@ fn test_withdrawal_request_data_serialization() {
 #[test]
 fn test_claim_withdrawal_data_serialization() {
     let keypair = KeyPair::generate();
-    let data = ClaimWithdrawalData::new(keypair.public_key().clone(), 0);
+    let data = ClaimWithdrawalData::new(*keypair.public_key(), 0);
 
     let bytes = data.to_bytes();
     let decoded = ClaimWithdrawalData::from_bytes(&bytes).unwrap();
@@ -361,7 +361,7 @@ fn test_add_bond_transaction() {
     // Create mock input (normally from UTXO)
     let input = doli_core::Input::new(Hash::ZERO, 0);
 
-    let tx = Transaction::new_add_bond(vec![input], keypair.public_key().clone(), 5);
+    let tx = Transaction::new_add_bond(vec![input], *keypair.public_key(), 5);
 
     assert_eq!(tx.tx_type, TxType::AddBond);
     assert!(tx.is_add_bond());
@@ -378,7 +378,7 @@ fn test_request_withdrawal_transaction() {
     let keypair = KeyPair::generate();
     let destination = hash(b"destination");
 
-    let tx = Transaction::new_request_withdrawal(keypair.public_key().clone(), 3, destination);
+    let tx = Transaction::new_request_withdrawal(*keypair.public_key(), 3, destination);
 
     assert_eq!(tx.tx_type, TxType::RequestWithdrawal);
     assert!(tx.is_request_withdrawal());
@@ -397,8 +397,7 @@ fn test_claim_withdrawal_transaction() {
     let destination = hash(b"destination");
     let net_amount = 5 * BOND_UNIT / 2; // After 50% penalty
 
-    let tx =
-        Transaction::new_claim_withdrawal(keypair.public_key().clone(), 0, net_amount, destination);
+    let tx = Transaction::new_claim_withdrawal(*keypair.public_key(), 0, net_amount, destination);
 
     assert_eq!(tx.tx_type, TxType::ClaimWithdrawal);
     assert!(tx.is_claim_withdrawal());

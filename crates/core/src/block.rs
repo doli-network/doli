@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn test_merkle_root_single() {
         let tx = Transaction::new_coinbase(100, Hash::ZERO, 0);
-        let root = compute_merkle_root(&[tx.clone()]);
+        let root = compute_merkle_root(std::slice::from_ref(&tx));
         assert_eq!(root, tx.hash());
     }
 
@@ -370,13 +370,13 @@ mod tests {
         let params = ConsensusParams::mainnet();
 
         // Genesis case: prev_slot=0, slot=0 should work
-        let builder = BlockBuilder::new(Hash::ZERO, 0, producer.clone());
+        let builder = BlockBuilder::new(Hash::ZERO, 0, producer);
         let header = builder.build(params.genesis_time);
         assert!(header.is_some());
         assert_eq!(header.unwrap().slot, 0);
 
         // Normal case: slot > prev_slot should work
-        let builder = BlockBuilder::new(Hash::ZERO, 5, producer.clone());
+        let builder = BlockBuilder::new(Hash::ZERO, 5, producer);
         // 6 slots after genesis = 6 * 60 seconds
         let timestamp = params.genesis_time + 6 * params.slot_duration;
         let header = builder.build(timestamp);
@@ -384,7 +384,7 @@ mod tests {
         assert!(header.unwrap().slot > 5);
 
         // Violation: slot <= prev_slot should return None
-        let builder = BlockBuilder::new(Hash::ZERO, 10, producer.clone());
+        let builder = BlockBuilder::new(Hash::ZERO, 10, producer);
         // Only 5 slots after genesis, but prev_slot is 10
         let timestamp = params.genesis_time + 5 * params.slot_duration;
         let header = builder.build(timestamp);

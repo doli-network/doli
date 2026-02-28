@@ -471,7 +471,7 @@ mod tests {
         // Add 3 UTXOs for alice, 1 for bob
         for i in 0..3 {
             let tx = test_coinbase_tx(100_000 * (i + 1), alice);
-            store.add_transaction(&tx, i as u64, true);
+            store.add_transaction(&tx, i, true);
         }
         let bob_tx = test_coinbase_tx(500_000, bob);
         store.add_transaction(&bob_tx, 3, true);
@@ -521,7 +521,7 @@ mod tests {
 
         for i in 0..5 {
             let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i as u64, true);
+            store.add_transaction(&tx, i, true);
         }
 
         let bytes1 = store.serialize_canonical();
@@ -560,7 +560,7 @@ mod tests {
 
         for i in 0..10 {
             let tx = test_coinbase_tx(100 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i as u64, true);
+            store.add_transaction(&tx, i, true);
         }
         assert_eq!(store.len(), 10);
 

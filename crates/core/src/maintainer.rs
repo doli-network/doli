@@ -645,11 +645,7 @@ mod tests {
         let kp2 = crypto::KeyPair::generate();
         let kp3 = crypto::KeyPair::generate();
 
-        let members = vec![
-            kp1.public_key().clone(),
-            kp2.public_key().clone(),
-            kp3.public_key().clone(),
-        ];
+        let members = vec![*kp1.public_key(), *kp2.public_key(), *kp3.public_key()];
         let set = MaintainerSet::with_members(members, 0);
 
         // Message to sign
@@ -657,11 +653,11 @@ mod tests {
 
         // Sign with 2 of 3 (threshold is 2 for 3 members)
         let sig1 = MaintainerSignature::new(
-            kp1.public_key().clone(),
+            *kp1.public_key(),
             crypto::signature::sign(message, kp1.private_key()),
         );
         let sig2 = MaintainerSignature::new(
-            kp2.public_key().clone(),
+            *kp2.public_key(),
             crypto::signature::sign(message, kp2.private_key()),
         );
 
@@ -680,26 +676,22 @@ mod tests {
         let kp2 = crypto::KeyPair::generate();
         let kp3 = crypto::KeyPair::generate();
 
-        let members = vec![
-            kp1.public_key().clone(),
-            kp2.public_key().clone(),
-            kp3.public_key().clone(),
-        ];
+        let members = vec![*kp1.public_key(), *kp2.public_key(), *kp3.public_key()];
         let set = MaintainerSet::with_members(members, 0);
 
         let message = b"remove target";
 
         // Sign with all 3
         let sig1 = MaintainerSignature::new(
-            kp1.public_key().clone(),
+            *kp1.public_key(),
             crypto::signature::sign(message, kp1.private_key()),
         );
         let sig2 = MaintainerSignature::new(
-            kp2.public_key().clone(),
+            *kp2.public_key(),
             crypto::signature::sign(message, kp2.private_key()),
         );
         let sig3 = MaintainerSignature::new(
-            kp3.public_key().clone(),
+            *kp3.public_key(),
             crypto::signature::sign(message, kp3.private_key()),
         );
 

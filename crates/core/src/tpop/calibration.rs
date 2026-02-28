@@ -348,6 +348,7 @@ pub struct CalibrationStats {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

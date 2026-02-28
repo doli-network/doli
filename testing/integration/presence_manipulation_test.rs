@@ -122,7 +122,7 @@ fn test_weighted_reward_calculation() {
     let total_weight: u128 = 14;
 
     // Each producer's reward = block_reward * their_weight / total_weight
-    let reward_1bond = (block_reward as u128 * 1) / total_weight;
+    let reward_1bond = (block_reward as u128) / total_weight;
     let reward_10bonds = (block_reward as u128 * 10) / total_weight;
 
     println!("Block reward: {} units", block_reward);
@@ -264,7 +264,7 @@ fn test_doli_network_bug_scenario() {
     // Calculate what rewards SHOULD be for Producer 5
     let block_reward: u128 = 1_000_000_000; // 10 DOLI
     let producer5_reward = (block_reward * 10) / total_weight as u128;
-    let producer1_reward = (block_reward * 1) / total_weight as u128;
+    let producer1_reward = block_reward / total_weight as u128;
 
     println!("\nCorrect reward distribution:");
     println!(

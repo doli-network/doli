@@ -454,7 +454,7 @@ mod tests {
     fn test_record_block() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
 
         handler.record_block(hash1, genesis);
@@ -468,7 +468,7 @@ mod tests {
     fn test_no_reorg_on_tip() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
 
         handler.record_block(hash1, genesis);
@@ -477,8 +477,8 @@ mod tests {
         let header = doli_core::BlockHeader {
             version: 1,
             prev_hash: hash1,
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 1,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -534,7 +534,7 @@ mod tests {
         let mut handler = ReorgHandler::new();
         handler.max_tracked = 10; // Small limit for testing
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut prev = genesis;
 
         // Add more blocks than limit
@@ -552,7 +552,7 @@ mod tests {
     fn test_weight_accumulation() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
         let hash2 = crypto::hash::hash(b"block2");
         let hash3 = crypto::hash::hash(b"block3");
@@ -573,7 +573,7 @@ mod tests {
     fn test_weight_based_fork_choice_rejects_lighter_chain() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
         let hash2 = crypto::hash::hash(b"block2");
 
@@ -585,8 +585,8 @@ mod tests {
         let header = doli_core::BlockHeader {
             version: 1,
             prev_hash: hash1, // Fork from hash1
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -605,7 +605,7 @@ mod tests {
     fn test_weight_based_fork_choice_accepts_heavier_chain() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
         let hash2 = crypto::hash::hash(b"block2");
 
@@ -617,8 +617,8 @@ mod tests {
         let header = doli_core::BlockHeader {
             version: 1,
             prev_hash: hash1, // Fork from hash1
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -642,7 +642,7 @@ mod tests {
     fn test_chain_comparison() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let chain_a = crypto::hash::hash(b"chain_a");
         let chain_b = crypto::hash::hash(b"chain_b");
 
@@ -662,7 +662,7 @@ mod tests {
     fn test_equal_weight_tiebreak_by_hash() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let hash1 = crypto::hash::hash(b"block1");
         let hash2 = crypto::hash::hash(b"block2");
 
@@ -675,8 +675,8 @@ mod tests {
         let header = doli_core::BlockHeader {
             version: 1,
             prev_hash: hash1,
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -707,7 +707,7 @@ mod tests {
     fn test_tiebreak_with_new_method() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let tip_a = crypto::hash::hash(b"tip_a");
         let tip_b = crypto::hash::hash(b"tip_b");
 
@@ -741,10 +741,10 @@ mod tests {
     fn test_reorg_past_finality_rejected() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let block1 = crypto::hash::hash(b"block1");
         let block2 = crypto::hash::hash(b"block2");
-        let fork_block = crypto::hash::hash(b"fork");
+        let _fork_block = crypto::hash::hash(b"fork");
 
         // Build main chain: genesis -> block1 -> block2
         handler.record_block_with_weight(block1, genesis, 10);
@@ -780,7 +780,7 @@ mod tests {
     fn test_reorg_after_finality_ok() {
         let mut handler = ReorgHandler::new();
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let block1 = crypto::hash::hash(b"block1");
         let block2 = crypto::hash::hash(b"block2");
 

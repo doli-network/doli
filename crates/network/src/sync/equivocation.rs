@@ -246,7 +246,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot,
-            producer: producer.clone(),
+            producer: *producer,
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -335,7 +335,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 42,
-            producer: producer.clone(),
+            producer,
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -346,13 +346,13 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 42,
-            producer: producer.clone(),
+            producer,
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
 
         let proof = EquivocationProof {
-            producer: producer.clone(),
+            producer,
             block_header_1: header1.clone(),
             block_header_2: header2.clone(),
             slot: 42,
@@ -364,18 +364,14 @@ mod tests {
         let slash_data = slash_tx.slash_data().unwrap();
         assert_eq!(slash_data.producer_pubkey, producer);
 
-        if let SlashingEvidence::DoubleProduction {
+        let SlashingEvidence::DoubleProduction {
             block_header_1,
             block_header_2,
-        } = slash_data.evidence
-        {
-            assert_eq!(block_header_1.slot, 42);
-            assert_eq!(block_header_2.slot, 42);
-            assert_eq!(block_header_1.hash(), header1.hash());
-            assert_eq!(block_header_2.hash(), header2.hash());
-        } else {
-            panic!("Expected DoubleProduction evidence");
-        }
+        } = slash_data.evidence;
+        assert_eq!(block_header_1.slot, 42);
+        assert_eq!(block_header_2.slot, 42);
+        assert_eq!(block_header_1.hash(), header1.hash());
+        assert_eq!(block_header_2.hash(), header2.hash());
     }
 
     #[test]
@@ -411,12 +407,12 @@ mod tests {
         assert_eq!(detector.tracked_count(), 5);
 
         // Entries at 100-104 should be gone
-        assert!(!detector.seen_blocks.contains_key(&(producer.clone(), 100)));
-        assert!(!detector.seen_blocks.contains_key(&(producer.clone(), 104)));
+        assert!(!detector.seen_blocks.contains_key(&(producer, 100)));
+        assert!(!detector.seen_blocks.contains_key(&(producer, 104)));
 
         // Entries at 105-109 should still exist
-        assert!(detector.seen_blocks.contains_key(&(producer.clone(), 105)));
-        assert!(detector.seen_blocks.contains_key(&(producer.clone(), 109)));
+        assert!(detector.seen_blocks.contains_key(&(producer, 105)));
+        assert!(detector.seen_blocks.contains_key(&(producer, 109)));
     }
 
     #[test]
