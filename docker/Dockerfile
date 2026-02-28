@@ -28,10 +28,11 @@ WORKDIR /build
 # Copy workspace configuration first (for better caching)
 COPY Cargo.toml Cargo.lock ./
 
-# Copy all crates and bins
+# Copy all crates, bins, and chainspec (embedded in binary via include_str!)
 COPY crates/ crates/
 COPY bins/ bins/
 COPY testing/ testing/
+COPY chainspec.mainnet.json ./
 
 # Build release binary
 RUN cargo build --release --package doli-node
