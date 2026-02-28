@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772306254,
+    "timestamp": 1772308811,
     "message": "Genesis - Production - VDF proof + real bonds",
     "initial_reward": 100000000
   },
