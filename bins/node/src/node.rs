@@ -135,6 +135,9 @@ pub struct Node {
     /// Avoids race conditions when GetStateRoot reads during apply_block.
     /// Tuple: (state_root, block_hash, block_height)
     cached_state_root: Arc<RwLock<Option<(Hash, Hash, u64)>>>,
+    /// Cached genesis producers (immutable after first derivation).
+    /// Avoids re-validating VDF proofs (~2s) on every reorg crossing genesis boundary.
+    cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
 }
 
 /// How often to save state (every N blocks applied)
@@ -549,6 +552,7 @@ impl Node {
             snap_sync_height: None,
             genesis_vdf_output: None,
             cached_state_root: Arc::new(RwLock::new(None)),
+            cached_genesis_producers: std::sync::OnceLock::new(),
         })
     }
 
@@ -5543,52 +5547,60 @@ impl Node {
     /// and returns only producers with valid proofs. Producers who produced
     /// blocks but did NOT submit a VDF proof are NOT registered.
     fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
-        let genesis_blocks = self.config.network.genesis_blocks();
-        if genesis_blocks == 0 {
-            return Vec::new();
-        }
+        self.cached_genesis_producers
+            .get_or_init(|| {
+                let genesis_blocks = self.config.network.genesis_blocks();
+                if genesis_blocks == 0 {
+                    return Vec::new();
+                }
 
-        let iterations = self.config.network.vdf_register_iterations();
-        let mut seen = std::collections::HashSet::new();
-        let mut proven_producers = Vec::new();
+                let iterations = self.config.network.vdf_register_iterations();
+                let mut seen = std::collections::HashSet::new();
+                let mut proven_producers = Vec::new();
 
-        for height in 1..=genesis_blocks {
-            if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
-                for tx in &block.transactions {
-                    if tx.tx_type == TxType::Registration {
-                        if let Some(reg_data) = tx.registration_data() {
-                            if reg_data.vdf_output.len() == 32 {
-                                let vdf_input = vdf::registration_input(&reg_data.public_key, 0);
-                                let output: [u8; 32] =
-                                    reg_data.vdf_output.as_slice().try_into().unwrap();
-                                if verify_hash_chain_vdf(&vdf_input, &output, iterations) {
-                                    if seen.insert(reg_data.public_key) {
-                                        info!(
-                                            "  VDF proof valid for genesis producer {}",
-                                            hex::encode(&reg_data.public_key.as_bytes()[..8])
-                                        );
-                                        proven_producers.push(reg_data.public_key);
+                for height in 1..=genesis_blocks {
+                    if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
+                        for tx in &block.transactions {
+                            if tx.tx_type == TxType::Registration {
+                                if let Some(reg_data) = tx.registration_data() {
+                                    if reg_data.vdf_output.len() == 32 {
+                                        let vdf_input =
+                                            vdf::registration_input(&reg_data.public_key, 0);
+                                        let output: [u8; 32] =
+                                            reg_data.vdf_output.as_slice().try_into().unwrap();
+                                        if verify_hash_chain_vdf(&vdf_input, &output, iterations) {
+                                            if seen.insert(reg_data.public_key) {
+                                                info!(
+                                                    "  VDF proof valid for genesis producer {}",
+                                                    hex::encode(
+                                                        &reg_data.public_key.as_bytes()[..8]
+                                                    )
+                                                );
+                                                proven_producers.push(reg_data.public_key);
+                                            }
+                                        } else {
+                                            warn!(
+                                                "  VDF proof INVALID for {} in block {}",
+                                                hex::encode(&reg_data.public_key.as_bytes()[..8]),
+                                                height
+                                            );
+                                        }
                                     }
-                                } else {
-                                    warn!(
-                                        "  VDF proof INVALID for {} in block {}",
-                                        hex::encode(&reg_data.public_key.as_bytes()[..8]),
-                                        height
-                                    );
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
 
-        info!(
-            "Derived {} genesis producers with valid VDF proofs (from {} genesis blocks)",
-            proven_producers.len(),
-            genesis_blocks
-        );
-        proven_producers
+                info!(
+                    "Derived {} genesis producers with valid VDF proofs (from {} genesis blocks)",
+                    proven_producers.len(),
+                    genesis_blocks
+                );
+
+                proven_producers
+            })
+            .clone()
     }
 
     /// Consume genesis-era coinbase UTXOs for bond migration during UTXO rebuild.
