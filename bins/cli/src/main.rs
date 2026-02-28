@@ -969,7 +969,7 @@ async fn cmd_producer(
                 "devnet" => 576, // ~10 minutes at 1s slots
                 _ => 12_614_400, // ~4 years at 10s slots (mainnet/testnet)
             };
-            let lock_until = chain_info.best_height + blocks_per_era;
+            let lock_until = chain_info.best_height + blocks_per_era + 1000;
 
             // Compute hash-chain VDF proof for registration (~5 seconds)
             let current_epoch = (chain_info.best_slot / 360) as u32;
