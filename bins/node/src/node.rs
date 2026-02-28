@@ -1858,6 +1858,15 @@ impl Node {
         info!("Building new UTXO set up to height {}", target_height);
         let mut new_utxo = UtxoSet::new();
 
+        // Pre-compute genesis bond parameters for UTXO consumption during rebuild
+        let genesis_blocks = self.config.network.genesis_blocks();
+        let genesis_producers = if genesis_blocks > 0 && target_height > genesis_blocks {
+            self.derive_genesis_producers_from_chain()
+        } else {
+            Vec::new()
+        };
+        let bond_unit = self.config.network.bond_unit();
+
         // Re-apply all blocks from 1 to target_height
         for height in 1..=target_height {
             let block = self
@@ -1882,6 +1891,16 @@ impl Node {
                     }
                 }
                 new_utxo.add_transaction(tx, height, is_reward_tx);
+            }
+
+            // Genesis bond UTXO consumption — matches apply_block() ordering
+            if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                Self::consume_genesis_bond_utxos(
+                    &mut new_utxo,
+                    &genesis_producers,
+                    bond_unit,
+                    height,
+                );
             }
         }
 
@@ -1930,6 +1949,16 @@ impl Node {
                         }
                         utxo.add_transaction(tx, height, is_reward_tx);
                     }
+                }
+
+                // Genesis bond UTXO consumption — matches apply_block() ordering
+                if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                    Self::consume_genesis_bond_utxos(
+                        &mut utxo,
+                        &genesis_producers,
+                        bond_unit,
+                        height,
+                    );
                 }
             }
         }
@@ -5024,6 +5053,13 @@ impl Node {
         );
 
         // Rebuild UTXO set from blocks 1..=target_height
+        let genesis_blocks = self.config.network.genesis_blocks();
+        let genesis_producers = if genesis_blocks > 0 && target_height > genesis_blocks {
+            self.derive_genesis_producers_from_chain()
+        } else {
+            Vec::new()
+        };
+        let bond_unit = self.config.network.bond_unit();
         {
             let mut utxo = self.utxo_set.write().await;
             utxo.clear();
@@ -5043,6 +5079,16 @@ impl Node {
                         let _ = utxo.spend_transaction(tx);
                     }
                     utxo.add_transaction(tx, height, is_reward_tx);
+                }
+
+                // Genesis bond UTXO consumption — matches apply_block() ordering
+                if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                    Self::consume_genesis_bond_utxos(
+                        &mut utxo,
+                        &genesis_producers,
+                        bond_unit,
+                        height,
+                    );
                 }
             }
         }
@@ -5520,6 +5566,62 @@ impl Node {
             genesis_blocks
         );
         proven_producers
+    }
+
+    /// Consume genesis-era coinbase UTXOs for bond migration during UTXO rebuild.
+    ///
+    /// Must be called at height == genesis_blocks + 1 in any UTXO rebuild loop
+    /// to match the apply_block() behavior. Without this, rebuilt UTXO sets
+    /// retain coinbase UTXOs that should have been consumed for bonds.
+    fn consume_genesis_bond_utxos(
+        utxo: &mut storage::UtxoSet,
+        genesis_producers: &[PublicKey],
+        bond_unit: u64,
+        height: u64,
+    ) {
+        for pubkey in genesis_producers {
+            let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
+            let mut producer_utxos = utxo.get_by_pubkey_hash(&pubkey_hash);
+            producer_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
+                a_entry
+                    .height
+                    .cmp(&b_entry.height)
+                    .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
+                    .then_with(|| a_op.index.cmp(&b_op.index))
+            });
+
+            let total_available: u64 = producer_utxos.iter().map(|(_, e)| e.output.amount).sum();
+            if total_available < bond_unit {
+                continue;
+            }
+
+            let mut consumed_amount: u64 = 0;
+            let mut consumed_outpoints = Vec::new();
+            for (outpoint, entry) in &producer_utxos {
+                if consumed_amount >= bond_unit {
+                    break;
+                }
+                consumed_amount += entry.output.amount;
+                consumed_outpoints.push(*outpoint);
+            }
+
+            for outpoint in &consumed_outpoints {
+                utxo.remove(outpoint);
+            }
+
+            let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+            let change = consumed_amount.saturating_sub(bond_unit);
+            if change > 0 {
+                let change_outpoint = storage::Outpoint::new(bond_hash, 1);
+                let change_entry = storage::UtxoEntry {
+                    output: doli_core::transaction::Output::normal(change, pubkey_hash),
+                    height,
+                    is_coinbase: false,
+                    is_epoch_reward: false,
+                };
+                utxo.insert(change_outpoint, change_entry);
+            }
+        }
     }
 
     /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
