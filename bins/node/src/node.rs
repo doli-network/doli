@@ -1775,7 +1775,7 @@ impl Node {
         }
 
         // Apply the block
-        self.apply_block(block).await?;
+        self.apply_block(block, ValidationMode::Full).await?;
 
         Ok(())
     }
@@ -1980,7 +1980,7 @@ impl Node {
         // state uses the wrong producer set (common ancestor, not fork chain).
         info!("Applying {} new blocks from fork", new_blocks.len());
         for block in new_blocks {
-            if let Err(e) = self.apply_block(block).await {
+            if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 error!(
                     "Reorg apply_block failed: {} — state is at common ancestor + applied blocks, sync will catch up",
                     e
@@ -2268,7 +2268,7 @@ impl Node {
                         let mut cache = self.fork_block_cache.write().await;
                         cache.remove(&block.hash());
                     }
-                    self.apply_block(block).await?;
+                    self.apply_block(block, ValidationMode::Full).await?;
                 }
 
                 return Ok(());
@@ -2815,7 +2815,10 @@ impl Node {
     }
 
     /// Apply a block to the chain
-    async fn apply_block(&mut self, block: Block) -> Result<()> {
+    ///
+    /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
+    ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
+    async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
         let block_hash = block.hash();
 
         // Defense-in-depth: skip blocks we already have.
@@ -2830,8 +2833,7 @@ impl Node {
 
         let height = self.chain_state.read().await.best_height + 1;
 
-        self.validate_block_for_apply(&block, height, ValidationMode::Full)
-            .await?;
+        self.validate_block_for_apply(&block, height, mode).await?;
 
         info!("Applying block {} at height {}", block_hash, height);
 
@@ -4702,7 +4704,8 @@ impl Node {
         );
 
         // Apply the block locally
-        self.apply_block(block.clone()).await?;
+        self.apply_block(block.clone(), ValidationMode::Full)
+            .await?;
 
         // Reset stale chain timer — we just produced a block
         self.sync_manager
@@ -5204,7 +5207,7 @@ impl Node {
             if !blocks.is_empty() {
                 info!("Applying {} pending sync blocks in order", blocks.len());
                 for block in blocks {
-                    if let Err(e) = self.apply_block(block).await {
+                    if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                         warn!("Failed to apply pending sync block: {}", e);
                         break;
                     }
