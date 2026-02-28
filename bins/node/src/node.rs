@@ -4384,26 +4384,32 @@ impl Node {
             }
         }
 
-        // Build the block
+        // Build the block — single transaction list used for both merkle root and block body.
+        // All transactions MUST be added to the builder BEFORE build(), which computes the
+        // merkle root from exactly the transactions that will be in the final block.
         let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
         let mut builder =
             BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
         builder.add_coinbase(height, producer_pubkey_hash);
 
+        let block_reward = self.params.block_reward(height);
+        info!(
+            "Block coinbase: {} units to producer {}",
+            block_reward,
+            hex::encode(&producer_pubkey_hash.as_bytes()[..8])
+        );
+
         // AUTOMATIC EPOCH REWARDS: At epoch boundaries, calculate and distribute
         // rewards to all producers who were present in the completed epoch.
         // Rewards are immediately available in producer wallets (no claim needed).
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-        let epoch_coinbase: Option<Transaction> = if height > 0
-            && reward_epoch::is_epoch_start_with(height, blocks_per_epoch)
-        {
+        if height > 0 && reward_epoch::is_epoch_start_with(height, blocks_per_epoch) {
             let completed_epoch = (height / blocks_per_epoch) - 1;
             info!(
                 "Epoch {} completed at height {}, calculating automatic rewards...",
                 completed_epoch, height
             );
 
-            // Calculate rewards for all present producers in the completed epoch
             let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
 
             if !epoch_outputs.is_empty() {
@@ -4415,21 +4421,47 @@ impl Node {
                     completed_epoch
                 );
 
-                // Create epoch reward coinbase transaction with all producer rewards
                 let coinbase =
                     Transaction::new_epoch_reward_coinbase(epoch_outputs, height, completed_epoch);
-                builder.add_transaction(coinbase.clone());
-                Some(coinbase)
+                builder.add_transaction(coinbase);
             } else {
                 debug!(
                     "No producers present in epoch {}, skipping reward distribution",
                     completed_epoch
                 );
-                None
             }
-        } else {
-            None
-        };
+        }
+
+        // During genesis: include VDF proof Registration TX (zero-bond, VDF-only)
+        if let Some(vdf_output_bytes) = self.genesis_vdf_output {
+            if self.config.network.is_in_genesis(height) && !self.genesis_vdf_submitted {
+                let reg_data = RegistrationData {
+                    public_key: our_pubkey,
+                    epoch: 0,
+                    vdf_output: vdf_output_bytes.to_vec(),
+                    vdf_proof: vec![],
+                    prev_registration_hash: Hash::ZERO,
+                    sequence_number: 0,
+                    bond_count: 0, // Zero bond — handled at genesis end
+                };
+                let extra_data = bincode::serialize(&reg_data)
+                    .expect("RegistrationData serialization cannot fail");
+                let reg_tx = Transaction {
+                    version: 1,
+                    tx_type: TxType::Registration,
+                    inputs: vec![],
+                    outputs: vec![],
+                    extra_data,
+                };
+                builder.add_transaction(reg_tx);
+                self.genesis_vdf_submitted = true;
+                info!(
+                    "Included genesis VDF proof Registration TX in block {} for {}",
+                    height,
+                    hex::encode(&our_pubkey.as_bytes()[..8])
+                );
+            }
+        }
 
         // Add transactions from mempool
         let mempool_txs: Vec<Transaction> = {
@@ -4440,9 +4472,10 @@ impl Node {
             builder.add_transaction(tx.clone());
         }
 
-        // Build block header (without VDF - we'll compute it)
-        let header = match builder.build(now) {
-            Some(h) => h,
+        // Build header + finalized transaction list. The merkle root is computed from
+        // exactly these transactions, guaranteeing header-body consistency.
+        let (header, transactions) = match builder.build(now) {
+            Some(result) => result,
             None => {
                 warn!("Failed to build block - slot monotonicity violation");
                 return Ok(());
@@ -4598,6 +4631,7 @@ impl Node {
             prev_hash: header.prev_hash,
             merkle_root: header.merkle_root,
             presence_root: header.presence_root,
+            genesis_hash: header.genesis_hash,
             timestamp: header.timestamp,
             slot: header.slot,
             producer: header.producer,
@@ -4605,60 +4639,8 @@ impl Node {
             vdf_proof,
         };
 
-        // Collect all transactions for the block:
-        // 1. Block reward coinbase (100% to producer, like Bitcoin)
-        // 2. Epoch reward coinbase (if this is an epoch boundary)
-        // 3. Transactions from mempool
-        let mut transactions = Vec::new();
-
-        // Create block reward coinbase - producer gets 100% of block reward
-        let block_reward = self.params.block_reward(height);
-        let block_coinbase = Transaction::new_coinbase(block_reward, producer_pubkey_hash, height);
-        transactions.push(block_coinbase);
-        info!(
-            "Block coinbase: {} units to producer {}",
-            block_reward,
-            hex::encode(&producer_pubkey_hash.as_bytes()[..8])
-        );
-
-        // Add epoch reward coinbase if at epoch boundary
-        if let Some(coinbase) = epoch_coinbase {
-            transactions.push(coinbase);
-        }
-
-        // During genesis: include VDF proof Registration TX (zero-bond, VDF-only)
-        if let Some(vdf_output_bytes) = self.genesis_vdf_output {
-            if self.config.network.is_in_genesis(height) && !self.genesis_vdf_submitted {
-                let reg_data = RegistrationData {
-                    public_key: our_pubkey,
-                    epoch: 0,
-                    vdf_output: vdf_output_bytes.to_vec(),
-                    vdf_proof: vec![],
-                    prev_registration_hash: Hash::ZERO,
-                    sequence_number: 0,
-                    bond_count: 0, // Zero bond — handled at genesis end
-                };
-                let extra_data = bincode::serialize(&reg_data)
-                    .expect("RegistrationData serialization cannot fail");
-                let reg_tx = Transaction {
-                    version: 1,
-                    tx_type: TxType::Registration,
-                    inputs: vec![],
-                    outputs: vec![],
-                    extra_data,
-                };
-                transactions.push(reg_tx);
-                self.genesis_vdf_submitted = true;
-                info!(
-                    "Included genesis VDF proof Registration TX in block {} for {}",
-                    height,
-                    hex::encode(&our_pubkey.as_bytes()[..8])
-                );
-            }
-        }
-
-        transactions.extend(mempool_txs);
-
+        // Use the transactions from the builder — same list used for merkle root computation.
+        // No duplicate transaction assembly needed.
         let block = Block {
             header: final_header,
             transactions,

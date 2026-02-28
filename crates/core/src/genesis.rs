@@ -202,12 +202,23 @@ pub fn generate_genesis_block(config: &GenesisConfig) -> Block {
     // Calculate merkle root (single tx = tx hash)
     let merkle_root = tx_hash;
 
+    // Compute genesis_hash for chain identity
+    let genesis_hash = {
+        let mut hasher = crypto::Hasher::new();
+        hasher.update(&timestamp.to_le_bytes());
+        hasher.update(&(config.network as u32).to_le_bytes());
+        hasher.update(&config.network.slot_duration().to_le_bytes());
+        hasher.update(config.message.as_bytes());
+        hasher.finalize()
+    };
+
     // Create block header
     let header = BlockHeader {
-        version: 1,
+        version: 2,
         prev_hash: Hash::from_bytes(NULL_HASH),
         merkle_root,
         presence_root: Hash::ZERO, // Genesis block has no presence commitment
+        genesis_hash,
         timestamp,
         slot: 0,
         producer: PublicKey::from_bytes(GENESIS_PUBKEY),

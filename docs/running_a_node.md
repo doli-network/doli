@@ -336,17 +336,20 @@ Attempting to override these on mainnet will log a warning and use hardcoded val
 
 ### 5.5. Configuration Precedence
 
-1. **CLI flags** (highest priority, e.g., `--p2p-port`)
-2. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — authoritative for consensus params
-3. **Parent process environment variables**
-4. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
-5. **Network defaults** (hardcoded in `consensus.rs`)
+1. **Embedded binary** (mainnet ONLY — chainspec compiled in, `--chainspec` and disk files ignored)
+2. **CLI flags** (highest priority for non-chainspec settings, e.g., `--p2p-port`)
+3. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — testnet/devnet only
+4. **Parent process environment variables**
+5. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
+6. **Network defaults** (hardcoded in `consensus.rs`)
 
 Example: `--rpc-port 9999` overrides `DOLI_RPC_PORT=8888` in `.env`.
 
 **`.env` file lookup**: When `--data-dir` points to a subdirectory (e.g., `~/.doli/devnet/data/node5`), the node first checks `{data_dir}/.env`, then falls back to `~/.doli/{network}/.env`. This ensures manually-started nodes pick up the shared network configuration.
 
-**Chainspec is authoritative**: When a chainspec file is provided (via `--chainspec` or found at `{data_dir}/chainspec.json`), its consensus parameters (`slot_duration`, `bond_amount`, `slots_per_epoch`, `initial_reward`, `timestamp`) are applied directly to `ConsensusParams` in `Node::new()`, overriding any values from the OnceLock/env pipeline. This guarantees correct params even if `.env` loading fails silently. Mainnet chainspecs are skipped (defense-in-depth).
+**Mainnet chainspec security**: For mainnet, the chainspec is always loaded from the binary via `include_str!`. The `--chainspec` flag and any `chainspec.json` on disk are ignored. This prevents genesis-time-hijack attacks where a tampered or stale chainspec could cause slot schedule divergence and chain forks.
+
+**Testnet/devnet chainspec**: For testnet and devnet, chainspec files on disk and `--chainspec` flags work normally, allowing flexible parameter configuration during development.
 
 ---
 

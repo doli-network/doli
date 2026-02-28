@@ -86,6 +86,7 @@ The adversary **cannot**:
 | Nothing-at-stake | Bond slashing for equivocation |
 | Grinding | Selection seed derived from previous block hash |
 | Time manipulation | Slot anchored to VDF-proven timestamp |
+| Genesis-time hijack | `genesis_hash` in every block header (see 2.2.5) |
 
 #### 2.2.4 Network Attacks
 
@@ -94,6 +95,41 @@ The adversary **cannot**:
 | Eclipse attack | Multiple peer connections; peer reputation |
 | DoS on producers | Producer rotation; multiple active producers |
 | Transaction censorship | Fee market; producer competition |
+
+#### 2.2.5 Genesis-Time Hijack Attack
+
+**Discovered**: 2026-02-28 during mainnet incident
+
+**Attack**: A node with a different `genesis_timestamp` produces blocks with wildly different
+slot numbers (e.g., slot 9000 vs slot 400). If validation is bypassed or insufficient, other
+nodes accept these blocks. If the attacker has majority stake, fork choice selects their chain
+and honest nodes can no longer produce (their `current_slot` is far behind the new tip).
+
+**Root cause**: Integer division in `timestamp_to_slot()` means a 1-second genesis difference
+produces the same slot 90% of the time, making slot derivation alone insufficient.
+
+**Mitigation (v2 protocol)**:
+
+1. **`genesis_hash` in BlockHeader**: Every block carries
+   `BLAKE3(genesis_time || network_id || slot_duration || message)`. Any parameter change
+   produces a completely different hash. Checked as the FIRST validation step in both
+   Full and Light modes.
+
+2. **Embedded chainspec (mainnet)**: Mainnet always uses the chainspec compiled into the
+   binary. Disk files and `--chainspec` CLI flag are ignored. Prevents accidental or
+   malicious genesis parameter override.
+
+3. **Slot derivation in Light mode**: Sync path now validates
+   `slot == timestamp_to_slot(timestamp)` even for historical blocks.
+
+**Defense layers**:
+
+| Layer | Check | Mode |
+|-------|-------|------|
+| 1 | `genesis_hash` match | Full + Light |
+| 2 | Slot derivation from genesis | Full + Light |
+| 3 | Slot advancing from parent | Full + Light |
+| 4 | Timestamp bounds (wall-clock) | Full only |
 
 ---
 
@@ -787,7 +823,16 @@ Track producer win rates. Statistically significant deviation from expected dist
 |------|-------|----------|--------|
 | 2026-01-25 | VDF slashing evidence | Internal audit | Fixed (5863805) |
 | 2026-02-02 | Security documentation | Internal | Documented |
+| 2026-02-28 | Genesis-time hijack, merkle root, chainspec hardening | Internal | Fixed (5 fixes) |
 | TBD | Full protocol | TBD | Pending |
+
+**2026-02-28 - Genesis Security Hardening (5 fixes)**:
+- **Fix 1**: Removed MERKLE_FIX_HEIGHT gate — all blocks validated unconditionally
+- **Fix 2**: Mainnet chainspec embedded in binary — disk/CLI overrides disabled
+- **Fix 3**: Added slot derivation + genesis_hash checks to Light validation mode
+- **Fix 4**: Unified block production — merkle root computed from final transaction list
+- **Fix 5**: Added `genesis_hash` field to BlockHeader (v2) — chain identity fingerprint
+- **Incident**: N6 joined with old binary (25h behind genesis), causing slot divergence and chain takeover
 
 **2026-02-02 - Security Implementation Documentation**:
 - **Scope**: Documented network layer security implementations

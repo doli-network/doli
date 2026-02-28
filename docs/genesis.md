@@ -43,7 +43,8 @@ Complete technical documentation for launching DOLI mainnet.
 
 ### Chainspec Verification
 
-- [ ] Chainspec at `resources/chainspec/mainnet.json` has `genesis_producers: []`
+- [ ] Mainnet chainspec is embedded in the binary (`include_str!` in `main.rs`)
+- [ ] `--chainspec` flag and disk `chainspec.json` are ignored for mainnet (security)
 - [ ] Genesis timestamp and consensus parameters are correct
 - [ ] Producers self-register during the 7-day genesis phase (no pre-generated keys)
 
@@ -201,10 +202,15 @@ doli-node --network mainnet --chainspec mainnet.json run \
 
 | Parameter | Value |
 |-----------|-------|
-| Timestamp | 2026-02-01T00:00:00Z (Unix: 1769904000) |
+| Timestamp | Set at chain launch (embedded in binary) |
 | Message | "Time is the only fair currency. 01/Feb/2026" |
 | Genesis Producers | None in chainspec — producers self-register during 7-day genesis phase |
 | Genesis Blocks | 60,480 (7 days of open registration) |
+| Genesis Hash | `BLAKE3(timestamp ∥ network_id ∥ slot_duration ∥ message)` — in every block header |
+
+**Genesis Hash**: A cryptographic fingerprint computed from the genesis parameters. Included in
+every block header (v2+) as chain identity. Nodes reject blocks with a different genesis_hash
+immediately, preventing genesis-time-hijack attacks.
 
 ### Network Ports
 
@@ -294,8 +300,8 @@ cat resources/chainspec/mainnet.json | jq '.genesis_producers | length'
 ### Phase 3: Genesis (T-0)
 
 ```bash
-# 1. Start seed node
-doli-node --network mainnet --chainspec mainnet.json run \
+# 1. Start seed node (mainnet chainspec is embedded — no --chainspec needed)
+doli-node --network mainnet run \
     --producer --producer-key producer_1.json
 
 # 2. Get peer ID from logs
@@ -303,9 +309,12 @@ grep "Local peer id" node.log
 
 # 3. Start other nodes (on other servers)
 #    Bootstrap is automatic via seed1/seed2.doli.network defaults
-doli-node --network mainnet --chainspec mainnet.json run \
+doli-node --network mainnet run \
     --producer --producer-key producer_2.json
 ```
+
+> **Note**: For mainnet, the `--chainspec` flag is ignored. The chainspec is always loaded from
+> the embedded binary to prevent genesis-time-hijack attacks.
 
 ---
 
@@ -521,6 +530,9 @@ For implementation details, see `REWARDS.md` in the repository root.
 // Block timing
 pub const SLOT_DURATION: u64 = 10;          // 10 seconds per block
 pub const SLOTS_PER_EPOCH: u32 = 360;       // 1 hour
+
+// Block header
+pub const BLOCK_VERSION: u32 = 2;           // v2 adds genesis_hash field
 
 // Economics
 pub const INITIAL_REWARD: u64 = 100_000_000;  // 1 DOLI per block
