@@ -2457,6 +2457,19 @@ impl Node {
             new_chain_state.best_height, new_chain_state.best_hash,
         );
 
+        // C3 defense: envelope must match deserialized state
+        if new_chain_state.best_hash != snapshot.block_hash
+            || new_chain_state.best_height != snapshot.block_height
+        {
+            error!(
+                "[SNAP_SYNC] Envelope/state mismatch: envelope=({}, {:.16}) vs deserialized=({}, {:.16})",
+                snapshot.block_height, snapshot.block_hash,
+                new_chain_state.best_height, new_chain_state.best_hash,
+            );
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
         // Step 3: Replace local state (preserve genesis_hash from our chain)
         let genesis_hash = self.chain_state.read().await.genesis_hash;
         {
