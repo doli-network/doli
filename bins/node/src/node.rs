@@ -27,8 +27,6 @@ use doli_core::tpop::heartbeat::verify_hash_chain_vdf;
 use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
-// ValidationMode is ready for use once merkle root computation is fixed
-#[allow(unused_imports)]
 use doli_core::validation::ValidationMode;
 use doli_core::{
     AdaptiveGossip, Attestation, Block, BlockHeader, Network, ProducerAnnouncement, ProducerGSet,
@@ -2647,8 +2645,6 @@ impl Node {
     }
 
     /// Validate a block before applying it to the chain.
-    /// DISABLED (2026-02-25): merkle root mismatch — re-enable after fix.
-    #[allow(dead_code)]
     ///
     /// Builds a full ValidationContext and calls `validate_block_with_mode`.
     /// In `Light` mode (gap blocks after snap sync), VDF is skipped.
@@ -2757,11 +2753,10 @@ impl Node {
 
         let height = self.chain_state.read().await.best_height + 1;
 
-        // DISABLED (2026-02-25): validate_block_for_apply causes false "invalid merkle root"
-        // rejections. The merkle root computation in verify_merkle_root() differs from how
-        // the producer calculates it in produce_block(). Investigation needed before re-enabling.
-        // See: validate_block_for_apply() and ValidationMode are ready for use once the
-        // merkle root computation is made consistent between producer and validator.
+        if height >= consensus::MERKLE_FIX_HEIGHT {
+            self.validate_block_for_apply(&block, height, ValidationMode::Full)
+                .await?;
+        }
 
         info!("Applying block {} at height {}", block_hash, height);
 
@@ -4362,8 +4357,10 @@ impl Node {
         }
 
         // Build the block
+        let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
         let mut builder =
             BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
+        builder.add_coinbase(height, producer_pubkey_hash);
 
         // AUTOMATIC EPOCH REWARDS: At epoch boundaries, calculate and distribute
         // rewards to all producers who were present in the completed epoch.
@@ -4588,8 +4585,6 @@ impl Node {
 
         // Create block reward coinbase - producer gets 100% of block reward
         let block_reward = self.params.block_reward(height);
-        // Use domain-separated hash to match wallet address format
-        let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
         let block_coinbase = Transaction::new_coinbase(block_reward, producer_pubkey_hash, height);
         transactions.push(block_coinbase);
         info!(
