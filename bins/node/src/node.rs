@@ -4599,36 +4599,34 @@ impl Node {
         }
 
         // During genesis: include VDF proof Registration TX (zero-bond, VDF-only)
-        if self.config.network.is_in_genesis(height)
-            && self.genesis_vdf_output.is_some()
-            && !self.genesis_vdf_submitted
-        {
-            let vdf_output_bytes = self.genesis_vdf_output.unwrap();
-            let reg_data = RegistrationData {
-                public_key: our_pubkey,
-                epoch: 0,
-                vdf_output: vdf_output_bytes.to_vec(),
-                vdf_proof: vec![],
-                prev_registration_hash: Hash::ZERO,
-                sequence_number: 0,
-                bond_count: 0, // Zero bond — handled at genesis end
-            };
-            let extra_data =
-                bincode::serialize(&reg_data).expect("RegistrationData serialization cannot fail");
-            let reg_tx = Transaction {
-                version: 1,
-                tx_type: TxType::Registration,
-                inputs: vec![],
-                outputs: vec![],
-                extra_data,
-            };
-            transactions.push(reg_tx);
-            self.genesis_vdf_submitted = true;
-            info!(
-                "Included genesis VDF proof Registration TX in block {} for {}",
-                height,
-                hex::encode(&our_pubkey.as_bytes()[..8])
-            );
+        if let Some(vdf_output_bytes) = self.genesis_vdf_output {
+            if self.config.network.is_in_genesis(height) && !self.genesis_vdf_submitted {
+                let reg_data = RegistrationData {
+                    public_key: our_pubkey,
+                    epoch: 0,
+                    vdf_output: vdf_output_bytes.to_vec(),
+                    vdf_proof: vec![],
+                    prev_registration_hash: Hash::ZERO,
+                    sequence_number: 0,
+                    bond_count: 0, // Zero bond — handled at genesis end
+                };
+                let extra_data = bincode::serialize(&reg_data)
+                    .expect("RegistrationData serialization cannot fail");
+                let reg_tx = Transaction {
+                    version: 1,
+                    tx_type: TxType::Registration,
+                    inputs: vec![],
+                    outputs: vec![],
+                    extra_data,
+                };
+                transactions.push(reg_tx);
+                self.genesis_vdf_submitted = true;
+                info!(
+                    "Included genesis VDF proof Registration TX in block {} for {}",
+                    height,
+                    hex::encode(&our_pubkey.as_bytes()[..8])
+                );
+            }
         }
 
         transactions.extend(mempool_txs);
