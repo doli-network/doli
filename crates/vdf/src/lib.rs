@@ -1,100 +1,40 @@
 //! # doli-vdf
 //!
-//! Production-grade Wesolowski Verifiable Delay Function over class groups.
+//! VDF primitives for DOLI's Proof of Time (PoT) consensus.
 //!
-//! This crate provides the VDF computation and verification used in DOLI's
-//! Proof of Time (PoT) consensus mechanism.
+//! ## Two VDF types
 //!
-//! ## What is a VDF?
+//! | Type | Algorithm | Used for | Consensus? |
+//! |------|-----------|----------|------------|
+//! | **Hash-chain** | Iterated BLAKE3 (`heartbeat::hash_chain_vdf`) | Block production (800K iter, ~55ms) and registration (5M iter, ~30s) | **Yes** |
+//! | **Wesolowski** | Class group sequential squarings | Telemetry-only presence tracking (`tpop::presence`) | No |
 //!
-//! A Verifiable Delay Function (VDF) is a function that:
+//! All consensus-critical VDF validation goes through `hash_chain_vdf` /
+//! `verify_hash_chain_vdf` in `doli_core::heartbeat`. The Wesolowski
+//! implementation (`vdf::compute`, `vdf::verify`) is only called from
+//! the telemetry presence module, which does NOT affect consensus.
 //!
-//! 1. **Requires sequential time**: Computing y = f(x) takes T sequential steps
-//!    that cannot be significantly parallelized
-//! 2. **Is efficiently verifiable**: Given x, y, and a proof, anyone can verify
-//!    the computation in time much less than T
-//! 3. **Is deterministic**: The same input always produces the same output
+//! ## Hash-chain VDF (consensus)
 //!
-//! ## The Wesolowski Construction
-//!
-//! We implement the Wesolowski VDF which works as follows:
-//!
-//! **Setup**: Choose a class group with unknown group order (derived from a
-//! large discriminant Δ)
-//!
-//! **Compute** (prover, time T):
-//! 1. Map input hash to group element x
-//! 2. Compute y = x^(2^t) by t sequential squarings
-//! 3. Generate proof π = x^q where q = floor(2^t / l) and l is a prime challenge
-//!
-//! **Verify** (verifier, time O(log t)):
-//! 1. Compute challenge l from (x, y, t) using Fiat-Shamir
-//! 2. Compute r = 2^t mod l
-//! 3. Check: y == π^l · x^r
-//!
-//! The verification equation holds because:
-//! - 2^t = l·q + r (by definition)
-//! - π^l · x^r = x^(l·q) · x^r = x^(l·q + r) = x^(2^t) = y
-//!
-//! ## Security
-//!
-//! The VDF security relies on:
-//!
-//! - **Unknown group order**: The discriminant is generated from a public seed,
-//!   so no one knows the group order (computing it requires factoring)
-//! - **Sequential squaring**: There's no known way to compute x^(2^t) faster
-//!   than ~t squarings in a group of unknown order
-//! - **Low-order assumption**: It's computationally infeasible to find non-trivial
-//!   elements of low order in the class group
-//!
-//! ## Parameters
+//! Simple iterated BLAKE3: `state = BLAKE3(state)` repeated T times.
+//! Verification requires recomputation (no compact proof).
 //!
 //! | Parameter | Value | Purpose |
 //! |-----------|-------|---------|
-//! | Discriminant bits | 2048 | Security (infeasible to factor) |
-//! | Challenge bits | 128 | Proof soundness |
-//! | T_BLOCK | 10M | ~700ms anti-grinding VDF |
-//! | T_REGISTER_BASE | 5M | ~30 seconds for registration (anti-flash-attack) |
+//! | T_BLOCK | 800K | ~55ms anti-grinding for block production |
+//! | T_REGISTER_BASE | 5M | ~30s anti-flash-attack for registration |
 //!
-//! ## Time-Based Consensus
+//! ## Wesolowski VDF (telemetry only)
 //!
-//! DOLI uses time-based slot selection (like Ethereum) rather than VDF-based timing.
-//! Slot timing is determined by NTP/wall-clock time, not VDF duration.
-//! This eliminates hardware advantage: faster VDF ≠ faster block production.
+//! Sequential squarings in imaginary quadratic class groups with a
+//! Wesolowski proof (O(log t) verification). Used only for presence
+//! tracking in `doli_core::tpop::presence` — does not affect block
+//! validity, producer selection, or rewards.
 //!
-//! The small block VDF prevents grinding attacks where producers try many
-//! block variations to manipulate randomness. Registration VDF remains long
-//! to provide anti-Sybil protection.
+//! ## Time-based consensus
 //!
-//! ## Example Usage
-//!
-//! ```rust
-//! use vdf::{compute, verify};
-//! use crypto::hash::hash;
-//!
-//! // Create input from a hash
-//! let input = hash(b"block data");
-//!
-//! // Compute VDF (t=10 for example; real usage would be much larger)
-//! let t = 10;
-//! let (output, proof) = compute(&input, t).expect("VDF computation failed");
-//!
-//! // Verify the proof
-//! verify(&input, &output, &proof, t).expect("VDF verification failed");
-//! ```
-//!
-//! ## Usage in DOLI
-//!
-//! DOLI uses VDFs for:
-//!
-//! 1. **Block production**: Producers must compute a VDF on the previous block hash
-//!    to create a new block, ensuring minimum time between blocks
-//!
-//! 2. **Producer registration**: New producers must compute a VDF to register,
-//!    preventing Sybil attacks
-//!
-//! 3. **Leader selection**: VDF outputs provide unpredictable randomness for
-//!    selecting the next block producer
+//! Slot timing is NTP/wall-clock based, not VDF-duration based.
+//! Faster VDF hardware does NOT mean faster block production.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -126,33 +66,10 @@ pub use class_group::{ClassGroupElement, ClassGroupError};
 
 use crypto::Hash;
 
-/// VDF parameter for block production - MAINNET DEFAULT (~700ms on reference hardware).
+/// Hash-chain VDF iterations for block production (~55ms on reference hardware).
 ///
-/// **Note**: This is the mainnet default value. For network-aware code, use
-/// `doli_core::network_params::NetworkParams::load(network).vdf_iterations` instead.
-/// Devnet uses 1 iteration for fast testing.
-///
-/// # Time-Based Consensus Model
-///
-/// DOLI uses time-based consensus where slot timing is determined by real
-/// time (NTP), not VDF duration. This eliminates hardware advantage:
-/// faster VDF computation does NOT mean faster block production.
-///
-/// The block VDF serves as an anti-grinding mechanism to prevent
-/// producers from:
-/// 1. Trying many block variations to find favorable randomness
-/// 2. Instantly producing blocks when their slot arrives
-///
-/// With 10-second slots and 2s sequential fallback windows, the VDF
-/// takes ~55ms, leaving ~1945ms margin within each fallback window
-/// (55ms VDF + ~600ms propagation = 655ms, margin = 1345ms).
-///
-/// This is calibrated so that:
-/// - A single-threaded CPU takes ~55ms
-/// - Even with ASIC speedup, still provides anti-grinding protection
-/// - Does not create hardware-based competitive advantage
-///
-/// Registration VDF (T_REGISTER_BASE) remains long for anti-Sybil protection.
+/// Used by `heartbeat::hash_chain_vdf`. For network-aware code, use
+/// `NetworkParams::load(network).vdf_iterations` instead.
 pub const T_BLOCK: u64 = 800_000;
 
 /// Fixed VDF parameter for producer registration (~30 seconds).
