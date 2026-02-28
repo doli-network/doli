@@ -309,8 +309,8 @@ mod tests {
         let header = BlockHeader {
             version: 1,
             prev_hash,
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: now,
             slot,
             producer: PublicKey::from_bytes([0u8; 32]),
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(downloader.in_flight_count(), 2);
 
         // Peer1 responds with only hash1 (hash2 missing → goes to failed)
-        let block1 = create_test_block(Hash::zero(), 1);
+        let _block1 = create_test_block(Hash::ZERO, 1);
         // We can't match hash exactly, so simulate via timeout
         downloader.handle_timeout(&peer1);
         // Now hash1 and hash2 are in failed, in_flight is empty
@@ -423,7 +423,7 @@ mod tests {
 
         let _ = downloader.next_request(&needed, &peers);
 
-        let block = create_test_block(Hash::zero(), 1);
+        let block = create_test_block(Hash::ZERO, 1);
         let block_hash = block.hash();
 
         // Simulate receiving response with the block

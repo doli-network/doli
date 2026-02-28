@@ -2784,7 +2784,7 @@ mod tests {
 
         // Create a keypair for the test
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
 
         // Create a previous transaction output
@@ -2793,7 +2793,7 @@ mod tests {
 
         // Set up the mock UTXO provider
         let mut utxo_provider = MockUtxoProvider::new();
-        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey.clone());
+        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
 
         // Create the spending transaction
         let new_pubkey_hash = crypto::hash::hash(b"recipient");
@@ -2842,14 +2842,14 @@ mod tests {
         let ctx = test_context();
 
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
 
         let prev_tx_hash = crypto::hash::hash(b"prev_tx");
         let prev_output = Output::normal(100, pubkey_hash); // Only 100
 
         let mut utxo_provider = MockUtxoProvider::new();
-        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey.clone());
+        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
 
         let new_pubkey_hash = crypto::hash::hash(b"recipient");
         let mut tx = Transaction {
@@ -2880,7 +2880,7 @@ mod tests {
         let ctx = test_context();
 
         let owner_keypair = crypto::KeyPair::generate();
-        let owner_pubkey = owner_keypair.public_key().clone();
+        let owner_pubkey = *owner_keypair.public_key();
         let pubkey_hash =
             crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, owner_pubkey.as_bytes());
 
@@ -2920,7 +2920,7 @@ mod tests {
         let ctx = test_context();
 
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
 
         let prev_tx_hash = crypto::hash::hash(b"prev_tx");
@@ -2928,7 +2928,7 @@ mod tests {
         let prev_output = Output::bond(1000, pubkey_hash, 1000);
 
         let mut utxo_provider = MockUtxoProvider::new();
-        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey.clone());
+        utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
 
         let new_pubkey_hash = crypto::hash::hash(b"recipient");
         let mut tx = Transaction {
@@ -3120,7 +3120,7 @@ mod tests {
         fn prop_valid_signature_verifies(amount in 1u64..1_000_000_000u64, seed: [u8; 32]) {
             let ctx = test_context();
             let keypair = crypto::KeyPair::from_seed(seed);
-            let pubkey = keypair.public_key().clone();
+            let pubkey = *keypair.public_key();
             let pubkey_hash = crypto::hash::hash_with_domain(
                 crypto::ADDRESS_DOMAIN,
                 pubkey.as_bytes(),
@@ -3160,7 +3160,7 @@ mod tests {
             let owner_keypair = crypto::KeyPair::from_seed(owner_seed);
             let attacker_keypair = crypto::KeyPair::from_seed(attacker_seed);
 
-            let owner_pubkey = owner_keypair.public_key().clone();
+            let owner_pubkey = *owner_keypair.public_key();
             let pubkey_hash = crypto::hash::hash_with_domain(
                 crypto::ADDRESS_DOMAIN,
                 owner_pubkey.as_bytes(),
@@ -3245,13 +3245,13 @@ mod tests {
     fn test_add_bond_transaction() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Create an input (required for AddBond)
         let prev_tx_hash = crypto::hash::hash(b"prev_tx");
         let input = Input::new(prev_tx_hash, 0);
 
-        let tx = Transaction::new_add_bond(vec![input], pubkey.clone(), 5);
+        let tx = Transaction::new_add_bond(vec![input], pubkey, 5);
 
         assert!(tx.is_add_bond());
         assert_eq!(tx.tx_type, TxType::AddBond);
@@ -3272,7 +3272,7 @@ mod tests {
     fn test_add_bond_no_inputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Create AddBond with no inputs (invalid)
         let tx = Transaction::new_add_bond(vec![], pubkey, 5);
@@ -3288,7 +3288,7 @@ mod tests {
     fn test_add_bond_allows_normal_outputs_for_change() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash(b"test");
 
         // Create AddBond with Normal output (valid - for change)
@@ -3314,11 +3314,11 @@ mod tests {
     fn test_add_bond_rejects_bond_outputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash(b"test");
 
         // Create AddBond with Bond output (invalid - only Normal allowed)
-        let bond_data = crate::transaction::AddBondData::new(pubkey.clone(), 5);
+        let bond_data = crate::transaction::AddBondData::new(pubkey, 5);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::AddBond,
@@ -3338,7 +3338,7 @@ mod tests {
     fn test_add_bond_zero_bond_count() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Create AddBond with zero bond count (invalid)
         let tx =
@@ -3354,13 +3354,10 @@ mod tests {
     #[test]
     fn test_add_bond_data_serialization() {
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
-        let tx = Transaction::new_add_bond(
-            vec![Input::new(crypto::hash::hash(b"prev"), 0)],
-            pubkey.clone(),
-            10,
-        );
+        let tx =
+            Transaction::new_add_bond(vec![Input::new(crypto::hash::hash(b"prev"), 0)], pubkey, 10);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -3378,10 +3375,10 @@ mod tests {
     fn test_request_withdrawal_transaction() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        let tx = Transaction::new_request_withdrawal(pubkey.clone(), 3, destination);
+        let tx = Transaction::new_request_withdrawal(pubkey, 3, destination);
 
         assert!(tx.is_request_withdrawal());
         assert_eq!(tx.tx_type, TxType::RequestWithdrawal);
@@ -3403,7 +3400,7 @@ mod tests {
     fn test_request_withdrawal_with_inputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create RequestWithdrawal with inputs (invalid)
@@ -3428,7 +3425,7 @@ mod tests {
     fn test_request_withdrawal_with_outputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create RequestWithdrawal with outputs (invalid)
@@ -3453,7 +3450,7 @@ mod tests {
     fn test_request_withdrawal_zero_bond_count() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create RequestWithdrawal with zero bond count (invalid)
@@ -3470,7 +3467,7 @@ mod tests {
     fn test_request_withdrawal_zero_destination() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Create RequestWithdrawal with zero destination (invalid)
         let tx = Transaction::new_request_withdrawal(pubkey, 3, Hash::ZERO);
@@ -3485,10 +3482,10 @@ mod tests {
     #[test]
     fn test_request_withdrawal_data_serialization() {
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        let tx = Transaction::new_request_withdrawal(pubkey.clone(), 7, destination);
+        let tx = Transaction::new_request_withdrawal(pubkey, 7, destination);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -3507,11 +3504,11 @@ mod tests {
     fn test_claim_withdrawal_transaction() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
         let net_amount = 500_000_000;
 
-        let tx = Transaction::new_claim_withdrawal(pubkey.clone(), 0, net_amount, destination);
+        let tx = Transaction::new_claim_withdrawal(pubkey, 0, net_amount, destination);
 
         assert!(tx.is_claim_withdrawal());
         assert_eq!(tx.tx_type, TxType::ClaimWithdrawal);
@@ -3534,7 +3531,7 @@ mod tests {
     fn test_claim_withdrawal_with_inputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create ClaimWithdrawal with inputs (invalid)
@@ -3558,7 +3555,7 @@ mod tests {
     fn test_claim_withdrawal_no_outputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Create ClaimWithdrawal with no outputs (invalid)
         let claim_data = crate::transaction::ClaimWithdrawalData::new(pubkey, 0);
@@ -3581,7 +3578,7 @@ mod tests {
     fn test_claim_withdrawal_multiple_outputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create ClaimWithdrawal with multiple outputs (invalid)
@@ -3608,7 +3605,7 @@ mod tests {
     fn test_claim_withdrawal_wrong_output_type() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
         // Create ClaimWithdrawal with bond output type (invalid)
@@ -3631,10 +3628,10 @@ mod tests {
     #[test]
     fn test_claim_withdrawal_data_serialization() {
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        let tx = Transaction::new_claim_withdrawal(pubkey.clone(), 5, 1_000_000_000, destination);
+        let tx = Transaction::new_claim_withdrawal(pubkey, 5, 1_000_000_000, destination);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -3697,8 +3694,7 @@ mod tests {
     fn test_validate_epoch_reward_no_inputs() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let mut tx =
-            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         // Add an input (invalid for epoch reward)
         tx.inputs.push(Input::new(Hash::ZERO, 0));
@@ -3716,8 +3712,7 @@ mod tests {
     fn test_validate_epoch_reward_one_output() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let mut tx =
-            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         // Add extra output with valid pubkey_hash (invalid for epoch reward - must have exactly 1 output)
         let extra_pubkey_hash = crypto::hash::hash(b"another_recipient");
@@ -3736,8 +3731,7 @@ mod tests {
     fn test_validate_epoch_reward_normal_output_type() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let mut tx =
-            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         // Change to bond output (invalid)
         tx.outputs[0].output_type = OutputType::Bond;
@@ -3779,7 +3773,7 @@ mod tests {
         // deterministic scheduler model. It IS valid and should pass validation.
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         let ctx = test_context();
         let result = validate_transaction(&tx, &ctx);
@@ -3793,7 +3787,7 @@ mod tests {
         // EpochReward transactions don't require UTXO inputs since they are minted
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         let ctx = test_context();
         let utxo_provider = MockUtxoProvider::new(); // Empty UTXO set
@@ -3842,7 +3836,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO, // Will be invalid, but we're testing rewards logic
             presence_root: Hash::ZERO,
-            producer: keypair.public_key().clone(),
+            producer: *keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::default(),
         };
@@ -3914,7 +3908,7 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let epoch_reward =
-            Transaction::new_epoch_reward(0, keypair.public_key().clone(), 1000, pubkey_hash);
+            Transaction::new_epoch_reward(0, *keypair.public_key(), 1000, pubkey_hash);
         let block = create_test_block_at_slot(non_boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards(&block, &ctx);
@@ -3949,7 +3943,7 @@ mod tests {
         let expected_pool = ctx.params.total_epoch_reward(boundary_slot as u64);
         let epoch_reward = Transaction::new_epoch_reward(
             expected_epoch as u64,
-            keypair.public_key().clone(),
+            *keypair.public_key(),
             expected_pool / 2, // Wrong amount!
             pubkey_hash,
         );
@@ -3973,7 +3967,7 @@ mod tests {
         let expected_pool = ctx.params.total_epoch_reward(boundary_slot as u64);
         let epoch_reward = Transaction::new_epoch_reward(
             expected_epoch as u64,
-            keypair.public_key().clone(),
+            *keypair.public_key(),
             expected_pool, // Correct amount
             pubkey_hash,
         );
@@ -3996,7 +3990,7 @@ mod tests {
         let expected_pool = ctx.params.total_epoch_reward(boundary_slot as u64);
         let epoch_reward = Transaction::new_epoch_reward(
             99, // Wrong epoch!
-            keypair.public_key().clone(),
+            *keypair.public_key(),
             expected_pool,
             pubkey_hash,
         );
@@ -4062,7 +4056,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
-            producer: producer.clone(),
+            producer: *producer,
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::default(),
         };
@@ -4071,6 +4065,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_calculate_expected_epoch_rewards_empty() {
         let params = ConsensusParams::mainnet();
         let blocks: Vec<Block> = vec![];
@@ -4080,10 +4075,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_calculate_expected_epoch_rewards_single_producer() {
         let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Create 10 blocks by single producer
         let blocks: Vec<Block> = (1..=10)
@@ -4101,13 +4097,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_calculate_expected_epoch_rewards_multiple_producers() {
         let params = ConsensusParams::mainnet();
 
         let keypair1 = crypto::KeyPair::generate();
         let keypair2 = crypto::KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
+        let producer1 = *keypair1.public_key();
+        let producer2 = *keypair2.public_key();
 
         // Producer1: 3 blocks, Producer2: 7 blocks
         let mut blocks = Vec::new();
@@ -4141,19 +4138,20 @@ mod tests {
 
         // Approximate proportions (allow for rounding)
         let expected_p1 = (3 * total_pool) / 10;
-        let expected_p2 = total_pool - expected_p1; // Last gets remainder
+        let _expected_p2 = total_pool - expected_p1; // Last gets remainder
 
         // The actual amounts depend on sort order, but total must be correct
         assert!(p1_amount > 0 && p2_amount > 0, "Both should get rewards");
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_calculate_expected_epoch_rewards_deterministic_ordering() {
         let params = ConsensusParams::mainnet();
 
         // Generate multiple keypairs
         let keypairs: Vec<_> = (0..5).map(|_| crypto::KeyPair::generate()).collect();
-        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+        let producers: Vec<_> = keypairs.iter().map(|kp| *kp.public_key()).collect();
 
         // Each producer creates 2 blocks
         let mut blocks = Vec::new();
@@ -4184,10 +4182,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_calculate_expected_epoch_rewards_skips_null_producer() {
         let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Create blocks including one with null producer (genesis-like)
         let mut blocks = vec![create_test_block_with_producer(1, &producer)];
@@ -4204,6 +4203,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_slot_zero() {
         let params = ConsensusParams::mainnet();
         let source = MockEpochBlockSource::new(0, vec![]);
@@ -4217,10 +4217,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_first_epoch_boundary() {
         let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
         // Add a block in epoch 1 (slots 360-719) so it has blocks to reward
         // Note: We're at slot 720 (epoch 2), checking if epoch 1 needs rewards
         let block_in_epoch_1 = create_test_block_with_producer(
@@ -4238,6 +4239,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_empty_epoch_skipped() {
         let params = ConsensusParams::mainnet();
         // No blocks in epoch 0 or 1 - they should be skipped
@@ -4255,6 +4257,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_already_rewarded() {
         let params = ConsensusParams::mainnet();
         let source = MockEpochBlockSource::new(1, vec![]); // Epoch 1 already rewarded
@@ -4270,10 +4273,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_multi_epoch_catchup() {
         let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Add blocks in epochs 1 and 2 (epoch 0 is empty)
         let block_in_epoch_1 =
@@ -4296,10 +4300,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_epoch_needing_rewards_late_start_skips_empty() {
         let params = ConsensusParams::mainnet();
         let keypair = crypto::KeyPair::generate();
-        let pubkey = keypair.public_key().clone();
+        let pubkey = *keypair.public_key();
 
         // Simulate chain starting late: only epoch 5 has blocks
         let block_in_epoch_5 =
@@ -4319,6 +4324,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_non_boundary_no_rewards() {
         let params = ConsensusParams::mainnet();
         let non_boundary_slot = params.slots_per_reward_epoch / 2;
@@ -4334,6 +4340,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_unexpected_rewards() {
         let params = ConsensusParams::mainnet();
         let non_boundary_slot = params.slots_per_reward_epoch / 2;
@@ -4345,7 +4352,7 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let epoch_reward =
-            Transaction::new_epoch_reward(0, keypair.public_key().clone(), 1000, pubkey_hash);
+            Transaction::new_epoch_reward(0, *keypair.public_key(), 1000, pubkey_hash);
         let block = create_test_block_at_slot(non_boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -4356,6 +4363,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_missing_rewards() {
         let params = ConsensusParams::mainnet();
@@ -4365,7 +4373,7 @@ mod tests {
 
         // Create blocks in epoch 0 for the source
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
             .collect();
@@ -4383,6 +4391,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_valid() {
         let params = ConsensusParams::mainnet();
         // Use second boundary (slot 720) where we validate epoch 1 rewards
@@ -4406,7 +4415,7 @@ mod tests {
         // Create blocks in epoch 1 (slots 360-719)
         // At slot 720 with last_rewarded=0, epoch 1 is being rewarded
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
         let start_slot = params.slots_per_reward_epoch; // 360
         let epoch_blocks: Vec<Block> = (start_slot..start_slot + 10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
@@ -4421,8 +4430,7 @@ mod tests {
 
         // Create valid epoch reward transaction
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-        let epoch_reward =
-            Transaction::new_epoch_reward(1, producer.clone(), expected[0].1, pubkey_hash);
+        let epoch_reward = Transaction::new_epoch_reward(1, producer, expected[0].1, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -4434,6 +4442,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_wrong_amount() {
         let params = ConsensusParams::mainnet();
@@ -4456,7 +4465,7 @@ mod tests {
 
         // Create blocks in epoch 0
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
             .collect();
@@ -4466,8 +4475,7 @@ mod tests {
         // Create epoch reward with WRONG amount
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
         let wrong_amount = 12345; // Arbitrary wrong amount
-        let epoch_reward =
-            Transaction::new_epoch_reward(1, producer.clone(), wrong_amount, pubkey_hash);
+        let epoch_reward = Transaction::new_epoch_reward(1, producer, wrong_amount, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -4479,6 +4487,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_wrong_recipient() {
         let params = ConsensusParams::mainnet();
@@ -4501,7 +4510,7 @@ mod tests {
 
         // Create blocks in epoch 0 by producer1
         let keypair1 = crypto::KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
+        let producer1 = *keypair1.public_key();
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer1))
             .collect();
@@ -4512,7 +4521,7 @@ mod tests {
         let expected =
             calculate_expected_epoch_rewards(1, &source.blocks, ctx.current_height, &ctx_params);
         let keypair2 = crypto::KeyPair::generate();
-        let wrong_recipient = keypair2.public_key().clone();
+        let wrong_recipient = *keypair2.public_key();
         let pubkey_hash = crypto::hash::hash(wrong_recipient.as_bytes());
 
         let epoch_reward =
@@ -4528,6 +4537,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_wrong_epoch_number() {
         let params = ConsensusParams::mainnet();
         // Use second epoch boundary (slot 720) where we reward epoch 2
@@ -4552,14 +4562,14 @@ mod tests {
         // Create blocks in epoch 1 (slots 360-719) since we're at slot 720
         // and last_rewarded=1 means epoch 2 is next to be rewarded
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
         let start = params.slots_per_reward_epoch;
         let epoch_blocks: Vec<Block> = (start..start + 10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
             .collect();
 
         // last_rewarded=1 means epoch 1 was rewarded, so epoch 2 is next
-        let source = MockEpochBlockSource::new(1, epoch_blocks);
+        let _source = MockEpochBlockSource::new(1, epoch_blocks);
 
         // Calculate expected rewards for epoch 2 (but there are no blocks there)
         // So we need blocks in epoch 2 range (720-1079)
@@ -4590,7 +4600,7 @@ mod tests {
         // Create epoch reward with WRONG epoch number (should be 1)
         let epoch_reward = Transaction::new_epoch_reward(
             99, // Wrong epoch! Should be 1
-            producer.clone(),
+            producer,
             expected[0].1,
             pubkey_hash,
         );
@@ -4609,6 +4619,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_many_producers() {
         // Test validation with 10 producers to verify scalability
         let params = ConsensusParams::mainnet();
@@ -4631,7 +4642,7 @@ mod tests {
 
         // Create 10 producers, each with 1 block in epoch 1
         let keypairs: Vec<_> = (0..10).map(|_| crypto::KeyPair::generate()).collect();
-        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+        let producers: Vec<_> = keypairs.iter().map(|kp| *kp.public_key()).collect();
 
         let start_slot = params.slots_per_reward_epoch;
         let epoch_blocks: Vec<Block> = producers
@@ -4652,7 +4663,7 @@ mod tests {
             .iter()
             .map(|(producer, amount)| {
                 let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+                Transaction::new_epoch_reward(1, *producer, *amount, pubkey_hash)
             })
             .collect();
 
@@ -4667,6 +4678,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_validate_block_rewards_exact_dust_handling() {
         // Test validation with rounding dust (e.g., 100 units / 3 producers)
         let params = ConsensusParams::mainnet();
@@ -4690,7 +4702,7 @@ mod tests {
 
         // Create 3 producers with equal blocks (1 each) in epoch 1 range
         let keypairs: Vec<_> = (0..3).map(|_| crypto::KeyPair::generate()).collect();
-        let mut producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+        let mut producers: Vec<_> = keypairs.iter().map(|kp| *kp.public_key()).collect();
 
         // Sort producers by pubkey for deterministic dust assignment
         producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -4728,7 +4740,7 @@ mod tests {
             .iter()
             .map(|(producer, amount)| {
                 let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+                Transaction::new_epoch_reward(1, *producer, *amount, pubkey_hash)
             })
             .collect();
 
@@ -4743,6 +4755,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_over_distribution() {
         // Test rejection of rewards that exceed expected amounts
@@ -4765,7 +4778,7 @@ mod tests {
         );
 
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
@@ -4780,8 +4793,7 @@ mod tests {
         let inflated_amount = correct_amount + 1_000_000; // Add 1M extra units
 
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-        let epoch_reward =
-            Transaction::new_epoch_reward(1, producer.clone(), inflated_amount, pubkey_hash);
+        let epoch_reward = Transaction::new_epoch_reward(1, producer, inflated_amount, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -4793,6 +4805,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_under_distribution() {
         // Test rejection of rewards that are less than expected
@@ -4815,7 +4828,7 @@ mod tests {
         );
 
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
@@ -4830,8 +4843,7 @@ mod tests {
         let reduced_amount = correct_amount - 1_000_000; // Remove 1M units
 
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-        let epoch_reward =
-            Transaction::new_epoch_reward(1, producer.clone(), reduced_amount, pubkey_hash);
+        let epoch_reward = Transaction::new_epoch_reward(1, producer, reduced_amount, pubkey_hash);
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
 
         let result = validate_block_rewards_exact(&block, &ctx, &source);
@@ -4843,6 +4855,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_partial_producer_list() {
         // Test rejection when some producers are missing from rewards
@@ -4866,7 +4879,7 @@ mod tests {
 
         // Create 3 producers with blocks
         let keypairs: Vec<_> = (0..3).map(|_| crypto::KeyPair::generate()).collect();
-        let producers: Vec<_> = keypairs.iter().map(|kp| kp.public_key().clone()).collect();
+        let producers: Vec<_> = keypairs.iter().map(|kp| *kp.public_key()).collect();
 
         let epoch_blocks: Vec<Block> = producers
             .iter()
@@ -4887,7 +4900,7 @@ mod tests {
             .take(2) // Only first 2 producers
             .map(|(producer, amount)| {
                 let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-                Transaction::new_epoch_reward(1, producer.clone(), *amount, pubkey_hash)
+                Transaction::new_epoch_reward(1, *producer, *amount, pubkey_hash)
             })
             .collect();
 
@@ -4902,6 +4915,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     #[ignore = "Tests deprecated automatic epoch reward system - use ClaimEpochReward instead"]
     fn test_validate_block_rewards_exact_extra_reward_tx() {
         // Test rejection when block has more reward transactions than expected
@@ -4924,7 +4938,7 @@ mod tests {
         );
 
         let keypair = crypto::KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         let epoch_blocks: Vec<Block> = (1..=10)
             .map(|slot| create_test_block_with_producer(slot, &producer))
@@ -4939,11 +4953,10 @@ mod tests {
 
         // Create valid reward plus an EXTRA reward to a fake producer
         let pubkey_hash = crypto::hash::hash(producer.as_bytes());
-        let valid_reward =
-            Transaction::new_epoch_reward(1, producer.clone(), expected[0].1, pubkey_hash);
+        let valid_reward = Transaction::new_epoch_reward(1, producer, expected[0].1, pubkey_hash);
 
         let fake_keypair = crypto::KeyPair::generate();
-        let fake_producer = fake_keypair.public_key().clone();
+        let fake_producer = *fake_keypair.public_key();
         let fake_hash = crypto::hash::hash(fake_producer.as_bytes());
         let extra_reward = Transaction::new_epoch_reward(1, fake_producer, 1_000_000, fake_hash);
 
@@ -4963,11 +4976,7 @@ mod tests {
 
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-            3,
-        );
+        let data = DelegateBondData::new(*delegator.public_key(), *delegate.public_key(), 3);
         let tx = Transaction::new_delegate_bond(data);
         let ctx = test_context();
 
@@ -4985,11 +4994,7 @@ mod tests {
 
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-            0,
-        );
+        let data = DelegateBondData::new(*delegator.public_key(), *delegate.public_key(), 0);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::DelegateBond,
@@ -5034,10 +5039,7 @@ mod tests {
 
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-        );
+        let data = RevokeDelegationData::new(*delegator.public_key(), *delegate.public_key());
         let tx = Transaction::new_revoke_delegation(data);
         let ctx = test_context();
 
@@ -5088,7 +5090,7 @@ mod tests {
             prev_hash: Hash::ZERO,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
-            producer: keypair.public_key().clone(),
+            producer: *keypair.public_key(),
             vdf_output: VdfOutput {
                 value: vec![0u8; 32],
             },
@@ -5109,7 +5111,7 @@ mod tests {
             1,
         )
         .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
-        .with_bootstrap_producers(vec![keypair.public_key().clone()]);
+        .with_bootstrap_producers(vec![*keypair.public_key()]);
 
         (block, ctx)
     }

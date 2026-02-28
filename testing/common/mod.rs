@@ -1,7 +1,7 @@
+#![allow(dead_code)]
 //! Common test utilities for DOLI integration and E2E tests
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,9 +10,9 @@ use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::{
     consensus::ConsensusParams, Amount, Block, BlockHeader, BlockHeight, Output, Slot, Transaction,
 };
-use storage::{BlockStore, ChainState, Outpoint, UtxoEntry, UtxoSet};
+use storage::{ChainState, Outpoint, UtxoEntry, UtxoSet};
 use tempfile::TempDir;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use vdf::{VdfOutput, VdfProof};
 
 /// Test node configuration
@@ -234,7 +234,7 @@ pub fn create_test_block(
         presence_root: crypto::Hash::ZERO,
         timestamp,
         slot,
-        producer: producer.clone(),
+        producer: *producer,
         vdf_output: VdfOutput {
             value: vec![0u8; 32],
         },

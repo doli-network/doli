@@ -87,8 +87,10 @@ mod tests {
     fn test_maintainer_state_save_load() {
         let dir = tempfile::tempdir().unwrap();
 
-        let mut state = MaintainerState::default();
-        state.last_derived_height = 42;
+        let state = MaintainerState {
+            last_derived_height: 42,
+            ..Default::default()
+        };
         state.save(dir.path()).unwrap();
 
         let loaded = MaintainerState::load(dir.path()).unwrap();

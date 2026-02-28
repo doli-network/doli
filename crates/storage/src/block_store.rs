@@ -809,7 +809,7 @@ impl doli_core::rewards::BlockSource for BlockStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::hash::{hash as crypto_hash, hash_with_domain};
+    use crypto::hash::hash_with_domain;
     use crypto::{KeyPair, PublicKey, ADDRESS_DOMAIN};
     use doli_core::{Block, BlockHeader, Transaction};
     use tempfile::TempDir;
@@ -831,7 +831,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 1000 + slot as u64 * 10,
             slot,
-            producer: producer.clone(),
+            producer: *producer,
             vdf_output: VdfOutput { value: Vec::new() },
             vdf_proof: VdfProof::empty(),
         }
@@ -846,7 +846,7 @@ mod tests {
     fn create_epoch_reward_block(slot: u32, producer: &PublicKey, epoch: u64) -> Block {
         let epoch_reward_tx = Transaction::new_epoch_reward(
             epoch,
-            producer.clone(),
+            *producer,
             100_000_000, // 1 DOLI
             hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes()),
         );
@@ -866,7 +866,7 @@ mod tests {
     fn test_get_block_by_slot_found() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store a block at slot 42
         let block = create_test_block(42, &producer);
@@ -893,7 +893,7 @@ mod tests {
     fn test_get_blocks_in_slot_range_with_gaps() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks at slots 10, 12, 15 (with gaps at 11, 13, 14)
         let slots = [10u32, 12, 15];
@@ -914,7 +914,7 @@ mod tests {
     fn test_get_blocks_in_slot_range_ordering() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks in non-sequential order
         for (height, slot) in [(0, 5u32), (1, 3), (2, 7), (3, 1)] {
@@ -935,7 +935,7 @@ mod tests {
     fn test_get_last_rewarded_epoch_no_rewards() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks without epoch rewards
         for height in 0..5 {
@@ -952,7 +952,7 @@ mod tests {
     fn test_get_last_rewarded_epoch_single_reward() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store a block with epoch reward for epoch 5
         let block = create_epoch_reward_block(360, &producer, 5);
@@ -966,7 +966,7 @@ mod tests {
     fn test_get_last_rewarded_epoch_multiple_rewards() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks with epoch rewards for epochs 1, 2, 3
         let reward_blocks = [
@@ -989,7 +989,7 @@ mod tests {
     fn test_get_last_rewarded_epoch_mixed_blocks() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store a mix of regular blocks and epoch reward blocks
         // height 0: regular block
@@ -1029,7 +1029,7 @@ mod tests {
     fn test_get_hash_by_slot() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store a block
         let block = create_test_block(42, &producer);
@@ -1050,7 +1050,7 @@ mod tests {
     fn test_has_any_block_in_slot_range() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks at slots 100, 150, 200
         for (height, slot) in [(0, 100u32), (1, 150), (2, 200)] {
@@ -1082,7 +1082,7 @@ mod tests {
         // Query an empty slot in a chain that has blocks with gaps
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks at slots 10, 12, 15 (gaps at 11, 13, 14)
         let slots = [10u32, 12, 15];
@@ -1113,7 +1113,7 @@ mod tests {
     fn test_get_blocks_in_slot_range_boundary_conditions() {
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store blocks at slots 5, 10, 15
         for (height, slot) in [(0, 5u32), (1, 10), (2, 15)] {
@@ -1152,7 +1152,7 @@ mod tests {
         // Test that get_last_rewarded_epoch handles non-sequential epoch numbers
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store epoch rewards for epochs 1, 3, 5 (skipping 2 and 4)
         // This simulates a scenario where some epochs had no blocks
@@ -1173,8 +1173,8 @@ mod tests {
         let (store, _dir) = create_test_store();
         let keypair1 = KeyPair::generate();
         let keypair2 = KeyPair::generate();
-        let producer1 = keypair1.public_key().clone();
-        let producer2 = keypair2.public_key().clone();
+        let producer1 = *keypair1.public_key();
+        let producer2 = *keypair2.public_key();
 
         // Store blocks across 3 epochs (using devnet 30 slots/epoch)
         // Epoch 0: slots 1-29
@@ -1252,7 +1252,7 @@ mod tests {
         // Test querying slots before first block and after last block
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store a single block at slot 100
         let block = create_test_block(100, &producer);
@@ -1288,7 +1288,7 @@ mod tests {
         // SLOT_INDEX entries persist and pollute queries.
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Populate store with blocks (simulating a fork)
         for height in 0..10u64 {
@@ -1331,7 +1331,7 @@ mod tests {
         // interference from previously cleared data.
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Store "fork" blocks at heights 0-4, slots 100-104
         for i in 0..5u64 {
@@ -1378,7 +1378,7 @@ mod tests {
         // After set_canonical_chain(D'), height_index must point to B', C', D'.
         let (store, _dir) = create_test_store();
         let keypair = KeyPair::generate();
-        let producer = keypair.public_key().clone();
+        let producer = *keypair.public_key();
 
         // Block A (genesis) at height 0
         let block_a = create_test_block(1, &producer);

@@ -149,6 +149,7 @@ impl std::fmt::Display for VdfProof {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

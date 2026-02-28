@@ -172,7 +172,7 @@ async fn test_producer_misses_slots() {
     // Producer 1: 2 produced, 1 missed
     assert_eq!(state1.blocks_produced, 2);
     assert_eq!(state1.blocks_missed, 1);
-    let expected_score1 = INITIAL_PRESENCE_SCORE + 2 * SCORE_PRODUCE_BONUS - 1 * SCORE_MISS_PENALTY;
+    let expected_score1 = INITIAL_PRESENCE_SCORE + 2 * SCORE_PRODUCE_BONUS - SCORE_MISS_PENALTY;
     assert_eq!(state1.presence_score, expected_score1);
 
     // Producer 2: 4 produced (including taking over slot 3), 0 missed

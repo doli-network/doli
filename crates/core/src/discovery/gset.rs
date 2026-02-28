@@ -1169,7 +1169,7 @@ mod stress_tests {
             // Simple pseudo-random selection
             rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let kp_idx = (rng_seed as usize) % keypairs.len();
-            let seq = ((rng_seed >> 32) as u64) % 10;
+            let seq = (rng_seed >> 32) % 10;
 
             let ann = ProducerAnnouncement::new(&keypairs[kp_idx], 1, seq);
             // All operations should succeed without panic
@@ -1190,7 +1190,7 @@ mod stress_tests {
         let mut gset = ProducerGSet::new(1);
 
         let mut valid_count = 0;
-        let mut invalid_count = 0;
+        let mut _invalid_count = 0;
 
         // Mix of valid and invalid announcements
         for i in 0..100 {
@@ -1200,7 +1200,7 @@ mod stress_tests {
             if i % 4 == 0 {
                 // Tamper every 4th announcement
                 ann.sequence = 999;
-                invalid_count += 1;
+                _invalid_count += 1;
             } else {
                 valid_count += 1;
             }
@@ -1392,14 +1392,14 @@ mod stress_tests {
 
         // Simulate gossip rounds - each node shares with others
         // Round 1: node1 -> node2, node2 -> node3, node3 -> node1
-        node2.merge(node1.export());
-        node3.merge(node2.export());
-        node1.merge(node3.export());
+        let _ = node2.merge(node1.export());
+        let _ = node3.merge(node2.export());
+        let _ = node1.merge(node3.export());
 
         // Round 2: propagate again
-        node2.merge(node1.export());
-        node3.merge(node2.export());
-        node1.merge(node3.export());
+        let _ = node2.merge(node1.export());
+        let _ = node3.merge(node2.export());
+        let _ = node1.merge(node3.export());
 
         // All nodes should have all 30 producers
         assert_eq!(node1.len(), 30, "Node 1 should have all 30 producers");
@@ -1449,10 +1449,10 @@ mod stress_tests {
         assert_eq!(partition_b1.len(), 10);
 
         // Heal: merge partitions
-        partition_a1.merge(partition_b1.export());
-        partition_a2.merge(partition_b2.export());
-        partition_b1.merge(partition_a1.export());
-        partition_b2.merge(partition_a2.export());
+        let _ = partition_a1.merge(partition_b1.export());
+        let _ = partition_a2.merge(partition_b2.export());
+        let _ = partition_b1.merge(partition_a1.export());
+        let _ = partition_b2.merge(partition_a2.export());
 
         // All nodes should converge to 20 producers
         assert_eq!(partition_a1.len(), 20, "A1 should have all 20");
