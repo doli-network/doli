@@ -62,7 +62,7 @@ impl ProducerGuard {
 impl Drop for ProducerGuard {
     fn drop(&mut self) {
         // Unlock is automatic when file is closed, but be explicit
-        if let Err(e) = self.lock_file.unlock() {
+        if let Err(e) = FileExt::unlock(&self.lock_file) {
             debug!("Failed to unlock producer lock file: {}", e);
         }
         info!("Producer lock released: {:?}", self.lock_path);

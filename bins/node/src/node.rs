@@ -211,7 +211,15 @@ impl Node {
         let mut chain_state = if state_path.exists() {
             ChainState::load(&state_path)?
         } else {
-            let genesis_hash = crypto::hash::hash(b"DOLI Genesis");
+            // Genesis hash must be UNIQUE per chain instance (timestamp + network + params).
+            // Using a static hash like hash(b"DOLI Genesis") would allow nodes from
+            // different genesis runs to pass the handshake, poisoning sync state.
+            let spec = match config.network {
+                Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+                Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+                Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+            };
+            let genesis_hash = spec.genesis_hash();
             ChainState::new(genesis_hash)
         };
         let genesis_hash = chain_state.genesis_hash;
