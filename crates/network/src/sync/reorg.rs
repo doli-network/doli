@@ -479,6 +479,7 @@ mod tests {
             prev_hash: hash1,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 0,
             slot: 1,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -510,6 +511,7 @@ mod tests {
             prev_hash: hash1, // Fork from hash1, not hash2
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -587,6 +589,7 @@ mod tests {
             prev_hash: hash1, // Fork from hash1
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -619,6 +622,7 @@ mod tests {
             prev_hash: hash1, // Fork from hash1
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -677,6 +681,7 @@ mod tests {
             prev_hash: hash1,
             merkle_root: Hash::ZERO,
             presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
             timestamp: 0,
             slot: 2,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -761,6 +766,7 @@ mod tests {
                 prev_hash: genesis, // forks from genesis (height 0) < finality height 1
                 merkle_root: Hash::ZERO,
                 presence_root: Hash::ZERO,
+                genesis_hash: Hash::ZERO,
                 timestamp: 100,
                 slot: 1,
                 producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -797,6 +803,7 @@ mod tests {
                 prev_hash: block1, // forks from block1 (height 1) > finality height 0
                 merkle_root: Hash::ZERO,
                 presence_root: Hash::ZERO,
+                genesis_hash: Hash::ZERO,
                 timestamp: 200,
                 slot: 2,
                 producer: crypto::PublicKey::from_bytes([0u8; 32]),

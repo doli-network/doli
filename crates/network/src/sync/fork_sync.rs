@@ -389,6 +389,7 @@ mod tests {
                             prev_hash: Hash::ZERO,
                             merkle_root: Hash::ZERO,
                             presence_root: Hash::ZERO,
+                            genesis_hash: Hash::ZERO,
                             timestamp: height * 10,
                             slot: height as u32,
                             producer: crypto::PublicKey::from_bytes([0u8; 32]),

@@ -183,6 +183,22 @@ impl ChainSpec {
             .collect()
     }
 
+    /// Compute the genesis hash — a unique fingerprint for this chain's identity.
+    ///
+    /// `genesis_hash = BLAKE3(timestamp_le || network_id_le || slot_duration_le || message_bytes)`
+    ///
+    /// Any change to genesis parameters (even 1 second in timestamp) produces a
+    /// completely different hash. Used in every block header to reject blocks from
+    /// nodes with different genesis configurations.
+    pub fn genesis_hash(&self) -> crypto::Hash {
+        let mut hasher = crypto::Hasher::new();
+        hasher.update(&self.genesis.timestamp.to_le_bytes());
+        hasher.update(&(self.network as u32).to_le_bytes());
+        hasher.update(&self.consensus.slot_duration.to_le_bytes());
+        hasher.update(self.genesis.message.as_bytes());
+        hasher.finalize()
+    }
+
     /// Check if this spec has genesis producers configured
     pub fn has_genesis_producers(&self) -> bool {
         !self.genesis_producers.is_empty()

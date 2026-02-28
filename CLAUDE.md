@@ -324,11 +324,19 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 ## 🛡 Validation & Security
 
 ### Block Validation
-- Version = 1
+- genesis_hash matches (FIRST check — rejects different genesis immediately)
+- Version = 2
 - Timestamp advances from parent
+- Slot = timestamp_to_slot(timestamp) (derived, not free field)
 - Max size: 1MB + header overhead
 - Merkle root matches transactions
 - VDF proof valid for slot
+
+### Chain Identity (genesis_hash)
+- `genesis_hash = BLAKE3(genesis_time || network_id || slot_duration || message)`
+- Present in every BlockHeader (v2+), included in block hash
+- Mainnet chainspec is embedded in binary — disk files and `--chainspec` ignored
+- Prevents genesis-time-hijack attacks (even 1s difference → different hash → rejected)
 
 ### Transaction Validation
 - Signature valid (Ed25519)

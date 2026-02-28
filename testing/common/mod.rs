@@ -232,6 +232,7 @@ pub fn create_test_block(
         prev_hash,
         merkle_root,
         presence_root: crypto::Hash::ZERO,
+        genesis_hash: crypto::Hash::ZERO,
         timestamp,
         slot,
         producer: *producer,

@@ -218,9 +218,11 @@ struct GossipMessage {
 
 ```rust
 struct BlockHeader {
-    version: u32,              // Currently 1
+    version: u32,              // Currently 2
     prev_hash: [u8; 32],       // Previous block hash
     merkle_root: [u8; 32],     // Transaction merkle root
+    presence_root: [u8; 32],   // Presence commitment hash (ZERO in deterministic model)
+    genesis_hash: [u8; 32],    // Chain identity fingerprint (v2+)
     timestamp: u64,            // Unix timestamp (seconds)
     slot: u32,                 // Slot number
     producer: [u8; 32],        // Producer public key
@@ -229,7 +231,10 @@ struct BlockHeader {
 }
 ```
 
-**Header size:** ~340 bytes (varies with VDF proof size)
+**Header size:** ~404 bytes (varies with VDF proof size)
+
+**genesis_hash**: `BLAKE3(genesis_time || network_id || slot_duration || message)`. Ensures
+blocks from nodes with different genesis parameters are rejected immediately.
 
 ---
 

@@ -104,6 +104,12 @@ DOLI is built on three fundamental security principles:
 - New producers have weight 1, seniors have up to 4
 - Attacker cannot quickly accumulate weight
 
+**Genesis-Time Hijack Attack:**
+- Every block header carries a `genesis_hash` — a BLAKE3 fingerprint of genesis parameters
+- Any difference in genesis_timestamp (even 1 second) produces a completely different hash
+- Blocks with mismatched `genesis_hash` are rejected as the FIRST validation check
+- Mainnet chainspec is embedded in the binary; disk overrides are disabled
+
 ### 3.3. Finality Model
 
 ```
