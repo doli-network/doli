@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1772305100;
+pub const GENESIS_TIME: u64 = 1772306500;
 
 // ==================== Proof of Time Parameters ====================
 
