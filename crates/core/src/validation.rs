@@ -26,7 +26,7 @@ use thiserror::Error;
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{
     is_producer_eligible_ms, max_block_size, select_producer_for_slot, ConsensusParams, RewardMode,
-    MAX_DRIFT, MAX_FUTURE_SLOTS, MAX_PAST_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
+    MAX_DRIFT, MAX_FUTURE_SLOTS, NETWORK_MARGIN, TOTAL_SUPPLY,
 };
 use crate::network::Network;
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
@@ -613,14 +613,11 @@ pub fn validate_header(
         });
     }
 
-    // Check not too far in the past (but must be after prev_slot which is already checked)
-    if current_slot as u64 > header.slot as u64 + MAX_PAST_SLOTS {
-        return Err(ValidationError::SlotTooPast {
-            got: header.slot,
-            current: current_slot,
-            max_past: MAX_PAST_SLOTS,
-        });
-    }
+    // MAX_PAST_SLOTS: enforced at the gossip boundary (node.rs gossip handler),
+    // NOT here. Checking here breaks header-first sync and reorgs because
+    // historical blocks have slots far behind wall-clock. The gossip handler
+    // is the correct enforcement point — it rejects old gossip blocks before
+    // they reach apply_block(), while sync/reorg paths bypass it safely.
 
     Ok(())
 }
