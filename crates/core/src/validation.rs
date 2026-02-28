@@ -1243,6 +1243,8 @@ pub fn validate_transaction(
         && !tx.is_epoch_reward()
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
+        && !tx.is_registration()
+    // Registration handles its own input validation
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have inputs".to_string(),
@@ -1260,6 +1262,8 @@ pub fn validate_transaction(
         && !tx.is_epoch_reward()
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
+        && !tx.is_registration()
+    // Registration handles its own output validation
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have outputs".to_string(),
