@@ -2573,11 +2573,8 @@ impl SyncManager {
             return;
         }
 
-        // Fixed quorum (default 2). Scaling by peer count caused failures when
-        // ±1 block height divergence split votes across heights (e.g., 6 peers,
-        // quorum=4, but only 3 agree on same height). Safety is ensured by
-        // verifying compute_state_root(snapshot) == quorum_root after download.
-        let quorum = self.snap_sync_quorum;
+        // Quorum: at least the configured minimum, or 25% of peers (whichever is larger).
+        let quorum = std::cmp::max(self.snap_sync_quorum, self.peers.len() / 4);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
@@ -2586,29 +2583,33 @@ impl SyncManager {
                 return;
             };
 
-        // Group votes by (height, state_root) — peers must agree on both
-        let mut groups: HashMap<(u64, Hash), Vec<(PeerId, Hash)>> = HashMap::new();
+        // Group votes by state_root only — peers at different heights with the
+        // same root no longer split quorum (fixes ±1 height divergence).
+        let mut groups: HashMap<Hash, Vec<(PeerId, Hash, u64)>> = HashMap::new();
         for (pid, bhash, bheight, sroot) in &votes_snapshot {
             groups
-                .entry((*bheight, *sroot))
+                .entry(*sroot)
                 .or_default()
-                .push((*pid, *bhash));
+                .push((*pid, *bhash, *bheight));
         }
 
-        // Find any group with quorum
-        if let Some(((height, quorum_root), peers_with_hash)) =
+        if let Some((quorum_root, peers_with_info)) =
             groups.iter().find(|(_, peers)| peers.len() >= quorum)
         {
-            let (download_peer, download_hash) = peers_with_hash[0];
+            // Pick peer with highest height for download
+            let (download_peer, download_hash, best_height) = peers_with_info
+                .iter()
+                .max_by_key(|(_, _, h)| *h)
+                .copied()
+                .unwrap();
             info!(
-                "[SNAP_SYNC] Quorum reached: {} peers agree on height={}, root={:.16}, downloading from {}",
-                peers_with_hash.len(), height, quorum_root, download_peer
+                "[SNAP_SYNC] Quorum reached: {} peers agree on root={:.16}, best_height={}, downloading from {}",
+                peers_with_info.len(), quorum_root, best_height, download_peer
             );
             let quorum_root = *quorum_root;
-            let target_height = *height;
             self.state = SyncState::SnapDownloading {
                 target_hash: download_hash,
-                target_height,
+                target_height: best_height,
                 quorum_root,
                 peer: download_peer,
                 started_at: Instant::now(),
