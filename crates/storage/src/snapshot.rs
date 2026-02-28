@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_state_root_deterministic() {
-        let cs = ChainState::new(Hash::zero());
+        let cs = ChainState::new(Hash::ZERO);
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
@@ -219,8 +219,8 @@ mod tests {
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
-        let cs1 = ChainState::new(Hash::zero());
-        let mut cs2 = ChainState::new(Hash::zero());
+        let cs1 = ChainState::new(Hash::ZERO);
+        let mut cs2 = ChainState::new(Hash::ZERO);
         cs2.best_height = 100;
 
         let root1 = compute_state_root(&cs1, &utxo, &ps).unwrap();
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_create_verify_roundtrip() {
-        let cs = ChainState::new(Hash::zero());
+        let cs = ChainState::new(Hash::ZERO);
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
@@ -239,13 +239,13 @@ mod tests {
         assert!(snapshot.verify(&snapshot.state_root));
 
         // Tamper detection
-        let wrong_root = Hash::zero();
+        let wrong_root = Hash::ZERO;
         assert!(!snapshot.verify(&wrong_root));
     }
 
     #[test]
     fn test_snapshot_deserialize() {
-        let mut cs = ChainState::new(Hash::zero());
+        let mut cs = ChainState::new(Hash::ZERO);
         cs.best_height = 42;
         cs.total_minted = 1_000_000;
         let utxo = UtxoSet::new();
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_state_root_deterministic_across_calls() {
-        let cs = ChainState::new(Hash::zero());
+        let cs = ChainState::new(Hash::ZERO);
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
@@ -277,7 +277,7 @@ mod tests {
     fn test_snapshot_with_utxos_roundtrip() {
         use doli_core::transaction::Transaction;
 
-        let cs = ChainState::new(Hash::zero());
+        let cs = ChainState::new(Hash::ZERO);
         let mut utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
@@ -298,8 +298,6 @@ mod tests {
 
     #[test]
     fn test_producer_set_canonical_deterministic_insertion_order() {
-        use crate::producer::ProducerInfo;
-
         // Create two ProducerSets with same producers inserted in different order
         let pk1 = crypto::PublicKey::from_bytes([1u8; 32]);
         let pk2 = crypto::PublicKey::from_bytes([2u8; 32]);
@@ -329,7 +327,7 @@ mod tests {
         );
 
         // State roots must also match
-        let cs = ChainState::new(Hash::zero());
+        let cs = ChainState::new(Hash::ZERO);
         let utxo = UtxoSet::new();
 
         let root_a = compute_state_root(&cs, &utxo, &ps_a).unwrap();
@@ -348,7 +346,7 @@ mod tests {
         // These must match or snap sync will always fail verification.
         use doli_core::transaction::Transaction;
 
-        let mut cs = ChainState::new(Hash::zero());
+        let mut cs = ChainState::new(Hash::ZERO);
         cs.update(crypto::hash::hash(b"block100"), 100, 200);
         cs.total_minted = 5_000_000;
 
@@ -388,11 +386,11 @@ mod tests {
         // N1: was restarted, total_work accumulated from 0 for ~11351 blocks
         // Old code: total_work = 11351 (wrong, accumulated from restart)
         // New code: total_work = height (fixed)
-        let mut n1 = ChainState::new(Hash::zero());
+        let mut n1 = ChainState::new(Hash::ZERO);
         n1.update(block_hash, 61351, 122702); // total_work = 61351 after fix
 
         // N2: running since genesis
-        let mut n2 = ChainState::new(Hash::zero());
+        let mut n2 = ChainState::new(Hash::ZERO);
         n2.update(block_hash, 61351, 122702); // total_work = 61351
 
         assert_eq!(

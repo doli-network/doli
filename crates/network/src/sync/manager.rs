@@ -3013,9 +3013,9 @@ mod tests {
 
     #[test]
     fn test_sync_manager_creation() {
-        let manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
         assert!(matches!(*manager.state(), SyncState::Idle));
-        assert_eq!(manager.local_tip(), (0, Hash::zero(), 0));
+        assert_eq!(manager.local_tip(), (0, Hash::ZERO, 0));
     }
 
     // =========================================================================
@@ -3028,15 +3028,15 @@ mod tests {
     fn test_production_allowed_when_ahead_of_peers() {
         // Layer 7 removed: node at height 992, peers at 910 — should still produce.
         // Forks are resolved by longest chain reorg, not by stopping production.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 992;
         manager.local_slot = 992;
 
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
-        manager.add_peer(peer1, 910, Hash::zero(), 910);
-        manager.add_peer(peer2, 910, Hash::zero(), 910);
+        manager.add_peer(peer1, 910, Hash::ZERO, 910);
+        manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
@@ -3049,7 +3049,7 @@ mod tests {
     fn test_production_allowed_when_within_range_of_peers() {
         // Scenario: Node at height 912, peers at 910 (only 2 blocks ahead)
         // Should be allowed to produce (within threshold)
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Set local height to 912
         manager.local_height = 912;
@@ -3058,8 +3058,8 @@ mod tests {
         // Add TWO peers at height 910 to satisfy min_peers_for_production
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
-        manager.add_peer(peer1, 910, Hash::zero(), 910);
-        manager.add_peer(peer2, 910, Hash::zero(), 910);
+        manager.add_peer(peer1, 910, Hash::ZERO, 910);
+        manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
         // Need to clear bootstrap phase requirements
         manager.has_connected_to_peer = true;
@@ -3073,15 +3073,15 @@ mod tests {
     #[test]
     fn test_max_heights_ahead_no_longer_blocks() {
         // Layer 7 removed: configurable threshold no longer blocks production.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
         manager.set_max_heights_ahead(2);
         manager.local_height = 915;
         manager.local_slot = 915;
 
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
-        manager.add_peer(peer1, 910, Hash::zero(), 910);
-        manager.add_peer(peer2, 910, Hash::zero(), 910);
+        manager.add_peer(peer1, 910, Hash::ZERO, 910);
+        manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
@@ -3099,15 +3099,15 @@ mod tests {
     fn test_forked_node_scenario_produces_on_best_chain() {
         // Layer 7 removed (2026-02-25): A node ahead of peers should still produce.
         // If it's truly forked, the longest chain rule will resolve it via reorg.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 992;
         manager.local_slot = 992;
 
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
-        manager.add_peer(peer1, 910, Hash::zero(), 910);
-        manager.add_peer(peer2, 910, Hash::zero(), 910);
+        manager.add_peer(peer1, 910, Hash::ZERO, 910);
+        manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
@@ -3129,7 +3129,7 @@ mod tests {
     fn test_insufficient_peers_blocks_production() {
         // Scenario: Node with only 1 peer (echo chamber risk)
         // Should be blocked from producing to prevent isolated cluster forks
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Node at height 100
         manager.local_height = 100;
@@ -3137,7 +3137,7 @@ mod tests {
 
         // Only 1 peer - insufficient for safe production
         let peer = PeerId::random();
-        manager.add_peer(peer, 100, Hash::zero(), 100);
+        manager.add_peer(peer, 100, Hash::ZERO, 100);
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
 
@@ -3157,7 +3157,7 @@ mod tests {
     #[test]
     fn test_sufficient_peers_allows_production() {
         // Scenario: Node with 2+ peers (safe to produce)
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Node at height 100
         manager.local_height = 100;
@@ -3166,8 +3166,8 @@ mod tests {
         // 2 peers - sufficient for safe production
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
-        manager.add_peer(peer1, 100, Hash::zero(), 100);
-        manager.add_peer(peer2, 100, Hash::zero(), 100);
+        manager.add_peer(peer1, 100, Hash::ZERO, 100);
+        manager.add_peer(peer2, 100, Hash::ZERO, 100);
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
 
@@ -3180,7 +3180,7 @@ mod tests {
         // Scenario: Node at height 0 (genesis) with only 1 peer
         // Should NOT be blocked by insufficient peers at genesis
         // (there may be legitimate first-producer scenarios)
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Node at height 0 (genesis)
         manager.local_height = 0;
@@ -3188,7 +3188,7 @@ mod tests {
 
         // Only 1 peer at genesis
         let peer = PeerId::random();
-        manager.add_peer(peer, 0, Hash::zero(), 0);
+        manager.add_peer(peer, 0, Hash::ZERO, 0);
         manager.has_connected_to_peer = true;
         manager.first_peer_status_received = Some(std::time::Instant::now());
 
@@ -3207,7 +3207,7 @@ mod tests {
     #[test]
     fn test_ahead_of_network_tip_still_produces() {
         // Layer 7 removed (2026-02-25): Node ahead of network_tip should still produce.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 136;
         manager.local_slot = 136;
@@ -3243,7 +3243,7 @@ mod tests {
         // Echo chambers are now detected by other mechanisms:
         // - Sync failures (P0 #4)
         // - InsufficientPeers check (P0 #5)
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Node at height 136
         manager.local_height = 136;
@@ -3252,8 +3252,8 @@ mod tests {
         // Two peers: one behind (93), one at same height (136)
         let behind_peer = PeerId::random();
         let synced_peer = PeerId::random();
-        manager.add_peer(behind_peer, 93, Hash::zero(), 93);
-        manager.add_peer(synced_peer, 136, Hash::zero(), 136);
+        manager.add_peer(behind_peer, 93, Hash::ZERO, 93);
+        manager.add_peer(synced_peer, 136, Hash::ZERO, 136);
 
         // Mark bootstrap checks as passed
         manager.has_connected_to_peer = true;
@@ -3289,7 +3289,7 @@ mod tests {
         // with inflated slots from triggering unnecessary sync.
         // Peer behind in height (834 < 876) but ahead in slot (919 > 261)
         // should NOT trigger sync.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 876;
         manager.local_slot = 261;
@@ -3299,7 +3299,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 834,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 919,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3316,7 +3316,7 @@ mod tests {
     #[test]
     fn test_should_sync_triggers_when_peer_ahead_in_height() {
         // should_sync() triggers when a peer has more blocks (higher height)
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 100;
         manager.local_slot = 100;
@@ -3326,7 +3326,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 500,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 500,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3344,7 +3344,7 @@ mod tests {
     fn test_best_peer_ignores_peer_behind_in_height() {
         // best_peer() only returns peers with MORE BLOCKS (higher height).
         // A peer behind in height but ahead in slot should be ignored.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.local_height = 876;
         manager.local_slot = 261;
@@ -3354,7 +3354,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 834,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 919,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3373,7 +3373,7 @@ mod tests {
     fn test_stall_recovery_resets_to_idle() {
         // Scenario: Synchronized state but significantly behind in slots.
         // cleanup() should detect stall and reset to Idle.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Simulate: height matches but slots diverge (the deadlock scenario)
         manager.local_height = 876;
@@ -3385,7 +3385,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 876,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 920,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3408,7 +3408,7 @@ mod tests {
     fn test_update_local_tip_requires_slot_alignment() {
         // Scenario: peer at height 100/slot 500, we reach height 100 but only slot 100.
         // update_local_tip should NOT mark us as Synchronized because slots don't align.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Start in a syncing state
         let peer = PeerId::random();
@@ -3416,7 +3416,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 100,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 500,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3431,7 +3431,7 @@ mod tests {
         };
 
         // Height matches peer but slot is way behind
-        manager.update_local_tip(100, Hash::zero(), 100);
+        manager.update_local_tip(100, Hash::ZERO, 100);
 
         // Should NOT be Synchronized because slot lag = 500 - 100 = 400 >> max_slots_behind (2)
         assert!(
@@ -3447,7 +3447,7 @@ mod tests {
         // Reproduce: node downloads 58 blocks, applies them all, but network_tip
         // advanced to 59 during processing. Processing state with no pending work
         // should transition to Idle and start a new sync round.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         // Simulate: downloaded blocks 1-58, now in Processing state
         manager.state = SyncState::Processing { height: 1 };
@@ -3459,7 +3459,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 59,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 64,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3487,7 +3487,7 @@ mod tests {
     fn test_processing_stuck_recovery_via_cleanup() {
         // Safety net: even if block_applied doesn't fire, cleanup() detects
         // a stuck Processing state with no pending work.
-        let mut manager = SyncManager::new(SyncConfig::default(), Hash::zero());
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
         manager.state = SyncState::Processing { height: 1 };
         manager.local_height = 58;
@@ -3503,7 +3503,7 @@ mod tests {
             peer,
             PeerSyncStatus {
                 best_height: 65,
-                best_hash: Hash::zero(),
+                best_hash: Hash::ZERO,
                 best_slot: 70,
                 last_status_response: Instant::now(),
                 last_block_received: None,
@@ -3536,8 +3536,8 @@ mod tests {
         BlockHeader {
             version: 1,
             prev_hash,
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: now,
             slot,
             producer: crypto::PublicKey::from_bytes([0u8; 32]),
@@ -3560,11 +3560,11 @@ mod tests {
     #[test]
     fn test_next_request_guard_prevents_duplicate_requests() {
         // Fix 1: next_request() must return None when peer already has pending request
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
         let peer = PeerId::random();
-        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.add_peer(peer, 1000, Hash::ZERO, 1000);
 
         // Trigger sync
         manager.start_sync();
@@ -3590,11 +3590,11 @@ mod tests {
         // Fix 2: A single chain break (stale response) must NOT destroy progress.
         // process_headers() doesn't modify expected_prev_hash when valid_count=0,
         // so the downloader state is still correct — just skip and continue.
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
         let peer = PeerId::random();
-        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.add_peer(peer, 1000, Hash::ZERO, 1000);
         manager.start_sync();
 
         // First: download some valid headers to build up state
@@ -3637,11 +3637,11 @@ mod tests {
     #[test]
     fn test_start_sync_clears_header_downloader() {
         // Fix 3: start_sync() must clear stale expected_prev_hash
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
         let peer = PeerId::random();
-        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.add_peer(peer, 1000, Hash::ZERO, 1000);
 
         // Poison the header downloader with a stale expected_prev_hash
         let chain = build_header_chain(genesis, 5);
@@ -3663,11 +3663,11 @@ mod tests {
     #[test]
     fn test_stale_response_discarded_when_no_pending_request() {
         // Fix 4: responses with no matching pending_request must be discarded
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
         let peer = PeerId::random();
-        manager.add_peer(peer, 1000, Hash::zero(), 1000);
+        manager.add_peer(peer, 1000, Hash::ZERO, 1000);
         manager.start_sync();
 
         // Send request and consume response (clears pending_request)
@@ -3692,7 +3692,7 @@ mod tests {
         // 3. Response arrives with valid headers
         // 4. Next request goes out for the continuation
         // 5. Second response arrives — chain continues correctly
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut manager = SyncManager::new(SyncConfig::default(), genesis);
 
         let peer = PeerId::random();
@@ -3712,7 +3712,7 @@ mod tests {
 
         // After response processed: state should still be DownloadingHeaders
         // and expected_prev_hash should be at header 5
-        let expected_hash = full_chain[4].hash();
+        let _expected_hash = full_chain[4].hash();
         if let SyncState::DownloadingHeaders { headers_count, .. } = manager.state {
             assert_eq!(headers_count, 5, "Should have 5 headers counted");
         } else {

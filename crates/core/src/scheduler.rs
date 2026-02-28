@@ -346,8 +346,7 @@ mod tests {
     #[test]
     fn test_single_producer() {
         let pubkey = make_pubkey(1);
-        let scheduler =
-            DeterministicScheduler::new(vec![ScheduledProducer::new(pubkey.clone(), 5)]);
+        let scheduler = DeterministicScheduler::new(vec![ScheduledProducer::new(pubkey, 5)]);
 
         assert_eq!(scheduler.producer_count(), 1);
         assert_eq!(scheduler.total_bonds(), 5);
@@ -365,8 +364,8 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 3),
-            ScheduledProducer::new(bob.clone(), 2),
+            ScheduledProducer::new(alice, 3),
+            ScheduledProducer::new(bob, 2),
         ]);
 
         assert_eq!(scheduler.total_bonds(), 5);
@@ -390,9 +389,9 @@ mod tests {
         let charlie = make_pubkey(3);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 10),
-            ScheduledProducer::new(bob.clone(), 10),
-            ScheduledProducer::new(charlie.clone(), 10),
+            ScheduledProducer::new(alice, 10),
+            ScheduledProducer::new(bob, 10),
+            ScheduledProducer::new(charlie, 10),
         ]);
 
         // Total = 30 tickets
@@ -422,8 +421,8 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 3),
-            ScheduledProducer::new(bob.clone(), 3),
+            ScheduledProducer::new(alice, 3),
+            ScheduledProducer::new(bob, 3),
         ]);
 
         // At slot 0, Alice is rank 0
@@ -440,9 +439,9 @@ mod tests {
         let charlie = make_pubkey(3);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 10),
-            ScheduledProducer::new(bob.clone(), 10),
-            ScheduledProducer::new(charlie.clone(), 10),
+            ScheduledProducer::new(alice, 10),
+            ScheduledProducer::new(bob, 10),
+            ScheduledProducer::new(charlie, 10),
         ]);
 
         // At 0 seconds, only primary is eligible (rank 0)
@@ -451,15 +450,15 @@ mod tests {
 
         // At 1 second, ranks 0-1 eligible
         let eligible = scheduler.eligible_producers(0, 1);
-        assert!(eligible.len() >= 1);
+        assert!(!eligible.is_empty());
 
         // At 5 seconds, ranks 0-5 eligible
         let eligible = scheduler.eligible_producers(0, 5);
-        assert!(eligible.len() >= 1);
+        assert!(!eligible.is_empty());
 
         // At 9 seconds, all 10 ranks eligible
         let eligible = scheduler.eligible_producers(0, 9);
-        assert!(eligible.len() >= 1);
+        assert!(!eligible.is_empty());
     }
 
     #[test]
@@ -468,8 +467,8 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 10),
-            ScheduledProducer::new(bob.clone(), 10),
+            ScheduledProducer::new(alice, 10),
+            ScheduledProducer::new(bob, 10),
         ]);
 
         // Total = 20 bonds
@@ -503,8 +502,8 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 3),
-            ScheduledProducer::new(bob.clone(), 2),
+            ScheduledProducer::new(alice, 3),
+            ScheduledProducer::new(bob, 2),
         ]);
 
         // At slot 0, Alice's next primary is immediately (slot 0)
@@ -550,18 +549,15 @@ mod tests {
         let bond_unit = 10_000_000_000u64;
 
         // 100 DOLI = 1 bond unit
-        let producer =
-            ScheduledProducer::from_bond_amount(pubkey.clone(), 10_000_000_000, bond_unit);
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 10_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 1);
 
         // 1000 DOLI = 10 bond units
-        let producer =
-            ScheduledProducer::from_bond_amount(pubkey.clone(), 100_000_000_000, bond_unit);
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 100_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 10);
 
         // Partial bonds round down
-        let producer =
-            ScheduledProducer::from_bond_amount(pubkey.clone(), 15_000_000_000, bond_unit);
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 15_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 1); // 150 DOLI = 1 bond (rounds down)
     }
 
@@ -587,13 +583,13 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler1 = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 3),
-            ScheduledProducer::new(bob.clone(), 2),
+            ScheduledProducer::new(alice, 3),
+            ScheduledProducer::new(bob, 2),
         ]);
 
         let scheduler2 = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(bob.clone(), 2),
-            ScheduledProducer::new(alice.clone(), 3),
+            ScheduledProducer::new(bob, 2),
+            ScheduledProducer::new(alice, 3),
         ]);
 
         // Both should select same producer for each slot
@@ -611,8 +607,8 @@ mod tests {
         let bob = make_pubkey(2);
 
         let scheduler = DeterministicScheduler::new(vec![
-            ScheduledProducer::new(alice.clone(), 0), // Should be filtered
-            ScheduledProducer::new(bob.clone(), 5),
+            ScheduledProducer::new(alice, 0), // Should be filtered
+            ScheduledProducer::new(bob, 5),
         ]);
 
         assert_eq!(scheduler.producer_count(), 1);

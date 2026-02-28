@@ -1266,7 +1266,7 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey = keypair.public_key();
 
-        let tx = Transaction::new_exit(pubkey.clone());
+        let tx = Transaction::new_exit(*pubkey);
 
         assert!(tx.is_exit());
         assert!(!tx.is_coinbase());
@@ -1285,7 +1285,7 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey = keypair.public_key();
 
-        let tx = Transaction::new_exit(pubkey.clone());
+        let tx = Transaction::new_exit(*pubkey);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -1300,7 +1300,7 @@ mod tests {
         let pubkey = keypair.public_key();
         let recipient_hash = crypto::hash::hash(b"recipient");
 
-        let tx = Transaction::new_claim_reward(pubkey.clone(), 500_000_000, recipient_hash);
+        let tx = Transaction::new_claim_reward(*pubkey, 500_000_000, recipient_hash);
 
         assert!(tx.is_claim_reward());
         assert!(!tx.is_coinbase());
@@ -1322,7 +1322,7 @@ mod tests {
         let pubkey = keypair.public_key();
         let recipient_hash = crypto::hash::hash(b"recipient");
 
-        let tx = Transaction::new_claim_reward(pubkey.clone(), 1_000_000_000, recipient_hash);
+        let tx = Transaction::new_claim_reward(*pubkey, 1_000_000_000, recipient_hash);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -1337,7 +1337,7 @@ mod tests {
         let pubkey = keypair.public_key();
         let recipient_hash = crypto::hash::hash(b"recipient");
 
-        let tx = Transaction::new_claim_bond(pubkey.clone(), 100_000_000_000, recipient_hash);
+        let tx = Transaction::new_claim_bond(*pubkey, 100_000_000_000, recipient_hash);
 
         assert!(tx.is_claim_bond());
         assert!(!tx.is_coinbase());
@@ -1359,7 +1359,7 @@ mod tests {
         let pubkey = keypair.public_key();
         let recipient_hash = crypto::hash::hash(b"recipient");
 
-        let tx = Transaction::new_claim_bond(pubkey.clone(), 50_000_000_000, recipient_hash);
+        let tx = Transaction::new_claim_bond(*pubkey, 50_000_000_000, recipient_hash);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -1383,7 +1383,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 12345,
-            producer: producer_keypair.public_key().clone(),
+            producer: *producer_keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -1394,7 +1394,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 12345,
-            producer: producer_keypair.public_key().clone(),
+            producer: *producer_keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -1405,7 +1405,7 @@ mod tests {
         };
 
         let slash_data = SlashData {
-            producer_pubkey: producer_keypair.public_key().clone(),
+            producer_pubkey: *producer_keypair.public_key(),
             evidence,
             reporter_signature: Signature::default(),
         };
@@ -1440,7 +1440,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 99999,
-            producer: producer_keypair.public_key().clone(),
+            producer: *producer_keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -1451,7 +1451,7 @@ mod tests {
             presence_root: Hash::ZERO,
             timestamp: 0,
             slot: 99999,
-            producer: producer_keypair.public_key().clone(),
+            producer: *producer_keypair.public_key(),
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
         };
@@ -1462,7 +1462,7 @@ mod tests {
         };
 
         let slash_data = SlashData {
-            producer_pubkey: producer_keypair.public_key().clone(),
+            producer_pubkey: *producer_keypair.public_key(),
             evidence,
             reporter_signature: Signature::default(),
         };
@@ -1496,7 +1496,7 @@ mod tests {
     #[test]
     fn test_epoch_reward_data_serialization() {
         let keypair = crypto::KeyPair::generate();
-        let data = EpochRewardData::new(42, keypair.public_key().clone());
+        let data = EpochRewardData::new(42, *keypair.public_key());
 
         let bytes = data.to_bytes();
         let parsed = EpochRewardData::from_bytes(&bytes).unwrap();
@@ -1519,10 +1519,10 @@ mod tests {
             crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
 
         let tx = Transaction::new_epoch_reward(
-            5,                            // epoch
-            keypair.public_key().clone(), // recipient
-            1_000_000,                    // amount
-            pubkey_hash,                  // recipient hash
+            5,                     // epoch
+            *keypair.public_key(), // recipient
+            1_000_000,             // amount
+            pubkey_hash,           // recipient hash
         );
 
         assert!(tx.is_epoch_reward());
@@ -1541,7 +1541,7 @@ mod tests {
     fn test_epoch_reward_is_not_coinbase() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = Hash::ZERO;
-        let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         assert!(!tx.is_coinbase());
         assert!(tx.is_epoch_reward());
@@ -1552,8 +1552,8 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = Hash::ZERO;
 
-        let tx1 = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
-        let tx2 = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, pubkey_hash);
+        let tx1 = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
+        let tx2 = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
         assert_eq!(tx1.hash(), tx2.hash());
     }
@@ -1564,10 +1564,10 @@ mod tests {
         let pubkey_hash = crypto::hash::hash(b"recipient");
 
         let tx = Transaction::new_epoch_reward(
-            100,                          // epoch
-            keypair.public_key().clone(), // recipient
-            50_000_000,                   // amount
-            pubkey_hash,                  // recipient hash
+            100,                   // epoch
+            *keypair.public_key(), // recipient
+            50_000_000,            // amount
+            pubkey_hash,           // recipient hash
         );
 
         let bytes = tx.serialize();
@@ -1594,7 +1594,7 @@ mod tests {
         let target = crypto::KeyPair::generate();
 
         let tx = Transaction::new_remove_maintainer(
-            target.public_key().clone(),
+            *target.public_key(),
             vec![], // Empty sigs for test - real tx would have 3+ sigs
             Some("Inactive for 6 months".to_string()),
         );
@@ -1617,7 +1617,7 @@ mod tests {
         let target = crypto::KeyPair::generate();
 
         let tx = Transaction::new_add_maintainer(
-            target.public_key().clone(),
+            *target.public_key(),
             vec![], // Empty sigs for test
         );
 
@@ -1639,7 +1639,7 @@ mod tests {
         let target = crypto::KeyPair::generate();
 
         let tx = Transaction::new_remove_maintainer(
-            target.public_key().clone(),
+            *target.public_key(),
             vec![],
             Some("Test removal".to_string()),
         );
@@ -1660,7 +1660,7 @@ mod tests {
         assert!(tx.maintainer_change_data().is_none());
 
         let keypair = crypto::KeyPair::generate();
-        let tx = Transaction::new_exit(keypair.public_key().clone());
+        let tx = Transaction::new_exit(*keypair.public_key());
         assert!(tx.maintainer_change_data().is_none());
     }
 
@@ -1668,11 +1668,7 @@ mod tests {
     fn test_delegate_bond_transaction() {
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-            5,
-        );
+        let data = DelegateBondData::new(*delegator.public_key(), *delegate.public_key(), 5);
         let tx = Transaction::new_delegate_bond(data);
 
         assert!(tx.is_delegate_bond());
@@ -1691,10 +1687,7 @@ mod tests {
     fn test_revoke_delegation_transaction() {
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-        );
+        let data = RevokeDelegationData::new(*delegator.public_key(), *delegate.public_key());
         let tx = Transaction::new_revoke_delegation(data);
 
         assert!(tx.is_revoke_delegation());
@@ -1712,11 +1705,7 @@ mod tests {
     fn test_delegate_bond_data_serialization() {
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = DelegateBondData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-            42,
-        );
+        let data = DelegateBondData::new(*delegator.public_key(), *delegate.public_key(), 42);
         let bytes = data.to_bytes();
         let recovered = DelegateBondData::from_bytes(&bytes).unwrap();
         assert_eq!(data, recovered);
@@ -1732,10 +1721,7 @@ mod tests {
     fn test_revoke_delegation_data_serialization() {
         let delegator = crypto::KeyPair::generate();
         let delegate = crypto::KeyPair::generate();
-        let data = RevokeDelegationData::new(
-            delegator.public_key().clone(),
-            delegate.public_key().clone(),
-        );
+        let data = RevokeDelegationData::new(*delegator.public_key(), *delegate.public_key());
         let bytes = data.to_bytes();
         let recovered = RevokeDelegationData::from_bytes(&bytes).unwrap();
         assert_eq!(data, recovered);

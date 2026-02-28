@@ -85,7 +85,7 @@ impl EpochRewardTracker {
                         (self.epoch_reward_pool * **blocks) / total_blocks
                     };
                     distributed += amount;
-                    ((*pubkey).clone(), amount, **blocks)
+                    (*(*pubkey), amount, **blocks)
                 })
                 .collect();
 
@@ -122,9 +122,9 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
     let producer2 = KeyPair::generate(); // Joins mid-epoch (slot 10)
     let producer3 = KeyPair::generate(); // Joins at epoch 2 start (slot 21)
 
-    let pubkey1 = producer1.public_key().clone();
-    let pubkey2 = producer2.public_key().clone();
-    let pubkey3 = producer3.public_key().clone();
+    let pubkey1 = *producer1.public_key();
+    let pubkey2 = *producer2.public_key();
+    let pubkey3 = *producer3.public_key();
 
     let hash1 = hash(pubkey1.as_bytes());
     let hash2 = hash(pubkey2.as_bytes());
@@ -184,7 +184,7 @@ async fn test_producer_joins_mid_epoch_no_immediate_rewards() {
         node.add_block(block).await.unwrap();
 
         // Track in reward tracker
-        tracker.track_block(producer.1.clone(), slot as BlockHeight);
+        tracker.track_block(*producer.1, slot as BlockHeight);
 
         // Check for epoch boundary
         if let Some(rewards) = tracker.check_epoch_boundary(slot as BlockHeight) {
@@ -343,8 +343,8 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
     let producer1 = KeyPair::generate(); // Produces blocks
     let producer2 = KeyPair::generate(); // Joins but produces no blocks this epoch
 
-    let pubkey1 = producer1.public_key().clone();
-    let pubkey2 = producer2.public_key().clone();
+    let pubkey1 = *producer1.public_key();
+    let pubkey2 = *producer2.public_key();
     let hash1 = hash(pubkey1.as_bytes());
 
     // Genesis block
@@ -362,7 +362,7 @@ async fn test_producer_joins_but_no_blocks_no_rewards() {
         node.add_block(block).await.unwrap();
 
         // Only track P1's blocks
-        tracker.track_block(pubkey1.clone(), slot as BlockHeight);
+        tracker.track_block(pubkey1, slot as BlockHeight);
     }
 
     // Check epoch boundary (30 slots per epoch)
@@ -396,7 +396,7 @@ async fn test_ten_producers_fair_distribution() {
 
     // Create 10 producers joining at staggered intervals
     let producers: Vec<KeyPair> = (0..10).map(|_| KeyPair::generate()).collect();
-    let pubkeys: Vec<PublicKey> = producers.iter().map(|p| p.public_key().clone()).collect();
+    let pubkeys: Vec<PublicKey> = producers.iter().map(|p| *p.public_key()).collect();
     let hashes: Vec<_> = pubkeys.iter().map(|pk| hash(pk.as_bytes())).collect();
 
     // Join slots for each producer (spread across first epoch)
@@ -445,7 +445,7 @@ async fn test_ten_producers_fair_distribution() {
         prev_hash = block.hash();
         node.add_block(block).await.unwrap();
 
-        tracker.track_block(pubkeys[producer_idx].clone(), slot as BlockHeight);
+        tracker.track_block(pubkeys[producer_idx], slot as BlockHeight);
 
         if let Some(rewards) = tracker.check_epoch_boundary(slot as BlockHeight) {
             println!(
@@ -498,7 +498,7 @@ async fn test_ten_producers_fair_distribution() {
     println!("Total blocks: {}", total_blocks);
 
     // Verify each producer's reward is proportional to their block count
-    for (pk, amount, blocks) in epoch2 {
+    for (_pk, amount, blocks) in epoch2 {
         let expected_proportional = (total_pool * blocks) / total_blocks;
         let diff = (*amount as i64 - expected_proportional as i64).abs();
 
@@ -536,9 +536,9 @@ async fn test_proportional_rewards_unequal_blocks() {
     let producer2 = KeyPair::generate();
     let producer3 = KeyPair::generate();
 
-    let pubkey1 = producer1.public_key().clone();
-    let pubkey2 = producer2.public_key().clone();
-    let pubkey3 = producer3.public_key().clone();
+    let pubkey1 = *producer1.public_key();
+    let pubkey2 = *producer2.public_key();
+    let pubkey3 = *producer3.public_key();
 
     println!("=== Proportional Rewards Bug Fix Test ===");
     println!("Simulating: Node1=8 blocks, Node2=21 blocks, Node3=1 block");
@@ -557,7 +557,7 @@ async fn test_proportional_rewards_unequal_blocks() {
         } else {
             &pubkey3
         };
-        tracker.track_block(producer.clone(), height);
+        tracker.track_block(*producer, height);
     }
 
     // Get epoch rewards

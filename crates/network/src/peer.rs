@@ -364,7 +364,7 @@ mod tests {
 
         let peer1 = test_peer_id();
         let peer2 = test_peer_id();
-        let peer3 = test_peer_id();
+        let _peer3 = test_peer_id();
         let peer4 = test_peer_id();
 
         // First two from same /24 should be allowed
