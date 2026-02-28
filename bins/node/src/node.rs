@@ -131,8 +131,6 @@ pub struct Node {
     /// Cached genesis VDF proof output (computed in background at startup during genesis).
     /// Used to create a zero-bond Registration TX that proves VDF work on-chain.
     genesis_vdf_output: Option<[u8; 32]>,
-    /// Whether the genesis VDF Registration TX has been included in a produced block.
-    genesis_vdf_submitted: bool,
     /// Cached state root, updated atomically after each block application.
     /// Avoids race conditions when GetStateRoot reads during apply_block.
     /// Tuple: (state_root, block_hash, block_height)
@@ -550,7 +548,6 @@ impl Node {
             producer_liveness,
             snap_sync_height: None,
             genesis_vdf_output: None,
-            genesis_vdf_submitted: false,
             cached_state_root: Arc::new(RwLock::new(None)),
         })
     }
@@ -4469,9 +4466,12 @@ impl Node {
             }
         }
 
-        // During genesis: include VDF proof Registration TX (zero-bond, VDF-only)
+        // During genesis: include VDF proof Registration TX in EVERY block we produce.
+        // Idempotent — derive_genesis_producers_from_chain() deduplicates by public key.
+        // Must not use a one-shot flag: orphaned blocks would set it permanently,
+        // preventing retry in the canonical chain.
         if let Some(vdf_output_bytes) = self.genesis_vdf_output {
-            if self.config.network.is_in_genesis(height) && !self.genesis_vdf_submitted {
+            if self.config.network.is_in_genesis(height) {
                 let reg_data = RegistrationData {
                     public_key: our_pubkey,
                     epoch: 0,
@@ -4491,7 +4491,6 @@ impl Node {
                     extra_data,
                 };
                 builder.add_transaction(reg_tx);
-                self.genesis_vdf_submitted = true;
                 info!(
                     "Included genesis VDF proof Registration TX in block {} for {}",
                     height,
