@@ -64,7 +64,8 @@ use crate::types::{Amount, BlockHeight, Epoch, Era, Slot};
 use serde::{Deserialize, Serialize};
 
 /// Genesis timestamp — must match chainspec.mainnet.json
-pub const GENESIS_TIME: u64 = 1772289945;
+/// Guarded by `test_genesis_time_matches_chainspec` test.
+pub const GENESIS_TIME: u64 = 1772301497;
 
 // ==================== Proof of Time Parameters ====================
 
@@ -4100,5 +4101,17 @@ mod tests {
         // Tier 3 would unsubscribe from BLOCKS_TOPIC, starving the node.
         let unknown_key = crypto::PublicKey::from_bytes([0xFF; 32]);
         assert_eq!(producer_tier(&unknown_key, &tier1_set, &all_sorted), 0);
+    }
+
+    #[test]
+    fn test_genesis_time_matches_chainspec() {
+        let json = include_str!("../../../chainspec.mainnet.json");
+        let spec: serde_json::Value = serde_json::from_str(json).unwrap();
+        let chainspec_time = spec["genesis"]["timestamp"].as_u64().unwrap();
+        assert_eq!(
+            GENESIS_TIME, chainspec_time,
+            "GENESIS_TIME ({}) is out of sync with chainspec.mainnet.json ({})",
+            GENESIS_TIME, chainspec_time
+        );
     }
 }
