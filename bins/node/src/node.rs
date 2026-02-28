@@ -1233,6 +1233,36 @@ impl Node {
 
             NetworkEvent::NewBlock(block, source_peer) => {
                 debug!("Received new block: {} from {}", block.hash(), source_peer);
+
+                // DEFENSE: Slot sanity — reject gossip blocks with wildly wrong slots.
+                // Prevents genesis-time-hijack attacks where a node compiled with a
+                // different GENESIS_TIME produces blocks with desfasados slots.
+                // Only applies to GOSSIP blocks — sync blocks (header-first download)
+                // bypass this via apply_block() directly, so initial sync is unaffected.
+                {
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let current_slot = self.params.timestamp_to_slot(now_secs) as u64;
+                    let block_slot = block.header.slot as u64;
+
+                    if block_slot > current_slot + consensus::MAX_FUTURE_SLOTS {
+                        warn!(
+                            "SLOT_SANITY: Rejecting gossip block {} — slot {} too far in future (current={}, limit=+{})",
+                            block.hash(), block_slot, current_slot, consensus::MAX_FUTURE_SLOTS
+                        );
+                        return Ok(());
+                    }
+                    if current_slot > block_slot + consensus::MAX_PAST_SLOTS {
+                        warn!(
+                            "SLOT_SANITY: Rejecting gossip block {} — slot {} too far in past (current={}, limit=-{})",
+                            block.hash(), block_slot, current_slot, consensus::MAX_PAST_SLOTS
+                        );
+                        return Ok(());
+                    }
+                }
+
                 // Update network tip slot from gossip - this tells us what slot the network has reached
                 // even if we don't know which specific peer sent the block.
                 // This is critical for the "behind peers" production safety check.
