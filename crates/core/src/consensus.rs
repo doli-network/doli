@@ -64,7 +64,7 @@ use crate::types::{Amount, BlockHeight, Epoch, Era, Slot};
 use serde::{Deserialize, Serialize};
 
 /// Genesis timestamp — must match chainspec.mainnet.json
-pub const GENESIS_TIME: u64 = 1772266416;
+pub const GENESIS_TIME: u64 = 1772267524;
 
 // ==================== Proof of Time Parameters ====================
 
