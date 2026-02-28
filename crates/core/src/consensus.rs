@@ -133,10 +133,6 @@ pub const HALVING_INTERVAL: BlockHeight = SLOTS_PER_ERA;
 /// 7 days = 60,480 blocks
 pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 
-/// Height at which merkle root validation is enforced. Blocks below this
-/// height were produced with incorrect merkle roots (block coinbase missing
-/// from BlockBuilder). Validation is skipped for those historical blocks.
-pub const MERKLE_FIX_HEIGHT: BlockHeight = 70_000;
 
 /// Liveness window: producers who haven't produced within this many blocks
 /// are excluded from primary scheduling (but eligible for re-entry slots).

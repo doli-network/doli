@@ -2783,10 +2783,8 @@ impl Node {
 
         let height = self.chain_state.read().await.best_height + 1;
 
-        if height >= consensus::MERKLE_FIX_HEIGHT {
-            self.validate_block_for_apply(&block, height, ValidationMode::Full)
-                .await?;
-        }
+        self.validate_block_for_apply(&block, height, ValidationMode::Full)
+            .await?;
 
         info!("Applying block {} at height {}", block_hash, height);
 
