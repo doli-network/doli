@@ -891,11 +891,10 @@ mod tests {
 
     #[test]
     fn test_genesis_blocks_mainnet_testnet() {
-        // PRODUCTION: 360 blocks (1 hour), TEST: 32 blocks (~5 min)
-        assert_eq!(Network::Mainnet.genesis_blocks(), 32);
+        assert_eq!(Network::Mainnet.genesis_blocks(), 360);
         assert!(Network::Mainnet.is_in_genesis(1));
-        assert!(Network::Mainnet.is_in_genesis(32));
-        assert!(!Network::Mainnet.is_in_genesis(33));
+        assert!(Network::Mainnet.is_in_genesis(360));
+        assert!(!Network::Mainnet.is_in_genesis(361));
 
         // Testnet has no genesis phase (pre-registered producers)
         assert_eq!(Network::Testnet.genesis_blocks(), 0);
