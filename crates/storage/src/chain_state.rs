@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_chain_state_new() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let state = ChainState::new(genesis);
 
         assert!(state.is_genesis());
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_chain_state_update() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         let new_hash = crypto::hash::hash(b"block1");
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_registration_chain_first_registration() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let state = ChainState::new(genesis);
 
         // First registration expects ZERO hash and sequence 0
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_registration_chain_subsequent_registrations() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Record first registration
@@ -355,13 +355,13 @@ mod tests {
 
     #[test]
     fn test_registration_chain_prevents_parallel_attack() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Attacker tries to register two nodes "simultaneously"
         // Both claim to be the first registration
         let attacker_reg1 = crypto::hash::hash(b"attacker1");
-        let attacker_reg2 = crypto::hash::hash(b"attacker2");
+        let _attacker_reg2 = crypto::hash::hash(b"attacker2");
 
         // First registration succeeds
         assert!(state.verify_registration_chain(Hash::ZERO, 0));
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_apply_coinbase() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Apply first coinbase
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_apply_coinbase_enforces_supply_cap() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Mint almost all supply
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_remaining_supply() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Initially all supply remains
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_effective_reward() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         let full_reward = 100_000_000;
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_supply_never_exceeds_cap() {
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let mut state = ChainState::new(genesis);
 
         // Simulate mining many blocks
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_serialize_canonical_fixed_size() {
-        let state = ChainState::new(Hash::zero());
+        let state = ChainState::new(Hash::ZERO);
         let bytes = state.serialize_canonical();
         assert_eq!(bytes.len(), 140, "canonical bytes must be exactly 140");
     }
@@ -501,8 +501,8 @@ mod tests {
 
     #[test]
     fn test_serialize_canonical_different_states_differ() {
-        let s1 = ChainState::new(Hash::zero());
-        let mut s2 = ChainState::new(Hash::zero());
+        let s1 = ChainState::new(Hash::ZERO);
+        let mut s2 = ChainState::new(Hash::ZERO);
         s2.update(crypto::hash::hash(b"block1"), 1, 1);
 
         assert_ne!(
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_serialize_canonical_total_work_equals_height() {
-        let mut state = ChainState::new(Hash::zero());
+        let mut state = ChainState::new(Hash::ZERO);
         // Simulate a node that was restarted at height 1000 and then processed 50 more blocks
         // Old bug: total_work would be 50 (counted from restart)
         // Fix: total_work = height always
@@ -523,8 +523,8 @@ mod tests {
 
         // Two nodes with the same best block but different restart histories
         // must produce identical canonical bytes
-        let mut node_a = ChainState::new(Hash::zero());
-        let mut node_b = ChainState::new(Hash::zero());
+        let mut node_a = ChainState::new(Hash::ZERO);
+        let mut node_b = ChainState::new(Hash::ZERO);
         let block_hash = crypto::hash::hash(b"block5000");
         node_a.update(block_hash, 5000, 10000);
         node_b.total_work = 999; // simulate stale value from old code

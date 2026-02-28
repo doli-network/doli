@@ -597,6 +597,7 @@ impl<'de> Deserialize<'de> for Address {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -683,7 +684,7 @@ mod tests {
     #[test]
     fn test_private_key_debug_redacted() {
         let private = PrivateKey::generate();
-        let debug = format!("{:?}", private);
+        let debug = format!("{private:?}");
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains(&private.to_hex()));
     }

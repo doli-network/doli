@@ -967,8 +967,8 @@ mod tests {
             0,
             Hash::default(),
             vec![
-                ProducerPresenceState::with_bonds(producer1.clone(), 0, 5), // 5 bonds
-                ProducerPresenceState::with_bonds(producer2.clone(), 0, 10), // 10 bonds
+                ProducerPresenceState::with_bonds(producer1, 0, 5), // 5 bonds
+                ProducerPresenceState::with_bonds(producer2, 0, 10), // 10 bonds
             ],
         );
 
@@ -1032,10 +1032,10 @@ mod tests {
             for (pubkey, bonds) in eligible {
                 cumulative += *bonds as u64;
                 if ticket_index < cumulative {
-                    return (*pubkey).clone();
+                    return *(*pubkey);
                 }
             }
-            (*eligible.last().unwrap().0).clone()
+            *eligible.last().unwrap().0
         }
 
         // Test first cycle (slots 0-9)

@@ -9,9 +9,10 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use crypto::{hash::hash, Hash, KeyPair};
+use crypto::{hash::hash, KeyPair};
 use doli_core::{
     consensus::{ConsensusParams, RewardMode, REWARD_MATURITY},
+    network::Network,
     transaction::{Output, Transaction, TxType},
     Amount,
 };
@@ -96,8 +97,7 @@ fn test_epoch_reward_transaction_creation() {
     let epoch = 5u64;
     let amount = 100_000_000_000u64; // 100 DOLI
 
-    let tx =
-        Transaction::new_epoch_reward(epoch, keypair.public_key().clone(), amount, recipient_hash);
+    let tx = Transaction::new_epoch_reward(epoch, *keypair.public_key(), amount, recipient_hash);
 
     assert_eq!(tx.tx_type, TxType::EpochReward);
     assert!(tx.inputs.is_empty()); // Minted, no inputs
@@ -114,8 +114,7 @@ fn test_epoch_reward_transaction_data() {
     let epoch = 42u64;
     let amount = 50_000_000_000u64;
 
-    let tx =
-        Transaction::new_epoch_reward(epoch, keypair.public_key().clone(), amount, recipient_hash);
+    let tx = Transaction::new_epoch_reward(epoch, *keypair.public_key(), amount, recipient_hash);
 
     // Verify epoch reward data can be extracted
     let data = tx
@@ -130,7 +129,7 @@ fn test_epoch_reward_has_correct_type() {
     let keypair = KeyPair::generate();
     let recipient_hash = hash(keypair.public_key().as_bytes());
 
-    let tx = Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1000, recipient_hash);
+    let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, recipient_hash);
 
     // Type should be EpochReward (10)
     assert_eq!(tx.tx_type, TxType::EpochReward);
@@ -148,12 +147,8 @@ fn test_epoch_reward_utxo_maturity() {
     let recipient_hash = hash(keypair.public_key().as_bytes());
 
     // Create an epoch reward transaction
-    let tx = Transaction::new_epoch_reward(
-        1,
-        keypair.public_key().clone(),
-        100_000_000_000,
-        recipient_hash,
-    );
+    let tx =
+        Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
 
     // Create UTXO entry for the epoch reward (created at height 100)
     let entry = UtxoEntry {
@@ -164,13 +159,13 @@ fn test_epoch_reward_utxo_maturity() {
     };
 
     // Should NOT be spendable before maturity (100 confirmations)
-    assert!(!entry.is_spendable_at(100)); // 0 confirmations
-    assert!(!entry.is_spendable_at(150)); // 50 confirmations
-    assert!(!entry.is_spendable_at(199)); // 99 confirmations
+    assert!(!entry.is_spendable_at_for_network(100, Network::Mainnet)); // 0 confirmations
+    assert!(!entry.is_spendable_at_for_network(150, Network::Mainnet)); // 50 confirmations
+    assert!(!entry.is_spendable_at_for_network(199, Network::Mainnet)); // 99 confirmations
 
     // Should be spendable at and after maturity
-    assert!(entry.is_spendable_at(200)); // Exactly 100 confirmations
-    assert!(entry.is_spendable_at(300)); // 200 confirmations
+    assert!(entry.is_spendable_at_for_network(200, Network::Mainnet)); // Exactly 100 confirmations
+    assert!(entry.is_spendable_at_for_network(300, Network::Mainnet)); // 200 confirmations
 }
 
 #[test]
@@ -189,10 +184,10 @@ fn test_coinbase_maturity_unchanged() {
     };
 
     // Coinbase should also require 100 confirmations
-    assert!(!entry.is_spendable_at(50)); // 0 confirmations
-    assert!(!entry.is_spendable_at(100)); // 50 confirmations
-    assert!(!entry.is_spendable_at(149)); // 99 confirmations
-    assert!(entry.is_spendable_at(150)); // 100 confirmations
+    assert!(!entry.is_spendable_at_for_network(50, Network::Mainnet)); // 0 confirmations
+    assert!(!entry.is_spendable_at_for_network(100, Network::Mainnet)); // 50 confirmations
+    assert!(!entry.is_spendable_at_for_network(149, Network::Mainnet)); // 99 confirmations
+    assert!(entry.is_spendable_at_for_network(150, Network::Mainnet)); // 100 confirmations
 }
 
 #[test]
@@ -211,8 +206,8 @@ fn test_regular_tx_no_maturity() {
     };
 
     // Regular transactions should be spendable immediately
-    assert!(entry.is_spendable_at(50)); // Same height
-    assert!(entry.is_spendable_at(51)); // Next height
+    assert!(entry.is_spendable_at_for_network(50, Network::Mainnet)); // Same height
+    assert!(entry.is_spendable_at_for_network(51, Network::Mainnet)); // Next height
 }
 
 // =============================================================================
@@ -268,7 +263,7 @@ fn test_producer_sorting_deterministic() {
     let producers: Vec<KeyPair> = (0..5).map(|_| KeyPair::generate()).collect();
 
     // Get their public keys
-    let mut pubkeys: Vec<_> = producers.iter().map(|kp| kp.public_key().clone()).collect();
+    let mut pubkeys: Vec<_> = producers.iter().map(|kp| *kp.public_key()).collect();
 
     // Sort by public key bytes
     pubkeys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -366,7 +361,7 @@ fn test_epoch_reward_minimum_amount() {
     // Create epoch reward with minimum valid amount (1 base unit)
     let tx = Transaction::new_epoch_reward(
         1,
-        keypair.public_key().clone(),
+        *keypair.public_key(),
         1, // 1 base unit
         recipient_hash,
     );
@@ -381,8 +376,7 @@ fn test_epoch_reward_large_epoch_number() {
     let recipient_hash = hash(keypair.public_key().as_bytes());
 
     // Create epoch reward with very large epoch number
-    let tx =
-        Transaction::new_epoch_reward(u64::MAX, keypair.public_key().clone(), 1000, recipient_hash);
+    let tx = Transaction::new_epoch_reward(u64::MAX, *keypair.public_key(), 1000, recipient_hash);
 
     let data = tx.epoch_reward_data().unwrap();
     assert_eq!(data.epoch, u64::MAX);
@@ -406,12 +400,8 @@ fn test_utxo_set_add_epoch_reward() {
     let keypair = KeyPair::generate();
     let recipient_hash = hash(keypair.public_key().as_bytes());
 
-    let tx = Transaction::new_epoch_reward(
-        1,
-        keypair.public_key().clone(),
-        100_000_000_000,
-        recipient_hash,
-    );
+    let tx =
+        Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
 
     // Add to UTXO set (not coinbase, height 100)
     utxo_set.add_transaction(&tx, 100, false);
@@ -438,12 +428,8 @@ fn test_utxo_set_epoch_reward_balance() {
     let recipient_hash = hash(keypair.public_key().as_bytes());
 
     // Add epoch reward at height 100
-    let tx = Transaction::new_epoch_reward(
-        1,
-        keypair.public_key().clone(),
-        100_000_000_000,
-        recipient_hash,
-    );
+    let tx =
+        Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
     utxo_set.add_transaction(&tx, 100, false);
 
     // Before maturity, balance should be 0 (not spendable)
@@ -499,7 +485,7 @@ fn test_empty_epoch_produces_no_rewards() {
     let params = ConsensusParams::devnet();
 
     // If epoch 1 has 0 blocks:
-    // - Pool = 0 blocks × block_reward = 0
+    // - Pool = 0 blocks * block_reward = 0
     // - No reward transactions should be created
     // - No division by zero issues
 

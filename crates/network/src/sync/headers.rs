@@ -179,8 +179,8 @@ mod tests {
         BlockHeader {
             version: 1,
             prev_hash,
-            merkle_root: Hash::zero(),
-            presence_root: Hash::zero(),
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
             timestamp: now,
             slot,
             producer: PublicKey::from_bytes([0u8; 32]),
@@ -200,7 +200,7 @@ mod tests {
     fn test_process_valid_headers() {
         let mut downloader = HeaderDownloader::new(2000, Duration::from_secs(30));
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let header1 = create_test_header(genesis, 1);
         let hash1 = header1.hash();
         let header2 = create_test_header(hash1, 2);
@@ -214,10 +214,10 @@ mod tests {
     fn test_process_broken_chain() {
         let mut downloader = HeaderDownloader::new(2000, Duration::from_secs(30));
 
-        let genesis = Hash::zero();
+        let genesis = Hash::ZERO;
         let header1 = create_test_header(genesis, 1);
         // header2 has wrong prev_hash
-        let header2 = create_test_header(Hash::zero(), 2);
+        let header2 = create_test_header(Hash::ZERO, 2);
 
         let valid = downloader.process_headers(&[header1, header2], genesis);
         assert_eq!(valid, 1); // Only first header is valid

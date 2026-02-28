@@ -185,6 +185,7 @@ fn looks_like_bech32(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::hash::hash_with_domain;
@@ -196,7 +197,7 @@ mod tests {
 
         for prefix in &[HRP_MAINNET, HRP_TESTNET, HRP_DEVNET] {
             let encoded = encode(&hash, prefix).unwrap();
-            assert!(encoded.starts_with(&format!("{}1", prefix)));
+            assert!(encoded.starts_with(&format!("{prefix}1")));
 
             let (decoded_hash, decoded_prefix) = decode(&encoded).unwrap();
             assert_eq!(decoded_hash, hash);

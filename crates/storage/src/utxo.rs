@@ -548,7 +548,7 @@ mod tests {
         let mut utxo_set = UtxoSet::new();
 
         // Create a coinbase transaction
-        let tx = Transaction::new_coinbase(500_000_000, Hash::zero(), 0);
+        let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0);
         let tx_hash = tx.hash();
 
         // Add to UTXO set
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_outpoint_serialization() {
-        let outpoint = Outpoint::new(Hash::zero(), 42);
+        let outpoint = Outpoint::new(Hash::ZERO, 42);
         let bytes = outpoint.to_bytes();
         let recovered = Outpoint::from_bytes(&bytes).unwrap();
         assert_eq!(outpoint, recovered);
@@ -584,8 +584,7 @@ mod tests {
     fn test_utxo_entry_epoch_reward_maturity() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx =
-            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
+        let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1_000_000, pubkey_hash);
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
@@ -612,7 +611,7 @@ mod tests {
     #[test]
     fn test_utxo_entry_coinbase_maturity_unchanged() {
         // Verify coinbase still requires same maturity
-        let tx = Transaction::new_coinbase(500_000_000, Hash::zero(), 0);
+        let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0);
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
@@ -642,8 +641,8 @@ mod tests {
         let tx = Transaction {
             version: 1,
             tx_type: doli_core::transaction::TxType::Transfer,
-            inputs: vec![Input::new(Hash::zero(), 0)],
-            outputs: vec![Output::normal(1000, Hash::zero())],
+            inputs: vec![Input::new(Hash::ZERO, 0)],
+            outputs: vec![Output::normal(1000, Hash::ZERO)],
             extra_data: vec![],
         };
         let tx_hash = tx.hash();
@@ -706,8 +705,7 @@ mod tests {
     fn test_utxo_entry_serialization_roundtrip() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
-        let tx =
-            Transaction::new_epoch_reward(1, keypair.public_key().clone(), 1_000_000, pubkey_hash);
+        let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1_000_000, pubkey_hash);
 
         let mut utxo_set = UtxoSet::new();
         utxo_set.add_transaction(&tx, 100, false);

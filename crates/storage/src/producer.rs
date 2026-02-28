@@ -1969,6 +1969,7 @@ impl ProducerSet {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crypto::KeyPair;
@@ -2055,7 +2056,7 @@ mod tests {
         assert!(set.register(info, 1000).is_err());
 
         // Request exit (starts 7-day unbonding period)
-        set.request_exit(&*keypair.public_key(), 2000).unwrap();
+        set.request_exit(keypair.public_key(), 2000).unwrap();
         assert_eq!(set.active_count(), 1); // Still active during unbonding
 
         // Process unbonding (test uses 43,200 blocks as arbitrary duration)
@@ -2083,7 +2084,7 @@ mod tests {
         // Renew with new bond
         let old_bond = set
             .renew(
-                &*keypair.public_key(),
+                keypair.public_key(),
                 70_000_000_000, // Era 2 bond
                 (Hash::ZERO, 1),
                 2_103_400,
@@ -2093,7 +2094,7 @@ mod tests {
 
         assert_eq!(old_bond, 100_000_000_000);
 
-        let renewed = set.get_by_pubkey(&*keypair.public_key()).unwrap();
+        let renewed = set.get_by_pubkey(keypair.public_key()).unwrap();
         assert_eq!(renewed.bond_amount, 70_000_000_000);
         assert_eq!(renewed.registration_era, 1);
     }
@@ -2143,33 +2144,33 @@ mod tests {
         set.register(info, 1000).unwrap();
 
         // No pending rewards initially
-        assert_eq!(set.pending_rewards(&*keypair.public_key()), 0);
+        assert_eq!(set.pending_rewards(keypair.public_key()), 0);
 
         // Distribute block reward
-        set.distribute_block_reward(&*keypair.public_key(), 500_000_000);
-        assert_eq!(set.pending_rewards(&*keypair.public_key()), 500_000_000);
+        set.distribute_block_reward(keypair.public_key(), 500_000_000);
+        assert_eq!(set.pending_rewards(keypair.public_key()), 500_000_000);
 
         // Check blocks_produced was incremented
-        let producer = set.get_by_pubkey(&*keypair.public_key()).unwrap();
+        let producer = set.get_by_pubkey(keypair.public_key()).unwrap();
         assert_eq!(producer.blocks_produced, 1);
 
         // Distribute more rewards
-        set.distribute_block_reward(&*keypair.public_key(), 500_000_000);
-        assert_eq!(set.pending_rewards(&*keypair.public_key()), 1_000_000_000);
+        set.distribute_block_reward(keypair.public_key(), 500_000_000);
+        assert_eq!(set.pending_rewards(keypair.public_key()), 1_000_000_000);
         assert_eq!(
-            set.get_by_pubkey(&*keypair.public_key())
+            set.get_by_pubkey(keypair.public_key())
                 .unwrap()
                 .blocks_produced,
             2
         );
 
         // Process claim
-        let claimed = set.process_claim(&*keypair.public_key());
+        let claimed = set.process_claim(keypair.public_key());
         assert_eq!(claimed, Some(1_000_000_000));
-        assert_eq!(set.pending_rewards(&*keypair.public_key()), 0);
+        assert_eq!(set.pending_rewards(keypair.public_key()), 0);
 
         // Claim again when empty
-        let claimed_again = set.process_claim(&*keypair.public_key());
+        let claimed_again = set.process_claim(keypair.public_key());
         assert_eq!(claimed_again, None);
     }
 
@@ -2213,7 +2214,7 @@ mod tests {
         let info = make_producer(0);
 
         // Discrete yearly steps: 0-1=1, 1-2=2, 2-3=3, 3+=4
-        assert_eq!(info.weight(1 * BLOCKS_PER_YEAR), 2); // Year 1
+        assert_eq!(info.weight(BLOCKS_PER_YEAR), 2); // Year 1
         assert_eq!(info.weight(2 * BLOCKS_PER_YEAR), 3); // Year 2
         assert_eq!(info.weight(3 * BLOCKS_PER_YEAR), 4); // Year 3
         assert_eq!(info.weight(4 * BLOCKS_PER_YEAR), 4); // Year 4 (max)
@@ -2341,11 +2342,11 @@ mod tests {
         assert_eq!(distributed, 2);
 
         // Senior producer should get 2/3 of reward (200M)
-        let senior_rewards = set.pending_rewards(&*keypair1.public_key());
+        let senior_rewards = set.pending_rewards(keypair1.public_key());
         assert_eq!(senior_rewards, 200_000_000);
 
         // Junior producer should get 1/3 of reward (100M)
-        let junior_rewards = set.pending_rewards(&*keypair2.public_key());
+        let junior_rewards = set.pending_rewards(keypair2.public_key());
         assert_eq!(junior_rewards, 100_000_000);
     }
 
@@ -2404,13 +2405,13 @@ mod tests {
         set.register(info, 0).unwrap();
 
         // Initially not in exit history
-        assert!(!set.has_prior_exit(&*keypair.public_key(), 0));
+        assert!(!set.has_prior_exit(keypair.public_key(), 0));
 
         // Request exit
-        set.request_exit(&*keypair.public_key(), 1000).unwrap();
+        set.request_exit(keypair.public_key(), 1000).unwrap();
 
         // Still not in exit history (unbonding not complete)
-        assert!(!set.has_prior_exit(&*keypair.public_key(), 1000));
+        assert!(!set.has_prior_exit(keypair.public_key(), 1000));
 
         // Complete unbonding (test uses arbitrary 43,200 blocks)
         let unbonding_duration = 43_200;
@@ -2418,7 +2419,7 @@ mod tests {
         set.process_unbonding(exit_height, unbonding_duration);
 
         // Now in exit history
-        assert!(set.has_prior_exit(&*keypair.public_key(), exit_height));
+        assert!(set.has_prior_exit(keypair.public_key(), exit_height));
     }
 
     #[test]
@@ -2429,14 +2430,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // First registration
-        let info1 = ProducerInfo::new(
-            pubkey.clone(),
-            0,
-            100_000_000_000,
-            (Hash::ZERO, 0),
-            0,
-            BOND_UNIT,
-        );
+        let info1 = ProducerInfo::new(pubkey, 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info1, 0).unwrap();
 
         // Exit completely
@@ -2450,7 +2444,7 @@ mod tests {
 
         // Re-register
         let info2 = ProducerInfo::new(
-            pubkey.clone(),
+            pubkey,
             100_000,
             100_000_000_000,
             (Hash::ZERO, 1),
@@ -2475,14 +2469,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at genesis
-        let info1 = ProducerInfo::new(
-            pubkey.clone(),
-            0,
-            100_000_000_000,
-            (Hash::ZERO, 0),
-            0,
-            BOND_UNIT,
-        );
+        let info1 = ProducerInfo::new(pubkey, 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info1, 0).unwrap();
 
         // After 9 years, weight is 4 (max, with sqrt formula)
@@ -2497,7 +2484,7 @@ mod tests {
         // Re-register at year 10
         let ten_years = 10 * BLOCKS_PER_YEAR;
         let info2 = ProducerInfo::new(
-            pubkey.clone(),
+            pubkey,
             ten_years,
             100_000_000_000,
             (Hash::ZERO, 1),
@@ -2522,14 +2509,7 @@ mod tests {
         let keypair = KeyPair::generate();
         let pubkey = *keypair.public_key();
 
-        let info = ProducerInfo::new(
-            pubkey.clone(),
-            0,
-            100_000_000_000,
-            (Hash::ZERO, 0),
-            0,
-            BOND_UNIT,
-        );
+        let info = ProducerInfo::new(pubkey, 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info, 0).unwrap();
 
         // Slash the producer
@@ -2696,14 +2676,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register at block 0
-        let info1 = ProducerInfo::new(
-            pubkey.clone(),
-            0,
-            100_000_000_000,
-            (Hash::ZERO, 0),
-            0,
-            BOND_UNIT,
-        );
+        let info1 = ProducerInfo::new(pubkey, 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register_for_network(info1, 0, devnet).unwrap();
 
         // Exit at block 576 (4 years on devnet: 144 blocks/year × 4)
@@ -2788,10 +2761,10 @@ mod tests {
         assert_eq!(distributed, 2);
 
         // Producer 1 gets 2/3 = 200M
-        assert_eq!(set.pending_rewards(&*keypair1.public_key()), 200_000_000);
+        assert_eq!(set.pending_rewards(keypair1.public_key()), 200_000_000);
 
         // Producer 2 gets 1/3 = 100M
-        assert_eq!(set.pending_rewards(&*keypair2.public_key()), 100_000_000);
+        assert_eq!(set.pending_rewards(keypair2.public_key()), 100_000_000);
     }
 
     #[test]
@@ -2923,14 +2896,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Register producer
-        let info = ProducerInfo::new(
-            pubkey.clone(),
-            0,
-            100_000_000_000,
-            (Hash::ZERO, 0),
-            0,
-            BOND_UNIT,
-        );
+        let info = ProducerInfo::new(pubkey, 0, 100_000_000_000, (Hash::ZERO, 0), 0, BOND_UNIT);
         set.register(info, 0).unwrap();
 
         // Verify initially active
@@ -2991,7 +2957,7 @@ mod tests {
 
         // Register producer at block 0
         let info = ProducerInfo::new(
-            pubkey.clone(),
+            pubkey,
             0, // registered_at = 0
             100_000_000_000,
             (Hash::ZERO, 0),

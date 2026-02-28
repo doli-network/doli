@@ -104,7 +104,7 @@ mod tests {
 
     fn make_keys(n: usize) -> Vec<PublicKey> {
         (0..n)
-            .map(|_| crypto::KeyPair::generate().public_key().clone())
+            .map(|_| *crypto::KeyPair::generate().public_key())
             .collect()
     }
 

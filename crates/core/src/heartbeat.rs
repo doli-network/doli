@@ -491,13 +491,13 @@ mod tests {
 
         // Create witness keypair
         let witness_kp = KeyPair::generate();
-        let witness_pk = witness_kp.public_key().clone();
+        let witness_pk = *witness_kp.public_key();
 
         // Sign the witness message
         let message = WitnessSignature::compute_message(&producer, slot, &vdf_output);
         let signature = crypto::signature::sign_hash(&message, witness_kp.private_key());
 
-        let witness_sig = WitnessSignature::new(witness_pk.clone(), signature);
+        let witness_sig = WitnessSignature::new(witness_pk, signature);
 
         // Should verify
         assert!(witness_sig.verify(&producer, slot, &vdf_output));
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn test_heartbeat_signature() {
         let kp = KeyPair::generate();
-        let producer = kp.public_key().clone();
+        let producer = *kp.public_key();
         let slot = 100;
         let prev_hash = mock_hash(1);
 
@@ -568,7 +568,7 @@ mod tests {
 
         // Try to use producer as their own witness (along with a valid one to meet count)
         let self_witness = WitnessSignature {
-            witness: producer.clone(),
+            witness: producer,
             signature: Signature::default(),
         };
         let other_witness = WitnessSignature {
@@ -578,7 +578,7 @@ mod tests {
 
         let heartbeat = Heartbeat {
             version: HEARTBEAT_VERSION,
-            producer: producer.clone(),
+            producer,
             slot: 100,
             prev_block_hash: mock_hash(1),
             vdf_output: [0u8; 32],
@@ -600,17 +600,17 @@ mod tests {
         let valid_witness = mock_pubkey(2);
 
         let invalid_sig = WitnessSignature {
-            witness: non_active_witness.clone(),
+            witness: non_active_witness,
             signature: Signature::default(),
         };
         let valid_sig = WitnessSignature {
-            witness: valid_witness.clone(),
+            witness: valid_witness,
             signature: Signature::default(),
         };
 
         let heartbeat = Heartbeat {
             version: HEARTBEAT_VERSION,
-            producer: producer.clone(),
+            producer,
             slot: 100,
             prev_block_hash: mock_hash(1),
             vdf_output: [0u8; 32],
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn test_valid_witnesses() {
         let producer_kp = KeyPair::generate();
-        let producer = producer_kp.public_key().clone();
+        let producer = *producer_kp.public_key();
         let slot = 100;
         let prev_hash = mock_hash(1);
 
@@ -646,13 +646,13 @@ mod tests {
         let sig2 = crypto::signature::sign_hash(&msg, witness2_kp.private_key());
 
         let witnesses = vec![
-            WitnessSignature::new(witness1_kp.public_key().clone(), sig1),
-            WitnessSignature::new(witness2_kp.public_key().clone(), sig2),
+            WitnessSignature::new(*witness1_kp.public_key(), sig1),
+            WitnessSignature::new(*witness2_kp.public_key(), sig2),
         ];
 
         let heartbeat = Heartbeat {
             version: HEARTBEAT_VERSION,
-            producer: producer.clone(),
+            producer,
             slot,
             prev_block_hash: prev_hash,
             vdf_output,
@@ -662,8 +662,8 @@ mod tests {
 
         let active = vec![
             producer,
-            witness1_kp.public_key().clone(),
-            witness2_kp.public_key().clone(),
+            *witness1_kp.public_key(),
+            *witness2_kp.public_key(),
         ];
 
         let result = heartbeat.verify_witnesses(&active);

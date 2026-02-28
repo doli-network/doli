@@ -10,11 +10,9 @@
 //! the security model is broken and double-spend attacks become possible.
 
 use crypto::{hash::hash, Hash, KeyPair, PublicKey};
-use doli_core::block::BlockBuilder;
-use doli_core::consensus::ConsensusParams;
-use doli_core::transaction::{SlashData, SlashingEvidence, Transaction};
+use doli_core::transaction::SlashingEvidence;
 use doli_core::{Block, BlockHeader};
-use network::{EquivocationDetector, EquivocationProof};
+use network::EquivocationDetector;
 use storage::{ProducerInfo, ProducerSet, ProducerStatus};
 use vdf::{VdfOutput, VdfProof};
 
@@ -30,7 +28,7 @@ fn create_test_block(slot: u32, producer: &PublicKey, prev_hash: Hash, merkle_ro
         presence_root: Hash::ZERO,
         timestamp: slot as u64 * 10, // 10-second slots
         slot,
-        producer: producer.clone(),
+        producer: *producer,
         vdf_output: VdfOutput {
             value: vec![slot as u8; 32], // Distinct VDF output
         },
@@ -45,7 +43,7 @@ fn create_producer_set_with_bonds(producers: &[(&PublicKey, u64)]) -> ProducerSe
     let mut set = ProducerSet::new();
     for (pubkey, bond_amount) in producers {
         let info = ProducerInfo {
-            public_key: (*pubkey).clone(),
+            public_key: *(*pubkey),
             registered_at: 0,
             bond_amount: *bond_amount,
             bond_outpoint: (Hash::ZERO, 0),
@@ -77,7 +75,7 @@ fn create_producer_set_with_bonds(producers: &[(&PublicKey, u64)]) -> ProducerSe
 async fn test_equivocation_detection_basic() {
     let mut detector = EquivocationDetector::new();
     let malicious_producer = KeyPair::generate();
-    let producer_pubkey = malicious_producer.public_key().clone();
+    let producer_pubkey = *malicious_producer.public_key();
 
     // Create two DIFFERENT blocks for the SAME slot
     let slot = 100;
@@ -118,7 +116,7 @@ async fn test_equivocation_detection_basic() {
 async fn test_same_block_twice_not_equivocation() {
     let mut detector = EquivocationDetector::new();
     let producer = KeyPair::generate();
-    let producer_pubkey = producer.public_key().clone();
+    let producer_pubkey = *producer.public_key();
 
     let block = create_test_block(50, &producer_pubkey, Hash::ZERO, hash(b"tx"));
 
@@ -140,7 +138,7 @@ async fn test_same_block_twice_not_equivocation() {
 async fn test_different_slots_not_equivocation() {
     let mut detector = EquivocationDetector::new();
     let producer = KeyPair::generate();
-    let producer_pubkey = producer.public_key().clone();
+    let producer_pubkey = *producer.public_key();
 
     // Create blocks for different slots
     let block_slot_10 = create_test_block(10, &producer_pubkey, Hash::ZERO, hash(b"a"));
@@ -186,7 +184,7 @@ async fn test_different_producers_same_slot_not_equivocation() {
 async fn test_proof_contains_vdf_verifiable_headers() {
     let mut detector = EquivocationDetector::new();
     let producer = KeyPair::generate();
-    let producer_pubkey = producer.public_key().clone();
+    let producer_pubkey = *producer.public_key();
 
     let slot = 77;
     let block_a = create_test_block(slot, &producer_pubkey, Hash::ZERO, hash(b"block_a"));
@@ -220,7 +218,7 @@ async fn test_proof_to_slash_transaction() {
     let mut detector = EquivocationDetector::new();
     let malicious = KeyPair::generate();
     let reporter = KeyPair::generate();
-    let malicious_pubkey = malicious.public_key().clone();
+    let malicious_pubkey = *malicious.public_key();
 
     let slot = 42;
     let block_a = create_test_block(slot, &malicious_pubkey, Hash::ZERO, hash(b"a"));
@@ -239,17 +237,13 @@ async fn test_proof_to_slash_transaction() {
     assert_eq!(slash_data.producer_pubkey, malicious_pubkey);
 
     // Verify evidence contains both headers
-    if let SlashingEvidence::DoubleProduction {
+    let SlashingEvidence::DoubleProduction {
         block_header_1,
         block_header_2,
-    } = &slash_data.evidence
-    {
-        assert_eq!(block_header_1.slot, slot);
-        assert_eq!(block_header_2.slot, slot);
-        assert_ne!(block_header_1.hash(), block_header_2.hash());
-    } else {
-        panic!("Expected DoubleProduction evidence");
-    }
+    } = &slash_data.evidence;
+    assert_eq!(block_header_1.slot, slot);
+    assert_eq!(block_header_2.slot, slot);
+    assert_ne!(block_header_1.hash(), block_header_2.hash());
 
     // Reporter signature should be present (prevents spam)
     assert!(!slash_data
@@ -332,7 +326,7 @@ async fn test_slashed_producer_cannot_reregister() {
 async fn test_multiple_equivocations_detected() {
     let mut detector = EquivocationDetector::new();
     let producer = KeyPair::generate();
-    let producer_pubkey = producer.public_key().clone();
+    let producer_pubkey = *producer.public_key();
 
     // Equivocate in slot 10
     let block_10a = create_test_block(10, &producer_pubkey, Hash::ZERO, hash(b"10a"));
@@ -368,7 +362,7 @@ async fn test_equivocation_slashing_e2e() {
     let honest_1 = KeyPair::generate();
     let honest_2 = KeyPair::generate();
 
-    let malicious_pubkey = malicious.public_key().clone();
+    let malicious_pubkey = *malicious.public_key();
 
     // Create producer set with bonds
     let mut producer_set = create_producer_set_with_bonds(&[

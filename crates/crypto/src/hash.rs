@@ -368,6 +368,7 @@ pub fn hash_twice(data: &[u8]) -> Hash {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

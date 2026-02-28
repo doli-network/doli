@@ -611,7 +611,7 @@ mod tests {
         for slot in 100..=110 {
             let pk = mock_pubkey(slot as u8);
             collector.heartbeats.insert(
-                (slot, pk.clone()),
+                (slot, pk),
                 PresenceHeartbeat {
                     version: 1,
                     producer: pk,

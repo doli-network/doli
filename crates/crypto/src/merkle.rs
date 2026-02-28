@@ -315,6 +315,7 @@ pub fn transaction_root(tx_hashes: &[Hash]) -> Hash {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::hash::hash;
@@ -341,9 +342,9 @@ mod tests {
         assert_eq!(tree.depth(), 1);
 
         // Verify proofs
-        for i in 0..2 {
+        for (i, &item) in items.iter().enumerate() {
             let proof = tree.proof(i).expect("should have proof");
-            assert!(proof.verify(&root, items[i]));
+            assert!(proof.verify(&root, item));
         }
     }
 
@@ -387,7 +388,7 @@ mod tests {
         // Verify all proofs
         for (i, item) in items.iter().enumerate() {
             let proof = tree.proof(i).expect("should have proof");
-            assert!(proof.verify(&root, item), "proof failed for index {}", i);
+            assert!(proof.verify(&root, item), "proof failed for index {i}");
         }
     }
 
@@ -477,7 +478,7 @@ mod tests {
         #[test]
         fn prop_root_is_deterministic(items: Vec<Vec<u8>>) {
             prop_assume!(!items.is_empty());
-            let refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+            let refs: Vec<&[u8]> = items.iter().map(std::vec::Vec::as_slice).collect();
             let root1 = merkle_root(&refs);
             let root2 = merkle_root(&refs);
             prop_assert_eq!(root1, root2);
@@ -486,7 +487,7 @@ mod tests {
         #[test]
         fn prop_all_proofs_verify(items: Vec<Vec<u8>>) {
             prop_assume!(!items.is_empty() && items.len() <= 100);
-            let refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+            let refs: Vec<&[u8]> = items.iter().map(std::vec::Vec::as_slice).collect();
             let tree = MerkleTree::new(&refs).unwrap();
             let root = tree.root();
 
