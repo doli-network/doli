@@ -23,7 +23,6 @@ use doli_core::consensus::{
 use doli_core::rewards::WeightedRewardCalculator;
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
-use doli_core::tpop::heartbeat::verify_hash_chain_vdf;
 use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
@@ -5593,9 +5592,9 @@ impl Node {
     /// examining the blockchain.
     /// Derive genesis producers from on-chain VDF proof Registration TXs.
     ///
-    /// Scans genesis blocks for Registration TXs, validates VDF proofs,
-    /// and returns only producers with valid proofs. Producers who produced
-    /// blocks but did NOT submit a VDF proof are NOT registered.
+    /// Scans genesis blocks for Registration TXs and returns producers
+    /// with valid registration data. VDF proofs were already verified
+    /// at block acceptance time (validation.rs:validate_registration).
     fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
         self.cached_genesis_producers
             .get_or_init(|| {
@@ -5604,7 +5603,6 @@ impl Node {
                     return Vec::new();
                 }
 
-                let iterations = self.config.network.vdf_register_iterations();
                 let mut seen = std::collections::HashSet::new();
                 let mut proven_producers = Vec::new();
 
@@ -5613,28 +5611,19 @@ impl Node {
                         for tx in &block.transactions {
                             if tx.tx_type == TxType::Registration {
                                 if let Some(reg_data) = tx.registration_data() {
-                                    if reg_data.vdf_output.len() == 32 {
-                                        let vdf_input =
-                                            vdf::registration_input(&reg_data.public_key, 0);
-                                        let output: [u8; 32] =
-                                            reg_data.vdf_output.as_slice().try_into().unwrap();
-                                        if verify_hash_chain_vdf(&vdf_input, &output, iterations) {
-                                            if seen.insert(reg_data.public_key) {
-                                                info!(
-                                                    "  VDF proof valid for genesis producer {}",
-                                                    hex::encode(
-                                                        &reg_data.public_key.as_bytes()[..8]
-                                                    )
-                                                );
-                                                proven_producers.push(reg_data.public_key);
-                                            }
-                                        } else {
-                                            warn!(
-                                                "  VDF proof INVALID for {} in block {}",
-                                                hex::encode(&reg_data.public_key.as_bytes()[..8]),
-                                                height
-                                            );
-                                        }
+                                    // VDF proof already verified at block acceptance
+                                    // (validate_registration in validation.rs).
+                                    // Just check format and deduplicate.
+                                    if reg_data.vdf_output.len() == 32
+                                        && seen.insert(reg_data.public_key)
+                                    {
+                                        info!(
+                                            "  Genesis producer {} (VDF pre-verified)",
+                                            hex::encode(
+                                                &reg_data.public_key.as_bytes()[..8]
+                                            )
+                                        );
+                                        proven_producers.push(reg_data.public_key);
                                     }
                                 }
                             }
