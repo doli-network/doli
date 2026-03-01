@@ -37,7 +37,7 @@ use network::{
     NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
-use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
+use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, UtxoSet};
 use updater::is_using_placeholder_keys;
 
 use crate::updater as node_updater;
@@ -1985,6 +1985,8 @@ impl Node {
             let mut producers = self.producer_set.write().await;
             self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
         }
+        // Force scheduler rebuild after producer set reconstruction
+        self.cached_scheduler = None;
 
         // Now apply the new blocks through normal path
         // Note: we skip check_producer_eligibility here because the fork blocks were
@@ -2924,7 +2926,7 @@ impl Node {
                 let _ = utxo.spend_transaction(tx); // Ignore errors for reward-minting txs
                 utxo.add_transaction(tx, height, is_reward_tx);
 
-                // Process registration transactions
+                // Process registration transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::Registration {
                     // During genesis, Registration TXs are VDF proof containers only.
                     // Actual producer registration happens at GENESIS PHASE COMPLETE (block 361).
@@ -2956,133 +2958,104 @@ impl Node {
                                 reg_data.bond_count,
                             );
 
-                            if let Err(e) = producers.register(producer_info, height) {
-                                warn!("Failed to register producer: {}", e);
-                            } else {
-                                info!(
-                                    "Registered producer {} at height {}",
-                                    crypto_hash(reg_data.public_key.as_bytes()),
-                                    height
-                                );
-                                // Track for known_producers update after lock release
-                                new_registrations.push(reg_data.public_key);
-                            }
-                        }
-                    }
-                }
-
-                // Process exit transactions
-                if tx.tx_type == TxType::Exit {
-                    if let Some(exit_data) = tx.exit_data() {
-                        if let Err(e) = producers.request_exit(&exit_data.public_key, height) {
-                            warn!("Failed to process exit: {}", e);
-                        } else {
+                            producers.queue_update(PendingProducerUpdate::Register {
+                                info: producer_info,
+                                height,
+                            });
                             info!(
-                                "Producer {} requested exit at height {}",
-                                crypto_hash(exit_data.public_key.as_bytes()),
+                                "Queued producer registration {} at height {} (deferred to epoch boundary)",
+                                crypto_hash(reg_data.public_key.as_bytes()),
                                 height
                             );
+                            // Track for known_producers update after lock release
+                            new_registrations.push(reg_data.public_key);
                         }
                     }
                 }
 
-                // Process slash transactions - equivocation (double signing) penalty
+                // Process exit transactions — deferred to epoch boundary
+                if tx.tx_type == TxType::Exit {
+                    if let Some(exit_data) = tx.exit_data() {
+                        producers.queue_update(PendingProducerUpdate::Exit {
+                            pubkey: exit_data.public_key,
+                            height,
+                        });
+                        info!(
+                            "Queued producer exit {} at height {} (deferred to epoch boundary)",
+                            crypto_hash(exit_data.public_key.as_bytes()),
+                            height
+                        );
+                    }
+                }
+
+                // Process slash transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::SlashProducer {
                     if let Some(slash_data) = tx.slash_data() {
-                        match producers.slash_producer(&slash_data.producer_pubkey, height) {
-                            Ok(burned_amount) => {
-                                warn!(
-                                    "SLASHED: Producer {} burned {} DOLI (100% bond) for equivocation at height {}",
-                                    crypto_hash(slash_data.producer_pubkey.as_bytes()),
-                                    burned_amount / UNITS_PER_COIN, // Convert to DOLI
-                                    height
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to slash producer {}: {}",
-                                    crypto_hash(slash_data.producer_pubkey.as_bytes()),
-                                    e
-                                );
-                            }
-                        }
+                        producers.queue_update(PendingProducerUpdate::Slash {
+                            pubkey: slash_data.producer_pubkey,
+                            height,
+                        });
+                        warn!(
+                            "Queued SLASH for producer {} at height {} (deferred to epoch boundary)",
+                            crypto_hash(slash_data.producer_pubkey.as_bytes()),
+                            height
+                        );
                     }
                 }
 
-                // Process AddBond transactions - add bonds to existing producer
-                // AddBond txs have inputs (consumed) and NO outputs - funds go into bond state
+                // Process AddBond transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::AddBond {
                     if let Some(add_bond_data) = tx.add_bond_data() {
                         let tx_hash = tx.hash();
                         let bond_count = add_bond_data.bond_count;
 
-                        // Create synthetic outpoints for tracking (tx_hash, index)
-                        // These are used for FIFO withdrawal ordering
                         let bond_outpoints: Vec<(crypto::Hash, u32)> =
                             (0..bond_count).map(|i| (tx_hash, i)).collect();
 
                         let bond_unit = self.config.network.bond_unit();
-                        if let Some(producer_info) =
-                            producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
-                        {
-                            let added = producer_info.add_bonds(bond_outpoints, bond_unit);
-                            if added > 0 {
-                                info!(
-                                    "Added {} bonds to producer {} (total: {} bonds, {} DOLI)",
-                                    added,
-                                    crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
-                                    producer_info.bond_count,
-                                    producer_info.bond_amount / UNITS_PER_COIN
-                                );
-                            }
-                        } else {
-                            warn!(
-                                "AddBond for unknown producer: {}",
-                                crypto_hash(add_bond_data.producer_pubkey.as_bytes())
-                            );
-                        }
+                        producers.queue_update(PendingProducerUpdate::AddBond {
+                            pubkey: add_bond_data.producer_pubkey,
+                            outpoints: bond_outpoints,
+                            bond_unit,
+                        });
+                        info!(
+                            "Queued AddBond ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
+                            bond_count,
+                            crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
+                            height
+                        );
                     }
                 }
 
-                // Process DelegateBond transactions
+                // Process DelegateBond transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::DelegateBond {
                     if let Some(data) = tx.delegate_bond_data() {
-                        match producers.delegate_bonds(
-                            &data.delegator,
-                            &data.delegate,
+                        producers.queue_update(PendingProducerUpdate::DelegateBond {
+                            delegator: data.delegator,
+                            delegate: data.delegate,
+                            bond_count: data.bond_count,
+                        });
+                        info!(
+                            "Queued DelegateBond ({} bonds) from {} to {} at height {} (deferred to epoch boundary)",
                             data.bond_count,
-                        ) {
-                            Ok(()) => {
-                                info!(
-                                    "Delegated {} bonds from {} to {} at height {}",
-                                    data.bond_count,
-                                    crypto_hash(data.delegator.as_bytes()),
-                                    crypto_hash(data.delegate.as_bytes()),
-                                    height
-                                );
-                            }
-                            Err(e) => {
-                                warn!("Failed to delegate bonds: {}", e);
-                            }
-                        }
+                            crypto_hash(data.delegator.as_bytes()),
+                            crypto_hash(data.delegate.as_bytes()),
+                            height
+                        );
                     }
                 }
 
-                // Process RevokeDelegation transactions
+                // Process RevokeDelegation transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::RevokeDelegation {
                     if let Some(data) = tx.revoke_delegation_data() {
-                        match producers.revoke_delegation(&data.delegator) {
-                            Ok(()) => {
-                                info!(
-                                    "Revoked delegation for {} at height {}",
-                                    crypto_hash(data.delegator.as_bytes()),
-                                    height
-                                );
-                            }
-                            Err(e) => {
-                                warn!("Failed to revoke delegation: {}", e);
-                            }
-                        }
+                        producers.queue_update(PendingProducerUpdate::RevokeDelegation {
+                            delegator: data.delegator,
+                        });
+                        info!(
+                            "Queued RevokeDelegation for {} at height {} (deferred to epoch boundary)",
+                            crypto_hash(data.delegator.as_bytes()),
+                            height
+                        );
                     }
                 }
             }
@@ -3198,6 +3171,26 @@ impl Node {
             if total_weight > 0 {
                 let mut sync = self.sync_manager.write().await;
                 sync.track_block_for_finality(block_hash, height, block.header.slot, total_weight);
+            }
+        }
+
+        // Apply deferred producer updates at epoch boundaries.
+        // During epoch 0 (blocks 1-359), apply every block so genesis producers work immediately.
+        // After epoch 0, apply only at epoch boundaries (height % 360 == 0).
+        {
+            let is_epoch_0 = height < SLOTS_PER_EPOCH as u64;
+            let is_boundary = doli_core::EpochSnapshot::is_epoch_boundary(height);
+            if is_epoch_0 || is_boundary {
+                let mut producers = self.producer_set.write().await;
+                if producers.has_pending_updates() {
+                    let count = producers.pending_update_count();
+                    producers.apply_pending_updates();
+                    self.cached_scheduler = None; // Force scheduler rebuild
+                    info!(
+                        "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={})",
+                        count, height, is_epoch_0, is_boundary
+                    );
+                }
             }
         }
 
@@ -5004,6 +4997,7 @@ impl Node {
         producers.clear();
         let bond_unit = self.config.network.bond_unit();
         let genesis_blocks = self.config.network.genesis_blocks();
+        let epoch_len = SLOTS_PER_EPOCH as u64;
 
         for height in 1..=target_height {
             let block = self
@@ -5040,18 +5034,27 @@ impl Node {
                                     era,
                                     reg_data.bond_count,
                                 );
-                                let _ = producers.register(producer_info, height);
+                                producers.queue_update(PendingProducerUpdate::Register {
+                                    info: producer_info,
+                                    height,
+                                });
                             }
                         }
                     }
                     TxType::Exit => {
                         if let Some(exit_data) = tx.exit_data() {
-                            let _ = producers.request_exit(&exit_data.public_key, height);
+                            producers.queue_update(PendingProducerUpdate::Exit {
+                                pubkey: exit_data.public_key,
+                                height,
+                            });
                         }
                     }
                     TxType::SlashProducer => {
                         if let Some(slash_data) = tx.slash_data() {
-                            let _ = producers.slash_producer(&slash_data.producer_pubkey, height);
+                            producers.queue_update(PendingProducerUpdate::Slash {
+                                pubkey: slash_data.producer_pubkey,
+                                height,
+                            });
                         }
                     }
                     TxType::AddBond => {
@@ -5061,25 +5064,27 @@ impl Node {
                                 .bond_count)
                                 .map(|i| (tx_hash, i))
                                 .collect();
-                            if let Some(producer_info) =
-                                producers.get_by_pubkey_mut(&add_bond_data.producer_pubkey)
-                            {
-                                producer_info.add_bonds(bond_outpoints, bond_unit);
-                            }
+                            producers.queue_update(PendingProducerUpdate::AddBond {
+                                pubkey: add_bond_data.producer_pubkey,
+                                outpoints: bond_outpoints,
+                                bond_unit,
+                            });
                         }
                     }
                     TxType::DelegateBond => {
                         if let Some(data) = tx.delegate_bond_data() {
-                            let _ = producers.delegate_bonds(
-                                &data.delegator,
-                                &data.delegate,
-                                data.bond_count,
-                            );
+                            producers.queue_update(PendingProducerUpdate::DelegateBond {
+                                delegator: data.delegator,
+                                delegate: data.delegate,
+                                bond_count: data.bond_count,
+                            });
                         }
                     }
                     TxType::RevokeDelegation => {
                         if let Some(data) = tx.revoke_delegation_data() {
-                            let _ = producers.revoke_delegation(&data.delegator);
+                            producers.queue_update(PendingProducerUpdate::RevokeDelegation {
+                                delegator: data.delegator,
+                            });
                         }
                     }
                     _ => {} // Other TX types don't modify producer set
@@ -5088,6 +5093,7 @@ impl Node {
 
             // Replicate GENESIS PHASE COMPLETE: register VDF-proven producers
             // when crossing the genesis boundary during rebuild.
+            // Genesis producers are registered immediately (not deferred).
             if genesis_blocks > 0 && height == genesis_blocks + 1 {
                 let genesis_producers = self.derive_genesis_producers_from_chain();
                 let era = self.params.height_to_era(height);
@@ -5106,9 +5112,20 @@ impl Node {
                 }
             }
 
+            // Apply deferred updates: every block in epoch 0, then at epoch boundaries
+            let is_epoch_0 = height < epoch_len;
+            let is_boundary = height > 0 && height.is_multiple_of(epoch_len);
+            if is_epoch_0 || is_boundary {
+                producers.apply_pending_updates();
+            }
+
             // Process completed unbonding periods after each block
             producers.process_unbonding(height, UNBONDING_PERIOD);
         }
+
+        // Apply any remaining pending updates (e.g. if target_height doesn't land on a boundary)
+        producers.apply_pending_updates();
+
         Ok(())
     }
 
@@ -5207,6 +5224,8 @@ impl Node {
             let mut producers = self.producer_set.write().await;
             self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
         }
+        // Force scheduler rebuild after producer set reconstruction
+        self.cached_scheduler = None;
 
         // Update chain state to parent
         {
