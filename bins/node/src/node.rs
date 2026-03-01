@@ -139,6 +139,8 @@ pub struct Node {
     /// Cached genesis producers (immutable after first derivation).
     /// Avoids re-validating VDF proofs (~2s) on every reorg crossing genesis boundary.
     cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
+    /// Whether we've already checked inbound peer connectivity (one-shot after 60s)
+    port_check_done: bool,
 }
 
 /// How often to save state (every N blocks applied)
@@ -554,6 +556,7 @@ impl Node {
             genesis_vdf_output: None,
             cached_state_root: Arc::new(RwLock::new(None)),
             cached_genesis_producers: std::sync::OnceLock::new(),
+            port_check_done: false,
         })
     }
 
@@ -5597,6 +5600,57 @@ impl Node {
                         let _ = network.request_status(peer_id, status_request).await;
                     }
                 }
+            }
+        }
+
+        // PORT REACHABILITY WARNING (one-shot, mainnet producers only)
+        // After 60s of running, if we have zero peers it likely means the P2P
+        // port is not reachable from the internet (firewall/NAT misconfiguration).
+        if !self.port_check_done
+            && self.config.network == Network::Mainnet
+            && self.producer_key.is_some()
+        {
+            let uptime = self
+                .first_peer_connected
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+            // Wait at least 60s after first peer, or 120s total if no peer ever connected
+            let threshold = if self.first_peer_connected.is_some() {
+                60
+            } else {
+                120
+            };
+            if uptime >= threshold
+                || (self.first_peer_connected.is_none()
+                    && now_secs.is_multiple_of(120)
+                    && now_secs > 0)
+            {
+                let peer_count = self.sync_manager.read().await.peer_count();
+                if peer_count == 0 {
+                    let p2p_port = self
+                        .config
+                        .listen_addr
+                        .split(':')
+                        .next_back()
+                        .unwrap_or("30303");
+                    warn!("════════════════════════════════════════════════════════════════");
+                    warn!(
+                        "  WARNING: 0 peers after {}s — P2P port {} may be unreachable",
+                        threshold, p2p_port
+                    );
+                    warn!("  Blocks you produce will NOT propagate to the network.");
+                    warn!(
+                        "  Fix: ensure TCP port {} is open (inbound) on your firewall.",
+                        p2p_port
+                    );
+                    warn!("════════════════════════════════════════════════════════════════");
+                } else {
+                    info!(
+                        "Port check: {} peers connected after {}s — OK",
+                        peer_count, threshold
+                    );
+                }
+                self.port_check_done = true;
             }
         }
 
