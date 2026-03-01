@@ -1782,6 +1782,13 @@ impl Node {
         // Apply the block
         self.apply_block(block, ValidationMode::Full).await?;
 
+        // A canonical gossip block was applied on our tip — clear the post-snap gate.
+        // This proves we're on the canonical chain and our block store has a real parent.
+        self.sync_manager
+            .write()
+            .await
+            .clear_awaiting_canonical_block();
+
         Ok(())
     }
 
@@ -3770,6 +3777,13 @@ impl Node {
                 );
                 return Ok(());
             }
+            ProductionAuthorization::BlockedAwaitingCanonicalBlock => {
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Awaiting first canonical gossip block after snap sync",
+                    current_slot
+                );
+                return Ok(());
+            }
         }
 
         // Log slot info periodically (every ~60 seconds)
@@ -5306,6 +5320,20 @@ impl Node {
                         }
                     }
                 }
+            }
+        }
+
+        // SAFETY NET: If fork recovery exceeded max depth, the fork is too deep
+        // for reorg. Escalate to force_resync_from_genesis() to recover.
+        {
+            let exceeded = self
+                .sync_manager
+                .write()
+                .await
+                .take_fork_exceeded_max_depth();
+            if exceeded {
+                warn!("Fork recovery exceeded max depth — escalating to genesis resync");
+                self.force_resync_from_genesis().await?;
             }
         }
 

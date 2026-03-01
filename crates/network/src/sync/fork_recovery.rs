@@ -51,6 +51,9 @@ pub struct ForkRecoveryTracker {
     active: Option<ActiveRecovery>,
     /// Cooldown: earliest time a new recovery can start
     cooldown_until: Option<Instant>,
+    /// Set when recovery is cancelled because the fork exceeds MAX_RECOVERY_DEPTH.
+    /// The node should escalate to force_resync_from_genesis().
+    exceeded_max_depth: bool,
 }
 
 impl ForkRecoveryTracker {
@@ -58,6 +61,7 @@ impl ForkRecoveryTracker {
         Self {
             active: None,
             cooldown_until: None,
+            exceeded_max_depth: false,
         }
     }
 
@@ -192,9 +196,22 @@ impl ForkRecoveryTracker {
     pub fn cancel(&mut self, reason: &str) {
         if self.active.is_some() {
             warn!("Fork recovery cancelled: {}", reason);
+            if reason == "exceeded max depth" {
+                self.exceeded_max_depth = true;
+                warn!(
+                    "Fork exceeds {} blocks — node should escalate to genesis resync",
+                    MAX_RECOVERY_DEPTH
+                );
+            }
             self.active = None;
             self.cooldown_until = Some(Instant::now() + RECOVERY_COOLDOWN);
         }
+    }
+
+    /// Check and consume the exceeded-max-depth flag.
+    /// Returns true exactly once after a max-depth cancellation.
+    pub fn take_exceeded_max_depth(&mut self) -> bool {
+        std::mem::take(&mut self.exceeded_max_depth)
     }
 }
 
