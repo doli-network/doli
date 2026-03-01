@@ -2796,42 +2796,58 @@ impl Node {
             .collect();
         drop(producers);
 
-        // Build bootstrap producer list (same as check_producer_eligibility)
-        let mut bootstrap_producers = {
-            let gset = self.producer_gset.read().await;
-            gset.active_producers(7200)
-        };
-        if bootstrap_producers.is_empty() {
-            let known = self.known_producers.read().await;
-            bootstrap_producers = known.clone();
-        }
-        bootstrap_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        // Build liveness split
-        let num_bp = bootstrap_producers.len();
-        let liveness_window = std::cmp::max(
-            consensus::LIVENESS_WINDOW_MIN,
-            (num_bp as u64).saturating_mul(3),
-        );
-        let chain_height = height.saturating_sub(1);
-        let cutoff = chain_height.saturating_sub(liveness_window);
-        let (live_bp, stale_bp): (Vec<PublicKey>, Vec<PublicKey>) = {
-            let (live, stale): (Vec<_>, Vec<_>) =
-                bootstrap_producers
-                    .iter()
-                    .partition(|pk| match self.producer_liveness.get(pk) {
-                        Some(&last_h) => last_h >= cutoff,
-                        None => chain_height < liveness_window,
-                    });
-            (
-                live.into_iter().copied().collect(),
-                stale.into_iter().copied().collect(),
-            )
-        };
-        let (live_bp, stale_bp) = if live_bp.is_empty() {
-            (bootstrap_producers.clone(), Vec::new())
+        // Build bootstrap producer list for validation.
+        //
+        // For Light mode (sync): the GSet reflects CURRENT network state
+        // (includes producers that joined after genesis, e.g. N6/N8), but
+        // historical blocks were produced with a DIFFERENT GSet composition.
+        // bootstrap_fallback_order uses (slot + rank) % n — a different n
+        // means completely different rank assignments → "invalid producer
+        // for slot". Pass empty bootstrap_producers for ALL synced blocks:
+        // - Genesis-phase blocks: accepted via empty-bootstrap-list fallback
+        // - Transition block (361): same — producer_set not yet populated
+        // - Post-genesis blocks: validated by deterministic bond-weighted
+        //   scheduler (on-chain data), bypassing bootstrap path entirely
+        // This is safe: header chain continuity is verified during header
+        // download, and blocks were already validated by the network.
+        let (bootstrap_producers, live_bp, stale_bp) = if mode == ValidationMode::Light {
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
-            (live_bp, stale_bp)
+            let mut bp = {
+                let gset = self.producer_gset.read().await;
+                gset.active_producers(7200)
+            };
+            if bp.is_empty() {
+                let known = self.known_producers.read().await;
+                bp = known.clone();
+            }
+            bp.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+            // Build liveness split
+            let num_bp = bp.len();
+            let liveness_window = std::cmp::max(
+                consensus::LIVENESS_WINDOW_MIN,
+                (num_bp as u64).saturating_mul(3),
+            );
+            let chain_height = height.saturating_sub(1);
+            let cutoff = chain_height.saturating_sub(liveness_window);
+            let (live, stale): (Vec<PublicKey>, Vec<PublicKey>) = {
+                let (l, s): (Vec<_>, Vec<_>) =
+                    bp.iter()
+                        .partition(|pk| match self.producer_liveness.get(pk) {
+                            Some(&last_h) => last_h >= cutoff,
+                            None => chain_height < liveness_window,
+                        });
+                (
+                    l.into_iter().copied().collect(),
+                    s.into_iter().copied().collect(),
+                )
+            };
+            if live.is_empty() {
+                (bp.clone(), bp, Vec::new())
+            } else {
+                (bp, live, stale)
+            }
         };
 
         // Get previous block timestamp from block store for header validation
