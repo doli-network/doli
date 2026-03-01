@@ -212,6 +212,7 @@ All commands implicitly wrapped in Nix develop shell.
 | **VDF Block** | 800K iter (~55ms) | 800K | `T_BLOCK` |
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
+| **Max Bonds** | 10,000/producer | 10,000 | `MAX_BONDS_PER_PRODUCER` (100K DOLI max stake) |
 | **Unbond** | 7 days | 10m | `WITHDRAWAL_DELAY_SLOTS` |
 | **Selection** | `slot % bonds` | - | Sequential 2s exclusive windows |
 | **Fallback** | 5 ranks | 5 ranks | `MAX_FALLBACK_RANKS`, `FALLBACK_TIMEOUT_MS=2000` |
