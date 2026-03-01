@@ -5619,9 +5619,7 @@ impl Node {
                                     {
                                         info!(
                                             "  Genesis producer {} (VDF pre-verified)",
-                                            hex::encode(
-                                                &reg_data.public_key.as_bytes()[..8]
-                                            )
+                                            hex::encode(&reg_data.public_key.as_bytes()[..8])
                                         );
                                         proven_producers.push(reg_data.public_key);
                                     }
