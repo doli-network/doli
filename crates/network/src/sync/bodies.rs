@@ -76,6 +76,11 @@ impl BodyDownloader {
     ) -> Option<(PeerId, SyncRequest)> {
         // Check if we can make more requests
         if self.active_requests.len() >= self.max_concurrent_requests {
+            warn!(
+                "[BODY_DL] Blocked: active_requests={} >= max={}",
+                self.active_requests.len(),
+                self.max_concurrent_requests
+            );
             return None;
         }
 
@@ -86,6 +91,11 @@ impl BodyDownloader {
             .collect();
 
         if free_peers.is_empty() {
+            warn!(
+                "[BODY_DL] No free peers: available={}, active_requests={}",
+                available_peers.len(),
+                self.active_requests.len()
+            );
             return None;
         }
 
@@ -146,6 +156,13 @@ impl BodyDownloader {
         }
 
         if hashes.is_empty() {
+            warn!(
+                "[BODY_DL] No hashes to request: needed={}, failed={}, in_flight={}, downloaded={}",
+                needed.len(),
+                self.failed.len(),
+                self.in_flight.len(),
+                self.downloaded.len()
+            );
             return None;
         }
 
