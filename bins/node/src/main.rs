@@ -23,6 +23,7 @@ use tracing_subscriber::FmtSubscriber;
 mod config;
 mod devnet;
 mod metrics;
+mod nat_check;
 mod node;
 mod producer;
 mod updater;
@@ -143,6 +144,10 @@ enum Commands {
         /// Use scripts/generate_chainspec.sh to create from wallet files
         #[arg(long)]
         chainspec: Option<PathBuf>,
+
+        /// Skip the P2P port reachability check (only for custom port-forwarding setups)
+        #[arg(long)]
+        override_nat_check: bool,
     },
 
     /// Initialize a new data directory
@@ -487,6 +492,7 @@ async fn main() -> Result<()> {
             force_start,
             yes,
             chainspec,
+            override_nat_check,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -511,6 +517,7 @@ async fn main() -> Result<()> {
                 force_start,
                 yes,
                 chainspec,
+                override_nat_check,
             )
             .await?;
         }
@@ -567,6 +574,7 @@ async fn main() -> Result<()> {
                 false,
                 false, // yes
                 None,  // chainspec
+                false, // override_nat_check
             )
             .await?;
         }
@@ -593,6 +601,7 @@ async fn run_node(
     force_start: bool,
     yes: bool,
     chainspec_path: Option<PathBuf>,
+    override_nat_check: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -964,6 +973,13 @@ async fn run_node(
 
     // Connect pending update state: UpdateService → RPC (live status reads)
     node.set_pending_update(pending_update);
+
+    // P2P port reachability check (mainnet producers only)
+    // Runs after Node::new() so the swarm is already listening on the port.
+    if network == Network::Mainnet && producer && !override_nat_check {
+        let p2p = p2p_port.unwrap_or(network.default_p2p_port());
+        nat_check::check_port_reachability(p2p).await?;
+    }
 
     info!("Node running. Press Ctrl+C to stop.");
 
