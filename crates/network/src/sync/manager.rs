@@ -2376,9 +2376,11 @@ impl SyncManager {
                 self.header_downloader.clear();
                 // Count toward deep fork detection so genesis resync triggers
                 self.consecutive_empty_headers += 1;
-                if matches!(self.state, SyncState::Processing { .. }) {
-                    self.state = SyncState::Idle;
-                }
+                // Always reset to Idle — staying in DownloadingBodies with
+                // empty headers_needing_bodies leaves the body downloader in
+                // a zombie state (needed=0, no requests, waits 120s for soft
+                // recovery). Idle lets cleanup() start a fresh sync immediately.
+                self.state = SyncState::Idle;
                 return blocks;
             }
         }
