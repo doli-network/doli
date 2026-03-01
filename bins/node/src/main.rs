@@ -30,6 +30,19 @@ mod updater;
 use config::NodeConfig;
 use updater::UpdateConfig;
 
+/// Expand `~` or `~/...` to the user's home directory.
+/// Shell tilde expansion doesn't happen inside Rust — clap default values
+/// and CLI arguments with `~` arrive as literal strings/paths.
+fn expand_tilde_path(path: &Path) -> PathBuf {
+    if let Ok(rest) = path.strip_prefix("~") {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "doli-node")]
 #[command(about = "DOLI full node", long_about = None)]
@@ -402,12 +415,16 @@ async fn main() -> Result<()> {
     let is_devnet_command = matches!(cli.command, Some(Commands::Devnet { .. }));
 
     // Get data directory (use override or network default)
-    let data_dir = cli.data_dir.clone().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".doli")
-            .join(network.data_dir_name())
-    });
+    let data_dir = cli
+        .data_dir
+        .as_deref()
+        .map(expand_tilde_path)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".doli")
+                .join(network.data_dir_name())
+        });
 
     // Load environment variables from data directory BEFORE using network params
     // This allows overriding network defaults via ~/.doli/{network}/.env
@@ -430,7 +447,7 @@ async fn main() -> Result<()> {
                     Some(Commands::Run {
                         chainspec: Some(ref path),
                         ..
-                    }) => Some(path.clone()),
+                    }) => Some(expand_tilde_path(path)),
                     Some(Commands::Run { .. }) => {
                         let default = data_dir.join("chainspec.json");
                         if default.exists() {
@@ -561,7 +578,7 @@ async fn main() -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn run_node(
     network: Network,
-    data_dir: &PathBuf,
+    data_dir: &Path,
     producer: bool,
     producer_key_path: Option<PathBuf>,
     update_config: UpdateConfig,
@@ -577,18 +594,12 @@ async fn run_node(
     yes: bool,
     chainspec_path: Option<PathBuf>,
 ) -> Result<()> {
-    info!("Starting node with data directory: {:?}", data_dir);
+    // Expand tilde in all paths (shell expansion doesn't happen in Rust)
+    let data_dir = expand_tilde_path(data_dir);
+    let producer_key_path = producer_key_path.map(|p| expand_tilde_path(&p));
+    let chainspec_path = chainspec_path.map(|p| expand_tilde_path(&p));
 
-    // Expand tilde in path
-    let data_dir = if data_dir.starts_with("~") {
-        if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(data_dir.strip_prefix("~").unwrap())
-        } else {
-            data_dir.clone()
-        }
-    } else {
-        data_dir.clone()
-    };
+    info!("Starting node with data directory: {:?}", data_dir);
 
     // Ensure data directory exists
     std::fs::create_dir_all(&data_dir)?;
