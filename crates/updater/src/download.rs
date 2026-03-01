@@ -306,7 +306,7 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
     let triple = platform_target_triple();
     let expected_hash = checksums_text
         .lines()
-        .find(|line| line.contains(triple))
+        .find(|line| line.contains(triple) && line.contains(".tar.gz"))
         .and_then(|line| line.split_whitespace().next())
         .ok_or_else(|| {
             UpdateError::DownloadFailed(format!(
