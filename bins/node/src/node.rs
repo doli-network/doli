@@ -70,8 +70,10 @@ pub struct Node {
     shutdown: Arc<RwLock<bool>>,
     /// Producer key (if producing blocks)
     producer_key: Option<KeyPair>,
-    /// Last slot we produced a block for (to avoid double-producing)
-    last_produced_slot: u32,
+    /// Last slot we successfully produced a block for (to avoid double-producing).
+    /// Set after successful broadcast — checked at the top of try_produce_block()
+    /// before any eligibility/scheduler work to save CPU and silence fallback-rank noise.
+    last_produced_slot: Option<u64>,
     /// Last time we checked for production opportunity
     _last_production_check: Instant,
     /// All known producers (persists across epochs for round-robin)
@@ -524,7 +526,7 @@ impl Node {
             sync_manager,
             shutdown,
             producer_key,
-            last_produced_slot: 0,
+            last_produced_slot: None,
             _last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
@@ -2663,7 +2665,7 @@ impl Node {
         // =========================================================================
         // LAYER 9: Reset all production timing state
         // =========================================================================
-        self.last_produced_slot = 0;
+        self.last_produced_slot = None;
         self.first_peer_connected = None;
         self.last_producer_list_change = None;
         // Note: last_resync_time is set by the caller before calling this function
@@ -3635,6 +3637,14 @@ impl Node {
 
         let current_slot = self.params.timestamp_to_slot(now);
 
+        // Already produced for this slot — skip before any eligibility/scheduler work.
+        // The signed_slots DB is the authoritative slashing guard; this is a fast path
+        // that avoids wasted eligibility checks, VDF, and block building when the
+        // production timer fires again within the same 10s slot.
+        if self.last_produced_slot == Some(current_slot as u64) {
+            return Ok(());
+        }
+
         // =========================================================================
         // PRODUCTION GATE CHECK - Single source of truth for production safety
         //
@@ -3796,16 +3806,11 @@ impl Node {
         }
 
         // Log slot info periodically (every ~60 seconds)
-        if current_slot.is_multiple_of(60) && current_slot != self.last_produced_slot {
+        if current_slot.is_multiple_of(60) {
             info!(
-                "Production check: now={}, genesis={}, current_slot={}, last_produced={}",
+                "Production check: now={}, genesis={}, current_slot={}, last_produced={:?}",
                 now, self.params.genesis_time, current_slot, self.last_produced_slot
             );
-        }
-
-        // Don't produce for the same slot twice
-        if current_slot <= self.last_produced_slot {
-            return Ok(());
         }
 
         // EARLY BLOCK EXISTENCE CHECK (optimization)
@@ -4782,7 +4787,7 @@ impl Node {
         }
 
         // Mark that we produced for this slot
-        self.last_produced_slot = current_slot;
+        self.last_produced_slot = Some(current_slot as u64);
 
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks
