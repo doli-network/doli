@@ -536,6 +536,22 @@ async fn cmd_balance(
     let mut total_immature = 0u64;
     let mut total_unconfirmed = 0u64;
 
+    // Build pubkey_hash → bond_amount map from producer set.
+    // Bonds live in ProducerSet, not as UTXOs, so we query getProducers once.
+    let bond_map: std::collections::HashMap<String, u64> = match rpc.get_producers(false).await {
+        Ok(producers) => producers
+            .iter()
+            .filter(|p| p.bond_amount > 0 && p.status == "active")
+            .filter_map(|p| {
+                let pubkey_bytes = hex::decode(&p.public_key).ok()?;
+                let pubkey_hash =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                Some((pubkey_hash.to_hex(), p.bond_amount))
+            })
+            .collect(),
+        Err(_) => std::collections::HashMap::new(),
+    };
+
     println!("Balances:");
     println!("{:-<60}", "");
 
@@ -572,18 +588,9 @@ async fn cmd_balance(
     for (pubkey_hash_hex, display_addr) in &addresses {
         match rpc.get_balance(pubkey_hash_hex).await {
             Ok(balance) => {
-                // Fetch UTXOs to find bonded amounts.
-                // RPC `confirmed` already excludes bonds (they fail is_spendable_at
-                // due to lock_until), and `total` = confirmed + unconfirmed + immature,
-                // so bonds are not counted in any RPC balance field. We add them separately.
-                let bonded = match rpc.get_utxos(pubkey_hash_hex, false).await {
-                    Ok(utxos) => utxos
-                        .iter()
-                        .filter(|u| u.output_type.eq_ignore_ascii_case("bond"))
-                        .map(|u| u.amount)
-                        .sum::<u64>(),
-                    Err(_) => 0,
-                };
+                // Bonds live in ProducerSet (consumed on registration), not as UTXOs.
+                // So `confirmed` (spendable UTXOs) does NOT include bonds.
+                let bonded = bond_map.get(pubkey_hash_hex.as_str()).copied().unwrap_or(0);
                 let spendable = balance.confirmed;
                 let total = balance.total.saturating_add(bonded);
 
