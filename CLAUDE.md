@@ -503,6 +503,29 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enab
 | U2 | `805b7411209cca4465892c483131cec07390befae77d5bca6930f4d55b07eff5` | ~1,644 | 1,644 DOLI |
 | U3 | `a44df67f10564a221b9bd6f2e020556940b5bf7036cab7e896a52a2d69a4e272` | ~1,517 | 1,517 DOLI |
 
+### 💰 Checking DOLI Balances (IMPORTANT)
+
+> **DO NOT use the RPC `getBalance` method** — it returns 0 for all addresses. Use the **CLI** instead.
+
+The CLI binary on omegacortex can query any address using any wallet file (the `-w` flag just provides RPC connectivity, it doesn't restrict queries):
+
+```bash
+# All N1-N5 balances (run from omegacortex)
+ssh ilozada@omegacortex.ai "
+  CLI=~/repos/doli/target/release/doli
+  W=~/.doli/mainnet/keys/producer_1.json
+  echo 'N1:' && \$CLI -w \$W balance --address doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+  echo 'N2:' && \$CLI -w \$W balance --address doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz
+  echo 'N3:' && \$CLI -w \$W balance --address doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql
+  echo 'N4:' && \$CLI -w \$W balance --address doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
+  echo 'N5:' && \$CLI -w \$W balance --address doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
+  echo 'N6:' && \$CLI -w \$W balance --address doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
+  echo 'N8:' && \$CLI -w \$W balance --address doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma
+"
+```
+
+**Output columns**: Spendable (confirmed, mature), Bonded (locked in bond), Immature (coinbase < 100 confirmations), Total.
+
 ### ⚠️ Chainspec Rules (CONSENSUS-CRITICAL)
 
 > **HARD LESSON (2026-02-22):** N4/N5 had no `chainspec.json` → different `genesis_timestamp` → slot schedule diverged → chain fork. N4 reorged from 37K to 19K blocks.
