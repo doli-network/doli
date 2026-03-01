@@ -536,20 +536,30 @@ async fn cmd_balance(
     let mut total_immature = 0u64;
     let mut total_unconfirmed = 0u64;
 
-    // Build pubkey_hash → bond_amount map from producer set.
-    // Bonds live in ProducerSet, not as UTXOs, so we query getProducers once.
-    let bond_map: std::collections::HashMap<String, u64> = match rpc.get_producers(false).await {
-        Ok(producers) => producers
-            .iter()
-            .filter(|p| p.bond_amount > 0 && p.status == "active")
-            .filter_map(|p| {
-                let pubkey_bytes = hex::decode(&p.public_key).ok()?;
-                let pubkey_hash =
-                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
-                Some((pubkey_hash.to_hex(), p.bond_amount))
-            })
-            .collect(),
-        Err(_) => std::collections::HashMap::new(),
+    // Build pubkey_hash → bonded_value map from producer set.
+    // Bonds live in ProducerSet (consumed on registration), not as UTXOs.
+    // Use bond_count * bond_unit (from node's network params) for the true locked value.
+    let bond_unit = rpc
+        .get_network_params()
+        .await
+        .map(|p| p.bond_unit)
+        .unwrap_or(0);
+    let bond_map: std::collections::HashMap<String, u64> = if bond_unit > 0 {
+        match rpc.get_producers(false).await {
+            Ok(producers) => producers
+                .iter()
+                .filter(|p| p.bond_count > 0 && p.status == "active")
+                .filter_map(|p| {
+                    let pubkey_bytes = hex::decode(&p.public_key).ok()?;
+                    let pubkey_hash =
+                        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                    Some((pubkey_hash.to_hex(), p.bond_count as u64 * bond_unit))
+                })
+                .collect(),
+            Err(_) => std::collections::HashMap::new(),
+        }
+    } else {
+        std::collections::HashMap::new()
     };
 
     println!("Balances:");

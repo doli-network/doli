@@ -218,8 +218,7 @@ pub const COINBASE_MATURITY: BlockHeight = 100;
 /// With 10 DOLI per bond unit:
 /// - Producer with 100 DOLI = 10 slots per cycle
 /// - Maximum 10,000 bonds = 100,000 DOLI maximum per producer
-// PRODUCTION: pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
-pub const BOND_UNIT: Amount = 100_000_000; // 1 DOLI in base units (TEST)
+pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
@@ -2315,17 +2314,16 @@ mod tests {
     fn test_bond_amount() {
         let params = ConsensusParams::mainnet();
 
-        // PRODUCTION: Era 0: 10 DOLI = 1_000_000_000 base units
-        // TEST: Era 0: 1 DOLI = 100_000_000 base units
-        assert_eq!(params.bond_amount(0), 100_000_000);
+        // Era 0: 10 DOLI = 1_000_000_000 base units
+        assert_eq!(params.bond_amount(0), 1_000_000_000);
 
         // Era 1: 70% of initial
         let era1_bond = params.bond_amount(BLOCKS_PER_ERA);
-        assert!(era1_bond > 69_000_000 && era1_bond < 71_000_000);
+        assert!(era1_bond > 690_000_000 && era1_bond < 710_000_000);
 
         // Era 2: 49% of initial
         let era2_bond = params.bond_amount(BLOCKS_PER_ERA * 2);
-        assert!(era2_bond > 48_000_000 && era2_bond < 50_000_000);
+        assert!(era2_bond > 480_000_000 && era2_bond < 500_000_000);
     }
 
     #[test]
