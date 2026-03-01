@@ -209,6 +209,10 @@ pub enum ProductionAuthorization {
         /// Height of the last finalized block.
         local_finalized_height: u64,
     },
+    /// Production is blocked after snap sync until a canonical gossip block is received.
+    /// Prevents producing on an empty block store before the node proves it's on the
+    /// canonical chain.
+    BlockedAwaitingCanonicalBlock,
 }
 
 impl SyncState {
@@ -408,6 +412,10 @@ pub struct SyncManager {
     snap_sync_failed: bool,
     /// When a fresh node first started waiting for 3 peers (for snap sync timeout)
     fresh_node_wait_start: Option<Instant>,
+    /// After snap sync, block production until at least one canonical gossip block
+    /// is received and applied. This proves the node is on the canonical chain and
+    /// its block store has a real parent to build on.
+    awaiting_canonical_block: bool,
 }
 
 impl SyncManager {
@@ -482,6 +490,7 @@ impl SyncManager {
             header_blacklisted_peers: HashMap::new(),
             snap_sync_failed: false,
             fresh_node_wait_start: None,
+            awaiting_canonical_block: false,
         }
     }
 
@@ -801,6 +810,15 @@ impl SyncManager {
             return ProductionAuthorization::BlockedResync {
                 grace_remaining_secs: self.resync_grace_period_secs,
             };
+        }
+
+        // Layer 2.5: Post-snap-sync canonical block gate
+        // After snap sync, the block store is empty — producing immediately would create
+        // a fork because there's no real parent block to build on. Wait until at least
+        // one canonical gossip block has been received and applied, proving we're on the
+        // canonical chain and giving the block store a real parent.
+        if self.awaiting_canonical_block {
+            return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
         }
 
         // Layer 3: Active sync in progress
@@ -1165,6 +1183,21 @@ impl SyncManager {
         info!("Resync completed - starting grace period");
         self.resync_in_progress = false;
         self.last_resync_completed = Some(Instant::now());
+    }
+
+    /// Clear the post-snap-sync production gate.
+    /// Called when a canonical gossip block has been successfully applied,
+    /// proving we're on the canonical chain.
+    pub fn clear_awaiting_canonical_block(&mut self) {
+        if self.awaiting_canonical_block {
+            info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
+            self.awaiting_canonical_block = false;
+        }
+    }
+
+    /// Check if we're waiting for a canonical block after snap sync.
+    pub fn is_awaiting_canonical_block(&self) -> bool {
+        self.awaiting_canonical_block
     }
 
     /// Reset consecutive resync counter (call after stable operation)
@@ -1555,6 +1588,13 @@ impl SyncManager {
     /// Can a new fork recovery start? (not active and not on cooldown)
     pub fn can_start_fork_recovery(&self) -> bool {
         self.fork_recovery.can_start()
+    }
+
+    /// Check and consume the fork-recovery exceeded-max-depth flag.
+    /// When true, the fork is deeper than MAX_RECOVERY_DEPTH and the node
+    /// should escalate to force_resync_from_genesis().
+    pub fn take_fork_exceeded_max_depth(&mut self) -> bool {
+        self.fork_recovery.take_exceeded_max_depth()
     }
 
     /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
@@ -2506,6 +2546,9 @@ impl SyncManager {
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
 
+        // Clear snap sync production gate (genesis resync starts fresh)
+        self.awaiting_canonical_block = false;
+
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
         self.last_block_applied = Instant::now();
@@ -2688,6 +2731,11 @@ impl SyncManager {
             if self.resync_in_progress {
                 self.complete_resync();
             }
+            // Block production until a canonical gossip block arrives.
+            // Snap sync restores state but leaves the block store empty —
+            // producing now would create a fork with no real parent.
+            self.awaiting_canonical_block = true;
+            info!("[SNAP_SYNC] Production gated: awaiting first canonical gossip block");
             if let SyncState::SnapReady { snapshot } = old {
                 Some(snapshot)
             } else {
