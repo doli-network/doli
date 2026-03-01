@@ -402,6 +402,8 @@ pub struct SyncManager {
     snap_download_timeout: Duration,
     /// Peers that served bad snapshots (blacklisted for this session)
     snap_blacklisted_peers: HashSet<PeerId>,
+    /// Peers that returned empty headers (blacklisted with cooldown)
+    header_blacklisted_peers: HashMap<PeerId, Instant>,
     /// Set after a snap sync failure to skip snap sync for one cycle
     snap_sync_failed: bool,
     /// When a fresh node first started waiting for 3 peers (for snap sync timeout)
@@ -477,6 +479,7 @@ impl SyncManager {
             snap_root_timeout: Duration::from_secs(10),
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
+            header_blacklisted_peers: HashMap::new(),
             snap_sync_failed: false,
             fresh_node_wait_start: None,
         }
@@ -521,6 +524,7 @@ impl SyncManager {
                 if height >= status.best_height && slot_aligned {
                     let was_syncing = self.state.is_syncing();
                     self.state = SyncState::Synchronized;
+                    self.header_blacklisted_peers.clear();
                     info!("Chain synchronized at height {}", height);
 
                     // If we were in a resync, complete it now
@@ -1678,9 +1682,13 @@ impl SyncManager {
     fn best_peer(&self) -> Option<PeerId> {
         // CRITICAL: Only consider peers with MORE BLOCKS (higher height).
         // Slot comparison alone is dangerous — see should_sync() comment.
+        // Skip peers that recently returned empty headers (cooldown).
         self.peers
             .iter()
-            .filter(|(_, status)| status.best_height > self.local_height)
+            .filter(|(pid, status)| {
+                status.best_height > self.local_height
+                    && !self.header_blacklisted_peers.contains_key(pid)
+            })
             .max_by_key(|(_, status)| (status.best_height, status.best_slot))
             .map(|(peer, _)| *peer)
     }
@@ -2176,14 +2184,16 @@ impl SyncManager {
                 // This is fork evidence regardless of gap size. A snap-synced peer
                 // far ahead still proves our tip is on a dead fork.
                 self.consecutive_empty_headers += 1;
+                self.header_blacklisted_peers.insert(peer, Instant::now());
                 warn!(
                     "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                     fork evidence (consecutive={}). Resetting to Idle.",
+                     fork evidence (consecutive={}). Blacklisted peer, resetting to Idle.",
                     peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
                 );
                 self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;
+                self.header_blacklisted_peers.clear();
                 info!("Chain synchronized");
             }
             return;
@@ -2406,6 +2416,7 @@ impl SyncManager {
             );
             self.state = SyncState::Synchronized;
             self.snap_sync_failed = false; // Reset snap sync fallback flag
+            self.header_blacklisted_peers.clear();
 
             // If we were in a resync, complete it now
             if self.resync_in_progress {
@@ -2656,6 +2667,7 @@ impl SyncManager {
     pub fn take_snap_snapshot(&mut self) -> Option<VerifiedSnapshot> {
         if matches!(self.state, SyncState::SnapReady { .. }) {
             let old = std::mem::replace(&mut self.state, SyncState::Synchronized);
+            self.header_blacklisted_peers.clear();
             if let SyncState::SnapReady { snapshot } = old {
                 Some(snapshot)
             } else {
@@ -2940,6 +2952,10 @@ impl SyncManager {
                 }
             }
         }
+
+        // Expire stale header blacklist entries (60s cooldown)
+        self.header_blacklisted_peers
+            .retain(|_, added| added.elapsed() < Duration::from_secs(60));
 
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
