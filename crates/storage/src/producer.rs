@@ -930,6 +930,38 @@ impl ProducerInfo {
 /// After this period, a producer can re-register without the prior_exit penalty.
 pub const EXIT_HISTORY_RETENTION: u64 = 2 * 2_102_400; // 2 eras = ~8 years
 
+/// A deferred producer set mutation, queued during block application and
+/// applied at the next epoch boundary. This prevents scheduler divergence
+/// between forks: all nodes apply the same mutations at deterministic heights.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PendingProducerUpdate {
+    Register {
+        info: ProducerInfo,
+        height: u64,
+    },
+    Exit {
+        pubkey: PublicKey,
+        height: u64,
+    },
+    Slash {
+        pubkey: PublicKey,
+        height: u64,
+    },
+    AddBond {
+        pubkey: PublicKey,
+        outpoints: Vec<(Hash, u32)>,
+        bond_unit: u64,
+    },
+    DelegateBond {
+        delegator: PublicKey,
+        delegate: PublicKey,
+        bond_count: u32,
+    },
+    RevokeDelegation {
+        delegator: PublicKey,
+    },
+}
+
 /// Set of producers with their states
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProducerSet {
@@ -956,6 +988,10 @@ pub struct ProducerSet {
     /// Rebuilt on deserialization from `producers` map.
     #[serde(skip)]
     unbonding_index: std::collections::BTreeMap<u64, Vec<Hash>>,
+    /// Deferred producer mutations queued during block application.
+    /// Applied at epoch boundaries to ensure scheduler consistency across forks.
+    #[serde(default)]
+    pending_updates: Vec<PendingProducerUpdate>,
 }
 
 impl ProducerSet {
@@ -966,6 +1002,7 @@ impl ProducerSet {
             exit_history: HashMap::new(),
             active_cache: None,
             unbonding_index: std::collections::BTreeMap::new(),
+            pending_updates: Vec::new(),
         }
     }
 
@@ -987,7 +1024,71 @@ impl ProducerSet {
     pub fn clear(&mut self) {
         self.producers.clear();
         self.active_cache = None;
+        self.pending_updates.clear();
         // Keep exit_history as it's needed for anti-sybil checks
+    }
+
+    /// Queue a deferred producer mutation for application at the next epoch boundary.
+    pub fn queue_update(&mut self, update: PendingProducerUpdate) {
+        self.pending_updates.push(update);
+    }
+
+    /// Apply all pending producer mutations (called at epoch boundaries).
+    /// After applying, the pending queue is cleared and caches invalidated.
+    pub fn apply_pending_updates(&mut self) {
+        if self.pending_updates.is_empty() {
+            return;
+        }
+        let updates = std::mem::take(&mut self.pending_updates);
+        for update in updates {
+            match update {
+                PendingProducerUpdate::Register { info, height } => {
+                    if let Err(e) = self.register(info, height) {
+                        tracing::warn!("Deferred register failed: {}", e);
+                    }
+                }
+                PendingProducerUpdate::Exit { pubkey, height } => {
+                    if let Err(e) = self.request_exit(&pubkey, height) {
+                        tracing::warn!("Deferred exit failed: {}", e);
+                    }
+                }
+                PendingProducerUpdate::Slash { pubkey, height } => {
+                    if let Err(e) = self.slash_producer(&pubkey, height) {
+                        tracing::warn!("Deferred slash failed: {}", e);
+                    }
+                }
+                PendingProducerUpdate::AddBond {
+                    pubkey,
+                    outpoints,
+                    bond_unit,
+                } => {
+                    if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
+                        producer_info.add_bonds(outpoints, bond_unit);
+                    }
+                }
+                PendingProducerUpdate::DelegateBond {
+                    delegator,
+                    delegate,
+                    bond_count,
+                } => {
+                    let _ = self.delegate_bonds(&delegator, &delegate, bond_count);
+                }
+                PendingProducerUpdate::RevokeDelegation { delegator } => {
+                    let _ = self.revoke_delegation(&delegator);
+                }
+            }
+        }
+        self.active_cache = None;
+    }
+
+    /// Check if there are pending updates waiting to be applied.
+    pub fn has_pending_updates(&self) -> bool {
+        !self.pending_updates.is_empty()
+    }
+
+    /// Get the count of pending updates.
+    pub fn pending_update_count(&self) -> usize {
+        self.pending_updates.len()
     }
 
     /// Load producer set from file
