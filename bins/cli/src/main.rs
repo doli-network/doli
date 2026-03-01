@@ -23,7 +23,7 @@ use wallet::Wallet;
 struct Cli {
     /// Wallet file path
     #[arg(short, long, default_value = "~/.doli/wallet.json")]
-    wallet: PathBuf,
+    wallet: String,
 
     /// Node RPC endpoint (default: seed1.doli.network for mainnet)
     #[arg(short, long, default_value = "http://seed1.doli.network:8545")]
@@ -294,43 +294,59 @@ enum MaintainerCommands {
     List,
 }
 
+/// Expand `~` or `~/...` to the user's home directory.
+/// Shell tilde expansion doesn't happen inside Rust — clap default values
+/// like `~/.doli/wallet.json` arrive as literal strings.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(rest)
+    } else if path == "~" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let wallet = expand_tilde(&cli.wallet);
 
     match cli.command {
         Commands::New { name } => {
-            cmd_new(&cli.wallet, name)?;
+            cmd_new(&wallet, name)?;
         }
         Commands::Restore { name } => {
-            cmd_restore(&cli.wallet, name)?;
+            cmd_restore(&wallet, name)?;
         }
         Commands::Address { label } => {
-            cmd_address(&cli.wallet, label)?;
+            cmd_address(&wallet, label)?;
         }
         Commands::Addresses => {
-            cmd_addresses(&cli.wallet)?;
+            cmd_addresses(&wallet)?;
         }
         Commands::Balance { address } => {
-            cmd_balance(&cli.wallet, &cli.rpc, address).await?;
+            cmd_balance(&wallet, &cli.rpc, address).await?;
         }
         Commands::Send { to, amount, fee } => {
-            cmd_send(&cli.wallet, &cli.rpc, &to, &amount, fee).await?;
+            cmd_send(&wallet, &cli.rpc, &to, &amount, fee).await?;
         }
         Commands::History { limit } => {
-            cmd_history(&cli.wallet, &cli.rpc, limit).await?;
+            cmd_history(&wallet, &cli.rpc, limit).await?;
         }
         Commands::Export { output } => {
-            cmd_export(&cli.wallet, &output)?;
+            cmd_export(&wallet, &output)?;
         }
         Commands::Import { input } => {
-            cmd_import(&cli.wallet, &input)?;
+            cmd_import(&wallet, &input)?;
         }
         Commands::Info => {
-            cmd_info(&cli.wallet)?;
+            cmd_info(&wallet)?;
         }
         Commands::Sign { message, address } => {
-            cmd_sign(&cli.wallet, &message, address)?;
+            cmd_sign(&wallet, &message, address)?;
         }
         Commands::Verify {
             message,
@@ -340,16 +356,16 @@ async fn main() -> Result<()> {
             cmd_verify(&message, &signature, &pubkey)?;
         }
         Commands::Producer { command } => {
-            cmd_producer(&cli.wallet, &cli.rpc, command).await?;
+            cmd_producer(&wallet, &cli.rpc, command).await?;
         }
         Commands::Rewards { command } => {
-            cmd_rewards(&cli.wallet, &cli.rpc, command).await?;
+            cmd_rewards(&wallet, &cli.rpc, command).await?;
         }
         Commands::Chain => {
             cmd_chain(&cli.rpc).await?;
         }
         Commands::Update { command } => {
-            cmd_update(&cli.wallet, &cli.rpc, command).await?;
+            cmd_update(&wallet, &cli.rpc, command).await?;
         }
         Commands::Maintainer { command } => {
             cmd_maintainer(&cli.rpc, command).await?;
@@ -409,7 +425,7 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     println!("  If you lose both the wallet file and these 24 words, your DOLI is gone forever.");
     println!("  Write them down on paper and store in a safe place.");
     println!("  Then delete the seed file:");
-    println!("    rm {:?}", seed_path);
+    println!("    rm {}", seed_path.display());
     println!();
 
     Ok(())
