@@ -434,14 +434,13 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | **N3** | N3-VPS | 147.93.84.44 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@147.93.84.44` | 30303 / 8545 / 9090 | `/home/ilozada/.doli/mainnet/data` | `/home/ilozada/doli-node` | `doli-mainnet-node3` |
 | **N4** | pro-KVM1 | 72.60.70.166 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.70.166` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node4` |
 | **N5** | fpx | 72.60.115.209 | `ssh ilozada@omegacortex.ai` then `ssh -p 50790 ilozada@72.60.115.209` | 30303 / 8545 / 9090 | `/home/isudoajl/.doli/mainnet/` | `/opt/doli/target/release/doli-node` | `doli-mainnet-node5` |
-| **N6** | macOS (local) | — | local | 30303 / 8545 / 9090 | `~/.doli/mainnet/data` | `~/repos/doli/target/release/doli-node` | `network.doli.mainnet.node6` (launchd) |
+| **N6** | omegacortex | same | same host | 30305 / 8547 / 9092 | `~/.doli/mainnet/node6/data` | same binary | `doli-mainnet-node6` |
 | **N8** | macOS (local) | — | local | 30305 / 8547 / — | `~/.doli/mainnet/node8/data` | `/usr/local/bin/doli-node` | `network.doli.mainnet.node8` (launchd) |
 
-**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`), **except N6/N8** which use macOS launchd.
+**All nodes managed by systemd** (`sudo systemctl restart/stop/status doli-mainnet-nodeN`), **except N8** which uses macOS launchd.
 
 **Service files**:
-- N1-N5: `/etc/systemd/system/doli-mainnet-nodeN.service`
-- N6: `~/Library/LaunchAgents/network.doli.mainnet.node6.plist`
+- N1-N6: `/etc/systemd/system/doli-mainnet-nodeN.service`
 - N8: `~/Library/LaunchAgents/network.doli.mainnet.node8.plist`
 
 **Logs**: `/var/log/doli/nodeN.log` — circular via logrotate (5MB max, 1 rotation). Config: `/etc/logrotate.d/doli`.
@@ -451,21 +450,20 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 tail -f /var/log/doli/node1.log                              # N1/N2 (omegacortex)
 ssh -p 50790 ilozada@147.93.84.44 'tail -f /var/log/doli/node3.log'  # N3 (via jump)
 ssh -p 50790 ilozada@72.60.70.166 'tail -f /var/log/doli/node4.log'  # N4 (via jump)
-tail -f ~/.doli/mainnet/node6.log                            # N6 (macOS local)
+tail -f /var/log/doli/node6.log                              # N6 (omegacortex)
 tail -f ~/.doli/mainnet/node8.log                            # N8 (macOS local)
 
-# Manage service (N1-N5: systemd)
+# Manage service (N1-N6: systemd)
 sudo systemctl status doli-mainnet-node1
 sudo systemctl restart doli-mainnet-node1
 sudo systemctl stop doli-mainnet-node1
 
-# Manage service (N6/N8: macOS launchd)
-launchctl list network.doli.mainnet.node6                    # status
-launchctl stop network.doli.mainnet.node6                    # stop
-launchctl start network.doli.mainnet.node6                   # start
-launchctl unload ~/Library/LaunchAgents/network.doli.mainnet.node6.plist  # disable
-launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enable
-# N8: same pattern — replace "node6" with "node8" in commands above
+# Manage service (N8: macOS launchd)
+launchctl list network.doli.mainnet.node8                    # status
+launchctl stop network.doli.mainnet.node8                    # stop
+launchctl start network.doli.mainnet.node8                   # start
+launchctl unload ~/Library/LaunchAgents/network.doli.mainnet.node8.plist  # disable
+launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node8.plist    # enable
 ```
 
 **Key differences:**
@@ -475,7 +473,7 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enab
 - **N3/N4/N5 SSH**: Only reachable via omegacortex as jump host (`ssh -p 50790`). Direct SSH from local machine fails.
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). Systemd service runs as `isudoajl`. SSH as `ilozada`.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
-- **N6** (macOS local): Rust toolchain available, builds locally. Managed by launchd (not systemd). Registered post-genesis at block 3236 with 10 bonds (100 DOLI). Not a maintainer.
+- **N6** (omegacortex): Shares host/binary with N1/N2. Managed by systemd. P2P port 30305, RPC port 8547, metrics 9092. Bootstraps from N1 local. Registered post-genesis at block 3236 with 10 bonds (100 DOLI). Not a maintainer.
 - **N8** (macOS local): Binary from `/usr/local/bin/doli-node` (updated manually from repo build or GitHub release). Managed by launchd. Uses P2P port 30305, RPC port 8547. Not a maintainer. `KeepAlive: true` — must `launchctl unload` (not just `stop`) before wiping data.
 
 ### Producer Key Registry (AUTHORITATIVE)
@@ -489,7 +487,7 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node6.plist    # enab
 | **N3** | N3-VPS | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql` | `54323cefd0...25c48c2b` |
 | **N4** | pro-KVM1 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6` | `a1596a36fd...e9beda1d` |
 | **N5** | fpx | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
-| **N6** | macOS (local) | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
+| **N6** | omegacortex | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
 | **N8** | macOS (local) | `~/.doli/mainnet/keys/producer_8.json` | `doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma` | `3303a23595...77b4b88` |
 
 **N6/N8 are NOT genesis producers** — N6 registered post-genesis at block 3236 with 10 bonds. N8 is a v2 (BIP-39) wallet registered post-genesis. Neither is a maintainer (governance stays 5/5 with N1-N5).
@@ -555,11 +553,9 @@ These are hardcoded in `crates/core/src/network_params.rs` as default mainnet bo
 # Linux nodes (omegacortex)
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
 
-# macOS (N6 — local)
-cd ~/repos/doli && git pull && cargo build --release
 ```
 
-This updates the binary for N1/N2/N3 (they share `~/repos/doli/target/release/doli-node`). N6 builds locally on macOS. Running nodes keep the old binary in memory until restarted.
+This updates the binary for N1/N2/N6 (they share `~/repos/doli/target/release/doli-node` on omegacortex). Running nodes keep the old binary in memory until restarted.
 
 #### Step 2: Deploy binary to N4/N5 via SCP
 
@@ -592,8 +588,10 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl st
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl stop doli-mainnet-node4'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl stop doli-mainnet-node5'"
 
-# N6/N8 (macOS local)
-launchctl stop network.doli.mainnet.node6
+# N6 (omegacortex)
+ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node6"
+
+# N8 (macOS local)
 launchctl stop network.doli.mainnet.node8
 ```
 
@@ -617,8 +615,10 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl st
 # N5
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl start doli-mainnet-node5'"
 
-# N6/N8 (macOS local)
-launchctl start network.doli.mainnet.node6
+# N6 (omegacortex)
+ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node6"
+
+# N8 (macOS local)
 launchctl start network.doli.mainnet.node8
 ```
 
@@ -626,16 +626,16 @@ launchctl start network.doli.mainnet.node8
 
 ```bash
 # All nodes running
-ssh ilozada@omegacortex.ai "pgrep -la doli-node"
+ssh ilozada@omegacortex.ai "pgrep -la doli-node"  # N1/N2/N6
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'"
-pgrep -la doli-node  # N6/N8 (macOS local)
+pgrep -la doli-node  # N8 (macOS local)
 
 # All nodes same height and hash (run twice 15s apart, height should advance)
 # N1-N5 (remote)
 ssh ilozada@omegacortex.ai "for p in 8545 8546; do echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done; echo \"N3: \$(ssh -p 50790 ilozada@147.93.84.44 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N4: \$(ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; echo \"N5: \$(ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\""
-# N6 (macOS local)
-curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'
+# N6 (omegacortex, RPC port 8547)
+ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8547 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'"
 # N8 (macOS local, RPC port 8547)
 curl -s -X POST http://127.0.0.1:8547 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}'
 ```
@@ -660,7 +660,7 @@ sudo systemctl start doli-mainnet-nodeN
 - **N3**: `/home/ilozada/.doli/mainnet/data/` (147.93.84.44)
 - **N4**: `/home/isudoajl/.doli/mainnet/` (72.60.70.166, no `data/` subdir)
 - **N5**: `/home/isudoajl/.doli/mainnet/` (72.60.115.209, no `data/` subdir)
-- **N6**: `~/.doli/mainnet/data/` (macOS local, stop via `launchctl stop network.doli.mainnet.node6`)
+- **N6**: `~/.doli/mainnet/node6/data/` (omegacortex)
 - **N8**: `~/.doli/mainnet/node8/data/` (macOS local, **must `launchctl unload`** — `KeepAlive: true` auto-restarts on stop)
 
 ### Consensus-Critical vs Rolling Upgrades
@@ -670,7 +670,7 @@ sudo systemctl start doli-mainnet-nodeN
 | **Consensus-critical** | Block validation, scheduling, VDF, economics, tx processing | Stop ALL nodes simultaneously, replace binary, start all |
 | **Non-consensus** | Sync, networking, RPC, logging, metrics | Rolling: one node at a time, verify health before next |
 
-**For consensus-critical changes:** All nodes MUST run the same binary version simultaneously to prevent forks. Stop all 6, deploy, start N1 first (bootstrap), then N2, then N3/N4/N5/N6.
+**For consensus-critical changes:** All nodes MUST run the same binary version simultaneously to prevent forks. Stop all nodes, deploy, start N1 first (bootstrap), then N2, then N3/N4/N5/N6.
 
 ### Snap Sync
 
