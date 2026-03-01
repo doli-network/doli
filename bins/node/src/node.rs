@@ -2041,9 +2041,23 @@ impl Node {
 
         if result.canonical_blocks.is_empty() {
             warn!("Fork sync: no canonical blocks to apply — aborting reorg");
-            // Still reset sync so we can try again
             let mut sync = self.sync_manager.write().await;
             sync.reset_sync_for_rollback();
+            return Ok(());
+        }
+
+        // Pre-check: verify block store has blocks from height 1 (required for UTXO rebuild).
+        // Snap-synced nodes don't have early blocks — reorg would fail in an infinite loop.
+        if self.block_store.get_block_by_height(1)?.is_none() {
+            warn!(
+                "Fork sync reorg: block store incomplete (snap-synced node). \
+                 Cannot rebuild UTXO from genesis. Falling back to full resync."
+            );
+            {
+                let mut sync = self.sync_manager.write().await;
+                sync.reset_sync_for_rollback();
+            }
+            self.force_resync_from_genesis().await?;
             return Ok(());
         }
 
@@ -2075,30 +2089,53 @@ impl Node {
             weight_delta: 1, // Positive = new chain is preferred (peers chose it)
         };
 
-        // Execute the reorg using the existing atomic reorg path
-        self.execute_reorg(reorg_result, trigger_block).await?;
+        // Execute the reorg using the existing atomic reorg path.
+        // IMPORTANT: Always reset sync state afterward, even on failure, to prevent
+        // infinite fork sync retry loops.
+        match self.execute_reorg(reorg_result, trigger_block).await {
+            Ok(()) => {
+                // Reset sync state so normal sync can resume from the new tip
+                {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.reset_sync_for_rollback();
+                    let (height, hash, slot) = {
+                        let state = self.chain_state.read().await;
+                        (state.best_height, state.best_hash, state.best_slot)
+                    };
+                    sync.update_local_tip(height, hash, slot);
+                }
 
-        // Reset sync state so normal sync can resume from the new tip
-        {
-            let mut sync = self.sync_manager.write().await;
-            sync.reset_sync_for_rollback();
-            let (height, hash, slot) = {
-                let state = self.chain_state.read().await;
-                (state.best_height, state.best_hash, state.best_slot)
-            };
-            sync.update_local_tip(height, hash, slot);
+                self.shallow_rollback_count = 0;
+                self.consecutive_fork_blocks = 0;
+
+                info!(
+                    "Fork sync reorg complete: now at height {}",
+                    self.chain_state.read().await.best_height
+                );
+
+                Ok(())
+            }
+            Err(e) => {
+                // Always reset sync state to prevent infinite retry loop
+                {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.reset_sync_for_rollback();
+                }
+
+                let err_msg = e.to_string();
+                if err_msg.contains("missing block") || err_msg.contains("UTXO rebuild") {
+                    warn!(
+                        "Fork sync reorg failed due to incomplete block store: {}. \
+                         Falling back to full resync.",
+                        e
+                    );
+                    self.force_resync_from_genesis().await?;
+                    return Ok(());
+                }
+
+                Err(e)
+            }
         }
-
-        // Reset shallow rollback counter since we successfully recovered
-        self.shallow_rollback_count = 0;
-        self.consecutive_fork_blocks = 0;
-
-        info!(
-            "Fork sync reorg complete: now at height {}",
-            self.chain_state.read().await.best_height
-        );
-
-        Ok(())
     }
 
     /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
@@ -5059,6 +5096,17 @@ impl Node {
 
         if local_height == 0 {
             return Ok(false);
+        }
+
+        // Pre-check: snap-synced nodes don't have blocks from height 1.
+        // UTXO/producer rebuild would fail. Fall back to full resync.
+        if self.block_store.get_block_by_height(1)?.is_none() {
+            warn!(
+                "Rollback: block store incomplete (snap-synced node). \
+                 Cannot rebuild state. Falling back to full resync."
+            );
+            self.force_resync_from_genesis().await?;
+            return Ok(true);
         }
 
         let target_height = local_height - 1;

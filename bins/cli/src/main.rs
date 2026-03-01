@@ -149,6 +149,17 @@ enum Commands {
         #[command(subcommand)]
         command: MaintainerCommands,
     },
+
+    /// Upgrade doli binaries to the latest release
+    Upgrade {
+        /// Target version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -370,6 +381,9 @@ async fn main() -> Result<()> {
         Commands::Maintainer { command } => {
             cmd_maintainer(&cli.rpc, command).await?;
         }
+        Commands::Upgrade { version, yes } => {
+            cmd_upgrade(version, yes).await?;
+        }
     }
 
     Ok(())
@@ -517,86 +531,97 @@ async fn cmd_balance(
         return Ok(());
     }
 
-    let mut total_confirmed = 0u64;
+    let mut total_spendable = 0u64;
+    let mut total_bonded = 0u64;
+    let mut total_immature = 0u64;
     let mut total_unconfirmed = 0u64;
 
     println!("Balances:");
     println!("{:-<60}", "");
 
-    let mut total_immature: u64 = 0;
-
-    if let Some(addr) = &address {
-        // Resolve user-supplied address (doli1... or hex)
+    // Collect addresses to query
+    let addresses: Vec<(String, String)> = if let Some(addr) = &address {
         let pubkey_hash =
             crypto::address::resolve(addr, None).map_err(|e| anyhow::anyhow!("{}", e))?;
         let pubkey_hash_hex = pubkey_hash.to_hex();
         let display_addr = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
             .unwrap_or_else(|_| pubkey_hash_hex.clone());
+        vec![(pubkey_hash_hex, display_addr)]
+    } else {
+        wallet
+            .addresses()
+            .iter()
+            .filter_map(|wallet_addr| {
+                let pubkey_bytes = hex::decode(&wallet_addr.public_key).ok()?;
+                let pubkey_hash =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                let pubkey_hash_hex = pubkey_hash.to_hex();
+                let label = wallet_addr.label.as_deref().unwrap_or("");
+                let bech32 = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
+                    .unwrap_or_else(|_| pubkey_hash_hex.clone());
+                let display = if !label.is_empty() {
+                    format!("{} ({})", bech32, label)
+                } else {
+                    bech32
+                };
+                Some((pubkey_hash_hex, display))
+            })
+            .collect()
+    };
 
-        match rpc.get_balance(&pubkey_hash_hex).await {
+    for (pubkey_hash_hex, display_addr) in &addresses {
+        match rpc.get_balance(pubkey_hash_hex).await {
             Ok(balance) => {
+                // Fetch UTXOs to split bonded vs spendable
+                let bonded = match rpc.get_utxos(pubkey_hash_hex, false).await {
+                    Ok(utxos) => utxos
+                        .iter()
+                        .filter(|u| u.output_type.eq_ignore_ascii_case("bond"))
+                        .map(|u| u.amount)
+                        .sum::<u64>(),
+                    Err(_) => 0,
+                };
+                let spendable = balance.confirmed.saturating_sub(bonded);
+
                 println!("{}", display_addr);
-                println!("  Confirmed:   {}", format_balance(balance.confirmed));
-                println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
-                println!("  Immature:    {}", format_balance(balance.immature));
-                println!("  Total:       {}", format_balance(balance.total));
+                println!("  Spendable: {}", format_balance(spendable));
+                if bonded > 0 {
+                    println!("  Bonded:    {}  (producer bond)", format_balance(bonded));
+                }
+                if balance.immature > 0 {
+                    println!("  Immature:  {}", format_balance(balance.immature));
+                }
+                if balance.unconfirmed > 0 {
+                    println!("  Pending:   {}", format_balance(balance.unconfirmed));
+                }
+                println!("  Total:     {}", format_balance(balance.total));
                 println!();
 
-                total_confirmed += balance.confirmed;
-                total_unconfirmed += balance.unconfirmed;
+                total_spendable += spendable;
+                total_bonded += bonded;
                 total_immature += balance.immature;
+                total_unconfirmed += balance.unconfirmed;
             }
             Err(e) => {
                 println!("{}: Error - {}", display_addr, e);
             }
         }
-    } else {
-        for wallet_addr in wallet.addresses() {
-            let pubkey_bytes = hex::decode(&wallet_addr.public_key)?;
-            let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
-            let pubkey_hash_hex = pubkey_hash.to_hex();
-
-            let label = wallet_addr.label.as_deref().unwrap_or("");
-            let bech32 = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
-                .unwrap_or_else(|_| pubkey_hash_hex.clone());
-
-            match rpc.get_balance(&pubkey_hash_hex).await {
-                Ok(balance) => {
-                    println!(
-                        "{} {}",
-                        bech32,
-                        if !label.is_empty() {
-                            format!("({})", label)
-                        } else {
-                            String::new()
-                        }
-                    );
-                    println!("  Confirmed:   {}", format_balance(balance.confirmed));
-                    println!("  Unconfirmed: {}", format_balance(balance.unconfirmed));
-                    println!("  Immature:    {}", format_balance(balance.immature));
-                    println!("  Total:       {}", format_balance(balance.total));
-                    println!();
-
-                    total_confirmed += balance.confirmed;
-                    total_unconfirmed += balance.unconfirmed;
-                    total_immature += balance.immature;
-                }
-                Err(e) => {
-                    println!("{}: Error - {}", bech32, e);
-                }
-            }
-        }
     }
 
-    if address.is_none() && wallet.addresses().len() > 1 {
+    if address.is_none() && addresses.len() > 1 {
+        let grand_total = total_spendable + total_bonded + total_immature + total_unconfirmed;
         println!("{:-<60}", "");
-        println!("Total Confirmed:   {}", format_balance(total_confirmed));
-        println!("Total Unconfirmed: {}", format_balance(total_unconfirmed));
-        println!("Total Immature:    {}", format_balance(total_immature));
-        println!(
-            "Total:             {}",
-            format_balance(total_confirmed + total_unconfirmed + total_immature)
-        );
+        println!("Total Spendable: {}", format_balance(total_spendable));
+        if total_bonded > 0 {
+            println!("Total Bonded:    {}", format_balance(total_bonded));
+        }
+        if total_immature > 0 {
+            println!("Total Immature:  {}", format_balance(total_immature));
+        }
+        if total_unconfirmed > 0 {
+            println!("Total Pending:   {}", format_balance(total_unconfirmed));
+        }
+        println!("Total:           {}", format_balance(grand_total));
     }
 
     Ok(())
@@ -895,6 +920,213 @@ fn cmd_verify(message: &str, signature: &str, pubkey: &str) -> Result<()> {
     println!("Valid: {}", valid);
 
     Ok(())
+}
+
+async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
+    let current = updater::current_version();
+    println!("Current version: v{}", current);
+    println!("Checking for updates...");
+
+    let release = updater::fetch_github_release(version.as_deref())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch release: {}", e))?;
+
+    if !updater::is_newer_version(&release.version, current) {
+        println!("Already up to date (v{}).", current);
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "New version available: v{} -> v{}",
+        current, release.version
+    );
+    if !release.changelog.is_empty() {
+        println!();
+        // Show first 20 lines of changelog
+        for line in release.changelog.lines().take(20) {
+            println!("  {}", line);
+        }
+        println!();
+    }
+
+    if !yes {
+        print!("Proceed with upgrade? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Upgrade cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Download tarball
+    println!("Downloading v{}...", release.version);
+    let tarball = updater::download_from_url(&release.tarball_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Download failed: {}", e))?;
+
+    // Verify hash
+    println!("Verifying checksum...");
+    updater::verify_hash(&tarball, &release.expected_hash)
+        .map_err(|e| anyhow::anyhow!("Hash verification failed: {}", e))?;
+    println!("Checksum OK.");
+
+    // Extract and install doli (CLI binary — ourselves)
+    let cli_binary = updater::extract_named_binary_from_tarball(&tarball, "doli")
+        .map_err(|e| anyhow::anyhow!("Failed to extract doli binary: {}", e))?;
+    let cli_path = std::env::current_exe()?;
+    println!("Installing doli to {:?}...", cli_path);
+    updater::install_binary(&cli_binary, &cli_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to install doli: {}", e))?;
+
+    // Extract and install doli-node (if found in tarball and on PATH)
+    match updater::extract_named_binary_from_tarball(&tarball, "doli-node") {
+        Ok(node_binary) => {
+            // Find where doli-node lives
+            let node_path = find_doli_node_path();
+            if let Some(path) = node_path {
+                println!("Installing doli-node to {:?}...", path);
+                updater::install_binary(&node_binary, &path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to install doli-node: {}", e))?;
+            } else {
+                println!("doli-node not found on system, skipping node binary install.");
+            }
+        }
+        Err(_) => {
+            println!("doli-node not in tarball, skipping node binary install.");
+        }
+    }
+
+    // Detect and restart running doli-node service
+    restart_doli_service();
+
+    println!();
+    println!("Upgrade to v{} complete!", release.version);
+
+    Ok(())
+}
+
+/// Find the path to an installed doli-node binary
+fn find_doli_node_path() -> Option<std::path::PathBuf> {
+    // Check `which doli-node`
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("doli-node")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Detect and restart a running doli-node service
+fn restart_doli_service() {
+    #[cfg(target_os = "macos")]
+    {
+        // Check launchd for doli services
+        if let Ok(output) = std::process::Command::new("launchctl")
+            .args(["list"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let services: Vec<&str> = stdout
+                .lines()
+                .filter(|line| line.contains("doli"))
+                .filter_map(|line| line.split_whitespace().last())
+                .collect();
+
+            if services.is_empty() {
+                println!("No running doli-node service found. Restart manually if needed.");
+                return;
+            }
+
+            for label in &services {
+                println!("Restarting service: {}", label);
+                let result = std::process::Command::new("launchctl")
+                    .args(["kickstart", "-k", &format!("gui/{}/{}", get_uid(), label)])
+                    .status();
+                match result {
+                    Ok(s) if s.success() => println!("  Restarted {}.", label),
+                    _ => {
+                        // Fallback: stop + start
+                        let _ = std::process::Command::new("launchctl")
+                            .args(["stop", label])
+                            .status();
+                        let _ = std::process::Command::new("launchctl")
+                            .args(["start", label])
+                            .status();
+                        println!("  Restarted {} (stop+start).", label);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Check systemd for doli services
+        if let Ok(output) = std::process::Command::new("systemctl")
+            .args([
+                "list-units",
+                "--type=service",
+                "--state=running",
+                "--no-pager",
+            ])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let services: Vec<&str> = stdout
+                .lines()
+                .filter(|line| line.contains("doli"))
+                .filter_map(|line| line.split_whitespace().next())
+                .collect();
+
+            if services.is_empty() {
+                println!("No running doli-node service found. Restart manually if needed.");
+                return;
+            }
+
+            for unit in &services {
+                println!("Restarting service: {}", unit);
+                let result = std::process::Command::new("sudo")
+                    .args(["systemctl", "restart", unit])
+                    .status();
+                match result {
+                    Ok(s) if s.success() => println!("  Restarted {}.", unit),
+                    _ => println!(
+                        "  Failed to restart {}. Run: sudo systemctl restart {}",
+                        unit, unit
+                    ),
+                }
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        println!("Service restart not supported on this platform. Restart manually.");
+    }
+}
+
+/// Get current user's UID (for launchctl kickstart)
+#[cfg(target_os = "macos")]
+fn get_uid() -> String {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "501".to_string())
 }
 
 async fn cmd_producer(
