@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772344423,
-    "message": "Genesis - Production - VDF proof + real bonds",
+    "timestamp": 1772397313,
+    "message": "Genesis v2 - Epoch-deferred ProducerSet - fork-safe scheduling",
     "initial_reward": 100000000
   },
   "consensus": {
