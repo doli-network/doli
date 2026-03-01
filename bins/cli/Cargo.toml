@@ -15,6 +15,7 @@ path = "src/main.rs"
 doli-core = { workspace = true }
 crypto = { workspace = true }
 vdf = { workspace = true }
+updater = { workspace = true }
 bincode.workspace = true
 clap.workspace = true
 serde.workspace = true

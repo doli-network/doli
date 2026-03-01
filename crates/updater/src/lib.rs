@@ -28,8 +28,8 @@ mod vote;
 pub mod watchdog;
 
 pub use apply::{
-    apply_update, backup_current, current_binary_path, extract_binary_from_tarball, install_binary,
-    restart_node, rollback,
+    apply_update, backup_current, current_binary_path, extract_binary_from_tarball,
+    extract_named_binary_from_tarball, install_binary, restart_node, rollback,
 };
 pub use download::{
     download_binary, download_from_url, fetch_github_release, fetch_latest_release, verify_hash,
