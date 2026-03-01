@@ -62,3 +62,6 @@ proptest-regressions/
 # Skill packages (generated zips)
 *.skill
 
+# Claude worktrees
+.claude/worktrees/
+
