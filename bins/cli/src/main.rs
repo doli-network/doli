@@ -572,7 +572,10 @@ async fn cmd_balance(
     for (pubkey_hash_hex, display_addr) in &addresses {
         match rpc.get_balance(pubkey_hash_hex).await {
             Ok(balance) => {
-                // Fetch UTXOs to split bonded vs spendable
+                // Fetch UTXOs to find bonded amounts.
+                // RPC `confirmed` already excludes bonds (they fail is_spendable_at
+                // due to lock_until), and `total` = confirmed + unconfirmed + immature,
+                // so bonds are not counted in any RPC balance field. We add them separately.
                 let bonded = match rpc.get_utxos(pubkey_hash_hex, false).await {
                     Ok(utxos) => utxos
                         .iter()
@@ -581,7 +584,8 @@ async fn cmd_balance(
                         .sum::<u64>(),
                     Err(_) => 0,
                 };
-                let spendable = balance.confirmed.saturating_sub(bonded);
+                let spendable = balance.confirmed;
+                let total = balance.total.saturating_add(bonded);
 
                 println!("{}", display_addr);
                 println!("  Spendable: {}", format_balance(spendable));
@@ -594,7 +598,7 @@ async fn cmd_balance(
                 if balance.unconfirmed > 0 {
                     println!("  Pending:   {}", format_balance(balance.unconfirmed));
                 }
-                println!("  Total:     {}", format_balance(balance.total));
+                println!("  Total:     {}", format_balance(total));
                 println!();
 
                 total_spendable += spendable;
