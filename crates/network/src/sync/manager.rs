@@ -1302,6 +1302,20 @@ impl SyncManager {
     /// (a node can have at most `active_producer_count - 1` peers).
     pub fn set_tier(&mut self, tier: u8, active_producer_count: usize) {
         self.tier = tier;
+
+        // Tier-based min_peers only applies to large networks (500+ producers).
+        // In small networks ALL producers are trivially "Tier 1", but the Tier 1
+        // min_peers (3) is designed for dense validator meshes at scale.
+        // Keep the default min_peers (2) until the network grows enough for
+        // tiering to be meaningful.
+        if active_producer_count < 500 {
+            info!(
+                "Set tier={} min_peers_for_production={} (skipped tier override: network_size={} < 500)",
+                tier, self.min_peers_for_production, active_producer_count
+            );
+            return;
+        }
+
         let tier_min = match tier {
             1 => MIN_PEERS_TIER1,
             2 => MIN_PEERS_TIER2,
