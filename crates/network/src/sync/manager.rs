@@ -2682,6 +2682,12 @@ impl SyncManager {
         if matches!(self.state, SyncState::SnapReady { .. }) {
             let old = std::mem::replace(&mut self.state, SyncState::Synchronized);
             self.header_blacklisted_peers.clear();
+            // Snap sync bypasses the normal sync pipeline, so complete_resync()
+            // is never reached via handle_applied_block(). Clear it here so
+            // production resumes after the grace period.
+            if self.resync_in_progress {
+                self.complete_resync();
+            }
             if let SyncState::SnapReady { snapshot } = old {
                 Some(snapshot)
             } else {
