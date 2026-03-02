@@ -500,6 +500,58 @@ pub struct EpochInfoResponse {
     pub block_reward: u64,
 }
 
+/// Parameters for getBondDetails
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBondDetailsParams {
+    /// Producer public key (hex)
+    pub public_key: String,
+}
+
+/// Response for getBondDetails
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondDetailsResponse {
+    /// Producer public key (hex)
+    pub public_key: String,
+    /// Total bond count
+    pub bond_count: u32,
+    /// Total staked amount (base units)
+    pub total_staked: u64,
+    /// Registration slot (proxy for bond creation)
+    pub registration_slot: u64,
+    /// Age in slots since registration
+    pub age_slots: u64,
+    /// Current penalty percentage (0-75)
+    pub penalty_pct: u8,
+    /// Whether all bonds are fully vested
+    pub vested: bool,
+    /// Slot when bonds become fully vested (0% penalty)
+    pub maturation_slot: u64,
+    /// Vesting quarter duration in slots
+    pub vesting_quarter_slots: u64,
+    /// Full vesting period in slots
+    pub vesting_period_slots: u64,
+    /// Summary by vesting quarter
+    pub summary: BondsSummaryResponse,
+    /// Pending withdrawals
+    #[serde(default)]
+    pub pending_withdrawals: Vec<PendingWithdrawalResponse>,
+}
+
+/// Bond summary by vesting quarter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondsSummaryResponse {
+    /// Bonds in Q1 (0-6h, 75% penalty)
+    pub q1: u32,
+    /// Bonds in Q2 (6-12h, 50% penalty)
+    pub q2: u32,
+    /// Bonds in Q3 (12-18h, 25% penalty)
+    pub q3: u32,
+    /// Fully vested bonds (18h+, 0% penalty)
+    pub vested: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

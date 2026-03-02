@@ -231,29 +231,35 @@ pub const MAX_BONDS_PER_PRODUCER: u32 = 10_000;
 /// After requesting withdrawal, must wait this period before claiming
 pub const WITHDRAWAL_DELAY_SLOTS: Slot = 60_480; // 7 days * 24 * 360 slots/hour
 
-/// One year in slots (used for vesting calculation)
+/// One year in slots (used for seniority weight calculation — NOT vesting)
 /// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
 pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 
-/// Commitment period for full vesting (4 years)
-/// After 4 years, bonds can be withdrawn with 0% penalty
-pub const COMMITMENT_PERIOD: BlockHeight = 4 * YEAR_IN_SLOTS as BlockHeight;
+/// One vesting quarter (6 hours = 2,160 slots at 10s/slot)
+pub const VESTING_QUARTER_SLOTS: Slot = 2_160;
+
+/// Full vesting period (1 day = 4 quarters = 8,640 slots)
+pub const VESTING_PERIOD_SLOTS: Slot = 4 * VESTING_QUARTER_SLOTS;
+
+/// Commitment period for full vesting (1 day = 4 quarters)
+/// After 1 day, bonds can be withdrawn with 0% penalty
+pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 
 /// Unbonding period for exit (~7 days at 10-second slots)
 /// After requesting exit, producers must wait this long before claiming bond
 /// 60,480 slots = 7 days (matches WITHDRAWAL_DELAY_SLOTS)
 pub const UNBONDING_PERIOD: BlockHeight = 60_480;
 
-/// Lock duration for bonds (4 years for full vesting)
+/// Lock duration for bonds (1 day for full vesting)
 pub const BOND_LOCK_BLOCKS: BlockHeight = COMMITMENT_PERIOD;
 
 /// Calculate withdrawal penalty rate based on bond age.
 ///
-/// # Vesting Schedule
-/// - Year 1 (0-365 days): 75% penalty
-/// - Year 2 (365-730 days): 50% penalty
-/// - Year 3 (730-1095 days): 25% penalty
-/// - Year 4+ (1095+ days): 0% penalty (fully vested)
+/// # Vesting Schedule (1-day, quarter-based)
+/// - Q1 (0-6h): 75% penalty
+/// - Q2 (6-12h): 50% penalty
+/// - Q3 (12-18h): 25% penalty
+/// - Q4+ (18h+): 0% penalty (fully vested)
 ///
 /// # Arguments
 /// - `bond_age_slots`: How many slots since the bond was created
@@ -261,12 +267,19 @@ pub const BOND_LOCK_BLOCKS: BlockHeight = COMMITMENT_PERIOD;
 /// # Returns
 /// Penalty percentage (0-75)
 pub fn withdrawal_penalty_rate(bond_age_slots: Slot) -> u8 {
-    let years = bond_age_slots / YEAR_IN_SLOTS;
-    match years {
-        0 => 75, // Year 1: 75% penalty
-        1 => 50, // Year 2: 50% penalty
-        2 => 25, // Year 3: 25% penalty
-        _ => 0,  // Year 4+: no penalty (fully vested)
+    withdrawal_penalty_rate_with_quarter(bond_age_slots, VESTING_QUARTER_SLOTS)
+}
+
+/// Calculate withdrawal penalty rate with a custom quarter duration.
+///
+/// Used by `NetworkParams`-aware code paths (devnet can override quarter length).
+pub fn withdrawal_penalty_rate_with_quarter(bond_age_slots: Slot, quarter_slots: Slot) -> u8 {
+    let quarters = bond_age_slots / quarter_slots;
+    match quarters {
+        0 => 75, // Q1: 75% penalty
+        1 => 50, // Q2: 50% penalty
+        2 => 25, // Q3: 25% penalty
+        _ => 0,  // Q4+: no penalty (fully vested)
     }
 }
 
@@ -334,11 +347,11 @@ pub struct ExitTerms {
 ///
 /// For the new bond stacking system, use `ProducerBonds::request_withdrawal()` instead.
 ///
-/// # Vesting Schedule
-/// - Year 1: 75% penalty
-/// - Year 2: 50% penalty
-/// - Year 3: 25% penalty
-/// - Year 4+: 0% penalty (fully vested)
+/// # Vesting Schedule (1-day, quarter-based)
+/// - Q1 (0-6h): 75% penalty
+/// - Q2 (6-12h): 50% penalty
+/// - Q3 (12-18h): 25% penalty
+/// - Q4+ (18h+): 0% penalty (fully vested)
 ///
 /// # Arguments
 /// - `bond_amount`: The producer's bond amount
@@ -366,8 +379,8 @@ pub fn calculate_exit(
         }
     } else {
         // Early exit: apply penalty based on vesting schedule
-        let years = slots_served as Slot / YEAR_IN_SLOTS;
-        let commitment_percent = ((years * 25) as u8).min(100);
+        let quarters = slots_served as Slot / VESTING_QUARTER_SLOTS;
+        let commitment_percent = ((quarters * 25) as u8).min(100);
 
         // Calculate penalty
         let penalty_amount = (bond_amount * penalty_rate as u64) / 100;
@@ -560,9 +573,9 @@ impl BondEntry {
         (net, penalty)
     }
 
-    /// Check if this bond is fully vested (4+ years old)
+    /// Check if this bond is fully vested (1+ day old, i.e. 4 quarters)
     pub fn is_vested(&self, current_slot: Slot) -> bool {
-        self.age(current_slot) >= 4 * YEAR_IN_SLOTS
+        self.age(current_slot) >= VESTING_PERIOD_SLOTS
     }
 }
 
@@ -711,17 +724,17 @@ impl ProducerBonds {
         Ok(self.pending_withdrawals.remove(idx))
     }
 
-    /// Get summary of bonds by maturity year
+    /// Get summary of bonds by vesting quarter
     pub fn maturity_summary(&self, current_slot: Slot) -> BondsMaturitySummary {
         let mut summary = BondsMaturitySummary::default();
 
         for bond in &self.bonds {
-            let years = bond.age(current_slot) / YEAR_IN_SLOTS;
-            match years {
-                0 => summary.year_1 += 1,
-                1 => summary.year_2 += 1,
-                2 => summary.year_3 += 1,
-                _ => summary.year_4_plus += 1,
+            let quarters = bond.age(current_slot) / VESTING_QUARTER_SLOTS;
+            match quarters {
+                0 => summary.q1 += 1,
+                1 => summary.q2 += 1,
+                2 => summary.q3 += 1,
+                _ => summary.vested += 1,
             }
         }
 
@@ -742,17 +755,17 @@ impl ProducerBonds {
     }
 }
 
-/// Summary of bonds by maturity year
+/// Summary of bonds by vesting quarter
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BondsMaturitySummary {
-    /// Bonds in year 1 (75% penalty)
-    pub year_1: u32,
-    /// Bonds in year 2 (50% penalty)
-    pub year_2: u32,
-    /// Bonds in year 3 (25% penalty)
-    pub year_3: u32,
-    /// Bonds in year 4+ (0% penalty, fully vested)
-    pub year_4_plus: u32,
+    /// Bonds in Q1 (0-6h, 75% penalty)
+    pub q1: u32,
+    /// Bonds in Q2 (6-12h, 50% penalty)
+    pub q2: u32,
+    /// Bonds in Q3 (12-18h, 25% penalty)
+    pub q3: u32,
+    /// Bonds fully vested (18h+, 0% penalty)
+    pub vested: u32,
 }
 
 /// Errors related to bond operations
@@ -2610,7 +2623,7 @@ mod tests {
     fn test_calculate_exit_normal() {
         let bond = 100_000_000_000u64; // 1000 DOLI
         let registered_at = 0;
-        let current_height = COMMITMENT_PERIOD; // Exactly 4 years
+        let current_height = COMMITMENT_PERIOD; // Full vesting period (1 day)
 
         let terms = calculate_exit(bond, registered_at, current_height);
 
@@ -2622,16 +2635,16 @@ mod tests {
 
     #[test]
     fn test_calculate_exit_early_half() {
-        // At 2 years (50% of 4-year commitment), penalty is 25%
+        // At 2 quarters (50% of commitment), penalty is 25%
         let bond = 100_000_000_000u64;
         let registered_at = 0;
-        let current_height = COMMITMENT_PERIOD / 2; // 2 years
+        let current_height = COMMITMENT_PERIOD / 2; // 2 quarters (12h)
 
         let terms = calculate_exit(bond, registered_at, current_height);
 
         assert!(terms.is_early_exit);
         assert_eq!(terms.commitment_percent, 50);
-        // New schedule: 2 years = 25% penalty, 75% returned
+        // Q3: 25% penalty, 75% returned
         assert_eq!(terms.penalty_amount, (bond * 25) / 100);
         assert_eq!(terms.return_amount, (bond * 75) / 100);
         assert_eq!(terms.penalty_destination, PenaltyDestination::Burn);
@@ -2639,7 +2652,7 @@ mod tests {
 
     #[test]
     fn test_calculate_exit_very_early() {
-        // At 0 years (immediate exit), penalty is 75%
+        // At 0 quarters (immediate exit), penalty is 75%
         let bond = 100_000_000_000u64;
         let registered_at = 1000;
         let current_height = 1000; // Immediate exit
@@ -2648,23 +2661,23 @@ mod tests {
 
         assert!(terms.is_early_exit);
         assert_eq!(terms.commitment_percent, 0);
-        // New schedule: 0 years = 75% penalty, 25% returned
+        // Q1: 75% penalty, 25% returned
         assert_eq!(terms.penalty_amount, (bond * 75) / 100);
         assert_eq!(terms.return_amount, (bond * 25) / 100);
     }
 
     #[test]
-    fn test_calculate_exit_one_year() {
-        // At 1 year (25% of commitment), penalty is 50%
+    fn test_calculate_exit_one_quarter() {
+        // At 1 quarter (25% of commitment), penalty is 50%
         let bond = 100_000_000_000u64;
         let registered_at = 0;
-        let current_height = COMMITMENT_PERIOD / 4; // 1 year
+        let current_height = COMMITMENT_PERIOD / 4; // 1 quarter (6h)
 
         let terms = calculate_exit(bond, registered_at, current_height);
 
         assert!(terms.is_early_exit);
         assert_eq!(terms.commitment_percent, 25);
-        // New schedule: 1 year = 50% penalty, 50% returned
+        // Q2: 50% penalty, 50% returned
         assert_eq!(terms.penalty_amount, (bond * 50) / 100);
         assert_eq!(terms.return_amount, (bond * 50) / 100);
     }
@@ -2686,10 +2699,10 @@ mod tests {
     }
 
     #[test]
-    fn test_commitment_period_is_4_years() {
-        // Commitment period: 4 years at 10s slots
-        // 4 * 365 * 24 * 360 = 12,614,400 slots
-        assert_eq!(COMMITMENT_PERIOD, 4 * YEAR_IN_SLOTS as BlockHeight);
+    fn test_commitment_period_is_1_day() {
+        // Commitment period: 1 day = 4 quarters of 6h each = 8,640 slots
+        assert_eq!(COMMITMENT_PERIOD, VESTING_PERIOD_SLOTS as BlockHeight);
+        assert_eq!(COMMITMENT_PERIOD, 4 * VESTING_QUARTER_SLOTS as BlockHeight);
     }
 
     // ==================== RewardMode Tests ====================

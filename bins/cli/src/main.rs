@@ -1337,6 +1337,45 @@ async fn cmd_producer(
                     println!("Bond Amount:   {}", format_balance(info.bond_amount));
                     println!("Current Era:   {}", info.era);
 
+                    // Show vesting info
+                    if let Ok(chain_info) = rpc.get_chain_info().await {
+                        let slots_active = chain_info
+                            .best_slot
+                            .saturating_sub(info.registration_height);
+                        let vesting_quarter: u64 = 2_160;
+                        let vesting_period: u64 = 4 * vesting_quarter;
+                        let quarters = slots_active / vesting_quarter;
+                        let penalty_pct: u64 = match quarters {
+                            0 => 75,
+                            1 => 50,
+                            2 => 25,
+                            _ => 0,
+                        };
+                        let hours_active = (slots_active * 10) as f64 / 3600.0;
+
+                        println!();
+                        println!("Vesting:");
+                        if penalty_pct == 0 {
+                            println!("  Status:      Fully vested (0% penalty)");
+                            println!("  Age:         {:.1}h", hours_active);
+                        } else {
+                            let hours_until_vested =
+                                ((vesting_period - slots_active) * 10) as f64 / 3600.0;
+                            println!(
+                                "  Quarter:     Q{} ({}% penalty)",
+                                quarters + 1,
+                                penalty_pct
+                            );
+                            println!("  Age:         {:.1}h", hours_active);
+                            println!("  Fully vests: {:.1}h remaining", hours_until_vested);
+                            let per_bond = info.bond_amount / info.bond_count as u64;
+                            println!(
+                                "  Penalty/bond: {} burned",
+                                format_balance(per_bond * penalty_pct / 100)
+                            );
+                        }
+                    }
+
                     // Show pending withdrawals if any
                     if !info.pending_withdrawals.is_empty() {
                         println!();
@@ -1546,8 +1585,44 @@ async fn cmd_producer(
             let dest_display = crypto::address::encode(&dest_hash, DEFAULT_PREFIX)
                 .unwrap_or_else(|_| dest_hash.to_hex());
 
+            // Fetch chain info and show vesting penalty
+            let chain_info = rpc.get_chain_info().await?;
+            let pk = wallet.addresses()[0].public_key.clone();
+            let producer_info = rpc.get_producer(&pk).await?;
+            let slots_active = chain_info
+                .best_slot
+                .saturating_sub(producer_info.registration_height);
+            let vesting_quarter: u64 = 2_160;
+            let quarters = slots_active / vesting_quarter;
+            let penalty_pct: u64 = match quarters {
+                0 => 75,
+                1 => 50,
+                2 => 25,
+                _ => 0,
+            };
+
             println!("Requesting withdrawal of {} bond(s)", count);
             println!("Destination: {}", dest_display);
+            if penalty_pct > 0 {
+                let bond_value =
+                    count as u64 * producer_info.bond_amount / producer_info.bond_count as u64;
+                println!();
+                println!(
+                    "  Current penalty: {}% (Q{} of vesting)",
+                    penalty_pct,
+                    quarters + 1
+                );
+                println!(
+                    "  Penalty burn:    {}",
+                    format_balance(bond_value * penalty_pct / 100)
+                );
+                println!(
+                    "  You receive:     {}",
+                    format_balance(bond_value * (100 - penalty_pct) / 100)
+                );
+            } else {
+                println!("  Fully vested — 0% penalty");
+            }
             println!();
             println!("Note: Withdrawals have a 7-day delay period.");
             println!("      Use 'doli producer claim-withdrawal' after delay.");
@@ -1660,28 +1735,33 @@ async fn cmd_producer(
                 return Ok(());
             }
 
-            // Calculate early exit penalty based on time active
+            // Calculate early exit penalty based on time active (1-day vesting)
             let current_info = rpc.get_chain_info().await?;
-            let blocks_active = current_info
-                .best_height
+            let slots_active = current_info
+                .best_slot
                 .saturating_sub(producer_info.registration_height);
-            let slots_per_year = 365 * 24 * 60; // Approximate
+            let vesting_quarter: u64 = 2_160; // 6 hours at 10s slots
+            let vesting_period: u64 = 4 * vesting_quarter; // 1 day
 
-            let years_active = blocks_active as f64 / slots_per_year as f64;
-            let penalty_pct = if years_active < 1.0 {
-                75
-            } else if years_active < 2.0 {
-                50
-            } else if years_active < 3.0 {
-                25
+            let quarters = slots_active / vesting_quarter;
+            let penalty_pct: u64 = match quarters {
+                0 => 75,
+                1 => 50,
+                2 => 25,
+                _ => 0,
+            };
+
+            let hours_active = (slots_active * 10) as f64 / 3600.0;
+            let hours_until_vested = if slots_active >= vesting_period {
+                0.0
             } else {
-                0
+                ((vesting_period - slots_active) * 10) as f64 / 3600.0
             };
 
             if penalty_pct > 0 && !force {
                 println!("Warning: Early exit penalty applies!");
                 println!();
-                println!("  Time active:   {:.1} years", years_active);
+                println!("  Time active:   {:.1}h (Q{})", hours_active, quarters + 1);
                 println!("  Penalty:       {}%", penalty_pct);
                 println!(
                     "  Bond amount:   {}",
@@ -1698,8 +1778,8 @@ async fn cmd_producer(
                 println!();
                 println!("Use --force to proceed with early exit.");
                 println!(
-                    "Or wait {} more years to exit without penalty.",
-                    4.0 - years_active
+                    "Or wait {:.1}h more to exit without penalty.",
+                    hours_until_vested
                 );
                 return Ok(());
             }

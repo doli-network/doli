@@ -121,6 +121,10 @@ pub struct NetworkParams {
     /// Network margin / clock drift tolerance in milliseconds
     pub network_margin_ms: u64,
 
+    // === Vesting (locked for mainnet — consensus critical) ===
+    /// Vesting quarter duration in slots (default: 2,160 = 6 hours)
+    pub vesting_quarter_slots: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
@@ -323,6 +327,13 @@ impl NetworkParams {
                 env_parse("DOLI_NETWORK_MARGIN_MS", defaults.network_margin_ms)
             },
 
+            // Vesting (locked for mainnet — consensus critical)
+            vesting_quarter_slots: if is_mainnet {
+                defaults.vesting_quarter_slots // LOCKED for mainnet
+            } else {
+                env_parse("DOLI_VESTING_QUARTER_SLOTS", defaults.vesting_quarter_slots)
+            },
+
             // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
             mesh_n: if is_mainnet {
                 defaults.mesh_n
@@ -407,6 +418,9 @@ impl NetworkParams {
                 max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
                 network_margin_ms: consensus::NETWORK_MARGIN_MS,
 
+                // Vesting (locked for mainnet — consensus critical)
+                vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
+
                 // Gossip mesh (standard for DHT-enabled networks)
                 mesh_n: 6,
                 mesh_n_low: 4,
@@ -462,10 +476,13 @@ impl NetworkParams {
                 // Presence (telemetry)
                 presence_window_ms: consensus::NETWORK_MARGIN_MS,
 
-                // Fallback timing (locked for mainnet)
+                // Fallback timing (same as mainnet)
                 fallback_timeout_ms: consensus::FALLBACK_TIMEOUT_MS,
                 max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
                 network_margin_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Vesting (same as mainnet)
+                vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
                 // Gossip mesh (standard for DHT-enabled networks)
                 mesh_n: 6,
@@ -523,6 +540,9 @@ impl NetworkParams {
                 fallback_timeout_ms: consensus::FALLBACK_TIMEOUT_MS,
                 max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
                 network_margin_ms: consensus::NETWORK_MARGIN_MS,
+
+                // Vesting (fast for devnet testing: 10 min per quarter, 40 min full vest)
+                vesting_quarter_slots: 60,
 
                 // Gossip mesh (larger for --no-dht star topology)
                 // With --no-dht, all nodes connect to bootstrap only.

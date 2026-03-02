@@ -149,6 +149,7 @@ pub use consensus::{
     producer_tier,
     select_producer_for_slot,
     withdrawal_penalty_rate,
+    withdrawal_penalty_rate_with_quarter,
     BondEntry,
     BondError,
     BondsMaturitySummary,
@@ -199,6 +200,8 @@ pub use consensus::{
     TIER1_MAX_VALIDATORS,
     TIER2_MAX_ATTESTORS,
     VDF_DISCRIMINANT_BITS,
+    VESTING_PERIOD_SLOTS,
+    VESTING_QUARTER_SLOTS,
     WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
 };

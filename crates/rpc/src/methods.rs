@@ -254,6 +254,7 @@ impl RpcContext {
             "getNodeInfo" => self.get_node_info().await,
             "getEpochInfo" => self.get_epoch_info().await,
             "getNetworkParams" => self.get_network_params().await,
+            "getBondDetails" => self.get_bond_details(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -988,5 +989,96 @@ impl RpcContext {
             "tx_hash": tx_hash.to_hex(),
             "message": format!("Maintainer {} transaction submitted", params.action)
         }))
+    }
+
+    /// Get bond vesting details for a producer
+    async fn get_bond_details(&self, params: Value) -> Result<Value, RpcError> {
+        use doli_core::consensus::{
+            withdrawal_penalty_rate, VESTING_PERIOD_SLOTS, VESTING_QUARTER_SLOTS,
+        };
+
+        let params: GetBondDetailsParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+
+        let pubkey = crypto::PublicKey::from_hex(&params.public_key)
+            .map_err(|_| RpcError::invalid_params("Invalid public key format"))?;
+
+        let producers = producer_set.read().await;
+        let chain_state = self.chain_state.read().await;
+        let current_slot = chain_state.best_slot;
+
+        let info = producers
+            .get_by_pubkey(&pubkey)
+            .ok_or_else(RpcError::producer_not_found)?;
+
+        let age_slots = (current_slot as u64).saturating_sub(info.registered_at);
+        let penalty_pct = withdrawal_penalty_rate(age_slots as u32);
+        let vested = age_slots >= VESTING_PERIOD_SLOTS as u64;
+        let maturation_slot = info.registered_at + VESTING_PERIOD_SLOTS as u64;
+
+        // Approximate per-quarter summary using registration time
+        // All bonds share the same registration slot (individual creation times not stored)
+        let quarters = age_slots / VESTING_QUARTER_SLOTS as u64;
+        let summary = if quarters >= 3 {
+            BondsSummaryResponse {
+                q1: 0,
+                q2: 0,
+                q3: 0,
+                vested: info.bond_count,
+            }
+        } else {
+            // All bonds are in the same quarter since they share registration time
+            let mut s = BondsSummaryResponse {
+                q1: 0,
+                q2: 0,
+                q3: 0,
+                vested: 0,
+            };
+            match quarters {
+                0 => s.q1 = info.bond_count,
+                1 => s.q2 = info.bond_count,
+                2 => s.q3 = info.bond_count,
+                _ => s.vested = info.bond_count,
+            }
+            s
+        };
+
+        // Pending withdrawals
+        let current_height = chain_state.best_height;
+        let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
+        let pending_withdrawals =
+            if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
+                let claimable = current_height >= started_at + unbonding_period;
+                vec![PendingWithdrawalResponse {
+                    bond_count: info.bond_count,
+                    request_slot: *started_at as u32,
+                    net_amount: info.bond_amount,
+                    claimable,
+                }]
+            } else {
+                Vec::new()
+            };
+
+        let response = BondDetailsResponse {
+            public_key: params.public_key,
+            bond_count: info.bond_count,
+            total_staked: info.bond_amount,
+            registration_slot: info.registered_at,
+            age_slots,
+            penalty_pct,
+            vested,
+            maturation_slot,
+            vesting_quarter_slots: VESTING_QUARTER_SLOTS as u64,
+            vesting_period_slots: VESTING_PERIOD_SLOTS as u64,
+            summary,
+            pending_withdrawals,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }
