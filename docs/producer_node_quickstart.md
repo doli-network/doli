@@ -227,7 +227,7 @@ DO NOT expose the RPC port (8545) to the internet.
 - **NEVER** run two nodes with the same producer key simultaneously. This causes slashing (100% of bond burned).
 - **NEVER** share the `producer.json` file — it contains the private key.
 - Coinbase rewards have a 100-block maturity period before they can be spent.
-- The bond is locked for 4 years. Early withdrawal incurs penalties: 75% (year 0-1), 50% (year 1-2), 25% (year 2-3), 0% (year 3+).
+- Bonds vest over 1 day (4 quarters of 6h). Early withdrawal penalties: 75% (Q1, 0-6h), 50% (Q2, 6-12h), 25% (Q3, 12-18h), 0% (Q4+, 18h+).
 
 ---
 

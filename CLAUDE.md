@@ -313,14 +313,16 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **Fork Choice**: Heaviest weight
 - **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 4y), Reg Fees
 
-### Bond Vesting (Withdrawal Penalty)
+### Bond Vesting (Withdrawal Penalty — 1-day, quarter-based)
 
-| Age | Penalty |
-|-----|---------|
-| <1y | 75% Burn |
-| 1-2y | 50% Burn |
-| 2-3y | 25% Burn |
-| 3y+ | 0% |
+| Quarter | Age | Penalty |
+|---------|-----|---------|
+| Q1 | 0-6h | 75% Burn |
+| Q2 | 6-12h | 50% Burn |
+| Q3 | 12-18h | 25% Burn |
+| Q4+ | 18h+ | 0% |
+
+`VESTING_QUARTER_SLOTS = 2,160` (6h), `VESTING_PERIOD_SLOTS = 8,640` (1 day). Configurable on devnet via `DOLI_VESTING_QUARTER_SLOTS`.
 
 ## 🛡 Validation & Security
 
