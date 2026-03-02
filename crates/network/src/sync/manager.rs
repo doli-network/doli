@@ -220,6 +220,14 @@ impl SyncState {
     pub fn is_syncing(&self) -> bool {
         !matches!(self, SyncState::Idle | SyncState::Synchronized)
     }
+
+    /// Check if snap sync is in progress (collecting roots or downloading snapshot)
+    pub fn is_snap_syncing(&self) -> bool {
+        matches!(
+            self,
+            SyncState::SnapCollectingRoots { .. } | SyncState::SnapDownloading { .. }
+        )
+    }
 }
 
 /// Peer sync status
@@ -1446,7 +1454,8 @@ impl SyncManager {
     /// so sync can restart from the new (rolled-back) tip.
     pub fn reset_sync_for_rollback(&mut self) {
         self.consecutive_empty_headers = 0;
-        self.needs_genesis_resync = false;
+        // needs_genesis_resync intentionally preserved — rollbacks must not
+        // suppress the genesis resync signal set by the sync manager.
         self.consecutive_sync_failures = 0;
         self.fork_sync = None;
         self.state = SyncState::Idle;
