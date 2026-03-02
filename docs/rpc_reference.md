@@ -26,6 +26,8 @@ This document describes the DOLI node JSON-RPC API.
 | **Governance** | `getMaintainerSet` | Implemented |
 | **Governance** | `submitMaintainerChange` | Implemented |
 | **Epoch** | `getEpochInfo` | Implemented |
+| **Producer** | `getBondDetails` | Implemented |
+| **Network** | `getNetworkParams` | Implemented |
 
 ### Not Yet Implemented
 
@@ -481,6 +483,55 @@ Returns information about a specific producer.
 curl -X POST http://127.0.0.1:8545 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducer","params":{"public_key":"0x..."},"id":1}'
+```
+
+---
+
+### getBondDetails
+
+Returns bond vesting details for a producer, including penalty percentages and maturation info.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| public_key | string | Producer public key (hex) |
+
+**Response:**
+```json
+{
+    "publicKey": "0x...",
+    "bondCount": 10,
+    "totalStaked": 10000000000,
+    "registrationSlot": 5000,
+    "ageSlots": 3000,
+    "penaltyPct": 50,
+    "vested": false,
+    "maturationSlot": 13640,
+    "vestingQuarterSlots": 2160,
+    "vestingPeriodSlots": 8640,
+    "summary": {
+        "q1": 0,
+        "q2": 10,
+        "q3": 0,
+        "vested": 0
+    },
+    "pendingWithdrawals": []
+}
+```
+
+**Vesting quarters:**
+| Quarter | Bond Age | Penalty |
+|---------|----------|---------|
+| Q1 | 0-6h | 75% |
+| Q2 | 6-12h | 50% |
+| Q3 | 12-18h | 25% |
+| Q4+ | 18h+ | 0% |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getBondDetails","params":{"public_key":"0x..."},"id":1}'
 ```
 
 ---

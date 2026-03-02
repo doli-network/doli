@@ -502,14 +502,16 @@ claim_withdrawal_tx = {
 
 **Vesting Schedule (Early Withdrawal Penalties):**
 
-Bonds vest over 4 years. Early withdrawal incurs penalties (burned, not redistributed):
+Bonds vest over 1 day (4 quarters of 6 hours each). Early withdrawal incurs penalties (burned, not redistributed):
 
 | Bond Age | Penalty | Net Return |
 |----------|---------|------------|
-| Year 0-1 (0-365 days) | 75% burned | 25% returned |
-| Year 1-2 (365-730 days) | 50% burned | 50% returned |
-| Year 2-3 (730-1095 days) | 25% burned | 75% returned |
-| Year 3+ (1095+ days) | 0% (fully vested) | 100% returned |
+| Q1 (0-6 hours) | 75% burned | 25% returned |
+| Q2 (6-12 hours) | 50% burned | 50% returned |
+| Q3 (12-18 hours) | 25% burned | 75% returned |
+| Q4+ (18+ hours) | 0% (fully vested) | 100% returned |
+
+Vesting quarter duration is configurable via `DOLI_VESTING_QUARTER_SLOTS` (locked for mainnet at 2,160 slots = 6 hours).
 
 Penalty calculation uses FIFO order - oldest bonds are withdrawn first, ensuring
 bonds that have vested longer receive lower penalties.
@@ -924,7 +926,7 @@ def bond_amount(bond_count):
 
 BOND_UNIT = 1_000_000_000        // 10 DOLI per bond
 MAX_BONDS = 10_000               // Maximum bonds per producer
-LOCK_DURATION = 4 * YEAR_IN_SLOTS  // ~4 years for full vesting
+LOCK_DURATION = VESTING_PERIOD_SLOTS  // 1 day (4 quarters × 6h) for full vesting
 ```
 
 ### 6.3 Registration VDF
@@ -1280,8 +1282,10 @@ Result:
 | BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
 | MAX_BONDS_PER_PRODUCER | 10,000               |
 | WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
-| YEAR_IN_SLOTS      | 3,153,600                |
-| COMMITMENT_PERIOD  | 12,614,400 (~4 years)    |
+| YEAR_IN_SLOTS      | 3,153,600 (seniority only) |
+| VESTING_QUARTER_SLOTS | 2,160 (~6 hours)      |
+| VESTING_PERIOD_SLOTS | 8,640 (~1 day)          |
+| COMMITMENT_PERIOD  | 8,640 (~1 day)             |
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 100                      |
@@ -1297,14 +1301,14 @@ Result:
 | MIN_MAINTAINERS    | 3                        |
 | MAX_MAINTAINERS    | 5                        |
 
-**Vesting Penalties:**
+**Vesting Penalties (1-day, quarter-based):**
 
 | Bond Age | Penalty Rate |
 |----------|-------------|
-| Year 0-1 | 75%         |
-| Year 1-2 | 50%         |
-| Year 2-3 | 25%         |
-| Year 3+  | 0%          |
+| Q1 (0-6h) | 75%       |
+| Q2 (6-12h) | 50%      |
+| Q3 (12-18h) | 25%     |
+| Q4+ (18h+) | 0%       |
 
 ---
 

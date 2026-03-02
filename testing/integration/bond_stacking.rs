@@ -1,12 +1,14 @@
 //! Bond Stacking Integration Tests
 //!
 //! Tests the bond stacking system:
-//! - Add bonds (1,000 DOLI = 1 bond)
-//! - Maximum 100 bonds per producer
+//! - Add bonds (10 DOLI = 1 bond)
+//! - Maximum 10,000 bonds per producer
 //! - Withdrawal with vesting penalties (75%/50%/25%/0%)
 //! - FIFO withdrawal (oldest bonds first)
 //! - 7-day withdrawal delay
 //! - 100% burn of penalties
+//!
+//! Vesting schedule: 1-day, quarter-based (6h quarters)
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -28,6 +30,8 @@ use doli_core::{
     // Bond constants
     BOND_UNIT,
     MAX_BONDS_PER_PRODUCER,
+    VESTING_PERIOD_SLOTS,
+    VESTING_QUARTER_SLOTS,
     WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
 };
@@ -53,32 +57,42 @@ fn test_withdrawal_delay_constant() {
     assert_eq!(WITHDRAWAL_DELAY_SLOTS, 60_480);
 }
 
-/// Test year in slots constant
+/// Test year in slots constant (used for seniority, not vesting)
 #[test]
 fn test_year_in_slots_constant() {
     // 1 year at 10s slots = 365 * 24 * 360 = 3,153,600 slots
     assert_eq!(YEAR_IN_SLOTS, 3_153_600);
 }
 
-/// Test vesting penalty schedule
+/// Test vesting constants
+#[test]
+fn test_vesting_constants() {
+    // 1 quarter = 6 hours = 2,160 slots at 10s/slot
+    assert_eq!(VESTING_QUARTER_SLOTS, 2_160);
+    // Full vesting = 4 quarters = 1 day = 8,640 slots
+    assert_eq!(VESTING_PERIOD_SLOTS, 4 * VESTING_QUARTER_SLOTS);
+    assert_eq!(VESTING_PERIOD_SLOTS, 8_640);
+}
+
+/// Test vesting penalty schedule (quarter-based)
 #[test]
 fn test_withdrawal_penalty_schedule() {
-    // Year 1 (0-365 days): 75% penalty
+    // Q1 (0-6h): 75% penalty
     assert_eq!(withdrawal_penalty_rate(0), 75);
-    assert_eq!(withdrawal_penalty_rate(YEAR_IN_SLOTS - 1), 75);
+    assert_eq!(withdrawal_penalty_rate(VESTING_QUARTER_SLOTS - 1), 75);
 
-    // Year 2 (365-730 days): 50% penalty
-    assert_eq!(withdrawal_penalty_rate(YEAR_IN_SLOTS), 50);
-    assert_eq!(withdrawal_penalty_rate(2 * YEAR_IN_SLOTS - 1), 50);
+    // Q2 (6-12h): 50% penalty
+    assert_eq!(withdrawal_penalty_rate(VESTING_QUARTER_SLOTS), 50);
+    assert_eq!(withdrawal_penalty_rate(2 * VESTING_QUARTER_SLOTS - 1), 50);
 
-    // Year 3 (730-1095 days): 25% penalty
-    assert_eq!(withdrawal_penalty_rate(2 * YEAR_IN_SLOTS), 25);
-    assert_eq!(withdrawal_penalty_rate(3 * YEAR_IN_SLOTS - 1), 25);
+    // Q3 (12-18h): 25% penalty
+    assert_eq!(withdrawal_penalty_rate(2 * VESTING_QUARTER_SLOTS), 25);
+    assert_eq!(withdrawal_penalty_rate(3 * VESTING_QUARTER_SLOTS - 1), 25);
 
-    // Year 4+ (1095+ days): 0% penalty (fully vested)
-    assert_eq!(withdrawal_penalty_rate(3 * YEAR_IN_SLOTS), 0);
-    assert_eq!(withdrawal_penalty_rate(4 * YEAR_IN_SLOTS), 0);
-    assert_eq!(withdrawal_penalty_rate(10 * YEAR_IN_SLOTS), 0);
+    // Q4+ (18h+): 0% penalty (fully vested)
+    assert_eq!(withdrawal_penalty_rate(3 * VESTING_QUARTER_SLOTS), 0);
+    assert_eq!(withdrawal_penalty_rate(4 * VESTING_QUARTER_SLOTS), 0);
+    assert_eq!(withdrawal_penalty_rate(10 * VESTING_QUARTER_SLOTS), 0);
 }
 
 /// Test BondEntry creation and age calculation
@@ -93,13 +107,13 @@ fn test_bond_entry() {
     // Age at same slot should be 0
     assert_eq!(bond.age(1000), 0);
 
-    // Age after 1 year
-    let one_year_later = creation_slot + YEAR_IN_SLOTS;
-    assert_eq!(bond.age(one_year_later), YEAR_IN_SLOTS);
+    // Age after 1 quarter (6h)
+    let one_quarter_later = creation_slot + VESTING_QUARTER_SLOTS;
+    assert_eq!(bond.age(one_quarter_later), VESTING_QUARTER_SLOTS);
 
     // Penalty rate at different ages
-    assert_eq!(bond.penalty_rate(1000), 75); // Same slot = year 1
-    assert_eq!(bond.penalty_rate(one_year_later), 50); // 1 year = year 2
+    assert_eq!(bond.penalty_rate(1000), 75); // Same slot = Q1
+    assert_eq!(bond.penalty_rate(one_quarter_later), 50); // 1 quarter = Q2
 }
 
 /// Test BondEntry withdrawal calculations
@@ -108,24 +122,24 @@ fn test_bond_withdrawal_amounts() {
     let creation_slot = 0;
     let bond = BondEntry::new(creation_slot);
 
-    // Year 1: 75% penalty
+    // Q1: 75% penalty
     let (net, penalty) = bond.withdrawal_amount(100);
     assert_eq!(penalty, BOND_UNIT * 75 / 100);
     assert_eq!(net, BOND_UNIT * 25 / 100);
     assert_eq!(net + penalty, BOND_UNIT);
 
-    // Year 2: 50% penalty
-    let (net, penalty) = bond.withdrawal_amount(YEAR_IN_SLOTS + 100);
+    // Q2: 50% penalty
+    let (net, penalty) = bond.withdrawal_amount(VESTING_QUARTER_SLOTS + 100);
     assert_eq!(penalty, BOND_UNIT * 50 / 100);
     assert_eq!(net, BOND_UNIT * 50 / 100);
 
-    // Year 3: 25% penalty
-    let (net, penalty) = bond.withdrawal_amount(2 * YEAR_IN_SLOTS + 100);
+    // Q3: 25% penalty
+    let (net, penalty) = bond.withdrawal_amount(2 * VESTING_QUARTER_SLOTS + 100);
     assert_eq!(penalty, BOND_UNIT * 25 / 100);
     assert_eq!(net, BOND_UNIT * 75 / 100);
 
-    // Year 4+: 0% penalty (fully vested)
-    let (net, penalty) = bond.withdrawal_amount(4 * YEAR_IN_SLOTS);
+    // Q4+: 0% penalty (fully vested)
+    let (net, penalty) = bond.withdrawal_amount(VESTING_PERIOD_SLOTS);
     assert_eq!(penalty, 0);
     assert_eq!(net, BOND_UNIT);
 }
@@ -135,16 +149,15 @@ fn test_bond_withdrawal_amounts() {
 fn test_bond_is_vested() {
     let bond = BondEntry::new(0);
 
-    // Not vested in years 1-3
+    // Not vested in Q1-Q3
     assert!(!bond.is_vested(0));
-    assert!(!bond.is_vested(YEAR_IN_SLOTS));
-    assert!(!bond.is_vested(2 * YEAR_IN_SLOTS));
-    assert!(!bond.is_vested(3 * YEAR_IN_SLOTS));
-    assert!(!bond.is_vested(4 * YEAR_IN_SLOTS - 1));
+    assert!(!bond.is_vested(VESTING_QUARTER_SLOTS));
+    assert!(!bond.is_vested(2 * VESTING_QUARTER_SLOTS));
+    assert!(!bond.is_vested(VESTING_PERIOD_SLOTS - 1));
 
-    // Vested at year 4+
-    assert!(bond.is_vested(4 * YEAR_IN_SLOTS));
-    assert!(bond.is_vested(5 * YEAR_IN_SLOTS));
+    // Vested at Q4+ (full period)
+    assert!(bond.is_vested(VESTING_PERIOD_SLOTS));
+    assert!(bond.is_vested(2 * VESTING_PERIOD_SLOTS));
 }
 
 /// Test ProducerBonds add bonds
@@ -188,24 +201,24 @@ fn test_producer_bonds_fifo_withdrawal() {
     let destination = Hash::ZERO;
 
     // Add bonds at different times:
-    // 5 bonds at slot 0 (will be oldest = fully vested after 3 years)
-    // 3 bonds at slot 2 * YEAR_IN_SLOTS (newer = higher penalty)
+    // 5 bonds at slot 0 (will be oldest = fully vested after 3 quarters)
+    // 3 bonds at slot 2 * VESTING_QUARTER_SLOTS (newer = higher penalty)
     bonds.add_bonds(5, 0).unwrap();
-    bonds.add_bonds(3, 2 * YEAR_IN_SLOTS).unwrap();
+    bonds.add_bonds(3, 2 * VESTING_QUARTER_SLOTS).unwrap();
 
     assert_eq!(bonds.bond_count(), 8);
 
-    // Withdraw at slot 3 * YEAR_IN_SLOTS
-    // Oldest bonds (slot 0) are now 3 years old = 0% penalty (fully vested!)
-    // Newest bonds (slot 2Y) are 1 year old = 50% penalty
-    let current_slot = 3 * YEAR_IN_SLOTS;
+    // Withdraw at slot 3 * VESTING_QUARTER_SLOTS (18h)
+    // Oldest bonds (slot 0) are now 3 quarters old = 0% penalty (fully vested!)
+    // Newest bonds (slot 2Q) are 1 quarter old = 50% penalty
+    let current_slot = 3 * VESTING_QUARTER_SLOTS;
 
     // Request withdrawal of 3 bonds (should take 3 oldest)
     let withdrawal = bonds
         .request_withdrawal(3, current_slot, destination)
         .unwrap();
 
-    // 3 oldest bonds have 0% penalty (3+ years = fully vested)
+    // 3 oldest bonds have 0% penalty (3+ quarters = fully vested)
     let expected_penalty = 0;
     let expected_net = 3 * BOND_UNIT;
 
@@ -245,8 +258,8 @@ fn test_producer_bonds_claim_withdrawal() {
 
     bonds.add_bonds(10, 0).unwrap();
 
-    // Request withdrawal
-    let current_slot = YEAR_IN_SLOTS; // Year 2 = 50% penalty
+    // Request withdrawal at Q2 (6h) = 50% penalty
+    let current_slot = VESTING_QUARTER_SLOTS;
     let withdrawal = bonds
         .request_withdrawal(5, current_slot, destination)
         .unwrap();
@@ -267,29 +280,29 @@ fn test_producer_bonds_claim_withdrawal() {
     assert!(!bonds.has_pending_withdrawals());
 }
 
-/// Test ProducerBonds maturity summary
+/// Test ProducerBonds maturity summary (quarter-based)
 #[test]
 fn test_bonds_maturity_summary() {
     let mut bonds = ProducerBonds::new();
 
     // Add bonds at different creation times
-    bonds.add_bonds(2, 0).unwrap(); // age 4Y at check → year_4_plus
-    bonds.add_bonds(3, YEAR_IN_SLOTS).unwrap(); // age 3Y at check → year_4_plus (3+ years = vested)
-    bonds.add_bonds(4, 2 * YEAR_IN_SLOTS).unwrap(); // age 2Y at check → year_3 (25% penalty)
-    bonds.add_bonds(1, 3 * YEAR_IN_SLOTS).unwrap(); // age 1Y at check → year_2 (50% penalty)
+    bonds.add_bonds(2, 0).unwrap(); // age 4Q at check → vested
+    bonds.add_bonds(3, VESTING_QUARTER_SLOTS).unwrap(); // age 3Q at check → vested (3+ quarters)
+    bonds.add_bonds(4, 2 * VESTING_QUARTER_SLOTS).unwrap(); // age 2Q at check → q3 (25% penalty)
+    bonds.add_bonds(1, 3 * VESTING_QUARTER_SLOTS).unwrap(); // age 1Q at check → q2 (50% penalty)
 
-    // Check at 4 years from epoch 0
-    let current_slot = 4 * YEAR_IN_SLOTS;
+    // Check at 4 quarters from epoch 0
+    let current_slot = 4 * VESTING_QUARTER_SLOTS;
     let summary = bonds.maturity_summary(current_slot);
 
-    // year_1 = bonds < 1Y old (none)
-    // year_2 = bonds 1Y-2Y old (1 bond from slot 3Y)
-    // year_3 = bonds 2Y-3Y old (4 bonds from slot 2Y)
-    // year_4_plus = bonds 3Y+ old (2 from slot 0 + 3 from slot 1Y = 5)
-    assert_eq!(summary.year_1, 0);
-    assert_eq!(summary.year_2, 1);
-    assert_eq!(summary.year_3, 4);
-    assert_eq!(summary.year_4_plus, 5);
+    // q1 = bonds < 1Q old (none)
+    // q2 = bonds 1Q-2Q old (1 bond from slot 3Q)
+    // q3 = bonds 2Q-3Q old (4 bonds from slot 2Q)
+    // vested = bonds 3Q+ old (2 from slot 0 + 3 from slot 1Q = 5)
+    assert_eq!(summary.q1, 0);
+    assert_eq!(summary.q2, 1);
+    assert_eq!(summary.q3, 4);
+    assert_eq!(summary.vested, 5);
 }
 
 /// Test ProducerBonds total withdrawal penalty calculation
@@ -300,12 +313,12 @@ fn test_total_withdrawal_penalty() {
     // All bonds at slot 0
     bonds.add_bonds(10, 0).unwrap();
 
-    // Year 1: 75% penalty each
+    // Q1: 75% penalty each
     let penalty = bonds.total_withdrawal_penalty(100);
     assert_eq!(penalty, 10 * BOND_UNIT * 75 / 100);
 
-    // Year 4+: 0% penalty
-    let penalty = bonds.total_withdrawal_penalty(4 * YEAR_IN_SLOTS);
+    // Q4+: 0% penalty
+    let penalty = bonds.total_withdrawal_penalty(VESTING_PERIOD_SLOTS);
     assert_eq!(penalty, 0);
 }
 
@@ -433,37 +446,39 @@ fn test_bond_error_display() {
     assert!(err.to_string().contains("no withdrawal"));
 }
 
-/// Test realistic bond scenario
+/// Test realistic bond scenario (1-day vesting)
 #[test]
 fn test_realistic_bond_scenario() {
     let mut bonds = ProducerBonds::new();
     let destination = Hash::ZERO;
 
-    // Producer starts with 10 bonds (10,000 DOLI)
+    // Producer starts with 10 bonds (100 DOLI)
     bonds.add_bonds(10, 0).unwrap();
     assert_eq!(bonds.selection_weight(), 10);
 
-    // After 6 months, add 5 more bonds
-    let six_months = YEAR_IN_SLOTS / 2;
-    bonds.add_bonds(5, six_months).unwrap();
+    // After 1.5 quarters (9h), add 5 more bonds
+    let one_and_half_q = VESTING_QUARTER_SLOTS + VESTING_QUARTER_SLOTS / 2;
+    bonds.add_bonds(5, one_and_half_q).unwrap();
     assert_eq!(bonds.bond_count(), 15);
     assert_eq!(bonds.selection_weight(), 15);
 
-    // After 2 years, producer wants to partially withdraw
-    let two_years = 2 * YEAR_IN_SLOTS;
+    // After 2 quarters (12h), producer wants to partially withdraw
+    let two_quarters = 2 * VESTING_QUARTER_SLOTS;
 
-    // First 10 bonds are now 2 years old → year_3 (25% penalty)
-    // Next 5 bonds are 1.5 years old → year_2 (50% penalty)
-    let summary = bonds.maturity_summary(two_years);
-    assert_eq!(summary.year_1, 0); // no bonds < 1Y old
-    assert_eq!(summary.year_2, 5); // 5 bonds from 6 months (1.5Y old)
-    assert_eq!(summary.year_3, 10); // 10 bonds from slot 0 (2Y old)
+    // First 10 bonds are now 2 quarters old → q3 (25% penalty)
+    // Next 5 bonds are 0.5 quarters old → q1 (75% penalty)
+    let summary = bonds.maturity_summary(two_quarters);
+    assert_eq!(summary.q1, 5); // 5 bonds from 1.5Q (only 0.5Q old)
+    assert_eq!(summary.q2, 0); // no bonds 1Q-2Q old
+    assert_eq!(summary.q3, 10); // 10 bonds from slot 0 (2Q old)
 
-    // Withdraw 5 oldest bonds (25% penalty - they're 2Y old, in year_3)
-    let withdrawal = bonds.request_withdrawal(5, two_years, destination).unwrap();
+    // Withdraw 5 oldest bonds (25% penalty - they're 2Q old, in q3)
+    let withdrawal = bonds
+        .request_withdrawal(5, two_quarters, destination)
+        .unwrap();
 
-    // Net = 5 * 1000 DOLI * 75% = 3,750 DOLI
-    // Penalty = 5 * 1000 DOLI * 25% = 1,250 DOLI (BURNED)
+    // Net = 5 * 10 DOLI * 75% = 37.5 DOLI
+    // Penalty = 5 * 10 DOLI * 25% = 12.5 DOLI (BURNED)
     assert_eq!(withdrawal.net_amount, 5 * BOND_UNIT * 75 / 100);
     assert_eq!(withdrawal.penalty_amount, 5 * BOND_UNIT * 25 / 100);
 
@@ -471,28 +486,17 @@ fn test_realistic_bond_scenario() {
     assert_eq!(bonds.bond_count(), 10);
 
     // Wait 7 days and claim
-    let claim_time = two_years + WITHDRAWAL_DELAY_SLOTS;
+    let claim_time = two_quarters + WITHDRAWAL_DELAY_SLOTS;
     let claimed = bonds.claim_withdrawal(claim_time).unwrap();
     assert_eq!(claimed.net_amount, 5 * BOND_UNIT * 75 / 100);
 
-    // After 4 years total, withdraw remaining with no penalty
-    let four_years = 4 * YEAR_IN_SLOTS;
+    // After full vesting period, withdraw remaining with no penalty
+    let fully_vested = VESTING_PERIOD_SLOTS + one_and_half_q; // Ensure even newest bonds are vested
     let final_withdrawal = bonds
-        .request_withdrawal(10, four_years, destination)
+        .request_withdrawal(10, fully_vested, destination)
         .unwrap();
 
-    // After the first withdrawal of 5 bonds, we have:
-    // - 5 bonds from slot 0 (remaining original bonds)
-    // - 5 bonds from slot 6_months
-    //
-    // At 4 years:
-    // - 5 bonds from slot 0: age = 4Y, years = 4 → 0% penalty
-    // - 5 bonds from slot 6_months: age = 3.5Y, years = 3 → 0% penalty (3+ = vested)
-    //
-    // FIFO takes oldest first, all are fully vested
-    let expected_net = 10 * BOND_UNIT;
-    let expected_penalty = 0;
-
-    assert_eq!(final_withdrawal.net_amount, expected_net);
-    assert_eq!(final_withdrawal.penalty_amount, expected_penalty);
+    // All bonds fully vested → 0% penalty
+    assert_eq!(final_withdrawal.net_amount, 10 * BOND_UNIT);
+    assert_eq!(final_withdrawal.penalty_amount, 0);
 }

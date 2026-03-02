@@ -2542,7 +2542,23 @@ impl Node {
             cs.mark_snap_synced(snapshot.block_height); // Survives restart: block store empty by design
 
             let mut utxo = self.utxo_set.write().await;
-            *utxo = new_utxo_set;
+            // Snap sync deserializes into InMemory. Write through to RocksDB
+            // so UTXOs survive node restart (RocksDB dir persists, utxo.bin does not).
+            if let UtxoSet::InMemory(ref mem_store) = new_utxo_set {
+                if let UtxoSet::RocksDb(ref rocks) = *utxo {
+                    rocks.clear();
+                    rocks.import_from(mem_store.iter());
+                    info!("[SNAP_SYNC] Imported {} UTXOs into RocksDB", rocks.len());
+                } else {
+                    let rocks_path = self.config.data_dir.join("utxo_rocks");
+                    let rocks = storage::RocksDbUtxoStore::open(&rocks_path)?;
+                    rocks.import_from(mem_store.iter());
+                    info!("[SNAP_SYNC] Created RocksDB with {} UTXOs", rocks.len());
+                    *utxo = UtxoSet::RocksDb(rocks);
+                }
+            } else {
+                *utxo = new_utxo_set;
+            }
 
             let mut ps = self.producer_set.write().await;
             *ps = new_producer_set;

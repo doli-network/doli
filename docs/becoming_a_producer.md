@@ -38,10 +38,10 @@ Block producers in DOLI:
 
 ### 2.2. Economic
 
-| Requirement | Amount | Lock Period |
-|-------------|--------|-------------|
-| Bond unit | 10 DOLI | 4 years |
-| Maximum bonds | 1000 bonds (10,000 DOLI) | 4 years |
+| Requirement | Amount | Vesting Period |
+|-------------|--------|----------------|
+| Bond unit | 10 DOLI | 1 day (4 × 6h quarters) |
+| Maximum bonds | 10,000 bonds (100,000 DOLI) | 1 day |
 
 **Bond Stacking**: You can hold multiple bonds (up to 10,000), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
 
@@ -50,7 +50,7 @@ Block producers in DOLI:
 | Phase | Duration |
 |-------|----------|
 | Registration VDF | ~10 minutes (base) |
-| Bond lock | 4 years |
+| Bond vesting | 1 day (0% penalty after 18h) |
 | Unbonding period | 7 days |
 | Withdrawal delay | 7 days |
 
@@ -140,7 +140,7 @@ doli --wallet ~/.doli/keys/my_producer.json \
 **What happens during registration:**
 1. Node computes registration VDF (~10 minutes base)
 2. Registration transaction submitted to network
-3. Bond locked for 4 years
+3. Bond begins 1-day vesting (fully vested after 18h)
 4. Producer added to active set after ACTIVATION_DELAY (10 blocks)
 
 ### 3.5. Start Producing (CRITICAL)
@@ -362,21 +362,22 @@ Full exit from producer set:
 
 ### 6.6. Vesting Schedule and Early Withdrawal Penalties
 
-**Each bond vests independently over 4 years:**
+**Each bond vests independently over 1 day (4 quarters of 6 hours):**
 
 | Bond Age | Penalty on Withdrawal |
 |----------|----------------------|
-| Year 0-1 | 75% burned |
-| Year 1-2 | 50% burned |
-| Year 2-3 | 25% burned |
-| Year 3+ | 0% (fully vested) |
+| Q1 (0-6h) | 75% burned |
+| Q2 (6-12h) | 50% burned |
+| Q3 (12-18h) | 25% burned |
+| Q4+ (18h+) | 0% (fully vested) |
 
 **Example:** If you have 3 bonds created at different times:
-- Bond 1 (created 3 years ago): 0% penalty, receive 10 DOLI
-- Bond 2 (created 18 months ago): 50% penalty, receive 5 DOLI
-- Bond 3 (created 6 months ago): 75% penalty, receive 2.5 DOLI
+- Bond 1 (created 20 hours ago): 0% penalty, receive 10 DOLI
+- Bond 2 (created 9 hours ago): 50% penalty, receive 5 DOLI
+- Bond 3 (created 3 hours ago): 75% penalty, receive 2.5 DOLI
 
 FIFO withdrawal means oldest bonds (typically with lower penalties) are withdrawn first.
+Use `doli producer status` to see current vesting quarter and penalty % for your bonds.
 
 ---
 
@@ -567,10 +568,10 @@ Updates have a 7-day veto period:
 | Block reward (Era 1) | 1 DOLI |
 | Blocks per year (1 bond, 1000 total) | ~3,154 |
 | Annual rewards (1 bond, 1000 total) | ~3,154 DOLI |
-| Full vesting period | 4 years |
+| Full vesting period | 1 day (8,640 slots) |
 | Withdrawal delay | 7 days (60,480 slots) |
 | Coinbase maturity | 100 blocks |
-| Early exit penalties | 75%/50%/25%/0% (years 0-1/1-2/2-3/3+) |
+| Early exit penalties | 75%/50%/25%/0% (Q1/Q2/Q3/Q4+, 6h each) |
 
 ---
 
