@@ -929,18 +929,18 @@ mod tests {
 
     #[test]
     fn test_veto_period_by_network() {
-        // Mainnet and Testnet: 7 days
-        assert_eq!(Network::Mainnet.veto_period_secs(), 7 * 24 * 3600);
-        assert_eq!(Network::Testnet.veto_period_secs(), 7 * 24 * 3600);
+        // Mainnet and Testnet: 2 epochs (~2h)
+        assert_eq!(Network::Mainnet.veto_period_secs(), 2 * 3600);
+        assert_eq!(Network::Testnet.veto_period_secs(), 2 * 3600);
         // Devnet: 1 minute for fast testing
         assert_eq!(Network::Devnet.veto_period_secs(), 60);
     }
 
     #[test]
     fn test_grace_period_by_network() {
-        // Mainnet and Testnet: 48 hours
-        assert_eq!(Network::Mainnet.grace_period_secs(), 48 * 3600);
-        assert_eq!(Network::Testnet.grace_period_secs(), 48 * 3600);
+        // Mainnet and Testnet: 1 epoch (~1h)
+        assert_eq!(Network::Mainnet.grace_period_secs(), 3600);
+        assert_eq!(Network::Testnet.grace_period_secs(), 3600);
         // Devnet: 30 seconds for fast testing
         assert_eq!(Network::Devnet.grace_period_secs(), 30);
     }
@@ -1032,14 +1032,14 @@ mod tests {
         assert_eq!(full_cycle, 90);
 
         // Compare to mainnet:
-        // veto (7 days) + grace (48h) = 9 days total
+        // veto (2 epochs = 7200s) + grace (1 epoch = 3600s) = 10800s total
         let mainnet = Network::Mainnet;
         let mainnet_cycle = mainnet.veto_period_secs() + mainnet.grace_period_secs();
-        assert_eq!(mainnet_cycle, 9 * 24 * 3600); // 9 days in seconds
+        assert_eq!(mainnet_cycle, 10800); // 3 hours in seconds
 
-        // Devnet is ~8640x faster (9 days vs 90 seconds)
+        // Devnet is 120x faster (3h vs 90 seconds)
         let acceleration = mainnet_cycle / full_cycle;
-        assert!(acceleration > 8000);
+        assert!(acceleration > 100);
     }
 
     #[test]
