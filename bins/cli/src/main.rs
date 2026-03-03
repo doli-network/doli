@@ -1296,7 +1296,17 @@ async fn cmd_producer(
                     println!("Registration submitted successfully!");
                     println!("TX Hash: {}", hash);
                     println!();
-                    println!("Note: Registration requires VDF proof validation.");
+                    // Show activation epoch ETA
+                    if let Ok(epoch) = rpc.get_epoch_info().await {
+                        let eta_minutes = (epoch.blocks_remaining * 10) / 60;
+                        println!("Status: Pending activation (epoch-deferred).",);
+                        println!(
+                            "Estimated activation: ~{} minutes (Epoch {}, block {}).",
+                            eta_minutes,
+                            epoch.current_epoch + 1,
+                            epoch.epoch_end_height
+                        );
+                    }
                     println!("Use 'doli producer status' to check registration status.");
                 }
                 Err(e) => {
@@ -1367,6 +1377,34 @@ async fn cmd_producer(
                             println!(
                                 "  Withdrawal pending: {} bonds (applied at next epoch boundary)",
                                 details.withdrawal_pending_count
+                            );
+                        }
+                    }
+
+                    // Show pending epoch-deferred updates
+                    if !info.pending_updates.is_empty() {
+                        println!();
+                        println!("Pending updates (applied at next epoch boundary):");
+                        for pu in &info.pending_updates {
+                            match pu.update_type.as_str() {
+                                "add_bond" => {
+                                    println!("  + Add {} bond(s)", pu.bond_count.unwrap_or(0))
+                                }
+                                "withdrawal" => {
+                                    println!("  - Withdraw {} bond(s)", pu.bond_count.unwrap_or(0))
+                                }
+                                "exit" => println!("  - Exit producer set"),
+                                "register" => println!("  + Registration pending"),
+                                other => println!("  ? {}", other),
+                            }
+                        }
+                        if let Ok(epoch) = rpc.get_epoch_info().await {
+                            let eta_minutes = (epoch.blocks_remaining * 10) / 60;
+                            println!(
+                                "  ETA: ~{} minutes (Epoch {}, block {})",
+                                eta_minutes,
+                                epoch.current_epoch + 1,
+                                epoch.epoch_end_height
                             );
                         }
                     }
@@ -1531,6 +1569,18 @@ async fn cmd_producer(
                 Ok(hash) => {
                     println!("Bonds added successfully!");
                     println!("TX Hash: {}", hash);
+                    println!();
+                    // Show activation epoch ETA
+                    if let Ok(epoch) = rpc.get_epoch_info().await {
+                        let eta_minutes = (epoch.blocks_remaining * 10) / 60;
+                        println!("Status: Pending activation (epoch-deferred).",);
+                        println!(
+                            "Estimated activation: ~{} minutes (Epoch {}, block {}).",
+                            eta_minutes,
+                            epoch.current_epoch + 1,
+                            epoch.epoch_end_height
+                        );
+                    }
                 }
                 Err(e) => {
                     println!("Error adding bonds: {}", e);
@@ -1685,10 +1735,17 @@ async fn cmd_producer(
 
             match rpc.send_transaction(&tx_hex).await {
                 Ok(hash) => {
-                    println!("Withdrawal request submitted!");
-                    println!("TX Hash: {}", hash);
-                    println!();
-                    println!("Funds available now. Bonds removed at next epoch boundary.");
+                    println!("Withdrawal submitted. TX: {}", hash);
+                    println!("Funds available now.");
+                    // Show epoch boundary ETA for bond removal
+                    if let Ok(epoch) = rpc.get_epoch_info().await {
+                        let eta_minutes = (epoch.blocks_remaining * 10) / 60;
+                        println!(
+                            "Bonds removed at next epoch boundary (~{} minutes, Epoch {}).",
+                            eta_minutes,
+                            epoch.current_epoch + 1,
+                        );
+                    }
                 }
                 Err(e) => {
                     println!("Error requesting withdrawal: {}", e);

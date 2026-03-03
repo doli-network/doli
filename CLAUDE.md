@@ -485,7 +485,7 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node8.plist    # enab
 - **N3/N4/N5 SSH**: Only reachable via omegacortex as jump host (`ssh -p 50790`). Direct SSH from local machine fails.
 - **N4/N5 process user**: `isudoajl` (not `ilozada`). Systemd service runs as `isudoajl`. SSH as `ilozada`.
 - **N4/N5 data dir**: Files live directly in `~/.doli/mainnet/` (no `data/` subdirectory).
-- **N6** (omegacortex): Shares host/binary with N1/N2. Managed by systemd. P2P port 30305, RPC port 8547, metrics 9092. Bootstraps from N1 local. Registered post-genesis at block 3236 with 10 bonds (100 DOLI). Not a maintainer.
+- **N6** (omegacortex): Shares host/binary with N1/N2. Managed by systemd. P2P port 30305, RPC port 8547, metrics 9092. Bootstraps from N1 local. Re-registered post-genesis at block 7812 with 10 bonds (100 DOLI). Not a maintainer.
 - **N8** (macOS local): Binary from `/usr/local/bin/doli-node` (updated manually from repo build or GitHub release). Managed by launchd. Uses P2P port 30305, RPC port 8547. Not a maintainer. `KeepAlive: true` — must `launchctl unload` (not just `stop`) before wiping data.
 
 ### Producer Key Registry (AUTHORITATIVE)
@@ -502,17 +502,16 @@ launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node8.plist    # enab
 | **N6** | omegacortex | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
 | **N8** | macOS (local) | `~/.doli/mainnet/keys/producer_8.json` | `doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma` | `3303a23595...77b4b88` |
 
-**N6/N8 are NOT genesis producers** — N6 registered post-genesis at block 3236 with 10 bonds. N8 is a v2 (BIP-39) wallet registered post-genesis. Neither is a maintainer (governance stays 5/5 with N1-N5).
+**N6/N8 are NOT genesis producers** — N6 re-registered post-genesis at block 7812 with 10 bonds. N8 is a v2 (BIP-39) wallet registered post-genesis. Neither is a maintainer (governance stays 5/5 with N1-N5).
+
+**External producers** (not operated by us):
+
+| Name | Host | Address (`doli1...`) | Public Key (Ed25519) | Bonds | Registered |
+|------|------|---------------------|----------------------|-------|------------|
+| **atinoco** | doli01 | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 19 | Height 495 |
 
 **Producer key files are wallet-compatible** — use directly with `doli -w <key_file>` for balance queries, sends, and producer operations.
 
-**Retired keys** (produced early blocks, no longer active — funds still held):
-
-| Key | Public Key | Approx Blocks | Balance |
-|-----|------------|---------------|---------|
-| U1 | `fd2f9af2d073c52a11c0994f0f3df607cb19f13cbabf1e30f1f02525d4cda691` | ~1,601 | 1,601 DOLI |
-| U2 | `805b7411209cca4465892c483131cec07390befae77d5bca6930f4d55b07eff5` | ~1,644 | 1,644 DOLI |
-| U3 | `a44df67f10564a221b9bd6f2e020556940b5bf7036cab7e896a52a2d69a4e272` | ~1,517 | 1,517 DOLI |
 
 ### 💰 Checking DOLI Balances (IMPORTANT)
 
@@ -532,6 +531,7 @@ ssh ilozada@omegacortex.ai "
   echo 'N5:' && \$CLI -w \$W balance --address doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
   echo 'N6:' && \$CLI -w \$W balance --address doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
   echo 'N8:' && \$CLI -w \$W balance --address doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma
+  echo 'atinoco:' && \$CLI -w \$W balance --address doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e
 "
 ```
 

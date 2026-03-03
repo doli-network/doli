@@ -988,6 +988,29 @@ impl Transaction {
         bincode::deserialize(&self.extra_data).ok()
     }
 
+    /// Returns true if this transaction type has no UTXO inputs by design.
+    ///
+    /// State-only txs (Exit, RequestWithdrawal, etc.) operate on producer state
+    /// and are spam-protected by requiring a registered producer bond. They bypass
+    /// UTXO-based fee accounting in the mempool.
+    ///
+    /// Registration and AddBond are NOT state-only — they consume UTXO inputs.
+    pub fn is_state_only(&self) -> bool {
+        matches!(
+            self.tx_type,
+            TxType::Exit
+                | TxType::ClaimReward
+                | TxType::ClaimBond
+                | TxType::SlashProducer
+                | TxType::RequestWithdrawal
+                | TxType::ClaimWithdrawal
+                | TxType::DelegateBond
+                | TxType::RevokeDelegation
+                | TxType::AddMaintainer
+                | TxType::RemoveMaintainer
+        )
+    }
+
     /// Compute the transaction hash
     pub fn hash(&self) -> Hash {
         use crypto::Hasher;
