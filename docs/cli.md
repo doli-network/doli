@@ -315,7 +315,7 @@ Register as a block producer with bonds.
 doli producer register [OPTIONS]
 
 Options:
-  -b, --bonds <BONDS>    Number of bonds to stake (1-100) [default: 1]
+  -b, --bonds <BONDS>    Number of bonds to stake (1-10,000) [default: 1]
 ```
 
 **Bond Requirements:**
@@ -331,6 +331,8 @@ doli producer register
 doli producer register --bonds 5
 ```
 
+Registration is epoch-deferred — your producer becomes active at the next epoch boundary.
+
 **WHITEPAPER Reference:** Section 6 (Producer Registration)
 - Requires activation bond (Section 6.2)
 - Bond stacking up to 10,000x (Section 6.3)
@@ -340,7 +342,7 @@ doli producer register --bonds 5
 
 ### 4.2. Check Producer Status
 
-View producer status, rewards, and pending withdrawals.
+View producer status, bond vesting tiers, and pending epoch-deferred updates.
 
 ```bash
 doli producer status [OPTIONS]
@@ -362,26 +364,70 @@ doli producer status --pubkey c455c65d3e17...
 ```
 Producer Status
 ------------------------------------------------------------
-Public Key:           c455c65d3e17c07f...
-Status:               active
-Registration Height:  1,234
-Bond Amount:          5,000.00000000 DOLI
-Bond Count:           5
-Blocks Produced:      1,247
-Pending Rewards:      0.00000000 DOLI (auto-distributed)
-Era:                  1
 
-Pending Withdrawals:  None
-------------------------------------------------------------
+Address:       doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+Status:        active
+Registered at: block 0
+Bond Count:    10
+Bond Amount:   100.00000000 DOLI
+Current Era:   1
+
+Bonds: 10 (100.00000000 DOLI):
+  Vested (0% penalty):   7 bonds
+  Q3 (25% penalty):      1 bond  — ~2h 10m to 0%
+  Q2 (50% penalty):      1 bond  — ~30m to 25%
+  Q1 (75% penalty):      1 bond  — ~4h 40m to 50%
 ```
 
-**Rewards:** Automatically distributed at epoch boundaries as UTXOs. No manual claim needed.
+Each bond tier shows time remaining until the oldest bond in that tier graduates to the next tier (lower penalty).
+
+**Rewards:** Automatically distributed via coinbase (1 DOLI per block). No manual claim needed.
 
 **WHITEPAPER Reference:** Section 7.2 (Deterministic Rewards) - All producers earn identical ROI percentage.
 
 ---
 
-### 4.3. List All Producers
+### 4.3. Per-Bond Vesting Details
+
+Show detailed per-bond vesting information (age, quarter, penalty, time to next tier).
+
+```bash
+doli producer bonds [OPTIONS]
+
+Options:
+  -p, --pubkey <PUBKEY>    Check specific producer (default: wallet's key)
+```
+
+**Example:**
+```bash
+doli producer bonds
+```
+
+**Output:**
+```
+Bond Details (5 bonds, 50.00000000 DOLI staked)
+------------------------------------------------------------
+ #    Created (slot)   Age          Quarter    Penalty  Time to Next
+ ----------------------------------------------------------------------
+ 1    slot 361         23h 45m      Q4+        0%       Fully vested
+ 2    slot 361         23h 45m      Q4+        0%       Fully vested
+ 3    slot 2500        12h 10m      Q3         25%      ~5h 50m to 0%
+ 4    slot 5000        5h 30m       Q2         50%      ~30m to 25%
+ 5    slot 8000        1h 20m       Q1         75%      ~4h 40m to 50%
+```
+
+**Vesting schedule** (1-day, quarter-based):
+
+| Quarter | Age | Penalty |
+|---------|-----|---------|
+| Q1 | 0-6h | 75% burn |
+| Q2 | 6-12h | 50% burn |
+| Q3 | 12-18h | 25% burn |
+| Q4+ | 18h+ | 0% (fully vested) |
+
+---
+
+### 4.4. List All Producers
 
 Display all producers in the network.
 
@@ -403,20 +449,20 @@ doli producer list --active
 
 ---
 
-### 4.4. Add Bonds (Bond Stacking)
+### 4.5. Add Bonds (Bond Stacking)
 
-Increase stake by adding more bonds.
+Increase stake by adding more bonds. Activation is epoch-deferred.
 
 ```bash
 doli producer add-bond --count <COUNT>
 
 Options:
-  -c, --count <COUNT>    Number of bonds to add (1-100)
+  -c, --count <COUNT>    Number of bonds to add (1-10,000)
 ```
 
 **Example:**
 ```bash
-# Add 3 more bonds (300 DOLI on mainnet/testnet)
+# Add 3 more bonds (30 DOLI on mainnet/testnet)
 doli producer add-bond --count 3
 ```
 
@@ -424,60 +470,70 @@ doli producer add-bond --count 3
 
 ---
 
-### 4.5. Request Withdrawal
+### 4.6. Withdraw Bonds
 
-Request to withdraw bonds. Starts a ~7-day withdrawal delay period (60,480 blocks).
+Withdraw bonds instantly using FIFO order (oldest first). Each bond's penalty depends on its individual vesting age. Funds are available immediately; bonds are removed at the next epoch boundary.
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]
 
 Options:
   -c, --count <COUNT>              Number of bonds to withdraw
-  -d, --destination <DESTINATION>  Destination address for funds
+  -d, --destination <DESTINATION>  Destination address (default: wallet address)
 ```
 
 **Example:**
 ```bash
-# Request withdrawal of 2 bonds
+# Withdraw 2 bonds
 doli producer request-withdrawal --count 2
 
-# Specify destination address
-doli producer request-withdrawal --count 2 --destination a1b2c3d4...
+# Withdraw to a different address
+doli producer request-withdrawal --count 2 --destination doli1abc...
 ```
 
-**WHITEPAPER Reference:** Section 6.4 (Bond Lifecycle)
-- Withdrawal delay: ~7 days (60,480 blocks)
-- Early exit incurs proportional penalty
+**Output shows FIFO breakdown before submitting:**
+```
+Your bonds (5 total):
+  2 bonds — vested (0% penalty)
+  1 bonds — Q3 (25% penalty)
+  1 bonds — Q2 (50% penalty)
+  1 bonds — Q1 (75% penalty)
+
+Withdrawing 3 bonds (FIFO — oldest first):
+  2 x vested (0% penalty): 20.00000000 DOLI -> 20.00000000 DOLI (0.00000000 DOLI burned)
+  1 x Q3 (25% penalty): 10.00000000 DOLI -> 7.50000000 DOLI (2.50000000 DOLI burned)
+  --------------------------------------------------
+  Total: 30.00000000 DOLI -> 27.50000000 DOLI (2.50000000 DOLI burned)
+
+You receive: 27.50000000 DOLI
+Penalty burned: 2.50000000 DOLI
+```
 
 ---
 
-### 4.6. Claim Withdrawal
+### 4.7. Simulate Withdrawal (Dry Run)
 
-Claim funds after unbonding period completes.
+Preview the FIFO penalty breakdown without submitting a transaction.
 
 ```bash
-doli producer claim-withdrawal [OPTIONS]
+doli producer simulate-withdrawal --count <COUNT>
 
 Options:
-  -i, --index <INDEX>    Withdrawal index [default: 0]
+  -c, --count <COUNT>    Number of bonds to simulate withdrawing
 ```
 
 **Example:**
 ```bash
-# Claim first pending withdrawal
-doli producer claim-withdrawal
-
-# Claim specific withdrawal
-doli producer claim-withdrawal --index 1
+doli producer simulate-withdrawal --count 3
 ```
 
-Use `doli producer status` to see pending withdrawals and their claimable status.
+Output is identical to `request-withdrawal` but clearly marked as a dry run with no transaction submitted.
 
 ---
 
-### 4.7. Exit Producer Set
+### 4.8. Exit Producer Set
 
-Exit the producer set completely.
+Exit the producer set completely. Uses 1-day vesting with quarter-based penalties.
 
 ```bash
 doli producer exit [OPTIONS]
@@ -486,28 +542,32 @@ Options:
       --force    Force early exit with penalty
 ```
 
-**Exit Penalty (Early Exit):**
-```
-penalty_pct = (time_remaining × 100) / T_commitment
-return = bond × (100 - penalty_pct) / 100
-```
+**Exit Penalty (1-day vesting):**
+
+| Quarter | Age | Penalty |
+|---------|-----|---------|
+| Q1 | 0-6h | 75% burn |
+| Q2 | 6-12h | 50% burn |
+| Q3 | 12-18h | 25% burn |
+| Q4+ | 18h+ | 0% |
 
 **Example:**
 ```bash
-# Normal exit (after 4-year commitment)
+# Exit without penalty (after 1 day)
 doli producer exit
 
 # Force early exit (with penalty)
 doli producer exit --force
 ```
 
+Without `--force`, the command shows the current penalty and time remaining before allowing exit.
+
 **WHITEPAPER Reference:** Section 6.4 (Bond Lifecycle)
-- 4-year commitment period
-- Early exit penalties recycle to reward pool
+- Penalty burns are permanent (deflationary)
 
 ---
 
-### 4.8. Submit Slashing Evidence
+### 4.9. Submit Slashing Evidence
 
 Report double production (equivocation) for slashing.
 
@@ -566,14 +626,14 @@ Rewards appear as "pending" until they reach 100 confirmations, then become
 
 ### 5.3. Deprecated Commands
 
-The following commands are deprecated and non-functional:
+The following commands print an informative message redirecting to `doli balance`:
 
-| Command | Status |
-|---------|--------|
-| `doli rewards list` | Deprecated - returns empty |
-| `doli rewards claim` | Deprecated - nothing to claim |
-| `doli rewards claim-all` | Deprecated - nothing to claim |
-| `doli rewards history` | Deprecated - no claim history |
+| Command | Message |
+|---------|---------|
+| `doli rewards list` | "Rewards are distributed automatically via coinbase" |
+| `doli rewards claim` | Same — no claiming needed |
+| `doli rewards claim-all` | Same — no claiming needed |
+| `doli rewards history` | "Use 'doli history' to see received rewards" |
 
 These commands existed for a weighted presence reward system that was removed
 in favor of the simpler Bitcoin-like coinbase model.
@@ -777,19 +837,16 @@ doli producer add-bond --count 4
 ### 8.3 Exiting as a Producer
 
 ```bash
-# 1. Check current status and pending withdrawals
+# 1. Check current status and bond vesting
 doli producer status
 
-# 2. Request withdrawal of some bonds
+# 2. Preview withdrawal penalty (dry run)
+doli producer simulate-withdrawal --count 2
+
+# 3. Withdraw bonds (instant payout, FIFO penalty)
 doli producer request-withdrawal --count 2
 
-# 3. Wait for unbonding period (check status periodically)
-doli producer status
-
-# 4. After unbonding completes, claim funds
-doli producer claim-withdrawal
-
-# 5. Or exit completely
+# 4. Or exit completely
 doli producer exit
 ```
 
@@ -967,10 +1024,10 @@ doli-node maintainer verify --pubkey <PUBKEY>
 | 4.2 Time Structure | `doli chain` |
 | 6. Producer Registration | `doli producer register` |
 | 6.2 Activation Bond | `doli producer register --bonds N` |
-| 6.3 Bond Stacking | `doli producer add-bond` |
-| 6.4 Bond Lifecycle | `doli producer exit`, `doli producer request-withdrawal`, `doli producer claim-withdrawal` |
+| 6.3 Bond Stacking | `doli producer add-bond`, `doli producer bonds` |
+| 6.4 Bond Lifecycle | `doli producer exit`, `doli producer request-withdrawal`, `doli producer simulate-withdrawal` |
 | 7. Producer Selection | `doli producer status`, `doli producer list` |
-| 9.1 Emission/Rewards | `doli wallet balance` (rewards are automatic via coinbase) |
+| 9.1 Emission/Rewards | `doli balance` (rewards are automatic via coinbase) |
 | 10.3 Double Production | `doli producer slash` |
 | 14. Privacy (new keys) | `doli address` |
 | 15. Governance | `doli-node update vote`, `doli-node maintainer` |
@@ -1007,4 +1064,4 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-*Last updated: February 2026*
+*Last updated: March 2026*
