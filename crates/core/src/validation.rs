@@ -1861,8 +1861,10 @@ fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
 ///
 /// Structural validation for RequestWithdrawal transactions:
 /// - Must have no inputs (state-only operation)
-/// - Must have no outputs (funds locked until claim)
+/// - Must have exactly 1 normal output (payout to destination)
 /// - Must have valid withdrawal request data
+/// - Output amount must be > 0
+/// - Output pubkey_hash must match destination in withdrawal data
 ///
 /// Note: Producer bond holdings and FIFO calculation done at node level.
 fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), ValidationError> {
@@ -1873,10 +1875,22 @@ fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), ValidationEr
         ));
     }
 
-    // Must have no outputs (funds locked in pending state)
-    if !tx.outputs.is_empty() {
+    // Must have exactly 1 output (payout)
+    if tx.outputs.len() != 1 {
         return Err(ValidationError::InvalidWithdrawalRequest(
-            "withdrawal request must have no outputs".to_string(),
+            "withdrawal request must have exactly 1 output".to_string(),
+        ));
+    }
+
+    let output = &tx.outputs[0];
+    if output.output_type != OutputType::Normal {
+        return Err(ValidationError::InvalidWithdrawalRequest(
+            "withdrawal output must be Normal type".to_string(),
+        ));
+    }
+    if output.amount == 0 {
+        return Err(ValidationError::InvalidWithdrawalRequest(
+            "withdrawal output amount must be positive".to_string(),
         ));
     }
 
@@ -1899,10 +1913,17 @@ fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), ValidationEr
         ));
     }
 
+    // Output destination must match withdrawal data destination
+    if output.pubkey_hash != withdrawal_data.destination {
+        return Err(ValidationError::InvalidWithdrawalRequest(
+            "output destination must match withdrawal data destination".to_string(),
+        ));
+    }
+
     // Note: These validations are done at node level:
     // - Producer is registered
     // - Producer has enough bonds to withdraw
-    // - FIFO calculation of net/penalty amounts
+    // - Output amount <= FIFO net calculation
 
     Ok(())
 }
@@ -3428,13 +3449,16 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
+        let net_amount = 3_000_000_000u64; // 3 bonds worth
 
-        let tx = Transaction::new_request_withdrawal(pubkey, 3, destination);
+        let tx = Transaction::new_request_withdrawal(pubkey, 3, destination, net_amount);
 
         assert!(tx.is_request_withdrawal());
         assert_eq!(tx.tx_type, TxType::RequestWithdrawal);
         assert!(tx.inputs.is_empty());
-        assert!(tx.outputs.is_empty());
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].amount, net_amount);
+        assert_eq!(tx.outputs[0].pubkey_hash, destination);
 
         // Verify withdrawal data can be parsed
         let withdrawal_data = tx.withdrawal_request_data().unwrap();
@@ -3461,7 +3485,7 @@ mod tests {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)], // Should be empty
-            outputs: vec![],
+            outputs: vec![Output::normal(100, destination)],
             extra_data: withdrawal_data.to_bytes(),
         };
 
@@ -3473,27 +3497,27 @@ mod tests {
     }
 
     #[test]
-    fn test_request_withdrawal_with_outputs() {
+    fn test_request_withdrawal_wrong_output_count() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        // Create RequestWithdrawal with outputs (invalid)
+        // Create RequestWithdrawal with no outputs (must have exactly 1)
         let withdrawal_data =
             crate::transaction::WithdrawalRequestData::new(pubkey, 3, destination);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
             inputs: vec![],
-            outputs: vec![Output::normal(100, destination)], // Should be empty
+            outputs: vec![], // Must have exactly 1
             extra_data: withdrawal_data.to_bytes(),
         };
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
             result,
-            Err(ValidationError::InvalidWithdrawalRequest(msg)) if msg.contains("must have no outputs")
+            Err(ValidationError::InvalidWithdrawalRequest(msg)) if msg.contains("exactly 1 output")
         ));
     }
 
@@ -3505,7 +3529,7 @@ mod tests {
         let destination = crypto::hash::hash(b"destination");
 
         // Create RequestWithdrawal with zero bond count (invalid)
-        let tx = Transaction::new_request_withdrawal(pubkey, 0, destination);
+        let tx = Transaction::new_request_withdrawal(pubkey, 0, destination, 100);
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
@@ -3521,13 +3545,11 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Create RequestWithdrawal with zero destination (invalid)
-        let tx = Transaction::new_request_withdrawal(pubkey, 3, Hash::ZERO);
+        let tx = Transaction::new_request_withdrawal(pubkey, 3, Hash::ZERO, 100);
 
         let result = validate_transaction(&tx, &ctx);
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidWithdrawalRequest(msg)) if msg.contains("destination cannot be zero")
-        ));
+        // General output validation catches zero pubkey_hash before withdrawal-specific checks
+        assert!(result.is_err(), "zero destination should be rejected");
     }
 
     #[test]
@@ -3536,11 +3558,13 @@ mod tests {
         let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        let tx = Transaction::new_request_withdrawal(pubkey, 7, destination);
+        let tx = Transaction::new_request_withdrawal(pubkey, 7, destination, 5_000_000_000);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
         assert_eq!(tx.tx_type, recovered.tx_type);
+        assert_eq!(recovered.outputs.len(), 1);
+        assert_eq!(recovered.outputs[0].amount, 5_000_000_000);
         let recovered_data = recovered.withdrawal_request_data().unwrap();
         assert_eq!(recovered_data.producer_pubkey, pubkey);
         assert_eq!(recovered_data.bond_count, 7);

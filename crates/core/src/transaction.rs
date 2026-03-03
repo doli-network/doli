@@ -911,14 +911,14 @@ impl Transaction {
 
     /// Create a withdrawal request transaction.
     ///
-    /// This starts the 7-day withdrawal delay. Penalty is calculated at
-    /// request time based on bond age (FIFO - oldest bonds first).
-    ///
-    /// The penalty amount is burned (100% burn, no treasury).
+    /// Bonds are removed at the next epoch boundary. Payout is included
+    /// directly in the transaction output — no separate claim step needed.
+    /// Penalty is implicitly burned (bond_value × count − net_amount = burned).
     pub fn new_request_withdrawal(
         producer_pubkey: PublicKey,
         bond_count: u32,
         destination: Hash,
+        net_amount: Amount,
     ) -> Self {
         let withdrawal_data = WithdrawalRequestData::new(producer_pubkey, bond_count, destination);
         let extra_data = withdrawal_data.to_bytes();
@@ -926,8 +926,8 @@ impl Transaction {
         Self {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
-            inputs: Vec::new(),  // No inputs - state-only operation
-            outputs: Vec::new(), // No outputs - funds locked until claim
+            inputs: Vec::new(), // No inputs - payout comes from bond release
+            outputs: vec![Output::normal(net_amount, destination)],
             extra_data,
         }
     }
