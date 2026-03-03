@@ -18,6 +18,40 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
 
+/// Convert a PendingProducerUpdate to its RPC representation.
+fn pending_update_to_info(update: &storage::PendingProducerUpdate) -> PendingUpdateInfo {
+    match update {
+        storage::PendingProducerUpdate::Register { .. } => PendingUpdateInfo {
+            update_type: "register".to_string(),
+            bond_count: None,
+        },
+        storage::PendingProducerUpdate::Exit { .. } => PendingUpdateInfo {
+            update_type: "exit".to_string(),
+            bond_count: None,
+        },
+        storage::PendingProducerUpdate::Slash { .. } => PendingUpdateInfo {
+            update_type: "slash".to_string(),
+            bond_count: None,
+        },
+        storage::PendingProducerUpdate::AddBond { outpoints, .. } => PendingUpdateInfo {
+            update_type: "add_bond".to_string(),
+            bond_count: Some(outpoints.len() as u32),
+        },
+        storage::PendingProducerUpdate::DelegateBond { bond_count, .. } => PendingUpdateInfo {
+            update_type: "delegate_bond".to_string(),
+            bond_count: Some(*bond_count),
+        },
+        storage::PendingProducerUpdate::RevokeDelegation { .. } => PendingUpdateInfo {
+            update_type: "revoke_delegation".to_string(),
+            bond_count: None,
+        },
+        storage::PendingProducerUpdate::RequestWithdrawal { bond_count, .. } => PendingUpdateInfo {
+            update_type: "withdrawal".to_string(),
+            bond_count: Some(*bond_count),
+        },
+    }
+}
+
 /// Map a network name string to its bech32m address prefix.
 ///
 /// Returns `Some` for known networks, `None` otherwise (which makes
@@ -349,20 +383,36 @@ impl RpcContext {
 
         let tx_hash = tx.hash();
 
-        // Add to mempool
+        // Add to mempool — state-only txs (Exit, RequestWithdrawal, etc.) bypass
+        // UTXO fee accounting since they have no inputs by design. Their spam
+        // protection comes from requiring a registered producer bond.
         {
-            let utxo_set = self.utxo_set.read().await;
             let chain_state = self.chain_state.read().await;
+            let current_height = chain_state.best_height;
+            drop(chain_state);
+
             let mut mempool = self.mempool.write().await;
 
-            mempool
-                .add_transaction(tx.clone(), &utxo_set, chain_state.best_height)
-                .map_err(|e| match e {
-                    MempoolError::AlreadyExists => RpcError::tx_already_known(),
-                    MempoolError::Full => RpcError::mempool_full(),
-                    MempoolError::InvalidTransaction(msg) => RpcError::invalid_tx(msg),
-                    _ => RpcError::internal_error(e.to_string()),
-                })?;
+            if tx.is_state_only() {
+                mempool
+                    .add_system_transaction(tx.clone(), current_height)
+                    .map_err(|e| match e {
+                        MempoolError::AlreadyExists => RpcError::tx_already_known(),
+                        MempoolError::Full => RpcError::mempool_full(),
+                        MempoolError::InvalidTransaction(msg) => RpcError::invalid_tx(msg),
+                        _ => RpcError::internal_error(e.to_string()),
+                    })?;
+            } else {
+                let utxo_set = self.utxo_set.read().await;
+                mempool
+                    .add_transaction(tx.clone(), &utxo_set, current_height)
+                    .map_err(|e| match e {
+                        MempoolError::AlreadyExists => RpcError::tx_already_known(),
+                        MempoolError::Full => RpcError::mempool_full(),
+                        MempoolError::InvalidTransaction(msg) => RpcError::invalid_tx(msg),
+                        _ => RpcError::internal_error(e.to_string()),
+                    })?;
+            }
         }
 
         // Broadcast to network
@@ -561,6 +611,13 @@ impl RpcContext {
                 Vec::new()
             };
 
+        // Collect pending epoch-deferred updates for this producer
+        let pending_updates: Vec<PendingUpdateInfo> = producers
+            .pending_updates_for(&pubkey)
+            .into_iter()
+            .map(pending_update_to_info)
+            .collect();
+
         let response = ProducerResponse {
             public_key: params.public_key,
             registration_height: info.registered_at,
@@ -569,6 +626,7 @@ impl RpcContext {
             status: status.to_string(),
             era,
             pending_withdrawals,
+            pending_updates,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
@@ -620,6 +678,12 @@ impl RpcContext {
                         Vec::new()
                     };
 
+                let pending_updates: Vec<PendingUpdateInfo> = producers
+                    .pending_updates_for(&info.public_key)
+                    .into_iter()
+                    .map(pending_update_to_info)
+                    .collect();
+
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),
                     registration_height: info.registered_at,
@@ -628,6 +692,7 @@ impl RpcContext {
                     status: status.to_string(),
                     era,
                     pending_withdrawals,
+                    pending_updates,
                 }
             })
             .collect();
@@ -975,13 +1040,10 @@ impl RpcContext {
             chain_state.best_height
         };
 
-        // Get UTXO set reference
-        let utxo_set = self.utxo_set.read().await;
-
-        // Submit to mempool
+        // Submit to mempool (maintainer txs are state-only, no UTXO inputs)
         let mut mempool = self.mempool.write().await;
         mempool
-            .add_transaction(tx, &utxo_set, current_height)
+            .add_system_transaction(tx, current_height)
             .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
 
         Ok(serde_json::json!({
