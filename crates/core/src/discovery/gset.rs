@@ -860,11 +860,14 @@ mod tests {
             assert!(bloom.probably_contains(kp.public_key()));
         }
 
-        // Random key should not be found (with high probability)
-        let random_kp = KeyPair::generate();
-        // Note: This could fail with ~1% probability due to false positives
-        // but for a single key it's very unlikely
-        assert!(!bloom.probably_contains(random_kp.public_key()));
+        // False positive rate should be reasonable (test 100 random keys)
+        let false_positives = (0..100)
+            .filter(|_| bloom.probably_contains(KeyPair::generate().public_key()))
+            .count();
+        assert!(
+            false_positives < 10,
+            "too many false positives: {false_positives}/100"
+        );
     }
 
     #[test]
