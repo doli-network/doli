@@ -921,7 +921,7 @@ doli-node recover [--yes]
 
 ## 10. Update Commands (doli-node update)
 
-The update system uses 3/5 maintainer multisig with a 7-day veto period and 40% threshold.
+The update system uses 3/5 maintainer multisig (via SIGNATURES.json in GitHub Releases) with a 2-epoch (~2h) veto period and 40% threshold.
 
 ### 11.1 Check for Updates
 

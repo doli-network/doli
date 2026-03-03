@@ -378,8 +378,8 @@ impl NetworkParams {
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: consensus::GENESIS_TIME,
-                veto_period_secs: 7 * 24 * 3600, // 7 days (policy, not consensus rule per se, but good default)
-                grace_period_secs: 48 * 3600,    // 48 hours
+                veto_period_secs: 2 * 3600, // 2 epochs (~2h)
+                grace_period_secs: 3600,    // 1 epoch (~1h)
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD, // blocks (already u64)
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
@@ -441,8 +441,8 @@ impl NetworkParams {
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: 1769738400, // 2026-01-29T22:00:00Z (Testnet specific)
-                veto_period_secs: 7 * 24 * 3600,
-                grace_period_secs: 48 * 3600,
+                veto_period_secs: 2 * 3600, // 2 epochs (~2h)
+                grace_period_secs: 3600,  // 1 epoch (~1h)
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD,
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
