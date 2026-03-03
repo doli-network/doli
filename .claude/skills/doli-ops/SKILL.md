@@ -49,8 +49,7 @@ doli [OPTIONS] <COMMAND>
 | `status` | Check producer status | `-p, --pubkey <KEY>` |
 | `list` | List all producers | `--active` |
 | `add-bond` | Add bonds to stake | `-c, --count <N>` (required, 1-10000) |
-| `request-withdrawal` | Start withdrawal delay | `-c, --count <N>`, `-d, --destination <ADDR>` |
-| `claim-withdrawal` | Claim after delay | `-i, --index <N>` (default 0) |
+| `request-withdrawal` | Withdraw bonds (instant payout, FIFO) | `-c, --count <N>`, `-d, --destination <ADDR>` |
 | `exit` | Exit producer set | `--force` (early exit with penalty) |
 | `slash` | Submit equivocation evidence | |
 
@@ -826,27 +825,41 @@ doli -r http://127.0.0.1:PORT producer status -p <PUBKEY_HEX>
 doli -r http://127.0.0.1:PORT producer list
 ```
 
-### 6.4 Withdrawal
+### 6.4 Withdrawal (Instant, FIFO — v1.0.23+)
 
-**Withdrawal has a 7-day delay (mainnet) / 10min (devnet) + vesting penalty:**
+**No delay.** Funds available immediately in the same block. Bonds removed at next epoch boundary.
 
-| Bond Age | Penalty |
-|----------|---------|
-| < 1 year | 75% burned |
-| 1-2 years | 50% burned |
-| 2-3 years | 25% burned |
-| 3+ years | 0% |
+**1-day vesting penalty (per-bond FIFO — oldest withdrawn first):**
+
+| Quarter | Bond Age | Penalty |
+|---------|----------|---------|
+| Q1 | 0-6h | 75% burned |
+| Q2 | 6-12h | 50% burned |
+| Q3 | 12-18h | 25% burned |
+| Q4+ | 18h+ | 0% |
+
+Each bond's penalty is calculated individually based on its creation time. Penalty is burned.
 
 ```bash
-# Request withdrawal (starts timer)
+# Withdraw 2 bonds (instant payout, FIFO order)
 doli -r http://127.0.0.1:PORT producer request-withdrawal -c 2
 
-# After delay, claim
-doli -r http://127.0.0.1:PORT producer claim-withdrawal
+# Withdraw to specific destination
+doli -r http://127.0.0.1:PORT producer request-withdrawal -c 1 -d doli1recipient...
 
-# Emergency exit (penalty applies)
+# Emergency exit (penalty applies per-bond)
 doli -r http://127.0.0.1:PORT producer exit --force
 ```
+
+**CLI shows interactive FIFO breakdown** before submitting:
+- Bond inventory by vesting tier (Q1/Q2/Q3/vested)
+- Per-tier penalty calculation for the requested count
+- Total net amount, total burned, bonds remaining
+- Confirmation prompt before submitting
+
+**Double-withdrawal prevention**: Cannot submit two withdrawals in the same epoch. `withdrawal_pending_count` blocks duplicates until epoch boundary.
+
+**Note**: `claim-withdrawal` (TxType 9) is no longer needed — withdrawal is instant. The command remains defined but unused.
 
 ### 6.5 Transaction Types Reference
 

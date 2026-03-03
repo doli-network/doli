@@ -213,7 +213,8 @@ All commands implicitly wrapped in Nix develop shell.
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
 | **Max Bonds** | 10,000/producer | 10,000 | `MAX_BONDS_PER_PRODUCER` (100K DOLI max stake) |
-| **Unbond** | 7 days | 10m | `WITHDRAWAL_DELAY_SLOTS` |
+| **Vesting** | 1 day (8,640 slots) | configurable | `VESTING_PERIOD_SLOTS` (per-bond FIFO) |
+| **Vesting Quarter** | 6h (2,160 slots) | configurable | `VESTING_QUARTER_SLOTS` |
 | **Selection** | `slot % bonds` | - | Sequential 2s exclusive windows |
 | **Fallback** | 5 ranks | 5 ranks | `MAX_FALLBACK_RANKS`, `FALLBACK_TIMEOUT_MS=2000` |
 | **Clock Drift** | 1s / 200ms | 1s / 200ms | `MAX_DRIFT=1`, `MAX_DRIFT_MS=200` |
@@ -311,9 +312,12 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **Halving**: Every Era (~4y)
 - **Weights**: Year 0-1 (1x) → Year 3+ (4x)
 - **Fork Choice**: Heaviest weight
-- **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 4y), Reg Fees
+- **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 1 day, per-bond FIFO), Reg Fees
+- **Bond Unit**: Fixed at 10 DOLI across all eras (never decreases)
 
-### Bond Vesting (Withdrawal Penalty — 1-day, quarter-based)
+### Bond Vesting (Per-Bond FIFO — 1-day, quarter-based)
+
+Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **FIFO order** (oldest first), with per-bond penalty based on individual age. **Instant payout** — funds available in the same block, no delay. Bonds removed at next epoch boundary.
 
 | Quarter | Age | Penalty |
 |---------|-----|---------|
@@ -323,6 +327,12 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | Q4+ | 18h+ | 0% |
 
 `VESTING_QUARTER_SLOTS = 2,160` (6h), `VESTING_PERIOD_SLOTS = 8,640` (1 day). Configurable on devnet via `DOLI_VESTING_QUARTER_SLOTS`.
+
+**Key fields on ProducerInfo**: `bond_entries: Vec<StoredBondEntry>`, `withdrawal_pending_count: u32` (prevents double-withdrawal in same epoch).
+
+**RPC**: `getBondDetails` returns real per-bond data (creation_slot, penalty_pct, vested status per bond).
+
+**CLI**: `producer status` shows per-bond maturation tiers. `producer request-withdrawal --count N` shows interactive FIFO breakdown with per-tier penalties before confirmation.
 
 ## 🛡 Validation & Security
 
@@ -382,7 +392,7 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 |------|---------|
 | `block_store.rs` | RocksDB block storage |
 | `utxo.rs` | UTXO set (HashMap driven) |
-| `producer.rs` | Producer registry |
+| `producer.rs` | Producer registry (per-bond `StoredBondEntry` tracking, FIFO withdrawal) |
 
 **Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
 
@@ -397,8 +407,8 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 | 5 | Slash | Slash equivocating producer |
 | 6 | Coinbase | Block reward |
 | 7 | AddBond | Add to existing bond |
-| 8 | WithdrawalRequest | Request early withdrawal |
-| 9 | WithdrawalClaim | Claim withdrawal |
+| 8 | WithdrawalRequest | Instant bond withdrawal (FIFO, per-bond penalty, payout in same block) |
+| 9 | WithdrawalClaim | Reserved (unused — withdrawal is now instant via TxType 8) |
 | 10 | EpochReward | Epoch-level rewards |
 | 11 | MaintainerAdd | Add maintainer (governance) |
 | 12 | MaintainerRemove | Remove maintainer (governance) |
