@@ -1228,8 +1228,7 @@ mod tests {
         let pk = *kp.public_key();
         let pk_hash = crypto_hash(pk.as_bytes());
 
-        let info =
-            ProducerInfo::new_with_bonds(pk, 0, 1_000_000_000, (Hash::ZERO, 0), 0, 1);
+        let info = ProducerInfo::new_with_bonds(pk, 0, 1_000_000_000, (Hash::ZERO, 0), 0, 1);
 
         let mut batch = db.begin_batch();
         batch.put_producer(&pk_hash, &info);
