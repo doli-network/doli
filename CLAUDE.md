@@ -212,7 +212,7 @@ All commands implicitly wrapped in Nix develop shell.
 | **VDF Block** | 800K iter (~55ms) | 800K | `T_BLOCK` |
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
-| **Max Bonds** | 10,000/producer | 10,000 | `MAX_BONDS_PER_PRODUCER` (100K DOLI max stake) |
+| **Max Bonds** | 3,000/producer | 3,000 | `MAX_BONDS_PER_PRODUCER` (30K DOLI max stake) |
 | **Vesting** | 1 day (8,640 slots) | configurable | `VESTING_PERIOD_SLOTS` (per-bond FIFO) |
 | **Vesting Quarter** | 6h (2,160 slots) | configurable | `VESTING_QUARTER_SLOTS` |
 | **Selection** | `slot % bonds` | - | Sequential 2s exclusive windows |

@@ -874,8 +874,8 @@ cargo test -p integration bond_stacking -- --nocapture
 *Formula: `bond = initial_bond × 0.7^era` (30% decrease per era)*
 
 **Bond Stacking Verified**:
-- `MAX_BONDS_PER_PRODUCER = 100` (anti-whale cap) ✓
-- `ProducerBonds::add_bonds()` - returns `BondError::MaxBondsExceeded` if >100 ✓
+- `MAX_BONDS_PER_PRODUCER = 3,000` (anti-whale cap) ✓
+- `ProducerBonds::add_bonds()` - returns `BondError::MaxBondsExceeded` if >3,000 ✓
 - `BOND_UNIT = 100,000,000,000` (1,000 DOLI per bond)
 - `test_rank_producers_includes_bond_count` - bond count in selection ✓
 

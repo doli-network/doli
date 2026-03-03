@@ -1280,7 +1280,7 @@ Result:
 | R_CAP              | 100                      |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
 | BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
-| MAX_BONDS_PER_PRODUCER | 10,000               |
+| MAX_BONDS_PER_PRODUCER | 3,000                |
 | WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
 | YEAR_IN_SLOTS      | 3,153,600 (seniority only) |
 | VESTING_QUARTER_SLOTS | 2,160 (~6 hours)      |
