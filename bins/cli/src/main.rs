@@ -1337,58 +1337,36 @@ async fn cmd_producer(
                     println!("Bond Amount:   {}", format_balance(info.bond_amount));
                     println!("Current Era:   {}", info.era);
 
-                    // Show vesting info
-                    if let Ok(chain_info) = rpc.get_chain_info().await {
-                        let slots_active = chain_info
-                            .best_slot
-                            .saturating_sub(info.registration_height);
-                        let vesting_quarter: u64 = 2_160;
-                        let vesting_period: u64 = 4 * vesting_quarter;
-                        let quarters = slots_active / vesting_quarter;
-                        let penalty_pct: u64 = match quarters {
-                            0 => 75,
-                            1 => 50,
-                            2 => 25,
-                            _ => 0,
-                        };
-                        let hours_active = (slots_active * 10) as f64 / 3600.0;
-
+                    // Show per-bond vesting info from getBondDetails
+                    if let Ok(details) = rpc.get_bond_details(&pk).await {
                         println!();
-                        println!("Vesting:");
-                        if penalty_pct == 0 {
-                            println!("  Status:      Fully vested (0% penalty)");
-                            println!("  Age:         {:.1}h", hours_active);
-                        } else {
-                            let hours_until_vested =
-                                ((vesting_period - slots_active) * 10) as f64 / 3600.0;
-                            println!(
-                                "  Quarter:     Q{} ({}% penalty)",
-                                quarters + 1,
-                                penalty_pct
-                            );
-                            println!("  Age:         {:.1}h", hours_active);
-                            println!("  Fully vests: {:.1}h remaining", hours_until_vested);
-                            let per_bond = info.bond_amount / info.bond_count as u64;
-                            println!(
-                                "  Penalty/bond: {} burned",
-                                format_balance(per_bond * penalty_pct / 100)
-                            );
+                        println!(
+                            "Bonds: {} ({}):",
+                            details.bond_count,
+                            format_balance(details.total_staked)
+                        );
+                        let s = &details.summary;
+                        if s.vested > 0 {
+                            let label = if s.vested == 1 { "bond " } else { "bonds" };
+                            println!("  Vested (0% penalty):   {} {} ", s.vested, label);
                         }
-                    }
-
-                    // Show pending withdrawals if any
-                    if !info.pending_withdrawals.is_empty() {
-                        println!();
-                        println!("Pending Withdrawals:");
-                        for (i, w) in info.pending_withdrawals.iter().enumerate() {
-                            let claimable = if w.claimable { " [READY]" } else { "" };
+                        if s.q3 > 0 {
+                            let label = if s.q3 == 1 { "bond " } else { "bonds" };
+                            println!("  Q3 (25% penalty):      {} {}", s.q3, label);
+                        }
+                        if s.q2 > 0 {
+                            let label = if s.q2 == 1 { "bond " } else { "bonds" };
+                            println!("  Q2 (50% penalty):      {} {}", s.q2, label);
+                        }
+                        if s.q1 > 0 {
+                            let label = if s.q1 == 1 { "bond " } else { "bonds" };
+                            println!("  Q1 (75% penalty):      {} {}", s.q1, label);
+                        }
+                        if details.withdrawal_pending_count > 0 {
+                            println!();
                             println!(
-                                "  [{}] {} bonds, {} net{} (requested slot {})",
-                                i,
-                                w.bond_count,
-                                format_balance(w.net_amount),
-                                claimable,
-                                w.request_slot
+                                "  Withdrawal pending: {} bonds (applied at next epoch boundary)",
+                                details.withdrawal_pending_count
                             );
                         }
                     }
@@ -1585,47 +1563,112 @@ async fn cmd_producer(
             let dest_display = crypto::address::encode(&dest_hash, DEFAULT_PREFIX)
                 .unwrap_or_else(|_| dest_hash.to_hex());
 
-            // Fetch chain info and show vesting penalty
-            let chain_info = rpc.get_chain_info().await?;
+            // Fetch per-bond details for FIFO breakdown
             let pk = wallet.addresses()[0].public_key.clone();
-            let producer_info = rpc.get_producer(&pk).await?;
-            let slots_active = chain_info
-                .best_slot
-                .saturating_sub(producer_info.registration_height);
-            let vesting_quarter: u64 = 2_160;
-            let quarters = slots_active / vesting_quarter;
-            let penalty_pct: u64 = match quarters {
-                0 => 75,
-                1 => 50,
-                2 => 25,
-                _ => 0,
-            };
+            let details = rpc.get_bond_details(&pk).await?;
 
-            println!("Requesting withdrawal of {} bond(s)", count);
-            println!("Destination: {}", dest_display);
-            if penalty_pct > 0 {
-                let bond_value =
-                    count as u64 * producer_info.bond_amount / producer_info.bond_count as u64;
-                println!();
+            let available = details.bond_count - details.withdrawal_pending_count;
+            if count > available {
                 println!(
-                    "  Current penalty: {}% (Q{} of vesting)",
-                    penalty_pct,
-                    quarters + 1
+                    "Error: --count must be between 1 and {} (your available bonds)",
+                    available
                 );
-                println!(
-                    "  Penalty burn:    {}",
-                    format_balance(bond_value * penalty_pct / 100)
-                );
-                println!(
-                    "  You receive:     {}",
-                    format_balance(bond_value * (100 - penalty_pct) / 100)
-                );
-            } else {
-                println!("  Fully vested — 0% penalty");
+                return Ok(());
+            }
+
+            // Show bond inventory
+            let s = &details.summary;
+            println!("Your bonds ({} total):", details.bond_count);
+            if s.vested > 0 {
+                println!("  {} bonds — vested (0% penalty)", s.vested);
+            }
+            if s.q3 > 0 {
+                println!("  {} bonds — Q3 (25% penalty)", s.q3);
+            }
+            if s.q2 > 0 {
+                println!("  {} bonds — Q2 (50% penalty)", s.q2);
+            }
+            if s.q1 > 0 {
+                println!("  {} bonds — Q1 (75% penalty)", s.q1);
             }
             println!();
-            println!("Note: Withdrawals have a 7-day delay period.");
-            println!("      Use 'doli producer claim-withdrawal' after delay.");
+
+            // Calculate FIFO breakdown (oldest first)
+            let mut total_net: u64 = 0;
+            let mut total_penalty: u64 = 0;
+            let mut breakdown: Vec<(u32, u8, u64, u64)> = Vec::new(); // (count, penalty_pct, gross, net)
+
+            let mut current_tier_pct: Option<u8> = None;
+            let mut tier_count: u32 = 0;
+            let mut tier_gross: u64 = 0;
+            let mut tier_net: u64 = 0;
+
+            for entry in details.bonds.iter().take(count as usize) {
+                let pct = entry.penalty_pct;
+                let penalty = (entry.amount * pct as u64) / 100;
+                let net = entry.amount - penalty;
+                total_net += net;
+                total_penalty += penalty;
+
+                if current_tier_pct == Some(pct) {
+                    tier_count += 1;
+                    tier_gross += entry.amount;
+                    tier_net += net;
+                } else {
+                    if let Some(prev_pct) = current_tier_pct {
+                        breakdown.push((tier_count, prev_pct, tier_gross, tier_net));
+                    }
+                    current_tier_pct = Some(pct);
+                    tier_count = 1;
+                    tier_gross = entry.amount;
+                    tier_net = net;
+                }
+            }
+            if let Some(pct) = current_tier_pct {
+                breakdown.push((tier_count, pct, tier_gross, tier_net));
+            }
+
+            println!("Withdrawing {} bonds (FIFO — oldest first):", count);
+            println!("Destination: {}", dest_display);
+            for (cnt, pct, gross, net) in &breakdown {
+                let tier_label = match pct {
+                    0 => "vested (0% penalty)".to_string(),
+                    p => format!("Q{} ({}% penalty)", (4 - p / 25), p),
+                };
+                println!(
+                    "  {} x {}: {} -> {} ({} burned)",
+                    cnt,
+                    tier_label,
+                    format_balance(*gross),
+                    format_balance(*net),
+                    format_balance(gross - net)
+                );
+            }
+            if breakdown.len() > 1 {
+                let total_gross = total_net + total_penalty;
+                println!("  {:-<50}", "");
+                println!(
+                    "  Total: {} -> {} ({} burned)",
+                    format_balance(total_gross),
+                    format_balance(total_net),
+                    format_balance(total_penalty)
+                );
+            }
+            println!();
+            println!("You receive: {}", format_balance(total_net));
+            if total_penalty > 0 {
+                println!("Penalty burned: {}", format_balance(total_penalty));
+                let pct = (total_penalty * 100) / (total_net + total_penalty);
+                if pct >= 50 {
+                    println!(
+                        "WARNING: High penalty — {}% of bond value will be burned.",
+                        pct
+                    );
+                }
+            } else {
+                println!("No penalty — all bonds fully vested.");
+            }
+            println!("Bonds remaining: {}", details.bond_count - count);
             println!();
 
             // Parse producer public key
@@ -1633,10 +1676,10 @@ async fn cmd_producer(
             let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
                 .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
-            // Create request-withdrawal transaction
-            let tx = Transaction::new_request_withdrawal(producer_pubkey, count, dest_hash);
+            // Create request-withdrawal transaction with FIFO net amount
+            let tx =
+                Transaction::new_request_withdrawal(producer_pubkey, count, dest_hash, total_net);
 
-            // Sign (request-withdrawal is state-only, but still needs signature for authorization)
             let tx_hex = hex::encode(tx.serialize());
             println!("Submitting withdrawal request...");
 
@@ -1645,7 +1688,7 @@ async fn cmd_producer(
                     println!("Withdrawal request submitted!");
                     println!("TX Hash: {}", hash);
                     println!();
-                    println!("Use 'doli producer status' to track withdrawal status.");
+                    println!("Funds available now. Bonds removed at next epoch boundary.");
                 }
                 Err(e) => {
                     println!("Error requesting withdrawal: {}", e);

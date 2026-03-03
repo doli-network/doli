@@ -101,9 +101,10 @@ pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
     producer_weight_precise_for_network, total_weight, total_weight_for_network,
     weighted_veto_threshold, weighted_veto_threshold_for_network, ActivityStatus,
-    PendingProducerUpdate, ProducerInfo, ProducerSet, ProducerStatus, ACTIVATION_DELAY,
-    BLOCKS_PER_MONTH, BLOCKS_PER_YEAR, EXIT_HISTORY_RETENTION, INACTIVITY_THRESHOLD, MAX_WEIGHT,
-    MIN_WEIGHT, REACTIVATION_THRESHOLD, VETO_BOND_AMOUNT, VETO_THRESHOLD_PERCENT,
+    PendingProducerUpdate, ProducerInfo, ProducerSet, ProducerStatus, StoredBondEntry,
+    ACTIVATION_DELAY, BLOCKS_PER_MONTH, BLOCKS_PER_YEAR, EXIT_HISTORY_RETENTION,
+    INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD, VETO_BOND_AMOUNT,
+    VETO_THRESHOLD_PERCENT,
 };
 pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
 pub use update::UpdateState;

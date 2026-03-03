@@ -2987,7 +2987,7 @@ impl Node {
                             );
 
                             producers.queue_update(PendingProducerUpdate::Register {
-                                info: producer_info,
+                                info: Box::new(producer_info),
                                 height,
                             });
                             info!(
@@ -3045,6 +3045,7 @@ impl Node {
                             pubkey: add_bond_data.producer_pubkey,
                             outpoints: bond_outpoints,
                             bond_unit,
+                            creation_slot: block.header.slot,
                         });
                         info!(
                             "Queued AddBond ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
@@ -3052,6 +3053,65 @@ impl Node {
                             crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
                             height
                         );
+                    }
+                }
+
+                // Process WithdrawalRequest transactions — deferred to epoch boundary
+                if tx.tx_type == TxType::RequestWithdrawal {
+                    if let Some(data) = tx.withdrawal_request_data() {
+                        // Validate: producer exists and has enough bonds
+                        if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
+                            let available = info
+                                .bond_count
+                                .saturating_sub(info.withdrawal_pending_count);
+                            if data.bond_count > available {
+                                warn!(
+                                    "WithdrawalRequest: not enough bonds (requested {}, available {})",
+                                    data.bond_count, available
+                                );
+                            } else {
+                                // Validate: output amount <= FIFO net calculation
+                                let expected =
+                                    info.calculate_withdrawal(data.bond_count, block.header.slot);
+                                let tx_output = tx.outputs.first().map(|o| o.amount).unwrap_or(0);
+                                if let Some((expected_net, _penalty)) = expected {
+                                    if tx_output > expected_net {
+                                        warn!(
+                                            "WithdrawalRequest: output {} exceeds FIFO net {}",
+                                            tx_output, expected_net
+                                        );
+                                    } else {
+                                        // Increment pending count (prevents double-withdrawal in same epoch)
+                                        if let Some(producer) =
+                                            producers.get_by_pubkey_mut(&data.producer_pubkey)
+                                        {
+                                            producer.withdrawal_pending_count += data.bond_count;
+                                        }
+
+                                        let bond_unit = self.config.network.bond_unit();
+                                        producers.queue_update(
+                                            PendingProducerUpdate::RequestWithdrawal {
+                                                pubkey: data.producer_pubkey,
+                                                bond_count: data.bond_count,
+                                                bond_unit,
+                                            },
+                                        );
+                                        info!(
+                                            "Queued WithdrawalRequest ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
+                                            data.bond_count,
+                                            crypto_hash(data.producer_pubkey.as_bytes()),
+                                            height
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "WithdrawalRequest: FIFO calculation failed for producer"
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!("WithdrawalRequest: producer not found");
+                        }
                     }
                 }
 
@@ -5066,7 +5126,7 @@ impl Node {
                                     reg_data.bond_count,
                                 );
                                 producers.queue_update(PendingProducerUpdate::Register {
-                                    info: producer_info,
+                                    info: Box::new(producer_info),
                                     height,
                                 });
                             }
@@ -5099,7 +5159,32 @@ impl Node {
                                 pubkey: add_bond_data.producer_pubkey,
                                 outpoints: bond_outpoints,
                                 bond_unit,
+                                creation_slot: block.header.slot,
                             });
+                        }
+                    }
+                    TxType::RequestWithdrawal => {
+                        if let Some(data) = tx.withdrawal_request_data() {
+                            // During rebuild, validate and queue the withdrawal
+                            if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
+                                let available = info
+                                    .bond_count
+                                    .saturating_sub(info.withdrawal_pending_count);
+                                if data.bond_count <= available {
+                                    if let Some(producer) =
+                                        producers.get_by_pubkey_mut(&data.producer_pubkey)
+                                    {
+                                        producer.withdrawal_pending_count += data.bond_count;
+                                    }
+                                    producers.queue_update(
+                                        PendingProducerUpdate::RequestWithdrawal {
+                                            pubkey: data.producer_pubkey,
+                                            bond_count: data.bond_count,
+                                            bond_unit,
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
                     TxType::DelegateBond => {
