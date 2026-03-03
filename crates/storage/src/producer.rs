@@ -1269,19 +1269,43 @@ impl ProducerSet {
             .collect()
     }
 
-    /// Load producer set from file
+    /// Load producer set from file.
+    ///
+    /// Tries JSON first (current format), then bincode (legacy), then starts fresh.
+    /// This ensures backward compatibility across version upgrades — bincode is
+    /// positional and breaks when fields are added, while JSON with `#[serde(default)]`
+    /// handles missing fields gracefully.
     pub fn load(path: &Path) -> Result<Self, StorageError> {
         if !path.exists() {
             return Ok(Self::new());
         }
 
         let data = std::fs::read(path)?;
-        let mut set: Self =
-            bincode::deserialize(&data).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        set.rebuild_unbonding_index();
-        // Migrate legacy producers: populate bond_entries from bond_count if empty
-        set.migrate_bond_entries(CORE_BOND_UNIT);
-        Ok(set)
+
+        // Try JSON first (current format)
+        if let Ok(mut set) = serde_json::from_slice::<Self>(&data) {
+            set.rebuild_unbonding_index();
+            set.migrate_bond_entries(CORE_BOND_UNIT);
+            return Ok(set);
+        }
+
+        // Try bincode (legacy format from older versions)
+        if let Ok(mut set) = bincode::deserialize::<Self>(&data) {
+            tracing::info!(
+                "Migrated producers.bin from bincode to JSON ({} producers)",
+                set.total_count()
+            );
+            set.rebuild_unbonding_index();
+            set.migrate_bond_entries(CORE_BOND_UNIT);
+            // Re-save as JSON so future loads use the new format
+            if let Err(e) = set.save(path) {
+                tracing::warn!("Failed to re-save migrated producer set as JSON: {}", e);
+            }
+            return Ok(set);
+        }
+
+        tracing::warn!("Could not deserialize producers.bin (JSON or bincode), starting fresh");
+        Ok(Self::new())
     }
 
     /// Migrate all producers that have empty bond_entries.
@@ -1291,10 +1315,13 @@ impl ProducerSet {
         }
     }
 
-    /// Save producer set to file (atomic: write to temp file, then rename)
+    /// Save producer set to file (atomic: write to temp file, then rename).
+    ///
+    /// Uses JSON format — backward compatible with `#[serde(default)]` fields,
+    /// so future version upgrades won't break deserialization.
     pub fn save(&self, path: &Path) -> Result<(), StorageError> {
         let data =
-            bincode::serialize(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
+            serde_json::to_vec(self).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let tmp = path.with_extension("bin.tmp");
         std::fs::write(&tmp, &data)?;
         std::fs::rename(&tmp, path)?;
