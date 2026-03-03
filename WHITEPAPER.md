@@ -2,6 +2,7 @@
 
 ## Deterministic Ordering through Linear Iterations
 
+### Only Time Matters...
 ### A Peer-to-Peer Electronic Cash System Based on Verifiable Time
 
 **E. Weil** · weil@doli.network
@@ -22,15 +23,15 @@ The result is a system where consensus weight emerges from time rather than trus
 
 ## 1. Introduction
 
-Commerce on the Internet has come to rely almost exclusively on trusted financial institutions to process electronic payments. While the model works well enough for most transactions, it suffers from the inherent weaknesses of the trust-based model.
+Every consensus mechanism ever designed shares one assumption: security requires a scarce resource that can be accumulated. Bitcoin chose energy. Ethereum chose capital. Both created systems where the largest participant has a structural advantage over the smallest.
 
-Transactions can be reversed, which increases costs of mediation and limits the minimum practical transaction size. The possibility of reversal requires merchants to request more information from customers than otherwise necessary. A certain percentage of fraud is accepted as unavoidable.
+This assumption is wrong. There exists a resource that cannot be accumulated, cannot be parallelized, and is distributed equally to every participant on Earth: **time**.
 
-These costs and payment uncertainties can be avoided using physical currency, but no mechanism exists to make payments over a communication channel without a trusted party.
+One second passes at the same rate for an individual running a single node as it does for a nation-state with unlimited budget. No amount of money can buy more time. No amount of hardware can make time pass faster.
 
-What is needed is an electronic payment system based on cryptographic proof instead of trust, allowing any two willing parties to transact directly without the need for a trusted third party.
+We propose an electronic cash system where consensus derives from verifiable sequential computation — proof that real time has elapsed. Double-spending is prevented not by energy expenditure or capital lockup, but by the irreversible passage of time. The system is secure as long as honest participants collectively maintain more sequential computation presence than any cooperating group of attackers.
 
-In this paper, we propose a solution to the double-spending problem using a peer-to-peer network that anchors consensus to the passage of time through verifiable delay functions. The system is secure as long as honest participants collectively control more sequential computation capacity than any cooperating group of attackers.
+The result is a network where a participant with a single bond (10 DOLI) earns the same percentage return as the largest producer. Pools are unnecessary. Rewards are deterministic. The smallest participant knows exactly when their next block will be produced.
 
 ### 1.1. Why Now
 
@@ -54,7 +55,7 @@ The tradeoff disappears when the resource cannot be monopolized.
 
 ## 2. Transactions
 
-We define an electronic coin as a chain of digital signatures. Each owner transfers the coin to the next by digitally signing a hash of the previous transaction and the public key of the next owner and adding these to the end of the coin. A payee can verify the signatures to verify the chain of ownership.
+A coin is a chain of digital signatures. To transfer ownership, the current holder signs the transaction hash together with the recipient's public key. The recipient verifies the signature chain to confirm provenance.
 
 ```
 ┌─────────────────────────────────┐
@@ -75,11 +76,9 @@ We define an electronic coin as a chain of digital signatures. Each owner transf
 └─────────────────────────────────┘
 ```
 
-The problem is that the payee cannot verify that one of the owners did not double-spend the coin. A common solution is to introduce a trusted central authority that checks every transaction. After each transaction, the coin must be returned to the authority to issue a new one, and only coins issued directly from the authority are trusted not to be double-spent.
+The fundamental challenge is double-spending: without a central authority, how does the recipient know the sender hasn't already spent the same coin elsewhere? Centralized solutions work but create single points of failure and require universal trust.
 
-The problem with this solution is that the fate of the entire monetary system depends on the entity running the authority, with every transaction having to pass through it.
-
-We need a way for the payee to know that the previous owners did not sign any earlier transactions. For our purposes, the earliest transaction is the one that counts, so we do not care about later attempts to double-spend. The only way to confirm the absence of a transaction is to be aware of all transactions. To accomplish this without a trusted party, transactions must be publicly announced, and we need a system for participants to agree on a single history of the order in which they were received.
+DOLI solves this through public announcement of all transactions and deterministic time-ordering. Every transaction is broadcast to the network and included in a block at a specific slot. The sequential nature of slots — each anchored by a VDF proof — establishes an unambiguous ordering. The earliest transaction in the time sequence is the valid one. Later attempts to spend the same output are rejected by every honest node.
 
 ### 2.1. Transaction Validity
 
@@ -331,18 +330,32 @@ At 1 DOLI reward per block:
 | Max stake             | 100,000 DOLI (10,000 bonds)|
 | Block reward (Era 1)  | 1 DOLI                   |
 
+#### Accessibility at Scale
+
+At network maturity (60,000 total bonds across all producers):
+
+| Your Stake | Bonds | Blocks/Week | Income/Week | Hardware |
+|-----------|-------|-------------|-------------|----------|
+| 10 DOLI   | 1     | ~1          | ~1 DOLI     | Any CPU  |
+| 100 DOLI  | 10    | ~10         | ~10 DOLI    | Any CPU  |
+| 1,000 DOLI| 100   | ~100        | ~100 DOLI   | Any CPU  |
+
+No mining rigs. No staking pools. No minimum hardware requirements. A \/month VPS is sufficient to produce blocks and earn deterministic rewards.
+
 ### 6.4. Bond Lifecycle
 
-The bond has a 4-year commitment period:
+The bond has a 4-year commitment period with per-bond FIFO tracking:
 
 ```
 T_commitment = 12,614,400 blocks (~4 years)
-T_unbonding  = 60,480 blocks (~7 days)
+T_withdrawal = next epoch boundary (max 1 hour)
 ```
 
-After 4 years, the producer can exit without penalty.
+Each bond tracks its own creation time. Withdrawal uses FIFO order (oldest bonds first), with penalty calculated individually per bond based on its age.
 
-Early exit incurs a tiered penalty based on bond age:
+**Withdrawal is instant** — funds are returned in the same epoch boundary. No 7-day delay. No separate claim step.
+
+Early withdrawal incurs a tiered penalty based on individual bond age:
 
 | Bond Age  | Penalty | Returned |
 |-----------|---------|----------|
@@ -351,7 +364,9 @@ Early exit incurs a tiered penalty based on bond age:
 | 2-3 years | 25%     | 75%      |
 | 3+ years  | 0%      | 100%     |
 
-All penalties (early exit and slashing) are burned permanently, removing coins from circulation.
+A producer with bonds of mixed ages can withdraw selectively. The oldest bonds (lowest penalty) are withdrawn first. This rewards long-term commitment while allowing flexible exit.
+
+All penalties are burned permanently, removing coins from circulation.
 
 ---
 
@@ -408,11 +423,14 @@ Carol: 4 bonds → produces exactly 4 blocks every 10 slots
 
 **There is no lottery. There is no variance. There is no luck.**
 
-| System       | Selection                 | Variance | Pools required |
-|--------------|---------------------------|----------|----------------|
-| Bitcoin      | Lottery (hashpower)       | High     | Yes            |
-| Ethereum PoS | Lottery (stake)           | Medium   | Yes            |
-| DOLI         | Deterministic round-robin | Zero     | No             |
+| System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
+|--------------|---------------------------|----------|-------|---------------|-----------------|
+| Bitcoin      | Lottery (hashpower)       | High     | Yes   | ~150 TWh/yr   | ASIC (,000+)  |
+| Ethereum PoS | Lottery (stake)           | Medium   | Yes   | ~2.6 GWh/yr   | 32 ETH (0K+)  |
+| Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | ,000+ server  |
+| DOLI PoT     | Deterministic round-robin | **Zero** | **No**| **Negligible**| **Any CPU (/mo)**|
+
+The distinction between DOLI and Solana deserves emphasis. Solana uses Proof of History as a clock, but leader selection is still stake-weighted with probabilistic elements. Validators require high-performance hardware. DOLI uses the VDF purely as a heartbeat — leader selection is a deterministic pure function of slot number and bond count. No hardware advantage exists.
 
 A producer with 1 bond knows exactly when their next block will be produced. There is no need to join a pool to "smooth" rewards because there is nothing to smooth.
 
@@ -496,11 +514,14 @@ The producer loses the slot opportunity. The bond remains intact.
 
 ### 10.2. Inactivity
 
-If a producer fails to produce when selected for 50 consecutive slots:
+If a producer fails to produce for 60,480 consecutive blocks (~7 days):
 
-- Removed from active set
-- Bond remains locked
-- Can reactivate with new registration VDF
+- Classified as inactive
+- Excluded from block scheduling
+- Bond remains locked (no penalty for inactivity)
+- Reactivates automatically upon resuming production
+
+Inactivity is not punished — it is tolerated. A producer who goes offline loses income (missed block rewards) but not capital (bond remains intact). This is a deliberate design choice: penalizing downtime would discourage small operators with less reliable infrastructure.
 
 ### 10.3. Double Production
 
@@ -662,7 +683,33 @@ The choice is simple: participate in consensus with current software, or do not 
 
 ---
 
-## 18. Conclusion
+## 18. Live Network
+
+DOLI is not a proposal. The network described in this paper is operational.
+
+As of March 2026, the mainnet runs with multiple independent producers across geographically distributed nodes. The source code is open and the chain state is publicly verifiable.
+
+| Metric | Value |
+|--------|-------|
+| Block time | 10 seconds |
+| VDF computation | ~55ms per block |
+| Block propagation | < 500ms (5-node network) |
+| Forks since genesis | 0 |
+| Missed slot rate | < 10% (fallback mechanism) |
+| Node hardware | Standard VPS, any CPU |
+| Minimum bond | 10 DOLI |
+
+```
+Genesis:    March 2026
+Consensus:  Proof of Time (VDF heartbeat + deterministic round-robin)
+Status:     Live
+Source:     https://github.com/e-weil/doli
+Explorer:   https://doli.network
+```
+
+---
+
+## 19. Conclusion
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
@@ -680,7 +727,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v1.0**
+**DOLI v1.0.25**
 
 *"Time is the only fair currency."*
 
