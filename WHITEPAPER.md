@@ -2,7 +2,6 @@
 
 ## Deterministic Ordering through Linear Iterations
 
-### Only Time Matters...
 ### A Peer-to-Peer Electronic Cash System Based on Verifiable Time
 
 **E. Weil** · weil@doli.network
