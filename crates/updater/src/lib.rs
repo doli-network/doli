@@ -3,21 +3,22 @@
 //! Simple, transparent auto-updates with community veto power.
 //!
 //! # Rules (no exceptions)
-//! - ALL updates: 7 days veto period (configurable per network)
+//! - ALL updates: 2-epoch veto period (configurable per network)
 //! - 40% of producers can veto any update
-//! - 3 of 5 maintainer signatures required
+//! - 3 of 5 maintainer signatures required (via SIGNATURES.json in GitHub Releases)
 //!
 //! # Flow
-//! 1. Release published (signed by 3/5 maintainers)
-//! 2. Veto period begins (7 days mainnet, 1 min devnet)
-//! 3. Producers can vote to veto
-//! 4. If >= 40% veto: REJECTED
-//! 5. If < 40% veto: APPROVED and applied
+//! 1. Release published on GitHub (CI creates CHECKSUMS.txt)
+//! 2. Maintainers sign with `doli release sign` → SIGNATURES.json uploaded
+//! 3. Veto period begins (2 epochs mainnet, 1 min devnet)
+//! 4. Producers can vote to veto
+//! 5. If >= 40% veto: REJECTED
+//! 6. If < 40% veto: APPROVED and applied
 //!
 //! # Network-Aware Parameters
 //!
 //! All timing parameters are configurable per network via `UpdateParams`:
-//! - Mainnet/Testnet: Production timing (7 days veto, 48h grace)
+//! - Mainnet/Testnet: Production timing (2 epochs veto, 1 epoch grace)
 //! - Devnet: Accelerated timing (60s veto, 30s grace) for fast testing
 
 mod apply;
@@ -32,10 +33,9 @@ pub use apply::{
     extract_named_binary_from_tarball, install_binary, restart_node, rollback,
 };
 pub use download::{
-    download_binary, download_from_url, fetch_github_release, fetch_latest_release, verify_hash,
-    GithubReleaseInfo,
+    download_binary, download_checksums_txt, download_from_url, download_signatures_json,
+    fetch_github_release, fetch_latest_release, verify_hash, GithubReleaseInfo,
 };
-// sign_release_hash is exported directly from this module (defined below)
 pub use test_keys::{
     create_test_release_signatures, should_use_test_keys, sign_with_test_key,
     test_maintainer_pubkeys, TestMaintainerKey, TEST_MAINTAINER_KEYS,
@@ -53,11 +53,11 @@ use tracing::{debug, info, warn};
 // Constants - Simple, fixed, no exceptions
 // ============================================================================
 
-/// Veto period: 7 days for ALL updates
-pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Veto period: 2 epochs (~2h) for ALL updates
+pub const VETO_PERIOD: Duration = Duration::from_secs(2 * 3600);
 
-/// Grace period after approval: 48 hours to update before enforcement
-pub const GRACE_PERIOD: Duration = Duration::from_secs(48 * 3600);
+/// Grace period after approval: 1 epoch (~1h) to update before enforcement
+pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);
 
 /// Veto threshold: 40% of active producers (weighted by seniority)
 ///
@@ -167,7 +167,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 /// assert_eq!(params.veto_period_secs, 60); // 1 minute on devnet
 ///
 /// let params = UpdateParams::for_network(Network::Mainnet);
-/// assert_eq!(params.veto_period_secs, 7 * 24 * 3600); // 7 days on mainnet
+/// assert_eq!(params.veto_period_secs, 2 * 3600); // 2 epochs (~2h) on mainnet
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateParams {
@@ -321,8 +321,24 @@ pub struct MaintainerSignature {
     /// Maintainer's public key (hex-encoded)
     pub public_key: String,
 
-    /// Signature over "version:binary_sha256" (hex-encoded)
+    /// Signature over "version:checksums_sha256" (hex-encoded)
     pub signature: String,
+}
+
+/// SIGNATURES.json file format (uploaded to GitHub Releases)
+///
+/// Each maintainer signs `"{version}:{sha256(CHECKSUMS.txt)}"` — one signature
+/// covers all platforms since CHECKSUMS.txt contains per-platform hashes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignaturesFile {
+    /// Semantic version (e.g., "1.0.27")
+    pub version: String,
+
+    /// SHA-256 hash of CHECKSUMS.txt (hex-encoded)
+    pub checksums_sha256: String,
+
+    /// Maintainer signatures
+    pub signatures: Vec<MaintainerSignature>,
 }
 
 /// Update configuration

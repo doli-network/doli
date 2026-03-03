@@ -686,7 +686,7 @@ doli/
 │   │   └── protocols/  # Status and sync request/response protocols
 │   ├── storage/        # RocksDB blocks + unified StateDb for UTXO/state (~5,500 lines)
 │   ├── rpc/            # JSON-RPC API server (Axum) (~1,700 lines)
-│   └── updater/        # Auto-update with 3/5 multisig, 7-day veto (~1,750 lines)
+│   └── updater/        # Auto-update with 3/5 multisig, 2-epoch veto (~1,750 lines)
 ├── docker/             # Docker configuration files
 ├── docs/               # Documentation
 ├── specs/              # Technical specifications
@@ -728,7 +728,7 @@ bins/node (doli-node)          bins/cli (doli-cli)
 | `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection | `service.rs` (1,081), `sync/manager.rs` (744), `sync/reorg.rs` (595), `sync/equivocation.rs` (359), `scoring.rs` (450) |
 | `mempool` | ~760 | Transaction pool with fee policies, double-spend detection | `pool.rs` (589), `policy.rs` (57) |
 | `rpc` | ~1,700 | JSON-RPC server (Axum) for wallet/explorer | `methods.rs` (839), `types.rs` (527), `server.rs` (121) |
-| `updater` | ~1,750 | Auto-update with 3/5 multisig, 7-day veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
+| `updater` | ~1,750 | Auto-update with 3/5 multisig, 2-epoch veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
 
 ### Core Crate Submodules
 
@@ -857,7 +857,7 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 2. **Threshold**: 3/5 multisig required for maintainer changes
 3. **Operations**: AddMaintainer (tx type 12), RemoveMaintainer (tx type 11)
 4. **Slashing**: Producers removed from maintainer set automatically when slashed
-5. **Update Governance**: 7-day veto period, 40% veto threshold to block updates
+5. **Update Governance**: 2-epoch (~2h) veto period, 40% veto threshold to block updates
 
 ### Binary Crates
 

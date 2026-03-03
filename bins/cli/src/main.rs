@@ -160,6 +160,12 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Release management commands (maintainer signing)
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -312,6 +318,23 @@ enum MaintainerCommands {
     List,
 }
 
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Sign a release (maintainer workflow)
+    ///
+    /// Signs the message "{version}:{sha256(CHECKSUMS.txt)}" with a producer key.
+    /// Output is a JSON signature block for inclusion in SIGNATURES.json.
+    Sign {
+        /// Release version to sign (e.g., v1.0.27)
+        #[arg(long)]
+        version: String,
+
+        /// Path to producer key file (overrides -w wallet)
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
+}
+
 /// Expand `~` or `~/...` to the user's home directory.
 /// Shell tilde expansion doesn't happen inside Rust — clap default values
 /// like `~/.doli/wallet.json` arrive as literal strings.
@@ -390,6 +413,9 @@ async fn main() -> Result<()> {
         }
         Commands::Upgrade { version, yes } => {
             cmd_upgrade(version, yes).await?;
+        }
+        Commands::Release { command } => {
+            cmd_release(&wallet, command).await?;
         }
     }
 
@@ -993,6 +1019,40 @@ async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Hash verification failed: {}", e))?;
     println!("Checksum OK.");
 
+    // Check maintainer signatures (informational — never blocks manual upgrade)
+    match updater::download_signatures_json(&release.version).await {
+        Ok(Some(sf)) => {
+            let sig_release = updater::Release {
+                version: sf.version.clone(),
+                binary_sha256: sf.checksums_sha256.clone(),
+                signatures: sf.signatures,
+                binary_url_template: String::new(),
+                changelog: String::new(),
+                published_at: 0,
+            };
+            match updater::verify_release_signatures(&sig_release) {
+                Ok(()) => {
+                    println!("Verified: 3/5 maintainer signatures on CHECKSUMS.txt");
+                }
+                Err(updater::UpdateError::InsufficientSignatures { found, required }) => {
+                    println!(
+                        "Warning: only {}/{} required maintainer signatures found",
+                        found, required
+                    );
+                }
+                Err(e) => {
+                    println!("Warning: signature verification failed: {}", e);
+                }
+            }
+        }
+        Ok(None) => {
+            println!("Note: no maintainer signatures (SIGNATURES.json not found)");
+        }
+        Err(e) => {
+            println!("Note: could not check signatures: {}", e);
+        }
+    }
+
     // Extract and install doli (CLI binary — ourselves)
     let cli_binary = updater::extract_named_binary_from_tarball(&tarball, "doli")
         .map_err(|e| anyhow::anyhow!("Failed to extract doli binary: {}", e))?;
@@ -1026,6 +1086,59 @@ async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
 
     println!();
     println!("Upgrade to v{} complete!", release.version);
+
+    Ok(())
+}
+
+async fn cmd_release(wallet_path: &Path, command: ReleaseCommands) -> Result<()> {
+    match command {
+        ReleaseCommands::Sign { version, key } => {
+            cmd_release_sign(wallet_path, &version, key).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_release_sign(
+    wallet_path: &Path,
+    version: &str,
+    key_path: Option<PathBuf>,
+) -> Result<()> {
+    // Load wallet/key
+    let key_file = key_path.as_deref().unwrap_or(wallet_path);
+    let w = Wallet::load(key_file)?;
+    let keypair = w.primary_keypair()?;
+    let pubkey_hex = keypair.public_key().to_hex();
+
+    let version_bare = version.strip_prefix('v').unwrap_or(version);
+
+    // Download CHECKSUMS.txt from GitHub and compute its SHA-256
+    println!("Fetching CHECKSUMS.txt for v{}...", version_bare);
+    let (_checksums_content, checksums_sha256) = updater::download_checksums_txt(version_bare)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch CHECKSUMS.txt: {}", e))?;
+
+    // Sign "version:checksums_sha256"
+    let sig = updater::sign_release_hash(&keypair, version_bare, &checksums_sha256);
+
+    // Output JSON signature block
+    let output = serde_json::json!({
+        "public_key": sig.public_key,
+        "signature": sig.signature
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    eprintln!();
+    eprintln!(
+        "Signed v{} with key {}...{}",
+        version_bare,
+        &pubkey_hex[..8],
+        &pubkey_hex[pubkey_hex.len() - 8..]
+    );
+    eprintln!("Message: \"{}:{}\"", version_bare, checksums_sha256);
+    eprintln!();
+    eprintln!("To assemble SIGNATURES.json, collect 3+ signatures and upload:");
+    eprintln!("  gh release upload v{} SIGNATURES.json", version_bare);
 
     Ok(())
 }
