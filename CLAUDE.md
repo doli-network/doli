@@ -198,7 +198,7 @@ All commands implicitly wrapped in Nix develop shell.
 | `crypto` | BLAKE3, Ed25519, Merkle, Bech32m Addresses | `hash.rs`, `keys.rs`, `merkle.rs`, `address.rs` (Domain separated) |
 | `vdf` | Wesolowski (Reg) & Hash-Chain (Block) | `vdf.rs`, `proof.rs` (GMP/Rug) |
 | `network` | Gossipsub, Sync, Equivocation | `service.rs`, `sync/`, `gossip.rs` |
-| `storage` | RocksDB (Headers, Bodies, UTXO) | `block_store.rs`, `utxo.rs`, `producer.rs` |
+| `storage` | RocksDB blocks + unified StateDb | `block_store.rs`, `state_db.rs`, `utxo.rs`, `producer.rs` |
 | `mempool` | Tx Pool, Double-spend checks | `pool.rs`, `policy.rs` |
 | `updater` | 3/5 Multisig Auto-Update | `lib.rs`, `vote.rs` |
 
@@ -390,11 +390,13 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 ### Storage (`crates/storage/src/`)
 | File | Purpose |
 |------|---------|
-| `block_store.rs` | RocksDB block storage |
-| `utxo.rs` | UTXO set (HashMap driven) |
+| `block_store.rs` | RocksDB block storage (headers, bodies, indexes) |
+| `state_db.rs` | Unified StateDb: atomic WriteBatch per block (UTXOs, producers, chain state) |
+| `utxo.rs` | In-memory UTXO working set for fast reads |
 | `producer.rs` | Producer registry (per-bond `StoredBondEntry` tracking, FIFO withdrawal) |
 
-**Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
+**BlockStore Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
+**StateDb Column Families**: `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`
 
 ### Transaction Types (`TxType`)
 
@@ -659,8 +661,9 @@ curl -s -X POST http://127.0.0.1:8547 -H 'Content-Type: application/json' -d '{"
 sudo systemctl stop doli-mainnet-nodeN
 
 # 2. Wipe chain state (keep keys and chainspec!)
+rm -rf state_db/ blocks/ signed_slots.db/
+# Legacy files (pre-StateDb, may not exist):
 rm -f chain_state.bin producers.bin utxo.bin
-rm -rf blocks/ signed_slots.db/
 
 # 3. Restart
 sudo systemctl start doli-mainnet-nodeN

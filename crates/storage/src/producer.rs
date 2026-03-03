@@ -1158,6 +1158,34 @@ impl ProducerSet {
         }
     }
 
+    /// Reconstruct a ProducerSet from raw parts (used by StateDb loading).
+    pub fn from_parts(
+        producers: HashMap<Hash, ProducerInfo>,
+        exit_history: HashMap<Hash, u64>,
+        pending_updates: Vec<PendingProducerUpdate>,
+    ) -> Self {
+        let mut set = Self {
+            producers,
+            exit_history,
+            active_cache: None,
+            unbonding_index: std::collections::BTreeMap::new(),
+            pending_updates,
+        };
+        set.rebuild_unbonding_index();
+        set
+    }
+
+    /// Borrow the raw parts for serialization into StateDb.
+    pub fn as_parts(
+        &self,
+    ) -> (
+        &HashMap<Hash, ProducerInfo>,
+        &HashMap<Hash, u64>,
+        &Vec<PendingProducerUpdate>,
+    ) {
+        (&self.producers, &self.exit_history, &self.pending_updates)
+    }
+
     /// Rebuild the unbonding index from producers map.
     /// Called after deserialization to restore the skip-serialized index.
     pub fn rebuild_unbonding_index(&mut self) {

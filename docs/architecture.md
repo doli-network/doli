@@ -179,8 +179,9 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 | Module | Function |
 |--------|----------|
-| `block_store.rs` | Blocks indexed by hash/height |
-| `utxo.rs` | UTXO set with O(1) lookup |
+| `block_store.rs` | Blocks indexed by hash/height (RocksDB) |
+| `state_db.rs` | Unified state: UTXOs, producers, chain state (RocksDB) |
+| `utxo.rs` | In-memory UTXO working set for fast reads |
 | `chain_state.rs` | Consensus state tracking |
 | `producer.rs` | Producer registry |
 
@@ -196,9 +197,8 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 **Storage technologies:**
 - **BlockStore** (RocksDB): Column families `headers`, `bodies`, `height_index`, `slot_index`
-- **UtxoSet** (File I/O): In-memory HashMap with disk persistence via bincode
-- **ChainState** (File I/O): Single file persistence via bincode
-- **ProducerSet** (File I/O): Single file persistence via bincode
+- **StateDb** (RocksDB): Unified state store with atomic WriteBatch per block. Column families: `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`. All state changes (UTXOs, chain state, producers) committed atomically — no crash-inconsistency possible.
+- **In-memory UtxoSet**: Loaded from StateDb on startup, mutated in parallel with batch writes for fast mempool/RPC reads
 
 ### 3.6. network
 
@@ -467,13 +467,26 @@ miss rewards - no slashing or weight reduction occurs.
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 6.2. UtxoSet, ChainState, ProducerSet (File I/O)
+### 6.2. StateDb (Unified State Store)
 
-These components use in-memory structures with file-based persistence:
+All mutable state is stored in a single RocksDB instance (`state_db/`) with
+one atomic WriteBatch per block:
 
-- **UtxoSet**: `HashMap<Outpoint, UtxoEntry>` serialized via bincode
-- **ChainState**: Struct containing best_hash, best_height, epoch state
-- **ProducerSet**: Producer registry with bond information
+- **cf_utxo**: `Outpoint → UtxoEntry` (primary UTXO index)
+- **cf_utxo_by_pubkey**: `pubkey_hash ++ outpoint → 0x00` (secondary index)
+- **cf_producers**: `pubkey_hash → ProducerInfo` (producer registry)
+- **cf_exit_history**: `pubkey_hash → exit_height` (anti-Sybil tracking)
+- **cf_meta**: `"chain_state"`, `"pending_updates"`, `"last_applied"` (bookkeeping)
+
+**Atomicity**: `apply_block()` collects all state changes in a `BlockBatch`,
+then commits them in a single `WriteBatch::write()`. Crash between any two
+state updates is impossible. Reorgs and rollbacks use `atomic_replace()`.
+
+**In-memory working set**: UTXOs are also kept in an `InMemoryUtxoStore` for
+fast reads by mempool, RPC, and state root computation. StateDb is authoritative.
+
+**Migration**: On first startup after upgrade, old files (`chain_state.bin`,
+`producers.bin`, `utxo_rocks/`) are automatically migrated into StateDb.
 
 ---
 

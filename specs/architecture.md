@@ -141,23 +141,36 @@ Column Families:
 └── slot_index        # Slot (u32 LE) → Hash
 ```
 
-#### UTXO Set (File I/O)
-- In-memory HashMap with file-based persistence
-- Key: `Outpoint (txid, output_index)`
-- Value: `UtxoEntry { output, height, is_coinbase, is_epoch_reward }`
-- Serialized via bincode
+#### StateDb (Unified RocksDB)
 
-#### ChainState (File I/O)
-- Single file persistence via bincode
-- Contains: best_hash, best_height, best_slot, genesis info, epoch state
+All mutable state (UTXOs, chain state, producers) is stored in a single RocksDB
+instance (`state_db/`) with one atomic WriteBatch per block. This eliminates
+crash-inconsistency between state components.
 
-#### Producer Registry
-- List of registered producers with:
-  - Public key
-  - Registration epoch
-  - Bond output reference
-  - Failure counter
-  - Status (active/inactive/excluded)
+```
+Column Families:
+├── cf_utxo             # Outpoint (36B) → UtxoEntry (bincode)
+├── cf_utxo_by_pubkey   # pubkey_hash(32B) ++ outpoint(36B) → 0x00
+├── cf_producers        # pubkey_hash (32B) → ProducerInfo (bincode)
+├── cf_exit_history     # pubkey_hash (32B) → exit_height (8B LE)
+└── cf_meta             # string key → varies
+    ├── "chain_state"       → ChainState (bincode)
+    ├── "pending_updates"   → Vec<PendingProducerUpdate> (bincode)
+    └── "last_applied"      → {height: u64, hash: Hash, slot: u32} (44B)
+```
+
+**Atomicity**: `apply_block()` creates a `BlockBatch` that collects all UTXO
+spends/adds, producer mutations, and chain state updates, then commits them
+in a single `WriteBatch::write()`. Reorgs and rollbacks use `atomic_replace()`
+which deletes all CFs and writes new state in one batch.
+
+**In-memory working set**: UTXOs are also kept in-memory (`InMemoryUtxoStore`)
+for fast reads by mempool, RPC, and state root computation. The in-memory set
+is mutated in parallel with the batch — StateDb is the authoritative store.
+
+**Migration**: On first startup with new binary, if `state_db/` doesn't exist
+but old files do (`chain_state.bin`, `producers.bin`, `utxo_rocks/`), the node
+migrates all state into StateDb and renames old files to `.backup`.
 
 ### 3. Validation Layer
 
@@ -671,7 +684,7 @@ doli/
 │   ├── network/        # libp2p P2P networking (~5,900 lines)
 │   │   ├── sync/       # Sync manager, headers, bodies, equivocation, reorg
 │   │   └── protocols/  # Status and sync request/response protocols
-│   ├── storage/        # RocksDB blocks, File I/O for UTXO/state (~4,500 lines)
+│   ├── storage/        # RocksDB blocks + unified StateDb for UTXO/state (~5,500 lines)
 │   ├── rpc/            # JSON-RPC API server (Axum) (~1,700 lines)
 │   └── updater/        # Auto-update with 3/5 multisig, 7-day veto (~1,750 lines)
 ├── docker/             # Docker configuration files
