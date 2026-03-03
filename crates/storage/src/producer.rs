@@ -28,7 +28,9 @@ use std::path::Path;
 
 use crypto::hash::hash as crypto_hash;
 use crypto::{Hash, PublicKey};
-use doli_core::consensus::MAX_BONDS_PER_PRODUCER;
+use doli_core::consensus::{
+    withdrawal_penalty_rate, BOND_UNIT as CORE_BOND_UNIT, MAX_BONDS_PER_PRODUCER,
+};
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
 use serde::{Deserialize, Serialize};
@@ -301,6 +303,18 @@ pub enum ActivityStatus {
     Dormant,
 }
 
+/// A single bond entry with its creation time, stored in ProducerInfo.
+///
+/// Each bond tracks when it was created for per-bond vesting/penalty calculation.
+/// Sorted by `creation_slot` ascending (oldest first) for FIFO withdrawal.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredBondEntry {
+    /// Slot when this bond was created
+    pub creation_slot: u32,
+    /// Amount staked (always BOND_UNIT)
+    pub amount: u64,
+}
+
 /// Information about a registered producer
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProducerInfo {
@@ -383,6 +397,15 @@ pub struct ProducerInfo {
     /// Delegations received from other producers: (delegator pubkey hash, bond count)
     #[serde(default)]
     pub received_delegations: Vec<(Hash, u32)>,
+    /// Per-bond creation timestamps for FIFO withdrawal penalty calculation.
+    /// Sorted by creation_slot ascending (oldest first).
+    /// Auto-populated from bond_count + registered_at on first load if empty.
+    #[serde(default)]
+    pub bond_entries: Vec<StoredBondEntry>,
+    /// Bonds pending withdrawal this epoch (prevents double-withdrawal).
+    /// Reset to 0 when RequestWithdrawal is applied at epoch boundary.
+    #[serde(default)]
+    pub withdrawal_pending_count: u32,
 }
 
 /// Default bond count for backwards compatibility
@@ -428,6 +451,13 @@ impl ProducerInfo {
         let bond_count = (bond_amount / bond_unit).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
         let bond_count = bond_count.max(1); // Minimum 1 bond
 
+        let bond_entries = (0..bond_count)
+            .map(|_| StoredBondEntry {
+                creation_slot: registered_at as u32,
+                amount: bond_unit,
+            })
+            .collect();
+
         Self {
             public_key,
             registered_at,
@@ -446,6 +476,8 @@ impl ProducerInfo {
             delegated_to: None,
             delegated_bonds: 0,
             received_delegations: Vec::new(),
+            bond_entries,
+            withdrawal_pending_count: 0,
         }
     }
 
@@ -460,6 +492,18 @@ impl ProducerInfo {
         bond_count: u32,
     ) -> Self {
         let bond_count = bond_count.clamp(1, MAX_BONDS_PER_PRODUCER);
+        let bond_unit = if bond_count > 0 {
+            bond_amount / bond_count as u64
+        } else {
+            CORE_BOND_UNIT
+        };
+
+        let bond_entries = (0..bond_count)
+            .map(|_| StoredBondEntry {
+                creation_slot: registered_at as u32,
+                amount: bond_unit,
+            })
+            .collect();
 
         Self {
             public_key,
@@ -479,6 +523,8 @@ impl ProducerInfo {
             delegated_to: None,
             delegated_bonds: 0,
             received_delegations: Vec::new(),
+            bond_entries,
+            withdrawal_pending_count: 0,
         }
     }
 
@@ -502,6 +548,13 @@ impl ProducerInfo {
         let bond_count = (bond_amount / bond_unit).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
         let bond_count = bond_count.max(1);
 
+        let bond_entries = (0..bond_count)
+            .map(|_| StoredBondEntry {
+                creation_slot: registered_at as u32,
+                amount: bond_unit,
+            })
+            .collect();
+
         Self {
             public_key,
             registered_at,
@@ -520,6 +573,8 @@ impl ProducerInfo {
             delegated_to: None,
             delegated_bonds: 0,
             received_delegations: Vec::new(),
+            bond_entries,
+            withdrawal_pending_count: 0,
         }
     }
 
@@ -622,10 +677,16 @@ impl ProducerInfo {
     /// # Arguments
     /// * `bond_outpoints` - List of (tx_hash, output_index) for the new bonds
     /// * `amount_per_bond` - Amount per bond (should be BOND_UNIT)
+    /// * `creation_slot` - Slot when these bonds were created (for vesting)
     ///
     /// # Returns
     /// Number of bonds actually added (may be less if hitting MAX_BONDS_PER_PRODUCER)
-    pub fn add_bonds(&mut self, bond_outpoints: Vec<(Hash, u32)>, amount_per_bond: u64) -> u32 {
+    pub fn add_bonds(
+        &mut self,
+        bond_outpoints: Vec<(Hash, u32)>,
+        amount_per_bond: u64,
+        creation_slot: u32,
+    ) -> u32 {
         if !self.is_active() {
             return 0;
         }
@@ -636,6 +697,10 @@ impl ProducerInfo {
         for outpoint in bond_outpoints.into_iter().take(bonds_to_add as usize) {
             self.additional_bonds.push(outpoint);
             self.bond_amount = self.bond_amount.saturating_add(amount_per_bond);
+            self.bond_entries.push(StoredBondEntry {
+                creation_slot,
+                amount: amount_per_bond,
+            });
         }
 
         self.bond_count += bonds_to_add;
@@ -699,6 +764,87 @@ impl ProducerInfo {
             own_bonds + delegated
         } else {
             0
+        }
+    }
+
+    // ==================== Per-Bond Withdrawal Methods ====================
+
+    /// Migrate legacy producers that have no bond_entries.
+    ///
+    /// If `bond_entries` is empty but `bond_count > 0`, populate with
+    /// `bond_count` entries using `registered_at` as creation_slot and
+    /// `bond_unit` as amount. Called after deserialization.
+    pub fn migrate_bond_entries(&mut self, bond_unit: u64) {
+        if self.bond_entries.is_empty() && self.bond_count > 0 {
+            let unit = if bond_unit == 0 {
+                CORE_BOND_UNIT
+            } else {
+                bond_unit
+            };
+            self.bond_entries = (0..self.bond_count)
+                .map(|_| StoredBondEntry {
+                    creation_slot: self.registered_at as u32,
+                    amount: unit,
+                })
+                .collect();
+        }
+    }
+
+    /// Calculate FIFO withdrawal amounts without mutating state.
+    ///
+    /// Returns `(net_amount, penalty_amount)` for withdrawing `count` oldest bonds.
+    /// Returns `None` if not enough bonds available (considering pending withdrawals).
+    pub fn calculate_withdrawal(&self, count: u32, current_slot: u32) -> Option<(u64, u64)> {
+        let available = self
+            .bond_count
+            .saturating_sub(self.withdrawal_pending_count);
+        if count == 0 || count > available {
+            return None;
+        }
+
+        let mut total_net: u64 = 0;
+        let mut total_penalty: u64 = 0;
+
+        for entry in self.bond_entries.iter().take(count as usize) {
+            let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64) as u32;
+            let penalty_pct = withdrawal_penalty_rate(age);
+            let penalty = (entry.amount * penalty_pct as u64) / 100;
+            let net = entry.amount - penalty;
+            total_net += net;
+            total_penalty += penalty;
+        }
+
+        Some((total_net, total_penalty))
+    }
+
+    /// Apply a withdrawal at epoch boundary: remove oldest `count` entries.
+    ///
+    /// Decreases `bond_count`, `bond_amount`, and resets `withdrawal_pending_count`.
+    /// Also removes corresponding entries from `additional_bonds`.
+    pub fn apply_withdrawal(&mut self, count: u32, bond_unit: u64) {
+        let to_remove = count.min(self.bond_entries.len() as u32);
+        if to_remove == 0 {
+            return;
+        }
+
+        // Remove oldest entries (front of vec = FIFO)
+        self.bond_entries.drain(..to_remove as usize);
+
+        let unit = if bond_unit == 0 {
+            CORE_BOND_UNIT
+        } else {
+            bond_unit
+        };
+        self.bond_count = self.bond_count.saturating_sub(to_remove);
+        self.bond_amount = self.bond_amount.saturating_sub(to_remove as u64 * unit);
+        self.withdrawal_pending_count = self.withdrawal_pending_count.saturating_sub(to_remove);
+
+        // Remove corresponding additional_bonds (from the end, they're newest)
+        // Actually we remove from the front since FIFO removes oldest
+        for _ in 0..to_remove {
+            if !self.additional_bonds.is_empty() {
+                self.additional_bonds.remove(0);
+            }
         }
     }
 
@@ -936,7 +1082,7 @@ pub const EXIT_HISTORY_RETENTION: u64 = 2 * 2_102_400; // 2 eras = ~8 years
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PendingProducerUpdate {
     Register {
-        info: ProducerInfo,
+        info: Box<ProducerInfo>,
         height: u64,
     },
     Exit {
@@ -951,6 +1097,7 @@ pub enum PendingProducerUpdate {
         pubkey: PublicKey,
         outpoints: Vec<(Hash, u32)>,
         bond_unit: u64,
+        creation_slot: u32,
     },
     DelegateBond {
         delegator: PublicKey,
@@ -959,6 +1106,11 @@ pub enum PendingProducerUpdate {
     },
     RevokeDelegation {
         delegator: PublicKey,
+    },
+    RequestWithdrawal {
+        pubkey: PublicKey,
+        bond_count: u32,
+        bond_unit: u64,
     },
 }
 
@@ -1043,7 +1195,7 @@ impl ProducerSet {
         for update in updates {
             match update {
                 PendingProducerUpdate::Register { info, height } => {
-                    if let Err(e) = self.register(info, height) {
+                    if let Err(e) = self.register(*info, height) {
                         tracing::warn!("Deferred register failed: {}", e);
                     }
                 }
@@ -1061,9 +1213,10 @@ impl ProducerSet {
                     pubkey,
                     outpoints,
                     bond_unit,
+                    creation_slot,
                 } => {
                     if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
-                        producer_info.add_bonds(outpoints, bond_unit);
+                        producer_info.add_bonds(outpoints, bond_unit, creation_slot);
                     }
                 }
                 PendingProducerUpdate::DelegateBond {
@@ -1075,6 +1228,15 @@ impl ProducerSet {
                 }
                 PendingProducerUpdate::RevokeDelegation { delegator } => {
                     let _ = self.revoke_delegation(&delegator);
+                }
+                PendingProducerUpdate::RequestWithdrawal {
+                    pubkey,
+                    bond_count,
+                    bond_unit,
+                } => {
+                    if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
+                        producer_info.apply_withdrawal(bond_count, bond_unit);
+                    }
                 }
             }
         }
@@ -1101,7 +1263,16 @@ impl ProducerSet {
         let mut set: Self =
             bincode::deserialize(&data).map_err(|e| StorageError::Serialization(e.to_string()))?;
         set.rebuild_unbonding_index();
+        // Migrate legacy producers: populate bond_entries from bond_count if empty
+        set.migrate_bond_entries(CORE_BOND_UNIT);
         Ok(set)
+    }
+
+    /// Migrate all producers that have empty bond_entries.
+    pub fn migrate_bond_entries(&mut self, bond_unit: u64) {
+        for info in self.producers.values_mut() {
+            info.migrate_bond_entries(bond_unit);
+        }
     }
 
     /// Save producer set to file (atomic: write to temp file, then rename)
@@ -1139,6 +1310,7 @@ impl ProducerSet {
             info_sorted
                 .received_delegations
                 .sort_by_key(|(h, c)| (*h, *c));
+            info_sorted.bond_entries.sort_by_key(|e| e.creation_slot);
             let info_bytes = bincode::serialize(&info_sorted).unwrap_or_default();
             buf.extend_from_slice(&(info_bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(&info_bytes);
@@ -1300,6 +1472,12 @@ impl ProducerSet {
 
         // Use network-specific bond_unit instead of hardcoded BOND_UNIT
         let bond_amount = (bond_count as u64) * bond_unit;
+        let bond_entries = (0..bond_count)
+            .map(|_| StoredBondEntry {
+                creation_slot: 0,
+                amount: bond_unit,
+            })
+            .collect();
         let info = ProducerInfo {
             public_key: pubkey,
             registered_at: 0, // Genesis registration
@@ -1318,6 +1496,8 @@ impl ProducerSet {
             delegated_to: None,
             delegated_bonds: 0,
             received_delegations: Vec::new(),
+            bond_entries,
+            withdrawal_pending_count: 0,
         };
 
         self.producers.insert(key, info);

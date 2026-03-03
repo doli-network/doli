@@ -519,13 +519,13 @@ pub struct BondDetailsResponse {
     pub total_staked: u64,
     /// Registration slot (proxy for bond creation)
     pub registration_slot: u64,
-    /// Age in slots since registration
+    /// Age in slots since oldest bond
     pub age_slots: u64,
-    /// Current penalty percentage (0-75)
+    /// Penalty percentage for oldest bond (0-75)
     pub penalty_pct: u8,
     /// Whether all bonds are fully vested
     pub vested: bool,
-    /// Slot when bonds become fully vested (0% penalty)
+    /// Slot when newest bond becomes fully vested (0% penalty)
     pub maturation_slot: u64,
     /// Vesting quarter duration in slots
     pub vesting_quarter_slots: u64,
@@ -533,9 +533,30 @@ pub struct BondDetailsResponse {
     pub vesting_period_slots: u64,
     /// Summary by vesting quarter
     pub summary: BondsSummaryResponse,
-    /// Pending withdrawals
+    /// Per-bond details (sorted oldest first)
     #[serde(default)]
-    pub pending_withdrawals: Vec<PendingWithdrawalResponse>,
+    pub bonds: Vec<BondEntryResponse>,
+    /// Bonds pending withdrawal this epoch
+    #[serde(default)]
+    pub withdrawal_pending_count: u32,
+}
+
+/// Individual bond entry response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondEntryResponse {
+    /// Slot when this bond was created
+    pub creation_slot: u32,
+    /// Amount staked (base units)
+    pub amount: u64,
+    /// Age in slots
+    pub age_slots: u64,
+    /// Current penalty percentage (0-75)
+    pub penalty_pct: u8,
+    /// Whether this bond is fully vested
+    pub vested: bool,
+    /// Slot when this bond becomes fully vested
+    pub maturation_slot: u64,
 }
 
 /// Bond summary by vesting quarter

@@ -991,7 +991,7 @@ impl RpcContext {
         }))
     }
 
-    /// Get bond vesting details for a producer
+    /// Get bond vesting details for a producer (per-bond granularity)
     async fn get_bond_details(&self, params: Value) -> Result<Value, RpcError> {
         use doli_core::consensus::{
             withdrawal_penalty_rate, VESTING_PERIOD_SLOTS, VESTING_QUARTER_SLOTS,
@@ -1016,67 +1016,72 @@ impl RpcContext {
             .get_by_pubkey(&pubkey)
             .ok_or_else(RpcError::producer_not_found)?;
 
-        let age_slots = (current_slot as u64).saturating_sub(info.registered_at);
-        let penalty_pct = withdrawal_penalty_rate(age_slots as u32);
-        let vested = age_slots >= VESTING_PERIOD_SLOTS as u64;
-        let maturation_slot = info.registered_at + VESTING_PERIOD_SLOTS as u64;
+        // Build real per-bond data from bond_entries
+        let bonds: Vec<BondEntryResponse> = info
+            .bond_entries
+            .iter()
+            .map(|entry| {
+                let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
+                let penalty = withdrawal_penalty_rate(age as u32);
+                BondEntryResponse {
+                    creation_slot: entry.creation_slot,
+                    amount: entry.amount,
+                    age_slots: age,
+                    penalty_pct: penalty,
+                    vested: age >= VESTING_PERIOD_SLOTS as u64,
+                    maturation_slot: entry.creation_slot as u64 + VESTING_PERIOD_SLOTS as u64,
+                }
+            })
+            .collect();
 
-        // Approximate per-quarter summary using registration time
-        // All bonds share the same registration slot (individual creation times not stored)
-        let quarters = age_slots / VESTING_QUARTER_SLOTS as u64;
-        let summary = if quarters >= 3 {
-            BondsSummaryResponse {
-                q1: 0,
-                q2: 0,
-                q3: 0,
-                vested: info.bond_count,
-            }
-        } else {
-            // All bonds are in the same quarter since they share registration time
-            let mut s = BondsSummaryResponse {
-                q1: 0,
-                q2: 0,
-                q3: 0,
-                vested: 0,
-            };
-            match quarters {
-                0 => s.q1 = info.bond_count,
-                1 => s.q2 = info.bond_count,
-                2 => s.q3 = info.bond_count,
-                _ => s.vested = info.bond_count,
-            }
-            s
+        // Compute real summary from bond_entries
+        let mut summary = BondsSummaryResponse {
+            q1: 0,
+            q2: 0,
+            q3: 0,
+            vested: 0,
         };
+        for entry in &info.bond_entries {
+            let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
+            let quarters = age / VESTING_QUARTER_SLOTS as u64;
+            match quarters {
+                0 => summary.q1 += 1,
+                1 => summary.q2 += 1,
+                2 => summary.q3 += 1,
+                _ => summary.vested += 1,
+            }
+        }
 
-        // Pending withdrawals
-        let current_height = chain_state.best_height;
-        let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
-        let pending_withdrawals =
-            if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
-                let claimable = current_height >= started_at + unbonding_period;
-                vec![PendingWithdrawalResponse {
-                    bond_count: info.bond_count,
-                    request_slot: *started_at as u32,
-                    net_amount: info.bond_amount,
-                    claimable,
-                }]
-            } else {
-                Vec::new()
-            };
+        // Overall vesting based on oldest bond
+        let oldest_age = info
+            .bond_entries
+            .first()
+            .map(|e| (current_slot as u64).saturating_sub(e.creation_slot as u64))
+            .unwrap_or(0);
+        let overall_penalty = withdrawal_penalty_rate(oldest_age as u32);
+        let all_vested = info.bond_entries.iter().all(|e| {
+            (current_slot as u64).saturating_sub(e.creation_slot as u64)
+                >= VESTING_PERIOD_SLOTS as u64
+        });
 
         let response = BondDetailsResponse {
             public_key: params.public_key,
             bond_count: info.bond_count,
             total_staked: info.bond_amount,
             registration_slot: info.registered_at,
-            age_slots,
-            penalty_pct,
-            vested,
-            maturation_slot,
+            age_slots: oldest_age,
+            penalty_pct: overall_penalty,
+            vested: all_vested,
+            maturation_slot: info
+                .bond_entries
+                .last()
+                .map(|e| e.creation_slot as u64 + VESTING_PERIOD_SLOTS as u64)
+                .unwrap_or(0),
             vesting_quarter_slots: VESTING_QUARTER_SLOTS as u64,
             vesting_period_slots: VESTING_PERIOD_SLOTS as u64,
             summary,
-            pending_withdrawals,
+            bonds,
+            withdrawal_pending_count: info.withdrawal_pending_count,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
