@@ -9,23 +9,23 @@
 //! ## Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                     Storage Layer                            │
+//! ┌──────────────────────────────────────────────────────────────┐
+//! │                      Storage Layer                           │
 //! │                                                              │
-//! │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-//! │  │ BlockStore  │  │  UtxoSet    │  │ ChainState  │          │
-//! │  │             │  │             │  │             │          │
-//! │  │ - Headers   │  │ - Outputs   │  │ - Tip hash  │          │
-//! │  │ - Bodies    │  │ - Spent     │  │ - Height    │          │
-//! │  │ - Index     │  │ - Balances  │  │ - Producers │          │
-//! │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
-//! │         │                │                │                  │
-//! │         ▼                ▼                ▼                  │
-//! │  BlockStore uses RocksDB with column families:              │
-//! │  │  headers, bodies, height_index, slot_index               │
-//! │  UtxoSet, ChainState, ProducerSet use file-based I/O       │
-//! │  (in-memory HashMap + bincode serialization)               │
-//! └─────────────────────────────────────────────────────────────┘
+//! │  ┌─────────────┐  ┌──────────────────────────────────────┐   │
+//! │  │ BlockStore  │  │            StateDb                    │   │
+//! │  │  (RocksDB)  │  │         (RocksDB)                    │   │
+//! │  │             │  │                                      │   │
+//! │  │ - headers   │  │ cf_utxo          Outpoint→UtxoEntry  │   │
+//! │  │ - bodies    │  │ cf_utxo_by_pubkey  secondary index   │   │
+//! │  │ - height_idx│  │ cf_producers     pubkey→ProducerInfo │   │
+//! │  │ - slot_idx  │  │ cf_exit_history  pubkey→exit_height  │   │
+//! │  │             │  │ cf_meta          chain_state, etc.    │   │
+//! │  └─────────────┘  └──────────────────────────────────────┘   │
+//! │                                                              │
+//! │  One atomic WriteBatch per block — all state changes         │
+//! │  (UTXOs, producers, chain_state) committed together.         │
+//! └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Components
@@ -89,6 +89,7 @@ pub mod chain_state;
 pub mod maintainer;
 pub mod producer;
 pub mod snapshot;
+pub mod state_db;
 pub mod update;
 pub mod utxo;
 pub mod utxo_rocks;
@@ -107,6 +108,7 @@ pub use producer::{
     VETO_THRESHOLD_PERCENT,
 };
 pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
+pub use state_db::{BlockBatch, LastApplied, StateDb};
 pub use update::UpdateState;
 pub use utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet};
 pub use utxo_rocks::RocksDbUtxoStore;

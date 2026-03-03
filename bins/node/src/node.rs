@@ -37,7 +37,7 @@ use network::{
     NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
-use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, UtxoSet};
+use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, StateDb, UtxoSet};
 use updater::is_using_placeholder_keys;
 
 use crate::updater as node_updater;
@@ -54,7 +54,9 @@ pub struct Node {
     params: ConsensusParams,
     /// Block storage
     block_store: Arc<BlockStore>,
-    /// UTXO set
+    /// Unified state database (UTXO + producers + chain state, atomic WriteBatch per block)
+    state_db: Arc<StateDb>,
+    /// UTXO set (in-memory working copy, populated from state_db on startup)
     utxo_set: Arc<RwLock<UtxoSet>>,
     /// Chain state
     chain_state: Arc<RwLock<ChainState>>,
@@ -100,8 +102,6 @@ pub struct Node {
     announcement_sequence: Arc<AtomicU64>,
     /// Signed slots database (prevents double-signing after restart)
     signed_slots_db: Option<SignedSlotsDb>,
-    /// Blocks applied since last state save (for periodic persistence)
-    blocks_since_save: u64,
     /// Consecutive slots where production was blocked due to fork detection
     /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
     consecutive_fork_blocks: u32,
@@ -143,9 +143,6 @@ pub struct Node {
     port_check_done: bool,
 }
 
-/// How often to save state (every N blocks applied)
-const STATE_SAVE_INTERVAL: u64 = 1;
-
 impl Node {
     /// Create a new node
     ///
@@ -178,54 +175,114 @@ impl Node {
         let blocks_path = config.data_dir.join("blocks");
         let block_store = Arc::new(BlockStore::open(&blocks_path)?);
 
-        // Load or create UTXO set
-        // Priority: RocksDB dir > legacy utxo.bin (auto-migrate) > empty
-        let utxo_rocks_path = config.data_dir.join("utxo_rocks");
-        let utxo_path = config.data_dir.join("utxo.bin");
-        let utxo_set = if utxo_rocks_path.exists() {
-            // RocksDB backend already exists — open it
-            info!("[UTXO] Opening RocksDB backend at {:?}", utxo_rocks_path);
-            UtxoSet::open_rocksdb(&utxo_rocks_path)?
-        } else if utxo_path.exists() {
-            // Legacy utxo.bin exists — migrate to RocksDB
-            info!("[UTXO] Migrating legacy utxo.bin → RocksDB...");
-            let legacy = storage::InMemoryUtxoStore::load(&utxo_path)?;
-            let rocks = storage::RocksDbUtxoStore::open(&utxo_rocks_path)?;
-            rocks.import_from(legacy.iter());
-            info!(
-                "[UTXO] Migration complete: {} entries. Backing up utxo.bin",
-                rocks.len()
-            );
-            // Rename old file so we don't re-migrate
-            let backup_path = config.data_dir.join("utxo.bin.backup");
-            std::fs::rename(&utxo_path, &backup_path)?;
-            UtxoSet::RocksDb(rocks)
-        } else {
-            // Fresh node — create RocksDB backend
-            info!(
-                "[UTXO] Creating new RocksDB backend at {:?}",
-                utxo_rocks_path
-            );
-            UtxoSet::open_rocksdb(&utxo_rocks_path)?
-        };
-        let utxo_set = Arc::new(RwLock::new(utxo_set));
+        // Open unified StateDb (atomic WriteBatch per block)
+        let state_db_path = config.data_dir.join("state_db");
+        let state_db = Arc::new(StateDb::open(&state_db_path)?);
 
-        // Load or create chain state
-        let state_path = config.data_dir.join("chain_state.bin");
-        let mut chain_state = if state_path.exists() {
-            ChainState::load(&state_path)?
+        // Migration: if state_db is empty but old files exist, migrate into it
+        if !state_db.has_state() {
+            let state_path = config.data_dir.join("chain_state.bin");
+            let producers_path = config.data_dir.join("producers.bin");
+            let utxo_rocks_path = config.data_dir.join("utxo_rocks");
+            let utxo_path = config.data_dir.join("utxo.bin");
+
+            if state_path.exists() || utxo_rocks_path.exists() || utxo_path.exists() {
+                info!("[MIGRATION] Migrating to unified state_db...");
+
+                // Load chain state
+                let old_cs = if state_path.exists() {
+                    ChainState::load(&state_path)?
+                } else {
+                    let spec = match config.network {
+                        Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+                        Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+                        Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+                    };
+                    ChainState::new(spec.genesis_hash())
+                };
+
+                // Load producer set
+                let old_ps = if producers_path.exists() {
+                    ProducerSet::load(&producers_path)?
+                } else {
+                    ProducerSet::new()
+                };
+
+                // Load UTXOs (priority: utxo_rocks > utxo.bin)
+                if utxo_rocks_path.exists() {
+                    let rocks = storage::RocksDbUtxoStore::open(&utxo_rocks_path)?;
+                    let entries = rocks.iter_entries();
+                    state_db.import_utxos(entries.iter().map(|(o, e)| (o, e)));
+                    info!(
+                        "[MIGRATION] Imported {} UTXOs from utxo_rocks",
+                        state_db.utxo_len()
+                    );
+                } else if utxo_path.exists() {
+                    let legacy = storage::InMemoryUtxoStore::load(&utxo_path)?;
+                    state_db.import_utxos(legacy.iter());
+                    info!(
+                        "[MIGRATION] Imported {} UTXOs from utxo.bin",
+                        state_db.utxo_len()
+                    );
+                }
+
+                // Write chain state + producers atomically
+                state_db.put_chain_state(&old_cs)?;
+                state_db.write_producer_set(&old_ps)?;
+
+                info!(
+                    "[MIGRATION] Migrated to unified state_db (height={}, {} UTXOs, {} producers)",
+                    old_cs.best_height,
+                    state_db.utxo_len(),
+                    old_ps.active_count(),
+                );
+
+                // Backup old files (safety net for rollback to old binary)
+                for path in [&state_path, &producers_path] {
+                    if path.exists() {
+                        let backup = path.with_extension("bin.backup");
+                        if let Err(e) = std::fs::rename(path, &backup) {
+                            warn!("[MIGRATION] Failed to backup {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Load state from StateDb (or create fresh genesis)
+        let mut chain_state = if let Some(cs) = state_db.get_chain_state() {
+            cs
         } else {
-            // Genesis hash must be UNIQUE per chain instance (timestamp + network + params).
-            // Using a static hash like hash(b"DOLI Genesis") would allow nodes from
-            // different genesis runs to pass the handshake, poisoning sync state.
             let spec = match config.network {
                 Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
                 Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
                 Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
             };
             let genesis_hash = spec.genesis_hash();
-            ChainState::new(genesis_hash)
+            let cs = ChainState::new(genesis_hash);
+            state_db.put_chain_state(&cs)?;
+            cs
         };
+
+        // Load UTXOs from StateDb into in-memory working set
+        let utxo_set = {
+            let utxo_count = state_db.utxo_len();
+            if utxo_count > 0 {
+                info!(
+                    "[STATE_DB] Loading {} UTXOs into in-memory working set...",
+                    utxo_count
+                );
+                let mut mem = storage::InMemoryUtxoStore::new();
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    mem.insert(outpoint, entry);
+                }
+                info!("[STATE_DB] Loaded {} UTXOs", mem.len());
+                UtxoSet::InMemory(mem)
+            } else {
+                UtxoSet::new()
+            }
+        };
+        let utxo_set = Arc::new(RwLock::new(utxo_set));
         let genesis_hash = chain_state.genesis_hash;
 
         // Verify chain state consistency with block store
@@ -385,33 +442,36 @@ impl Node {
 
         let chain_state = Arc::new(RwLock::new(chain_state));
 
-        // Load or create producer set (use provided one if available)
+        // Load or create producer set (use provided one, or load from StateDb)
         let producer_set = if let Some(set) = producer_set {
             set
         } else {
-            let producers_path = config.data_dir.join("producers.bin");
-            let set = if producers_path.exists() {
-                ProducerSet::load(&producers_path)?
-            } else {
+            // Load from StateDb first (unified persistence)
+            let loaded = state_db.load_producer_set();
+            let set = if loaded.active_count() > 0 {
+                info!(
+                    "[STATE_DB] Loaded {} producers from state_db",
+                    loaded.active_count()
+                );
+                loaded
+            } else if config.network == Network::Testnet {
                 // For testnet: initialize with genesis producers
-                if config.network == Network::Testnet {
-                    use doli_core::genesis::testnet_genesis_producers;
-                    let genesis_producers = testnet_genesis_producers();
-                    if !genesis_producers.is_empty() {
-                        info!(
-                            "Initializing testnet with {} genesis producers",
-                            genesis_producers.len()
-                        );
-                        ProducerSet::with_genesis_producers(
-                            genesis_producers,
-                            config.network.bond_unit(),
-                        )
-                    } else {
-                        ProducerSet::new()
-                    }
+                use doli_core::genesis::testnet_genesis_producers;
+                let genesis_producers = testnet_genesis_producers();
+                if !genesis_producers.is_empty() {
+                    info!(
+                        "Initializing testnet with {} genesis producers",
+                        genesis_producers.len()
+                    );
+                    ProducerSet::with_genesis_producers(
+                        genesis_producers,
+                        config.network.bond_unit(),
+                    )
                 } else {
                     ProducerSet::new()
                 }
+            } else {
+                ProducerSet::new()
             };
             Arc::new(RwLock::new(set))
         };
@@ -520,6 +580,7 @@ impl Node {
             config,
             params,
             block_store,
+            state_db,
             utxo_set,
             chain_state,
             producer_set,
@@ -542,7 +603,6 @@ impl Node {
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
-            blocks_since_save: 0,
             consecutive_fork_blocks: 0,
             shallow_rollback_count: 0,
             cached_scheduler: None,
@@ -2000,6 +2060,20 @@ impl Node {
         // Force scheduler rebuild after producer set reconstruction
         self.cached_scheduler = None;
 
+        // Atomically persist common ancestor state to StateDb
+        {
+            let state = self.chain_state.read().await;
+            let utxo = self.utxo_set.read().await;
+            let producers = self.producer_set.read().await;
+            let utxo_pairs: Vec<_> = match &*utxo {
+                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
+                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
+            };
+            self.state_db
+                .atomic_replace(&state, &producers, utxo_pairs.into_iter())
+                .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
+        }
+
         // Now apply the new blocks through normal path
         // Note: we skip check_producer_eligibility here because the fork blocks were
         // validated when originally produced, and re-validating against rolled-back
@@ -2541,24 +2615,9 @@ impl Node {
             cs.genesis_hash = genesis_hash; // Preserve our genesis identity
             cs.mark_snap_synced(snapshot.block_height); // Survives restart: block store empty by design
 
+            // Replace in-memory UTXO set (snap sync always deserializes to InMemory)
             let mut utxo = self.utxo_set.write().await;
-            // Snap sync deserializes into InMemory. Write through to RocksDB
-            // so UTXOs survive node restart (RocksDB dir persists, utxo.bin does not).
-            if let UtxoSet::InMemory(ref mem_store) = new_utxo_set {
-                if let UtxoSet::RocksDb(ref rocks) = *utxo {
-                    rocks.clear();
-                    rocks.import_from(mem_store.iter());
-                    info!("[SNAP_SYNC] Imported {} UTXOs into RocksDB", rocks.len());
-                } else {
-                    let rocks_path = self.config.data_dir.join("utxo_rocks");
-                    let rocks = storage::RocksDbUtxoStore::open(&rocks_path)?;
-                    rocks.import_from(mem_store.iter());
-                    info!("[SNAP_SYNC] Created RocksDB with {} UTXOs", rocks.len());
-                    *utxo = UtxoSet::RocksDb(rocks);
-                }
-            } else {
-                *utxo = new_utxo_set;
-            }
+            *utxo = new_utxo_set;
 
             let mut ps = self.producer_set.write().await;
             *ps = new_producer_set;
@@ -2570,13 +2629,22 @@ impl Node {
                 *cache = Some((root, cs.best_hash, cs.best_height));
             }
 
+            // Atomically persist to StateDb (single WriteBatch — crash-safe)
+            let utxo_pairs: Vec<_> = match &*utxo {
+                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
+                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
+            };
+            if let Err(e) = self
+                .state_db
+                .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
+            {
+                error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
+            }
+
             // Update sync manager local tip while chain_state is still locked
             let mut sync = self.sync_manager.write().await;
             sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
         }
-
-        // Step 4: Save to disk (includes snap_sync_height flag)
-        self.save_state().await?;
 
         // Step 6: Seed the canonical index so the first post-snap-sync block can
         // call set_canonical_chain without walking into an empty block store.
@@ -2636,7 +2704,7 @@ impl Node {
         }
 
         // =========================================================================
-        // LAYER 3: Clear UTXO set completely
+        // LAYER 3: Clear UTXO set (in-memory) completely
         // =========================================================================
         {
             let mut utxo = self.utxo_set.write().await;
@@ -2654,6 +2722,16 @@ impl Node {
             let mut producers = self.producer_set.write().await;
             producers.clear();
             info!("Producer set cleared - will rebuild from synced blocks");
+        }
+
+        // =========================================================================
+        // LAYER 4.5: Atomic clear of StateDb (UTXOs + producers + chain state)
+        // Single WriteBatch: either old state survives or genesis state is written.
+        // =========================================================================
+        {
+            let genesis_cs = ChainState::new(genesis_hash);
+            self.state_db.clear_and_write_genesis(&genesis_cs);
+            info!("StateDb atomically reset to genesis");
         }
 
         // =========================================================================
@@ -2942,17 +3020,31 @@ impl Node {
         // Track newly registered producers to add to known_producers after lock release
         let mut new_registrations: Vec<PublicKey> = Vec::new();
 
+        // Create BlockBatch for atomic persistence (all state changes in one WriteBatch)
+        let mut batch = self.state_db.begin_batch();
+
+        // Track dirty producers for efficient batch writes
+        let mut dirty_producer_keys: std::collections::HashSet<Hash> =
+            std::collections::HashSet::new();
+        let removed_producer_keys: std::collections::HashSet<Hash> =
+            std::collections::HashSet::new();
+        let dirty_exit_keys: std::collections::HashSet<Hash> = std::collections::HashSet::new();
+
         // Apply transactions to UTXO set and process special transactions
         {
             let mut utxo = self.utxo_set.write().await;
             let mut producers = self.producer_set.write().await;
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
-                // Apply UTXO changes
-                // Check for both regular coinbase and epoch reward coinbase (both mint new coins)
+                // Apply UTXO changes (in-memory for reads + batch for atomic persistence)
                 let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                let _ = utxo.spend_transaction(tx); // Ignore errors for reward-minting txs
-                utxo.add_transaction(tx, height, is_reward_tx);
+                let _ = utxo.spend_transaction(tx); // In-memory
+                utxo.add_transaction(tx, height, is_reward_tx); // In-memory
+                                                                // Batch: track the same UTXO changes for atomic persistence
+                if !is_reward_tx {
+                    let _ = batch.spend_transaction_utxos(tx);
+                }
+                batch.add_transaction_utxos(tx, height, is_reward_tx);
 
                 // Process registration transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::Registration {
@@ -3086,6 +3178,10 @@ impl Node {
                                             producers.get_by_pubkey_mut(&data.producer_pubkey)
                                         {
                                             producer.withdrawal_pending_count += data.bond_count;
+                                            // Track as dirty for atomic batch write
+                                            dirty_producer_keys.insert(crypto_hash(
+                                                data.producer_pubkey.as_bytes(),
+                                            ));
                                         }
 
                                         let bond_unit = self.config.network.bond_unit();
@@ -3265,6 +3361,7 @@ impl Node {
         // Apply deferred producer updates at epoch boundaries.
         // During epoch 0 (blocks 1-359), apply every block so genesis producers work immediately.
         // After epoch 0, apply only at epoch boundaries (height % 360 == 0).
+        let mut needs_full_producer_write = false;
         {
             let is_epoch_0 = height < SLOTS_PER_EPOCH as u64;
             let is_boundary = doli_core::EpochSnapshot::is_epoch_boundary(height);
@@ -3274,6 +3371,7 @@ impl Node {
                     let count = producers.pending_update_count();
                     producers.apply_pending_updates();
                     self.cached_scheduler = None; // Force scheduler rebuild
+                    needs_full_producer_write = true; // Many producers may have changed
                     info!(
                         "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={})",
                         count, height, is_epoch_0, is_boundary
@@ -3282,37 +3380,8 @@ impl Node {
             }
         }
 
-        // Recompute our tier at epoch boundaries and build EpochSnapshot
-        self.recompute_tier(height).await;
-        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
-            let epoch = doli_core::EpochSnapshot::epoch_from_height(height);
-            let producers = self.producer_set.read().await;
-            let active = producers.active_producers_at_height(height);
-            let pws: Vec<(PublicKey, u64)> = active
-                .iter()
-                .map(|p| (p.public_key, p.selection_weight()))
-                .collect();
-            let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
-            let tier1 = compute_tier1_set(&pws);
-            let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
-            all_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            drop(producers);
-
-            let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);
-            info!(
-                "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
-                epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
-            );
-        }
-
-        // Attest to blocks we didn't produce (self-attestation for our own blocks
-        // is handled in try_produce_block after broadcast)
-        if let Some(ref kp) = self.producer_key {
-            if block.header.producer != *kp.public_key() {
-                self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
-                    .await;
-            }
-        }
+        // NOTE: recompute_tier + EpochSnapshot + attestation moved after batch commit
+        // to avoid borrow conflict with BlockBatch (which borrows self.state_db).
 
         // GENESIS END: Derive and register producers with REAL bonds from the blockchain.
         // This runs when applying the FIRST post-genesis block (genesis_blocks + 1).
@@ -3377,9 +3446,10 @@ impl Node {
                         consumed_outpoints.push(*outpoint);
                     }
 
-                    // Remove consumed UTXOs from the set
+                    // Remove consumed UTXOs from the set (in-memory + batch)
                     for outpoint in &consumed_outpoints {
                         utxo.remove(outpoint);
+                        let _ = batch.spend_utxo(outpoint); // Batch: atomic persistence
                     }
 
                     // Create deterministic bond hash for tracking
@@ -3395,7 +3465,8 @@ impl Node {
                             is_coinbase: false,
                             is_epoch_reward: false,
                         };
-                        utxo.insert(change_outpoint, change_entry);
+                        utxo.insert(change_outpoint, change_entry.clone());
+                        batch.add_utxo(change_outpoint, change_entry); // Batch: atomic persistence
                     }
 
                     // Register producer with real bond outpoint
@@ -3430,11 +3501,8 @@ impl Node {
                     }
                 }
 
-                // Save producer set immediately
-                let producers_path = self.config.data_dir.join("producers.bin");
-                if let Err(e) = producers.save(&producers_path) {
-                    warn!("Failed to save producer set after genesis: {}", e);
-                }
+                // Full producer write needed — clear + rebuild happened
+                needs_full_producer_write = true;
 
                 info!(
                     "Genesis complete: {} producers now active in scheduler (real bonds)",
@@ -3472,9 +3540,62 @@ impl Node {
             block.header.prev_hash,
         );
 
-        // Periodic state save for crash resilience
-        // This ensures state is persisted even if the node crashes before graceful shutdown
-        self.maybe_save_state().await?;
+        // Atomic state persistence via StateDb WriteBatch.
+        // All state changes (UTXOs, chain_state, producers) committed in one batch.
+        // Crash between any two writes is impossible — it's all-or-nothing.
+        {
+            let state = self.chain_state.read().await;
+            batch.put_chain_state(&state);
+            batch.set_last_applied(height, block_hash, state.best_slot);
+
+            let producers = self.producer_set.read().await;
+            if needs_full_producer_write {
+                batch.write_full_producer_set(&producers);
+            } else {
+                batch.write_dirty_producers(
+                    &producers,
+                    &dirty_producer_keys,
+                    &removed_producer_keys,
+                    &dirty_exit_keys,
+                );
+            }
+        }
+        batch
+            .commit()
+            .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
+
+        // Recompute our tier at epoch boundaries and build EpochSnapshot
+        // (moved after batch commit to avoid borrow conflict with BlockBatch)
+        self.recompute_tier(height).await;
+        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+            let epoch = doli_core::EpochSnapshot::epoch_from_height(height);
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(height);
+            let pws: Vec<(PublicKey, u64)> = active
+                .iter()
+                .map(|p| (p.public_key, p.selection_weight()))
+                .collect();
+            let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
+            let tier1 = compute_tier1_set(&pws);
+            let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
+            all_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            drop(producers);
+
+            let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);
+            info!(
+                "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
+                epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
+            );
+        }
+
+        // Attest to blocks we didn't produce (self-attestation for our own blocks
+        // is handled in try_produce_block after broadcast)
+        if let Some(ref kp) = self.producer_key {
+            if block.header.producer != *kp.public_key() {
+                self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
+                    .await;
+            }
+        }
 
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
@@ -5358,8 +5479,21 @@ impl Node {
             sync.reset_sync_for_rollback();
         }
 
-        // Save state to persist the rollback
-        self.save_state().await?;
+        // Atomically persist the rolled-back state via StateDb.
+        // Collects all UTXOs from in-memory set and writes everything in one WriteBatch.
+        {
+            let state = self.chain_state.read().await;
+            let producers = self.producer_set.read().await;
+            let utxo = self.utxo_set.read().await;
+            let utxo_pairs: Vec<(storage::Outpoint, storage::UtxoEntry)> = match &*utxo {
+                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
+                // RocksDb variant shouldn't occur (we load InMemory from StateDb), but handle it
+                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
+            };
+            self.state_db
+                .atomic_replace(&state, &producers, utxo_pairs.into_iter())
+                .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
+        }
 
         info!(
             "Fork recovery rollback complete: now at height {} (hash {:.8})",
@@ -5929,35 +6063,12 @@ impl Node {
         }
     }
 
-    /// Save state periodically (every STATE_SAVE_INTERVAL blocks)
+    /// Save all node state — now a no-op.
     ///
-    /// This provides crash resilience by persisting state to disk without
-    /// waiting for graceful shutdown. Called after applying each block.
-    async fn maybe_save_state(&mut self) -> Result<()> {
-        self.blocks_since_save += 1;
-
-        if self.blocks_since_save >= STATE_SAVE_INTERVAL {
-            self.save_state().await?;
-            self.blocks_since_save = 0;
-        }
-
-        Ok(())
-    }
-
-    /// Save all node state to disk
+    /// All state persistence happens atomically via StateDb WriteBatch.
+    /// apply_block() commits chain_state + producers + UTXOs in one batch.
+    /// Reorg/rollback/snap_sync use atomic_replace().
     async fn save_state(&self) -> Result<()> {
-        // Save chain state
-        let state_path = self.config.data_dir.join("chain_state.bin");
-        self.chain_state.read().await.save(&state_path)?;
-
-        // Save UTXO set
-        let utxo_path = self.config.data_dir.join("utxo.bin");
-        self.utxo_set.read().await.save(&utxo_path)?;
-
-        // Save producer set
-        let producers_path = self.config.data_dir.join("producers.bin");
-        self.producer_set.read().await.save(&producers_path)?;
-
         Ok(())
     }
 
