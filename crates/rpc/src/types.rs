@@ -462,6 +462,9 @@ pub struct ProducerResponse {
     /// Pending withdrawals
     #[serde(default)]
     pub pending_withdrawals: Vec<PendingWithdrawalResponse>,
+    /// Pending epoch-deferred updates
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_updates: Vec<PendingUpdateInfo>,
 }
 
 /// Pending withdrawal response
@@ -476,6 +479,17 @@ pub struct PendingWithdrawalResponse {
     pub net_amount: u64,
     /// Whether this withdrawal can be claimed now
     pub claimable: bool,
+}
+
+/// Pending producer update info (epoch-deferred)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUpdateInfo {
+    /// Update type (register, exit, add_bond, withdrawal, etc.)
+    pub update_type: String,
+    /// Bond count affected (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bond_count: Option<u32>,
 }
 
 /// Response for getEpochInfo
@@ -647,6 +661,7 @@ mod tests {
                 net_amount: 10_000_000_000,
                 claimable: false,
             }],
+            pending_updates: Vec::new(),
         };
 
         let json = serde_json::to_string(&response).unwrap();
@@ -668,6 +683,7 @@ mod tests {
             status: "active".to_string(),
             era: 0,
             pending_withdrawals: Vec::new(),
+            pending_updates: Vec::new(),
         };
 
         let json = serde_json::to_string(&response).unwrap();

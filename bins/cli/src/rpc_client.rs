@@ -183,6 +183,9 @@ pub struct ProducerInfo {
     /// Pending withdrawals
     #[serde(default)]
     pub pending_withdrawals: Vec<PendingWithdrawalInfo>,
+    /// Pending epoch-deferred updates
+    #[serde(default)]
+    pub pending_updates: Vec<PendingUpdateInfo>,
 }
 
 fn default_bond_count() -> u32 {
@@ -202,6 +205,16 @@ pub struct PendingWithdrawalInfo {
     pub net_amount: u64,
     /// Whether this withdrawal can be claimed now
     pub claimable: bool,
+}
+
+/// Pending producer update info (epoch-deferred)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUpdateInfo {
+    /// Update type (register, exit, add_bond, withdrawal, etc.)
+    pub update_type: String,
+    /// Bond count affected (if applicable)
+    pub bond_count: Option<u32>,
 }
 
 /// Bond details response (per-bond granularity)

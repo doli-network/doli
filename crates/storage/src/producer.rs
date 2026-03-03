@@ -1253,6 +1253,22 @@ impl ProducerSet {
         self.pending_updates.len()
     }
 
+    /// Get pending updates for a specific producer (by public key).
+    pub fn pending_updates_for(&self, pubkey: &PublicKey) -> Vec<&PendingProducerUpdate> {
+        self.pending_updates
+            .iter()
+            .filter(|u| match u {
+                PendingProducerUpdate::Register { info, .. } => info.public_key == *pubkey,
+                PendingProducerUpdate::Exit { pubkey: pk, .. } => pk == pubkey,
+                PendingProducerUpdate::Slash { pubkey: pk, .. } => pk == pubkey,
+                PendingProducerUpdate::AddBond { pubkey: pk, .. } => pk == pubkey,
+                PendingProducerUpdate::DelegateBond { delegator, .. } => delegator == pubkey,
+                PendingProducerUpdate::RevokeDelegation { delegator } => delegator == pubkey,
+                PendingProducerUpdate::RequestWithdrawal { pubkey: pk, .. } => pk == pubkey,
+            })
+            .collect()
+    }
+
     /// Load producer set from file
     pub fn load(path: &Path) -> Result<Self, StorageError> {
         if !path.exists() {
