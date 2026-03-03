@@ -1225,11 +1225,11 @@ mod tests {
         let (db, _dir) = create_test_db();
 
         let kp = KeyPair::generate();
-        let pk = kp.public_key().clone();
+        let pk = *kp.public_key();
         let pk_hash = crypto_hash(pk.as_bytes());
 
         let info =
-            ProducerInfo::new_with_bonds(pk.clone(), 0, 1_000_000_000, (Hash::ZERO, 0), 0, 1);
+            ProducerInfo::new_with_bonds(pk, 0, 1_000_000_000, (Hash::ZERO, 0), 0, 1);
 
         let mut batch = db.begin_batch();
         batch.put_producer(&pk_hash, &info);
@@ -1378,12 +1378,12 @@ mod tests {
         let kp1 = KeyPair::generate();
         let kp2 = KeyPair::generate();
         let kp3 = KeyPair::generate();
-        let pk1 = kp1.public_key().clone();
-        let pk2 = kp2.public_key().clone();
-        let pk3 = kp3.public_key().clone();
-        let _ = ps.register_genesis_producer(pk1.clone(), 1, 1_000_000_000);
-        let _ = ps.register_genesis_producer(pk2.clone(), 1, 1_000_000_000);
-        let _ = ps.register_genesis_producer(pk3.clone(), 1, 1_000_000_000);
+        let pk1 = *kp1.public_key();
+        let pk2 = *kp2.public_key();
+        let pk3 = *kp3.public_key();
+        let _ = ps.register_genesis_producer(pk1, 1, 1_000_000_000);
+        let _ = ps.register_genesis_producer(pk2, 1, 1_000_000_000);
+        let _ = ps.register_genesis_producer(pk3, 1, 1_000_000_000);
         db.write_producer_set(&ps).unwrap();
         assert_eq!(db.iter_producers().len(), 3);
 
@@ -1438,9 +1438,9 @@ mod tests {
         let mut ps = ProducerSet::new();
         let kp1 = KeyPair::generate();
         let kp2 = KeyPair::generate();
-        ps.register_genesis_producer(kp1.public_key().clone(), 1, 1_000_000_000)
+        ps.register_genesis_producer(*kp1.public_key(), 1, 1_000_000_000)
             .expect("register pk1");
-        ps.register_genesis_producer(kp2.public_key().clone(), 1, 1_000_000_000)
+        ps.register_genesis_producer(*kp2.public_key(), 1, 1_000_000_000)
             .expect("register pk2");
         assert_eq!(ps.active_count(), 2);
 
