@@ -158,6 +158,19 @@ jobs:
           cd release
           sha256sum * > CHECKSUMS.txt
 
+      - name: Create empty SIGNATURES.json scaffold
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION_NUM=${VERSION#v}
+          CHECKSUMS_SHA256=$(sha256sum release/CHECKSUMS.txt | cut -d' ' -f1)
+          cat > release/SIGNATURES.json <<SIGEOF
+          {
+            "version": "${VERSION_NUM}",
+            "checksums_sha256": "${CHECKSUMS_SHA256}",
+            "signatures": []
+          }
+          SIGEOF
+
       - name: Generate release notes
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
