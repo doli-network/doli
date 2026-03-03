@@ -11,13 +11,13 @@
 
 ## Abstract
 
-Bitcoin consumes the energy of a mid-sized country. Proof of Stake requires significant capital to participate in consensus. Both use probabilistic reward systems that force small participants into pools, reintroducing centralization.
+We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
 
-We propose a system where the only resource required is time—the one resource distributed equally to all participants. Block production follows deterministic rotation, not lottery. A participant with one bond knows exactly when their next block will be produced. Pools become unnecessary.
+Block production follows deterministic rotation: a participant with one bond knows exactly when their next block will be produced. Pools are unnecessary. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
-Transactions are ordered through verifiable time. Blocks are produced at fixed intervals using a sequential delay function that cannot be parallelized. Participation in block production requires sustained time commitment, limiting the ability to create influence instantly.
+A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or ten thousand. No lottery. No variance. No pools. Just time.
 
-The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
+Transactions are ordered through verifiable delay functions that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
 ---
 
@@ -246,6 +246,29 @@ network_time = local_clock + median(peer_offsets)
 ```
 
 Blocks with timestamps outside the acceptable window are rejected.
+
+### 5.3. Throughput
+
+With 10-second block times and a maximum block size of 1 MB:
+
+| Metric              | Value          |
+|---------------------|----------------|
+| Block time          | 10 seconds     |
+| Max block size      | 1 MB           |
+| Avg transaction     | ~250 bytes     |
+| Theoretical max TPS | ~400           |
+| Practical TPS       | 100-200        |
+
+DOLI does not compete on raw throughput. It competes on accessibility:
+
+| System       | TPS       | Min hardware to participate |
+|--------------|-----------|----------------------------|
+| Bitcoin      | ~7        | ASIC ($5,000+)             |
+| Ethereum PoS | ~30       | 32 ETH + server ($100K+)   |
+| Solana       | ~4,000    | 256GB RAM server ($10K+)   |
+| DOLI         | ~200      | Any CPU ($5/mo VPS)        |
+
+200 TPS on a $5/month VPS is a different proposition than 4,000 TPS on hardware most people cannot afford. The throughput is sufficient for a cash system; the accessibility is sufficient for global participation.
 
 ---
 
@@ -497,6 +520,40 @@ fee = sum(inputs) - sum(outputs)
 
 The fee goes to the block producer. A minimum fee rate prevents spam.
 
+### 9.4. Compound Growth
+
+Unlike Proof of Work where mining hardware depreciates, or Proof of Stake where yield is a fixed percentage, DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing future block assignments proportionally.
+
+Given a network with *B* total bonds and block reward *R*:
+
+```
+weekly_earnings(b) = (slots_per_week * R * b) / B
+doubling_time      = BOND_UNIT * B / (slots_per_week * R)
+```
+
+The doubling time is **identical for all producers regardless of size.** A producer with 1 bond and a producer with 1,000 bonds both double their stake in the same number of weeks. The growth rate is equal; only the absolute magnitude differs.
+
+**Example (Era 1, 18,000 total network bonds):**
+
+```
+New producer: 1 bond (10 DOLI)
+Weekly earnings: ~3.3 DOLI
+Doubling time: ~3 weeks
+
+Week 0:   1 bond     →  3.3 DOLI/week
+Week 3:   2 bonds    →  6.6 DOLI/week
+Week 6:   4 bonds    →  13 DOLI/week
+Week 12:  16 bonds   →  53 DOLI/week
+Week 18:  64 bonds   →  213 DOLI/week
+Week 24:  256 bonds  →  853 DOLI/week
+```
+
+Starting with 10 DOLI, a disciplined producer who reinvests all rewards reaches 10,000 DOLI in stake within months — not years. This trajectory is calculable before the first block is produced.
+
+This creates a property unique among consensus systems: **the earliest participants earn the highest absolute returns, but the growth rate is equal for all.** Late entrants face a larger network (longer doubling time) but benefit from a more secure and valuable network. This mirrors Bitcoin's early mining dynamics, with a critical difference: DOLI's growth is deterministic and predictable, not probabilistic.
+
+As the network grows, doubling time naturally increases (more total bonds dilute the reward share). This is self-regulating: rapid early growth gradually converges toward stable distribution, without requiring protocol changes or governance intervention.
+
 ---
 
 ## 10. Infractions
@@ -591,6 +648,24 @@ For a network with 1,000 honest producers and 100,000 DOLI bonded, an attacker w
 - 1,001 × `T_registration` in sequential time
 
 **The sequential time requirement cannot be bypassed.** An attacker with 1,000 machines still needs 1,001 × `T_registration` wall-clock time to register 1,001 identities.
+
+### 11.3. Safety Theorem
+
+**Theorem:** An attacker controlling *f* < *n*/2 bond-weighted slots cannot produce a heavier chain than the honest network over any sufficiently long interval.
+
+**Proof sketch:** In each slot, the deterministic schedule assigns exactly one primary producer. The schedule is a pure function of `(slot, ActiveSet(epoch))` — no block content influences it. Therefore:
+
+1. The honest network produces one block per assigned slot (when online). Total honest weight per epoch: `W_h = sum(weight(honest_producer_i))` for each slot assigned to an honest producer.
+
+2. The attacker can produce at most one block per slot assigned to an attacker-controlled producer. Total attacker weight: `W_a = sum(weight(attacker_producer_j))`.
+
+3. Since `f < n/2` (bond-weighted), the attacker controls fewer slots than honest producers in every epoch. Additionally, seniority weighting (Section 8.1) means newly created attacker identities have weight 1, while established honest producers have weight up to 4.
+
+4. Over *k* epochs, the honest chain accumulates weight `k * W_h` while the attacker chain accumulates at most `k * W_a`. Since `W_h > W_a` by construction, the honest chain is strictly heavier for all *k* > 0.
+
+5. Unlike Proof of Work, the attacker cannot compensate for fewer slots by computing faster — VDF computation is sequential and cannot be parallelized. The deficit grows linearly with time.
+
+**Corollary:** Double-spend attacks require controlling >50% of bond-weighted slots AND maintaining that majority for the duration of the attack. The seniority penalty on new identities means an attacker starting from zero needs approximately 3 years of sustained presence before their weight equals an established honest producer, even with equal bond count.
 
 ---
 
@@ -709,7 +784,19 @@ Explorer:   https://doli.network
 
 ---
 
-## 19. Conclusion
+## 19. Scope
+
+DOLI is a cash system. It processes value transfers, not arbitrary computation. This is by design.
+
+Smart contract platforms optimize for generality at the cost of complexity, attack surface, and verification cost. Every additional opcode is a potential vulnerability. Every state transition rule is a consensus-critical surface that must be audited, fuzzed, and maintained forever.
+
+DOLI optimizes for one thing: moving value with deterministic finality and predictable timing. The base layer is intentionally minimal — digital signatures, UTXO transfers, bond management, and time-anchored ordering. Nothing more.
+
+This constraint is a feature. A system that does one thing well is more secure, more auditable, and more resistant to governance capture than a system that attempts to be a universal computer. Bitcoin demonstrated that a focused protocol can sustain a trillion-dollar network. Complexity is not a prerequisite for value.
+
+---
+
+## 20. Conclusion
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
@@ -727,7 +814,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v1.0.25**
+**DOLI v1.0.26**
 
 *"Time is the only fair currency."*
 
