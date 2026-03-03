@@ -646,10 +646,10 @@ fn test_withdrawal_mixed_age_penalties() {
 
     // Add 2 bonds at 2*Q slots (will be in Q3 at check time)
     let outpoints = vec![(Hash::ZERO, 1), (Hash::ZERO, 2)];
-    info.add_bonds(outpoints, BOND_UNIT, 2 * VESTING_QUARTER_SLOTS as u32);
+    info.add_bonds(outpoints, BOND_UNIT, 2 * VESTING_QUARTER_SLOTS);
 
     // Check at slot = 3*Q
-    let check_slot = 3 * VESTING_QUARTER_SLOTS as u32;
+    let check_slot = 3 * VESTING_QUARTER_SLOTS;
 
     // Withdraw 6 bonds: 5 at slot 0 (age 3Q = vested) + 1 at slot 2Q (age 1Q = 50% penalty)
     let (net, penalty) = info.calculate_withdrawal(6, check_slot).unwrap();
@@ -758,7 +758,7 @@ fn test_withdrawal_all_vested_zero_penalty() {
 
     // All bonds at slot 0, check at > VESTING_PERIOD
     let (net, penalty) = info
-        .calculate_withdrawal(5, VESTING_PERIOD_SLOTS as u32 + 1)
+        .calculate_withdrawal(5, VESTING_PERIOD_SLOTS + 1)
         .unwrap();
     assert_eq!(net, 5 * BOND_UNIT);
     assert_eq!(penalty, 0);
@@ -809,7 +809,7 @@ fn test_full_withdrawal_lifecycle() {
 
     // Withdraw 4 bonds (oldest first: 3 from slot 0 + 1 from slot 5000)
     let (net, penalty) = info
-        .calculate_withdrawal(4, VESTING_PERIOD_SLOTS as u32 + 1)
+        .calculate_withdrawal(4, VESTING_PERIOD_SLOTS + 1)
         .unwrap();
     // Slot 0 bonds: age > VESTING_PERIOD → 0% penalty (3 bonds)
     // Slot 5000 bond: age = VESTING_PERIOD+1-5000 ≈ 3641 → Q2 (50% penalty)
