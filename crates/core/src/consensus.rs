@@ -224,8 +224,8 @@ pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 pub const INITIAL_BOND: Amount = BOND_UNIT;
 
 /// Maximum bonds per producer
-/// 10,000 bonds × 10 DOLI = 100,000 DOLI maximum stake per node
-pub const MAX_BONDS_PER_PRODUCER: u32 = 10_000;
+/// 3,000 bonds × 10 DOLI = 30,000 DOLI maximum stake per node
+pub const MAX_BONDS_PER_PRODUCER: u32 = 3_000;
 
 /// Withdrawal delay in slots (7 days at 10s slots)
 /// After requesting withdrawal, must wait this period before claiming
