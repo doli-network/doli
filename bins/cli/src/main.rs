@@ -178,6 +178,13 @@ enum ProducerCommands {
         pubkey: Option<String>,
     },
 
+    /// Show per-bond vesting details
+    Bonds {
+        /// Public key (optional, uses wallet if not specified)
+        #[arg(short, long)]
+        pubkey: Option<String>,
+    },
+
     /// List all producers in the network
     List {
         /// Show only active producers
@@ -192,7 +199,7 @@ enum ProducerCommands {
         count: u32,
     },
 
-    /// Request withdrawal of bonds (starts 7-day delay)
+    /// Withdraw bonds instantly (FIFO, vesting penalty applies)
     RequestWithdrawal {
         /// Number of bonds to withdraw
         #[arg(short, long)]
@@ -203,11 +210,11 @@ enum ProducerCommands {
         destination: Option<String>,
     },
 
-    /// Claim withdrawal after 7-day delay
-    ClaimWithdrawal {
-        /// Withdrawal index (use 'producer status' to see pending withdrawals)
-        #[arg(short, long, default_value = "0")]
-        index: u32,
+    /// Simulate bond withdrawal (dry run, no transaction)
+    SimulateWithdrawal {
+        /// Number of bonds to simulate withdrawing
+        #[arg(short, long)]
+        count: u32,
     },
 
     /// Exit the producer set (early exit incurs penalty)
@@ -1141,6 +1148,96 @@ fn get_uid() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
+/// Format a slot duration as human-readable time (SLOT_DURATION = 10s)
+fn format_slot_duration(slots: u64) -> String {
+    let seconds = slots * 10;
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    if hours > 0 {
+        format!("~{}h {}m", hours, minutes)
+    } else {
+        format!("~{}m", minutes)
+    }
+}
+
+/// FIFO breakdown tier: (count, penalty_pct, gross_amount, net_amount)
+struct FifoBreakdown {
+    total_net: u64,
+    total_penalty: u64,
+    tiers: Vec<(u32, u8, u64, u64)>,
+}
+
+/// Compute FIFO breakdown for withdrawing `count` bonds (oldest first)
+fn compute_fifo_breakdown(details: &rpc_client::BondDetailsInfo, count: u32) -> FifoBreakdown {
+    let mut total_net: u64 = 0;
+    let mut total_penalty: u64 = 0;
+    let mut tiers: Vec<(u32, u8, u64, u64)> = Vec::new();
+
+    let mut current_tier_pct: Option<u8> = None;
+    let mut tier_count: u32 = 0;
+    let mut tier_gross: u64 = 0;
+    let mut tier_net: u64 = 0;
+
+    for entry in details.bonds.iter().take(count as usize) {
+        let pct = entry.penalty_pct;
+        let penalty = (entry.amount * pct as u64) / 100;
+        let net = entry.amount - penalty;
+        total_net += net;
+        total_penalty += penalty;
+
+        if current_tier_pct == Some(pct) {
+            tier_count += 1;
+            tier_gross += entry.amount;
+            tier_net += net;
+        } else {
+            if let Some(prev_pct) = current_tier_pct {
+                tiers.push((tier_count, prev_pct, tier_gross, tier_net));
+            }
+            current_tier_pct = Some(pct);
+            tier_count = 1;
+            tier_gross = entry.amount;
+            tier_net = net;
+        }
+    }
+    if let Some(pct) = current_tier_pct {
+        tiers.push((tier_count, pct, tier_gross, tier_net));
+    }
+
+    FifoBreakdown {
+        total_net,
+        total_penalty,
+        tiers,
+    }
+}
+
+/// Display FIFO breakdown table
+fn display_fifo_breakdown(breakdown: &FifoBreakdown) {
+    for (cnt, pct, gross, net) in &breakdown.tiers {
+        let tier_label = match pct {
+            0 => "vested (0% penalty)".to_string(),
+            p => format!("Q{} ({}% penalty)", (4 - p / 25), p),
+        };
+        println!(
+            "  {} x {}: {} -> {} ({} burned)",
+            cnt,
+            tier_label,
+            format_balance(*gross),
+            format_balance(*net),
+            format_balance(gross - net)
+        );
+    }
+    if breakdown.tiers.len() > 1 {
+        let total_gross = breakdown.total_net + breakdown.total_penalty;
+        println!("  {:-<50}", "");
+        println!(
+            "  Total: {} -> {} ({} burned)",
+            format_balance(total_gross),
+            format_balance(breakdown.total_net),
+            format_balance(breakdown.total_penalty)
+        );
+    }
+}
+
 async fn cmd_producer(
     wallet_path: &Path,
     rpc_endpoint: &str,
@@ -1349,6 +1446,37 @@ async fn cmd_producer(
 
                     // Show per-bond vesting info from getBondDetails
                     if let Ok(details) = rpc.get_bond_details(&pk).await {
+                        let vq = details.vesting_quarter_slots;
+
+                        // Find oldest bond per tier for time-to-next display
+                        let mut oldest_q3: Option<u64> = None; // oldest age in Q3
+                        let mut oldest_q2: Option<u64> = None;
+                        let mut oldest_q1: Option<u64> = None;
+                        for bond in &details.bonds {
+                            if bond.vested {
+                                continue;
+                            }
+                            let quarters = bond.age_slots / vq;
+                            match quarters {
+                                0 => {
+                                    oldest_q1 = Some(
+                                        oldest_q1.map_or(bond.age_slots, |v| v.max(bond.age_slots)),
+                                    );
+                                }
+                                1 => {
+                                    oldest_q2 = Some(
+                                        oldest_q2.map_or(bond.age_slots, |v| v.max(bond.age_slots)),
+                                    );
+                                }
+                                2 => {
+                                    oldest_q3 = Some(
+                                        oldest_q3.map_or(bond.age_slots, |v| v.max(bond.age_slots)),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+
                         println!();
                         println!(
                             "Bonds: {} ({}):",
@@ -1358,19 +1486,37 @@ async fn cmd_producer(
                         let s = &details.summary;
                         if s.vested > 0 {
                             let label = if s.vested == 1 { "bond " } else { "bonds" };
-                            println!("  Vested (0% penalty):   {} {} ", s.vested, label);
+                            println!("  Vested (0% penalty):   {} {}", s.vested, label);
                         }
                         if s.q3 > 0 {
                             let label = if s.q3 == 1 { "bond " } else { "bonds" };
-                            println!("  Q3 (25% penalty):      {} {}", s.q3, label);
+                            let eta = oldest_q3
+                                .map(|age| {
+                                    let remaining = (3 * vq).saturating_sub(age);
+                                    format!(" — {} to 0%", format_slot_duration(remaining))
+                                })
+                                .unwrap_or_default();
+                            println!("  Q3 (25% penalty):      {} {}{}", s.q3, label, eta);
                         }
                         if s.q2 > 0 {
                             let label = if s.q2 == 1 { "bond " } else { "bonds" };
-                            println!("  Q2 (50% penalty):      {} {}", s.q2, label);
+                            let eta = oldest_q2
+                                .map(|age| {
+                                    let remaining = (2 * vq).saturating_sub(age);
+                                    format!(" — {} to 25%", format_slot_duration(remaining))
+                                })
+                                .unwrap_or_default();
+                            println!("  Q2 (50% penalty):      {} {}{}", s.q2, label, eta);
                         }
                         if s.q1 > 0 {
                             let label = if s.q1 == 1 { "bond " } else { "bonds" };
-                            println!("  Q1 (75% penalty):      {} {}", s.q1, label);
+                            let eta = oldest_q1
+                                .map(|age| {
+                                    let remaining = vq.saturating_sub(age);
+                                    format!(" — {} to 50%", format_slot_duration(remaining))
+                                })
+                                .unwrap_or_default();
+                            println!("  Q1 (75% penalty):      {} {}{}", s.q1, label, eta);
                         }
                         if details.withdrawal_pending_count > 0 {
                             println!();
@@ -1427,6 +1573,86 @@ async fn cmd_producer(
                         println!("Error: {}", e);
                     }
                 }
+            }
+        }
+
+        ProducerCommands::Bonds { pubkey } => {
+            let pk = match pubkey {
+                Some(pk) => pk,
+                None => {
+                    let wallet = Wallet::load(wallet_path)?;
+                    wallet.addresses()[0].public_key.clone()
+                }
+            };
+
+            let details = rpc.get_bond_details(&pk).await?;
+            let vq = details.vesting_quarter_slots;
+
+            println!(
+                "Bond Details ({} bonds, {} staked)",
+                details.bond_count,
+                format_balance(details.total_staked)
+            );
+            println!("{:-<60}", "");
+
+            if details.bonds.is_empty() {
+                println!("No bonds found.");
+            } else {
+                println!(
+                    " {:<4} {:<16} {:<12} {:<10} {:<8} Time to Next",
+                    "#", "Created (slot)", "Age", "Quarter", "Penalty"
+                );
+                println!(" {:-<70}", "");
+
+                for (i, bond) in details.bonds.iter().enumerate() {
+                    let age_str = format_slot_duration(bond.age_slots);
+
+                    let quarter_label = if bond.vested {
+                        "Q4+".to_string()
+                    } else {
+                        let quarters = bond.age_slots / vq;
+                        format!("Q{}", quarters + 1)
+                    };
+
+                    let penalty_str = format!("{}%", bond.penalty_pct);
+
+                    let time_to_next = if bond.vested {
+                        "Fully vested".to_string()
+                    } else {
+                        // Slots until next quarter boundary
+                        let quarters_done = bond.age_slots / vq;
+                        let next_quarter_age = (quarters_done + 1) * vq;
+                        let slots_remaining = next_quarter_age.saturating_sub(bond.age_slots);
+                        let next_penalty = match quarters_done + 1 {
+                            1 => "50%",
+                            2 => "25%",
+                            _ => "0%",
+                        };
+                        format!(
+                            "{} to {}",
+                            format_slot_duration(slots_remaining),
+                            next_penalty
+                        )
+                    };
+
+                    println!(
+                        " {:<4} {:<16} {:<12} {:<10} {:<8} {}",
+                        i + 1,
+                        format!("slot {}", bond.creation_slot),
+                        age_str,
+                        quarter_label,
+                        penalty_str,
+                        time_to_next
+                    );
+                }
+            }
+
+            if details.withdrawal_pending_count > 0 {
+                println!();
+                println!(
+                    "Withdrawal pending: {} bonds (applied at next epoch boundary)",
+                    details.withdrawal_pending_count
+                );
             }
         }
 
@@ -1643,72 +1869,21 @@ async fn cmd_producer(
             }
             println!();
 
-            // Calculate FIFO breakdown (oldest first)
-            let mut total_net: u64 = 0;
-            let mut total_penalty: u64 = 0;
-            let mut breakdown: Vec<(u32, u8, u64, u64)> = Vec::new(); // (count, penalty_pct, gross, net)
-
-            let mut current_tier_pct: Option<u8> = None;
-            let mut tier_count: u32 = 0;
-            let mut tier_gross: u64 = 0;
-            let mut tier_net: u64 = 0;
-
-            for entry in details.bonds.iter().take(count as usize) {
-                let pct = entry.penalty_pct;
-                let penalty = (entry.amount * pct as u64) / 100;
-                let net = entry.amount - penalty;
-                total_net += net;
-                total_penalty += penalty;
-
-                if current_tier_pct == Some(pct) {
-                    tier_count += 1;
-                    tier_gross += entry.amount;
-                    tier_net += net;
-                } else {
-                    if let Some(prev_pct) = current_tier_pct {
-                        breakdown.push((tier_count, prev_pct, tier_gross, tier_net));
-                    }
-                    current_tier_pct = Some(pct);
-                    tier_count = 1;
-                    tier_gross = entry.amount;
-                    tier_net = net;
-                }
-            }
-            if let Some(pct) = current_tier_pct {
-                breakdown.push((tier_count, pct, tier_gross, tier_net));
-            }
+            // Calculate and display FIFO breakdown (oldest first)
+            let breakdown = compute_fifo_breakdown(&details, count);
 
             println!("Withdrawing {} bonds (FIFO — oldest first):", count);
             println!("Destination: {}", dest_display);
-            for (cnt, pct, gross, net) in &breakdown {
-                let tier_label = match pct {
-                    0 => "vested (0% penalty)".to_string(),
-                    p => format!("Q{} ({}% penalty)", (4 - p / 25), p),
-                };
-                println!(
-                    "  {} x {}: {} -> {} ({} burned)",
-                    cnt,
-                    tier_label,
-                    format_balance(*gross),
-                    format_balance(*net),
-                    format_balance(gross - net)
-                );
-            }
-            if breakdown.len() > 1 {
-                let total_gross = total_net + total_penalty;
-                println!("  {:-<50}", "");
-                println!(
-                    "  Total: {} -> {} ({} burned)",
-                    format_balance(total_gross),
-                    format_balance(total_net),
-                    format_balance(total_penalty)
-                );
-            }
+            display_fifo_breakdown(&breakdown);
             println!();
-            println!("You receive: {}", format_balance(total_net));
-            if total_penalty > 0 {
-                println!("Penalty burned: {}", format_balance(total_penalty));
-                let pct = (total_penalty * 100) / (total_net + total_penalty);
+            println!("You receive: {}", format_balance(breakdown.total_net));
+            if breakdown.total_penalty > 0 {
+                println!(
+                    "Penalty burned: {}",
+                    format_balance(breakdown.total_penalty)
+                );
+                let pct = (breakdown.total_penalty * 100)
+                    / (breakdown.total_net + breakdown.total_penalty);
                 if pct >= 50 {
                     println!(
                         "WARNING: High penalty — {}% of bond value will be burned.",
@@ -1718,6 +1893,7 @@ async fn cmd_producer(
             } else {
                 println!("No penalty — all bonds fully vested.");
             }
+            let total_net = breakdown.total_net;
             println!("Bonds remaining: {}", details.bond_count - count);
             println!();
 
@@ -1753,70 +1929,61 @@ async fn cmd_producer(
             }
         }
 
-        ProducerCommands::ClaimWithdrawal { index } => {
+        ProducerCommands::SimulateWithdrawal { count } => {
             let wallet = Wallet::load(wallet_path)?;
-            let pubkey_hash = wallet.primary_pubkey_hash();
 
-            println!("Claim Withdrawal");
+            println!("Simulated Withdrawal (dry run — no transaction submitted)");
             println!("{:-<60}", "");
             println!();
 
-            // First check producer status to get pending withdrawals
+            if count < 1 {
+                println!("Error: Must simulate at least 1 bond");
+                return Ok(());
+            }
+
             let pk = wallet.addresses()[0].public_key.clone();
-            let producer_info = rpc.get_producer(&pk).await?;
+            let details = rpc.get_bond_details(&pk).await?;
 
-            if producer_info.pending_withdrawals.is_empty() {
-                println!("No pending withdrawals found.");
+            let available = details.bond_count - details.withdrawal_pending_count;
+            if count > available {
+                println!(
+                    "Error: --count must be between 1 and {} (your available bonds)",
+                    available
+                );
                 return Ok(());
             }
 
-            let withdrawal = producer_info
-                .pending_withdrawals
-                .get(index as usize)
-                .ok_or_else(|| anyhow::anyhow!("Withdrawal index {} not found", index))?;
-
-            if !withdrawal.claimable {
-                println!("Error: Withdrawal [{}] is not yet claimable.", index);
-                println!("       Wait for the 7-day delay period to complete.");
-                return Ok(());
+            // Show bond inventory
+            let s = &details.summary;
+            println!("Your bonds ({} total):", details.bond_count);
+            if s.vested > 0 {
+                println!("  {} bonds — vested (0% penalty)", s.vested);
             }
-
-            println!("Claiming withdrawal [{}]:", index);
-            println!("  Bonds:      {}", withdrawal.bond_count);
-            println!("  Net Amount: {}", format_balance(withdrawal.net_amount));
+            if s.q3 > 0 {
+                println!("  {} bonds — Q3 (25% penalty)", s.q3);
+            }
+            if s.q2 > 0 {
+                println!("  {} bonds — Q2 (50% penalty)", s.q2);
+            }
+            if s.q1 > 0 {
+                println!("  {} bonds — Q1 (75% penalty)", s.q1);
+            }
             println!();
 
-            // Parse producer public key
-            let pubkey_bytes = hex::decode(&wallet.addresses()[0].public_key)?;
-            let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
-                .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+            // Calculate and display FIFO breakdown
+            let breakdown = compute_fifo_breakdown(&details, count);
 
-            // Destination is the wallet's pubkey hash
-            let dest_hash = Hash::from_hex(&pubkey_hash)
-                .ok_or_else(|| anyhow::anyhow!("Invalid destination"))?;
-
-            // Create claim-withdrawal transaction
-            let tx = Transaction::new_claim_withdrawal(
-                producer_pubkey,
-                index,
-                withdrawal.net_amount,
-                dest_hash,
-            );
-
-            let tx_hex = hex::encode(tx.serialize());
-            println!("Submitting claim transaction...");
-
-            match rpc.send_transaction(&tx_hex).await {
-                Ok(hash) => {
-                    println!("Withdrawal claimed successfully!");
-                    println!("TX Hash: {}", hash);
-                    println!();
-                    println!("Funds will be available in your wallet shortly.");
-                }
-                Err(e) => {
-                    println!("Error claiming withdrawal: {}", e);
-                }
+            println!("Withdrawing {} bonds (FIFO — oldest first):", count);
+            display_fifo_breakdown(&breakdown);
+            println!();
+            println!("You would receive: {}", format_balance(breakdown.total_net));
+            if breakdown.total_penalty > 0 {
+                println!(
+                    "Penalty burned: {}",
+                    format_balance(breakdown.total_penalty)
+                );
             }
+            println!("Bonds remaining: {}", details.bond_count - count);
         }
 
         ProducerCommands::Exit { force } => {
@@ -2019,12 +2186,10 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
 }
 
 async fn cmd_rewards(
-    wallet_path: &Path,
+    _wallet_path: &Path,
     rpc_endpoint: &str,
     command: RewardsCommands,
 ) -> Result<()> {
-    use crypto::{signature, Hash};
-
     let rpc = RpcClient::new(rpc_endpoint);
 
     // Check connection
@@ -2035,282 +2200,27 @@ async fn cmd_rewards(
 
     match command {
         RewardsCommands::List => {
-            let wallet = Wallet::load(wallet_path)?;
-            let producer_pubkey = &wallet.addresses()[0].public_key;
-
-            println!("Claimable Epoch Rewards");
-            println!("{:-<70}", "");
-            println!();
-
-            match rpc.get_claimable_rewards(producer_pubkey).await {
-                Ok(info) => {
-                    let producer_addr = hex::decode(producer_pubkey)
-                        .ok()
-                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
-                        .unwrap_or_else(|| {
-                            format!(
-                                "{}...{}",
-                                &producer_pubkey[..16],
-                                &producer_pubkey[producer_pubkey.len() - 8..]
-                            )
-                        });
-                    println!("Producer: {}", producer_addr);
-                    println!("Current Height: {}", info.current_height);
-                    println!("Current Epoch:  {}", info.current_epoch);
-                    println!();
-
-                    if info.epochs.is_empty() {
-                        println!("No claimable epochs found.");
-                        println!();
-                        println!("Note: Rewards accumulate each epoch (360 blocks).");
-                        println!("      Only complete epochs can be claimed.");
-                    } else {
-                        println!(
-                            "{:<8} {:<12} {:<12} {:<10} {:<18}",
-                            "Epoch", "Blocks", "Presence", "Rate", "Estimated Reward"
-                        );
-                        println!("{:-<60}", "");
-
-                        for entry in &info.epochs {
-                            println!(
-                                "{:<8} {:<12} {:<12} {:<10} {:<18}",
-                                entry.epoch,
-                                format!("{}/{}", entry.blocks_present, entry.total_blocks),
-                                format!("{}%", entry.presence_rate),
-                                "",
-                                format_balance(entry.estimated_reward)
-                            );
-                        }
-
-                        println!("{:-<60}", "");
-                        println!(
-                            "Claimable Epochs: {}   Total: {}",
-                            info.claimable_count,
-                            format_balance(info.total_estimated_reward)
-                        );
-                        println!();
-                        println!("Use 'doli rewards claim <epoch>' to claim a specific epoch.");
-                        println!("Use 'doli rewards claim-all' to claim all epochs.");
-                    }
-                }
-                Err(e) => {
-                    if e.to_string().contains("not found") {
-                        println!("Producer not found in the network.");
-                        println!("Use 'doli producer register' to become a producer first.");
-                    } else {
-                        println!("Error fetching claimable rewards: {}", e);
-                    }
-                }
-            }
+            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("No claiming needed. Use 'doli balance' to see your rewards.");
+            println!("Use 'doli rewards info' for current epoch details.");
         }
 
-        RewardsCommands::Claim { epoch, recipient } => {
-            let wallet = Wallet::load(wallet_path)?;
-            let keypair = wallet.primary_keypair()?;
-            let producer_pubkey = &wallet.addresses()[0].public_key;
-
-            println!("Claim Epoch Reward");
-            println!("{:-<60}", "");
-            println!();
-            println!("Epoch: {}", epoch);
-
-            // Build the claim transaction
-            match rpc
-                .build_claim_tx(producer_pubkey, epoch, recipient.as_deref())
-                .await
-            {
-                Ok(claim_info) => {
-                    println!("Amount: {}", format_balance(claim_info.amount));
-                    println!("Recipient: {}", claim_info.recipient);
-                    println!();
-
-                    // Sign the transaction
-                    let signing_message = Hash::from_hex(&claim_info.signing_message)
-                        .ok_or_else(|| anyhow::anyhow!("Invalid signing message"))?;
-
-                    let sig = signature::sign_hash(&signing_message, keypair.private_key());
-
-                    // Reconstruct the signed transaction
-                    // The unsigned_tx has a 64-byte zero placeholder for signature at the end of extra_data
-                    let mut tx_bytes = hex::decode(&claim_info.unsigned_tx)
-                        .map_err(|e| anyhow::anyhow!("Invalid unsigned tx hex: {}", e))?;
-
-                    // Replace the last 64 bytes with the actual signature
-                    let sig_bytes = sig.as_bytes();
-                    let tx_len = tx_bytes.len();
-                    tx_bytes[tx_len - 64..].copy_from_slice(sig_bytes);
-
-                    let tx_hex = hex::encode(&tx_bytes);
-
-                    println!("Submitting claim transaction...");
-
-                    match rpc.send_transaction(&tx_hex).await {
-                        Ok(hash) => {
-                            println!("Claim submitted successfully!");
-                            println!("TX Hash: {}", hash);
-                            println!();
-                            println!("Reward will be available after confirmation.");
-                        }
-                        Err(e) => {
-                            println!("Error submitting claim: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    if e.to_string().contains("not yet complete") {
-                        println!("Error: Epoch {} is not yet complete.", epoch);
-                        println!("Wait for the epoch to end before claiming.");
-                    } else if e.to_string().contains("already claimed") {
-                        println!("Error: Epoch {} has already been claimed.", epoch);
-                    } else if e.to_string().contains("No reward") {
-                        println!("Error: No reward to claim for epoch {}.", epoch);
-                        println!("You may not have been present during this epoch.");
-                    } else {
-                        println!("Error building claim: {}", e);
-                    }
-                }
-            }
+        RewardsCommands::Claim {
+            epoch: _,
+            recipient: _,
+        } => {
+            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("No claiming needed. Use 'doli balance' to see your rewards.");
         }
 
-        RewardsCommands::ClaimAll { recipient } => {
-            let wallet = Wallet::load(wallet_path)?;
-            let keypair = wallet.primary_keypair()?;
-            let producer_pubkey = &wallet.addresses()[0].public_key;
-
-            println!("Claim All Epoch Rewards");
-            println!("{:-<60}", "");
-            println!();
-
-            // Get all claimable epochs
-            let claimable = match rpc.get_claimable_rewards(producer_pubkey).await {
-                Ok(info) => info,
-                Err(e) => {
-                    println!("Error fetching claimable rewards: {}", e);
-                    return Ok(());
-                }
-            };
-
-            if claimable.epochs.is_empty() {
-                println!("No claimable epochs found.");
-                return Ok(());
-            }
-
-            println!(
-                "Found {} claimable epoch(s), total: {}",
-                claimable.claimable_count,
-                format_balance(claimable.total_estimated_reward)
-            );
-            println!();
-
-            let mut claimed = 0;
-            let mut total_claimed: u64 = 0;
-
-            for entry in &claimable.epochs {
-                print!("Claiming epoch {}... ", entry.epoch);
-
-                match rpc
-                    .build_claim_tx(producer_pubkey, entry.epoch, recipient.as_deref())
-                    .await
-                {
-                    Ok(claim_info) => {
-                        // Sign the transaction
-                        let signing_message = match Hash::from_hex(&claim_info.signing_message) {
-                            Some(h) => h,
-                            None => {
-                                println!("FAILED (invalid signing message)");
-                                continue;
-                            }
-                        };
-
-                        let sig = signature::sign_hash(&signing_message, keypair.private_key());
-
-                        // Reconstruct the signed transaction
-                        let mut tx_bytes = match hex::decode(&claim_info.unsigned_tx) {
-                            Ok(b) => b,
-                            Err(_) => {
-                                println!("FAILED (invalid tx hex)");
-                                continue;
-                            }
-                        };
-
-                        // Replace the last 64 bytes with the signature
-                        let sig_bytes = sig.as_bytes();
-                        let tx_len = tx_bytes.len();
-                        tx_bytes[tx_len - 64..].copy_from_slice(sig_bytes);
-
-                        let tx_hex = hex::encode(&tx_bytes);
-
-                        match rpc.send_transaction(&tx_hex).await {
-                            Ok(hash) => {
-                                println!("OK ({})", &hash[..16]);
-                                claimed += 1;
-                                total_claimed += claim_info.amount;
-                            }
-                            Err(e) => {
-                                println!("FAILED ({})", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("FAILED ({})", e);
-                    }
-                }
-            }
-
-            println!();
-            println!("{:-<60}", "");
-            println!(
-                "Claimed {} of {} epochs, total: {}",
-                claimed,
-                claimable.claimable_count,
-                format_balance(total_claimed)
-            );
+        RewardsCommands::ClaimAll { recipient: _ } => {
+            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("No claiming needed. Use 'doli balance' to see your rewards.");
         }
 
-        RewardsCommands::History { limit } => {
-            let wallet = Wallet::load(wallet_path)?;
-            let producer_pubkey = &wallet.addresses()[0].public_key;
-
-            println!("Claim History");
-            println!("{:-<70}", "");
-            println!();
-
-            match rpc.get_claim_history(producer_pubkey, limit).await {
-                Ok(history) => {
-                    if history.claims.is_empty() {
-                        println!("No claim history found.");
-                        println!();
-                        println!("Use 'doli rewards list' to see claimable epochs.");
-                    } else {
-                        println!(
-                            "{:<8} {:<18} {:<10} {:<20}",
-                            "Epoch", "Amount", "Height", "TX Hash"
-                        );
-                        println!("{:-<60}", "");
-
-                        for entry in &history.claims {
-                            println!(
-                                "{:<8} {:<18} {:<10} {}...{}",
-                                entry.epoch,
-                                format_balance(entry.amount),
-                                entry.height,
-                                &entry.tx_hash[..8],
-                                &entry.tx_hash[entry.tx_hash.len() - 6..]
-                            );
-                        }
-
-                        println!();
-                        println!(
-                            "Total Claims: {}   Total Claimed: {}",
-                            history.total_claims,
-                            format_balance(history.total_claimed)
-                        );
-                    }
-                }
-                Err(e) => {
-                    println!("Error fetching claim history: {}", e);
-                }
-            }
+        RewardsCommands::History { limit: _ } => {
+            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("No claim history — use 'doli history' to see received rewards.");
         }
 
         RewardsCommands::Info => {
@@ -2558,13 +2468,13 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
 
             match rpc.get_maintainer_set().await {
                 Ok(set) => {
-                    if let Some(members) = set.get("members").and_then(|m| m.as_array()) {
+                    if let Some(maintainers) = set.get("maintainers").and_then(|m| m.as_array()) {
                         let threshold = set.get("threshold").and_then(|t| t.as_u64()).unwrap_or(3);
-                        println!("Threshold: {} of {}", threshold, members.len());
+                        println!("Threshold: {} of {}", threshold, maintainers.len());
                         println!();
 
-                        for (i, member) in members.iter().enumerate() {
-                            let key = member.as_str().unwrap_or("?");
+                        for (i, member) in maintainers.iter().enumerate() {
+                            let key = member.get("pubkey").and_then(|p| p.as_str()).unwrap_or("?");
                             let short = if key.len() > 24 {
                                 format!("{}...{}", &key[..16], &key[key.len() - 8..])
                             } else {
