@@ -695,3 +695,174 @@ When a node is >1000 blocks behind with 3+ peers, it uses snap sync: downloads a
 - State root: `H(H(chain_state) || H(utxo_set) || H(producer_set))` verified by 2+ peers
 - Falls back to header-first sync if <3 peers or quorum fails
 - Logs: `[SNAP_SYNC]` prefix
+
+### Auto-Update System (Release → Sign → Veto → Deploy)
+
+The auto-update system unifies GitHub Releases with maintainer Ed25519 signatures. Both `doli upgrade` (manual CLI) and the node's auto-update loop use the same trust chain: **CHECKSUMS.txt** (per-platform hashes) + **SIGNATURES.json** (3/5 maintainer signatures over CHECKSUMS.txt).
+
+#### Timing Constants
+
+| Parameter | Mainnet/Testnet | Devnet | Code |
+|-----------|----------------|--------|------|
+| **Veto Period** | 2 epochs (~2h, 7200s) | 60s | `crates/core/src/network_params.rs` |
+| **Grace Period** | 1 epoch (~1h, 3600s) | 30s | `crates/core/src/network_params.rs` |
+| **Veto Threshold** | 40% weighted | 40% | `crates/updater/src/lib.rs` |
+| **Required Signatures** | 3 of 5 | 3 of 5 | `crates/updater/src/lib.rs` |
+| **Check Interval** | 6 hours | 10s | `crates/core/src/network_params.rs` |
+
+Env overrides: `DOLI_VETO_PERIOD_SECS`, `DOLI_GRACE_PERIOD_SECS` (all networks).
+
+#### Signing Convention
+
+```
+message = "{version}:{sha256(CHECKSUMS.txt)}"
+```
+
+One signature covers **all platforms** since CHECKSUMS.txt lists per-platform hashes. The `binary_sha256` field in `Release` holds the SHA-256 of CHECKSUMS.txt itself (not a single binary).
+
+#### Full Release Lifecycle
+
+```
+Step 1: CI creates GitHub Release (tag push)
+  └── Builds binaries, generates CHECKSUMS.txt, creates empty SIGNATURES.json scaffold
+
+Step 2: Maintainers sign (3 of 5 required)
+  └── Each runs: doli release sign --version v1.0.27 --key ~/.doli/mainnet/keys/producer_N.json
+  └── Collects signatures into SIGNATURES.json
+  └── Uploads: gh release upload v1.0.27 SIGNATURES.json --clobber
+
+Step 3: Nodes detect new release (auto-update loop, every 6h)
+  └── fetch_from_github() → downloads CHECKSUMS.txt + SIGNATURES.json
+  └── Verifies 3/5 signatures → enters veto period (2 epochs)
+
+Step 4: Veto period (2 epochs, ~2h)
+  └── Producers vote: doli update vote --version 1.0.27 --veto (or --approve)
+  └── If >= 40% weighted veto → REJECTED
+  └── If < 40% → APPROVED
+
+Step 5: Grace period (1 epoch, ~1h)
+  └── Approved update downloaded and verified
+  └── Operators can apply early: doli-node update apply
+  └── Outdated nodes can still produce
+
+Step 6: Enforcement
+  └── Nodes below min_version stop producing (paused, not crashed)
+  └── doli-node update apply to resume
+```
+
+#### Agent Checklist: Publishing a Release
+
+When Ivan asks to "publish a release" or "do an auto-update", follow these steps **in order**:
+
+**Phase 1: Build & Tag** (requires Ivan approval per MANDATORY RULE)
+
+```bash
+# 1. Ensure all changes are committed, tests pass
+cargo build --release && cargo clippy -- -D warnings && cargo fmt --check && cargo test
+
+# 2. Tag the release (Ivan provides version)
+git tag v1.0.XX
+git push origin v1.0.XX
+# This triggers .github/workflows/release.yml → creates GitHub Release with:
+#   - Platform tarballs (.tar.gz)
+#   - CHECKSUMS.txt (SHA-256 of all assets)
+#   - SIGNATURES.json (scaffold with empty signatures array)
+```
+
+**Phase 2: Maintainer Signing** (at least 3 of N1-N5 keys)
+
+```bash
+# Each maintainer signs from their respective node:
+# On omegacortex (N1):
+ssh ilozada@omegacortex.ai "
+  ~/repos/doli/target/release/doli release sign \
+    --version v1.0.XX \
+    --key ~/.doli/mainnet/keys/producer_1.json
+"
+
+# On omegacortex (N2):
+ssh ilozada@omegacortex.ai "
+  ~/repos/doli/target/release/doli release sign \
+    --version v1.0.XX \
+    --key ~/.doli/mainnet/keys/producer_2.json
+"
+
+# On N3 (via jump):
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 '
+  /home/ilozada/doli release sign \
+    --version v1.0.XX \
+    --key /home/ilozada/.doli/mainnet/keys/producer_3.json
+'"
+```
+
+Each command prints a JSON signature block to stdout. Assemble into SIGNATURES.json:
+
+```json
+{
+  "version": "1.0.XX",
+  "checksums_sha256": "<sha256-of-CHECKSUMS.txt>",
+  "signatures": [
+    {"public_key": "202047...", "signature": "aabb..."},
+    {"public_key": "effe88...", "signature": "ccdd..."},
+    {"public_key": "54323c...", "signature": "eeff..."}
+  ]
+}
+```
+
+Upload to the release:
+
+```bash
+gh release upload v1.0.XX SIGNATURES.json --clobber
+```
+
+**Phase 3: Wait for Veto Period** (2 epochs = ~2 hours)
+
+```bash
+# Check update status from any node:
+ssh ilozada@omegacortex.ai "
+  ~/repos/doli/target/release/doli update status
+"
+
+# Or check via RPC:
+curl -s -X POST http://127.0.0.1:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}' | jq .
+```
+
+After ~2 hours with < 40% veto, the update is **APPROVED**.
+
+**Phase 4: Deploy** (follows standard Deployment procedure above)
+
+For consensus-critical changes → stop all nodes, deploy binary, restart.
+For non-consensus changes → rolling restart one node at a time.
+
+The auto-update loop on each node will also apply the update automatically during the grace period. Manual deploy is faster and preferred for our nodes.
+
+#### Manual Upgrade (CLI — no veto, informational signatures)
+
+```bash
+# Upgrade doli CLI + doli-node on the local machine
+doli upgrade                    # latest version
+doli upgrade --version v1.0.27  # specific version
+doli upgrade --yes              # skip confirmation
+
+# Output includes signature verification:
+#   "Verified: 3/5 maintainer signatures on CHECKSUMS.txt"   — signed release
+#   "Warning: only 1/3 required signatures found"             — partially signed
+#   "Note: no maintainer signatures (SIGNATURES.json not found)" — unsigned
+# Signatures are informational only — manual upgrade never blocks.
+```
+
+#### Key Files
+
+| File | Purpose |
+|------|---------|
+| `crates/updater/src/lib.rs` | `Release`, `SignaturesFile`, `MaintainerSignature`, signature verification, constants |
+| `crates/updater/src/download.rs` | `fetch_from_github()`, `download_signatures_json()`, `download_checksums_txt()` |
+| `crates/updater/src/vote.rs` | `VoteTracker`, seniority-weighted veto tracking |
+| `crates/updater/src/apply.rs` | Binary backup, install, rollback, tarball extraction |
+| `crates/updater/src/watchdog.rs` | Post-update crash detection, automatic rollback |
+| `crates/core/src/network_params.rs` | `veto_period_secs`, `grace_period_secs` per network |
+| `bins/cli/src/main.rs` | `doli upgrade`, `doli release sign`, `doli update *` commands |
+| `bins/node/src/updater.rs` | Node-side auto-update loop, veto tracking, enforcement |
+| `.github/workflows/release.yml` | CI: build, package, CHECKSUMS.txt, SIGNATURES.json scaffold |

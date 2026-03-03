@@ -8,7 +8,8 @@
 //! - Free hosting
 
 use crate::{
-    platform_identifier, Release, Result, UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
+    platform_identifier, MaintainerSignature, Release, Result, SignaturesFile, UpdateError,
+    FALLBACK_MIRROR, GITHUB_RELEASES_URL,
 };
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -157,21 +158,23 @@ pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Rel
 
 /// Fetch release info from GitHub API
 ///
-/// 1. Get latest release tag from GitHub API
-/// 2. Download release.json from that release
+/// Builds a `Release` from GitHub Release assets (no release.json needed):
+/// 1. GET /releases/latest from GitHub API
+/// 2. Parse tag_name, body (changelog), published_at
+/// 3. Find CHECKSUMS.txt asset → download → compute SHA-256 of the file itself
+/// 4. Find SIGNATURES.json asset → download → parse as SignaturesFile
+/// 5. Construct Release with checksums_sha256 as the signed hash
 async fn fetch_from_github() -> Result<Option<Release>> {
     use crate::GITHUB_API_URL;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("doli-node") // GitHub requires User-Agent
+        .user_agent("doli-node")
         .build()?;
 
-    // Get latest release info from GitHub API
     let response = client.get(GITHUB_API_URL).send().await?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        // No releases yet
         return Ok(None);
     }
 
@@ -182,19 +185,85 @@ async fn fetch_from_github() -> Result<Option<Release>> {
         )));
     }
 
-    // Parse GitHub API response to get tag name
     let github_release: serde_json::Value = response.json().await?;
     let tag_name = github_release["tag_name"]
         .as_str()
         .ok_or_else(|| UpdateError::DownloadFailed("No tag_name in GitHub response".into()))?;
+    let version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+    let changelog = github_release["body"].as_str().unwrap_or("").to_string();
+    let published_at = github_release["published_at"]
+        .as_str()
+        .and_then(parse_iso8601_timestamp)
+        .unwrap_or(0);
 
-    debug!("Latest GitHub release: {}", tag_name);
+    debug!(
+        "Latest GitHub release: {} (published {})",
+        tag_name, published_at
+    );
 
-    // Download release.json from this release
-    let release_json_url = format!("{}/{}/release.json", GITHUB_RELEASES_URL, tag_name);
-    debug!("Fetching release metadata: {}", release_json_url);
+    let assets = github_release["assets"].as_array();
 
-    fetch_release_from_url(&release_json_url).await.map(Some)
+    // Download CHECKSUMS.txt
+    let checksums_url = assets
+        .and_then(|a| {
+            a.iter()
+                .find(|a| a["name"].as_str() == Some("CHECKSUMS.txt"))
+                .and_then(|a| a["browser_download_url"].as_str())
+        })
+        .ok_or_else(|| {
+            UpdateError::DownloadFailed("CHECKSUMS.txt not found in release assets".into())
+        })?
+        .to_string();
+
+    let checksums_body = download_from_url(&checksums_url).await?;
+    let checksums_sha256 = {
+        let mut hasher = Sha256::new();
+        hasher.update(&checksums_body);
+        hex::encode(hasher.finalize())
+    };
+
+    // Try to download SIGNATURES.json (optional — may not exist yet)
+    let signatures: Vec<MaintainerSignature> = if let Some(sigs_url) = assets.and_then(|a| {
+        a.iter()
+            .find(|a| a["name"].as_str() == Some("SIGNATURES.json"))
+            .and_then(|a| a["browser_download_url"].as_str())
+    }) {
+        match download_from_url(sigs_url).await {
+            Ok(body) => match serde_json::from_slice::<SignaturesFile>(&body) {
+                Ok(sf) => {
+                    info!(
+                        "SIGNATURES.json: {} signatures for v{}",
+                        sf.signatures.len(),
+                        sf.version
+                    );
+                    sf.signatures
+                }
+                Err(e) => {
+                    warn!("Failed to parse SIGNATURES.json: {}", e);
+                    vec![]
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download SIGNATURES.json: {}", e);
+                vec![]
+            }
+        }
+    } else {
+        debug!("No SIGNATURES.json in release assets");
+        vec![]
+    };
+
+    Ok(Some(Release {
+        version: version.to_string(),
+        binary_sha256: checksums_sha256,
+        binary_url_template: format!(
+            "{}/{}/doli-node-{{platform}}",
+            GITHUB_RELEASES_URL, tag_name
+        ),
+        changelog,
+        published_at,
+        signatures,
+    }))
 }
 
 /// Fetch release metadata from a specific URL
@@ -342,6 +411,103 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
         expected_hash,
         changelog,
     })
+}
+
+/// Parse an ISO 8601 timestamp (e.g. "2026-03-01T12:00:00Z") to Unix timestamp.
+/// Only handles the `YYYY-MM-DDThh:mm:ssZ` format returned by GitHub API.
+fn parse_iso8601_timestamp(s: &str) -> Option<u64> {
+    // Minimal parser for GitHub's "2026-03-01T12:00:00Z" format
+    let s = s.trim_end_matches('Z');
+    let (date_part, time_part) = s.split_once('T')?;
+    let mut date_iter = date_part.split('-');
+    let year: i64 = date_iter.next()?.parse().ok()?;
+    let month: i64 = date_iter.next()?.parse().ok()?;
+    let day: i64 = date_iter.next()?.parse().ok()?;
+
+    let mut time_iter = time_part.split(':');
+    let hour: i64 = time_iter.next()?.parse().ok()?;
+    let min: i64 = time_iter.next()?.parse().ok()?;
+    let sec: i64 = time_iter.next()?.parse().ok()?;
+
+    // Days from year 1970 to the given year (simplified, no leap second)
+    let mut days: i64 = 0;
+    for y in 1970..year {
+        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+    }
+    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    for &d in month_days.iter().take((month - 1) as usize) {
+        days += d as i64;
+    }
+    days += day - 1;
+
+    let timestamp = days * 86400 + hour * 3600 + min * 60 + sec;
+    Some(timestamp as u64)
+}
+
+/// Download SIGNATURES.json for a specific release version
+///
+/// Returns `None` if the asset doesn't exist. Used by `doli upgrade` to
+/// show signature verification status.
+pub async fn download_signatures_json(version: &str) -> Result<Option<SignaturesFile>> {
+    let tag = if version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{}", version)
+    };
+
+    let url = format!("{}/{}/SIGNATURES.json", GITHUB_RELEASES_URL, tag);
+    debug!("Fetching SIGNATURES.json: {}", url);
+
+    match download_from_url(&url).await {
+        Ok(body) => {
+            let sf: SignaturesFile = serde_json::from_slice(&body)?;
+            Ok(Some(sf))
+        }
+        Err(UpdateError::DownloadFailed(msg)) if msg.contains("404") || msg.contains("HTTP") => {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Download CHECKSUMS.txt for a specific release version and return its content + SHA-256
+pub async fn download_checksums_txt(version: &str) -> Result<(String, String)> {
+    let tag = if version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{}", version)
+    };
+
+    let url = format!("{}/{}/CHECKSUMS.txt", GITHUB_RELEASES_URL, tag);
+    debug!("Fetching CHECKSUMS.txt: {}", url);
+
+    let body = download_from_url(&url).await?;
+    let content = String::from_utf8_lossy(&body).to_string();
+    let sha256 = {
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        hex::encode(hasher.finalize())
+    };
+
+    Ok((content, sha256))
 }
 
 #[cfg(test)]
