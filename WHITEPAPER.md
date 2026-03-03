@@ -319,12 +319,12 @@ Block rewards halve each era (~4 years), making early participation more rewardi
 
 ### 6.3. Bond Stacking
 
-Producers can increase their stake up to 10,000 times the base bond unit.
+Producers can increase their stake up to 3,000 times the base bond unit.
 
 ```
 BOND_UNIT = 10 DOLI
 MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
-MAX_STAKE = 10,000 × BOND_UNIT (100,000 DOLI)
+MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
 Selection uses deterministic round-robin, not probabilistic lottery. Each bond unit grants one ticket in the rotation:
@@ -349,18 +349,18 @@ At 1 DOLI reward per block:
 |-----------------------|--------------------------|
 | Bond unit             | 10 DOLI                  |
 | Min stake             | 10 DOLI (1 bond)         |
-| Max stake             | 100,000 DOLI (10,000 bonds)|
+| Max stake             | 30,000 DOLI (3,000 bonds) |
 | Block reward (Era 1)  | 1 DOLI                   |
 
 #### Accessibility at Scale
 
-At network maturity (60,000 total bonds across all producers):
+At network maturity (18,000 total bonds across all producers):
 
 | Your Stake | Bonds | Blocks/Week | Income/Week | Hardware |
 |-----------|-------|-------------|-------------|----------|
-| 10 DOLI   | 1     | ~1          | ~1 DOLI     | Any CPU  |
-| 100 DOLI  | 10    | ~10         | ~10 DOLI    | Any CPU  |
-| 1,000 DOLI| 100   | ~100        | ~100 DOLI   | Any CPU  |
+| 10 DOLI   | 1     | ~3          | ~3 DOLI     | Any CPU  |
+| 100 DOLI  | 10    | ~34         | ~34 DOLI    | Any CPU  |
+| 1,000 DOLI| 100   | ~336        | ~336 DOLI   | Any CPU  |
 
 No mining rigs. No staking pools. No minimum hardware requirements. A \/month VPS is sufficient to produce blocks and earn deterministic rewards.
 
@@ -547,7 +547,7 @@ Week 18:  64 bonds   →  213 DOLI/week
 Week 24:  256 bonds  →  853 DOLI/week
 ```
 
-Starting with 10 DOLI, a disciplined producer who reinvests all rewards reaches 10,000 DOLI in stake within months — not years. This trajectory is calculable before the first block is produced.
+Starting with 10 DOLI, a disciplined producer who reinvests all rewards reaches 30,000 DOLI in stake within months — not years. This trajectory is calculable before the first block is produced.
 
 This creates a property unique among consensus systems: **the earliest participants earn the highest absolute returns, but the growth rate is equal for all.** Late entrants face a larger network (longer doubling time) but benefit from a more secure and valuable network. This mirrors Bitcoin's early mining dynamics, with a critical difference: DOLI's growth is deterministic and predictable, not probabilistic.
 
