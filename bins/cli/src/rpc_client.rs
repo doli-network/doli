@@ -190,6 +190,7 @@ fn default_bond_count() -> u32 {
 }
 
 /// Pending withdrawal information
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingWithdrawalInfo {
@@ -201,6 +202,55 @@ pub struct PendingWithdrawalInfo {
     pub net_amount: u64,
     /// Whether this withdrawal can be claimed now
     pub claimable: bool,
+}
+
+/// Bond details response (per-bond granularity)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondDetailsInfo {
+    /// Total bond count
+    pub bond_count: u32,
+    /// Total staked amount (base units)
+    pub total_staked: u64,
+    /// Summary by vesting quarter
+    pub summary: BondsSummaryInfo,
+    /// Per-bond details (sorted oldest first)
+    #[serde(default)]
+    pub bonds: Vec<BondEntryInfo>,
+    /// Bonds pending withdrawal this epoch
+    #[serde(default)]
+    pub withdrawal_pending_count: u32,
+}
+
+/// Bond summary by vesting quarter
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondsSummaryInfo {
+    /// Bonds in Q1 (0-6h, 75% penalty)
+    pub q1: u32,
+    /// Bonds in Q2 (6-12h, 50% penalty)
+    pub q2: u32,
+    /// Bonds in Q3 (12-18h, 25% penalty)
+    pub q3: u32,
+    /// Fully vested bonds (18h+, 0% penalty)
+    pub vested: u32,
+}
+
+/// Individual bond entry info
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BondEntryInfo {
+    /// Slot when this bond was created
+    pub creation_slot: u32,
+    /// Amount staked (base units)
+    pub amount: u64,
+    /// Age in slots
+    pub age_slots: u64,
+    /// Current penalty percentage (0-75)
+    pub penalty_pct: u8,
+    /// Whether this bond is fully vested
+    pub vested: bool,
 }
 
 /// RPC client for communicating with DOLI nodes
@@ -341,6 +391,16 @@ impl RpcClient {
         }
 
         self.call("getProducer", Params { public_key }).await
+    }
+
+    /// Get per-bond vesting details for a producer
+    pub async fn get_bond_details(&self, public_key: &str) -> Result<BondDetailsInfo> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            public_key: &'a str,
+        }
+
+        self.call("getBondDetails", Params { public_key }).await
     }
 
     /// Get all producers in the network
