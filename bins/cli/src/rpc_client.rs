@@ -164,6 +164,7 @@ pub struct HistoryEntry {
 }
 
 /// Producer information
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProducerInfo {
@@ -218,6 +219,7 @@ pub struct PendingUpdateInfo {
 }
 
 /// Bond details response (per-bond granularity)
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BondDetailsInfo {
@@ -233,6 +235,20 @@ pub struct BondDetailsInfo {
     /// Bonds pending withdrawal this epoch
     #[serde(default)]
     pub withdrawal_pending_count: u32,
+    /// Vesting quarter duration in slots (e.g. 2160 = 6h)
+    #[serde(default = "default_vesting_quarter_slots")]
+    pub vesting_quarter_slots: u64,
+    /// Full vesting period in slots (e.g. 8640 = 1 day)
+    #[serde(default = "default_vesting_period_slots")]
+    pub vesting_period_slots: u64,
+}
+
+fn default_vesting_quarter_slots() -> u64 {
+    2_160
+}
+
+fn default_vesting_period_slots() -> u64 {
+    8_640
 }
 
 /// Bond summary by vesting quarter
@@ -264,6 +280,9 @@ pub struct BondEntryInfo {
     pub penalty_pct: u8,
     /// Whether this bond is fully vested
     pub vested: bool,
+    /// Slot when this bond fully vests (creation_slot + vesting_period)
+    #[serde(default)]
+    pub maturation_slot: u64,
 }
 
 /// RPC client for communicating with DOLI nodes
@@ -466,76 +485,7 @@ impl RpcClient {
         self.call("getBlockByHash", Params { hash }).await
     }
 
-    // ==================== Reward/Claim Methods ====================
-
-    /// Get claimable rewards for a producer
-    pub async fn get_claimable_rewards(&self, producer: &str) -> Result<ClaimableRewardsResponse> {
-        #[derive(Serialize)]
-        struct Params<'a> {
-            producer: &'a str,
-        }
-
-        self.call("getClaimableRewards", Params { producer }).await
-    }
-
-    /// Get claim history for a producer
-    pub async fn get_claim_history(
-        &self,
-        producer: &str,
-        limit: usize,
-    ) -> Result<ClaimHistoryResponse> {
-        #[derive(Serialize)]
-        struct Params<'a> {
-            producer: &'a str,
-            limit: usize,
-        }
-
-        self.call("getClaimHistory", Params { producer, limit })
-            .await
-    }
-
-    /// Estimate reward for a specific epoch
-    #[allow(dead_code)]
-    pub async fn estimate_epoch_reward(
-        &self,
-        producer: &str,
-        epoch: u64,
-    ) -> Result<RewardEstimateResponse> {
-        #[derive(Serialize)]
-        struct Params<'a> {
-            producer: &'a str,
-            epoch: u64,
-        }
-
-        self.call("estimateEpochReward", Params { producer, epoch })
-            .await
-    }
-
-    /// Build an unsigned claim transaction
-    pub async fn build_claim_tx(
-        &self,
-        producer: &str,
-        epoch: u64,
-        recipient: Option<&str>,
-    ) -> Result<BuildClaimTxResponse> {
-        #[derive(Serialize)]
-        struct Params<'a> {
-            producer: &'a str,
-            epoch: u64,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            recipient: Option<&'a str>,
-        }
-
-        self.call(
-            "buildClaimTx",
-            Params {
-                producer,
-                epoch,
-                recipient,
-            },
-        )
-        .await
-    }
+    // ==================== Reward/Epoch Methods ====================
 
     /// Get current reward epoch information
     pub async fn get_epoch_info(&self) -> Result<EpochInfoResponse> {
@@ -590,117 +540,6 @@ pub struct BlockInfo {
 }
 
 // ==================== Reward/Claim Types ====================
-
-/// A single claimable epoch entry
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimableEpochEntry {
-    /// Epoch number
-    pub epoch: u64,
-    /// Number of blocks where producer was present
-    pub blocks_present: u64,
-    /// Total blocks in the epoch
-    pub total_blocks: u64,
-    /// Presence rate as percentage (0-100)
-    pub presence_rate: u8,
-    /// Estimated reward amount (in base units)
-    pub estimated_reward: u64,
-}
-
-/// Response for getClaimableRewards
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimableRewardsResponse {
-    /// Producer public key
-    pub producer: String,
-    /// Current block height
-    pub current_height: u64,
-    /// Current reward epoch
-    pub current_epoch: u64,
-    /// Total claimable epochs
-    pub claimable_count: usize,
-    /// Total estimated reward across all unclaimed epochs
-    pub total_estimated_reward: u64,
-    /// List of claimable epochs
-    pub epochs: Vec<ClaimableEpochEntry>,
-}
-
-/// A single claim history entry
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimHistoryEntry {
-    /// Epoch that was claimed
-    pub epoch: u64,
-    /// Transaction hash that executed the claim
-    pub tx_hash: String,
-    /// Block height where claim was confirmed
-    pub height: u64,
-    /// Amount claimed (in base units)
-    pub amount: u64,
-    /// Timestamp when claimed
-    pub timestamp: u64,
-}
-
-/// Response for getClaimHistory
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimHistoryResponse {
-    /// Producer public key
-    pub producer: String,
-    /// Total number of claims made
-    pub total_claims: usize,
-    /// Total amount claimed
-    pub total_claimed: u64,
-    /// List of claim entries (most recent first)
-    pub claims: Vec<ClaimHistoryEntry>,
-}
-
-/// Response for estimateEpochReward
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RewardEstimateResponse {
-    /// Producer public key
-    pub producer: String,
-    /// Epoch number
-    pub epoch: u64,
-    /// Whether epoch is complete
-    pub is_complete: bool,
-    /// Whether epoch is already claimed
-    pub is_claimed: bool,
-    /// Number of blocks where producer was present
-    pub blocks_present: u64,
-    /// Total blocks in epoch
-    pub total_blocks: u64,
-    /// Presence rate as percentage
-    pub presence_rate: u8,
-    /// Block reward rate
-    pub block_reward: u64,
-    /// Estimated reward amount
-    pub estimated_reward: u64,
-    /// Average producer weight per block
-    pub average_weight: u64,
-}
-
-/// Response for buildClaimTx
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildClaimTxResponse {
-    /// Epoch being claimed
-    pub epoch: u64,
-    /// Calculated reward amount
-    pub amount: u64,
-    /// Recipient address hash
-    pub recipient: String,
-    /// Raw unsigned transaction (hex)
-    pub unsigned_tx: String,
-    /// Message to sign (hex)
-    pub signing_message: String,
-}
 
 /// Response for getEpochInfo
 #[derive(Debug, Deserialize)]
