@@ -339,6 +339,25 @@ impl RocksDbUtxoStore {
         buf
     }
 
+    /// Iterate all UTXO entries as `(Outpoint, UtxoEntry)` pairs.
+    pub fn iter_entries(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut result = Vec::new();
+        for (key, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let (Some(outpoint), Ok(entry)) = (
+                Outpoint::from_bytes(&key),
+                bincode::deserialize::<UtxoEntry>(&value),
+            ) {
+                result.push((outpoint, entry));
+            }
+        }
+        result
+    }
+
     /// Bulk import from an in-memory HashMap (for migration).
     ///
     /// Clears existing data and writes all entries from the iterator.
