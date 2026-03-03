@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772422457,
-    "message": "Genesis v2 - Epoch-deferred ProducerSet - fork-safe scheduling",
+    "timestamp": 1772508900,
+    "message": "Genesis v3 - JSON ProducerSet serialization - version-safe upgrades",
     "initial_reward": 100000000
   },
   "consensus": {
