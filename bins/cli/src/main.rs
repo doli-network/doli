@@ -20,6 +20,7 @@ use wallet::Wallet;
 #[derive(Parser)]
 #[command(name = "doli")]
 #[command(about = "DOLI wallet CLI", long_about = None)]
+#[command(version = env!("DOLI_VERSION_STRING"))]
 struct Cli {
     /// Wallet file path
     #[arg(short, long, default_value = "~/.doli/wallet.json")]
