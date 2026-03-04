@@ -1497,6 +1497,19 @@ async fn cmd_producer(
                 return Ok(());
             }
 
+            // Check if already registered (WHITEPAPER: "public key is not already registered")
+            let pk_hex = &wallet.addresses()[0].public_key;
+            if let Ok(info) = rpc.get_producer(pk_hex).await {
+                if info.status == "active" || info.status == "Active" {
+                    println!("Error: This key is already registered as an active producer.");
+                    println!("  Public key: {}", pk_hex);
+                    println!("  Bonds: {}", info.bond_count);
+                    println!();
+                    println!("Use 'doli producer add-bond' to increase your bond count.");
+                    return Ok(());
+                }
+            }
+
             // Get network parameters from node (bond_unit is network-specific)
             let chain_info = rpc.get_chain_info().await?;
             let network_params = rpc.get_network_params().await?;
