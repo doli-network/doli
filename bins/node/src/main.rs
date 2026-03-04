@@ -493,7 +493,10 @@ async fn main() -> Result<()> {
                 enabled: !no_auto_update,
                 notify_only: update_notify_only,
                 auto_rollback: !no_auto_rollback,
-                ..Default::default()
+                check_interval_secs: network.update_check_interval_secs(),
+                veto_period_secs: network.veto_period_secs(),
+                grace_period_secs: network.grace_period_secs(),
+                custom_url: None,
             };
             run_node(
                 network,
@@ -556,7 +559,12 @@ async fn main() -> Result<()> {
                 &data_dir,
                 false,
                 None,
-                UpdateConfig::default(),
+                UpdateConfig {
+                    check_interval_secs: network.update_check_interval_secs(),
+                    veto_period_secs: network.veto_period_secs(),
+                    grace_period_secs: network.grace_period_secs(),
+                    ..Default::default()
+                },
                 None,
                 None, // external_address
                 None,
