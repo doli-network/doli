@@ -4456,32 +4456,30 @@ impl Node {
                     // network latency or hash luck.
 
                     // Build sorted list of known producers.
-                    // Primary source: GSet CRDT (persistent, converges via signed gossip).
-                    // Fallback: known_producers Vec (non-persistent, rebuilt from peer status).
-                    let gset_producers = {
-                        let gset = self.producer_gset.read().await;
-                        gset.active_producers(7200) // 2h liveness window
-                    };
-                    let mut known_producers: Vec<PublicKey> = if !gset_producers.is_empty() {
-                        gset_producers
-                    } else {
-                        let known = self.known_producers.read().await;
-                        known.clone()
-                    };
-
-                    // During genesis, use the registered producer set (from chainspec)
-                    // instead of relying on gossip discovery, which may not have
-                    // converged yet. This ensures all nodes agree on the producer
-                    // list from the start, preventing independent production and forks.
-                    if in_genesis {
+                    // During genesis: use ONLY the on-chain registered producer set.
+                    // The GSet is non-deterministic (gossip convergence varies per node),
+                    // so using it as the round-robin denominator causes slot % N disagree-
+                    // ments and missed slots when nodes have different GSet sizes.
+                    // Outside genesis: use GSet for discovery-based bootstrap.
+                    let mut known_producers: Vec<PublicKey> = if in_genesis {
                         let producers = self.producer_set.read().await;
-                        let active = producers.active_producers_at_height(height);
-                        for p in &active {
-                            if !known_producers.contains(&p.public_key) {
-                                known_producers.push(p.public_key);
-                            }
+                        producers
+                            .active_producers_at_height(height)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect()
+                    } else {
+                        let gset_producers = {
+                            let gset = self.producer_gset.read().await;
+                            gset.active_producers(7200) // 2h liveness window
+                        };
+                        if !gset_producers.is_empty() {
+                            gset_producers
+                        } else {
+                            let known = self.known_producers.read().await;
+                            known.clone()
                         }
-                    }
+                    };
 
                     // Always include ourselves
                     if !known_producers.iter().any(|p| p == &our_pubkey) {
