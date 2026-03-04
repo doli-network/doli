@@ -1157,96 +1157,210 @@ fn find_doli_node_path() -> Option<std::path::PathBuf> {
             }
         }
     }
+
+    // Fallback: check common install paths
+    for path in &[
+        "/usr/local/bin/doli-node",
+        "/opt/doli/target/release/doli-node",
+    ] {
+        let p = std::path::PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
     None
 }
 
-/// Detect and restart a running doli-node service
+/// Detect and restart a running doli-node service (3-tier detection)
 fn restart_doli_service() {
-    #[cfg(target_os = "macos")]
-    {
-        // Check launchd for doli services
-        if let Ok(output) = std::process::Command::new("launchctl")
-            .args(["list"])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let services: Vec<&str> = stdout
-                .lines()
-                .filter(|line| line.contains("doli"))
-                .filter_map(|line| line.split_whitespace().last())
-                .collect();
-
-            if services.is_empty() {
-                println!("No running doli-node service found. Restart manually if needed.");
-                return;
-            }
-
-            for label in &services {
-                println!("Restarting service: {}", label);
-                let result = std::process::Command::new("launchctl")
-                    .args(["kickstart", "-k", &format!("gui/{}/{}", get_uid(), label)])
-                    .status();
-                match result {
-                    Ok(s) if s.success() => println!("  Restarted {}.", label),
-                    _ => {
-                        // Fallback: stop + start
-                        let _ = std::process::Command::new("launchctl")
-                            .args(["stop", label])
-                            .status();
-                        let _ = std::process::Command::new("launchctl")
-                            .args(["start", label])
-                            .status();
-                        println!("  Restarted {} (stop+start).", label);
-                    }
-                }
-            }
-        }
-    }
-
+    // Tier 1: systemd (Linux) — list-unit-files finds ALL installed services, not just running
     #[cfg(target_os = "linux")]
     {
-        // Check systemd for doli services
-        if let Ok(output) = std::process::Command::new("systemctl")
-            .args([
-                "list-units",
-                "--type=service",
-                "--state=running",
-                "--no-pager",
-            ])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let services: Vec<&str> = stdout
-                .lines()
-                .filter(|line| line.contains("doli"))
-                .filter_map(|line| line.split_whitespace().next())
-                .collect();
-
-            if services.is_empty() {
-                println!("No running doli-node service found. Restart manually if needed.");
-                return;
-            }
-
-            for unit in &services {
-                println!("Restarting service: {}", unit);
-                let result = std::process::Command::new("sudo")
-                    .args(["systemctl", "restart", unit])
-                    .status();
-                match result {
-                    Ok(s) if s.success() => println!("  Restarted {}.", unit),
-                    _ => println!(
-                        "  Failed to restart {}. Run: sudo systemctl restart {}",
-                        unit, unit
-                    ),
-                }
-            }
+        if try_restart_systemd() {
+            return;
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    // Tier 2: launchd (macOS) — launchctl list shows all loaded agents
+    #[cfg(target_os = "macos")]
     {
-        println!("Service restart not supported on this platform. Restart manually.");
+        if try_restart_launchd() {
+            return;
+        }
     }
+
+    // Tier 3: Process fallback (all platforms)
+    if try_restart_process() {
+        return;
+    }
+
+    println!("No doli-node service or process found. Restart manually if needed.");
+}
+
+/// Tier 1: Detect and restart doli-node via systemd (finds stopped/enabled services too)
+#[cfg(target_os = "linux")]
+fn try_restart_systemd() -> bool {
+    let output = match std::process::Command::new("systemctl")
+        .args(["list-unit-files", "--type=service", "--no-pager"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let units: Vec<String> = stdout
+        .lines()
+        .filter(|line| line.contains("doli"))
+        .filter_map(|line| {
+            // First column is the unit file name (e.g. "doli-mainnet-node1.service")
+            line.split_whitespace().next().map(|s| s.to_string())
+        })
+        .collect();
+
+    if units.is_empty() {
+        return false;
+    }
+
+    let mut any_ok = false;
+    for unit in &units {
+        println!("Restarting service: {}", unit);
+        let result = std::process::Command::new("sudo")
+            .args(["systemctl", "restart", unit])
+            .status();
+        match result {
+            Ok(s) if s.success() => {
+                println!("  Restarted {}.", unit);
+                any_ok = true;
+            }
+            _ => println!(
+                "  Failed to restart {}. Run: sudo systemctl restart {}",
+                unit, unit
+            ),
+        }
+    }
+    any_ok
+}
+
+/// Tier 2: Detect and restart doli-node via launchd
+#[cfg(target_os = "macos")]
+fn try_restart_launchd() -> bool {
+    let output = match std::process::Command::new("launchctl")
+        .args(["list"])
+        .output()
+    {
+        Ok(o) => o,
+        _ => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let services: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.contains("doli"))
+        .filter_map(|line| line.split_whitespace().last())
+        .collect();
+
+    if services.is_empty() {
+        return false;
+    }
+
+    let mut any_ok = false;
+    for label in &services {
+        println!("Restarting service: {}", label);
+        let result = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &format!("gui/{}/{}", get_uid(), label)])
+            .status();
+        match result {
+            Ok(s) if s.success() => {
+                println!("  Restarted {}.", label);
+                any_ok = true;
+            }
+            _ => {
+                // Fallback: stop + start
+                let _ = std::process::Command::new("launchctl")
+                    .args(["stop", label])
+                    .status();
+                let _ = std::process::Command::new("launchctl")
+                    .args(["start", label])
+                    .status();
+                println!("  Restarted {} (stop+start).", label);
+                any_ok = true;
+            }
+        }
+    }
+    any_ok
+}
+
+/// Tier 3: Detect doli-node process via pgrep and restart it
+fn try_restart_process() -> bool {
+    // pgrep -a on Linux shows PID + full cmdline; pgrep -fl on macOS does the same
+    let pgrep_args = if cfg!(target_os = "macos") {
+        vec!["-fl", "doli-node"]
+    } else {
+        vec!["-a", "doli-node"]
+    };
+
+    let output = match std::process::Command::new("pgrep")
+        .args(&pgrep_args)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return false;
+    }
+
+    let mut any_ok = false;
+    for line in &lines {
+        // Format: "<PID> <full command line>"
+        let mut parts = line.splitn(2, char::is_whitespace);
+        let pid_str = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
+        let cmdline = match parts.next() {
+            Some(c) => c.trim(),
+            None => continue,
+        };
+
+        println!("Found doli-node process (PID {}): {}", pid_str, cmdline);
+        println!("  Sending SIGTERM...");
+
+        // Kill the process gracefully
+        let kill_ok = std::process::Command::new("kill")
+            .arg(pid_str)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !kill_ok {
+            println!("  Failed to kill PID {}. May need sudo.", pid_str);
+            continue;
+        }
+
+        // Wait for clean shutdown
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Respawn with the same command line, detached
+        println!("  Respawning: {}", cmdline);
+        let spawn_result = std::process::Command::new("sh")
+            .args(["-c", &format!("nohup {} > /dev/null 2>&1 &", cmdline)])
+            .status();
+
+        match spawn_result {
+            Ok(s) if s.success() => {
+                println!("  Respawned doli-node.");
+                any_ok = true;
+            }
+            _ => println!("  Failed to respawn. Start manually: {}", cmdline),
+        }
+    }
+    any_ok
 }
 
 /// Get current user's UID (for launchctl kickstart)
