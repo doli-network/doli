@@ -167,6 +167,12 @@ enum Commands {
         #[command(subcommand)]
         command: ReleaseCommands,
     },
+
+    /// Protocol activation commands (on-chain consensus upgrades)
+    Protocol {
+        #[command(subcommand)]
+        command: ProtocolCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -336,6 +342,49 @@ enum ReleaseCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ProtocolCommands {
+    /// Sign a protocol activation (one maintainer at a time)
+    ///
+    /// Signs "activate:{version}:{epoch}" with a producer key.
+    /// Output is a JSON signature block. Collect 3/5 and pass to `protocol activate`.
+    Sign {
+        /// Protocol version to activate (e.g., 2)
+        #[arg(long)]
+        version: u32,
+
+        /// Epoch at which activation occurs
+        #[arg(long)]
+        epoch: u64,
+
+        /// Path to producer key file (overrides -w wallet)
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
+
+    /// Submit a protocol activation transaction (requires 3/5 signatures)
+    ///
+    /// Reads signature blocks from a JSON file, builds the ProtocolActivation tx,
+    /// and submits it to the network.
+    Activate {
+        /// Protocol version to activate (e.g., 2)
+        #[arg(long)]
+        version: u32,
+
+        /// Epoch at which activation occurs
+        #[arg(long)]
+        epoch: u64,
+
+        /// Description of consensus changes
+        #[arg(long)]
+        description: String,
+
+        /// Path to JSON file containing collected signatures
+        #[arg(long)]
+        signatures: PathBuf,
+    },
+}
+
 /// Expand `~` or `~/...` to the user's home directory.
 /// Shell tilde expansion doesn't happen inside Rust — clap default values
 /// like `~/.doli/wallet.json` arrive as literal strings.
@@ -417,6 +466,9 @@ async fn main() -> Result<()> {
         }
         Commands::Release { command } => {
             cmd_release(&wallet, command).await?;
+        }
+        Commands::Protocol { command } => {
+            cmd_protocol(&wallet, &cli.rpc, command).await?;
         }
     }
 
@@ -1140,6 +1192,165 @@ async fn cmd_release_sign(
     eprintln!();
     eprintln!("To assemble SIGNATURES.json, collect 3+ signatures and upload:");
     eprintln!("  gh release upload v{} SIGNATURES.json", version_bare);
+
+    Ok(())
+}
+
+async fn cmd_protocol(wallet_path: &Path, rpc_url: &str, command: ProtocolCommands) -> Result<()> {
+    match command {
+        ProtocolCommands::Sign {
+            version,
+            epoch,
+            key,
+        } => {
+            cmd_protocol_sign(wallet_path, version, epoch, key)?;
+        }
+        ProtocolCommands::Activate {
+            version,
+            epoch,
+            description,
+            signatures,
+        } => {
+            cmd_protocol_activate(rpc_url, version, epoch, description, signatures).await?;
+        }
+    }
+    Ok(())
+}
+
+fn cmd_protocol_sign(
+    wallet_path: &Path,
+    version: u32,
+    epoch: u64,
+    key_path: Option<PathBuf>,
+) -> Result<()> {
+    let key_file = key_path.as_deref().unwrap_or(wallet_path);
+    let w = Wallet::load(key_file)?;
+    let keypair = w.primary_keypair()?;
+    let pubkey_hex = keypair.public_key().to_hex();
+
+    // Build signing message: "activate:{version}:{epoch}"
+    let message = format!("activate:{}:{}", version, epoch);
+    let msg_bytes = message.as_bytes();
+
+    // Sign with Ed25519
+    let sig = crypto::signature::sign(msg_bytes, keypair.private_key());
+
+    let output = serde_json::json!({
+        "public_key": pubkey_hex,
+        "signature": hex::encode(sig.as_bytes()),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    eprintln!();
+    eprintln!(
+        "Signed protocol v{} activation at epoch {} with key {}...{}",
+        version,
+        epoch,
+        &pubkey_hex[..8],
+        &pubkey_hex[pubkey_hex.len() - 8..]
+    );
+    eprintln!("Message: \"{}\"", message);
+    eprintln!();
+    eprintln!("Collect 3/5 signatures into a JSON array file, then run:");
+    eprintln!(
+        "  doli protocol activate --version {} --epoch {} --description \"...\" --signatures sigs.json",
+        version, epoch
+    );
+
+    Ok(())
+}
+
+async fn cmd_protocol_activate(
+    rpc_url: &str,
+    version: u32,
+    epoch: u64,
+    description: String,
+    signatures_path: PathBuf,
+) -> Result<()> {
+    use crypto::{PublicKey, Signature};
+    use doli_core::maintainer::{MaintainerSignature, ProtocolActivationData};
+    use doli_core::Transaction;
+
+    println!("Protocol Activation");
+    println!("{:-<60}", "");
+    println!("  Version: {}", version);
+    println!("  Epoch:   {}", epoch);
+    println!("  Desc:    {}", description);
+    println!();
+
+    // Read signatures file
+    let sigs_json = std::fs::read_to_string(&signatures_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", signatures_path.display(), e))?;
+
+    let sigs: Vec<serde_json::Value> = serde_json::from_str(&sigs_json)
+        .map_err(|e| anyhow::anyhow!("Invalid JSON in signatures file: {}", e))?;
+
+    if sigs.len() < 3 {
+        anyhow::bail!(
+            "Need at least 3 signatures, got {}. Collect more with `doli protocol sign`.",
+            sigs.len()
+        );
+    }
+
+    // Parse signatures
+    let mut maintainer_sigs = Vec::new();
+    for (i, sig_val) in sigs.iter().enumerate() {
+        let pk_hex = sig_val["public_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Signature {} missing public_key", i))?;
+        let sig_hex = sig_val["signature"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Signature {} missing signature", i))?;
+
+        let pubkey = PublicKey::from_hex(pk_hex)
+            .map_err(|e| anyhow::anyhow!("Invalid public key in signature {}: {}", i, e))?;
+        let sig_bytes =
+            hex::decode(sig_hex).map_err(|e| anyhow::anyhow!("Invalid sig hex {}: {}", i, e))?;
+        let signature = Signature::try_from_slice(&sig_bytes)
+            .map_err(|e| anyhow::anyhow!("Invalid signature {}: {}", i, e))?;
+
+        println!(
+            "  Sig {}: {}...{}",
+            i + 1,
+            &pk_hex[..8],
+            &pk_hex[pk_hex.len() - 8..]
+        );
+        maintainer_sigs.push(MaintainerSignature::new(pubkey, signature));
+    }
+    println!();
+
+    // Build ProtocolActivationData
+    let data = ProtocolActivationData::new(version, epoch, description, maintainer_sigs);
+
+    // Verify signing message matches what signers signed
+    let expected_msg = data.signing_message();
+    println!(
+        "Signing message: \"{}\"",
+        String::from_utf8_lossy(&expected_msg)
+    );
+
+    // Build transaction
+    let tx = Transaction::new_protocol_activation(data);
+    let tx_hex = hex::encode(tx.serialize());
+
+    println!("Submitting ProtocolActivation transaction...");
+
+    let rpc = RpcClient::new(rpc_url);
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(hash) => {
+            println!();
+            println!("Protocol activation submitted!");
+            println!("TX Hash: {}", hash);
+            println!();
+            println!(
+                "All nodes will activate protocol v{} at epoch {}.",
+                version, epoch
+            );
+        }
+        Err(e) => {
+            println!("Error submitting activation: {}", e);
+        }
+    }
 
     Ok(())
 }
