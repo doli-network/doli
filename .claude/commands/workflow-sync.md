@@ -8,9 +8,15 @@ description: Detect and fix drift between codebase and specs/docs. Accepts optio
 Invoke ONLY the `architect` subagent in sync mode.
 Optional: `--scope="milestone or module"` to sync a specific area.
 
+## Prerequisite Fallback
+- **If no codebase exists** (no source files found): STOP and report: "No source code found. Nothing to sync. Use /workflow:new to create a project first."
+- **If `specs/` directory is entirely missing:** This is effectively a `/workflow:docs` task — the architect creates specs from scratch. Note: "No specs/ directory found. This sync will create initial specs from the codebase."
+- **If `docs/` directory is entirely missing:** Create docs from scratch as part of sync. Note: "No docs/ directory found. This sync will create initial docs from the codebase."
+- **If both specs/ and docs/ are missing:** Equivalent to `/workflow:docs`. Proceed with full documentation generation.
+
 ## Without scope (full sync)
 The architect MUST work in chunks to avoid context limits:
-1. Read `specs/SPECS.md` to get the full list of milestones/domains
+1. Read `specs/SPECS.md` to get the full list of milestones/domains (if it exists; if not, derive structure from directory layout)
 2. For each milestone:
    a. Read the code for that milestone
    b. Read corresponding spec files
