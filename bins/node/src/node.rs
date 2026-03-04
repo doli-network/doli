@@ -4494,28 +4494,31 @@ impl Node {
                     // network latency or hash luck.
 
                     // Build sorted list of known producers.
-                    // During genesis: use ONLY the on-chain registered producer set.
-                    // The GSet is non-deterministic (gossip convergence varies per node),
-                    // so using it as the round-robin denominator causes slot % N disagree-
-                    // ments and missed slots when nodes have different GSet sizes.
-                    // Outside genesis: use GSet for discovery-based bootstrap.
-                    let mut known_producers: Vec<PublicKey> = if in_genesis {
+                    // Prefer on-chain ProducerSet (deterministic). Fall back to GSet
+                    // when the on-chain set is empty (always the case during genesis
+                    // blocks 1-360, since producers aren't registered until height 361).
+                    let mut known_producers: Vec<PublicKey> = {
                         let producers = self.producer_set.read().await;
-                        producers
+                        let on_chain: Vec<PublicKey> = producers
                             .active_producers_at_height(height)
                             .iter()
                             .map(|p| p.public_key)
-                            .collect()
-                    } else {
-                        let gset_producers = {
-                            let gset = self.producer_gset.read().await;
-                            gset.active_producers(7200) // 2h liveness window
-                        };
-                        if !gset_producers.is_empty() {
-                            gset_producers
+                            .collect();
+                        if !on_chain.is_empty() {
+                            on_chain
                         } else {
-                            let known = self.known_producers.read().await;
-                            known.clone()
+                            // On-chain set empty (genesis phase). Use GSet as fallback.
+                            drop(producers); // release lock before acquiring gset lock
+                            let gset_producers = {
+                                let gset = self.producer_gset.read().await;
+                                gset.active_producers(7200)
+                            };
+                            if !gset_producers.is_empty() {
+                                gset_producers
+                            } else {
+                                let known = self.known_producers.read().await;
+                                known.clone()
+                            }
                         }
                     };
 
