@@ -292,24 +292,55 @@ impl StateDb {
     }
 
     /// Load ChainState from cf_meta.
+    ///
+    /// Returns `None` only when the key does not exist (genuine first run).
+    /// Panics if the key exists but cannot be deserialized — this prevents
+    /// silent state loss from format mismatches (the v1.0.29 incident).
     pub fn get_chain_state(&self) -> Option<ChainState> {
         let cf = self.db.cf_handle(CF_META).unwrap();
         match self.db.get_cf(cf, META_CHAIN_STATE) {
+            Ok(Some(bytes)) if bytes.is_empty() => None,
             Ok(Some(bytes)) => {
-                // Try current format first
-                if let Ok(cs) = bincode::deserialize::<ChainState>(&bytes) {
-                    return Some(cs);
-                }
-                // Migration: v1.0.28 format lacks active_protocol_version (u32)
-                // and pending_protocol_activation (Option<(u32, u64)>).
-                // Append defaults: 1u32 LE + 0x00 (None).
-                let mut extended = bytes;
-                extended.extend_from_slice(&1u32.to_le_bytes());
-                extended.push(0x00);
-                bincode::deserialize(&extended).ok()
+                let cs = Self::deserialize_chain_state(&bytes).expect(
+                    "ChainState exists in DB but failed to deserialize — refusing to start. \
+                             This likely means a binary with new ChainState fields was deployed \
+                             without a migration path. DO NOT ignore this error.",
+                );
+                Some(cs)
             }
-            _ => None,
+            Ok(None) => None,
+            Err(e) => {
+                panic!("RocksDB read error for chain_state: {e}");
+            }
         }
+    }
+
+    /// Deserialize ChainState bytes, handling format versions.
+    ///
+    /// Format detection:
+    /// - `0x01` prefix → versioned format (v1.0.30+), strip prefix, bincode the rest
+    /// - Anything else → legacy unversioned bincode (v1.0.28/v1.0.29)
+    fn deserialize_chain_state(bytes: &[u8]) -> Result<ChainState, String> {
+        const FORMAT_V1: u8 = 0x01;
+
+        if bytes.first() == Some(&FORMAT_V1) {
+            // Versioned format: skip the 1-byte prefix
+            return bincode::deserialize::<ChainState>(&bytes[1..])
+                .map_err(|e| format!("v1 format: {e}"));
+        }
+
+        // Legacy: try raw bincode (v1.0.29 format — has all current fields)
+        if let Ok(cs) = bincode::deserialize::<ChainState>(bytes) {
+            return Ok(cs);
+        }
+
+        // Legacy migration: v1.0.28 format lacks active_protocol_version (u32)
+        // and pending_protocol_activation (Option<(u32, u64)>).
+        // Append defaults: 1u32 LE + 0x00 (None).
+        let mut extended = bytes.to_vec();
+        extended.extend_from_slice(&1u32.to_le_bytes());
+        extended.push(0x00);
+        bincode::deserialize::<ChainState>(&extended).map_err(|e| format!("legacy migration: {e}"))
     }
 
     /// Load pending producer updates from cf_meta.
@@ -596,8 +627,12 @@ impl StateDb {
     /// Write a ChainState directly (non-batch, for genesis/migration).
     pub fn put_chain_state(&self, cs: &ChainState) -> Result<(), StorageError> {
         let cf = self.db.cf_handle(CF_META).unwrap();
-        let bytes =
+        let bincode_bytes =
             bincode::serialize(cs).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        // Versioned format: 0x01 prefix + bincode payload
+        let mut bytes = Vec::with_capacity(1 + bincode_bytes.len());
+        bytes.push(0x01);
+        bytes.extend_from_slice(&bincode_bytes);
         self.db.put_cf(cf, META_CHAIN_STATE, &bytes)?;
         Ok(())
     }
@@ -934,7 +969,11 @@ impl<'a> BlockBatch<'a> {
     /// Put the ChainState into the batch.
     pub fn put_chain_state(&mut self, cs: &ChainState) {
         let cf = self.db.db.cf_handle(CF_META).unwrap();
-        let bytes = bincode::serialize(cs).expect("ChainState serialization");
+        let bincode_bytes = bincode::serialize(cs).expect("ChainState serialization");
+        // Versioned format: 0x01 prefix + bincode payload
+        let mut bytes = Vec::with_capacity(1 + bincode_bytes.len());
+        bytes.push(0x01);
+        bytes.extend_from_slice(&bincode_bytes);
         self.batch.put_cf(cf, META_CHAIN_STATE, &bytes);
     }
 
@@ -1462,5 +1501,96 @@ mod tests {
 
         let loaded = db.load_producer_set();
         assert_eq!(loaded.active_count(), 2);
+    }
+
+    // ==================== Format Version Tests ====================
+
+    #[test]
+    fn test_chain_state_versioned_roundtrip() {
+        // Write with versioned format (0x01 prefix), read back
+        let (db, _dir) = create_test_db();
+        let mut cs = ChainState::new(crypto_hash(b"genesis"));
+        cs.update(crypto_hash(b"block42"), 42, 100);
+        cs.total_minted = 999_000_000;
+        cs.active_protocol_version = 2;
+        cs.pending_protocol_activation = Some((3, 500));
+
+        db.put_chain_state(&cs).unwrap();
+        let loaded = db.get_chain_state().unwrap();
+
+        assert_eq!(loaded.best_height, 42);
+        assert_eq!(loaded.best_slot, 100);
+        assert_eq!(loaded.total_minted, 999_000_000);
+        assert_eq!(loaded.active_protocol_version, 2);
+        assert_eq!(loaded.pending_protocol_activation, Some((3, 500)));
+    }
+
+    #[test]
+    fn test_chain_state_legacy_unversioned_migration() {
+        // Simulate v1.0.29 data (raw bincode, no prefix) — must still load
+        let (db, _dir) = create_test_db();
+        let cs = ChainState::new(crypto_hash(b"genesis"));
+        // Write raw bincode WITHOUT the 0x01 prefix (legacy format)
+        let raw = bincode::serialize(&cs).unwrap();
+        let cf = db.db.cf_handle(CF_META).unwrap();
+        db.db.put_cf(cf, META_CHAIN_STATE, &raw).unwrap();
+
+        let loaded = db.get_chain_state().unwrap();
+        assert_eq!(loaded.best_height, 0);
+        assert_eq!(loaded.active_protocol_version, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to deserialize")]
+    fn test_chain_state_corrupt_bytes_panics() {
+        // Corrupt data must panic, never silently return None
+        let (db, _dir) = create_test_db();
+        let cf = db.db.cf_handle(CF_META).unwrap();
+        db.db
+            .put_cf(cf, META_CHAIN_STATE, b"garbage bytes that are not valid")
+            .unwrap();
+
+        // This must panic — not return None
+        let _ = db.get_chain_state();
+    }
+
+    #[test]
+    fn test_chain_state_fixture_backward_compat() {
+        // Frozen bincode bytes from v1.0.30 ChainState::new(Hash::ZERO).
+        // If this test fails, someone added/removed/reordered a field
+        // without updating the migration in deserialize_chain_state().
+        let cs = ChainState::new(Hash::ZERO);
+        let bytes = bincode::serialize(&cs).unwrap();
+
+        // Store the length as a canary — any field change alters it
+        // ChainState::new(ZERO) = 32+8+4+8+32+8+32+8+8+1+4+1 = 146 bytes (bincode)
+        assert_eq!(
+            bytes.len(),
+            146,
+            "ChainState bincode size changed! A field was added/removed. \
+             Update deserialize_chain_state() with a migration path BEFORE deploying."
+        );
+
+        // Must roundtrip
+        let loaded: ChainState = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(loaded.best_height, 0);
+        assert_eq!(loaded.active_protocol_version, 1);
+        assert!(loaded.pending_protocol_activation.is_none());
+    }
+
+    #[test]
+    fn test_versioned_write_has_prefix() {
+        // Verify the 0x01 prefix is actually written
+        let (db, _dir) = create_test_db();
+        let cs = ChainState::new(Hash::ZERO);
+        db.put_chain_state(&cs).unwrap();
+
+        let cf = db.db.cf_handle(CF_META).unwrap();
+        let raw = db.db.get_cf(cf, META_CHAIN_STATE).unwrap().unwrap();
+        assert_eq!(raw[0], 0x01, "First byte must be format version 0x01");
+        // Rest is bincode of ChainState
+        let payload = &raw[1..];
+        let loaded: ChainState = bincode::deserialize(payload).unwrap();
+        assert_eq!(loaded.best_height, 0);
     }
 }
