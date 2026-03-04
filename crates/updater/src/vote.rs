@@ -26,6 +26,7 @@ pub struct VoteMessage {
     pub vote: Vote,
 
     /// Producer's public key (hex-encoded)
+    #[serde(alias = "producerId")]
     pub producer_id: String,
 
     /// Unix timestamp of the vote
