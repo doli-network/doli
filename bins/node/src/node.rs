@@ -439,18 +439,35 @@ impl Node {
 
         let chain_state = Arc::new(RwLock::new(chain_state));
 
-        // Load or create producer set (use provided one, or load from StateDb)
-        let producer_set = if let Some(set) = producer_set {
-            set
-        } else {
-            // Load from StateDb first (unified persistence)
+        // Load or create producer set.
+        // ALWAYS try StateDb first — it has the authoritative persisted state
+        // (including post-genesis registrations). The provided set from main.rs
+        // only has hardcoded genesis producers and would lose any runtime registrations.
+        let producer_set = {
             let loaded = state_db.load_producer_set();
             let set = if loaded.active_count() > 0 {
                 info!(
                     "[STATE_DB] Loaded {} producers from state_db",
                     loaded.active_count()
                 );
+                // If caller provided an Arc, replace its contents with the StateDb version
+                // so the UpdateService (which shares this Arc) also sees the correct producers.
+                if let Some(ref provided) = producer_set {
+                    let mut guard = provided.write().await;
+                    *guard = loaded.clone();
+                    drop(guard);
+                }
                 loaded
+            } else if let Some(ref provided) = producer_set {
+                // StateDb is empty — use the provided set (hardcoded genesis producers)
+                let guard = provided.read().await;
+                let cloned = guard.clone();
+                info!(
+                    "StateDb empty, using provided producer set ({} producers)",
+                    cloned.active_count()
+                );
+                drop(guard);
+                cloned
             } else if config.network == Network::Testnet {
                 // For testnet: initialize with genesis producers
                 use doli_core::genesis::testnet_genesis_producers;
@@ -502,7 +519,14 @@ impl Node {
                 }
             }
 
-            Arc::new(RwLock::new(set))
+            // Reuse the caller's Arc if provided (so UpdateService shares the same reference).
+            // We already updated its contents above if StateDb had data.
+            if let Some(ref provided) = producer_set {
+                // Contents already set (either StateDb version or kept as-is)
+                provided.clone()
+            } else {
+                Arc::new(RwLock::new(set))
+            }
         };
 
         // Create mempool
