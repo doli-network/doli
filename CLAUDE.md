@@ -713,7 +713,7 @@ The auto-update system unifies GitHub Releases with maintainer Ed25519 signature
 | **Required Signatures** | 3 of 5 | 3 of 5 | `crates/updater/src/lib.rs` |
 | **Check Interval** | 6 hours | 10s | `crates/core/src/network_params.rs` |
 
-Env overrides: `DOLI_VETO_PERIOD_SECS`, `DOLI_GRACE_PERIOD_SECS` (all networks).
+Env overrides: `DOLI_VETO_PERIOD_SECS`, `DOLI_GRACE_PERIOD_SECS`, `DOLI_UPDATE_CHECK_INTERVAL_SECS` (all networks).
 
 #### Signing Convention
 
