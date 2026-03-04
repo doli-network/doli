@@ -144,6 +144,7 @@ pub use consensus::{
     get_producer_rank,
     is_producer_eligible,
     is_producer_eligible_ms,
+    is_protocol_active,
     is_rank_eligible_at_ms,
     producer_region,
     producer_tier,
@@ -172,6 +173,8 @@ pub use consensus::{
     FALLBACK_TIMEOUT_MS,
     GENESIS_TIME,
     INITIAL_PRESENCE_SCORE,
+    // Protocol versioning
+    INITIAL_PROTOCOL_VERSION,
     MAX_BONDS_PER_PRODUCER,
     MAX_DRIFT_MS,
     MAX_FALLBACK_PRODUCERS,
@@ -243,8 +246,8 @@ pub use genesis::{
 };
 pub use maintainer::{
     derive_maintainer_set, BlockchainReader, MaintainerChange, MaintainerChangeData,
-    MaintainerError, MaintainerSet, MaintainerSignature, INITIAL_MAINTAINER_COUNT,
-    MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
+    MaintainerError, MaintainerSet, MaintainerSignature, ProtocolActivationData,
+    INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
 };
 pub use network::Network;
 pub use network_params::NetworkParams;

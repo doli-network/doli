@@ -282,6 +282,10 @@ pub enum ValidationError {
     /// Delegation transaction validation failed.
     #[error("invalid delegation: {0}")]
     InvalidDelegation(String),
+
+    /// Protocol activation transaction validation failed.
+    #[error("invalid protocol activation: {0}")]
+    InvalidProtocolActivation(String),
 }
 
 /// Information about an unspent transaction output.
@@ -1241,7 +1245,9 @@ pub fn validate_transaction(
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
         && !tx.is_registration()
-    // Registration handles its own input validation
+        && !tx.is_maintainer_change()
+        && !tx.is_protocol_activation()
+    // Registration/maintainer/protocol txs handle their own input validation
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have inputs".to_string(),
@@ -1260,7 +1266,9 @@ pub fn validate_transaction(
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
         && !tx.is_registration()
-    // Registration handles its own output validation
+        && !tx.is_maintainer_change()
+        && !tx.is_protocol_activation()
+    // Registration/maintainer/protocol txs handle their own output validation
     {
         return Err(ValidationError::InvalidTransaction(
             "transaction must have outputs".to_string(),
@@ -1326,6 +1334,9 @@ pub fn validate_transaction(
         }
         TxType::RevokeDelegation => {
             validate_revoke_delegation_data(tx)?;
+        }
+        TxType::ProtocolActivation => {
+            validate_protocol_activation_data(tx)?;
         }
     }
 
@@ -2136,6 +2147,68 @@ fn validate_revoke_delegation_data(tx: &Transaction) -> Result<(), ValidationErr
     let _data = RevokeDelegationData::from_bytes(&tx.extra_data).ok_or_else(|| {
         ValidationError::InvalidDelegation("invalid revoke delegation data format".to_string())
     })?;
+
+    Ok(())
+}
+
+// ==================== Protocol Activation Validation ====================
+
+/// Validate protocol activation transaction data.
+///
+/// Structural validation:
+/// - Must have no inputs (state-only operation)
+/// - Must have no outputs (no funds transferred)
+/// - Must have valid ProtocolActivationData in extra_data
+/// - Protocol version must be > 0
+/// - Activation epoch must be > 0
+/// - At least 1 signature present (full 3/5 check done at node level)
+///
+/// Note: Maintainer set verification (3/5 multisig), version > current,
+/// and epoch > current are checked at the node level where state is available.
+fn validate_protocol_activation_data(tx: &Transaction) -> Result<(), ValidationError> {
+    use crate::maintainer::ProtocolActivationData;
+
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "protocol activation must have no inputs".to_string(),
+        ));
+    }
+
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "protocol activation must have no outputs".to_string(),
+        ));
+    }
+
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "missing protocol activation data".to_string(),
+        ));
+    }
+
+    let data = ProtocolActivationData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidProtocolActivation(
+            "invalid protocol activation data format".to_string(),
+        )
+    })?;
+
+    if data.protocol_version == 0 {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "protocol version must be > 0".to_string(),
+        ));
+    }
+
+    if data.activation_epoch == 0 {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "activation epoch must be > 0".to_string(),
+        ));
+    }
+
+    if data.signatures.is_empty() {
+        return Err(ValidationError::InvalidProtocolActivation(
+            "at least one maintainer signature required".to_string(),
+        ));
+    }
 
     Ok(())
 }
@@ -5145,6 +5218,97 @@ mod tests {
         assert!(
             matches!(result, Err(ValidationError::InvalidDelegation(_))),
             "RevokeDelegation with empty data should fail: {:?}",
+            result
+        );
+    }
+
+    // ==========================================================================
+    // Protocol Activation Validation Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_validate_protocol_activation_valid() {
+        use crate::maintainer::{MaintainerSignature, ProtocolActivationData};
+
+        let kp = crypto::KeyPair::generate();
+        let data = ProtocolActivationData::new(2, 500, "Test".to_string(), vec![]);
+        // Add a signature so structural validation passes
+        let msg = data.signing_message();
+        let sig = crypto::signature::sign(&msg, kp.private_key());
+        let data = ProtocolActivationData::new(
+            2,
+            500,
+            "Test".to_string(),
+            vec![MaintainerSignature::new(*kp.public_key(), sig)],
+        );
+        let tx = Transaction::new_protocol_activation(data);
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            result.is_ok(),
+            "Valid ProtocolActivation should pass: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_protocol_activation_empty_extra_data() {
+        use crate::transaction::TxType;
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::ProtocolActivation,
+            inputs: vec![],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidProtocolActivation(_))),
+            "ProtocolActivation with empty data should fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_protocol_activation_zero_version() {
+        use crate::maintainer::{MaintainerSignature, ProtocolActivationData};
+
+        let kp = crypto::KeyPair::generate();
+        let msg = b"activate:0:500";
+        let sig = crypto::signature::sign(msg, kp.private_key());
+        let data = ProtocolActivationData::new(
+            0, // invalid
+            500,
+            "Test".to_string(),
+            vec![MaintainerSignature::new(*kp.public_key(), sig)],
+        );
+        let tx = Transaction::new_protocol_activation(data);
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidProtocolActivation(_))),
+            "ProtocolActivation with version 0 should fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_protocol_activation_no_signatures() {
+        use crate::maintainer::ProtocolActivationData;
+
+        let data = ProtocolActivationData::new(2, 500, "Test".to_string(), vec![]);
+        let tx = Transaction::new_protocol_activation(data);
+        let ctx = test_context();
+
+        let result = validate_transaction(&tx, &ctx);
+        assert!(
+            matches!(result, Err(ValidationError::InvalidProtocolActivation(_))),
+            "ProtocolActivation with no signatures should fail: {:?}",
             result
         );
     }

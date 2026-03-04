@@ -414,6 +414,9 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 | 10 | EpochReward | Epoch-level rewards |
 | 11 | MaintainerAdd | Add maintainer (governance) |
 | 12 | MaintainerRemove | Remove maintainer (governance) |
+| 13 | DelegateBond | Delegate bonds to another producer |
+| 14 | RevokeDelegation | Revoke delegated bonds |
+| 15 | ProtocolActivation | Activate new protocol version (3/5 maintainer multisig, on-chain) |
 
 ## 📋 Documentation Structure
 
@@ -831,12 +834,66 @@ curl -s -X POST http://127.0.0.1:8545 \
 
 After ~2 hours with < 40% veto, the update is **APPROVED**.
 
-**Phase 4: Deploy** (follows standard Deployment procedure above)
+**Phase 4: Deploy**
 
-For consensus-critical changes → stop all nodes, deploy binary, restart.
-For non-consensus changes → rolling restart one node at a time.
+Non-consensus changes → auto-installed during grace period, or rolling restart.
+Consensus-critical changes → binary installs normally, but new rules stay **dormant** until on-chain activation (see below).
 
-The auto-update loop on each node will also apply the update automatically during the grace period. Manual deploy is faster and preferred for our nodes.
+#### On-Chain Protocol Activation (consensus-critical changes)
+
+Binaries with consensus changes ship with new rules behind a **protocol version gate**. The rules are inert until activated on-chain by maintainers.
+
+```
+Binary v1.0.29 contains:
+  if chain_state.active_protocol_version >= 3 {
+      new_consensus_rules()    ← dormant until activated
+  } else {
+      old_consensus_rules()    ← active until activation tx
+  }
+```
+
+**Activation flow:**
+
+```
+Step 1: Binary installed via auto-update (safe — new rules dormant)
+
+Step 2: Maintainers emit ProtocolActivation tx (3/5 multisig)
+  └── doli protocol activate --version 3 --key producer_N.json
+  └── Requires 3/5 maintainer signatures (same governance)
+  └── Tx included in block, all nodes see it
+
+Step 3: Grace period (2 epochs)
+  └── All nodes have 2 epochs to process the activation tx
+  └── Operators see: [PROTOCOL] Activation v3 scheduled at epoch E+2
+
+Step 4: At epoch boundary → ALL nodes switch to v3 simultaneously
+  └── Deterministic: same block, same rules, zero fork
+
+If vetoed: no ProtocolActivation tx is ever sent → code stays dormant forever.
+```
+
+**Why this is safe:**
+- Install binary today or next week — doesn't matter, rules stay dormant
+- Only the on-chain tx triggers activation — no hardcoded heights
+- 3/5 multisig prevents unilateral activation
+- Old nodes that didn't update → fall behind at activation → snap sync rescues them
+
+**Implementation pieces:**
+
+| Piece | Description |
+|-------|-------------|
+| `TxType::ProtocolActivation = 15` | On-chain tx: "activate protocol version X" |
+| `ChainState.active_protocol_version` | Current active protocol version (starts at 2) |
+| `consensus::is_protocol_active(v, cs)` | Gate function for versioned consensus logic |
+| 3/5 multisig validation | Same `validate_maintainer_tx()` used by MaintainerAdd/Remove |
+| 2-epoch grace | Activation at next epoch boundary after 2 full epochs |
+
+**Classification:**
+
+| Change type | Activation | Example |
+|-------------|-----------|---------|
+| Non-consensus | Immediate on install | RPC, logging, sync, networking fixes |
+| Consensus-critical | On-chain ProtocolActivation | Scheduler, validation, economics, VDF |
 
 #### Manual Upgrade (CLI — no veto, informational signatures)
 

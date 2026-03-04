@@ -63,6 +63,26 @@ use crate::network::Network;
 use crate::types::{Amount, BlockHeight, Epoch, Era, Slot};
 use serde::{Deserialize, Serialize};
 
+// ==================== Protocol Versioning ====================
+
+/// Initial protocol version at genesis. All existing chains start at v1.
+/// Incremented via on-chain ProtocolActivation transactions (3/5 maintainer multisig).
+pub const INITIAL_PROTOCOL_VERSION: u32 = 1;
+
+/// Check if a protocol version is active given the current active version.
+///
+/// Used to gate consensus-critical code behind protocol version checks:
+/// ```ignore
+/// if is_protocol_active(2, state.active_protocol_version) {
+///     new_consensus_rules();
+/// } else {
+///     old_consensus_rules();
+/// }
+/// ```
+pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
+    active_version >= required_version
+}
+
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
 pub const GENESIS_TIME: u64 = 1772508945;
@@ -2296,6 +2316,27 @@ pub mod reward_epoch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_protocol_active() {
+        // Version 1 is always active at genesis
+        assert!(is_protocol_active(1, 1));
+        // Version 2 is not active at genesis
+        assert!(!is_protocol_active(2, 1));
+        // After activation to v2
+        assert!(is_protocol_active(1, 2));
+        assert!(is_protocol_active(2, 2));
+        assert!(!is_protocol_active(3, 2));
+        // Higher versions
+        assert!(is_protocol_active(1, 5));
+        assert!(is_protocol_active(5, 5));
+        assert!(!is_protocol_active(6, 5));
+    }
+
+    #[test]
+    fn test_initial_protocol_version() {
+        assert_eq!(INITIAL_PROTOCOL_VERSION, 1);
+    }
 
     #[test]
     fn test_slot_calculation() {
