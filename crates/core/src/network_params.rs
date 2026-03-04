@@ -378,8 +378,8 @@ impl NetworkParams {
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: consensus::GENESIS_TIME,
-                veto_period_secs: 600, // TEMPORARY: 10 min for auto-update testing (prod: 2 * 3600)
-                grace_period_secs: 60, // TEMPORARY: 1 min for auto-update testing (prod: 3600)
+                veto_period_secs: 2 * 3600, // 2 epochs (~2h)
+                grace_period_secs: 3600, // 1 epoch (~1h)
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD, // blocks (already u64)
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
@@ -406,7 +406,7 @@ impl NetworkParams {
 
                 // Update system
                 min_voting_age_secs: 30 * 24 * 3600, // 30 days
-                update_check_interval_secs: 30, // TEMPORARY: 30s for auto-update testing (prod: 6 * 3600)
+                update_check_interval_secs: 6 * 3600, // 6 hours
                 crash_window_secs: 3600,        // 1 hour
                 max_registrations_per_block: 5,
 
