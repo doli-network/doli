@@ -632,19 +632,25 @@ impl UpdateService {
                     } else {
                         None
                     }
-                } else if veto_period_ended(&p.release) {
-                    // Veto period ended - check result
-                    let total = producer_count_fn();
-                    let result = calculate_veto_result(p.vote_tracker.veto_count(), total);
-
-                    if result.approved {
-                        Some(UpdateTransition::Approved(result))
-                    } else {
-                        Some(UpdateTransition::Rejected(result))
-                    }
                 } else {
-                    // Still in veto period
-                    None
+                    // Check veto period using config-aware timing
+                    let veto_deadline = p.release.published_at + self.config.veto_period_secs;
+                    let veto_ended = updater::current_timestamp() >= veto_deadline;
+
+                    if veto_ended {
+                        // Veto period ended - check result
+                        let total = producer_count_fn();
+                        let result = calculate_veto_result(p.vote_tracker.veto_count(), total);
+
+                        if result.approved {
+                            Some(UpdateTransition::Approved(result))
+                        } else {
+                            Some(UpdateTransition::Rejected(result))
+                        }
+                    } else {
+                        // Still in veto period
+                        None
+                    }
                 }
             } else {
                 None
@@ -658,13 +664,23 @@ impl UpdateService {
                 let mut pending = self.pending.write().await;
                 if let Some(ref mut p) = *pending {
                     info!(
-                        "Update {} APPROVED ({}% veto, threshold {}%) - Grace period: 48 hours",
-                        p.release.version, result.veto_percent, VETO_THRESHOLD_PERCENT
+                        "Update {} APPROVED ({}% veto, threshold {}%) - Grace period: {}s",
+                        p.release.version,
+                        result.veto_percent,
+                        VETO_THRESHOLD_PERCENT,
+                        self.config.grace_period_secs
                     );
 
-                    // Mark as approved and set enforcement
+                    // Mark as approved and set enforcement (config-aware timing)
                     p.approved = true;
-                    p.enforcement = Some(VersionEnforcement::from_approved_release(&p.release));
+                    let enforcement_time = p.release.published_at
+                        + self.config.veto_period_secs
+                        + self.config.grace_period_secs;
+                    p.enforcement = Some(VersionEnforcement {
+                        min_version: p.release.version.clone(),
+                        enforcement_time,
+                        active: false,
+                    });
 
                     // Save updated state
                     if let Err(e) = p.save(&self.data_dir) {
