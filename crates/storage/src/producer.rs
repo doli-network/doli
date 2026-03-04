@@ -3426,4 +3426,31 @@ mod tests {
         // No active producers after slash
         assert_eq!(set.active_producers_at_height(height).len(), 0);
     }
+
+    #[test]
+    fn test_duplicate_register_preserves_existing_producer() {
+        let mut ps = ProducerSet::new();
+        let kp = KeyPair::generate();
+
+        // Register producer at height 100
+        let info =
+            ProducerInfo::new_with_bonds(*kp.public_key(), 100, BOND_UNIT, (Hash::ZERO, 0), 0, 1);
+        ps.register(info, 100).unwrap();
+        assert_eq!(ps.active_count(), 1);
+
+        // Queue duplicate registration at height 200
+        let dup_info =
+            ProducerInfo::new_with_bonds(*kp.public_key(), 200, BOND_UNIT, (Hash::ZERO, 1), 0, 1);
+        ps.queue_update(PendingProducerUpdate::Register {
+            info: Box::new(dup_info),
+            height: 200,
+        });
+
+        // Apply pending updates — duplicate rejected, original preserved
+        ps.apply_pending_updates();
+        assert_eq!(ps.active_count(), 1);
+
+        let producer = ps.get_by_pubkey(kp.public_key()).unwrap();
+        assert_eq!(producer.registered_at, 100); // Original, not 200
+    }
 }

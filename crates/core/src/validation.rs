@@ -1516,6 +1516,13 @@ fn validate_registration_data(
     // Verify registration chain (anti-Sybil: prevents parallel registration)
     validate_registration_chain(&reg_data, ctx)?;
 
+    // Reject duplicate registration (GitHub Issue #4: duplicate register deletes producer)
+    if ctx.active_producers.contains(&reg_data.public_key) {
+        return Err(ValidationError::InvalidRegistration(
+            "producer already registered".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
