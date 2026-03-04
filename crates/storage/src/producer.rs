@@ -1297,6 +1297,20 @@ impl ProducerSet {
             .collect()
     }
 
+    /// Get public keys of all pending registrations (for duplicate detection).
+    pub fn pending_registration_keys(&self) -> Vec<crypto::PublicKey> {
+        self.pending_updates
+            .iter()
+            .filter_map(|u| {
+                if let PendingProducerUpdate::Register { info, .. } = u {
+                    Some(info.public_key)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Get all pending registrations (producers not yet in the set).
     pub fn pending_registrations(&self) -> Vec<&ProducerInfo> {
         self.pending_updates

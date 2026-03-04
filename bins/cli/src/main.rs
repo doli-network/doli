@@ -1749,11 +1749,17 @@ async fn cmd_producer(
                 anyhow::bail!("Bond count must be between 1 and 10000");
             }
 
-            // Check if already registered (WHITEPAPER: "public key is not already registered")
+            // Check if already registered or pending (WHITEPAPER: "public key is not already registered")
             let pk_hex = &wallet.addresses()[0].public_key;
             if let Ok(info) = rpc.get_producer(pk_hex).await {
-                if info.status == "active" || info.status == "Active" {
-                    anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
+                match info.status.to_lowercase().as_str() {
+                    "active" => {
+                        anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
+                    }
+                    "pending" => {
+                        anyhow::bail!("This key already has a pending registration (pubkey: {}). It will activate at the next epoch boundary.", pk_hex);
+                    }
+                    _ => {} // exited/slashed — allow re-registration
                 }
             }
 
