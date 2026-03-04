@@ -612,9 +612,7 @@ async fn cmd_balance(
 
     // Check connection first
     if !rpc.ping().await? {
-        println!("Warning: Cannot connect to node at {}", rpc_endpoint);
-        println!("Make sure a DOLI node is running and the RPC endpoint is correct.");
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}. Make sure a DOLI node is running and the RPC endpoint is correct.", rpc_endpoint);
     }
 
     let mut total_spendable = 0u64;
@@ -778,8 +776,7 @@ async fn cmd_send(
 
     // Check connection
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     // Parse recipient address (doli1... or 64-char hex pubkey_hash)
@@ -790,6 +787,14 @@ async fn cmd_send(
     let amount_coins: f64 = amount
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+
+    if amount_coins <= 0.0 {
+        anyhow::bail!("Amount must be greater than zero");
+    }
+    if amount_coins > 25_200_000.0 {
+        anyhow::bail!("Amount exceeds maximum supply (25.2M DOLI)");
+    }
+
     let amount_units = coins_to_units(amount_coins);
 
     // Parse explicit fee if provided; otherwise auto-calculate after UTXO selection
@@ -812,9 +817,7 @@ async fn cmd_send(
     let utxos = rpc.get_utxos(&from_pubkey_hash, true).await?;
 
     if utxos.is_empty() {
-        println!("Error: No spendable UTXOs available");
-        println!("Note: Coinbase outputs require 100 confirmations before they can be spent.");
-        return Ok(());
+        anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require 100 confirmations before they can be spent.");
     }
 
     // Select UTXOs with a preliminary fee estimate, then recalculate
@@ -850,17 +853,19 @@ async fn cmd_send(
     let required = amount_units + fee_units;
 
     if total_available < required {
-        println!("Error: Insufficient balance");
-        println!("  Available: {}", format_balance(total_available));
-        println!("  Required:  {}", format_balance(required));
-        return Ok(());
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_available),
+            format_balance(required)
+        );
     }
 
     if total_input < required {
-        println!("Error: Insufficient balance");
-        println!("  Selected:  {}", format_balance(total_input));
-        println!("  Required:  {}", format_balance(required));
-        return Ok(());
+        anyhow::bail!(
+            "Insufficient balance. Selected: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
     }
 
     println!("Preparing transaction:");
@@ -945,8 +950,7 @@ async fn cmd_history(wallet_path: &Path, rpc_endpoint: &str, limit: usize) -> Re
 
     // Check connection
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     println!("Transaction History (limit: {})", limit);
@@ -993,7 +997,7 @@ async fn cmd_history(wallet_path: &Path, rpc_endpoint: &str, limit: usize) -> Re
             }
         }
         Err(e) => {
-            println!("Error fetching history: {}", e);
+            anyhow::bail!("Error fetching history: {}", e);
         }
     }
 
@@ -1727,8 +1731,7 @@ async fn cmd_producer(
 
     // Check connection
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     match command {
@@ -1743,20 +1746,14 @@ async fn cmd_producer(
 
             // Validate bond count (WHITEPAPER Section 6.3: max 1000 bonds)
             if !(1..=10000).contains(&bonds) {
-                println!("Error: Bond count must be between 1 and 10000");
-                return Ok(());
+                anyhow::bail!("Bond count must be between 1 and 10000");
             }
 
             // Check if already registered (WHITEPAPER: "public key is not already registered")
             let pk_hex = &wallet.addresses()[0].public_key;
             if let Ok(info) = rpc.get_producer(pk_hex).await {
                 if info.status == "active" || info.status == "Active" {
-                    println!("Error: This key is already registered as an active producer.");
-                    println!("  Public key: {}", pk_hex);
-                    println!("  Bonds: {}", info.bond_count);
-                    println!();
-                    println!("Use 'doli producer add-bond' to increase your bond count.");
-                    return Ok(());
+                    anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
                 }
             }
 
@@ -1780,10 +1777,11 @@ async fn cmd_producer(
             let fee: u64 = 10000; // 0.0001 DOLI fee
 
             if total_available < required_amount + fee {
-                println!("Error: Insufficient balance for bond");
-                println!("  Required:  {} DOLI", bonds as u64 * bond_display);
-                println!("  Available: {}", format_balance(total_available));
-                return Ok(());
+                anyhow::bail!(
+                    "Insufficient balance for bond. Required: {} DOLI, Available: {}",
+                    bonds as u64 * bond_display,
+                    format_balance(total_available)
+                );
             }
 
             // Select UTXOs
@@ -1897,7 +1895,7 @@ async fn cmd_producer(
                     println!("Use 'doli producer status' to check registration status.");
                 }
                 Err(e) => {
-                    println!("Error submitting registration: {}", e);
+                    anyhow::bail!("Error submitting registration: {}", e);
                 }
             }
         }
@@ -2207,8 +2205,7 @@ async fn cmd_producer(
             println!();
 
             if !(1..=10000).contains(&count) {
-                println!("Error: Bond count must be between 1 and 10000");
-                return Ok(());
+                anyhow::bail!("Bond count must be between 1 and 10000");
             }
 
             // Get network parameters from node (bond_unit is network-specific)
@@ -2230,10 +2227,11 @@ async fn cmd_producer(
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
             if total_available < required_amount + fee {
-                println!("Error: Insufficient balance");
-                println!("  Required:  {} DOLI", count as u64 * bond_display);
-                println!("  Available: {}", format_balance(total_available));
-                return Ok(());
+                anyhow::bail!(
+                    "Insufficient balance. Required: {} DOLI, Available: {}",
+                    count as u64 * bond_display,
+                    format_balance(total_available)
+                );
             }
 
             // Select UTXOs
@@ -2299,7 +2297,7 @@ async fn cmd_producer(
                     }
                 }
                 Err(e) => {
-                    println!("Error adding bonds: {}", e);
+                    anyhow::bail!("Error adding bonds: {}", e);
                 }
             }
         }
@@ -2314,8 +2312,7 @@ async fn cmd_producer(
             println!();
 
             if count < 1 {
-                println!("Error: Must withdraw at least 1 bond");
-                return Ok(());
+                anyhow::bail!("Must withdraw at least 1 bond");
             }
 
             // Destination defaults to wallet address (accept doli1... or hex)
@@ -2335,11 +2332,10 @@ async fn cmd_producer(
 
             let available = details.bond_count - details.withdrawal_pending_count;
             if count > available {
-                println!(
-                    "Error: --count must be between 1 and {} (your available bonds)",
+                anyhow::bail!(
+                    "--count must be between 1 and {} (your available bonds)",
                     available
                 );
-                return Ok(());
             }
 
             // Show bond inventory
@@ -2414,7 +2410,7 @@ async fn cmd_producer(
                     }
                 }
                 Err(e) => {
-                    println!("Error requesting withdrawal: {}", e);
+                    anyhow::bail!("Error requesting withdrawal: {}", e);
                 }
             }
         }
@@ -2427,8 +2423,7 @@ async fn cmd_producer(
             println!();
 
             if count < 1 {
-                println!("Error: Must simulate at least 1 bond");
-                return Ok(());
+                anyhow::bail!("Must simulate at least 1 bond");
             }
 
             let pk = wallet.addresses()[0].public_key.clone();
@@ -2436,11 +2431,10 @@ async fn cmd_producer(
 
             let available = details.bond_count - details.withdrawal_pending_count;
             if count > available {
-                println!(
-                    "Error: --count must be between 1 and {} (your available bonds)",
+                anyhow::bail!(
+                    "--count must be between 1 and {} (your available bonds)",
                     available
                 );
-                return Ok(());
             }
 
             // Show bond inventory
@@ -2488,8 +2482,7 @@ async fn cmd_producer(
             let producer_info = rpc.get_producer(&pk).await?;
 
             if producer_info.status == "exited" {
-                println!("Producer has already exited.");
-                return Ok(());
+                anyhow::bail!("Producer has already exited");
             }
 
             // Calculate early exit penalty based on time active (1-day vesting)
@@ -2565,7 +2558,7 @@ async fn cmd_producer(
                     }
                 }
                 Err(e) => {
-                    println!("Error submitting exit: {}", e);
+                    anyhow::bail!("Error submitting exit: {}", e);
                 }
             }
         }
@@ -2585,32 +2578,17 @@ async fn cmd_producer(
 
             // Verify they're for the same slot (equivocation)
             if block1_resp.slot != block2_resp.slot {
-                println!();
-                println!("Error: Blocks are for different slots!");
-                println!("  Block 1 slot: {}", block1_resp.slot);
-                println!("  Block 2 slot: {}", block2_resp.slot);
-                println!();
-                println!("Slashing requires two different blocks for the SAME slot.");
-                return Ok(());
+                anyhow::bail!("Blocks are for different slots (block 1 slot: {}, block 2 slot: {}). Slashing requires two different blocks for the SAME slot.", block1_resp.slot, block2_resp.slot);
             }
 
             // Verify they're from the same producer
             if block1_resp.producer != block2_resp.producer {
-                println!();
-                println!("Error: Blocks are from different producers!");
-                println!("  Block 1 producer: {}", block1_resp.producer);
-                println!("  Block 2 producer: {}", block2_resp.producer);
-                println!();
-                println!("Slashing requires blocks from the SAME producer.");
-                return Ok(());
+                anyhow::bail!("Blocks are from different producers (block 1: {}, block 2: {}). Slashing requires blocks from the SAME producer.", block1_resp.producer, block2_resp.producer);
             }
 
             // Verify blocks are different
             if block1_resp.hash == block2_resp.hash {
-                println!();
-                println!("Error: Both hashes refer to the same block!");
-                println!("Slashing requires two DIFFERENT blocks for the same slot.");
-                return Ok(());
+                anyhow::bail!("Both hashes refer to the same block. Slashing requires two DIFFERENT blocks for the same slot.");
             }
 
             let producer_addr = hex::decode(&block1_resp.producer)
@@ -2665,10 +2643,7 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
             println!("Genesis Hash: {}", info.genesis_hash);
         }
         Err(e) => {
-            println!("Error: Cannot connect to node at {}", rpc_endpoint);
-            println!("Details: {}", e);
-            println!();
-            println!("Make sure a DOLI node is running and accessible.");
+            anyhow::bail!("Cannot connect to node at {}. Details: {}. Make sure a DOLI node is running and accessible.", rpc_endpoint, e);
         }
     }
 
@@ -2684,8 +2659,7 @@ async fn cmd_rewards(
 
     // Check connection
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     match command {
@@ -2763,8 +2737,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
     let rpc = RpcClient::new(rpc_endpoint);
 
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     match command {
@@ -2853,8 +2826,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
             approve,
         } => {
             if !veto && !approve {
-                println!("Error: Must specify --veto or --approve");
-                return Ok(());
+                anyhow::bail!("Must specify --veto or --approve");
             }
 
             let wallet = Wallet::load(wallet_path)?;
@@ -2958,8 +2930,7 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
     let rpc = RpcClient::new(rpc_endpoint);
 
     if !rpc.ping().await? {
-        println!("Error: Cannot connect to node at {}", rpc_endpoint);
-        return Ok(());
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
     match command {

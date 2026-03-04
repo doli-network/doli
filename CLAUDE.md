@@ -81,7 +81,7 @@ Always imagine **thousands of producer nodes** in **10-second slot windows** bef
 
      ### [DATE] - <Short Description>
      - **Type**: Bug | Missing Command | Constraint
-     - **Command**: `doli-cli <subcommand>` (what was attempted)
+     - **Command**: `doli <subcommand>` (what was attempted)
      - **Observed**: What happened (or didn't)
      - **Expected**: What should happen
      - **Priority**: Low | Medium | High
@@ -92,8 +92,8 @@ Always imagine **thousands of producer nodes** in **10-second slot windows** bef
      - On resolution, keep the entry in `CLI.md` with updated status — do **not** move to `docs/legacy/bugs/` (that's for deep investigation reports only).
      - Review `CLI.md` before any CLI-related PR to check for low-hanging fixes.
    - **Examples**:
-     - Missing `doli-cli wallet export` sub-command → log it.
-     - `doli-cli bond status` returns wrong penalty tier → log it.
+     - Missing `doli wallet export` sub-command → log it.
+     - `doli bond status` returns wrong penalty tier → log it.
      - `--format json` flag silently ignored → log it.
 
 6. **Output Filtering**: Always filter verbose output:
@@ -179,7 +179,7 @@ All commands implicitly wrapped in Nix develop shell.
 | **Fuzz** | `cd testing/fuzz && cargo +nightly fuzz run <target>` |
 | **Run Node** | `cargo run -p doli-node -- run` |
 | **Run Node (Testnet)** | `cargo run -p doli-node -- --network testnet run` |
-| **Run Wallet** | `cargo run -p doli-cli -- <command>` |
+| **Run Wallet** | `cargo run -p doli -- <command>` |
 | **Full Pre-Commit** | `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test` |
 
 ## 🧠 System Architecture
