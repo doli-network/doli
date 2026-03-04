@@ -2976,6 +2976,7 @@ impl Node {
             .iter()
             .map(|p| (p.public_key, p.bond_count as u64))
             .collect();
+        let pending_keys = producers.pending_registration_keys();
         drop(producers);
 
         // Build bootstrap producer list for validation.
@@ -3049,6 +3050,7 @@ impl Node {
         )
         .with_prev_block(state.best_slot, prev_timestamp, state.best_hash)
         .with_producers_weighted(weighted)
+        .with_pending_producer_keys(pending_keys)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp);
 
