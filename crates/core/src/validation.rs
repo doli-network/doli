@@ -457,6 +457,9 @@ pub struct ValidationContext {
     pub stale_bootstrap_producers: Vec<crypto::PublicKey>,
     /// Registration chain state for chained VDF anti-Sybil verification.
     pub registration_chain: RegistrationChainState,
+    /// Public keys with pending (epoch-deferred) registrations.
+    /// Used to reject duplicate registrations before epoch activation.
+    pub pending_producer_keys: Vec<crypto::PublicKey>,
 }
 
 impl ValidationContext {
@@ -482,6 +485,7 @@ impl ValidationContext {
             live_bootstrap_producers: Vec::new(),
             stale_bootstrap_producers: Vec::new(),
             registration_chain: RegistrationChainState::default(),
+            pending_producer_keys: Vec::new(),
         }
     }
 
@@ -540,6 +544,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_registration_chain(mut self, last_hash: Hash, sequence: u64) -> Self {
         self.registration_chain = RegistrationChainState::new(last_hash, sequence);
+        self
+    }
+
+    /// Set pending producer keys (epoch-deferred registrations not yet active).
+    #[must_use]
+    pub fn with_pending_producer_keys(mut self, keys: Vec<crypto::PublicKey>) -> Self {
+        self.pending_producer_keys = keys;
         self
     }
 }
@@ -1520,6 +1531,13 @@ fn validate_registration_data(
     if ctx.active_producers.contains(&reg_data.public_key) {
         return Err(ValidationError::InvalidRegistration(
             "producer already registered".to_string(),
+        ));
+    }
+
+    // Reject registration if already pending (epoch-deferred, not yet active)
+    if ctx.pending_producer_keys.contains(&reg_data.public_key) {
+        return Err(ValidationError::InvalidRegistration(
+            "producer already has a pending registration".to_string(),
         ));
     }
 
