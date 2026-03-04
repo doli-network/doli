@@ -360,15 +360,13 @@ impl Node {
             // Chain state at genesis — check if block store has blocks (e.g., chain_state.bin
             // was not saved before shutdown). Recover to highest stored block.
             let mut recovered_height = 0u64;
-            for h in 1..=1000 {
-                if let Ok(Some(block)) = block_store.get_block_by_height(h) {
-                    chain_state.best_hash = block.hash();
-                    chain_state.best_height = h;
-                    chain_state.best_slot = block.header.slot;
-                    recovered_height = h;
-                } else {
-                    break;
-                }
+            let mut h = 1u64;
+            while let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                chain_state.best_hash = block.hash();
+                chain_state.best_height = h;
+                chain_state.best_slot = block.header.slot;
+                recovered_height = h;
+                h += 1;
             }
             if recovered_height > 0 {
                 warn!(
