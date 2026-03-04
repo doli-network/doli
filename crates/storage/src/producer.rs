@@ -1297,6 +1297,24 @@ impl ProducerSet {
             .collect()
     }
 
+    /// Get all pending registrations (producers not yet in the set).
+    pub fn pending_registrations(&self) -> Vec<&ProducerInfo> {
+        self.pending_updates
+            .iter()
+            .filter_map(|u| {
+                if let PendingProducerUpdate::Register { info, .. } = u {
+                    if !self
+                        .producers
+                        .contains_key(&crypto_hash(info.public_key.as_bytes()))
+                    {
+                        return Some(info.as_ref());
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
     /// Load producer set from file.
     ///
     /// Tries JSON first (current format), then bincode (legacy), then starts fresh.

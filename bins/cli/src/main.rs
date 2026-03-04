@@ -621,22 +621,42 @@ async fn cmd_balance(
     let mut total_bonded = 0u64;
     let mut total_immature = 0u64;
     let mut total_unconfirmed = 0u64;
+    let mut total_activating = 0u64;
 
     // Build pubkey_hash → bonded_value map from producer set.
     // Bonds live in ProducerSet (consumed on registration), not as UTXOs.
     // Use bond_amount from ProducerSet — the actual amount locked on-chain.
-    let bond_map: std::collections::HashMap<String, u64> = match rpc.get_producers(false).await {
-        Ok(producers) => producers
-            .iter()
-            .filter(|p| p.bond_amount > 0 && p.status == "active")
-            .filter_map(|p| {
-                let pubkey_bytes = hex::decode(&p.public_key).ok()?;
-                let pubkey_hash =
-                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
-                Some((pubkey_hash.to_hex(), p.bond_amount))
-            })
-            .collect(),
-        Err(_) => std::collections::HashMap::new(),
+    let (bond_map, pending_activation_map): (
+        std::collections::HashMap<String, u64>,
+        std::collections::HashMap<String, u64>,
+    ) = match rpc.get_producers(false).await {
+        Ok(producers) => {
+            let bonds = producers
+                .iter()
+                .filter(|p| p.bond_amount > 0 && p.status == "active")
+                .filter_map(|p| {
+                    let pubkey_bytes = hex::decode(&p.public_key).ok()?;
+                    let pubkey_hash =
+                        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                    Some((pubkey_hash.to_hex(), p.bond_amount))
+                })
+                .collect();
+            let pending = producers
+                .iter()
+                .filter(|p| p.bond_amount > 0 && p.status == "pending")
+                .filter_map(|p| {
+                    let pubkey_bytes = hex::decode(&p.public_key).ok()?;
+                    let pubkey_hash =
+                        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                    Some((pubkey_hash.to_hex(), p.bond_amount))
+                })
+                .collect();
+            (bonds, pending)
+        }
+        Err(_) => (
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        ),
     };
 
     println!("Balances:");
@@ -678,13 +698,26 @@ async fn cmd_balance(
                 // Bonds live in ProducerSet (consumed on registration), not as UTXOs.
                 // So `confirmed` (spendable UTXOs) does NOT include bonds.
                 let bonded = bond_map.get(pubkey_hash_hex.as_str()).copied().unwrap_or(0);
+                let activating = pending_activation_map
+                    .get(pubkey_hash_hex.as_str())
+                    .copied()
+                    .unwrap_or(0);
                 let spendable = balance.confirmed;
-                let total = balance.total.saturating_add(bonded);
+                let total = balance
+                    .total
+                    .saturating_add(bonded)
+                    .saturating_add(activating);
 
                 println!("{}", display_addr);
                 println!("  Spendable: {}", format_balance(spendable));
                 if bonded > 0 {
                     println!("  Bonded:    {}  (producer bond)", format_balance(bonded));
+                }
+                if activating > 0 {
+                    println!(
+                        "  Activating: {}  (pending epoch)",
+                        format_balance(activating)
+                    );
                 }
                 if balance.immature > 0 {
                     println!("  Immature:  {}", format_balance(balance.immature));
@@ -697,6 +730,7 @@ async fn cmd_balance(
 
                 total_spendable += spendable;
                 total_bonded += bonded;
+                total_activating += activating;
                 total_immature += balance.immature;
                 total_unconfirmed += balance.unconfirmed;
             }
@@ -707,11 +741,15 @@ async fn cmd_balance(
     }
 
     if address.is_none() && addresses.len() > 1 {
-        let grand_total = total_spendable + total_bonded + total_immature + total_unconfirmed;
+        let grand_total =
+            total_spendable + total_bonded + total_activating + total_immature + total_unconfirmed;
         println!("{:-<60}", "");
         println!("Total Spendable: {}", format_balance(total_spendable));
         if total_bonded > 0 {
             println!("Total Bonded:    {}", format_balance(total_bonded));
+        }
+        if total_activating > 0 {
+            println!("Total Activating: {}", format_balance(total_activating));
         }
         if total_immature > 0 {
             println!("Total Immature:  {}", format_balance(total_immature));
