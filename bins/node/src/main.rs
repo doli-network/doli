@@ -46,6 +46,7 @@ fn expand_tilde_path(path: &Path) -> PathBuf {
 #[derive(Parser)]
 #[command(name = "doli-node")]
 #[command(about = "DOLI full node", long_about = None)]
+#[command(version = env!("DOLI_VERSION_STRING"))]
 struct Cli {
     /// Network to connect to (mainnet, testnet, devnet)
     #[arg(short, long, default_value = "mainnet", global = true)]
