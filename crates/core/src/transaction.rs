@@ -55,6 +55,11 @@ pub enum TxType {
     DelegateBond = 13,
     /// Revoke delegation (DELEGATION_UNBONDING_SLOTS delay applies).
     RevokeDelegation = 14,
+    /// On-chain protocol activation (3/5 maintainer multisig).
+    ///
+    /// Schedules new consensus rules to activate at a future epoch boundary.
+    /// All nodes switch simultaneously — deterministic, zero coordination.
+    ProtocolActivation = 15,
 }
 
 impl TxType {
@@ -75,6 +80,7 @@ impl TxType {
             12 => Some(Self::AddMaintainer),
             13 => Some(Self::DelegateBond),
             14 => Some(Self::RevokeDelegation),
+            15 => Some(Self::ProtocolActivation),
             _ => None,
         }
     }
@@ -1190,6 +1196,35 @@ impl Transaction {
             extra_data: data.to_bytes(),
         }
     }
+
+    // ==================== Protocol Activation Transactions ====================
+
+    /// Create a new protocol activation transaction
+    ///
+    /// Schedules new consensus rules to activate at a future epoch boundary.
+    /// Requires 3/5 maintainer multisig.
+    pub fn new_protocol_activation(data: crate::maintainer::ProtocolActivationData) -> Self {
+        Self {
+            version: 1,
+            tx_type: TxType::ProtocolActivation,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
+
+    /// Check if this is a protocol activation transaction
+    pub fn is_protocol_activation(&self) -> bool {
+        self.tx_type == TxType::ProtocolActivation
+    }
+
+    /// Parse protocol activation data from extra_data
+    pub fn protocol_activation_data(&self) -> Option<crate::maintainer::ProtocolActivationData> {
+        if !self.is_protocol_activation() {
+            return None;
+        }
+        crate::maintainer::ProtocolActivationData::from_bytes(&self.extra_data)
+    }
 }
 
 #[cfg(test)]
@@ -1255,7 +1290,8 @@ mod tests {
         assert_eq!(TxType::from_u32(12), Some(TxType::AddMaintainer));
         assert_eq!(TxType::from_u32(13), Some(TxType::DelegateBond));
         assert_eq!(TxType::from_u32(14), Some(TxType::RevokeDelegation));
-        assert_eq!(TxType::from_u32(15), None);
+        assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
+        assert_eq!(TxType::from_u32(16), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
@@ -1752,6 +1788,56 @@ mod tests {
         let bytes = data.to_bytes();
         let recovered = RevokeDelegationData::from_bytes(&bytes).unwrap();
         assert_eq!(data, recovered);
+    }
+
+    // ==================== Protocol Activation Tests ====================
+
+    #[test]
+    fn test_protocol_activation_transaction() {
+        use crate::maintainer::ProtocolActivationData;
+
+        let data = ProtocolActivationData::new(2, 500, "Enable finality".to_string(), vec![]);
+        let tx = Transaction::new_protocol_activation(data);
+
+        assert!(tx.is_protocol_activation());
+        assert_eq!(tx.tx_type, TxType::ProtocolActivation);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+
+        let parsed = tx.protocol_activation_data().unwrap();
+        assert_eq!(parsed.protocol_version, 2);
+        assert_eq!(parsed.activation_epoch, 500);
+        assert_eq!(parsed.description, "Enable finality");
+    }
+
+    #[test]
+    fn test_protocol_activation_serialization_roundtrip() {
+        use crate::maintainer::ProtocolActivationData;
+
+        let data = ProtocolActivationData::new(3, 1000, "New rules".to_string(), vec![]);
+        let tx = Transaction::new_protocol_activation(data);
+
+        let bytes = tx.serialize();
+        let recovered = Transaction::deserialize(&bytes).unwrap();
+
+        assert_eq!(tx.tx_type, recovered.tx_type);
+        assert_eq!(tx, recovered);
+
+        let recovered_data = recovered.protocol_activation_data().unwrap();
+        assert_eq!(recovered_data.protocol_version, 3);
+        assert_eq!(recovered_data.activation_epoch, 1000);
+    }
+
+    #[test]
+    fn test_protocol_activation_data_none_for_other_types() {
+        let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+        assert!(tx.protocol_activation_data().is_none());
+    }
+
+    #[test]
+    fn test_tx_type_from_u32_protocol_activation() {
+        assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
+        assert_eq!(TxType::from_u32(16), None);
     }
 
     // Property-based tests

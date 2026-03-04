@@ -569,6 +569,51 @@ add_maintainer_tx = {
 - The first 5 registered producers automatically become the initial maintainer set
 - After bootstrap, changes require 3/5 multisig via these transactions
 
+### 3.17 ProtocolActivation Transaction
+
+Activates new consensus rules at a future epoch boundary. Requires 3/5 multisig from current maintainers (first 5 registered producers). This is the on-chain mechanism for coordinated consensus upgrades — all nodes switch simultaneously at the target epoch.
+
+```
+protocol_activation_tx = {
+    version: 1,
+    type: 15,                    // TxType::ProtocolActivation
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty
+    extra_data: {
+        protocol_version: uint32,   // Version to activate (must be > current)
+        activation_epoch: uint64,   // Epoch at which activation occurs (must be future)
+        description: string,        // Human-readable description of changes
+        signatures: signature[]     // Signatures from at least 3 maintainers
+    }
+}
+```
+
+**Signing message format:** `"activate:{version}:{epoch}"` (UTF-8 bytes)
+
+**Validation rules (structural):**
+- No inputs, no outputs
+- Valid ProtocolActivationData in extra_data
+- `protocol_version > 0`
+- `activation_epoch > 0`
+- At least 1 signature present
+
+**Validation rules (node-level, requires state):**
+- 3/5 valid maintainer signatures (first 5 registered producers)
+- `protocol_version > active_protocol_version`
+- `activation_epoch > current_epoch`
+
+**Activation lifecycle:**
+1. Tx included in block → `pending_protocol_activation = Some((version, epoch))`
+2. At epoch boundary where `current_epoch >= activation_epoch` → `active_protocol_version = version`
+3. Code gated by `is_protocol_active(version, state)` now executes
+
+**Gate function:**
+```rust
+pub fn is_protocol_active(required: u32, active: u32) -> bool {
+    active >= required
+}
+```
+
 ---
 
 ## 4. Blocks

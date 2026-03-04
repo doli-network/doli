@@ -54,6 +54,25 @@ pub struct ChainState {
     /// not part of the consensus state root.
     #[serde(default)]
     pub snap_sync_height: Option<u64>,
+
+    /// Active protocol version (1 = genesis, increments via ProtocolActivation tx).
+    ///
+    /// NOT included in `serialize_canonical()` — deterministically derived from
+    /// chain replay. Snap sync transfers it via bincode naturally.
+    #[serde(default = "default_protocol_version")]
+    pub active_protocol_version: u32,
+
+    /// Pending protocol activation: (version, activation_epoch).
+    /// None if no pending activation. Set by ProtocolActivation tx,
+    /// cleared when activation occurs at epoch boundary.
+    ///
+    /// NOT included in `serialize_canonical()` — deterministically derived.
+    #[serde(default)]
+    pub pending_protocol_activation: Option<(u32, u64)>,
+}
+
+fn default_protocol_version() -> u32 {
+    doli_core::consensus::INITIAL_PROTOCOL_VERSION
 }
 
 impl ChainState {
@@ -70,6 +89,8 @@ impl ChainState {
             registration_sequence: 0,
             total_minted: 0,
             snap_sync_height: None,
+            active_protocol_version: doli_core::consensus::INITIAL_PROTOCOL_VERSION,
+            pending_protocol_activation: None,
         }
     }
 
@@ -289,6 +310,9 @@ mod tests {
         assert_eq!(state.registration_sequence, 0);
         // Supply tracking starts at 0
         assert_eq!(state.total_minted, 0);
+        // Protocol version starts at 1
+        assert_eq!(state.active_protocol_version, 1);
+        assert!(state.pending_protocol_activation.is_none());
     }
 
     #[test]
@@ -476,6 +500,33 @@ mod tests {
 
         // Should never exceed cap
         assert!(state.total_minted <= TOTAL_SUPPLY);
+    }
+
+    // ==================== Protocol Version Tests ====================
+
+    #[test]
+    fn test_protocol_version_activation() {
+        let genesis = Hash::ZERO;
+        let mut state = ChainState::new(genesis);
+
+        assert_eq!(state.active_protocol_version, 1);
+        assert!(state.pending_protocol_activation.is_none());
+
+        // Schedule activation
+        state.pending_protocol_activation = Some((2, 500));
+        assert_eq!(state.pending_protocol_activation, Some((2, 500)));
+
+        // Activate
+        state.active_protocol_version = 2;
+        state.pending_protocol_activation = None;
+        assert_eq!(state.active_protocol_version, 2);
+        assert!(state.pending_protocol_activation.is_none());
+    }
+
+    #[test]
+    fn test_default_protocol_version_backward_compat() {
+        // Verify that the default function returns 1
+        assert_eq!(default_protocol_version(), 1);
     }
 
     // ==================== serialize_canonical Tests ====================

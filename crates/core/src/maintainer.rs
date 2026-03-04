@@ -336,6 +336,62 @@ impl MaintainerChangeData {
     }
 }
 
+/// Data for protocol activation transactions (on-chain consensus upgrade)
+///
+/// When maintainers want to activate new consensus rules, they create a
+/// ProtocolActivation transaction with 3/5 multisig. The activation is
+/// scheduled for a future epoch, giving all nodes time to process it.
+/// At the target epoch boundary, ALL nodes switch simultaneously.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolActivationData {
+    /// Protocol version to activate (must be > current active version)
+    pub protocol_version: u32,
+    /// Epoch at which activation occurs (must be in the future)
+    pub activation_epoch: u64,
+    /// Human-readable description of consensus changes
+    pub description: String,
+    /// Signatures from current maintainers authorizing activation
+    pub signatures: Vec<MaintainerSignature>,
+}
+
+impl ProtocolActivationData {
+    /// Create new protocol activation data
+    pub fn new(
+        protocol_version: u32,
+        activation_epoch: u64,
+        description: String,
+        signatures: Vec<MaintainerSignature>,
+    ) -> Self {
+        Self {
+            protocol_version,
+            activation_epoch,
+            description,
+            signatures,
+        }
+    }
+
+    /// Get the message bytes that should be signed for this activation
+    ///
+    /// Format: "activate:{version}:{epoch}"
+    pub fn signing_message(&self) -> Vec<u8> {
+        format!(
+            "activate:{}:{}",
+            self.protocol_version, self.activation_epoch
+        )
+        .into_bytes()
+    }
+
+    /// Serialize to bytes for storage in transaction extra_data
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap_or_default()
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bincode::deserialize(bytes).ok()
+    }
+}
+
 /// Errors that can occur during maintainer operations
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaintainerError {
@@ -704,5 +760,31 @@ mod tests {
         // Should fail if we only have the target's signature
         let signatures = vec![sig1];
         assert!(!set.verify_multisig_excluding(&signatures, message, kp1.public_key()));
+    }
+
+    #[test]
+    fn test_protocol_activation_data_serialization() {
+        let data = ProtocolActivationData::new(2, 500, "Enable new rules".to_string(), vec![]);
+
+        let bytes = data.to_bytes();
+        let recovered = ProtocolActivationData::from_bytes(&bytes).unwrap();
+
+        assert_eq!(data.protocol_version, recovered.protocol_version);
+        assert_eq!(data.activation_epoch, recovered.activation_epoch);
+        assert_eq!(data.description, recovered.description);
+        assert_eq!(data.signatures.len(), recovered.signatures.len());
+    }
+
+    #[test]
+    fn test_protocol_activation_signing_message() {
+        let data = ProtocolActivationData::new(3, 1000, "Test".to_string(), vec![]);
+        let msg = data.signing_message();
+        assert_eq!(msg, b"activate:3:1000");
+    }
+
+    #[test]
+    fn test_protocol_activation_from_bytes_invalid() {
+        assert!(ProtocolActivationData::from_bytes(&[]).is_none());
+        assert!(ProtocolActivationData::from_bytes(&[0u8; 4]).is_none());
     }
 }

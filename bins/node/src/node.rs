@@ -3020,6 +3020,9 @@ impl Node {
         // Track newly registered producers to add to known_producers after lock release
         let mut new_registrations: Vec<PublicKey> = Vec::new();
 
+        // Deferred protocol activation (verified in tx loop, applied when chain_state lock acquired)
+        let mut pending_protocol_activation_data: Option<(u32, u64)> = None;
+
         // Create BlockBatch for atomic persistence (all state changes in one WriteBatch)
         let mut batch = self.state_db.begin_batch();
 
@@ -3242,6 +3245,34 @@ impl Node {
                         );
                     }
                 }
+
+                // Process ProtocolActivation transactions — verified and applied when chain_state lock is acquired
+                if tx.tx_type == TxType::ProtocolActivation {
+                    if let Some(data) = tx.protocol_activation_data() {
+                        // Derive maintainer set from first 5 registered producers
+                        let mut sorted = producers.all_producers().to_vec();
+                        sorted.sort_by_key(|p| p.registered_at);
+                        let maintainer_keys: Vec<crypto::PublicKey> = sorted
+                            .iter()
+                            .take(doli_core::maintainer::INITIAL_MAINTAINER_COUNT)
+                            .map(|p| p.public_key)
+                            .collect();
+                        let mset = doli_core::MaintainerSet::with_members(maintainer_keys, height);
+
+                        let message = data.signing_message();
+                        if mset.verify_multisig(&data.signatures, &message) {
+                            // Store validated activation for deferred application
+                            pending_protocol_activation_data =
+                                Some((data.protocol_version, data.activation_epoch));
+                            info!(
+                                "[PROTOCOL] Verified activation tx: v{} at epoch {}",
+                                data.protocol_version, data.activation_epoch
+                            );
+                        } else {
+                            warn!("[PROTOCOL] Rejected activation: insufficient maintainer signatures");
+                        }
+                    }
+                }
             }
 
             // Process completed unbonding periods
@@ -3292,6 +3323,38 @@ impl Node {
             // Clear snap sync marker: block store now has at least one real block,
             // so the next restart's integrity check will find it normally.
             state.clear_snap_sync();
+
+            // Apply deferred protocol activation (verified during tx processing)
+            if let Some((version, activation_epoch)) = pending_protocol_activation_data {
+                let current_epoch = height / SLOTS_PER_EPOCH as u64;
+                if activation_epoch > current_epoch && version > state.active_protocol_version {
+                    state.pending_protocol_activation = Some((version, activation_epoch));
+                    info!(
+                        "[PROTOCOL] Scheduled activation: v{} at epoch {} (current epoch {})",
+                        version, activation_epoch, current_epoch
+                    );
+                } else {
+                    warn!(
+                        "[PROTOCOL] Rejected activation: v{} at epoch {} (current v{}, epoch {})",
+                        version, activation_epoch, state.active_protocol_version, current_epoch
+                    );
+                }
+            }
+
+            // Check pending protocol activation at epoch boundaries
+            if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+                if let Some((version, activation_epoch)) = state.pending_protocol_activation {
+                    let current_epoch = height / SLOTS_PER_EPOCH as u64;
+                    if current_epoch >= activation_epoch {
+                        state.active_protocol_version = version;
+                        state.pending_protocol_activation = None;
+                        info!(
+                            "[PROTOCOL] Activated protocol version {} at epoch {} (height {})",
+                            version, current_epoch, height
+                        );
+                    }
+                }
+            }
 
             // For devnet: set genesis_timestamp from first block if not already set from chainspec
             // When chainspec has a fixed genesis time, we MUST use it (all nodes must agree)
@@ -5324,7 +5387,9 @@ impl Node {
                             });
                         }
                     }
-                    _ => {} // Other TX types don't modify producer set
+                    // ProtocolActivation doesn't modify the producer set —
+                    // it's processed in apply_block where chain_state is available.
+                    _ => {}
                 }
             }
 
