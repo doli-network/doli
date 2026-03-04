@@ -356,6 +356,12 @@ pub struct UpdateConfig {
     /// Check interval in seconds (default: 6 hours)
     pub check_interval_secs: u64,
 
+    /// Veto period in seconds (default: 2 hours)
+    pub veto_period_secs: u64,
+
+    /// Grace period after approval in seconds (default: 1 hour)
+    pub grace_period_secs: u64,
+
     /// Custom update URL (optional, uses mirrors by default)
     pub custom_url: Option<String>,
 }
@@ -367,6 +373,8 @@ impl Default for UpdateConfig {
             notify_only: false,
             auto_rollback: true,
             check_interval_secs: CHECK_INTERVAL.as_secs(),
+            veto_period_secs: VETO_PERIOD.as_secs(),
+            grace_period_secs: GRACE_PERIOD.as_secs(),
             custom_url: None,
         }
     }
