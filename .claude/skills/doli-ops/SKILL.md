@@ -1038,3 +1038,169 @@ Max allowed drift: 1s (slot), 200ms (block timestamp).
 | `scripts/launch_testnet.sh` | Launch local 2-node devnet |
 | `scripts/update.sh` | Manual binary update from GitHub |
 | `scripts/generate_chainspec.sh` | Generate chainspec from wallets |
+
+---
+
+## Section 8: Producer Key Registry
+
+### 8.1 Our Producers (AUTHORITATIVE)
+
+> **CRITICAL**: These are the ONLY valid producer keys. They match `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs`.
+
+| Node | Key File | Address (`doli1...`) | Public Key (Ed25519) |
+|------|----------|---------------------|----------------------|
+| **N1** | `~/.doli/mainnet/keys/producer_1.json` | `doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef` | `202047256a...c3e6d3df` |
+| **N2** | `~/.doli/mainnet/keys/producer_2.json` | `doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz` | `effe88fefb...9926272b` |
+| **N3** | `/home/ilozada/.doli/mainnet/keys/producer_3.json` | `doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql` | `54323cefd0...25c48c2b` |
+| **N4** | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | `doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6` | `a1596a36fd...e9beda1d` |
+| **N5** | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | `doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc` | `c5acb5b359...e3c03a9` |
+| **N6** | `~/.doli/mainnet/keys/producer_6.json` | `doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s` | `d13ae33891...4a1ec670` |
+| **N8** | `~/.doli/mainnet/keys/producer_8.json` | `doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma` | `3303a23595...77b4b88` |
+
+**N1-N5**: Genesis producers and maintainers (governance 5/5).
+**N6/N8**: NOT genesis producers, NOT maintainers.
+
+Producer key files are wallet-compatible — use directly with `doli -w <key_file>`.
+
+### 8.2 External Producers
+
+| Name | Address (`doli1...`) | Public Key (Ed25519) | Bonds | Registered |
+|------|---------------------|----------------------|-------|------------|
+| **atinoco** | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 19 | Height 495 |
+
+### 8.3 All-Node Balance Check
+
+> **DO NOT use RPC `getBalance`** — returns 0. Use CLI instead.
+
+```bash
+ssh ilozada@omegacortex.ai "
+  CLI=~/repos/doli/target/release/doli
+  W=~/.doli/mainnet/keys/producer_1.json
+  echo 'N1:' && \$CLI -w \$W balance --address doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+  echo 'N2:' && \$CLI -w \$W balance --address doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz
+  echo 'N3:' && \$CLI -w \$W balance --address doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql
+  echo 'N4:' && \$CLI -w \$W balance --address doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
+  echo 'N5:' && \$CLI -w \$W balance --address doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
+  echo 'N6:' && \$CLI -w \$W balance --address doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
+  echo 'N8:' && \$CLI -w \$W balance --address doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma
+  echo 'atinoco:' && \$CLI -w \$W balance --address doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e
+"
+```
+
+---
+
+## Section 9: Additional Nodes (N6, N8)
+
+### 9.1 Node 6 (omegacortex)
+
+| Property | Value |
+|----------|-------|
+| Service | `doli-mainnet-node6` |
+| Service file | `/etc/systemd/system/doli-mainnet-node6.service` |
+| Data | `/home/ilozada/.doli/mainnet/node6/data` |
+| Key | `/home/ilozada/.doli/mainnet/keys/producer_6.json` |
+| P2P | 30305 |
+| RPC | 8547 |
+| Metrics | 9092 |
+| Logs | `/var/log/doli/node6.log` |
+| Bootstrap | Node 1 via `/ip4/127.0.0.1/tcp/30303` |
+
+Re-registered post-genesis at block 7812 with 10 bonds (100 DOLI). Not a maintainer. Shares host/binary with N1/N2.
+
+### 9.2 Node 8 (macOS local)
+
+| Property | Value |
+|----------|-------|
+| Service | `network.doli.mainnet.node8` (launchd) |
+| Service file | `~/Library/LaunchAgents/network.doli.mainnet.node8.plist` |
+| Binary | `/usr/local/bin/doli-node` |
+| Data | `~/.doli/mainnet/node8/data` |
+| Key | `~/.doli/mainnet/keys/producer_8.json` |
+| P2P | 30305 |
+| RPC | 8547 |
+| Logs | `~/.doli/mainnet/node8.log` |
+
+**KeepAlive: true** — must `launchctl unload` (not just `stop`) before wiping data.
+
+```bash
+# Manage N8 (macOS launchd)
+launchctl list network.doli.mainnet.node8                    # status
+launchctl stop network.doli.mainnet.node8                    # stop
+launchctl start network.doli.mainnet.node8                   # start
+launchctl unload ~/Library/LaunchAgents/network.doli.mainnet.node8.plist  # disable
+launchctl load ~/Library/LaunchAgents/network.doli.mainnet.node8.plist    # enable
+```
+
+---
+
+## Section 10: Chainspec, DNS & Snap Sync
+
+### 10.1 Chainspec Rules (CONSENSUS-CRITICAL)
+
+> **HARD LESSON (2026-02-22):** N4/N5 had no `chainspec.json` → different `genesis_timestamp` → slot diverged → chain fork.
+
+1. Chainspec is **embedded in the binary** (`chainspec.mainnet.json` via `include_str!`)
+2. On first start, if no `chainspec.json` in data dir, binary writes from embedded
+3. Priority: `--chainspec /path` > `$DATA_DIR/chainspec.json` > embedded fallback
+4. Producer nodes `exit(1)` without chainspec — code guard in `main.rs`
+5. **NEVER** change `genesis.timestamp` or `consensus.slot_duration` — breaks consensus
+
+### 10.2 DNS / Bootstrap
+
+| Record | Resolves to | Purpose |
+|--------|-------------|---------|
+| `seed1.doli.network` | `72.60.228.233` | Default bootstrap (N1) |
+| `seed2.doli.network` | `72.60.228.233` | Default bootstrap (N1) |
+
+Hardcoded in `crates/core/src/network_params.rs`. Nodes without `--bootstrap` use these automatically.
+
+### 10.3 Snap Sync
+
+When >1000 blocks behind with 3+ peers, node uses snap sync (full state snapshot). Seconds instead of hours.
+
+- Wire protocol: `GetStateRoot`/`StateRoot` + `GetStateSnapshot`/`StateSnapshot`
+- State root: `H(H(chain_state) || H(utxo_set) || H(producer_set))` verified by 2+ peers
+- Falls back to header-first sync if <3 peers or quorum fails
+- Logs: `[SNAP_SYNC]` prefix
+
+---
+
+## Section 11: On-Chain Protocol Activation
+
+Binaries with consensus changes ship new rules behind a **protocol version gate**. Rules stay dormant until activated on-chain by maintainers.
+
+**Activation flow:**
+1. Binary installed via auto-update (safe — new rules dormant)
+2. Maintainers emit `ProtocolActivation` tx (3/5 multisig): `doli protocol activate --version 3 --key producer_N.json`
+3. Grace period (2 epochs) — all nodes process the activation tx
+4. At epoch boundary → ALL nodes switch simultaneously (deterministic, zero fork)
+
+**Key pieces:**
+- `TxType::ProtocolActivation = 15`
+- `ChainState.active_protocol_version` (starts at 2)
+- `consensus::is_protocol_active(v, cs)` gate function
+- Same `validate_maintainer_tx()` as MaintainerAdd/Remove
+
+| Change type | Activation | Example |
+|-------------|-----------|---------|
+| Non-consensus | Immediate on install | RPC, logging, sync fixes |
+| Consensus-critical | On-chain ProtocolActivation | Scheduler, validation, economics, VDF |
+
+**Auto-update env overrides** (all networks):
+- `DOLI_VETO_PERIOD_SECS` — veto window (default: 7200s mainnet, 60s devnet)
+- `DOLI_GRACE_PERIOD_SECS` — grace window (default: 3600s mainnet, 30s devnet)
+- `DOLI_UPDATE_CHECK_INTERVAL_SECS` — poll interval (default: 21600s/6h mainnet, 10s devnet)
+
+**Signing convention:** `message = "{version}:{sha256(CHECKSUMS.txt)}"`
+
+**Updater key files:**
+
+| File | Purpose |
+|------|---------|
+| `crates/updater/src/lib.rs` | Release, signatures, verification, constants |
+| `crates/updater/src/download.rs` | `fetch_from_github()`, CHECKSUMS/SIGNATURES download |
+| `crates/updater/src/vote.rs` | VoteTracker, seniority-weighted veto |
+| `crates/updater/src/apply.rs` | Binary backup, install, rollback, extraction |
+| `crates/updater/src/watchdog.rs` | Post-update crash detection, auto-rollback |
+| `bins/node/src/updater.rs` | Node-side auto-update loop, enforcement |
+| `.github/workflows/release.yml` | CI: build, package, CHECKSUMS.txt, SIGNATURES.json scaffold |
