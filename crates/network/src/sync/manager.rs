@@ -397,6 +397,11 @@ pub struct SyncManager {
     /// to the existing hard reset-to-Idle behavior to avoid infinite loops.
     body_stall_retries: u32,
 
+    /// Consecutive block-apply failures (downloaded chain can't be applied).
+    /// Unlike consecutive_empty_headers (reset by header downloads), this is
+    /// ONLY reset by successful block_applied(). At >= 3, triggers genesis resync.
+    consecutive_apply_failures: u32,
+
     /// Timestamp when all peers were lost (for peer loss timeout).
     /// After `peer_loss_timeout_secs`, production resumes solo.
     peers_lost_at: Option<Instant>,
@@ -487,6 +492,7 @@ impl SyncManager {
             needs_genesis_resync: false,
             sync_epoch: 0,
             body_stall_retries: 0,
+            consecutive_apply_failures: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
             // Snap sync defaults
@@ -2442,6 +2448,7 @@ impl SyncManager {
         self.last_block_applied = Instant::now();
         self.last_sync_activity = Instant::now();
         self.body_stall_retries = 0;
+        self.consecutive_apply_failures = 0;
 
         // Applying a block means the chain is advancing — reset fork counter.
         self.consecutive_empty_headers = 0;
@@ -2509,6 +2516,34 @@ impl SyncManager {
             if self.should_sync() {
                 self.start_sync();
             }
+        }
+    }
+
+    /// Notify sync manager that apply_block() failed for a synced block.
+    ///
+    /// Clears all pending sync state (the downloaded chain is suspect) and
+    /// increments the apply failure counter. At 3+ failures, triggers genesis
+    /// resync — we're stuck on a fork producing valid-looking but unapplyable chains.
+    pub fn block_apply_failed(&mut self) {
+        self.consecutive_apply_failures += 1;
+        warn!(
+            "Block apply failure #{} — clearing pending sync state",
+            self.consecutive_apply_failures
+        );
+
+        // Clear everything — don't salvage blocks from a bad chain
+        self.pending_headers.clear();
+        self.pending_blocks.clear();
+        self.headers_needing_bodies.clear();
+        self.header_downloader.clear();
+        self.body_downloader.clear();
+        self.body_stall_retries = 0;
+        self.state = SyncState::Idle;
+        self.last_sync_activity = Instant::now();
+
+        if self.consecutive_apply_failures >= 3 {
+            warn!("3+ consecutive apply failures — triggering genesis resync");
+            self.needs_genesis_resync = true;
         }
     }
 
