@@ -2591,6 +2591,7 @@ impl SyncManager {
         self.consecutive_empty_headers = 0;
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
+        self.consecutive_apply_failures = 0;
 
         // Clear snap sync production gate (genesis resync starts fresh)
         self.awaiting_canonical_block = false;
