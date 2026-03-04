@@ -5674,6 +5674,7 @@ impl Node {
                 for block in blocks {
                     if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                         warn!("Failed to apply pending sync block: {}", e);
+                        self.sync_manager.write().await.block_apply_failed();
                         break;
                     }
                 }
