@@ -2820,19 +2820,31 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
             }
 
             let wallet = Wallet::load(wallet_path)?;
-            let vote_type = if veto { "veto" } else { "approve" };
+            let keypair = wallet.primary_keypair()?;
+            let vote_type = if veto { "Veto" } else { "Approve" };
+            let vote_str = if veto { "veto" } else { "approve" };
             let producer_id = wallet.addresses()[0].public_key.clone();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            // Sign the vote: "version:vote:timestamp"
+            let message = format!("{}:{}:{}", version, vote_str, timestamp);
+            let sig = crypto::signature::sign(message.as_bytes(), keypair.private_key());
 
             println!(
                 "Submitting {} vote for v{}...",
-                vote_type.to_uppercase(),
+                vote_str.to_uppercase(),
                 version
             );
 
             let vote_msg = serde_json::json!({
                 "version": version,
                 "vote": vote_type,
-                "producer_id": producer_id,
+                "producerId": producer_id,
+                "timestamp": timestamp,
+                "signature": sig.to_hex(),
             });
 
             match rpc.submit_vote(vote_msg).await {
@@ -2841,7 +2853,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
                         .get("status")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
-                    println!("Vote {}: {}", vote_type, status);
+                    println!("Vote {}: {}", vote_str, status);
                 }
                 Err(e) => println!("Error submitting vote: {}", e),
             }
