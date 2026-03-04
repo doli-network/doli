@@ -295,7 +295,19 @@ impl StateDb {
     pub fn get_chain_state(&self) -> Option<ChainState> {
         let cf = self.db.cf_handle(CF_META).unwrap();
         match self.db.get_cf(cf, META_CHAIN_STATE) {
-            Ok(Some(bytes)) => bincode::deserialize(&bytes).ok(),
+            Ok(Some(bytes)) => {
+                // Try current format first
+                if let Ok(cs) = bincode::deserialize::<ChainState>(&bytes) {
+                    return Some(cs);
+                }
+                // Migration: v1.0.28 format lacks active_protocol_version (u32)
+                // and pending_protocol_activation (Option<(u32, u64)>).
+                // Append defaults: 1u32 LE + 0x00 (None).
+                let mut extended = bytes;
+                extended.extend_from_slice(&1u32.to_le_bytes());
+                extended.push(0x00);
+                bincode::deserialize(&extended).ok()
+            }
             _ => None,
         }
     }
