@@ -1390,7 +1390,7 @@ async fn cmd_protocol_activate(
             );
         }
         Err(e) => {
-            println!("Error submitting activation: {}", e);
+            anyhow::bail!("Error submitting activation: {}", e);
         }
     }
 
@@ -2053,12 +2053,9 @@ async fn cmd_producer(
                             .unwrap_or_else(|| {
                                 format!("{}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..])
                             });
-                        println!("Producer not found: {}", pk_display);
-                        println!();
-                        println!("This key is not registered as a producer.");
-                        println!("Use 'doli producer register' to register.");
+                        anyhow::bail!("Producer not found: {}. This key is not registered as a producer. Use 'doli producer register' to register.", pk_display);
                     } else {
-                        println!("Error: {}", e);
+                        anyhow::bail!("Error: {}", e);
                     }
                 }
             }
@@ -2190,7 +2187,7 @@ async fn cmd_producer(
                     }
                 }
                 Err(e) => {
-                    println!("Error fetching producers: {}", e);
+                    anyhow::bail!("Error fetching producers: {}", e);
                 }
             }
         }
@@ -2724,7 +2721,7 @@ async fn cmd_rewards(
                     );
                 }
                 Err(e) => {
-                    println!("Error fetching epoch info: {}", e);
+                    anyhow::bail!("Error fetching epoch info: {}", e);
                 }
             }
         }
@@ -2772,7 +2769,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
                         println!("No pending updates.");
                     }
                 }
-                Err(e) => println!("Error checking updates: {}", e),
+                Err(e) => anyhow::bail!("Error checking updates: {}", e),
             }
         }
 
@@ -2816,7 +2813,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
                         println!("No pending updates.");
                     }
                 }
-                Err(e) => println!("Error fetching status: {}", e),
+                Err(e) => anyhow::bail!("Error fetching status: {}", e),
             }
         }
 
@@ -2865,7 +2862,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
                         .unwrap_or("unknown");
                     println!("Vote {}: {}", vote_str, status);
                 }
-                Err(e) => println!("Error submitting vote: {}", e),
+                Err(e) => anyhow::bail!("Error submitting vote: {}", e),
             }
         }
 
@@ -2896,7 +2893,7 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
                         }
                     );
                 }
-                Err(e) => println!("Error fetching votes: {}", e),
+                Err(e) => anyhow::bail!("Error fetching votes: {}", e),
             }
         }
 
@@ -2964,7 +2961,7 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
                         println!("No maintainers found (or unsupported response format).");
                     }
                 }
-                Err(e) => println!("Error fetching maintainer set: {}", e),
+                Err(e) => anyhow::bail!("Error fetching maintainer set: {}", e),
             }
         }
     }
