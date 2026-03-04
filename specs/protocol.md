@@ -1123,7 +1123,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 | Devnet only |
 | Reward Epoch | 360 blocks | 360 blocks | 4 blocks | Devnet only |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 | Devnet only |
-| Veto Period | 2 epochs (~2h) | 2 epochs (~2h) | 60s | All |
+| Veto Period | 7 days | 7 days | 60s | All |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
@@ -1340,7 +1340,8 @@ Result:
 | EXCLUSION_PERIOD   | 10,080                   |
 | TOTAL_SUPPLY       | 2,522,880,000,000,000    |
 
-| VETO_PERIOD        | 7,200 (2 epochs, ~2h)    |
+| VETO_PERIOD        | 604,800 (7 days)         |
+| GRACE_PERIOD       | 172,800 (48 hours)       |
 | VETO_THRESHOLD     | 40%                      |
 | REQUIRED_SIGS      | 3 of 5                   |
 | MIN_MAINTAINERS    | 3                        |
@@ -1411,16 +1412,21 @@ Only active producers can vote. Votes propagate via gossip.
 
 ### 9.4 Veto Calculation
 
+Votes are weighted by `bond_count × seniority_multiplier`:
+
 ```
-veto_percent = (veto_count * 100) / total_active_producers
+seniority_multiplier = 1.0 + min(years_active, 4) × 0.75
+vote_weight = bond_count × seniority_multiplier
+
+total_veto_weight = sum(vote_weight for each VETO vote)
+total_weight = sum(vote_weight for each active producer)
+veto_percent = (total_veto_weight * 100) / total_weight
 
 if veto_percent >= 40:
     update REJECTED
 else:
-    update APPROVED after 2 epochs (~2h)
+    update APPROVED after 7-day veto period
 ```
-
-Note: Voting uses simple count-based voting (one vote per producer), not weighted voting.
 
 ---
 
