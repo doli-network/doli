@@ -378,7 +378,7 @@ impl NetworkParams {
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: consensus::GENESIS_TIME,
-                veto_period_secs: 120, // TEMPORARY: 2 min for auto-update testing (prod: 2 * 3600)
+                veto_period_secs: 300, // TEMPORARY: 5 min for auto-update testing (prod: 2 * 3600)
                 grace_period_secs: 60, // TEMPORARY: 1 min for auto-update testing (prod: 3600)
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD, // blocks (already u64)
