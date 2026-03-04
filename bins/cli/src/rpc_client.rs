@@ -570,7 +570,12 @@ pub fn units_to_coins(units: u64) -> f64 {
 
 /// Convert display coins to base units
 pub fn coins_to_units(coins: f64) -> u64 {
-    (coins * 100_000_000.0) as u64
+    let units = coins * 100_000_000.0;
+    if units < 0.0 || units > u64::MAX as f64 {
+        0 // caller validates amount > 0 before calling
+    } else {
+        units.round() as u64
+    }
 }
 
 /// Format balance for display

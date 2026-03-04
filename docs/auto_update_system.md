@@ -47,8 +47,8 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 │ MAINTAINER_THRESHOLD           │ 3 of 5    │ Signatures needed for any action        │
 │ MIN_MAINTAINERS                │ 3         │ Cannot remove below this                │
 │ MAX_MAINTAINERS                │ 5         │ Maximum maintainer count                │
-│ VETO_PERIOD                    │ 2 epochs (~2h) │ Time for producers to vote on updates   │
-│ GRACE_PERIOD                   │ 1 epoch (~1h)  │ Time after approval before enforcement  │
+│ VETO_PERIOD                    │ 7 days    │ Time for producers to vote on updates   │
+│ GRACE_PERIOD                   │ 48 hours  │ Time after approval before enforcement  │
 │ VETO_THRESHOLD_PERCENT         │ 40%       │ Weighted percentage needed to reject    │
 │ CHECK_INTERVAL                 │ 6 hours   │ How often nodes check for updates       │
 │ MAX_SENIORITY_MULTIPLIER       │ 4x        │ Maximum vote weight for seniors         │
@@ -454,7 +454,7 @@ The "privilege" of early adopters has an expiration date. After 4 years, anyone 
 │  ├── If veto >= 40%: Update REJECTED, discarded                                 │
 │  └── If veto <  40%: Update APPROVED, grace period begins                       │
 │                                                                                 │
-│  HOUR 2-3: GRACE PERIOD (1 epoch, ~1h)                                          │
+│  DAYS 7-9: GRACE PERIOD (48 hours)                                              │
 │  ├── Approved update downloaded and verified                                    │
 │  ├── Operators can manually apply early: doli-node update apply                 │
 │  └── Outdated nodes can still produce blocks                                    │
@@ -724,7 +724,7 @@ Hard fork releases include an activation height in the release metadata:
 │  published   ends              (if approved)                 height reached    │
 │    │            │                  │                               │            │
 │    └────────────┴──────────────────┴───────────────────────────────┤            │
-│    │◄── 2 epochs ─►│◄── 1 epoch ──►│◄────── ~21 days ─────────────►│            │
+│    │◄── 7 days ──►│◄── 48 hrs ──►│◄────── ~21 days ──────────────►│            │
 │                                                                   │            │
 │                                                     At activation_height:       │
 │                                                     ├── New rules take effect   │
@@ -766,8 +766,8 @@ fn on_block_applied(&mut self, block: &Block) {
 │ Backward compatible │ Yes                 │ No                  │
 │ Old nodes can sync  │ Yes                 │ No (fork off)       │
 │ Activation          │ Immediate (grace)   │ At specific height  │
-│ Veto period         │ 2 epochs (~2h)      │ 2 epochs (~2h)      │
-│ Total notice        │ ~3 hours            │ ~30 days            │
+│ Veto period         │ 7 days              │ 7 days              │
+│ Total notice        │ 9 days              │ ~30 days            │
 │ Rollback possible   │ Yes (automatic)     │ No (chain diverged) │
 │ Network split risk  │ None                │ Yes (if not ready)  │
 └─────────────────────┴─────────────────────┴─────────────────────┘
@@ -793,7 +793,7 @@ fn on_block_applied(&mut self, block: &Block) {
 │ (2 keys)           │ releases                │ key                     │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
 │ Key compromise     │ Attacker signs          │ Community can veto      │ Medium       │
-│ (3 keys)           │ releases                │ within 2 epochs (~2h)   │              │
+│ (3 keys)           │ releases                │ within 7 days           │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
 │ Sybil veto         │ Block legitimate        │ Seniority weighting     │ Low          │
 │ attack             │ updates                 │ + bond + 30-day min     │              │
@@ -824,7 +824,7 @@ fn on_block_applied(&mut self, block: &Block) {
 │                                                                                 │
 │  Layer 2: GOVERNANCE                                                            │
 │  ├── 40% weighted veto threshold                                                │
-│  ├── 2-epoch mandatory review period (~2h)                                      │
+│  ├── 7-day mandatory review period                                              │
 │  ├── Vote changing allowed (react to new info)                                  │
 │  └── Transparent maintainer set (derived from chain)                            │
 │                                                                                 │
@@ -1165,8 +1165,8 @@ pub const MIN_MAINTAINERS: usize = 3;
 pub const MAX_MAINTAINERS: usize = 5;
 
 // Timing
-pub const VETO_PERIOD: Duration = Duration::from_secs(2 * 3600);          // 2 epochs (~2h)
-pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);             // 1 epoch (~1h)
+pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);     // 7 days
+pub const GRACE_PERIOD: Duration = Duration::from_secs(48 * 3600);        // 48 hours
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);       // 6 hours
 
 // Thresholds
@@ -1239,7 +1239,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 
 ### Q: Can maintainers force an update without community consent?
 
-**No.** Even with 3/5 maintainer signatures, the community has 2 epochs (~2 hours) to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
+**No.** Even with 3/5 maintainer signatures, the community has 7 days to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
 
 ### Q: How do I verify who the maintainers are?
 
@@ -1292,7 +1292,7 @@ This prevents "voter apathy" from blocking important security updates.
 
 ### Q: Can I change my vote?
 
-**Yes.** You can change your vote at any time during the 2-epoch veto period. Only your latest vote (by timestamp) counts at the deadline. This allows reaction to new information discovered during review.
+**Yes.** You can change your vote at any time during the 7-day veto period. Only your latest vote (by timestamp) counts at the deadline. This allows reaction to new information discovered during review.
 
 ### Q: What if fewer than 5 producers ever register?
 
