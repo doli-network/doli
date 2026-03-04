@@ -56,7 +56,7 @@ This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 
 | `MaintainerSet` | `crates/core/src/maintainer.rs` | Full 716 lines | Full implementation with multisig |
 | `TxType::AddMaintainer/RemoveMaintainer` | `crates/core/src/transaction.rs` | Types 11,12 | Transaction types defined |
 | Maintainer tx validation | `crates/core/src/validation.rs` | 1783+ | Structural validation |
-| Network params | `crates/core/src/network.rs` | 263-330 | All update timing params |
+| Network params | `crates/core/src/network_params.rs` | 375-415 | All update timing params |
 | VOTES_TOPIC gossip | `crates/network/src/gossip.rs` | 24, 99 | Vote gossip topic subscribed |
 | `UpdateService` | `bins/node/src/updater.rs` | 390-720 | Periodic check, download, veto tracking |
 | `PendingUpdate` | `bins/node/src/updater.rs` | 39-115 | JSON persistence of pending updates |
@@ -67,20 +67,24 @@ This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 
 ### ⚠️ NEEDS MODIFICATION — Change existing code
 | What | Where | Change Needed |
 |------|-------|---------------|
-| `calculate_vote_weight()` | `crates/updater/src/lib.rs:259` | Currently seniority-only. Must become `bond_count × seniority_multiplier` |
-| `VoteTracker.producer_weights` | `crates/updater/src/vote.rs` | Weights must be set using `bond_count × seniority_multiplier`, not seniority alone |
-| Vote forwarding | `bins/node/src/node.rs:1081` | TODO comment — must connect gossip votes to UpdateService via `vote_tx` channel |
+| Vote forwarding | `bins/node/src/node.rs` | Must connect gossip votes to UpdateService via `vote_tx` channel |
 | `getUpdateStatus` RPC | `crates/rpc/src/methods.rs` | Returns placeholder. Must query actual UpdateService state |
+
+### ✅ PREVIOUSLY MISSING — Now implemented
+| Component | Location | Notes |
+|-----------|----------|-------|
+| `calculate_vote_weight()` | `crates/updater/src/lib.rs:241` | Uses `bond_count × seniority_multiplier` |
+| `watchdog.rs` | `crates/updater/src/watchdog.rs` | Crash detection and auto-rollback |
+| `hardfork.rs` | `crates/updater/src/hardfork.rs` | Upgrade-at-height mechanism |
+| `storage/maintainer.rs` | `crates/storage/src/maintainer.rs` | Persist maintainer set |
+| `storage/update.rs` | `crates/storage/src/update.rs` | Persist update state, votes |
+| CLI `update` subcommand | `bins/cli/src/main.rs` | check, status, vote, votes, apply, rollback |
+| CLI `maintainer` subcommand | `bins/cli/src/main.rs` | list |
+| CLI `protocol` subcommand | `bins/cli/src/main.rs` | sign, activate |
 
 ### ❌ MISSING — Must implement
 | Component | Location | Milestone |
 |-----------|----------|-----------|
-| `watchdog.rs` | `crates/updater/src/watchdog.rs` | M4 |
-| `hardfork.rs` | `crates/updater/src/hardfork.rs` | M5 |
-| `storage/maintainer.rs` | `crates/storage/src/maintainer.rs` | M6 |
-| `storage/update.rs` | `crates/storage/src/update.rs` | M6 |
-| CLI `update` subcommand | `bins/cli/src/main.rs` | M9 |
-| CLI `maintainer` subcommand | `bins/cli/src/main.rs` | M9 |
 | E2E test: veto flow | `scripts/test_update_veto.sh` | M11 |
 | E2E test: rollback | `scripts/test_rollback.sh` | M11 |
 | E2E test: hard fork | `scripts/test_hard_fork.sh` | M11 |

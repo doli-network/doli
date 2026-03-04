@@ -403,7 +403,12 @@ async fn main() -> Result<()> {
         "info" => Level::INFO,
         "warn" => Level::WARN,
         "error" => Level::ERROR,
-        _ => Level::INFO,
+        other => {
+            anyhow::bail!(
+                "Invalid log level '{}'. Valid options: trace, debug, info, warn, error",
+                other
+            );
+        }
     };
 
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();

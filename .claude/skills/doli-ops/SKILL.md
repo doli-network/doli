@@ -551,6 +551,10 @@ ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && \
 # 2. Copy binary to N3 (via SCP from omegacortex)
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ilozada@147.93.84.44:~/doli-node"
 
+# 2b. Pull & build on N4 and N5 (they have their own git repos)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo -u isudoajl bash -c \"cd /opt/doli && git pull && source ~/.cargo/env && cargo build --release --package doli-node\"'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo -u isudoajl bash -c \"cd /opt/doli && git pull && source ~/.cargo/env && cargo build --release --package doli-node\"'"
+
 # 3. Stop ALL nodes via systemd
 ssh ilozada@omegacortex.ai "sudo systemctl stop doli-mainnet-node1 doli-mainnet-node2"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl stop doli-mainnet-node3'"
