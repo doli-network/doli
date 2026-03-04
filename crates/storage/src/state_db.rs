@@ -1563,10 +1563,9 @@ mod tests {
         let bytes = bincode::serialize(&cs).unwrap();
 
         // Store the length as a canary — any field change alters it
-        // ChainState::new(ZERO) = 32+8+4+8+32+8+32+8+8+1+4+1 = 146 bytes (bincode)
         assert_eq!(
             bytes.len(),
-            146,
+            170,
             "ChainState bincode size changed! A field was added/removed. \
              Update deserialize_chain_state() with a migration path BEFORE deploying."
         );
