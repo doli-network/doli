@@ -14,7 +14,7 @@ We propose a peer-to-peer electronic cash system where the only resource require
 
 Block production follows deterministic rotation: a participant with one bond knows exactly when their next block will be produced. Pools are unnecessary. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
-A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or ten thousand. No lottery. No variance. No pools. Just time.
+A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. No lottery. No variance. No pools. Just time.
 
 Transactions are ordered through verifiable delay functions that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
@@ -28,27 +28,19 @@ This assumption is wrong. There exists a resource that cannot be accumulated, ca
 
 One second passes at the same rate for an individual running a single node as it does for a nation-state with unlimited budget. No amount of money can buy more time. No amount of hardware can make time pass faster.
 
-We propose an electronic cash system where consensus derives from verifiable sequential computation — proof that real time has elapsed. Double-spending is prevented not by energy expenditure or capital lockup, but by the irreversible passage of time. The system is secure as long as honest participants collectively maintain more sequential computation presence than any cooperating group of attackers.
-
-The result is a network where a participant with a single bond (10 DOLI) earns the same percentage return as the largest producer. Pools are unnecessary. Rewards are deterministic. The smallest participant knows exactly when their next block will be produced.
+We propose an electronic cash system where consensus derives from verifiable sequential computation — proof that real time has elapsed. The system is secure as long as honest participants collectively maintain more sequential computation presence than any cooperating group of attackers.
 
 ### 1.1. Why Now
 
-The blockchain trilemma assumes three competing properties: decentralization, security, and scalability. Proposed solutions trade one for another. Proof of Work sacrifices energy efficiency for security. Proof of Stake sacrifices decentralization for scalability. Sharding sacrifices simplicity for throughput.
+The blockchain trilemma assumes three competing properties: decentralization, security, and scalability. Proposed solutions trade one for another — energy for security (PoW), decentralization for scalability (PoS), simplicity for throughput (sharding). These tradeoffs arise because every prior system anchors consensus to a resource that can be accumulated: hashpower, stake, or storage.
 
-These tradeoffs arise from a common assumption: consensus requires a scarce resource that can be accumulated. Hashpower can be bought. Stake can be concentrated. Storage can be hoarded.
+Verifiable Delay Functions, first formalized by Boneh, Bonneau, Bünz, and Fisch [2] in 2018, made it possible to prove that sequential time has elapsed without trusting the prover. Before this cryptographic primitive existed, Proof of Time was not implementable.
 
-**Time cannot be accumulated.** One entity cannot acquire "more time" than another. A nation-state with unlimited budget still experiences one second per second.
-
-Verifiable Delay Functions, first formalized by Boneh, Bonneau, Bünz, and Fisch in 2018, made it possible to prove that sequential time has elapsed without trusting the prover. Before this cryptographic primitive existed, Proof of Time was not implementable.
-
-The trilemma persists because it never considered time as the scarce resource. By anchoring consensus to sequential computation that cannot be parallelized, we achieve:
+By anchoring consensus to sequential computation:
 
 - **Decentralization:** No special hardware required. Any CPU can participate.
 - **Security:** Attacking requires real time, not purchasable resources.
 - **Scalability:** Block production is bounded by time, not by resource competition.
-
-The tradeoff disappears when the resource cannot be monopolized.
 
 ---
 
@@ -131,11 +123,7 @@ The solution is to use **Verifiable Delay Functions**. A VDF is a function that:
 2. Produces a proof that can be verified quickly.
 3. Cannot be significantly accelerated through parallelization.
 
-> **Technical note:** A VDF does not directly prove that "time has passed," but rather that *N* sequential operations were executed. However, since there is no known way to accelerate this computation through parallelization, time is the effective lower bound. The term "Proof of Time" reflects this property.
-
-> **Scope clarification:** The VDF is used to prove sequential work per slot and to anchor time ordering. It is NOT used as a randomness source and does not affect leader selection. Producer selection is purely deterministic based on slot number and the epoch-frozen active set.
-
-> **Hardware acceleration:** Faster VDF hardware provides no advantage. The VDF is a "heartbeat"—proof of presence, not proof of work. Producer selection is determined by Epoch Lookahead: the schedule for slot *s* is fixed at epoch start, independent of VDF computation speed.
+> **Note:** The VDF proves that *N* sequential operations were executed — time is the effective lower bound since no known technique accelerates sequential computation through parallelization. The VDF serves as a heartbeat (proof of presence), not as a randomness source. Producer selection is a pure function of `(slot, ActiveSet(epoch))`, fixed at epoch start, independent of VDF speed. Faster hardware provides no scheduling advantage.
 
 For each block, the producer must calculate:
 
@@ -149,23 +137,34 @@ Where *n* is the difficulty parameter that determines how long the computation t
 
 ### 4.1. VDF Construction
 
+DOLI uses an **iterated hash chain** (BLAKE3), not an algebraic VDF over groups of unknown order (Wesolowski [3], Pietrzak). The distinction matters:
+
+| Property | Algebraic VDF (Wesolowski) | Iterated Hash Chain (DOLI) |
+|----------|---------------------------|---------------------------|
+| Verification | *O(1)* — constant time | *O(T)* — must recompute |
+| Trusted setup | Required (RSA group) | None |
+| Quantum resistance | Uncertain | Hash-based (conservative) |
+| Implementation | Complex (GMP/big integers) | Simple (~10 lines) |
+
+Algebraic VDFs offer *O(1)* verification, which is critical when the delay parameter *T* is large (minutes to hours). DOLI's block VDF requires only *T* = 800,000 iterations (~55ms), making *O(T)* verification acceptable — every node recomputes the chain in the same ~55ms.
+
+The tradeoff is deliberate: DOLI gains simplicity, auditability, and no trusted setup at the cost of linear verification. For a heartbeat proof where *T* is small, this is the correct engineering choice.
+
 ```
-Input: prev_hash || slot || producer_key
+Input: prev_hash ∥ slot ∥ producer_key
          │
          ▼
     ┌─────────┐
     │ BLAKE3  │ ◄──┐
     └────┬────┘    │
          │         │
-         └─────────┘  × 800,000 iterations
+         └─────────┘  × T iterations (T = 800,000)
          │
          ▼
-      Output (hash chain result)
+      Output: h_T = H^T(input)
 ```
 
-**Verification:** Nodes verify by recomputing the hash chain. Since the computation is inherently sequential, verification requires the same work as computation. This is acceptable because the block VDF (~55ms) is short.
-
-The block VDF uses iterated BLAKE3 hashing (hash chain). This construction is simple, well-studied, and sufficient for the "heartbeat" proof of presence required per block.
+**Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. No shortcuts exist — the sequential dependency *h_{i+1} = H(h_i)* prevents parallelization.
 
 ### 4.2. Time Structure
 
@@ -204,7 +203,7 @@ If measured VDF time deviates more than 10%, iterations adjust by up to 20% per 
 
 With 10-second slots, the VDF takes ~55ms, leaving the remainder for block construction and propagation.
 
-Every consensus system enforces a scarce resource. In DOLI, this resource is sequential time—analogous to energy in Proof of Work or capital in Proof of Stake. Nodes that cannot reliably supply sequential time and availability cannot earn rewards, just as offline miners or inactive validators cannot in existing systems.
+Every consensus system enforces a scarce resource. In DOLI, that resource is sequential time.
 
 ---
 
@@ -362,7 +361,7 @@ At network maturity (18,000 total bonds across all producers):
 | 100 DOLI  | 10    | ~34         | ~34 DOLI    | Any CPU  |
 | 1,000 DOLI| 100   | ~336        | ~336 DOLI   | Any CPU  |
 
-No mining rigs. No staking pools. No minimum hardware requirements. A \/month VPS is sufficient to produce blocks and earn deterministic rewards.
+No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
 
 ### 6.4. Bond Lifecycle
 
@@ -394,24 +393,13 @@ All penalties are burned permanently, removing coins from circulation.
 
 ## 7. Producer Selection
 
-For each slot, a deterministic round-robin process determines which producer creates the block:
+For each slot, a deterministic function selects the block producer. Let *P* = {*p₁*, ..., *p_n*} be the active set sorted by public key, and *b(p_i)* the bond count of producer *p_i*. Define *B* = Σ *b(p_i)*.
 
-```python
-def select_producer(slot, active_producers):
-    sorted_producers = sorted(active_producers, key=lambda p: p.public_key)
-    total_tickets = sum(p.bond_count for p in sorted_producers)
-    ticket_index = slot % total_tickets
-    
-    accumulated = 0
-    for producer in sorted_producers:
-        accumulated += producer.bond_count
-        if ticket_index < accumulated:
-            return producer.public_key
+```
+producer(s) = p_j  where j = min{j : Σ_{i=1}^{j} b(p_i) > s mod B}
 ```
 
-> **Anti-grinding invariant:** The producer for slot *s* is a pure function of `(s, ActiveSet(epoch(s)))` and bond counts. It MUST NOT depend on `prev_hash`, transaction ordering, timestamps within the drift window, or any other value the current producer can influence. This eliminates grinding attacks entirely: no block content affects future leader selection.
-
-**Grinding is impossible in DOLI because the future is not a function of present choices. It is a function of time and a schedule fixed in advance.**
+The function is pure: `producer(s) = f(s, ActiveSet(epoch(s)))`. It depends on no value the current producer can influence — not `prev_hash`, not transaction ordering, not timestamps within the drift window. **Grinding is impossible because the schedule is a function of time alone, fixed at epoch start.**
 
 ### 7.1. Fallback Mechanism
 
@@ -427,36 +415,18 @@ To avoid empty slots when the primary producer is offline, 5 fallback ranks acti
 
 Each rank has an exclusive 2-second window. A block from rank *N* is valid only if `timestamp >= slot_start + N × 2s`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
 
-### 7.2. Deterministic Rewards
+### 7.2. Comparison with Existing Systems
 
-In Proof of Work, a small miner may mine for years without finding a block. The reward is a lottery: probability proportional to hashpower, but with extreme variance. This forces miners to join pools, delegating control to centralized operators.
-
-In Proof of Stake, validator selection is probabilistically weighted by stake. A small validator may wait weeks between blocks. Staking pools emerge for the same reason.
-
-**Pools exist because rewards are probabilistic.** When the reward is a lottery, variance is the enemy of the small participant. Pools reduce variance in exchange for centralization and fees.
-
-DOLI eliminates this problem entirely. Selection is deterministic round-robin:
-
-```
-Alice: 1 bond  → produces exactly 1 block every 10 slots
-Bob:   5 bonds → produces exactly 5 blocks every 10 slots
-Carol: 4 bonds → produces exactly 4 blocks every 10 slots
-```
-
-**There is no lottery. There is no variance. There is no luck.**
+Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic round-robin eliminates variance entirely (see Section 6.3).
 
 | System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
 |--------------|---------------------------|----------|-------|---------------|-----------------|
-| Bitcoin      | Lottery (hashpower)       | High     | Yes   | ~150 TWh/yr   | ASIC (,000+)  |
-| Ethereum PoS | Lottery (stake)           | Medium   | Yes   | ~2.6 GWh/yr   | 32 ETH (0K+)  |
-| Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | ,000+ server  |
-| DOLI PoT     | Deterministic round-robin | **Zero** | **No**| **Negligible**| **Any CPU (/mo)**|
+| Bitcoin      | Lottery (hashpower)       | High     | Yes   | ~150 TWh/yr   | ASIC ($5,000+)  |
+| Ethereum PoS | Lottery (stake)           | Medium   | Yes   | ~2.6 GWh/yr   | 32 ETH ($100K+)  |
+| Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | $10,000+ server  |
+| DOLI PoT     | Deterministic round-robin | **Zero** | **No**| **Negligible**| **Any CPU ($5/mo)**|
 
-The distinction between DOLI and Solana deserves emphasis. Solana uses Proof of History as a clock, but leader selection is still stake-weighted with probabilistic elements. Validators require high-performance hardware. DOLI uses the VDF purely as a heartbeat — leader selection is a deterministic pure function of slot number and bond count. No hardware advantage exists.
-
-A producer with 1 bond knows exactly when their next block will be produced. There is no need to join a pool to "smooth" rewards because there is nothing to smooth.
-
-**The smallest participant receives the same percentage return as the largest.** The only difference is absolute magnitude, not probability or timing.
+Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the VDF purely as a heartbeat — leader selection is a pure function of `(slot, ActiveSet(epoch))`. No hardware advantage exists.
 
 ---
 
@@ -521,37 +491,32 @@ The fee goes to the block producer. A minimum fee rate prevents spam.
 
 ### 9.4. Compound Growth
 
-Unlike Proof of Work where mining hardware depreciates, or Proof of Stake where yield is a fixed percentage, DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing future block assignments proportionally.
+DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing future block assignments proportionally.
 
-Given a network with *B* total bonds and block reward *R*:
-
-```
-weekly_earnings(b) = (slots_per_week * R * b) / B
-doubling_time      = BOND_UNIT * B / (slots_per_week * R)
-```
-
-The doubling time is **identical for all producers regardless of size.** A producer with 1 bond and a producer with 1,000 bonds both double their stake in the same number of weeks. The growth rate is equal; only the absolute magnitude differs.
-
-**Example (Era 1, 18,000 total network bonds):**
+**Definition.** Let *b* = a producer's bond count, *B* = total network bonds, *R* = block reward, *S* = slots per week (60,480). The producer's weekly earnings and doubling time are:
 
 ```
-New producer: 1 bond (10 DOLI)
-Weekly earnings: ~3.3 DOLI
-Doubling time: ~3 weeks
-
-Week 0:   1 bond     →  3.3 DOLI/week
-Week 3:   2 bonds    →  6.6 DOLI/week
-Week 6:   4 bonds    →  13 DOLI/week
-Week 12:  16 bonds   →  53 DOLI/week
-Week 18:  64 bonds   →  213 DOLI/week
-Week 24:  256 bonds  →  853 DOLI/week
+E(b) = S · R · b / B          (weekly earnings)
+D    = BOND_UNIT · B / (S · R) (doubling time in weeks)
 ```
 
-Starting with 10 DOLI, a disciplined producer who reinvests all rewards reaches 30,000 DOLI in stake within months — not years. This trajectory is calculable before the first block is produced.
+*D* is independent of *b*. A producer with 1 bond and a producer with 1,000 bonds both double their stake in *D* weeks. The growth rate is uniform; only the absolute magnitude differs.
 
-This creates a property unique among consensus systems: **the earliest participants earn the highest absolute returns, but the growth rate is equal for all.** Late entrants face a larger network (longer doubling time) but benefit from a more secure and valuable network. This mirrors Bitcoin's early mining dynamics, with a critical difference: DOLI's growth is deterministic and predictable, not probabilistic.
+**Example (Era 1, *B* = 18,000, *R* = 1 DOLI):**
 
-As the network grows, doubling time naturally increases (more total bonds dilute the reward share). This is self-regulating: rapid early growth gradually converges toward stable distribution, without requiring protocol changes or governance intervention.
+*D* = 10 × 18,000 / (60,480 × 1) ≈ 3 weeks.
+
+```
+Week 0:   1 bond     →   3.3 DOLI/week
+Week 3:   2 bonds    →   6.6 DOLI/week
+Week 6:   4 bonds    →    13 DOLI/week
+Week 12:  16 bonds   →    53 DOLI/week
+Week 24:  256 bonds  →   853 DOLI/week
+```
+
+Starting with 10 DOLI, a producer who reinvests all rewards reaches the 3,000-bond cap within months. This trajectory is calculable before the first block is produced.
+
+**Self-regulation:** As *B* grows, *D* increases proportionally. Rapid early growth naturally converges toward stable distribution without governance intervention. Late entrants face longer doubling times but benefit from a more secure and valuable network.
 
 ---
 
@@ -612,59 +577,81 @@ The protocol automatically regulates the rate at which new identities can join.
 
 ### 11.2. Attack Probability
 
-Given that blocks require fixed sequential time *T*, an attacker who begins producing an alternative chain at block *N* cannot catch up to the honest chain regardless of parallel resources.
+**Theorem (Sequential Deficit).** Let *T* be the fixed sequential time per block. An attacker who begins an alternative chain with deficit *d* ≥ 1 blocks cannot reduce *d* regardless of parallel computational resources.
 
-Let:
+**Proof.** Let *t₀* be the time the attacker begins forking. Define:
 
-- *h* = honest chain length (blocks)
-- *a* = attacker chain length (blocks)
-- *T* = time per block (fixed, ~10 seconds)
+- *H(t)* = honest chain length at time *t*
+- *A(t)* = attacker chain length at time *t*
+- *d(t) = H(t) − A(t)* = deficit at time *t*
 
-If the attacker starts at time *t₀* with deficit *d = h - a*:
+At *t₀*: *d(t₀) = d* ≥ 1.
 
-```
-time_to_catch_up = d × T (minimum)
-```
+Each block requires exactly *T* sequential computation. The attacker produces at most one block per *T* seconds per chain (sequential dependency: block *i+1* requires hash of block *i*). The honest network also produces at most one block per *T* seconds.
 
-Since the honest network continues producing blocks during this time:
+After elapsed time *Δt*:
 
 ```
-new_honest_blocks = d × T / T = d
+H(t₀ + Δt) ≤ H(t₀) + ⌊Δt / T⌋
+A(t₀ + Δt) ≤ A(t₀) + ⌊Δt / T⌋
 ```
 
-**The attacker's deficit remains constant or grows.** Unlike Proof of Work, where an attacker with 51% hashpower eventually wins, in Proof of Time an attacker with any amount of parallel hardware cannot reduce the time required.
+Therefore:
 
-The only attack vector is controlling >50% of registered producers, which requires:
+```
+d(t₀ + Δt) = H(t₀ + Δt) − A(t₀ + Δt) ≥ d(t₀) = d
+```
 
-1. **Time:** `T_registration` per identity (scales with demand, cannot be parallelized)
-2. **Capital:** Bond per identity (10+ DOLI each)
-3. **Risk:** 100% bond loss if detected double-producing
+The deficit is monotonically non-decreasing. Adding parallel hardware allows computing multiple *independent* chains, but each chain is sequential — the attacker cannot merge parallel chains into a single longer one. ∎
 
-For a network with 1,000 honest producers and 100,000 DOLI bonded, an attacker would need:
+**Contrast with Proof of Work:** In PoW, an attacker with >50% hashpower reduces the deficit probabilistically because hash attempts are parallelizable. In Proof of Time, the sequential dependency *h_{i+1} = H(h_i)* makes each chain inherently serial. The attacker's deficit is bounded below by its initial value, regardless of budget.
 
-- 1,001 identities minimum
-- 10,010 DOLI in bonds
-- 1,001 × `T_registration` in sequential time
+The only attack vector is controlling >50% of bond-weighted slots, which requires:
 
-**The sequential time requirement cannot be bypassed.** An attacker with 1,000 machines still needs 1,001 × `T_registration` wall-clock time to register 1,001 identities.
+1. *T_registration* sequential time per identity (cannot be parallelized per identity)
+2. *BOND_UNIT* capital per identity
+3. 100% bond loss risk if detected double-producing
 
-### 11.3. Safety Theorem
+### 11.3. The CPU Accumulation Objection
 
-**Theorem:** An attacker controlling *f* < *n*/2 bond-weighted slots cannot produce a heavier chain than the honest network over any sufficiently long interval.
+A natural objection: "Time cannot be accumulated, but the capacity to run VDFs can — more CPUs enable more parallel identities."
 
-**Proof sketch:** In each slot, the deterministic schedule assigns exactly one primary producer. The schedule is a pure function of `(slot, ActiveSet(epoch))` — no block content influences it. Therefore:
+This is correct and by design. An attacker with *M* machines can register *M* identities in parallel, each completing *T_registration* independently. However, each identity still requires:
 
-1. The honest network produces one block per assigned slot (when online). Total honest weight per epoch: `W_h = sum(weight(honest_producer_i))` for each slot assigned to an honest producer.
+1. **Sequential time:** *T_registration* wall-clock seconds (cannot be reduced by adding cores)
+2. **Capital:** *BOND_UNIT* locked per identity (linear cost in *M*)
+3. **Ongoing presence:** One VDF heartbeat per slot per identity (linear operational cost in *M*)
 
-2. The attacker can produce at most one block per slot assigned to an attacker-controlled producer. Total attacker weight: `W_a = sum(weight(attacker_producer_j))`.
+The attack cost is therefore *O(M)* in capital and operational expense, identical to Proof of Stake's security model. The critical difference is the **time floor**: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time. The registration difficulty adjusts per epoch (Section 6.1), so a burst of registrations increases *T_registration* for subsequent attempts.
 
-3. Since `f < n/2` (bond-weighted), the attacker controls fewer slots than honest producers in every epoch. Additionally, seniority weighting (Section 8.1) means newly created attacker identities have weight 1, while established honest producers have weight up to 4.
+Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity time delay. In DOLI, the same *M* machines yield *M* identities, but the registration pipeline enforces a sequential bottleneck per identity and the capital requirement scales linearly.
 
-4. Over *k* epochs, the honest chain accumulates weight `k * W_h` while the attacker chain accumulates at most `k * W_a`. Since `W_h > W_a` by construction, the honest chain is strictly heavier for all *k* > 0.
+The system does not claim immunity from wealthy adversaries — no system can. It claims that time imposes an irreducible cost floor that capital alone cannot bypass.
 
-5. Unlike Proof of Work, the attacker cannot compensate for fewer slots by computing faster — VDF computation is sequential and cannot be parallelized. The deficit grows linearly with time.
+### 11.4. Safety Theorem
 
-**Corollary:** Double-spend attacks require controlling >50% of bond-weighted slots AND maintaining that majority for the duration of the attack. The seniority penalty on new identities means an attacker starting from zero needs approximately 3 years of sustained presence before their weight equals an established honest producer, even with equal bond count.
+**Theorem.** Let *n* = total bond-weighted slots per epoch. An attacker controlling *f* < *n/2* bond-weighted slots cannot produce a heavier chain than the honest network over any interval of *k* ≥ 1 epochs.
+
+**Proof.** Define per epoch *e*:
+
+- *S_h(e)* = set of slots assigned to honest producers
+- *S_a(e)* = set of slots assigned to attacker producers
+- *w(p)* = seniority weight of producer *p* ∈ {1, 2, 3, 4}
+
+The schedule is a pure function of `(slot, ActiveSet(epoch))` — no block content influences it.
+
+The accumulated chain weight over *k* epochs:
+
+```
+W_h(k) = Σ_{e=1}^{k} Σ_{s ∈ S_h(e)} w(producer(s))
+W_a(k) = Σ_{e=1}^{k} Σ_{s ∈ S_a(e)} w(producer(s))
+```
+
+Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e*. Additionally, seniority weighting (Section 8.1) penalizes new identities: *w(new) = 1* while *w(established) ≤ 4*. Therefore *W_h(k) > W_a(k)* for all *k* ≥ 1.
+
+By the Sequential Deficit theorem (11.2), the attacker cannot compensate by computing faster — the VDF's sequential dependency prevents parallel acceleration. ∎
+
+**Corollary.** An attacker starting from zero needs ~3 years of sustained presence before seniority weight equals an established honest producer, even with equal bond count. The attack window is therefore bounded not just by capital but by calendar time.
 
 ---
 
@@ -684,9 +671,7 @@ It is possible to verify payments without running a full node. A user only needs
 
 ## 14. Privacy
 
-The public can see that someone is sending an amount to someone else, but without information linking the transaction to anyone. This is similar to the level of information released by stock exchanges.
-
-As an additional firewall, a new key pair should be used for each transaction to keep them from being linked to a common owner.
+DOLI adopts the pseudonymous privacy model described by Nakamoto [1]: transactions are public, but identities behind keys are not. Users generate new key pairs per transaction to prevent linkage. This provides privacy equivalent to public stock exchange disclosures — amounts and flows are visible, participants are not.
 
 ---
 
