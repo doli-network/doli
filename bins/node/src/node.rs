@@ -136,8 +136,7 @@ pub struct Node {
     /// Avoids race conditions when GetStateRoot reads during apply_block.
     /// Tuple: (state_root, block_hash, block_height)
     cached_state_root: Arc<RwLock<Option<(Hash, Hash, u64)>>>,
-    /// Cached genesis producers (immutable after first derivation).
-    /// Avoids re-validating VDF proofs (~2s) on every reorg crossing genesis boundary.
+    /// Cached genesis producers. Invalidated on reorgs crossing genesis boundary.
     cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
     /// Whether we've already checked inbound peer connectivity (one-shot after 60s)
     port_check_done: bool,
@@ -471,6 +470,38 @@ impl Node {
             } else {
                 ProducerSet::new()
             };
+            // Startup verification: ensure genesis producers match block store.
+            // Catches stale ProducerSet persisted from a pre-reorg chain.
+            let genesis_blocks = config.network.genesis_blocks();
+            let best_height = chain_state.read().await.best_height;
+            if genesis_blocks > 0 && best_height > genesis_blocks && set.active_count() > 0 {
+                let mut seen = std::collections::HashSet::new();
+                let mut chain_genesis_count = 0usize;
+                for h in 1..=genesis_blocks {
+                    if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                        for tx in &block.transactions {
+                            if tx.tx_type == TxType::Registration {
+                                if let Some(reg_data) = tx.registration_data() {
+                                    if reg_data.vdf_output.len() == 32
+                                        && seen.insert(reg_data.public_key)
+                                    {
+                                        chain_genesis_count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if chain_genesis_count > 0 && chain_genesis_count != set.active_count() {
+                    warn!(
+                        "[STARTUP] Genesis producer mismatch: StateDb has {} producers but block store has {}. \
+                         This can happen after genesis-crossing reorgs. ProducerSet will be rebuilt from blocks.",
+                        set.active_count(),
+                        chain_genesis_count
+                    );
+                }
+            }
+
             Arc::new(RwLock::new(set))
         };
 
@@ -1918,6 +1949,13 @@ impl Node {
         // Get current state
         let current_height = self.chain_state.read().await.best_height;
         let target_height = current_height - rollback_count as u64;
+
+        // Invalidate genesis producer cache if reorg crosses genesis boundary
+        let genesis_blocks = self.config.network.genesis_blocks();
+        if genesis_blocks > 0 && target_height <= genesis_blocks {
+            info!("[REORG] Crossing genesis boundary — invalidating genesis producer cache");
+            self.cached_genesis_producers = std::sync::OnceLock::new();
+        }
 
         info!(
             "Rolling back from height {} to {} (common ancestor)",
@@ -5457,6 +5495,14 @@ impl Node {
         }
 
         let target_height = local_height - 1;
+
+        // Invalidate genesis producer cache if rollback crosses genesis boundary
+        let genesis_blocks = self.config.network.genesis_blocks();
+        if genesis_blocks > 0 && target_height <= genesis_blocks {
+            info!("[ROLLBACK] Crossing genesis boundary — invalidating genesis producer cache");
+            self.cached_genesis_producers = std::sync::OnceLock::new();
+        }
+
         let genesis_hash = self.chain_state.read().await.genesis_hash;
 
         let (parent_hash, parent_slot) = if target_height == 0 {
@@ -6012,17 +6058,15 @@ impl Node {
         self.mempool.read().await.len()
     }
 
-    /// Derive genesis producers from the blockchain.
-    ///
-    /// Scans blocks 1 through genesis_blocks and extracts unique producers.
-    /// This is the source of truth for genesis producers - no gossip or
-    /// external configuration required. Any node can verify this by
-    /// examining the blockchain.
     /// Derive genesis producers from on-chain VDF proof Registration TXs.
     ///
     /// Scans genesis blocks for Registration TXs and returns producers
     /// with valid registration data. VDF proofs were already verified
     /// at block acceptance time (validation.rs:validate_registration).
+    ///
+    /// Cached via OnceLock for the common path. Invalidated by
+    /// execute_reorg/rollback_one_block when a reorg crosses the genesis
+    /// boundary (target_height <= genesis_blocks).
     fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
         self.cached_genesis_producers
             .get_or_init(|| {
