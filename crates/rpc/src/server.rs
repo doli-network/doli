@@ -3,13 +3,24 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{header, StatusCode},
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
 
 use crate::error::RpcError;
 use crate::methods::RpcContext;
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
+
+/// Maximum request body size (256 KB)
+const MAX_BODY_SIZE: usize = 256 * 1024;
 
 /// RPC server configuration
 #[derive(Clone, Debug)]
@@ -55,7 +66,8 @@ impl RpcServer {
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut app = Router::new()
             .route("/", post(handle_rpc))
-            .with_state(self.context.clone());
+            .with_state(self.context.clone())
+            .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE));
 
         // Add CORS if enabled
         if self.config.enable_cors {
@@ -84,21 +96,38 @@ impl RpcServer {
     }
 }
 
-/// Handle JSON-RPC request
-async fn handle_rpc(
-    State(context): State<Arc<RpcContext>>,
-    Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+/// Handle JSON-RPC request — manually parse body so malformed JSON returns
+/// a proper JSON-RPC error instead of Axum's default plain-text 422.
+async fn handle_rpc(State(context): State<Arc<RpcContext>>, body: Bytes) -> impl IntoResponse {
+    // Parse JSON body manually
+    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            let resp = JsonRpcResponse::error(serde_json::Value::Null, RpcError::parse_error());
+            return (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                Json(resp),
+            );
+        }
+    };
+
     // Validate JSON-RPC version
     if request.jsonrpc != "2.0" {
-        return Json(JsonRpcResponse::error(
-            request.id,
-            RpcError::invalid_request(),
-        ));
+        let resp = JsonRpcResponse::error(request.id, RpcError::invalid_request());
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(resp),
+        );
     }
 
     let response = context.handle_request(request).await;
-    Json(response)
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        Json(response),
+    )
 }
 
 /// Handle batch JSON-RPC requests

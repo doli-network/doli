@@ -54,7 +54,7 @@ futures = "0.3"
 
 # HTTP server (for RPC)
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "limit"] }
 
 # Async utilities
 async-trait = "0.1"

@@ -410,6 +410,7 @@ pub struct HistoryEntryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetProducerParams {
     /// Producer public key (hex)
+    #[serde(alias = "publicKey")]
     pub public_key: String,
 }
 
@@ -519,6 +520,7 @@ pub struct EpochInfoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBondDetailsParams {
     /// Producer public key (hex)
+    #[serde(alias = "publicKey")]
     pub public_key: String,
 }
 
