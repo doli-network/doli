@@ -926,12 +926,26 @@ impl Node {
         }
 
         // Wire up vote broadcast so RPC-submitted votes are gossiped to peers
+        // AND processed locally (gossip doesn't echo back to publisher)
         if let Some(ref network) = self.network {
             let cmd_tx = network.command_sender();
+            let local_vote_tx = self.vote_tx.clone();
             context = context.with_broadcast_vote(move |vote_data: Vec<u8>| {
                 let cmd_tx = cmd_tx.clone();
+                let local_tx = local_vote_tx.clone();
                 tokio::spawn(async move {
-                    let _ = cmd_tx.send(NetworkCommand::BroadcastVote(vote_data)).await;
+                    // Broadcast to network
+                    let _ = cmd_tx
+                        .send(NetworkCommand::BroadcastVote(vote_data.clone()))
+                        .await;
+                    // Also deliver to local update service (gossip won't echo back)
+                    if let Some(tx) = local_tx {
+                        if let Ok(vote_msg) =
+                            serde_json::from_slice::<node_updater::VoteMessage>(&vote_data)
+                        {
+                            let _ = tx.send(vote_msg).await;
+                        }
+                    }
                 });
             });
         }

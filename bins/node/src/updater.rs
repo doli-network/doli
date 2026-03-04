@@ -602,7 +602,7 @@ impl UpdateService {
                 && p.vote_tracker
                     .record_vote(vote_msg.producer_id.clone(), vote_msg.vote)
             {
-                debug!(
+                info!(
                     "Recorded {} vote from {}",
                     if vote_msg.vote == Vote::Veto {
                         "VETO"
@@ -611,6 +611,10 @@ impl UpdateService {
                     },
                     &vote_msg.producer_id[..16]
                 );
+                // Persist vote tracker to disk
+                if let Err(e) = p.save(&self.data_dir) {
+                    warn!("Failed to save vote state: {}", e);
+                }
             }
         }
     }
