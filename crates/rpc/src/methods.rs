@@ -697,6 +697,24 @@ impl RpcContext {
             })
             .collect();
 
+        // Append pending registrations (not yet in producer set)
+        let mut responses = responses;
+        for info in producers.pending_registrations() {
+            responses.push(ProducerResponse {
+                public_key: hex::encode(info.public_key.as_bytes()),
+                registration_height: info.registered_at,
+                bond_amount: info.bond_amount,
+                bond_count: info.bond_count,
+                status: "pending".to_string(),
+                era,
+                pending_withdrawals: Vec::new(),
+                pending_updates: vec![PendingUpdateInfo {
+                    update_type: "register".to_string(),
+                    bond_count: Some(info.bond_count),
+                }],
+            });
+        }
+
         serde_json::to_value(responses).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 
