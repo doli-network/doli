@@ -158,6 +158,53 @@ pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Auto-apply an approved update from GitHub
+///
+/// This is called by the UpdateService after an update is approved (veto period
+/// passed without rejection). It bypasses the veto/approval checks in `apply_update()`
+/// because those were already verified by the UpdateService.
+///
+/// Steps:
+/// 1. Fetch release info from GitHub (to get tarball URL)
+/// 2. Download the tarball
+/// 3. Verify SHA-256 hash
+/// 4. Extract doli-node binary
+/// 5. Backup current binary
+/// 6. Install new binary via atomic rename
+///
+/// Does NOT call `restart_node()` — the caller is responsible for that
+/// (because it needs to clean up state before exec()).
+pub async fn auto_apply_from_github(version: &str) -> Result<()> {
+    info!("Auto-applying approved update v{}...", version);
+
+    // 1. Fetch release info (gets tarball URL + expected hash)
+    let release_info = crate::fetch_github_release(Some(version)).await?;
+
+    // 2. Download tarball
+    info!("Downloading v{} tarball...", version);
+    let tarball = crate::download_from_url(&release_info.tarball_url).await?;
+
+    // 3. Verify hash
+    crate::verify_hash(&tarball, &release_info.expected_hash)?;
+    info!("Checksum verified for v{}", version);
+
+    // 4. Extract doli-node binary
+    let binary = extract_binary_from_tarball(&tarball)?;
+
+    // 5. Backup current
+    let _backup = backup_current().await?;
+
+    // 6. Install
+    let target = current_binary_path()?;
+    install_binary(&binary, &target).await?;
+
+    info!(
+        "Auto-apply complete: v{} installed to {:?}",
+        version, target
+    );
+    Ok(())
+}
+
 /// Extract a named binary from a .tar.gz tarball
 ///
 /// CI produces tarballs like `doli-node-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`

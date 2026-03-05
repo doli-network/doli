@@ -18,13 +18,14 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 pub use updater::{
-    apply_update, backup_current, calculate_veto_result, check_production_allowed,
-    current_binary_path, current_version, download_from_url, extract_binary_from_tarball,
-    fetch_github_release, fetch_latest_release, install_binary, is_newer_version, restart_node,
-    rollback, sign_release_hash, verify_hash, verify_release_signatures,
-    verify_release_signatures_with_keys, veto_deadline, veto_period_ended, ProductionBlocked,
-    Release, UpdateConfig, VersionEnforcement, Vote, VoteMessage, VoteTracker,
-    BOOTSTRAP_MAINTAINER_KEYS, GITHUB_RELEASES_URL, VETO_THRESHOLD_PERCENT,
+    apply_update, auto_apply_from_github, backup_current, calculate_veto_result,
+    check_production_allowed, current_binary_path, current_version, download_from_url,
+    extract_binary_from_tarball, fetch_github_release, fetch_latest_release, install_binary,
+    is_newer_version, restart_node, rollback, sign_release_hash, verify_hash,
+    verify_release_signatures, verify_release_signatures_with_keys, veto_deadline,
+    veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement, Vote,
+    VoteMessage, VoteTracker, BOOTSTRAP_MAINTAINER_KEYS, GITHUB_RELEASES_URL,
+    VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -665,35 +666,49 @@ impl UpdateService {
         match transition {
             Some(UpdateTransition::Approved(result)) => {
                 // Transition to grace period
-                let mut pending = self.pending.write().await;
-                if let Some(ref mut p) = *pending {
-                    info!(
-                        "Update {} APPROVED ({}% veto, threshold {}%) - Grace period: {}s",
-                        p.release.version,
-                        result.veto_percent,
-                        VETO_THRESHOLD_PERCENT,
-                        self.config.grace_period_secs
-                    );
+                let version_to_apply;
+                {
+                    let mut pending = self.pending.write().await;
+                    if let Some(ref mut p) = *pending {
+                        info!(
+                            "Update {} APPROVED ({}% veto, threshold {}%) - Grace period: {}s",
+                            p.release.version,
+                            result.veto_percent,
+                            VETO_THRESHOLD_PERCENT,
+                            self.config.grace_period_secs
+                        );
 
-                    // Mark as approved and set enforcement (config-aware timing)
-                    p.approved = true;
-                    let enforcement_time = p.release.published_at
-                        + self.config.veto_period_secs
-                        + self.config.grace_period_secs;
-                    p.enforcement = Some(VersionEnforcement {
-                        min_version: p.release.version.clone(),
-                        enforcement_time,
-                        active: false,
-                    });
+                        // Mark as approved and set enforcement (config-aware timing)
+                        p.approved = true;
+                        let enforcement_time = p.release.published_at
+                            + self.config.veto_period_secs
+                            + self.config.grace_period_secs;
+                        p.enforcement = Some(VersionEnforcement {
+                            min_version: p.release.version.clone(),
+                            enforcement_time,
+                            active: false,
+                        });
 
-                    // Save updated state
-                    if let Err(e) = p.save(&self.data_dir) {
-                        error!("Failed to save approved update state: {}", e);
+                        // Save updated state
+                        if let Err(e) = p.save(&self.data_dir) {
+                            error!("Failed to save approved update state: {}", e);
+                        }
+
+                        version_to_apply = Some(p.release.version.clone());
+
+                        // Show grace period notification
+                        display_grace_period_notification(p);
+                        *self.last_notification.write().await = updater::current_timestamp();
+                    } else {
+                        version_to_apply = None;
                     }
+                }
 
-                    // Show grace period notification
-                    display_grace_period_notification(p);
-                    *self.last_notification.write().await = updater::current_timestamp();
+                // Auto-apply if enabled (not notify_only)
+                if !self.config.notify_only {
+                    if let Some(version) = version_to_apply {
+                        self.auto_apply(&version).await;
+                    }
                 }
             }
             Some(UpdateTransition::Rejected(result)) => {
@@ -712,29 +727,87 @@ impl UpdateService {
                 }
             }
             Some(UpdateTransition::ActivateEnforcement) => {
-                // Activate enforcement
-                let mut pending = self.pending.write().await;
-                if let Some(ref mut p) = *pending {
-                    if let Some(ref mut enforcement) = p.enforcement {
-                        enforcement.active = true;
-                        info!(
-                            "Version enforcement ACTIVE - nodes running < {} cannot produce",
-                            enforcement.min_version
-                        );
+                // Activate enforcement — also try auto-apply as last resort
+                let version_to_apply;
+                {
+                    let mut pending = self.pending.write().await;
+                    if let Some(ref mut p) = *pending {
+                        if let Some(ref mut enforcement) = p.enforcement {
+                            enforcement.active = true;
+                            info!(
+                                "Version enforcement ACTIVE - nodes running < {} cannot produce",
+                                enforcement.min_version
+                            );
 
-                        // Save updated state
-                        if let Err(e) = p.save(&self.data_dir) {
-                            error!("Failed to save enforcement state: {}", e);
+                            // Save updated state
+                            if let Err(e) = p.save(&self.data_dir) {
+                                error!("Failed to save enforcement state: {}", e);
+                            }
+
+                            // Show enforcement notification
+                            display_enforcement_notification(p);
+                            *self.last_notification.write().await = updater::current_timestamp();
                         }
 
-                        // Show enforcement notification
-                        display_enforcement_notification(p);
-                        *self.last_notification.write().await = updater::current_timestamp();
+                        // If we still haven't updated (auto-apply failed earlier?), try again
+                        if is_newer_version(&p.release.version, current_version()) {
+                            version_to_apply = Some(p.release.version.clone());
+                        } else {
+                            version_to_apply = None;
+                        }
+                    } else {
+                        version_to_apply = None;
+                    }
+                }
+
+                if !self.config.notify_only {
+                    if let Some(version) = version_to_apply {
+                        self.auto_apply(&version).await;
                     }
                 }
             }
             None => {
                 // No transition needed
+            }
+        }
+    }
+
+    /// Download, install, and restart with the approved version
+    ///
+    /// On success, this function does NOT return — `restart_node()` calls `exec()`
+    /// to replace the current process with the new binary.
+    ///
+    /// On failure, logs the error and continues running the old version.
+    /// The enforcement mechanism will block production until the operator
+    /// manually applies the update.
+    async fn auto_apply(&self, version: &str) {
+        info!(
+            "Auto-applying approved update v{} (current: v{})...",
+            version,
+            current_version()
+        );
+
+        match auto_apply_from_github(version).await {
+            Ok(()) => {
+                info!("Update v{} installed successfully, restarting...", version);
+
+                // Clean up pending update before exec (won't return)
+                if let Err(e) = PendingUpdate::remove(&self.data_dir) {
+                    warn!("Failed to clean up pending_update.json: {}", e);
+                }
+
+                // exec() replaces the process — does NOT return
+                // systemd/launchd see the same PID, no restart triggered
+                restart_node();
+            }
+            Err(e) => {
+                error!(
+                    "Auto-apply failed for v{}: {}. Node continues with v{}. \
+                     Operator can manually run: doli-node update apply",
+                    version,
+                    e,
+                    current_version()
+                );
             }
         }
     }
