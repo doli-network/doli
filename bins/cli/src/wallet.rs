@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
 use crypto::{hash::hash_with_domain, signature, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN};
 use serde::{Deserialize, Serialize};
@@ -93,8 +93,14 @@ impl Wallet {
 
     /// Load wallet from file
     pub fn load(path: &Path) -> Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let wallet: Wallet = serde_json::from_str(&contents)?;
+        let contents = std::fs::read_to_string(path).with_context(|| {
+            format!(
+                "wallet file not found: {}\n  Use -w to specify the wallet path, e.g.: doli -w /path/to/wallet.json <command>",
+                path.display()
+            )
+        })?;
+        let wallet: Wallet = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse wallet file: {}", path.display()))?;
         Ok(wallet)
     }
 
