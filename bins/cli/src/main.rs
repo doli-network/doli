@@ -1093,7 +1093,10 @@ async fn cmd_upgrade(
         if let Some(ref svc) = service {
             // Binary already updated (e.g. by a prior run on this server),
             // but the caller wants a specific service restarted.
-            println!("Binary already at v{}, restarting service: {}", current, svc);
+            println!(
+                "Binary already at v{}, restarting service: {}",
+                current, svc
+            );
             restart_specific_service(svc);
             return Ok(());
         }
