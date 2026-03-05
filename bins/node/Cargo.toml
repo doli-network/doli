@@ -45,7 +45,7 @@ tempfile.workspace = true
 
 [package.metadata.deb]
 name = "doli"
-maintainer = "DOLI Network <doli@protonmail.com>"
+maintainer = "DOLI Network <doli@doli.network>"
 section = "net"
 priority = "optional"
 assets = [

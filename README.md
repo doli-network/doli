@@ -223,7 +223,7 @@ Each network has its own genesis, address prefix (`doli`, `tdoli`, `ddoli`), and
 ## Network
 
 - **Website**: [www.doli.network](https://www.doli.network)
-- **Email**: doli@protonmail.com
+- **Email**: doli@doli.network
 - **GitHub**: [github.com/doli-network](https://github.com/doli-network)
 
 ## Security
