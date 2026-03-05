@@ -1187,9 +1187,7 @@ async fn cmd_upgrade(
                     .map_err(|e| anyhow::anyhow!("Failed to install doli-node: {}", e))?;
             } else {
                 println!("doli-node not found on system, skipping node binary install.");
-                println!(
-                    "  Hint: use --doli-node-path <PATH> to specify the doli-node location."
-                );
+                println!("  Hint: use --doli-node-path <PATH> to specify the doli-node location.");
             }
         }
         Err(_) => {
