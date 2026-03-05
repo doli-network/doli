@@ -547,6 +547,7 @@ impl RpcContext {
 
         let response = ChainInfoResponse {
             network: self.network.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             best_hash: chain_state.best_hash.to_hex(),
             best_height: chain_state.best_height,
             best_slot: chain_state.best_slot,
