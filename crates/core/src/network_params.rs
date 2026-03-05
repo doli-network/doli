@@ -378,8 +378,8 @@ impl NetworkParams {
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: consensus::GENESIS_TIME,
-                veto_period_secs: 2 * 3600, // 2 epochs (~2h)
-                grace_period_secs: 3600,    // 1 epoch (~1h)
+                veto_period_secs: 5 * 60, // 5 minutes (early network, small maintainer set)
+                grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD, // blocks (already u64)
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
@@ -405,9 +405,9 @@ impl NetworkParams {
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system
-                min_voting_age_secs: 30 * 24 * 3600,  // 30 days
-                update_check_interval_secs: 6 * 3600, // 6 hours
-                crash_window_secs: 3600,              // 1 hour
+                min_voting_age_secs: 30 * 24 * 3600, // 30 days
+                update_check_interval_secs: 10 * 60, // 10 minutes (early network)
+                crash_window_secs: 3600,             // 1 hour
                 max_registrations_per_block: 5,
 
                 // Presence (telemetry)
@@ -441,8 +441,8 @@ impl NetworkParams {
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: 1769738400, // 2026-01-29T22:00:00Z (Testnet specific)
-                veto_period_secs: 2 * 3600, // 2 epochs (~2h)
-                grace_period_secs: 3600,  // 1 epoch (~1h)
+                veto_period_secs: 5 * 60, // 5 minutes (early network)
+                grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: consensus::UNBONDING_PERIOD,
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
@@ -467,9 +467,9 @@ impl NetworkParams {
                 slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH, // 1 hour for faster testing
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
-                // Update system (same as mainnet)
+                // Update system
                 min_voting_age_secs: 30 * 24 * 3600,
-                update_check_interval_secs: 6 * 3600,
+                update_check_interval_secs: 10 * 60, // 10 minutes (early network)
                 crash_window_secs: 3600,
                 max_registrations_per_block: 5,
 
