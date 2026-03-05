@@ -1040,51 +1040,82 @@ doli upgrade --yes --doli-node-path <PATH> --service <SERVICE>
 
 ### 4.6 Release Pipeline
 
-**1. Build release binaries:**
+**1. Tag + push (triggers CI to build tarballs + CHECKSUMS.txt):**
 ```bash
-./scripts/build_release.sh
-# Outputs: target/release/ tarballs + CHECKSUMS.txt
+# Bump version in Cargo.toml, commit, tag, push:
+git tag v1.2.0 && git push origin main v1.2.0
+# CI builds linux x86_64 tarball, creates GitHub Release with CHECKSUMS.txt
 ```
 
-**2. Sign release (each maintainer):**
+**2. Sign release with 3/5 maintainer keys:**
 ```bash
-doli-node release sign --key <MAINTAINER_KEY_PATH> --version 0.2.0 --hash <SHA256>
+# Automated (signs with producer keys 1-3, assembles SIGNATURES.json, uploads):
+./scripts/sign-release.sh 1.2.0
+
+# Manual (per-maintainer, if needed):
+doli -w ~/.doli/mainnet/keys/producer_1.json release sign --version v1.2.0
+# Outputs JSON signature block to stdout
+# Collect 3+ blocks → assemble SIGNATURES.json → gh release upload v1.2.0 SIGNATURES.json
 ```
 
-**3. Publish to GitHub:**
-```bash
-# Combine 3+ signatures into release.json and upload
-./scripts/publish_release.sh
+**SIGNATURES.json format:**
+```json
+{
+  "version": "1.2.0",
+  "checksums_sha256": "<sha256 of CHECKSUMS.txt>",
+  "signatures": [
+    {"public_key": "<hex>", "signature": "<hex>"},
+    {"public_key": "<hex>", "signature": "<hex>"},
+    {"public_key": "<hex>", "signature": "<hex>"}
+  ]
+}
 ```
 
-**4. Smoke test:**
+**3. Nodes auto-detect within 6 hours:**
+- `UpdateService` polls GitHub, finds new release
+- Verifies 3/5 signatures against on-chain maintainer keys
+- Starts veto period → if approved → auto-apply via `exec()`
+
+**4. If CI is down — manual release:**
 ```bash
-./scripts/smoke_test_release.sh
+# Build on omegacortex:
+ssh ilozada@omegacortex.ai "cd ~/repos/doli && cargo build --release"
+# Package tarball:
+DIRNAME="doli-node-v1.2.0-x86_64-unknown-linux-gnu"
+mkdir /tmp/$DIRNAME && cp target/release/doli-node target/release/doli /tmp/$DIRNAME/
+cd /tmp && tar czf ${DIRNAME}.tar.gz $DIRNAME
+shasum -a 256 ${DIRNAME}.tar.gz > CHECKSUMS.txt
+# Create release + upload:
+gh release create v1.2.0 --title "v1.2.0" --generate-notes ${DIRNAME}.tar.gz CHECKSUMS.txt
+# Then sign:
+./scripts/sign-release.sh 1.2.0
 ```
 
 ---
 
 ## Section 5: doli-node Upgrade
 
-### 5.1 Standard Version Upgrade
+### 5.1 Standard Version Upgrade (Manual)
 
 ```bash
-# 1. Build new version
-cargo build --release --package doli-node
+# 1. Build new version on omegacortex
+ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && source ~/.cargo/env && cargo build --release"
 
-# 2. Stop node
-sudo systemctl stop doli-testnet
+# 2. Atomic rename install (no need to stop the node)
+# On omegacortex (binary built in place — nothing to copy)
+# On N3/N4/N5: SCP + atomic rename:
+scp binary ilozada@server:/tmp/doli-node
+ssh ilozada@server 'sudo cp /tmp/doli-node /path/doli-node.new && sudo mv /path/doli-node.new /path/doli-node'
 
-# 3. Replace binary
-cp target/release/doli-node /path/to/installed/doli-node
+# 3. Restart service
+sudo systemctl restart doli-mainnet-node<N>
 
-# 4. Start node
-sudo systemctl start doli-testnet
-
-# 5. Verify
-sudo systemctl status doli-testnet
-journalctl -u doli-testnet --since '1 min ago' | grep -i version
+# 4. Verify (height should increase within 20s)
+curl -s -X POST http://127.0.0.1:PORT -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq '.result.bestHeight'
 ```
+
+**Full procedure for all 24 nodes**: See Section 3.4 (rolling upgrade) and Section 3.8.4 (full sequence).
 
 ### 5.2 In-Place Upgrade from GitHub (Preferred Method — v1.1.9+)
 
