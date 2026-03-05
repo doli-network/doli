@@ -942,14 +942,12 @@ async fn run_node(
     let maintainer_state = Arc::new(RwLock::new(
         storage::MaintainerState::load(&data_dir).unwrap_or_default(),
     ));
-    let ms_for_keys = maintainer_state.clone();
-    let maintainer_keys_fn = move || -> Vec<String> {
-        ms_for_keys
-            .try_read()
-            .map(|state| state.set.members.iter().map(|pk| pk.to_hex()).collect())
-            .unwrap_or_default()
-        // Returns empty Vec when not yet bootstrapped → updater falls back to BOOTSTRAP_MAINTAINER_KEYS
-    };
+    // Return empty → updater always uses BOOTSTRAP_MAINTAINER_KEYS (raw Ed25519 keys).
+    // On-chain ProducerInfo stores BLAKE3 pubkey hashes, not raw Ed25519 keys,
+    // so MaintainerState members can't be used for signature verification.
+    // TODO: Store raw Ed25519 keys on-chain to enable dynamic maintainer key lookup.
+    let _ms_for_keys = maintainer_state.clone();
+    let maintainer_keys_fn = move || -> Vec<String> { Vec::new() };
 
     // Spawn update service with real producer registry
     let (vote_tx, pending_update) = updater::spawn_update_service(
