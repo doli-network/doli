@@ -188,51 +188,46 @@ pub struct AddMaintainerData {
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.6 Maintainer Set State
+### 2.6 Maintainer Set Persistence
 
-```rust
-pub struct MaintainerSet {
-    /// Current maintainer public keys (max 5)
-    pub members: Vec<PublicKey>,
-    /// Required signatures (always 3 when 5 members)
-    pub threshold: usize,
-    /// Block height of last change
-    pub last_updated: u64,
-}
+The maintainer set is persisted as `MaintainerState` in `maintainer_state.bin` inside the node's data directory. This avoids re-deriving from genesis on every restart.
 
-impl MaintainerSet {
-    pub fn is_maintainer(&self, pubkey: &PublicKey) -> bool {
-        self.members.contains(pubkey)
-    }
-    
-    pub fn can_remove(&self) -> bool {
-        self.members.len() > MIN_MAINTAINERS  // > 3
-    }
-    
-    pub fn can_add(&self) -> bool {
-        self.members.len() < MAX_MAINTAINERS  // < 5
-    }
-    
-    pub fn verify_multisig(&self, signatures: &[Signature], message: &[u8]) -> bool {
-        let valid_count = signatures.iter()
-            .filter(|sig| self.is_maintainer(&sig.pubkey))
-            .filter(|sig| sig.verify(message))
-            .count();
-        valid_count >= self.threshold
-    }
-    
-    /// Dynamic threshold based on member count
-    pub fn calculate_threshold(member_count: usize) -> usize {
-        match member_count {
-            1 => 1,
-            2 => 2,
-            3 => 2,
-            4 => 3,
-            5 => 3,
-            _ => (member_count / 2) + 1,  // Simple majority
-        }
-    }
+```
+MaintainerState {
+    set: MaintainerSet,          // Current members, threshold, last_updated
+    last_derived_height: u64,    // Block height at which this was last modified
 }
+```
+
+**Lifecycle:**
+1. On startup: loaded from disk (or default empty)
+2. On epoch boundary: bootstrapped from first 5 producers (one-time, if not yet bootstrapped)
+3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
+4. On release verification: `maintainer_keys_fn` reads members from `MaintainerState`
+5. Pre-bootstrap fallback: empty set → `BOOTSTRAP_MAINTAINER_KEYS` used by UpdateService
+
+**Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
+
+### 2.7 Signature Verification Flow
+
+```
+Release published on GitHub
+    ↓
+UpdateService checks for new release (every check_interval)
+    ↓
+Downloads SIGNATURES.json (3+ signatures)
+    ↓
+maintainer_keys_fn() called:
+    ├─ MaintainerState bootstrapped? → Return on-chain member keys
+    └─ Not bootstrapped (empty)?     → Return empty → fallback to BOOTSTRAP_MAINTAINER_KEYS
+    ↓
+verify_release_signatures_with_keys():
+    For each signature in SIGNATURES.json:
+        1. Is signing key in allowed_keys? → If not, skip
+        2. Ed25519 verify(message, signature, pubkey)
+        3. Count valid signatures
+    ↓
+    valid_count >= REQUIRED_SIGNATURES (3)? → Verified ✓
 ```
 
 ---
