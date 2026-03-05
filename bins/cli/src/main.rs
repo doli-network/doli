@@ -160,6 +160,14 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// Custom path to doli-node binary (skip auto-detection)
+        #[arg(long)]
+        doli_node_path: Option<std::path::PathBuf>,
+
+        /// Restart only this systemd service (e.g. doli-mainnet-node3)
+        #[arg(long)]
+        service: Option<String>,
     },
 
     /// Release management commands (maintainer signing)
@@ -461,8 +469,13 @@ async fn main() -> Result<()> {
         Commands::Maintainer { command } => {
             cmd_maintainer(&cli.rpc, command).await?;
         }
-        Commands::Upgrade { version, yes } => {
-            cmd_upgrade(version, yes).await?;
+        Commands::Upgrade {
+            version,
+            yes,
+            doli_node_path,
+            service,
+        } => {
+            cmd_upgrade(version, yes, doli_node_path, service).await?;
         }
         Commands::Release { command } => {
             cmd_release(&wallet, command).await?;
@@ -1062,7 +1075,12 @@ fn cmd_verify(message: &str, signature: &str, pubkey: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
+async fn cmd_upgrade(
+    version: Option<String>,
+    yes: bool,
+    doli_node_path: Option<std::path::PathBuf>,
+    service: Option<String>,
+) -> Result<()> {
     let current = updater::current_version();
     println!("Current version: v{}", current);
     println!("Checking for updates...");
@@ -1160,8 +1178,8 @@ async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
     // Extract and install doli-node (if found in tarball and on PATH)
     match updater::extract_named_binary_from_tarball(&tarball, "doli-node") {
         Ok(node_binary) => {
-            // Find where doli-node lives
-            let node_path = find_doli_node_path();
+            // Use custom path if provided, otherwise auto-detect
+            let node_path = doli_node_path.or_else(find_doli_node_path);
             if let Some(path) = node_path {
                 println!("Installing doli-node to {:?}...", path);
                 updater::install_binary(&node_binary, &path)
@@ -1169,6 +1187,9 @@ async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("Failed to install doli-node: {}", e))?;
             } else {
                 println!("doli-node not found on system, skipping node binary install.");
+                println!(
+                    "  Hint: use --doli-node-path <PATH> to specify the doli-node location."
+                );
             }
         }
         Err(_) => {
@@ -1176,8 +1197,12 @@ async fn cmd_upgrade(version: Option<String>, yes: bool) -> Result<()> {
         }
     }
 
-    // Detect and restart running doli-node service
-    restart_doli_service();
+    // Restart doli-node service
+    if let Some(ref svc) = service {
+        restart_specific_service(svc);
+    } else {
+        restart_doli_service();
+    }
 
     println!();
     println!("Upgrade to v{} complete!", release.version);
@@ -1424,6 +1449,21 @@ fn find_doli_node_path() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+/// Restart a specific systemd service by name
+fn restart_specific_service(service: &str) {
+    println!("Restarting service: {}", service);
+    let result = std::process::Command::new("sudo")
+        .args(["systemctl", "restart", service])
+        .status();
+    match result {
+        Ok(s) if s.success() => println!("  Restarted {}.", service),
+        _ => println!(
+            "  Failed to restart {}. Run: sudo systemctl restart {}",
+            service, service
+        ),
+    }
 }
 
 /// Detect and restart a running doli-node service (3-tier detection)
