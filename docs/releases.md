@@ -174,8 +174,22 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 3. **GitHub Actions automatically:**
    - Builds binaries for all platforms
    - Builds multi-arch Docker images
-   - Creates GitHub Release with artifacts
+   - Creates GitHub Release with artifacts and empty SIGNATURES.json scaffold
    - Generates release notes from commits
+
+4. **Sign the release (after CI completes):**
+   ```bash
+   # Option A: If gh CLI is on the signing machine
+   ./scripts/sign-release.sh X.Y.Z
+
+   # Option B: Split workflow (keys on omegacortex, gh on Mac)
+   # See .claude/skills/doli-ops/SKILL.md Section 4.6 for full procedure
+   # Summary:
+   #   1. SSH to omegacortex, sign with producer keys 1-3 using doli release sign
+   #   2. SCP the assembled SIGNATURES.json to Mac
+   #   3. gh release delete-asset + upload from Mac
+   #   4. Verify with: gh release download vX.Y.Z --pattern SIGNATURES.json
+   ```
 
 ### Release Checklist
 
