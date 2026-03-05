@@ -9,8 +9,19 @@ use tokio::fs;
 use tracing::{debug, error, info, warn};
 
 /// Get the path to the current running binary
+///
+/// On Linux, if the binary was replaced via atomic rename while running,
+/// `/proc/self/exe` returns the path with ` (deleted)` suffix.
+/// We strip that suffix to get the actual install target path.
 pub fn current_binary_path() -> Result<PathBuf> {
-    std::env::current_exe().map_err(|e| UpdateError::InstallFailed(e.to_string()))
+    let path = std::env::current_exe()
+        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+    let path_str = path.to_string_lossy();
+    if path_str.ends_with(" (deleted)") {
+        Ok(PathBuf::from(path_str.trim_end_matches(" (deleted)")))
+    } else {
+        Ok(path)
+    }
 }
 
 /// Get the backup path for the current binary
