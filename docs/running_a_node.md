@@ -548,7 +548,7 @@ sudo systemctl start doli-node
 
 ### 11.1. Auto-Update (Default)
 
-The node automatically downloads and applies updates after the 7-day veto period. To receive notifications only:
+The node automatically downloads and applies updates after the veto period (currently 5 minutes, early network; target 7 days). To receive notifications only:
 
 ```bash
 ./target/release/doli-node run --update-notify-only
