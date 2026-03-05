@@ -1090,6 +1090,13 @@ async fn cmd_upgrade(
         .map_err(|e| anyhow::anyhow!("Failed to fetch release: {}", e))?;
 
     if !updater::is_newer_version(&release.version, current) {
+        if let Some(ref svc) = service {
+            // Binary already updated (e.g. by a prior run on this server),
+            // but the caller wants a specific service restarted.
+            println!("Binary already at v{}, restarting service: {}", current, svc);
+            restart_specific_service(svc);
+            return Ok(());
+        }
         println!("Already up to date (v{}).", current);
         return Ok(());
     }
