@@ -922,13 +922,31 @@ ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do echo \"port \$p: \$(curl
 
 ### 4.1 How It Works
 
-The auto-update system (`crates/updater/`) provides transparent updates with community veto:
+The auto-update system (`crates/updater/`) provides fully automatic updates with community veto power:
 
 1. **Release published** — signed by 3/5 maintainers (`sign_release_hash()`)
-2. **Veto period begins** — 7 days mainnet, 60s devnet
-3. **Producers vote** — can veto via `doli update vote`
-4. **Threshold check** — if >= 40% weighted veto: REJECTED
-5. **If approved** — 48h grace period, then enforcement (no-update-no-produce)
+2. **Node detects** — `UpdateService` checks GitHub every 6 hours, verifies 3/5 signatures
+3. **Veto period begins** — 2 epochs mainnet (~2h), 60s devnet
+4. **Producers vote** — can veto via `doli update vote` (weighted by bonds × seniority)
+5. **Threshold check** — if >= 40% weighted veto: REJECTED, update discarded
+6. **If approved** — **auto-apply**: download tarball from GitHub, verify SHA-256, atomic install, `exec()` restart (same PID, systemd/launchd unaware)
+7. **If auto-apply fails** — grace period (48h mainnet), then enforcement (block production paused until updated)
+8. **Watchdog** — if new binary crashes 3× within window, automatic rollback to backup
+
+**Auto-apply flow (v1.1.10+):**
+```
+Veto period ends + < 40% veto
+  → auto_apply_from_github(version)
+    → fetch_github_release() → download tarball
+    → verify_hash() → SHA-256 check
+    → extract_binary_from_tarball() → extract doli-node
+    → backup_current() → save .backup
+    → install_binary() → atomic rename (write .new + rename)
+    → restart_node() → exec() replaces process [NO RETURN]
+  → New binary running, same PID, same args
+```
+
+**Disable auto-apply**: Use `--no-auto-update` flag on `doli-node run`, or set `notify_only: true` in update config. In notify-only mode, the node shows the banner but waits for manual `doli-node update apply`.
 
 **Key constants:**
 - Veto threshold: 40% (seniority-weighted)
@@ -980,6 +998,9 @@ doli -r http://127.0.0.1:PORT update votes
 
 ### 4.5 Applying / Rolling Back
 
+**Automatic (default):** Once an update is approved (veto period passes without rejection), `doli-node` automatically downloads from GitHub, verifies, installs, and restarts via `exec()`. No operator action needed.
+
+**Manual (if auto-apply fails or `notify_only` mode):**
 ```bash
 # Apply approved update
 doli-node --network mainnet update apply
@@ -987,9 +1008,15 @@ doli-node --network mainnet update apply
 # Rollback to backup
 doli-node --network mainnet update rollback
 
-# Manual upgrade from GitHub
-doli-node upgrade --yes
+# Manual upgrade from GitHub (bypasses veto system)
+doli upgrade --yes --doli-node-path <PATH> --service <SERVICE>
 ```
+
+**Safety nets:**
+- If auto-apply fails (network error, disk full, etc.), node continues running old version and logs the error
+- Grace period (48h) gives time for manual intervention
+- After grace period, enforcement blocks production until updated
+- Watchdog auto-rolls back if new binary crashes 3× within crash window
 
 ### 4.6 Release Pipeline
 
