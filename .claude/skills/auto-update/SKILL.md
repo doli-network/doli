@@ -12,7 +12,7 @@ The auto-update system enables transparent, community-governed binary updates wi
 
 ```
 Flow: Release published → Veto period → Voting → Approved/Rejected → Grace period → Enforcement
-      (3/5 maintainer sigs)  (7 days mainnet)  (bonds+seniority weighted)     (48h)
+      (3/5 maintainer sigs)  (5 min early*)    (bonds+seniority weighted)    (2 min early*)
 ```
 
 ### Core Principle: Vote Weight = Staked Bonds × Seniority Multiplier
@@ -608,17 +608,19 @@ echo "This means whale ALONE can veto (>40%) — correct economic incentive"
 |-----------|---------|---------|--------|------------------|
 | Slot duration | 10s | 10s | 10s | — |
 | Blocks per year | 3,153,600 | 3,153,600 | 144 | ~24 minutes |
-| Veto period | 7 days | 7 days | 60s | 1 minute |
-| Grace period | 48 hours | 48 hours | 30s | 30 seconds |
+| Veto period | 5 min * | 5 min * | 60s | 1 minute |
+| Grace period | 2 min * | 2 min * | 30s | 30 seconds |
 | Min voting age | 30 days | 30 days | 60s | 1 minute |
-| Check interval | 6 hours | 6 hours | 10s | 10 seconds |
+| Check interval | 10 min * | 10 min * | 10s | 10 seconds |
 | Crash threshold | 3 | 3 | 3 | — |
 | Crash window | 1 hour | 1 hour | 60s | 1 minute |
 | Seniority step | 3.15M blocks | 3.15M blocks | 144 blocks | ~24 minutes |
 | Seniority maturity | 12.6M blocks | 12.6M blocks | 576 blocks | ~96 minutes |
 | Veto threshold | 40% | 40% | 40% | — |
 | Maintainer threshold | 3/5 | 3/5 | 3/5 | — |
-| **Full lifecycle** | **~7.5 days** | **~7.5 days** | **~2.5 min** | **veto + grace** |
+| **Full lifecycle** | **~7 min** * | **~7 min** * | **~2.5 min** | **veto + grace** |
+
+\* Early-network values (v1.1.13+). Will extend to 7d veto / 48h grace / 6h check as network grows.
 
 ### Environment Variable Overrides (devnet only)
 

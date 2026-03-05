@@ -366,7 +366,7 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 ### Governance
 - **Maintainers**: First 5 registered producers (on-chain); `BOOTSTRAP_MAINTAINER_KEYS` as fallback pre-sync
 - **Updates**: 3/5 multisig required for release signatures
-- **Veto**: 40% stake can block (7-day voting period)
+- **Veto**: 40% stake can block (5-min veto period early network; target 7 days)
 
 ## 📂 File Map
 

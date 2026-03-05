@@ -541,7 +541,7 @@ grep "VDF computed" /var/log/doli-node.log
 
 ### 12.1. Software Updates
 
-Updates have a 7-day veto period:
+Updates have a veto period (currently 5 minutes, early network; target 7 days):
 
 ```bash
 # Check pending update

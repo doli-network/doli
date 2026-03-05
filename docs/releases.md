@@ -187,6 +187,8 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 - [ ] Binaries tested on target platforms
 - [ ] Docker images verified
 - [ ] Release notes reviewed
+- [ ] SIGNATURES.json signed by 3/5 maintainers (see [auto_update_system.md](./auto_update_system.md))
+- [ ] SIGNATURES.json uploaded to release artifacts
 
 ---
 
@@ -194,9 +196,9 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 
 DOLI nodes can automatically update to new versions:
 
-1. **Notification:** Node detects new release
-2. **Veto Period:** 7-day window for producers to reject
-3. **Grace Period:** 48 hours to apply update
+1. **Notification:** Node detects new release (checks every 10 minutes)
+2. **Veto Period:** 5-minute window for producers to reject (early network; target: 7 days)
+3. **Grace Period:** 2 minutes to apply update (early network; target: 48 hours)
 4. **Enforcement:** Outdated nodes cannot produce blocks
 
 ```bash
@@ -246,4 +248,4 @@ Planned security improvements:
 
 ---
 
-*Last updated: January 2026*
+*Last updated: March 2026*

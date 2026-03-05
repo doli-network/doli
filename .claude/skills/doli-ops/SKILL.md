@@ -1013,12 +1013,12 @@ ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do echo \"port \$p: \$(curl
 The auto-update system (`crates/updater/`) provides fully automatic updates with community veto power:
 
 1. **Release published** — signed by 3/5 maintainers (`sign_release_hash()`)
-2. **Node detects** — `UpdateService` checks GitHub every 6 hours, verifies 3/5 signatures
+2. **Node detects** — `UpdateService` checks GitHub every 10 minutes, verifies 3/5 signatures
 3. **Veto period begins** — 2 epochs mainnet (~2h), 60s devnet
 4. **Producers vote** — can veto via `doli update vote` (weighted by bonds × seniority)
 5. **Threshold check** — if >= 40% weighted veto: REJECTED, update discarded
 6. **If approved** — **auto-apply**: download tarball from GitHub, verify SHA-256, atomic install, `exec()` restart (same PID, systemd/launchd unaware)
-7. **If auto-apply fails** — grace period (48h mainnet), then enforcement (block production paused until updated)
+7. **If auto-apply fails** — grace period (2 min early network*), then enforcement (block production paused until updated)
 8. **Watchdog** — if new binary crashes 3× within window, automatic rollback to backup
 
 **Auto-apply flow (v1.1.10+):**
@@ -1039,9 +1039,10 @@ Veto period ends + < 40% veto
 **Key constants:**
 - Veto threshold: 40% (seniority-weighted)
 - Required signatures: 3 of 5 maintainers
-- Veto period: 7 days (mainnet), 60s (devnet)
-- Grace period: 48 hours (mainnet), 30s (devnet)
-- Check interval: 6 hours
+- Veto period: 5 min (mainnet/testnet early*), 60s (devnet)
+- Grace period: 2 min (mainnet/testnet early*), 30s (devnet)
+- Check interval: 10 min (mainnet/testnet), 10s (devnet)
+- * Early-network values (v1.1.13+). Will extend as network grows.
 - GitHub repo: `e-weil/doli`
 
 **Vote weight formula:**
@@ -1139,7 +1140,7 @@ doli -w ~/.doli/mainnet/keys/producer_1.json release sign --version v1.2.0
 }
 ```
 
-**3. Nodes auto-detect within 6 hours:**
+**3. Nodes auto-detect within 10 minutes:**
 - `UpdateService` polls GitHub, finds new release
 - Verifies 3/5 signatures against on-chain maintainer keys
 - Starts veto period → if approved → auto-apply via `exec()`
