@@ -2107,7 +2107,15 @@ async fn cmd_producer(
                             .unwrap_or_else(|| {
                                 format!("{}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..])
                             });
-                        anyhow::bail!("Producer not found: {}. This key is not registered as a producer. Use 'doli producer register' to register.", pk_display);
+                        println!("Producer Status");
+                        println!("{:-<60}", "");
+                        println!();
+                        println!("  Address: {}", pk_display);
+                        println!("  Status:  Not registered");
+                        println!();
+                        println!("If you recently registered, your registration may be pending");
+                        println!("activation at the next epoch boundary. Check again in a few");
+                        println!("minutes, or use 'doli producer register' to register.");
                     } else {
                         anyhow::bail!("Error: {}", e);
                     }
