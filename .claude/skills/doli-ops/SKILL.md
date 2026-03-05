@@ -634,34 +634,28 @@ ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && source ~/.cargo/env &
 ssh ilozada@omegacortex.ai "md5sum ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli"
 
 # --- NT nodes (reverse: N5 → N4 → N3 → omegacortex) ---
-# Each server: kill processes → copy binary → start → verify advancing
+# Each server: SCP binary → atomic rename install → restart NT services → verify
 
 # NT14-18 (N5):
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo killall doli-node; sleep 2; pgrep -c doli-node || echo ALL_DEAD'"
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh start'"
-# Wait 15s, verify height increased:
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl restart doli-testnet-nt14 doli-testnet-nt15 doli-testnet-nt16 doli-testnet-nt17 doli-testnet-nt18'"
+# Wait 15s, verify heights increasing
 
 # NT9-13 (N4):
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo killall doli-node; sleep 2; pgrep -c doli-node || echo ALL_DEAD'"
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'source ~/doli-test/.env && ~/doli-test/manage.sh start'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl restart doli-testnet-nt9 doli-testnet-nt10 doli-testnet-nt11 doli-testnet-nt12 doli-testnet-nt13'"
 # Wait 15s, verify
 
-# NT6-8 (N3):
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo killall doli-node; sleep 2; pgrep -c doli-node || echo ALL_DEAD'"
-ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@147.93.84.44:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && md5sum ~/doli-node ~/doli'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'source ~/doli-test/.env && ~/doli-test/manage.sh start'"
+# NT6-8 (N3 — direct SSH from Mac, not via omegacortex):
+scp -P 50790 <binary> ilozada@147.93.84.44:/tmp/
+ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node.new && mv ~/doli-node.new ~/doli-node && cp /tmp/doli ~/doli.new && mv ~/doli.new ~/doli && md5sum ~/doli-node ~/doli'
+ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl restart doli-testnet-nt6 doli-testnet-nt7 doli-testnet-nt8'
 # Wait 15s, verify
 
-# NT1-5 (omegacortex — binary already in place, just restart):
-ssh ilozada@omegacortex.ai "source ~/doli-test/.env && ~/doli-test/manage.sh stop"
-ssh ilozada@omegacortex.ai "export DOLI_TEST_BINARY=/home/ilozada/repos/doli/target/release/doli-node && source ~/doli-test/.env && ~/doli-test/manage.sh start"
-# IMPORTANT: must `export` DOLI_TEST_BINARY — `source .env` alone doesn't export it
+# NT1-5 (omegacortex — binary already in place from build):
+ssh ilozada@omegacortex.ai "sudo systemctl restart doli-testnet-nt1 doli-testnet-nt2 doli-testnet-nt3 doli-testnet-nt4 doli-testnet-nt5"
 # Wait 15s, verify
 
 # --- Mainnet nodes (reverse: N6 → N5 → N4 → N3 → N2 → N1) ---
@@ -711,11 +705,17 @@ ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8545 -H 'Content-Ty
 ### 3.5 Post-Deploy Verification
 
 ```bash
-# 1. All services active
-ssh ilozada@omegacortex.ai "sudo systemctl is-active doli-mainnet-node1 doli-mainnet-node2"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl is-active doli-mainnet-node3'"
+# 1. All mainnet services active
+ssh ilozada@omegacortex.ai "sudo systemctl is-active doli-mainnet-node1 doli-mainnet-node2 doli-mainnet-node6"
+ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl is-active doli-mainnet-node3'
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl is-active doli-mainnet-node4'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl is-active doli-mainnet-node5'"
+
+# 1b. All NT services active
+ssh ilozada@omegacortex.ai "sudo systemctl is-active doli-testnet-nt{1..5}"
+ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl is-active doli-testnet-nt6 doli-testnet-nt7 doli-testnet-nt8'
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl is-active doli-testnet-nt9 doli-testnet-nt10 doli-testnet-nt11 doli-testnet-nt12 doli-testnet-nt13'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl is-active doli-testnet-nt14 doli-testnet-nt15 doli-testnet-nt16 doli-testnet-nt17 doli-testnet-nt18'"
 
 # 2. Chain is advancing (run twice, 15s apart, height should increase)
 ssh ilozada@omegacortex.ai "for p in 8545 8546; do \
@@ -753,17 +753,17 @@ For N3/N4/N5, you MUST SCP binaries — see Section 2.2 and 3.4 for full procedu
 
 ### 3.7 Deployment Gotchas (Lessons Learned)
 
-1. **"Text file busy"** — Cannot `cp` over a running binary. You MUST `killall doli-node` or `systemctl stop` the service BEFORE copying the new binary. This applies to both mainnet and NT nodes sharing the same binary path.
+1. **"Text file busy"** — Cannot `cp` over a running binary. Use atomic rename instead: `cp new /path/doli-node.new && mv /path/doli-node.new /path/doli-node`. The `doli upgrade` command does this automatically. Running processes keep the old inode.
 
 2. **SCP to N3 `~/` may fail** — Use `/tmp/` as staging directory, then `cp` from `/tmp/` to final location.
 
 3. **N4/N5 need `sudo` for `/opt/doli/`** — The binary path `/opt/doli/target/release/` is owned by `isudoajl`. Use `sudo cp` after SCP to `/tmp/`.
 
-4. **omegacortex manage.sh `.env` not exported** — `source ~/doli-test/.env` sets `DOLI_TEST_BINARY` but does NOT export it. The `manage.sh` script won't see it because the variable expansion happens in a subshell. Fix: `export DOLI_TEST_BINARY=... && source .env && manage.sh start`. On N3/N4/N5 this works fine because their `.env` is sourced within the same shell that runs `manage.sh`.
+4. **NT nodes are individual systemd services** — Each NT has its own service (`doli-testnet-nt1` through `doli-testnet-nt18`). Use `sudo systemctl restart doli-testnet-nt<ID>` for per-node control. The old `manage.sh` bulk start/stop is deprecated.
 
-5. **`systemctl stop doli-test-nodes` may not kill NT processes** — If NT nodes were started by `manage.sh` directly (not via systemd), `systemctl stop` has no effect. Use `killall doli-node` as fallback. **WARNING**: `killall doli-node` kills ALL doli-node processes including mainnet. Plan your stop/copy/start order accordingly — stop everything on the server, copy, then start in correct order.
+5. **NT + mainnet on same server** — On N3/N4/N5 where both NT and mainnet nodes run, upgrade the binary once (atomic rename), then restart services individually. Never use `killall doli-node` — it kills everything.
 
-6. **`killall doli-node` kills both NT and mainnet on same server** — On N3/N4/N5 where both NT and mainnet nodes run, `killall` is a sledgehammer. To avoid downtime, stop NT nodes first (via `manage.sh stop` or targeted `kill`), copy binary, restart NT nodes, verify, THEN `systemctl restart` the mainnet node.
+6. **Restart order on shared servers** — Restart NT nodes first (canaries), verify they advance, then restart the mainnet node. This minimizes mainnet downtime.
 
 7. **Never build on remote nodes** — N3 has no Rust toolchain. N4/N5 have stale `~/.cargo/env` paths that fail. Always build on omegacortex and distribute.
 
@@ -812,7 +812,24 @@ Options:
 | N4 (72.60.70.166) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node4` | **YES** (`sudo`) |
 | N5 (72.60.115.209) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node5` | **YES** (`sudo`) |
 
-**NT nodes**: NT nodes share the same `doli-node` binary as the N-node on their server. Running `doli upgrade` for any N-node on a server replaces the binary for NTs too. After upgrade, restart NTs via `manage.sh stop && manage.sh start`.
+**NT nodes**: Each NT node has its own systemd service (`doli-testnet-nt1` through `doli-testnet-nt18`). They share the same `doli-node` binary as the N-node on their server. Running `doli upgrade` for any N-node on a server replaces the binary for NTs too. After upgrade, restart each NT individually: `sudo systemctl restart doli-testnet-nt<ID>`.
+
+#### NT Node Service Registry
+
+| Server | NT Nodes | Services | Binary | RPC Ports |
+|--------|----------|----------|--------|-----------|
+| omegacortex | NT1-NT5 | `doli-testnet-nt1` ... `doli-testnet-nt5` | `~/repos/doli/target/release/doli-node` | 9001-9005 |
+| N3 (147.93.84.44) | NT6-NT8 | `doli-testnet-nt6` ... `doli-testnet-nt8` | `~/doli-node` | 9001-9003 |
+| N4 (72.60.70.166) | NT9-NT13 | `doli-testnet-nt9` ... `doli-testnet-nt13` | `/opt/doli/target/release/doli-node` | 9001-9005 |
+| N5 (72.60.115.209) | NT14-NT18 | `doli-testnet-nt14` ... `doli-testnet-nt18` | `/opt/doli/target/release/doli-node` | 9001-9005 |
+
+**Per-node control:**
+```bash
+sudo systemctl restart doli-testnet-nt18   # restart single NT
+sudo systemctl stop doli-testnet-nt18      # stop single NT
+sudo systemctl status doli-testnet-nt18    # check status
+journalctl -u doli-testnet-nt18 -f         # tail logs
+```
 
 #### 3.8.4 Full Upgrade Sequence (Reverse Order: NT18→NT1, N6→N1)
 
@@ -838,10 +855,10 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 '/opt/doli/target
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node5'"
 # 1b. Wait 15s, verify N5 is advancing
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"'"
-# 1c. Restart NT14-NT18 (binary already replaced by step 1a)
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh stop && ~/doli-test/manage.sh start'"
+# 1c. Restart NT14-NT18 individually (binary already replaced by step 1a)
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl restart doli-testnet-nt14 doli-testnet-nt15 doli-testnet-nt16 doli-testnet-nt17 doli-testnet-nt18'"
 # 1d. Verify NTs advancing
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'for p in 9001 9002 9003 9004 9005; do h=\$(curl -s -X POST http://127.0.0.1:\$p -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | grep -o \"\\\"bestHeight\\\":[0-9]*\" | cut -d: -f2); echo \"port \$p: height=\$h\"; done'"
 
 # ============================================================
 # STEP 2: Upgrade N4 server (NT9-NT13 + N4)
@@ -850,8 +867,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo /opt/doli/ta
 # Wait 15s, verify N4
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"'"
 # Restart NT9-NT13
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'source ~/doli-test/.env && ~/doli-test/manage.sh stop && ~/doli-test/manage.sh start'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl restart doli-testnet-nt9 doli-testnet-nt10 doli-testnet-nt11 doli-testnet-nt12 doli-testnet-nt13'"
+# Verify NTs advancing
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'for p in 9001 9002 9003 9004 9005; do h=\$(curl -s -X POST http://127.0.0.1:\$p -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | grep -o \"\\\"bestHeight\\\":[0-9]*\" | cut -d: -f2); echo \"port \$p: height=\$h\"; done'"
 
 # ============================================================
 # STEP 3: Upgrade N3 server (NT6-NT8 + N3)
@@ -860,8 +878,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 '~/doli upgrade --
 # Wait 15s, verify N3
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"'"
 # Restart NT6-NT8
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'source ~/doli-test/.env && ~/doli-test/manage.sh stop && ~/doli-test/manage.sh start'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl restart doli-testnet-nt6 doli-testnet-nt7 doli-testnet-nt8'
+# Verify NTs advancing
+ssh -p 50790 ilozada@147.93.84.44 'for p in 9001 9002 9003; do h=$(curl -s -X POST http://127.0.0.1:$p -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" | grep -o "\"bestHeight\":[0-9]*" | cut -d: -f2); echo "port $p: height=$h"; done'
 
 # ============================================================
 # STEP 4: Upgrade omegacortex (NT1-NT5 + N6 + N2 + N1)
@@ -877,8 +896,9 @@ ssh ilozada@omegacortex.ai "sudo systemctl restart doli-mainnet-node2"
 ssh ilozada@omegacortex.ai "curl -s -X POST http://127.0.0.1:8546 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | jq -c '.result | {h: .bestHeight, s: .bestSlot}'"
 
 # 4c. Restart NT1-NT5 (binary already replaced)
-ssh ilozada@omegacortex.ai "export DOLI_TEST_BINARY=/home/ilozada/repos/doli/target/release/doli-node && source ~/doli-test/.env && ~/doli-test/manage.sh stop && ~/doli-test/manage.sh start"
-ssh ilozada@omegacortex.ai "export DOLI_TEST_BINARY=/home/ilozada/repos/doli/target/release/doli-node && source ~/doli-test/.env && ~/doli-test/manage.sh status"
+ssh ilozada@omegacortex.ai "sudo systemctl restart doli-testnet-nt1 doli-testnet-nt2 doli-testnet-nt3 doli-testnet-nt4 doli-testnet-nt5"
+# Verify NTs advancing
+ssh ilozada@omegacortex.ai 'for p in 9001 9002 9003 9004 9005; do h=$(curl -s -X POST http://127.0.0.1:$p -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" | grep -o "\"bestHeight\":[0-9]*" | cut -d: -f2); echo "port $p: height=$h"; done'
 
 # 4d. Restart N1 — LAST (bootstrap node)
 ssh ilozada@omegacortex.ai "sudo systemctl restart doli-mainnet-node1"
@@ -902,7 +922,7 @@ ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do echo \"port \$p: \$(curl
 2. **One server at a time**: Upgrade + verify before moving to next server.
 3. **`--service` is mandatory on omegacortex**: N1, N2, N6 share one machine. Without `--service`, all three restart simultaneously.
 4. **`doli upgrade` only runs once per server**: It replaces both binaries. Subsequent N-nodes on the same server just need `sudo systemctl restart <service>`.
-5. **NT restart is manual**: After the binary is replaced, restart NTs via `manage.sh stop && manage.sh start`.
+5. **NT restart is per-node via systemd**: After the binary is replaced, restart NTs individually: `sudo systemctl restart doli-testnet-nt<ID>`.
 6. **If `doli upgrade` fails** (no GitHub Release, network error): Fall back to Section 3.4 (manual build + SCP).
 7. **Consensus-critical changes**: Still require simultaneous deployment (Section 3.3). `doli upgrade` is for rolling upgrades only.
 
