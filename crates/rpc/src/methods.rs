@@ -491,13 +491,18 @@ impl RpcContext {
         let utxo_set = self.utxo_set.read().await;
         let chain_state = self.chain_state.read().await;
         let current_height = chain_state.best_height;
+        let mempool = self.mempool.read().await;
 
         let utxos = utxo_set.get_by_pubkey_hash(&pubkey_hash);
         let maturity = self.coinbase_maturity;
 
         let responses: Vec<UtxoResponse> = utxos
             .into_iter()
-            .filter(|(_, entry)| {
+            .filter(|(outpoint, entry)| {
+                // Exclude UTXOs being spent by mempool transactions
+                if mempool.is_outpoint_spent(outpoint) {
+                    return false;
+                }
                 !params.spendable_only
                     || entry.is_spendable_at_with_maturity(current_height, maturity)
             })

@@ -347,6 +347,11 @@ impl Mempool {
         self.policy.max_count
     }
 
+    /// Check if an outpoint is being spent by a mempool transaction.
+    pub fn is_outpoint_spent(&self, outpoint: &Outpoint) -> bool {
+        self.spent_outputs.contains_key(outpoint)
+    }
+
     /// Get minimum fee rate for acceptance
     pub fn min_fee_rate(&self) -> u64 {
         // If mempool is getting full, dynamically increase minimum fee
