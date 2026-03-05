@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772595965,
-    "message": "Genesis v3 - JSON ProducerSet serialization - version-safe upgrades",
+    "timestamp": 1772684348,
+    "message": "Genesis v4 - Network reset 2026-03-05",
     "initial_reward": 100000000
   },
   "consensus": {
