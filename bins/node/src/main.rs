@@ -713,7 +713,12 @@ async fn run_node(
 
     // Start auto-update service
     if update_config.enabled {
-        info!("Auto-updates enabled (7-day veto period, 40% threshold)");
+        info!(
+            "Auto-updates enabled (check: {}m, veto: {}m, grace: {}m, threshold: 40%)",
+            update_config.check_interval_secs / 60,
+            update_config.veto_period_secs / 60,
+            update_config.grace_period_secs / 60,
+        );
         if update_config.notify_only {
             info!("Notify-only mode: updates will not be applied automatically");
         }
