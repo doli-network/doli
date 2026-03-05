@@ -448,32 +448,18 @@ impl RpcContext {
             maturity,
         );
 
-        // Calculate unconfirmed balance change from mempool
-        // This gives the net change (incoming - outgoing) from pending transactions
-        let unconfirmed_change = mempool.get_unconfirmed_balance(&pubkey_hash, &utxo_set);
+        // Get incoming (change outputs) and outgoing (spent UTXOs) from mempool
+        let (incoming, outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
 
-        // For the response, we show:
-        // - confirmed: current spendable balance
-        // - unconfirmed: incoming amounts in mempool (always positive, represents pending credits)
-        // - immature: coinbase/epoch rewards pending maturity
-        // - total: confirmed + unconfirmed + immature
-        let (incoming, _outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
-        let unconfirmed = incoming;
+        // Spendable = confirmed minus mempool-spent UTXOs (matches getUtxos filtering)
+        let spendable = confirmed.saturating_sub(outgoing);
 
-        // Total includes confirmed, unconfirmed mempool changes, and immature rewards
-        let total = if unconfirmed_change >= 0 {
-            confirmed
-                .saturating_add(unconfirmed_change as u64)
-                .saturating_add(immature)
-        } else {
-            confirmed
-                .saturating_sub((-unconfirmed_change) as u64)
-                .saturating_add(immature)
-        };
+        // Total = all assets: spendable + pending change + immature rewards
+        let total = spendable.saturating_add(incoming).saturating_add(immature);
 
         let response = BalanceResponse {
-            confirmed,
-            unconfirmed,
+            confirmed: spendable,
+            unconfirmed: incoming,
             immature,
             total,
         };
