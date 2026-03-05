@@ -1117,15 +1117,79 @@ git tag v1.2.0 && git push origin main v1.2.0
 ```
 
 **2. Sign release with 3/5 maintainer keys:**
-```bash
-# Automated (signs with producer keys 1-3, assembles SIGNATURES.json, uploads):
-./scripts/sign-release.sh 1.2.0
 
-# Manual (per-maintainer, if needed):
-doli -w ~/.doli/mainnet/keys/producer_1.json release sign --version v1.2.0
-# Outputs JSON signature block to stdout
-# Collect 3+ blocks → assemble SIGNATURES.json → gh release upload v1.2.0 SIGNATURES.json
+**Option A: Automated (requires `gh` CLI on signing machine):**
+```bash
+./scripts/sign-release.sh 1.2.0
 ```
+
+**Option B: Split workflow (omegacortex signs, Mac uploads — PROVEN WORKFLOW):**
+
+Omegacortex has the producer keys but no `gh` CLI. Mac has `gh` but no keys.
+This is the standard procedure used for all releases.
+
+```bash
+# Step 1: Sign on omegacortex (where the keys live)
+ssh ilozada@omegacortex.ai bash -s <<'REMOTE'
+set -euo pipefail
+DOLI=~/repos/doli/target/release/doli
+KEY_DIR=~/.doli/mainnet/keys
+VERSION="v1.2.0"   # ← change this
+TMPDIR=$(mktemp -d)
+
+# Download CHECKSUMS.txt from the GitHub Release
+curl -sL "https://github.com/e-weil/doli/releases/download/${VERSION}/CHECKSUMS.txt" \
+    -o "$TMPDIR/CHECKSUMS.txt"
+CHECKSUMS_SHA256=$(sha256sum "$TMPDIR/CHECKSUMS.txt" | awk '{print $1}')
+echo "CHECKSUMS.txt SHA-256: $CHECKSUMS_SHA256"
+
+# Sign with 3 producer keys → extract JSON blocks
+for i in 1 2 3; do
+    KEY="$KEY_DIR/producer_${i}.json"
+    "$DOLI" -w "$KEY" release sign --version "$VERSION" --key "$KEY" 2>/dev/null \
+        | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+start = raw.index('{')
+end = raw.index('}') + 1
+print(json.dumps(json.loads(raw[start:end])))
+" > "$TMPDIR/sig_${i}.json"
+    echo "Signed with producer_${i}"
+done
+
+# Assemble SIGNATURES.json
+python3 -c "
+import json, glob
+sigs = []
+for f in sorted(glob.glob('$TMPDIR/sig_*.json')):
+    sigs.append(json.load(open(f)))
+out = {'version': '${VERSION#v}', 'checksums_sha256': '$CHECKSUMS_SHA256', 'signatures': sigs}
+json.dump(out, open('$TMPDIR/SIGNATURES.json', 'w'), indent=2)
+print(json.dumps(out, indent=2))
+"
+echo "File: $TMPDIR/SIGNATURES.json"
+REMOTE
+
+# Step 2: Copy SIGNATURES.json to Mac
+scp ilozada@omegacortex.ai:/tmp/tmp.XXXXX/SIGNATURES.json /tmp/SIGNATURES.json
+# ↑ Use the actual tmpdir path from step 1 output
+
+# Step 3: Upload from Mac (where gh is authenticated)
+gh release delete-asset v1.2.0 SIGNATURES.json --repo e-weil/doli --yes 2>/dev/null || true
+gh release upload v1.2.0 /tmp/SIGNATURES.json --repo e-weil/doli
+
+# Step 4: Verify (bypass CDN cache with gh, not curl)
+gh release download v1.2.0 --repo e-weil/doli --pattern "SIGNATURES.json" --dir /tmp/verify --clobber
+python3 -c "import json; d=json.load(open('/tmp/verify/SIGNATURES.json')); print(f'Sigs: {len(d[\"signatures\"])}')"
+# Must show "Sigs: 3"
+```
+
+**IMPORTANT NOTES:**
+- `doli release sign` outputs status text mixed with JSON — use the python extraction above
+- The `--key` flag AND `-w` flag must BOTH point to the producer key file
+- CI creates an empty SIGNATURES.json scaffold (0 signatures) — always delete it first
+- CDN (curl) may serve cached empty file for minutes; use `gh release download` to verify
+- Message signed: `"{version_bare}:{sha256(CHECKSUMS.txt)}"` (e.g., `"1.2.0:ac338d..."`)
 
 **SIGNATURES.json format:**
 ```json
@@ -1142,22 +1206,22 @@ doli -w ~/.doli/mainnet/keys/producer_1.json release sign --version v1.2.0
 
 **3. Nodes auto-detect within 10 minutes:**
 - `UpdateService` polls GitHub, finds new release
-- Verifies 3/5 signatures against on-chain maintainer keys
+- Verifies 3/5 signatures against on-chain maintainer keys (from `MaintainerState`)
+- Pre-bootstrap fallback: `BOOTSTRAP_MAINTAINER_KEYS` in `crates/updater/src/lib.rs`
 - Starts veto period → if approved → auto-apply via `exec()`
 
 **4. If CI is down — manual release:**
 ```bash
 # Build on omegacortex:
-ssh ilozada@omegacortex.ai "cd ~/repos/doli && cargo build --release"
+ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && source ~/.cargo/env && cargo build --release"
 # Package tarball:
 DIRNAME="doli-node-v1.2.0-x86_64-unknown-linux-gnu"
 mkdir /tmp/$DIRNAME && cp target/release/doli-node target/release/doli /tmp/$DIRNAME/
 cd /tmp && tar czf ${DIRNAME}.tar.gz $DIRNAME
 shasum -a 256 ${DIRNAME}.tar.gz > CHECKSUMS.txt
-# Create release + upload:
+# Create release + upload (from Mac):
 gh release create v1.2.0 --title "v1.2.0" --generate-notes ${DIRNAME}.tar.gz CHECKSUMS.txt
-# Then sign:
-./scripts/sign-release.sh 1.2.0
+# Then sign using Option B above
 ```
 
 ---
