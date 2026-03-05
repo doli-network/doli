@@ -266,6 +266,8 @@ pub struct UtxoResponse {
 pub struct ChainInfoResponse {
     /// Network name
     pub network: String,
+    /// Node version (e.g. "1.1.11")
+    pub version: String,
     /// Best block hash
     pub best_hash: String,
     /// Best block height
@@ -620,6 +622,7 @@ mod tests {
     fn test_chain_info_response_serialization() {
         let response = ChainInfoResponse {
             network: "mainnet".to_string(),
+            version: "1.1.11".to_string(),
             best_hash: "abc123".to_string(),
             best_height: 50_000,
             best_slot: 50_100,
