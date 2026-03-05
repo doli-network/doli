@@ -812,7 +812,23 @@ Options:
 | N4 (72.60.70.166) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node4` | **YES** (`sudo`) |
 | N5 (72.60.115.209) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node5` | **YES** (`sudo`) |
 
-**NT nodes**: Each NT node has its own systemd service (`doli-testnet-nt1` through `doli-testnet-nt18`). They share the same `doli-node` binary as the N-node on their server. Running `doli upgrade` for any N-node on a server replaces the binary for NTs too. After upgrade, restart each NT individually: `sudo systemctl restart doli-testnet-nt<ID>`.
+**Exact `doli upgrade` commands per server:**
+```bash
+# N4 / N5 — auto-detects doli-node path, sudo needed for /opt/:
+sudo /opt/doli/target/release/doli upgrade --version <VER> --yes --service doli-mainnet-node5
+
+# N3 — doli-node at ~/doli-node (not in fallback chain):
+~/doli upgrade --version <VER> --yes --doli-node-path ~/doli-node --service doli-mainnet-node3
+
+# omegacortex — doli-node at ~/repos/... (not in fallback chain), one service at a time:
+~/repos/doli/target/release/doli upgrade --version <VER> --yes \
+  --doli-node-path ~/repos/doli/target/release/doli-node --service doli-mainnet-node6
+# Then just restart N2 and N1 (binary already replaced):
+sudo systemctl restart doli-mainnet-node2
+sudo systemctl restart doli-mainnet-node1
+```
+
+**NT nodes**: Each NT node has its own systemd service (`doli-testnet-nt1` through `doli-testnet-nt18`). They share the same `doli-node` binary as the N-node on their server. Running `doli upgrade` on any server replaces the binary for all nodes on that server. After upgrade, restart each NT individually: `sudo systemctl restart doli-testnet-nt<ID>`.
 
 #### NT Node Service Registry
 
