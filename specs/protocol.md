@@ -1127,7 +1127,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 | Devnet only |
 | Reward Epoch | 360 blocks | 360 blocks | 4 blocks | Devnet only |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 | Devnet only |
-| Veto Period | 7 days | 7 days | 60s | All |
+| Veto Period | 5 min * | 5 min * | 60s | All |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
@@ -1344,8 +1344,8 @@ Result:
 | EXCLUSION_PERIOD   | 10,080                   |
 | TOTAL_SUPPLY       | 2,522,880,000,000,000    |
 
-| VETO_PERIOD        | 604,800 (7 days)         |
-| GRACE_PERIOD       | 172,800 (48 hours)       |
+| VETO_PERIOD        | 300 (5 min early*)       |
+| GRACE_PERIOD       | 120 (2 min early*)       |
 | VETO_THRESHOLD     | 40%                      |
 | REQUIRED_SIGS      | 3 of 5                   |
 | MIN_MAINTAINERS    | 3                        |
@@ -1429,7 +1429,7 @@ veto_percent = (total_veto_weight * 100) / total_weight
 if veto_percent >= 40:
     update REJECTED
 else:
-    update APPROVED after 7-day veto period
+    update APPROVED after veto period (5 min early network*)
 ```
 
 ---

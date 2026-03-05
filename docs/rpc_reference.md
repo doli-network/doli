@@ -681,7 +681,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 ### getMaintainerSet
 
-Returns the current maintainer set (first 5 registered producers).
+Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first 5 registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to ad-hoc derivation if `MaintainerState` is not yet available.
 
 **Parameters:** None
 
@@ -700,8 +700,16 @@ Returns the current maintainer set (first 5 registered producers).
     "max_maintainers": 5,
     "min_maintainers": 3,
     "initial_maintainer_count": 5,
-    "last_change_block": 0
+    "last_change_block": 500,
+    "source": "on-chain"
 }
+```
+
+**Source values:**
+| Value | Description |
+|-------|-------------|
+| `on-chain` | Read from persisted `MaintainerState` (bootstrapped or governed) |
+| `derived` | Fallback: ad-hoc derivation from producer registry (pre-v1.1.15 behavior) |
 ```
 
 **Example:**

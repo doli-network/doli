@@ -44,9 +44,9 @@ doli update votes --version 1.0.1
 ### Auto-Update Flow
 
 1. Maintainers sign release (3/5 multisig)
-2. 7-day veto period starts
+2. Veto period starts (5 min early network*, target 7 days)
 3. Producers can veto (40% stake threshold blocks)
-4. If not vetoed: 48-hour grace period, then auto-apply
+4. If not vetoed: grace period (2 min early network*), then auto-apply
 5. Watchdog monitors: 3 crashes in window triggers rollback
 
 ### Vote Weight Formula
@@ -110,6 +110,7 @@ Hash is auto-computed from the binary. 3 of 5 maintainers must sign for release 
 | Maintainer count | First 5 producers |
 | Signature threshold | 3 of 5 |
 | Veto threshold | 40% weighted stake |
-| Veto period | 7 days (mainnet) |
-| Grace period | 48 hours |
+| Veto period | 5 min (early network*) |
+| Grace period | 2 min (early network*) |
+| Check interval | 10 min |
 | Crash window for rollback | 3 crashes |
