@@ -39,7 +39,10 @@ doli address
 # Check balance
 doli balance
 
-# Send coins
+# Check someone else's balance (note: -w is still required)
+doli -w ~/.doli/wallet.json balance --address doli1abc...
+
+# Send coins (no confirmation prompt — sends immediately)
 doli send <recipient> <amount>
 
 # Become a block producer
@@ -54,8 +57,10 @@ All commands support these options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-w, --wallet <PATH>` | Wallet file path | `~/.doli/wallet.json` |
+| `-w, --wallet <PATH>` | Wallet file path (**required** — see note below) | `~/.doli/wallet.json` |
 | `-r, --rpc <URL>` | Node RPC endpoint | `http://127.0.0.1:8545` |
+
+> **IMPORTANT:** The `-w` flag must be passed **before** the subcommand (e.g., `doli -w wallet.json balance`, NOT `doli balance -w wallet.json`). If `~/.doli/wallet.json` does not exist (common on servers), you **must** specify `-w` explicitly or the CLI will fail silently with exit code 1.
 
 **Network-specific RPC ports:**
 
@@ -233,26 +238,28 @@ a1b2c3d4e5f6... (primary)
 
 ### 2.2. Send Coins
 
-Transfer coins to another address.
+Transfer coins to another address. **Sends immediately — no confirmation prompt.**
 
 ```bash
 doli send [OPTIONS] <TO> <AMOUNT>
 
 Arguments:
-  <TO>        Recipient address (hex)
+  <TO>        Recipient address (bech32m or 64-char hex)
   <AMOUNT>    Amount to send in DOLI
 
 Options:
   -f, --fee <FEE>    Transaction fee (default: auto-calculated)
 ```
 
+> **Note:** There is no `--yes`, `--confirm`, or `-y` flag. The transaction is broadcast as soon as you press Enter.
+
 **Example:**
 ```bash
 # Send 10 DOLI
-doli send c7d8e9f0a1b2... 10
+doli -w ~/.doli/wallet.json send doli1abc... 10
 
 # Send with explicit fee
-doli send c7d8e9f0a1b2... 10 --fee 0.001
+doli -w ~/.doli/wallet.json send doli1abc... 10 --fee 0.001
 ```
 
 **WHITEPAPER Reference:** Section 2 (Transactions) - Transactions require valid inputs, signatures, and positive amounts.
@@ -618,7 +625,7 @@ or presence tracking - rewards are deterministic and immediate.
 To see your accumulated rewards:
 
 ```bash
-doli wallet balance
+doli -w /path/to/wallet.json balance
 ```
 
 Rewards appear as "pending" until they reach 100 confirmations, then become
@@ -766,6 +773,8 @@ The **pubkey hash** used for balance queries is derived from `public_key` via do
 
 ### 7.3 Querying Producer Balances
 
+**IMPORTANT:** The `-w` flag is **always required** — even when using `--address` to check someone else's balance. Without `-w`, the CLI fails with `Error: No such file or directory (os error 2)`.
+
 ```bash
 # Query balance using a producer key file as wallet
 doli -w /path/to/producer.json balance
@@ -773,9 +782,8 @@ doli -w /path/to/producer.json balance
 # Query from a remote node
 doli -w /path/to/producer.json -r http://127.0.0.1:8546 balance
 
-# Query a specific address by pubkey hash (no wallet file needed on disk,
-# but a default wallet must exist at ~/.doli/wallet.json)
-doli balance --address <64-char-pubkey-hash>
+# Query a specific address — still needs -w for RPC connection
+doli -w /path/to/any_wallet.json balance --address <64-char-pubkey-hash-or-bech32>
 ```
 
 **Example — check all producers from omegacortex:**
@@ -787,12 +795,38 @@ for i in 1 2 3; do
 done
 ```
 
-### 7.4 Sending From a Producer Wallet
-
-Producer keys are full wallets. You can send coins directly:
+**Example — check an external address:**
 
 ```bash
-doli -w ~/.doli/mainnet/keys/producer_1.json send <recipient-pubkey-hash> 100
+doli -w ~/.doli/mainnet/keys/producer_1.json balance --address doli1abc...
+```
+
+### 7.4 Sending From a Producer Wallet
+
+Producer keys are full wallets. You can send coins directly (sends immediately, no confirmation):
+
+```bash
+doli -w ~/.doli/mainnet/keys/producer_1.json send doli1recipient... 100
+```
+
+### 7.5 Batch Scripting Pattern
+
+When scripting multiple CLI calls, always use `-w` and check for errors:
+
+```bash
+CLI=~/repos/doli/target/release/doli
+W=~/.doli/mainnet/keys/producer_1.json
+
+# Send to multiple addresses (2s delay between for mempool propagation)
+for addr in doli1aaa... doli1bbb... doli1ccc...; do
+  $CLI -w $W send "$addr" 11 2>&1
+  sleep 2
+done
+
+# Check balances for external addresses (always needs -w)
+for addr in doli1aaa... doli1bbb...; do
+  $CLI -w $W balance --address "$addr" 2>&1
+done
 ```
 
 ---
