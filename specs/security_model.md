@@ -877,7 +877,7 @@ era-dependent. Block production uses ~10M iterations across all eras.
 
 If you discover a security vulnerability, please report it responsibly:
 
-**Email**: doli@protonmail.com
+**Email**: doli@doli.network
 
 **PGP Key**: [To be published]
 
