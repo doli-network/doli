@@ -377,20 +377,20 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@<IP> 'md5sum <binary_path>'"
 
 **SCP commands:**
 ```bash
-# N3 (no sudo needed, home dir)
-ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@147.93.84.44:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli'"
+# N3 (no sudo needed, home dir — SCP from Mac, not omegacortex)
+scp -P 50790 /tmp/doli-node /tmp/doli ilozada@147.93.84.44:/tmp/
+ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && chmod +x ~/doli-node ~/doli'
 
 # N4 (sudo needed for /opt/doli/)
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 
 # N5 (sudo needed for /opt/doli/)
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ```
 
-**CRITICAL:** You MUST stop the running `doli-node` process BEFORE copying. `cp` will fail with `Text file busy` if the binary is in use. See Section 3.7 for gotchas.
+**CRITICAL:** Use atomic rename (`cp new /path/binary.new && mv /path/binary.new /path/binary`) to avoid `Text file busy` errors. Direct `cp` over a running binary fails. See Section 3.7 for gotchas.
 
 ### 2.3 Starting Nodes
 
@@ -647,15 +647,15 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo killall doli
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo killall doli-node'"
 
 # 4. SCP binaries to all remote servers via /tmp/ staging + verify MD5
-# N3:
-ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@147.93.84.44:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && md5sum ~/doli-node ~/doli'"
+# N3 (SCP from Mac, not omegacortex):
+scp -P 50790 /tmp/doli-node /tmp/doli ilozada@147.93.84.44:/tmp/
+ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && chmod +x ~/doli-node ~/doli && md5sum ~/doli-node ~/doli'
 # N4:
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 # N5:
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 
 # 5. Start ALL nodes via systemd (N1 first = bootstrap)
 ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node1"
@@ -690,19 +690,19 @@ ssh ilozada@omegacortex.ai "md5sum ~/repos/doli/target/release/doli-node ~/repos
 
 # NT14-18 (N5):
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl restart doli-testnet-nt14 doli-testnet-nt15 doli-testnet-nt16 doli-testnet-nt17 doli-testnet-nt18'"
 # Wait 15s, verify heights increasing
 
 # NT9-13 (N4):
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl restart doli-testnet-nt9 doli-testnet-nt10 doli-testnet-nt11 doli-testnet-nt12 doli-testnet-nt13'"
 # Wait 15s, verify
 
 # NT6-8 (N3 — direct SSH from Mac, not via omegacortex):
-scp -P 50790 <binary> ilozada@147.93.84.44:/tmp/
-ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node.new && mv ~/doli-node.new ~/doli-node && cp /tmp/doli ~/doli.new && mv ~/doli.new ~/doli && md5sum ~/doli-node ~/doli'
+scp -P 50790 /tmp/doli-node /tmp/doli ilozada@147.93.84.44:/tmp/
+ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node.new && mv ~/doli-node.new ~/doli-node && cp /tmp/doli ~/doli.new && mv ~/doli.new ~/doli && chmod +x ~/doli-node ~/doli && md5sum ~/doli-node ~/doli'
 ssh -p 50790 ilozada@147.93.84.44 'sudo systemctl restart doli-testnet-nt6 doli-testnet-nt7 doli-testnet-nt8'
 # Wait 15s, verify
 
@@ -820,6 +820,8 @@ For N3/N4/N5, you MUST SCP binaries — see Section 2.2 and 3.4 for full procedu
 7. **Never build on remote nodes** — N3 has no Rust toolchain. N4/N5 have stale `~/.cargo/env` paths that fail. Always build on omegacortex and distribute.
 
 8. **MD5 verify every copy** — Always `md5sum` on source and destination. Binary corruption over SCP is rare but catastrophic on a blockchain node.
+
+9. **SCP strips execute permissions** — `scp` copies files without the execute bit. Always `chmod +x` after copying binaries. Without this, systemd fails with `status=203/EXEC`. Every SCP command in this runbook includes `chmod +x` — if you improvise a copy, don't forget it.
 
 ### 3.8 `doli upgrade` — Standard Upgrade Procedure (v1.1.9+)
 
