@@ -1070,7 +1070,8 @@ Producer key files are wallet-compatible — use directly with `doli -w <key_fil
 
 | Name | Address (`doli1...`) | Public Key (Ed25519) | Bonds | Registered |
 |------|---------------------|----------------------|-------|------------|
-| **atinoco** | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 19 | Height 495 |
+| **atinoco** | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 1 | Height 495 |
+| **daniel** | `doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh` | — | 1 | Pending (Epoch 18) |
 
 ### 8.3 All-Node Balance Check
 
@@ -1208,3 +1209,94 @@ Binaries with consensus changes ship new rules behind a **protocol version gate*
 | `crates/updater/src/watchdog.rs` | Post-update crash detection, auto-rollback |
 | `bins/node/src/updater.rs` | Node-side auto-update loop, enforcement |
 | `.github/workflows/release.yml` | CI: build, package, CHECKSUMS.txt, SIGNATURES.json scaffold |
+
+---
+
+## Section 12: Temporary Test Nodes (NTx)
+
+Sync-only nodes for network stress testing. All data lives in `~/doli-test/` per server — `rm -rf ~/doli-test` for full cleanup.
+
+### 12.1 Distribution
+
+| Server | Nodes | P2P Ports | RPC Ports | Binary |
+|--------|-------|-----------|-----------|--------|
+| omegacortex.ai | NT1-NT5 | 31001-31005 | 9001-9005 | `~/repos/doli/target/release/doli-node` |
+| 147.93.84.44 (N3) | NT6-NT8 | 31001-31003 | 9001-9003 | `/usr/local/bin/doli-node` |
+| 72.60.70.166 (N4) | NT9-NT13 | 31001-31005 | 9001-9005 | `/opt/doli/target/release/doli-node` |
+| 72.60.115.209 (N5) | NT14-NT18 | 31001-31005 | 9001-9005 | `/opt/doli/target/release/doli-node` |
+
+**Total: 18 test nodes** (N3 has 3 due to limited RAM: 1 CPU, 3.8GB).
+
+### 12.2 File Structure (per server)
+
+```
+~/doli-test/
+├── .env              # DOLI_TEST_BINARY, DOLI_TEST_COUNT, DOLI_TEST_OFFSET
+├── manage.sh         # start|stop|status|clean
+├── keys/
+│   └── ntX.json      # Wallet per node
+├── nt1/
+│   ├── data/         # Chain data
+│   └── node.log      # Logs
+├── nt2/
+│   └── ...
+└── ...
+```
+
+### 12.3 Management
+
+Each server has a `manage.sh` script and a `doli-test-nodes` systemd service.
+
+```bash
+# Via systemd
+sudo systemctl start doli-test-nodes
+sudo systemctl stop doli-test-nodes
+
+# Via script (must source .env first)
+source ~/doli-test/.env && ~/doli-test/manage.sh start
+source ~/doli-test/.env && ~/doli-test/manage.sh stop
+source ~/doli-test/.env && ~/doli-test/manage.sh status
+source ~/doli-test/.env && ~/doli-test/manage.sh clean   # stops + wipes data, keeps keys/logs
+```
+
+**Remote (via jump host):**
+```bash
+# Status all test nodes
+ssh ilozada@omegacortex.ai "source ~/doli-test/.env && ~/doli-test/manage.sh status"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+```
+
+### 12.4 Test Node Wallets
+
+| Node | Address | Server |
+|------|---------|--------|
+| NT1 | `doli1aknspdkl05fvkar873jgwzsqec89750ahddrhz2dfqqwc4du4pqslpm40d` | omegacortex |
+| NT2 | `doli1lnhatnrywewh2aj4pla9k6xf8f3k9vyhsdr4v5utedfhvs8y89gs3m68t9` | omegacortex |
+| NT3 | `doli15rwdjcqlw3ue4yetrwzcafld6exmk47mclp9555rck8u36yn93mqwh3ky7` | omegacortex |
+| NT4 | `doli1sjr56d0a0cpte7d7rqzwes6e8t6gqucgclu83h6nj7mev36wflcs6vgke4` | omegacortex |
+| NT5 | `doli1nyufskea2099zrz9jllpka436gf635hdswkux3aqjqsyth5whz9svdr2ks` | omegacortex |
+| NT6 | `doli1mrtqcl7wkyh09maxwd4qqf0q03ww2es5g2vnwpda6zg674wasr4qkh6eer` | N3 |
+| NT7 | `doli1j659wwxkfry8pu70jq9lqccpdu4ndm8rec88dumw8qgarpyedg3sm3uxpp` | N3 |
+| NT8 | `doli1mys9rqsdxke9jwvxp2qjgf5plunqjj8fg7mn06ae3n3datzyzq8qmttzk6` | N3 |
+| NT9 | `doli1cjd2wr56v3r6rad2hjhr6xu0qkagnhx83k5hauez8078hqzpn8fs9yuads` | N4 |
+| NT10 | `doli125qe88h4y9g98g5c0pgeucffzkhu5g9fccgg9h7eyj8cte30srusgquxlq` | N4 |
+| NT11 | `doli13cgd9uzvah82x9jvd8w7rnzk9wwj4t3zz23t57864fdc2e8kgs4qjdajvu` | N4 |
+| NT12 | `doli183snfefvkdpphynk6v3y0k36k629an0kc7r22vl664ad29q6lc6q49ehlz` | N4 |
+| NT13 | `doli1fgekf27mlt5n2qakpeyd8hcmx3xtr3asdjcsvfn544kk5w78ehgqhr77xd` | N4 |
+| NT14 | `doli1thrxjwqz5akuplj8x6xsh37dwpqkt70uy3jr82lsf9m7hz27u95snn0w68` | N5 |
+| NT15 | `doli1zazurax04txfz9raka2vc4upr79xwannu6rhrdhxrhs2x8eez86qza0c6w` | N5 |
+| NT16 | `doli1wxqsxjuxffzgyqhz7kg6jpty07hlpdaz4ujpdl73kahmrdn72e5qjrkkjj` | N5 |
+| NT17 | `doli1gxsps883neu5qvp7aqu5lp4p2jc3fe7l480zqxtkq3t3735s8v2qn4r6ek` | N5 |
+| NT18 | `doli1d40m5k7c90uk9d82hgk2p34adpd90exk2gzhf0faggh02k43xakqjf520k` | N5 |
+
+### 12.5 Full Cleanup
+
+```bash
+# Per server: stop nodes, remove service, delete all data
+sudo systemctl stop doli-test-nodes
+sudo rm /etc/systemd/system/doli-test-nodes.service
+sudo systemctl daemon-reload
+rm -rf ~/doli-test
+```
