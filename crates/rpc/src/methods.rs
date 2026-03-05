@@ -108,6 +108,9 @@ pub struct RpcContext {
     pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
     /// Update status callback (reads live state from UpdateService)
     pub update_status: Arc<dyn Fn() -> Value + Send + Sync>,
+    /// On-chain maintainer set (shared with Node — bootstrapped from first 5 producers,
+    /// updated via MaintainerAdd/Remove governance txs)
+    pub maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
 }
 
 impl RpcContext {
@@ -148,6 +151,7 @@ impl RpcContext {
                     "veto_percent": 0.0
                 })
             }),
+            maintainer_state: None,
         }
     }
 
@@ -192,6 +196,7 @@ impl RpcContext {
                         "veto_percent": 0.0
                     })
                 }),
+                maintainer_state: None,
             }
         }
     }
@@ -931,11 +936,35 @@ impl RpcContext {
     /// Returns the maintainer set derived from the blockchain.
     /// First 5 registered producers become maintainers automatically.
     async fn get_maintainer_set(&self) -> Result<Value, RpcError> {
-        use doli_core::maintainer::{
-            INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
-        };
+        use doli_core::maintainer::{INITIAL_MAINTAINER_COUNT, MAX_MAINTAINERS, MIN_MAINTAINERS};
 
-        // Get the producer set to find the first 5 registered producers
+        // Read from on-chain MaintainerState if available
+        if let Some(ms) = &self.maintainer_state {
+            let state = ms.read().await;
+            let maintainers: Vec<_> = state
+                .set
+                .members
+                .iter()
+                .map(|pk| {
+                    serde_json::json!({
+                        "pubkey": pk.to_hex(),
+                    })
+                })
+                .collect();
+
+            return Ok(serde_json::json!({
+                "maintainers": maintainers,
+                "threshold": state.set.threshold,
+                "member_count": state.set.members.len(),
+                "max_maintainers": MAX_MAINTAINERS,
+                "min_maintainers": MIN_MAINTAINERS,
+                "initial_maintainer_count": INITIAL_MAINTAINER_COUNT,
+                "last_change_block": state.set.last_updated,
+                "source": "on-chain"
+            }));
+        }
+
+        // Fallback: derive ad-hoc from producer set (pre-bootstrap or no MaintainerState)
         let producer_set = match &self.producer_set {
             Some(ps) => ps,
             None => {
@@ -943,18 +972,15 @@ impl RpcContext {
                     "maintainers": [],
                     "threshold": 0,
                     "member_count": 0,
-                    "error": "Producer set not available"
+                    "source": "none"
                 }));
             }
         };
 
         let producers = producer_set.read().await;
-
-        // Sort by registration height to find the first 5
         let mut sorted_producers = producers.all_producers();
         sorted_producers.sort_by_key(|p| p.registered_at);
 
-        // Take first 5 as maintainers
         let maintainers: Vec<_> = sorted_producers
             .into_iter()
             .take(INITIAL_MAINTAINER_COUNT)
@@ -968,13 +994,7 @@ impl RpcContext {
             .collect();
 
         let member_count = maintainers.len();
-        let threshold = if member_count <= 2 {
-            member_count
-        } else if member_count <= 4 {
-            (member_count / 2) + 1
-        } else {
-            MAINTAINER_THRESHOLD
-        };
+        let threshold = doli_core::maintainer::MaintainerSet::calculate_threshold(member_count);
 
         Ok(serde_json::json!({
             "maintainers": maintainers,
@@ -983,7 +1003,8 @@ impl RpcContext {
             "max_maintainers": MAX_MAINTAINERS,
             "min_maintainers": MIN_MAINTAINERS,
             "initial_maintainer_count": INITIAL_MAINTAINER_COUNT,
-            "last_change_block": 0  // Would need to track maintainer changes
+            "last_change_block": 0,
+            "source": "derived"
         }))
     }
 

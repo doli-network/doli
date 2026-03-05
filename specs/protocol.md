@@ -567,7 +567,11 @@ add_maintainer_tx = {
 
 **Maintainer Bootstrap:**
 - The first 5 registered producers automatically become the initial maintainer set
-- After bootstrap, changes require 3/5 multisig via these transactions
+- Bootstrap occurs once at the epoch boundary where the 5th producer becomes available
+- The maintainer set is persisted to `maintainer_state.bin` in the node's data directory
+- After bootstrap, changes require 3/5 multisig via AddMaintainer/RemoveMaintainer transactions
+- MaintainerAdd/RemoveMaintainer transactions are applied immediately (not deferred to epoch boundary)
+- Pre-bootstrap: nodes fall back to `BOOTSTRAP_MAINTAINER_KEYS` (hardcoded in binary) for release signature verification
 
 ### 3.17 ProtocolActivation Transaction
 

@@ -188,6 +188,58 @@ doli-node upgrade --version 0.2.0 --yes
 | Testnet | 2 | 40303 | 18545 | 19090 | `~/.doli/testnet/` |
 | Devnet | 99 | 50303 | 28545 | 29090 | `~/.doli/devnet/` |
 
+### 1.4 RPC API Reference
+
+> **CRITICAL: The RPC is POST-only JSON-RPC.** All endpoints go through `POST /` with a JSON body. GET requests return `405 Method Not Allowed`.
+
+**Request format:**
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"METHOD_NAME","params":{},"id":1}' \
+  http://127.0.0.1:PORT/
+```
+
+**Available methods:**
+
+| Method | Description | Key response fields |
+|--------|-------------|-------------------|
+| `getChainInfo` | Chain height, slot, genesis | `bestHeight`, `bestSlot`, `bestHash`, `genesisHash`, `network`, `version` |
+| `getNodeInfo` | Node info | `version`, `peerCount`, `peerId`, `network`, `platform`, `arch` |
+| `getNetworkInfo` | Network details | `peerCount` |
+| `getBalance` | Address balance (use CLI instead — more reliable) | `confirmed`, `unconfirmed`, `immature`, `total` |
+| `getBlockByHeight` | Block by height | `params: {"height": N}` |
+| `getBlockByHash` | Block by hash | `params: {"hash": "..."}` |
+| `getTransaction` | Transaction details | `params: {"hash": "..."}` |
+| `sendTransaction` | Submit raw TX | |
+| `getUtxos` | UTXOs for address | `params: {"address": "..."}` |
+| `getMempoolInfo` | Mempool status | |
+| `getProducer` | Producer info | `params: {"address": "..."}` |
+| `getProducers` | All producers | |
+| `getHistory` | TX history for address | `params: {"address": "..."}` |
+| `getEpochInfo` | Current epoch details | |
+| `getNetworkParams` | Network parameters | |
+| `getBondDetails` | Per-bond vesting info | `params: {"address": "..."}` |
+| `getUpdateStatus` | Auto-update status | |
+| `getMaintainerSet` | Current maintainers | |
+
+**Quick health check (all nodes):**
+```bash
+# Single node
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
+  http://127.0.0.1:8545/ | jq -c '.result | {h: .bestHeight, s: .bestSlot}'
+
+# All mainnet nodes on omegacortex
+for port in 8545 8546 8547; do
+  echo -n "port=$port: "
+  curl -s --max-time 3 -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
+    http://127.0.0.1:$port/ | jq -c '.result | {h: .bestHeight, s: .bestSlot}'
+done
+```
+
+**NOTE**: `peerCount` from `getNodeInfo` may report 0 even when nodes are synced and producing. This is a known reporting issue — do NOT rely on it. Use `bestHeight` from `getChainInfo` to verify nodes are in sync.
+
 ---
 
 ## Section 2: Node Operations
@@ -1642,16 +1694,27 @@ Sync-only nodes for network stress testing. All data lives in `~/doli-test/` per
 
 Each server has a `manage.sh` script and a `doli-test-nodes` systemd service.
 
+> **CRITICAL: `manage.sh status` is UNRELIABLE.** It may report "stopped" even when nodes are running via systemd. **Always verify via RPC** (see below). The systemd service `doli-test-nodes` is the authoritative process manager.
+
 ```bash
-# Via systemd
+# Via systemd (PREFERRED — this is the authoritative service)
 sudo systemctl start doli-test-nodes
 sudo systemctl stop doli-test-nodes
+sudo systemctl status doli-test-nodes
 
-# Via script (must source .env first)
+# Via script (must source .env first) — use for start/stop/clean, NOT for status
 source ~/doli-test/.env && ~/doli-test/manage.sh start
 source ~/doli-test/.env && ~/doli-test/manage.sh stop
-source ~/doli-test/.env && ~/doli-test/manage.sh status
 source ~/doli-test/.env && ~/doli-test/manage.sh clean   # stops + wipes data, keeps keys/logs
+```
+
+**RELIABLE status check — always use RPC:**
+```bash
+# Check NT node status via JSON-RPC (the ONLY reliable method)
+# NT RPC ports: 9001-9005 per server (matching node index within that server)
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
+  http://127.0.0.1:9001/ | jq -c '.result | {h: .bestHeight, s: .bestSlot}'
 ```
 
 **GOTCHA on omegacortex:** `source ~/doli-test/.env` sets `DOLI_TEST_BINARY` but does NOT export it. Over SSH, the variable is lost before `manage.sh` reads it. Fix:
@@ -1665,13 +1728,17 @@ ssh ilozada@omegacortex.ai "export DOLI_TEST_BINARY=/home/ilozada/repos/doli/tar
 
 This only affects omegacortex. On N3/N4/N5, the `.env` is sourced in the same non-SSH shell context and works fine.
 
-**Remote (via jump host):**
+**Remote status check (via RPC — preferred over manage.sh):**
 ```bash
-# Status all test nodes
-ssh ilozada@omegacortex.ai "source ~/doli-test/.env && ~/doli-test/manage.sh status"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@147.93.84.44 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-test/.env && ~/doli-test/manage.sh status'"
+# omegacortex NT1-NT5 (ports 9001-9005)
+ssh ilozada@omegacortex.ai 'for p in 9001 9002 9003 9004 9005; do echo -n "NT port=$p: "; curl -s --max-time 3 -X POST -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" http://127.0.0.1:$p/ | jq -c ".result | {h: .bestHeight, s: .bestSlot}"; done'
+
+# N3 NT6-NT8 (ports 9001-9003)
+ssh -p 50790 ilozada@147.93.84.44 'for p in 9001 9002 9003; do echo -n "NT port=$p: "; curl -s --max-time 3 -X POST -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" http://127.0.0.1:$p/ | jq -c ".result | {h: .bestHeight, s: .bestSlot}"; done'
+
+# N4 NT9-NT13 (ports 9001-9005) and N5 NT14-NT18 (ports 9001-9005) — via jump host
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'for p in 9001 9002 9003 9004 9005; do echo -n \"NT port=\$p: \"; curl -s --max-time 3 -X POST -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" http://127.0.0.1:\$p/ | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"; done'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'for p in 9001 9002 9003 9004 9005; do echo -n \"NT port=\$p: \"; curl -s --max-time 3 -X POST -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" http://127.0.0.1:\$p/ | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"; done'"
 ```
 
 ### 12.4 Test Node Wallets
@@ -1696,6 +1763,33 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'source ~/doli-te
 | NT16 | `doli1wxqsxjuxffzgyqhz7kg6jpty07hlpdaz4ujpdl73kahmrdn72e5qjrkkjj` | N5 |
 | NT17 | `doli1gxsps883neu5qvp7aqu5lp4p2jc3fe7l480zqxtkq3t3735s8v2qn4r6ek` | N5 |
 | NT18 | `doli1d40m5k7c90uk9d82hgk2p34adpd90exk2gzhf0faggh02k43xakqjf520k` | N5 |
+
+> **NT wallet key files are v2 format** — they do NOT have a top-level `address` field. The address is nested inside `addresses[0].address` as a raw hex hash (NOT a pubkey_hash). To get the bech32m `doli1...` address, use `doli -w <key_file> info`. Do NOT try to parse the hex address from JSON — it won't work with `doli balance --address`.
+
+**Getting NT bech32m addresses:**
+```bash
+# On omegacortex (NT1-NT5):
+doli -w ~/doli-test/keys/nt1.json info | grep -o 'doli1[a-z0-9]*'
+
+# On N3 (NT6-NT8):
+~/doli -w ~/doli-test/keys/nt6.json info | grep -o 'doli1[a-z0-9]*'
+
+# On N4 (NT9-NT13):
+/opt/doli/target/release/doli -w ~/doli-test/keys/nt9.json info | grep -o 'doli1[a-z0-9]*'
+
+# On N5 (NT14-NT18):
+/opt/doli/target/release/doli -w ~/doli-test/keys/nt14.json info | grep -o 'doli1[a-z0-9]*'
+```
+
+**NT key file naming:** Keys are named `ntN.json` where N matches the NT number on that server (e.g., N3 has `nt6.json`, `nt7.json`, `nt8.json`). On N4, keys are `nt9.json` through `nt13.json`.
+
+**Checking NT balance (from omegacortex):**
+```bash
+# Use the doli1 addresses from the table above
+CLI=~/repos/doli/target/release/doli
+W=~/.doli/mainnet/keys/producer_1.json
+$CLI -w $W balance --address doli1aknspdkl05fvkar873jgwzsqec89750ahddrhz2dfqqwc4du4pqslpm40d
+```
 
 ### 12.5 Full Cleanup
 
