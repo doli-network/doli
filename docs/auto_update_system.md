@@ -845,7 +845,56 @@ fn on_block_applied(&mut self, block: &Block) {
 
 ## 9. CLI Command Reference
 
-### 9.1 Update Management
+DOLI has two distinct upgrade paths:
+
+| Path | Binary | Purpose | Signatures required? |
+|------|--------|---------|---------------------|
+| **Operator upgrade** | `doli upgrade` | Manual, operator-driven. Downloads from GitHub, installs both `doli` + `doli-node`, restarts a service. | No (warning only) |
+| **Auto-update** | `doli-node update` | Autonomous. Node checks for updates, verifies 3/5 maintainer sigs, respects veto period, applies automatically. | Yes (3/5 required) |
+
+Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-update for autonomous operation.
+
+### 9.1 Operator Upgrade (`doli upgrade`)
+
+The preferred method for planned upgrades. Downloads the release tarball from GitHub, verifies SHA-256 checksum, installs both `doli` and `doli-node` binaries via atomic rename, and restarts the specified systemd service.
+
+```bash
+# Upgrade to latest version
+doli upgrade --yes --service doli-mainnet-node3
+
+# Upgrade to specific version
+doli upgrade --version 1.1.11 --yes --service doli-mainnet-node5
+
+# Custom doli-node path (required on servers where doli-node is not in the fallback chain)
+doli upgrade --yes --doli-node-path ~/repos/doli/target/release/doli-node --service doli-mainnet-node1
+
+# With sudo (required on N4/N5 where binaries are in /opt/)
+sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4
+```
+
+**Flags:**
+
+| Flag | Required? | Description |
+|------|-----------|-------------|
+| `--version <VER>` | No | Target version (default: latest GitHub release) |
+| `--yes` | No | Skip confirmation prompt |
+| `--doli-node-path <PATH>` | Depends | Path to `doli-node` binary. Required if not in: `which doli-node`, `/usr/local/bin/doli-node`, or `/opt/doli/target/release/doli-node` |
+| `--service <SERVICE>` | Recommended | Systemd service to restart. **Critical** on multi-node servers (omegacortex has N1+N2+N6) |
+
+**How it works:**
+1. Fetches release metadata from GitHub (`e-weil/doli`)
+2. Downloads platform tarball (auto-detects linux x86_64 / darwin aarch64)
+3. Verifies SHA-256 checksum from `CHECKSUMS.txt`
+4. Checks maintainer signatures (informational warning — does **not** block the upgrade)
+5. Installs `doli` binary (to its own path via `current_exe()`)
+6. Installs `doli-node` binary (auto-detected or `--doli-node-path`)
+7. Restarts the specified `--service`
+
+**Note:** If the binary is already at the target version, `doli upgrade` prints "Already up to date" and exits without restarting the service. To restart a service with an already-updated binary, use `sudo systemctl restart <service>` directly.
+
+For the full per-server command reference and upgrade sequence, see the ops runbook (`.claude/skills/doli-ops/SKILL.md`, Section 3.8).
+
+### 9.2 Auto-Update Management (`doli-node update`)
 
 ```bash
 # Check for available updates
@@ -867,7 +916,7 @@ doli-node update rollback
 doli-node update verify --version 1.0.1
 ```
 
-### 9.2 Voting (Producers Only)
+### 9.3 Voting (Producers Only)
 
 ```bash
 # Vote to VETO (block) an update
@@ -880,7 +929,7 @@ doli-node update vote --approve --version 1.0.1 --key /path/to/producer.json
 doli-node update votes --version 1.0.1
 ```
 
-### 9.3 Maintainer Management
+### 9.4 Maintainer Management
 
 ```bash
 # View current maintainer set
@@ -909,7 +958,7 @@ doli-node maintainer add --target doli1xyz... --key /path/to/maintainer.json
 doli-node maintainer sign --proposal-id 12345 --key /path/to/maintainer.json
 ```
 
-### 9.4 Node Run Options
+### 9.5 Node Run Options
 
 ```bash
 # Run with auto-updates enabled (default)
