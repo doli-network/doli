@@ -264,7 +264,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 **Features:**
 - Download from release server
-- 7-day veto period
+- Veto period (5 min early network; target 7 days)
 - 40% weighted veto threshold
 - Hash verification
 

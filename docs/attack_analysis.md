@@ -227,8 +227,8 @@ Attacker attempts to push malicious software update by manipulating the veto pro
 
 ### Defenses
 
-**7-Day Veto Period**:
-- Sufficient time for community review
+**Veto Period** (5 min early network; target 7 days):
+- Time for community review
 - Code audits can identify malicious changes
 - Any producer can trigger veto investigation
 

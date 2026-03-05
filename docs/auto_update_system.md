@@ -47,16 +47,18 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 │ MAINTAINER_THRESHOLD           │ 3 of 5    │ Signatures needed for any action        │
 │ MIN_MAINTAINERS                │ 3         │ Cannot remove below this                │
 │ MAX_MAINTAINERS                │ 5         │ Maximum maintainer count                │
-│ VETO_PERIOD                    │ 7 days    │ Time for producers to vote on updates   │
-│ GRACE_PERIOD                   │ 48 hours  │ Time after approval before enforcement  │
+│ VETO_PERIOD                    │ 5 min *   │ Time for producers to vote on updates   │
+│ GRACE_PERIOD                   │ 2 min *   │ Time after approval before enforcement  │
 │ VETO_THRESHOLD_PERCENT         │ 40%       │ Weighted percentage needed to reject    │
-│ CHECK_INTERVAL                 │ 6 hours   │ How often nodes check for updates       │
+│ CHECK_INTERVAL                 │ 10 min *  │ How often nodes check for updates       │
 │ MAX_SENIORITY_MULTIPLIER       │ 4x        │ Maximum vote weight for seniors         │
 │ SENIORITY_MATURITY_YEARS       │ 4         │ Years to reach maximum seniority        │
 │ MIN_VOTING_AGE_DAYS            │ 30        │ Minimum days as producer to vote        │
 │ CRASH_THRESHOLD                │ 3         │ Consecutive crashes before rollback     │
 └────────────────────────────────┴───────────┴─────────────────────────────────────────┘
 ```
+
+**\* Early-network values** (since v1.1.13). These accelerated timings are appropriate for the current small maintainer set. They will be extended as the network grows (target: 7-day veto, 48-hour grace, 6-hour check). Devnet uses further-accelerated values: 1 min veto, 30 sec grace, 10 sec check. Values are set in `crates/core/src/network_params.rs` and configurable on devnet via `DOLI_VETO_PERIOD_SECS`, `DOLI_GRACE_PERIOD_SECS`.
 
 ---
 
@@ -432,34 +434,35 @@ The "privilege" of early adopters has an expiration date. After 4 years, anyone 
 │                          COMPLETE UPDATE TIMELINE                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  DAY 0: RELEASE PUBLISHED                                                       │
+│  T+0: RELEASE PUBLISHED                                                         │
 │  ├── Maintainers build and test binaries for all platforms                      │
-│  ├── 3 of 5 maintainers sign the release offline                                │
+│  ├── 3 of 5 maintainers sign SIGNATURES.json offline                            │
 │  ├── Release published to GitHub and mirrors                                    │
 │  └── All nodes display mandatory notification                                   │
 │                                                                                 │
-│  DAYS 0-7: VETO PERIOD                                                          │
+│  T+0 to T+5min: VETO PERIOD *                                                   │
 │  ├── Producers review changelog and code changes                                │
 │  ├── Community discussion on forums/Discord                                     │
 │  ├── Producers submit votes (can change until deadline)                         │
 │  └── Real-time veto percentage displayed on all nodes                           │
 │                                                                                 │
-│  DAY 7: RESOLUTION                                                              │
+│  T+5min: RESOLUTION *                                                            │
 │  ├── Weighted votes tallied at exact deadline                                   │
 │  ├── If veto >= 40%: Update REJECTED, discarded                                 │
 │  └── If veto <  40%: Update APPROVED, grace period begins                       │
 │                                                                                 │
-│  DAYS 7-9: GRACE PERIOD (48 hours)                                              │
+│  T+5min to T+7min: GRACE PERIOD (2 min) *                                       │
 │  ├── Approved update downloaded and verified                                    │
 │  ├── Operators can manually apply early: doli-node update apply                 │
 │  └── Outdated nodes can still produce blocks                                    │
 │                                                                                 │
-│  DAY 9+: ENFORCEMENT ACTIVE                                                     │
+│  T+7min+: ENFORCEMENT ACTIVE                                                    │
 │  ├── Nodes below required version: production PAUSED                            │
 │  ├── Outdated nodes can still sync, serve RPC, relay transactions               │
 │  └── Update and restart to resume production                                    │
 │                                                                                 │
-│  Total notice before enforcement: 9 DAYS                                        │
+│  * Early-network timings (v1.1.13+). Will extend to 7d/48h as network grows.   │
+│  Total notice before enforcement: ~7 MINUTES (early network)                    │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -470,11 +473,11 @@ Producers receive automatic notifications through three channels:
 
 1. **Banner on ANY CLI command** while update is pending
 2. **`doli-node update status`** for full details
-3. **Periodic log messages** (every 6 hours)
+3. **Periodic log messages** (every check interval — currently 10 minutes)
 
 The notification content changes based on the current state:
 
-#### State 1: VOTING PERIOD (Days 0-7) - Not Yet Voted
+#### State 1: VOTING PERIOD (T+0 to T+5min) - Not Yet Voted
 
 **Banner (on any CLI command):**
 ```
@@ -528,7 +531,7 @@ The notification content changes based on the current state:
 ╚═════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
-#### State 3: GRACE PERIOD (Days 7-9)
+#### State 3: GRACE PERIOD (T+5min to T+7min)
 
 **Banner:**
 ```
@@ -537,7 +540,7 @@ The notification content changes based on the current state:
 ╚═════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
-#### State 4: PRODUCTION PAUSED (Day 9+, not updated)
+#### State 4: PRODUCTION PAUSED (T+7min+, not updated)
 
 **Banner:**
 ```
@@ -712,14 +715,14 @@ Hard fork releases include an activation height in the release metadata:
 │                            HARD FORK TIMELINE (~30 days)                         │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  Day 0        Day 7              Day 9                          Day ~30         │
+│  T+0          T+5min             T+7min                         T+~30d *       │
 │    │            │                  │                               │            │
 │    ▼            ▼                  ▼                               ▼            │
 │  Release     Veto period       Grace ends                    Activation        │
 │  published   ends              (if approved)                 height reached    │
 │    │            │                  │                               │            │
 │    └────────────┴──────────────────┴───────────────────────────────┤            │
-│    │◄── 7 days ──►│◄── 48 hrs ──►│◄────── ~21 days ──────────────►│            │
+│    │◄── 5 min ──►│◄── 2 min ───►│◄────── ~30 days ──────────────►│            │
 │                                                                   │            │
 │                                                     At activation_height:       │
 │                                                     ├── New rules take effect   │
@@ -761,8 +764,8 @@ fn on_block_applied(&mut self, block: &Block) {
 │ Backward compatible │ Yes                 │ No                  │
 │ Old nodes can sync  │ Yes                 │ No (fork off)       │
 │ Activation          │ Immediate (grace)   │ At specific height  │
-│ Veto period         │ 7 days              │ 7 days              │
-│ Total notice        │ 9 days              │ ~30 days            │
+│ Veto period         │ 5 min *             │ 5 min *             │
+│ Total notice        │ ~7 min *            │ ~30 days            │
 │ Rollback possible   │ Yes (automatic)     │ No (chain diverged) │
 │ Network split risk  │ None                │ Yes (if not ready)  │
 └─────────────────────┴─────────────────────┴─────────────────────┘
@@ -788,7 +791,7 @@ fn on_block_applied(&mut self, block: &Block) {
 │ (2 keys)           │ releases                │ key                     │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
 │ Key compromise     │ Attacker signs          │ Community can veto      │ Medium       │
-│ (3 keys)           │ releases                │ within 7 days           │              │
+│ (3 keys)           │ releases                │ within veto period      │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
 │ Sybil veto         │ Block legitimate        │ Seniority weighting     │ Low          │
 │ attack             │ updates                 │ + bond + 30-day min     │              │
@@ -819,7 +822,7 @@ fn on_block_applied(&mut self, block: &Block) {
 │                                                                                 │
 │  Layer 2: GOVERNANCE                                                            │
 │  ├── 40% weighted veto threshold                                                │
-│  ├── 7-day mandatory review period                                              │
+│  ├── Mandatory veto review period (5 min early network *)                       │
 │  ├── Vote changing allowed (react to new info)                                  │
 │  └── Transparent maintainer set (derived from chain)                            │
 │                                                                                 │
@@ -1209,9 +1212,13 @@ pub const MIN_MAINTAINERS: usize = 3;
 pub const MAX_MAINTAINERS: usize = 5;
 
 // Timing
-pub const VETO_PERIOD: Duration = Duration::from_secs(7 * 24 * 3600);     // 7 days
-pub const GRACE_PERIOD: Duration = Duration::from_secs(48 * 3600);        // 48 hours
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);       // 6 hours
+// Early-network values (v1.1.13+). Set in network_params.rs, not hardcoded here.
+// Mainnet/Testnet: veto=5min, grace=2min, check=10min
+// Devnet: veto=1min, grace=30s, check=10s
+// Target (mature network): veto=7 days, grace=48 hours, check=6 hours
+pub const VETO_PERIOD: Duration = Duration::from_secs(5 * 60);            // 5 minutes
+pub const GRACE_PERIOD: Duration = Duration::from_secs(2 * 60);           // 2 minutes
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);        // 10 minutes
 
 // Thresholds
 pub const VETO_THRESHOLD_PERCENT: u8 = 40;
@@ -1253,8 +1260,8 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 │ Veto power          │ 95%        │ Social     │ None       │ 40% weighted    │
 │                     │ threshold  │ consensus  │            │                 │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
-│ Time to update      │ Months to  │ Weeks to   │ Hours      │ 9 days          │
-│                     │ years      │ months     │            │ minimum         │
+│ Time to update      │ Months to  │ Weeks to   │ Hours      │ ~7 min *        │
+│                     │ years      │ months     │            │ (early network) │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
 │ Automatic apply     │ No         │ No         │ Yes        │ Yes             │
 │                     │            │            │            │ (with veto)     │
@@ -1283,7 +1290,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 
 ### Q: Can maintainers force an update without community consent?
 
-**No.** Even with 3/5 maintainer signatures, the community has 7 days to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
+**No.** Even with 3/5 maintainer signatures, the community has the veto period (currently 5 minutes, target 7 days as network grows) to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
 
 ### Q: How do I verify who the maintainers are?
 
@@ -1336,7 +1343,7 @@ This prevents "voter apathy" from blocking important security updates.
 
 ### Q: Can I change my vote?
 
-**Yes.** You can change your vote at any time during the 7-day veto period. Only your latest vote (by timestamp) counts at the deadline. This allows reaction to new information discovered during review.
+**Yes.** You can change your vote at any time during the veto period. Only your latest vote (by timestamp) counts at the deadline. This allows reaction to new information discovered during review.
 
 ### Q: What if fewer than 5 producers ever register?
 
