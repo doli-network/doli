@@ -168,7 +168,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 /// assert_eq!(params.veto_period_secs, 60); // 1 minute on devnet
 ///
 /// let params = UpdateParams::for_network(Network::Mainnet);
-/// assert_eq!(params.veto_period_secs, 2 * 3600); // 2 epochs (~2h) on mainnet
+/// assert_eq!(params.veto_period_secs, 5 * 60); // 5 minutes (early network)
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateParams {
