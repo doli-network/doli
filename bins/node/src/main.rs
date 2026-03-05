@@ -936,23 +936,19 @@ async fn run_node(
         }
     };
 
-    // Create closure to derive maintainer keys from on-chain producer set
-    // (first 5 registered producers, sorted by registration height)
-    let producers_for_maintainers = producer_set.clone();
+    // Load on-chain maintainer set from disk (or default empty).
+    // Shared between: maintainer_keys_fn (UpdateService), Node (apply_block), RPC.
+    // Bootstrapped from first 5 producers at epoch boundary in Node::apply_block.
+    let maintainer_state = Arc::new(RwLock::new(
+        storage::MaintainerState::load(&data_dir).unwrap_or_default(),
+    ));
+    let ms_for_keys = maintainer_state.clone();
     let maintainer_keys_fn = move || -> Vec<String> {
-        use doli_core::maintainer::INITIAL_MAINTAINER_COUNT;
-        producers_for_maintainers
+        ms_for_keys
             .try_read()
-            .map(|set| {
-                let mut sorted: Vec<_> = set.all_producers().into_iter().cloned().collect();
-                sorted.sort_by_key(|p| p.registered_at);
-                sorted
-                    .into_iter()
-                    .take(INITIAL_MAINTAINER_COUNT)
-                    .map(|p| p.public_key.to_hex())
-                    .collect()
-            })
+            .map(|state| state.set.members.iter().map(|pk| pk.to_hex()).collect())
             .unwrap_or_default()
+        // Returns empty Vec when not yet bootstrapped → updater falls back to BOOTSTRAP_MAINTAINER_KEYS
     };
 
     // Spawn update service with real producer registry
@@ -983,6 +979,9 @@ async fn run_node(
 
     // Connect pending update state: UpdateService → RPC (live status reads)
     node.set_pending_update(pending_update);
+
+    // Connect on-chain maintainer set: Node (apply_block) → UpdateService (signature verification)
+    node.set_maintainer_state(maintainer_state);
 
     info!("Node running. Press Ctrl+C to stop.");
 

@@ -140,6 +140,9 @@ pub struct Node {
     cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
     /// Whether we've already checked inbound peer connectivity (one-shot after 60s)
     port_check_done: bool,
+    /// On-chain maintainer set (3-5 members, persisted, bootstrapped from first 5 producers).
+    /// Used by the auto-update system for release signature verification.
+    maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
 }
 
 impl Node {
@@ -670,6 +673,7 @@ impl Node {
             cached_state_root: Arc::new(RwLock::new(None)),
             cached_genesis_producers: std::sync::OnceLock::new(),
             port_check_done: false,
+            maintainer_state: None,
         })
     }
 
@@ -684,6 +688,73 @@ impl Node {
         pending: Arc<RwLock<Option<node_updater::PendingUpdate>>>,
     ) {
         self.pending_update = Some(pending);
+    }
+
+    /// Set the shared maintainer state (connects on-chain governance to UpdateService)
+    pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {
+        self.maintainer_state = Some(state);
+    }
+
+    /// Bootstrap the maintainer set from the first 5 registered producers.
+    /// Called once at the epoch boundary where the 5th producer is first available.
+    /// After bootstrap, maintainer membership only changes via MaintainerAdd/Remove txs.
+    async fn maybe_bootstrap_maintainer_set(&self, height: u64) {
+        use doli_core::maintainer::INITIAL_MAINTAINER_COUNT;
+
+        let maintainer_state = match &self.maintainer_state {
+            Some(ms) => ms,
+            None => return,
+        };
+
+        // Already bootstrapped?
+        {
+            let state = maintainer_state.read().await;
+            if state.set.is_fully_bootstrapped() {
+                return;
+            }
+        }
+
+        // Need at least INITIAL_MAINTAINER_COUNT producers to bootstrap
+        let producers = self.producer_set.read().await;
+        let mut sorted: Vec<_> = producers.all_producers().into_iter().cloned().collect();
+        if sorted.len() < INITIAL_MAINTAINER_COUNT {
+            return;
+        }
+
+        // Take the first 5 by registration height (deterministic)
+        sorted.sort_by_key(|p| p.registered_at);
+        let bootstrap_keys: Vec<_> = sorted
+            .into_iter()
+            .take(INITIAL_MAINTAINER_COUNT)
+            .map(|p| p.public_key)
+            .collect();
+
+        let mut state = maintainer_state.write().await;
+        // Double-check under write lock
+        if state.set.is_fully_bootstrapped() {
+            return;
+        }
+
+        let set =
+            doli_core::maintainer::MaintainerSet::with_members(bootstrap_keys.clone(), height);
+        state.set = set;
+        state.last_derived_height = height;
+
+        // Persist to disk
+        if let Err(e) = state.save(&self.config.data_dir) {
+            warn!("Failed to persist maintainer state: {}", e);
+        }
+
+        info!(
+            "Bootstrapped maintainer set from first {} producers at height {} (keys: {})",
+            INITIAL_MAINTAINER_COUNT,
+            height,
+            bootstrap_keys
+                .iter()
+                .map(|k| format!("{}...", &k.to_hex()[..16]))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     /// Run the node
@@ -1022,6 +1093,11 @@ impl Node {
                     }),
                 }
             });
+        }
+
+        // Wire up on-chain maintainer set for getMaintainerSet RPC
+        if let Some(ref ms) = self.maintainer_state {
+            context.maintainer_state = Some(ms.clone());
         }
 
         let server = RpcServer::new(rpc_config, context);
@@ -3322,22 +3398,104 @@ impl Node {
                     }
                 }
 
-                // Process ProtocolActivation transactions — verified and applied when chain_state lock is acquired
+                // Process MaintainerAdd transactions — applied immediately (governance, not epoch-deferred)
+                if tx.tx_type == TxType::AddMaintainer {
+                    if let Some(maintainer_state) = &self.maintainer_state {
+                        if let Some(data) =
+                            doli_core::maintainer::MaintainerChangeData::from_bytes(&tx.extra_data)
+                        {
+                            let mut ms = maintainer_state.write().await;
+                            let message = data.signing_message(true);
+                            if ms.set.verify_multisig(&data.signatures, &message) {
+                                match ms.set.add_maintainer(data.target, height) {
+                                    Ok(()) => {
+                                        ms.last_derived_height = height;
+                                        if let Err(e) = ms.save(&self.config.data_dir) {
+                                            warn!("Failed to persist maintainer state: {}", e);
+                                        }
+                                        info!(
+                                            "[MAINTAINER] Added maintainer {} at height {}",
+                                            data.target.to_hex(),
+                                            height
+                                        );
+                                    }
+                                    Err(e) => warn!("[MAINTAINER] Add failed: {}", e),
+                                }
+                            } else {
+                                warn!(
+                                    "[MAINTAINER] Rejected AddMaintainer: insufficient signatures"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Process MaintainerRemove transactions — applied immediately
+                if tx.tx_type == TxType::RemoveMaintainer {
+                    if let Some(maintainer_state) = &self.maintainer_state {
+                        if let Some(data) =
+                            doli_core::maintainer::MaintainerChangeData::from_bytes(&tx.extra_data)
+                        {
+                            let mut ms = maintainer_state.write().await;
+                            let message = data.signing_message(false);
+                            if ms.set.verify_multisig_excluding(
+                                &data.signatures,
+                                &message,
+                                &data.target,
+                            ) {
+                                match ms.set.remove_maintainer(&data.target, height) {
+                                    Ok(()) => {
+                                        ms.last_derived_height = height;
+                                        if let Err(e) = ms.save(&self.config.data_dir) {
+                                            warn!("Failed to persist maintainer state: {}", e);
+                                        }
+                                        info!(
+                                            "[MAINTAINER] Removed maintainer {} at height {}",
+                                            data.target.to_hex(),
+                                            height
+                                        );
+                                    }
+                                    Err(e) => warn!("[MAINTAINER] Remove failed: {}", e),
+                                }
+                            } else {
+                                warn!("[MAINTAINER] Rejected RemoveMaintainer: insufficient signatures");
+                            }
+                        }
+                    }
+                }
+
+                // Process ProtocolActivation transactions — verified against on-chain maintainer set
                 if tx.tx_type == TxType::ProtocolActivation {
                     if let Some(data) = tx.protocol_activation_data() {
-                        // Derive maintainer set from first 5 registered producers
-                        let mut sorted = producers.all_producers().to_vec();
-                        sorted.sort_by_key(|p| p.registered_at);
-                        let maintainer_keys: Vec<crypto::PublicKey> = sorted
-                            .iter()
-                            .take(doli_core::maintainer::INITIAL_MAINTAINER_COUNT)
-                            .map(|p| p.public_key)
-                            .collect();
-                        let mset = doli_core::MaintainerSet::with_members(maintainer_keys, height);
+                        // Use on-chain MaintainerSet if available, fall back to ad-hoc derivation
+                        let mset = if let Some(maintainer_state) = &self.maintainer_state {
+                            let ms = maintainer_state.read().await;
+                            if ms.set.is_fully_bootstrapped() {
+                                ms.set.clone()
+                            } else {
+                                // Not yet bootstrapped — derive ad-hoc
+                                let mut sorted = producers.all_producers().to_vec();
+                                sorted.sort_by_key(|p| p.registered_at);
+                                let keys: Vec<crypto::PublicKey> = sorted
+                                    .iter()
+                                    .take(doli_core::maintainer::INITIAL_MAINTAINER_COUNT)
+                                    .map(|p| p.public_key)
+                                    .collect();
+                                doli_core::MaintainerSet::with_members(keys, height)
+                            }
+                        } else {
+                            let mut sorted = producers.all_producers().to_vec();
+                            sorted.sort_by_key(|p| p.registered_at);
+                            let keys: Vec<crypto::PublicKey> = sorted
+                                .iter()
+                                .take(doli_core::maintainer::INITIAL_MAINTAINER_COUNT)
+                                .map(|p| p.public_key)
+                                .collect();
+                            doli_core::MaintainerSet::with_members(keys, height)
+                        };
 
                         let message = data.signing_message();
                         if mset.verify_multisig(&data.signatures, &message) {
-                            // Store validated activation for deferred application
                             pending_protocol_activation_data =
                                 Some((data.protocol_version, data.activation_epoch));
                             info!(
@@ -3518,6 +3676,10 @@ impl Node {
                 }
             }
         }
+
+        // Bootstrap maintainer set once we have enough producers.
+        // Must run after apply_pending_updates so newly registered producers are visible.
+        self.maybe_bootstrap_maintainer_set(height).await;
 
         // NOTE: recompute_tier + EpochSnapshot + attestation moved after batch commit
         // to avoid borrow conflict with BlockBatch (which borrows self.state_db).
