@@ -381,13 +381,13 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@<IP> 'md5sum <binary_path>'"
 scp -P 50790 /tmp/doli-node /tmp/doli ilozada@147.93.84.44:/tmp/
 ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && chmod +x ~/doli-node ~/doli'
 
-# N4 (sudo needed for /opt/doli/)
+# N4 (shared `doli` group — no sudo needed)
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'cp /tmp/doli-node /opt/doli/target/release/ && cp /tmp/doli /opt/doli/target/release/ && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 
-# N5 (sudo needed for /opt/doli/)
+# N5 (shared `doli` group — no sudo needed)
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'cp /tmp/doli-node /opt/doli/target/release/ && cp /tmp/doli /opt/doli/target/release/ && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ```
 
 **CRITICAL:** Use atomic rename (`cp new /path/binary.new && mv /path/binary.new /path/binary`) to avoid `Text file busy` errors. Direct `cp` over a running binary fails. See Section 3.7 for gotchas.
@@ -652,10 +652,10 @@ scp -P 50790 /tmp/doli-node /tmp/doli ilozada@147.93.84.44:/tmp/
 ssh -p 50790 ilozada@147.93.84.44 'cp /tmp/doli-node ~/doli-node && cp /tmp/doli ~/doli && chmod +x ~/doli-node ~/doli && md5sum ~/doli-node ~/doli'
 # N4:
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 # N5:
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'cp /tmp/doli-node /tmp/doli /opt/doli/target/release/ && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 
 # 5. Start ALL nodes via systemd (N1 first = bootstrap)
 ssh ilozada@omegacortex.ai "sudo systemctl start doli-mainnet-node1"
@@ -690,13 +690,13 @@ ssh ilozada@omegacortex.ai "md5sum ~/repos/doli/target/release/doli-node ~/repos
 
 # NT14-18 (N5):
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.115.209:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'cp /tmp/doli-node /opt/doli/target/release/doli-node.new && mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && cp /tmp/doli /opt/doli/target/release/doli.new && mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo systemctl restart doli-testnet-nt14 doli-testnet-nt15 doli-testnet-nt16 doli-testnet-nt17 doli-testnet-nt18'"
 # Wait 15s, verify heights increasing
 
 # NT9-13 (N4):
 ssh ilozada@omegacortex.ai "scp -P 50790 ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli ilozada@72.60.70.166:/tmp/"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node.new && sudo mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && sudo cp /tmp/doli /opt/doli/target/release/doli.new && sudo mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && sudo chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'cp /tmp/doli-node /opt/doli/target/release/doli-node.new && mv /opt/doli/target/release/doli-node.new /opt/doli/target/release/doli-node && cp /tmp/doli /opt/doli/target/release/doli.new && mv /opt/doli/target/release/doli.new /opt/doli/target/release/doli && chmod +x /opt/doli/target/release/doli-node /opt/doli/target/release/doli-node && md5sum /opt/doli/target/release/doli-node /opt/doli/target/release/doli'"
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo systemctl restart doli-testnet-nt9 doli-testnet-nt10 doli-testnet-nt11 doli-testnet-nt12 doli-testnet-nt13'"
 # Wait 15s, verify
 
@@ -809,7 +809,7 @@ For N3/N4/N5, you MUST SCP binaries — see Section 2.2 and 3.4 for full procedu
 
 2. **SCP to N3 `~/` may fail** — Use `/tmp/` as staging directory, then `cp` from `/tmp/` to final location.
 
-3. **N4/N5 need `sudo` for `/opt/doli/`** — The binary path `/opt/doli/target/release/` is owned by `isudoajl`. Use `sudo cp` after SCP to `/tmp/`.
+3. **N4/N5 `/opt/doli/` permissions** — The binary path `/opt/doli/target/release/` has a shared `doli` group (members: `ilozada`, `isudoajl`) with setgid + group write. Both mainnet nodes (running as `isudoajl`) and NT nodes (running as `ilozada`) can write to it. If permissions break, fix with: `sudo chgrp -R doli /opt/doli/target/release/ && sudo chmod g+ws /opt/doli/target/release/`. For manual SCP deploys, `sudo cp` from `/tmp/` still works as fallback.
 
 4. **NT nodes are individual systemd services** — Each NT has its own service (`doli-testnet-nt1` through `doli-testnet-nt18`). Use `sudo systemctl restart doli-testnet-nt<ID>` for per-node control. The old `manage.sh` bulk start/stop is deprecated.
 
@@ -821,7 +821,9 @@ For N3/N4/N5, you MUST SCP binaries — see Section 2.2 and 3.4 for full procedu
 
 8. **MD5 verify every copy** — Always `md5sum` on source and destination. Binary corruption over SCP is rare but catastrophic on a blockchain node.
 
-9. **SCP strips execute permissions** — `scp` copies files without the execute bit. Always `chmod +x` after copying binaries. Without this, systemd fails with `status=203/EXEC`. Every SCP command in this runbook includes `chmod +x` — if you improvise a copy, don't forget it.
+9. **NT auto-update may fail on N4/N5** — If `/opt/doli/target/release/` permissions are wrong, NT nodes (running as `ilozada`) get `Permission denied` during auto-apply. The mainnet node (running as `isudoajl`) succeeds and replaces the binary, so NTs just need `sudo systemctl restart doli-testnet-nt<ID>` to pick up the new binary. Or use `sudo doli upgrade --yes --service doli-testnet-nt<ID>`. To prevent: ensure the `doli` shared group has write access (see gotcha #3).
+
+10. **SCP strips execute permissions** — `scp` copies files without the execute bit. Always `chmod +x` after copying binaries. Without this, systemd fails with `status=203/EXEC`. Every SCP command in this runbook includes `chmod +x` — if you improvise a copy, don't forget it.
 
 ### 3.8 `doli upgrade` — Standard Upgrade Procedure (v1.1.9+)
 
@@ -863,13 +865,13 @@ Options:
 | omegacortex (N2) | same | same | **YES** | `doli-mainnet-node2` | No |
 | omegacortex (N6) | same | same | **YES** | `doli-mainnet-node6` | No |
 | N3 (147.93.84.44) | `~/doli` | `~/doli-node` | **YES** | `doli-mainnet-node3` | No |
-| N4 (72.60.70.166) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node4` | **YES** (`sudo`) |
-| N5 (72.60.115.209) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node5` | **YES** (`sudo`) |
+| N4 (72.60.70.166) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node4` | No (`doli` group) |
+| N5 (72.60.115.209) | `/opt/doli/target/release/doli` | `/opt/doli/target/release/doli-node` | No (in fallback) | `doli-mainnet-node5` | No (`doli` group) |
 
 **Exact `doli upgrade` commands per server:**
 ```bash
-# N4 / N5 — auto-detects doli-node path, sudo needed for /opt/:
-sudo /opt/doli/target/release/doli upgrade --version <VER> --yes --service doli-mainnet-node5
+# N4 / N5 — auto-detects doli-node path, shared `doli` group gives write access:
+/opt/doli/target/release/doli upgrade --version <VER> --yes --service doli-mainnet-node5
 
 # N3 — doli-node at ~/doli-node (not in fallback chain):
 ~/doli upgrade --version <VER> --yes --doli-node-path ~/doli-node --service doli-mainnet-node3
@@ -922,7 +924,7 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 '/opt/doli/target
 # STEP 1: Upgrade N5 server (NT14-NT18 + N5)
 # ============================================================
 # 1a. Upgrade binaries on N5 (installs doli + doli-node, restarts N5 only)
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node5'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 '/opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node5'"
 # 1b. Wait 15s, verify N5 is advancing
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"'"
 # 1c. Restart NT14-NT18 individually (binary already replaced by step 1a)
@@ -933,7 +935,7 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'for p in 9001 90
 # ============================================================
 # STEP 2: Upgrade N4 server (NT9-NT13 + N4)
 # ============================================================
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4'"
+ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 '/opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4'"
 # Wait 15s, verify N4
 ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'curl -s -X POST http://127.0.0.1:8545 -H \"Content-Type: application/json\" -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\" | jq -c \".result | {h: .bestHeight, s: .bestSlot}\"'"
 # Restart NT9-NT13
@@ -1263,8 +1265,8 @@ doli upgrade --yes --service doli-mainnet-node3
 # Custom doli-node path (omegacortex, N3):
 doli upgrade --yes --doli-node-path ~/repos/doli/target/release/doli-node --service doli-mainnet-node1
 
-# With sudo (N4, N5 — /opt/doli/ permissions):
-sudo doli upgrade --yes --service doli-mainnet-node4
+# N4, N5 (shared `doli` group — no sudo needed):
+doli upgrade --yes --service doli-mainnet-node4
 
 # Specific version:
 doli upgrade --version 1.2.0 --yes --service doli-mainnet-node3
