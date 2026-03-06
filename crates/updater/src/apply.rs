@@ -157,7 +157,7 @@ pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(&temp_path).await?.permissions();
-        perms.set_mode(0o755);
+        perms.set_mode(0o775);
         fs::set_permissions(&temp_path, perms).await?;
     }
 
