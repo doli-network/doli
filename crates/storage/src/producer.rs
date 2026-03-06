@@ -846,6 +846,11 @@ impl ProducerInfo {
                 self.additional_bonds.remove(0);
             }
         }
+
+        // Auto-exit when all bonds are withdrawn
+        if self.bond_count == 0 {
+            self.status = ProducerStatus::Exited;
+        }
     }
 
     /// DEPRECATED: Credit reward to this producer's pending balance

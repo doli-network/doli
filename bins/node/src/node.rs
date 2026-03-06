@@ -3248,18 +3248,42 @@ impl Node {
                     }
                 }
 
-                // Process exit transactions — deferred to epoch boundary
+                // Process exit transactions — withdraw ALL bonds (deferred to epoch boundary)
                 if tx.tx_type == TxType::Exit {
                     if let Some(exit_data) = tx.exit_data() {
-                        producers.queue_update(PendingProducerUpdate::Exit {
-                            pubkey: exit_data.public_key,
-                            height,
-                        });
-                        info!(
-                            "Queued producer exit {} at height {} (deferred to epoch boundary)",
-                            crypto_hash(exit_data.public_key.as_bytes()),
-                            height
-                        );
+                        if let Some(info) = producers.get_by_pubkey(&exit_data.public_key) {
+                            let all_bonds = info.bond_count;
+                            if all_bonds > 0 {
+                                let bond_unit = self.config.network.bond_unit();
+                                // Mark all bonds as pending withdrawal
+                                if let Some(producer) =
+                                    producers.get_by_pubkey_mut(&exit_data.public_key)
+                                {
+                                    producer.withdrawal_pending_count += all_bonds;
+                                    dirty_producer_keys
+                                        .insert(crypto_hash(exit_data.public_key.as_bytes()));
+                                }
+                                producers.queue_update(PendingProducerUpdate::RequestWithdrawal {
+                                    pubkey: exit_data.public_key,
+                                    bond_count: all_bonds,
+                                    bond_unit,
+                                });
+                                info!(
+                                    "Queued exit (withdraw all {} bonds) for producer {} at height {} (deferred to epoch boundary)",
+                                    all_bonds,
+                                    crypto_hash(exit_data.public_key.as_bytes()),
+                                    height
+                                );
+                            } else {
+                                // No bonds — just mark as exited directly
+                                producers.queue_update(PendingProducerUpdate::Exit {
+                                    pubkey: exit_data.public_key,
+                                    height,
+                                });
+                            }
+                        } else {
+                            warn!("Exit: producer not found");
+                        }
                     }
                 }
 
@@ -5557,10 +5581,34 @@ impl Node {
                     }
                     TxType::Exit => {
                         if let Some(exit_data) = tx.exit_data() {
-                            producers.queue_update(PendingProducerUpdate::Exit {
-                                pubkey: exit_data.public_key,
-                                height,
-                            });
+                            // Convert Exit to RequestWithdrawal for all bonds
+                            if let Some(info) = producers.get_by_pubkey(&exit_data.public_key) {
+                                let all_bonds = info.bond_count;
+                                if all_bonds > 0 {
+                                    if let Some(producer) =
+                                        producers.get_by_pubkey_mut(&exit_data.public_key)
+                                    {
+                                        producer.withdrawal_pending_count += all_bonds;
+                                    }
+                                    producers.queue_update(
+                                        PendingProducerUpdate::RequestWithdrawal {
+                                            pubkey: exit_data.public_key,
+                                            bond_count: all_bonds,
+                                            bond_unit,
+                                        },
+                                    );
+                                } else {
+                                    producers.queue_update(PendingProducerUpdate::Exit {
+                                        pubkey: exit_data.public_key,
+                                        height,
+                                    });
+                                }
+                            } else {
+                                producers.queue_update(PendingProducerUpdate::Exit {
+                                    pubkey: exit_data.public_key,
+                                    height,
+                                });
+                            }
                         }
                     }
                     TxType::SlashProducer => {
