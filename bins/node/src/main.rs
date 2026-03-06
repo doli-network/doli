@@ -204,6 +204,20 @@ enum Commands {
         yes: bool,
     },
 
+    /// Restore chain from an archive directory (disaster recovery)
+    ///
+    /// Imports all blocks from the archive, verifies BLAKE3 checksums,
+    /// then rebuilds UTXO/producer/chain state automatically.
+    Restore {
+        /// Path to the archive directory
+        #[arg(long)]
+        from: PathBuf,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Rebuild canonical chain index from block headers
     ///
     /// Scans all headers in the block store (by hash, NOT by height_index),
@@ -552,6 +566,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
+        }
+        Some(Commands::Restore { from, yes }) => {
+            restore_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
         }
         Some(Commands::Reindex) => {
             reindex_canonical_chain(&data_dir)?;
@@ -2045,6 +2062,62 @@ fn show_status(data_dir: &PathBuf) -> Result<()> {
 
     // TODO: Load chain state and show status
     println!("Status: Not implemented yet");
+
+    Ok(())
+}
+
+fn restore_from_archive(
+    network: Network,
+    data_dir: &Path,
+    archive_dir: &Path,
+    skip_confirm: bool,
+) -> Result<()> {
+    use storage::BlockStore;
+
+    println!("=== DOLI Restore from Archive ===");
+    println!();
+    println!("Archive:   {:?}", archive_dir);
+    println!("Data dir:  {:?}", data_dir);
+    println!("Network:   {}", network.name());
+    println!();
+
+    if !archive_dir.exists() {
+        return Err(anyhow!(
+            "Archive directory does not exist: {:?}",
+            archive_dir
+        ));
+    }
+
+    if !skip_confirm {
+        println!("This will import blocks from the archive and rebuild chain state.");
+        println!("Press Ctrl+C to cancel, or wait 5 seconds to proceed...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    // Open or create BlockStore
+    let blocks_path = data_dir.join("blocks");
+    std::fs::create_dir_all(&blocks_path)?;
+    let block_store = BlockStore::open(&blocks_path)?;
+
+    // Get genesis hash for validation
+    let genesis_hash = doli_core::genesis::genesis_hash(network);
+
+    // Import blocks with checksum + genesis_hash verification
+    let imported =
+        storage::archiver::restore_from_archive(archive_dir, &block_store, Some(&genesis_hash))
+            .map_err(|e| anyhow!("{}", e))?;
+
+    println!();
+    println!("Imported {} blocks. Rebuilding chain state...", imported);
+    println!();
+
+    drop(block_store);
+
+    // Automatically run recover to rebuild UTXO/producers/chain_state
+    recover_chain_state(network, &data_dir.to_path_buf(), true)?;
+
+    println!();
+    println!("Restore complete! You can now start the node.");
 
     Ok(())
 }
