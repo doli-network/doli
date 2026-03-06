@@ -12,9 +12,9 @@ pub struct ArchiveBlock {
 
 /// Archives blocks to a filesystem directory.
 ///
-/// Each block is stored as `{height:010}.block` with a manifest tracking
-/// the latest archived height. On startup, catches up from the last archived
-/// height by reading missing blocks from the local BlockStore.
+/// Each block is stored as `{height:010}.block` with a BLAKE3 checksum sidecar
+/// (`{height:010}.sha256`) for integrity verification. A manifest tracks the
+/// latest archived height and genesis_hash for chain identity.
 pub struct BlockArchiver {
     rx: mpsc::Receiver<ArchiveBlock>,
     dir: PathBuf,
@@ -90,14 +90,10 @@ impl BlockArchiver {
             };
 
             let hash = block.hash();
-            let block_path = dir.join(format!("{:010}.block", h));
-
-            // Atomic write: tmp + rename
-            let tmp_path = dir.join(format!("{:010}.block.tmp", h));
-            std::fs::write(&tmp_path, &data)?;
-            std::fs::rename(&tmp_path, &block_path)?;
-
-            write_manifest(dir, h, &hash)?;
+            let genesis_hash = block.header.genesis_hash;
+            write_block_file(dir, h, &data)?;
+            write_checksum_file(dir, h, &data)?;
+            write_manifest(dir, h, &hash, &genesis_hash)?;
             archived += 1;
         }
 
@@ -121,12 +117,15 @@ impl BlockArchiver {
             return Ok(());
         }
 
-        // Atomic write: tmp + rename
-        let tmp_path = self.dir.join(format!("{:010}.block.tmp", block.height));
-        std::fs::write(&tmp_path, &block.data)?;
-        std::fs::rename(&tmp_path, &block_path)?;
+        write_block_file(&self.dir, block.height, &block.data)?;
+        write_checksum_file(&self.dir, block.height, &block.data)?;
 
-        write_manifest(&self.dir, block.height, &block.hash)?;
+        // Derive genesis_hash from block data for manifest
+        if let Ok(b) = bincode::deserialize::<doli_core::Block>(&block.data) {
+            write_manifest(&self.dir, block.height, &block.hash, &b.header.genesis_hash)?;
+        } else {
+            write_manifest_without_genesis(&self.dir, block.height, &block.hash)?;
+        }
 
         if block.height.is_multiple_of(100) {
             info!(
@@ -144,6 +143,28 @@ impl BlockArchiver {
     }
 }
 
+fn blake3_hex(data: &[u8]) -> String {
+    let hash = crypto::hash::hash(data);
+    hash.to_string()
+}
+
+fn write_block_file(dir: &Path, height: u64, data: &[u8]) -> Result<(), std::io::Error> {
+    let block_path = dir.join(format!("{:010}.block", height));
+    let tmp_path = dir.join(format!("{:010}.block.tmp", height));
+    std::fs::write(&tmp_path, data)?;
+    std::fs::rename(&tmp_path, &block_path)?;
+    Ok(())
+}
+
+fn write_checksum_file(dir: &Path, height: u64, data: &[u8]) -> Result<(), std::io::Error> {
+    let checksum = blake3_hex(data);
+    let path = dir.join(format!("{:010}.blake3", height));
+    let tmp = dir.join(format!("{:010}.blake3.tmp", height));
+    std::fs::write(&tmp, &checksum)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 fn read_manifest_height_from(dir: &Path) -> Option<u64> {
     let manifest_path = dir.join("manifest.json");
     let data = std::fs::read_to_string(&manifest_path).ok()?;
@@ -151,7 +172,37 @@ fn read_manifest_height_from(dir: &Path) -> Option<u64> {
     v.get("latest_height")?.as_u64()
 }
 
-fn write_manifest(dir: &Path, height: u64, hash: &crypto::Hash) -> Result<(), std::io::Error> {
+fn read_manifest_genesis_hash(dir: &Path) -> Option<String> {
+    let manifest_path = dir.join("manifest.json");
+    let data = std::fs::read_to_string(&manifest_path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    v.get("genesis_hash")?.as_str().map(|s| s.to_string())
+}
+
+fn write_manifest(
+    dir: &Path,
+    height: u64,
+    hash: &crypto::Hash,
+    genesis_hash: &crypto::Hash,
+) -> Result<(), std::io::Error> {
+    let manifest = serde_json::json!({
+        "latest_height": height,
+        "latest_hash": hash.to_string(),
+        "genesis_hash": genesis_hash.to_string(),
+    });
+
+    let manifest_path = dir.join("manifest.json");
+    let tmp_path = dir.join("manifest.json.tmp");
+    std::fs::write(&tmp_path, serde_json::to_string_pretty(&manifest).unwrap())?;
+    std::fs::rename(&tmp_path, &manifest_path)?;
+    Ok(())
+}
+
+fn write_manifest_without_genesis(
+    dir: &Path,
+    height: u64,
+    hash: &crypto::Hash,
+) -> Result<(), std::io::Error> {
     let manifest = serde_json::json!({
         "latest_height": height,
         "latest_hash": hash.to_string(),
@@ -161,17 +212,34 @@ fn write_manifest(dir: &Path, height: u64, hash: &crypto::Hash) -> Result<(), st
     let tmp_path = dir.join("manifest.json.tmp");
     std::fs::write(&tmp_path, serde_json::to_string_pretty(&manifest).unwrap())?;
     std::fs::rename(&tmp_path, &manifest_path)?;
-
     Ok(())
 }
 
 /// Restore chain from an archive directory. Returns the number of blocks imported.
+///
+/// Verifies BLAKE3 checksums for each block and validates genesis_hash consistency.
+/// After import, caller should run `recover --yes` to rebuild UTXO/producer state.
 pub fn restore_from_archive(
     archive_dir: &Path,
     block_store: &super::BlockStore,
+    expected_genesis_hash: Option<&crypto::Hash>,
 ) -> Result<u64, String> {
     let manifest_height = read_manifest_height_from(archive_dir)
         .ok_or_else(|| "No manifest.json found in archive directory".to_string())?;
+
+    // Validate genesis_hash from manifest if caller provided expected value
+    if let Some(expected) = expected_genesis_hash {
+        if let Some(archive_genesis) = read_manifest_genesis_hash(archive_dir) {
+            let expected_str = expected.to_string();
+            if archive_genesis != expected_str {
+                return Err(format!(
+                    "Genesis hash mismatch: archive={}, expected={}. Wrong chain!",
+                    &archive_genesis[..16],
+                    &expected_str[..16]
+                ));
+            }
+        }
+    }
 
     info!(
         "[ARCHIVER] Restoring from archive: {} blocks available",
@@ -184,10 +252,33 @@ pub fn restore_from_archive(
         let data = std::fs::read(&block_path)
             .map_err(|e| format!("Failed to read block file at height {}: {}", h, e))?;
 
+        // Verify BLAKE3 checksum if sidecar exists
+        let checksum_path = archive_dir.join(format!("{:010}.blake3", h));
+        if checksum_path.exists() {
+            let expected_checksum = std::fs::read_to_string(&checksum_path)
+                .map_err(|e| format!("Failed to read checksum at height {}: {}", h, e))?;
+            let actual_checksum = blake3_hex(&data);
+            if actual_checksum.trim() != expected_checksum.trim() {
+                return Err(format!(
+                    "Checksum mismatch at height {}: expected={}, got={}",
+                    h,
+                    &expected_checksum.trim()[..16],
+                    &actual_checksum[..16]
+                ));
+            }
+        }
+
         let block: doli_core::Block = bincode::deserialize(&data)
             .map_err(|e| format!("Failed to deserialize block at height {}: {}", h, e))?;
 
-        let expected_hash_str = block.hash().to_string();
+        // Validate genesis_hash consistency within the archive
+        if let Some(expected) = expected_genesis_hash {
+            if block.header.genesis_hash != *expected {
+                return Err(format!("Block {} has wrong genesis_hash (wrong chain)", h));
+            }
+        }
+
+        let hash_str = block.hash().to_string();
         block_store
             .put_block_canonical(&block, h)
             .map_err(|e| format!("Failed to store block {}: {}", h, e))?;
@@ -198,12 +289,15 @@ pub fn restore_from_archive(
                 "[ARCHIVER] Restored {}/{} blocks (hash={}...)",
                 h,
                 manifest_height,
-                &expected_hash_str[..16]
+                &hash_str[..16]
             );
         }
     }
 
-    info!("[ARCHIVER] Restore complete: {} blocks imported", imported);
+    info!(
+        "[ARCHIVER] Restore complete: {} blocks imported. Run 'doli-node recover --yes' to rebuild state.",
+        imported
+    );
 
     Ok(imported)
 }
