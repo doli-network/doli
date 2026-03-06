@@ -54,8 +54,8 @@ use tracing::{debug, info, warn};
 // Constants - Simple, fixed, no exceptions
 // ============================================================================
 
-/// Veto period: 2 epochs (~2h) for ALL updates
-pub const VETO_PERIOD: Duration = Duration::from_secs(2 * 3600);
+/// Veto period: 5 minutes for ALL updates (early network; target: 7 days)
+pub const VETO_PERIOD: Duration = Duration::from_secs(5 * 60);
 
 /// Grace period after approval: 1 epoch (~1h) to update before enforcement
 pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);

@@ -1584,8 +1584,10 @@ Producer key files are wallet-compatible — use directly with `doli -w <key_fil
 
 | Name | Address (`doli1...`) | Public Key (Ed25519) | Bonds | Registered |
 |------|---------------------|----------------------|-------|------------|
-| **atinoco** | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 1 | Height 495 |
-| **daniel** | `doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh` | — | 1 | Pending (Epoch 18) |
+| **atinoco** | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | `d4b5451bf7...d9fd095e` | 5 | Height 495 |
+| **daniel** | `doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh` | `efe52429684ac01688a952f6d3c0d7230fe2faa1270ea0e6d615b1b2b313c218` | 2 | Epoch 18 |
+
+**daniel's node**: `danetwork` — runs `doli-node` v1.1.13 via systemd (`doli-node.service`), producer key at `/home/captaindan/.doli/wallet.json`. Funded 22 DOLI from N4. Registered with 2 bonds (20 DOLI).
 
 ### 8.3 All-Node Balance Check
 
@@ -1603,6 +1605,7 @@ ssh ilozada@omegacortex.ai "
   echo 'N6:' && \$CLI -w \$W balance --address doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
   echo 'N8:' && \$CLI -w \$W balance --address doli16qgdgxh7s7jn7au578yky8k6wakqdng4x82t6nu0h4dla9xjd43s30g6ma
   echo 'atinoco:' && \$CLI -w \$W balance --address doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e
+  echo 'daniel:' && \$CLI -w \$W balance --address doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh
 "
 ```
 

@@ -14,8 +14,7 @@ use tracing::{debug, error, info, warn};
 /// `/proc/self/exe` returns the path with ` (deleted)` suffix.
 /// We strip that suffix to get the actual install target path.
 pub fn current_binary_path() -> Result<PathBuf> {
-    let path = std::env::current_exe()
-        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+    let path = std::env::current_exe().map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
     let path_str = path.to_string_lossy();
     if path_str.ends_with(" (deleted)") {
         Ok(PathBuf::from(path_str.trim_end_matches(" (deleted)")))

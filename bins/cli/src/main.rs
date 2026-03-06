@@ -181,6 +181,21 @@ enum Commands {
         #[command(subcommand)]
         command: ProtocolCommands,
     },
+
+    /// Wipe chain data for a fresh resync (preserves keys/ and .env)
+    Wipe {
+        /// Network (mainnet, testnet, devnet)
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// Data directory (overrides network default)
+        #[arg(short, long)]
+        data_dir: Option<PathBuf>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -482,6 +497,13 @@ async fn main() -> Result<()> {
         }
         Commands::Protocol { command } => {
             cmd_protocol(&wallet, &cli.rpc, command).await?;
+        }
+        Commands::Wipe {
+            network,
+            data_dir,
+            yes,
+        } => {
+            cmd_wipe(&network, data_dir, yes)?;
         }
     }
 
@@ -2543,53 +2565,70 @@ async fn cmd_producer(
             if producer_info.status == "exited" {
                 anyhow::bail!("Producer has already exited");
             }
+            if producer_info.status == "unbonding" {
+                anyhow::bail!(
+                    "Producer is in unbonding state. Use 'request-withdrawal' to withdraw bonds."
+                );
+            }
 
-            // Calculate early exit penalty based on time active (1-day vesting)
-            let current_info = rpc.get_chain_info().await?;
-            let slots_active = current_info
-                .best_slot
-                .saturating_sub(producer_info.registration_height);
-            let vesting_quarter: u64 = 2_160; // 6 hours at 10s slots
-            let vesting_period: u64 = 4 * vesting_quarter; // 1 day
+            let bond_count = producer_info.bond_count;
+            if bond_count == 0 {
+                anyhow::bail!("Producer has no bonds to withdraw");
+            }
 
-            let quarters = slots_active / vesting_quarter;
-            let penalty_pct: u64 = match quarters {
-                0 => 75,
-                1 => 50,
-                2 => 25,
-                _ => 0,
-            };
+            // Fetch per-bond details for FIFO breakdown
+            let details = rpc.get_bond_details(&pk).await?;
+            let available = details.bond_count - details.withdrawal_pending_count;
+            if available == 0 {
+                anyhow::bail!("All bonds already have pending withdrawals");
+            }
+            let withdraw_count = available; // withdraw ALL available bonds
 
-            let hours_active = (slots_active * 10) as f64 / 3600.0;
-            let hours_until_vested = if slots_active >= vesting_period {
-                0.0
+            // Show bond inventory
+            let s = &details.summary;
+            println!(
+                "Exiting producer set — withdrawing ALL {} bonds:",
+                withdraw_count
+            );
+            if s.vested > 0 {
+                println!("  {} bonds — vested (0% penalty)", s.vested);
+            }
+            if s.q3 > 0 {
+                println!("  {} bonds — Q3 (25% penalty)", s.q3);
+            }
+            if s.q2 > 0 {
+                println!("  {} bonds — Q2 (50% penalty)", s.q2);
+            }
+            if s.q1 > 0 {
+                println!("  {} bonds — Q1 (75% penalty)", s.q1);
+            }
+            println!();
+
+            // Calculate FIFO breakdown
+            let breakdown = compute_fifo_breakdown(&details, withdraw_count);
+            display_fifo_breakdown(&breakdown);
+            println!();
+            println!("You receive: {}", format_balance(breakdown.total_net));
+            if breakdown.total_penalty > 0 {
+                println!(
+                    "Penalty burned: {}",
+                    format_balance(breakdown.total_penalty)
+                );
+                let pct = (breakdown.total_penalty * 100)
+                    / (breakdown.total_net + breakdown.total_penalty);
+                if pct >= 50 {
+                    println!(
+                        "WARNING: High penalty — {}% of bond value will be burned.",
+                        pct
+                    );
+                }
             } else {
-                ((vesting_period - slots_active) * 10) as f64 / 3600.0
-            };
+                println!("No penalty — all bonds fully vested.");
+            }
+            println!();
 
-            if penalty_pct > 0 && !force {
-                println!("Warning: Early exit penalty applies!");
-                println!();
-                println!("  Time active:   {:.1}h (Q{})", hours_active, quarters + 1);
-                println!("  Penalty:       {}%", penalty_pct);
-                println!(
-                    "  Bond amount:   {}",
-                    format_balance(producer_info.bond_amount)
-                );
-                println!(
-                    "  Penalty loss:  {}",
-                    format_balance(producer_info.bond_amount * penalty_pct / 100)
-                );
-                println!(
-                    "  You receive:   {}",
-                    format_balance(producer_info.bond_amount * (100 - penalty_pct) / 100)
-                );
-                println!();
-                println!("Use --force to proceed with early exit.");
-                println!(
-                    "Or wait {:.1}h more to exit without penalty.",
-                    hours_until_vested
-                );
+            if !force {
+                println!("Use --force to proceed with exit.");
                 return Ok(());
             }
 
@@ -2598,23 +2637,29 @@ async fn cmd_producer(
             let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
                 .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
-            // Create exit transaction
-            let tx = Transaction::new_exit(producer_pubkey);
+            // Destination: wallet's own address
+            let pubkey_hash = wallet.primary_pubkey_hash();
+            let dest_hash = Hash::from_hex(&pubkey_hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?;
+
+            // Create RequestWithdrawal for ALL bonds (instant payout + auto-exit at epoch boundary)
+            let total_net = breakdown.total_net;
+            let tx = Transaction::new_request_withdrawal(
+                producer_pubkey,
+                withdraw_count,
+                dest_hash,
+                total_net,
+            );
             let tx_hex = hex::encode(tx.serialize());
 
-            println!("Submitting exit transaction...");
+            println!("Submitting exit (withdrawal of all bonds)...");
 
             match rpc.send_transaction(&tx_hex).await {
                 Ok(hash) => {
                     println!("Exit submitted successfully!");
                     println!("TX Hash: {}", hash);
-                    if penalty_pct > 0 {
-                        println!();
-                        println!(
-                            "Penalty of {}% applied. Remaining bond will be returned.",
-                            penalty_pct
-                        );
-                    }
+                    println!();
+                    println!("Bonds withdrawn. Producer will be removed at next epoch boundary.");
                 }
                 Err(e) => {
                     anyhow::bail!("Error submitting exit: {}", e);
@@ -3027,6 +3072,151 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
             }
         }
     }
+
+    Ok(())
+}
+
+fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> Result<()> {
+    println!("Wipe Chain Data");
+    println!("{:-<60}", "");
+    println!();
+
+    // 1. Resolve data dir
+    let data_dir = match data_dir {
+        Some(d) => d,
+        None => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+            home.join(".doli").join(network)
+        }
+    };
+
+    // 2. Verify directory exists
+    if !data_dir.exists() {
+        anyhow::bail!("Data directory does not exist: {:?}", data_dir);
+    }
+
+    println!("Network:   {}", network);
+    println!("Data dir:  {:?}", data_dir);
+    println!();
+
+    // 3. Safety check: is doli-node running with this data dir?
+    let data_dir_str = data_dir.to_string_lossy().to_string();
+    let is_running = std::process::Command::new("pgrep")
+        .args(["-f", &format!("doli-node.*{}", data_dir_str)])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if is_running {
+        anyhow::bail!(
+            "A doli-node process is running with this data directory.\n\
+             Stop the node first: sudo systemctl stop <service>"
+        );
+    }
+
+    // 4. List what gets deleted vs preserved
+    let delete_targets = [
+        "blocks",
+        "state_db",
+        "signed_slots.db",
+        "utxo_rocks",
+        "chain_state.bin",
+        "producers.bin",
+        "utxo.bin",
+        "producer_gset.bin",
+        "peers.cache",
+        "node_key",
+    ];
+    let preserve_targets = ["keys", ".env"];
+
+    // Scan for items to delete (including node subdirectories like node1/, node2/)
+    let mut found_items: Vec<PathBuf> = Vec::new();
+    let mut scan_dir = |dir: &Path| {
+        for name in &delete_targets {
+            let path = dir.join(name);
+            if path.exists() {
+                found_items.push(path);
+            }
+        }
+    };
+
+    // Scan data_dir itself
+    scan_dir(&data_dir);
+
+    // Scan subdirectories (node1/, node2/, data/, etc.)
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                // Skip preserved directories
+                if preserve_targets.contains(&name.as_ref()) {
+                    continue;
+                }
+                scan_dir(&path);
+                // Also scan data/ subdirectory if it exists
+                let data_subdir = path.join("data");
+                if data_subdir.is_dir() {
+                    scan_dir(&data_subdir);
+                }
+            }
+        }
+    }
+
+    if found_items.is_empty() {
+        println!("Nothing to wipe — data directory is already clean.");
+        return Ok(());
+    }
+
+    println!("Will DELETE:");
+    for item in &found_items {
+        let suffix = if item.is_dir() { "/" } else { "" };
+        println!(
+            "  - {}{}",
+            item.strip_prefix(&data_dir).unwrap_or(item).display(),
+            suffix
+        );
+    }
+    println!();
+    println!("Will PRESERVE:");
+    for name in &preserve_targets {
+        let path = data_dir.join(name);
+        if path.exists() {
+            println!("  - {}/", name);
+        }
+    }
+    println!();
+
+    // 5. Confirm
+    if !yes {
+        println!("This will delete all chain data. The node will resync from peers.");
+        println!("Run with --yes to proceed.");
+        return Ok(());
+    }
+
+    // 6. Delete
+    let mut deleted = 0;
+    for item in &found_items {
+        let result = if item.is_dir() {
+            std::fs::remove_dir_all(item)
+        } else {
+            std::fs::remove_file(item)
+        };
+        match result {
+            Ok(()) => {
+                deleted += 1;
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to remove {:?}: {}", item, e);
+            }
+        }
+    }
+
+    // 7. Summary
+    println!();
+    println!("Wiped {} items. Data directory is clean.", deleted);
+    println!("Start the node to resync from peers.");
 
     Ok(())
 }
