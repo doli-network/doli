@@ -144,6 +144,12 @@ enum Commands {
         /// Use scripts/generate_chainspec.sh to create from wallet files
         #[arg(long)]
         chainspec: Option<PathBuf>,
+
+        /// Archive blocks to a directory for disaster recovery.
+        /// Each block is stored as a file with atomic writes.
+        /// Example: --archive-to /home/ilozada/.doli/mainnet/archive
+        #[arg(long)]
+        archive_to: Option<PathBuf>,
     },
 
     /// Initialize a new data directory
@@ -493,6 +499,7 @@ async fn main() -> Result<()> {
             force_start,
             yes,
             chainspec,
+            archive_to,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -520,6 +527,7 @@ async fn main() -> Result<()> {
                 force_start,
                 yes,
                 chainspec,
+                archive_to,
             )
             .await?;
         }
@@ -581,6 +589,7 @@ async fn main() -> Result<()> {
                 false,
                 false, // yes
                 None,  // chainspec
+                None,  // archive_to
             )
             .await?;
         }
@@ -607,10 +616,12 @@ async fn run_node(
     force_start: bool,
     yes: bool,
     chainspec_path: Option<PathBuf>,
+    archive_to: Option<PathBuf>,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
     let producer_key_path = producer_key_path.map(|p| expand_tilde_path(&p));
+    let archive_to = archive_to.map(|p| expand_tilde_path(&p));
     let chainspec_path = chainspec_path.map(|p| expand_tilde_path(&p));
 
     info!("Starting node with data directory: {:?}", data_dir);
@@ -980,6 +991,29 @@ async fn run_node(
 
     // Connect on-chain maintainer set: Node (apply_block) → UpdateService (signature verification)
     node.set_maintainer_state(maintainer_state);
+
+    // Block archiver: streams blocks to filesystem for disaster recovery
+    if let Some(ref archive_dir) = archive_to {
+        let archive_dir = expand_tilde_path(archive_dir);
+        let tip = node.best_height().await;
+
+        // Catch up: archive any blocks we missed while down
+        if tip > 0 {
+            info!("Archiver: catching up to height {}...", tip);
+            match storage::archiver::BlockArchiver::catch_up(&archive_dir, node.block_store(), tip)
+            {
+                Ok(n) if n > 0 => info!("Archiver: caught up {} blocks", n),
+                Ok(_) => info!("Archiver: already up to date"),
+                Err(e) => warn!("Archiver catch-up error: {}", e),
+            }
+        }
+
+        let (archive_tx, archive_rx) = tokio::sync::mpsc::channel(256);
+        node.set_archive_tx(archive_tx);
+        let archiver = storage::archiver::BlockArchiver::new(archive_rx, archive_dir);
+        tokio::spawn(async move { archiver.run().await });
+        info!("Block archiver enabled");
+    }
 
     info!("Node running. Press Ctrl+C to stop.");
 

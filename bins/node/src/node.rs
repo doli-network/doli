@@ -37,6 +37,7 @@ use network::{
     NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
+use storage::archiver::ArchiveBlock;
 use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, StateDb, UtxoSet};
 use updater::is_using_placeholder_keys;
 
@@ -143,6 +144,8 @@ pub struct Node {
     /// On-chain maintainer set (3-5 members, persisted, bootstrapped from first 5 producers).
     /// Used by the auto-update system for release signature verification.
     maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
+    /// Channel to send blocks to the archiver (if --archive-to is set)
+    archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
 }
 
 impl Node {
@@ -674,6 +677,7 @@ impl Node {
             cached_genesis_producers: std::sync::OnceLock::new(),
             port_check_done: false,
             maintainer_state: None,
+            archive_tx: None,
         })
     }
 
@@ -691,6 +695,21 @@ impl Node {
     }
 
     /// Set the shared maintainer state (connects on-chain governance to UpdateService)
+    /// Set the archive channel (connects apply_block to BlockArchiver)
+    pub fn set_archive_tx(&mut self, tx: tokio::sync::mpsc::Sender<ArchiveBlock>) {
+        self.archive_tx = Some(tx);
+    }
+
+    /// Get a reference to the block store (for archiver catch-up)
+    pub fn block_store(&self) -> &Arc<BlockStore> {
+        &self.block_store
+    }
+
+    /// Get the current chain tip height
+    pub async fn best_height(&self) -> u64 {
+        self.chain_state.read().await.best_height
+    }
+
     pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {
         self.maintainer_state = Some(state);
     }
@@ -3967,6 +3986,17 @@ impl Node {
             if block.header.producer != *kp.public_key() {
                 self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
                     .await;
+            }
+        }
+
+        // Send block to archiver (non-blocking — drop if channel full)
+        if let Some(ref tx) = self.archive_tx {
+            if let Ok(data) = bincode::serialize(&block) {
+                let _ = tx.try_send(ArchiveBlock {
+                    height,
+                    hash: block_hash,
+                    data,
+                });
             }
         }
 
