@@ -1458,10 +1458,13 @@ impl ProducerSet {
         current_height: u64,
     ) -> Result<(), StorageError> {
         let key = crypto_hash(info.public_key.as_bytes());
-        if self.producers.contains_key(&key) {
-            return Err(StorageError::AlreadyExists(
-                "Producer already registered".to_string(),
-            ));
+        if let Some(existing) = self.producers.get(&key) {
+            if existing.status != ProducerStatus::Exited {
+                return Err(StorageError::AlreadyExists(
+                    "Producer already registered".to_string(),
+                ));
+            }
+            // Allow re-registration after exit — replace the old entry
         }
 
         // Anti-Sybil: Check if this producer has recently exited (not expired)
@@ -1483,10 +1486,13 @@ impl ProducerSet {
         network: Network,
     ) -> Result<(), StorageError> {
         let key = crypto_hash(info.public_key.as_bytes());
-        if self.producers.contains_key(&key) {
-            return Err(StorageError::AlreadyExists(
-                "Producer already registered".to_string(),
-            ));
+        if let Some(existing) = self.producers.get(&key) {
+            if existing.status != ProducerStatus::Exited {
+                return Err(StorageError::AlreadyExists(
+                    "Producer already registered".to_string(),
+                ));
+            }
+            // Allow re-registration after exit — replace the old entry
         }
 
         // Anti-Sybil: Check if this producer has recently exited (not expired for this network)
