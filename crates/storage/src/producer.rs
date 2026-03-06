@@ -822,29 +822,38 @@ impl ProducerInfo {
     /// Decreases `bond_count`, `bond_amount`, and resets `withdrawal_pending_count`.
     /// Also removes corresponding entries from `additional_bonds`.
     pub fn apply_withdrawal(&mut self, count: u32, bond_unit: u64) {
-        let to_remove = count.min(self.bond_entries.len() as u32);
-        if to_remove == 0 {
-            return;
-        }
-
-        // Remove oldest entries (front of vec = FIFO)
-        self.bond_entries.drain(..to_remove as usize);
-
         let unit = if bond_unit == 0 {
             CORE_BOND_UNIT
         } else {
             bond_unit
         };
-        self.bond_count = self.bond_count.saturating_sub(to_remove);
-        self.bond_amount = self.bond_amount.saturating_sub(to_remove as u64 * unit);
-        self.withdrawal_pending_count = self.withdrawal_pending_count.saturating_sub(to_remove);
 
-        // Remove corresponding additional_bonds (from the end, they're newest)
-        // Actually we remove from the front since FIFO removes oldest
-        for _ in 0..to_remove {
-            if !self.additional_bonds.is_empty() {
-                self.additional_bonds.remove(0);
+        let to_remove = count.min(self.bond_entries.len() as u32);
+
+        if to_remove > 0 {
+            // Remove oldest entries (front of vec = FIFO)
+            self.bond_entries.drain(..to_remove as usize);
+
+            self.bond_count = self.bond_count.saturating_sub(to_remove);
+            self.bond_amount = self.bond_amount.saturating_sub(to_remove as u64 * unit);
+            self.withdrawal_pending_count = self.withdrawal_pending_count.saturating_sub(to_remove);
+
+            // Remove corresponding additional_bonds (oldest first)
+            for _ in 0..to_remove {
+                if !self.additional_bonds.is_empty() {
+                    self.additional_bonds.remove(0);
+                }
             }
+        }
+
+        // Legacy fallback: bond_entries empty but bond_count > 0 (pre-StoredBondEntry producers)
+        let remaining = count.saturating_sub(to_remove);
+        if remaining > 0 && self.bond_count > 0 {
+            let legacy_remove = remaining.min(self.bond_count);
+            self.bond_count = self.bond_count.saturating_sub(legacy_remove);
+            self.bond_amount = self.bond_amount.saturating_sub(legacy_remove as u64 * unit);
+            self.withdrawal_pending_count =
+                self.withdrawal_pending_count.saturating_sub(legacy_remove);
         }
 
         // Auto-exit when all bonds are withdrawn
