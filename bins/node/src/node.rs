@@ -2644,6 +2644,34 @@ impl Node {
             return;
         }
 
+        // Fix 2: Hard cap on consecutive resyncs — stop the loop after N failures.
+        // Exponential backoff alone is insufficient; after 5 failed resyncs the node
+        // needs manual intervention (recover --yes or wipe + resync).
+        if consecutive_resyncs >= network::MAX_CONSECUTIVE_RESYNCS {
+            warn!(
+                "Fork recovery: reached max consecutive resyncs ({}) — manual intervention required. \
+                 Run `doli-node recover --yes` or wipe and resync.",
+                consecutive_resyncs
+            );
+            return;
+        }
+
+        // Fix 3: Don't interrupt active sync progress. If blocks are being applied,
+        // the node is making forward progress and should not be reset to genesis.
+        // This prevents the cycle: force_resync → sync to h=720 → fork_blocked → resync → h=0.
+        let blocks_applied = {
+            let sync = self.sync_manager.read().await;
+            sync.blocks_applied()
+        };
+        if blocks_applied > 0 {
+            debug!(
+                "Fork recovery: sync in progress ({} blocks applied), skipping resync",
+                blocks_applied
+            );
+            self.consecutive_fork_blocks = 0;
+            return;
+        }
+
         // Exponential backoff: 60s * 2^(resyncs), max ~16 min
         let cooldown_secs = 60u64 * (1u64 << consecutive_resyncs.min(4));
         let can_resync = match self.last_resync_time {
