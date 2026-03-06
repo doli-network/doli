@@ -84,6 +84,7 @@
 //! - Checksums detect data corruption
 //! - Periodic compaction maintains read performance
 
+pub mod archiver;
 pub mod block_store;
 pub mod chain_state;
 pub mod maintainer;
