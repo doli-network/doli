@@ -27,6 +27,11 @@ const MIN_PEERS_TIER1: usize = 3;
 const MIN_PEERS_TIER2: usize = 2;
 const MIN_PEERS_TIER3: usize = 1;
 
+/// Maximum consecutive force-resyncs before giving up.
+/// After this many failed resyncs, the node stops retrying and requires
+/// manual intervention (`recover --yes` or wipe + resync).
+pub const MAX_CONSECUTIVE_RESYNCS: u32 = 5;
+
 /// Sync configuration
 #[derive(Clone, Debug)]
 pub struct SyncConfig {
@@ -1233,6 +1238,11 @@ impl SyncManager {
     /// Get the current consecutive resync count
     pub fn consecutive_resync_count(&self) -> u32 {
         self.consecutive_resync_count
+    }
+
+    /// Get blocks applied since last reset (indicates active sync progress)
+    pub fn blocks_applied(&self) -> u64 {
+        self.blocks_applied
     }
 
     /// Signal that we have connected to at least one peer
@@ -2595,6 +2605,11 @@ impl SyncManager {
 
         // Clear snap sync production gate (genesis resync starts fresh)
         self.awaiting_canonical_block = false;
+
+        // Reset snap_sync_failed so the next sync attempt can use snap sync.
+        // Without this, a failed snap → force_resync → height 0 loop uses slow
+        // header-first sync instead of snap, causing resync death loops.
+        self.snap_sync_failed = false;
 
         // Reset stale chain timers
         self.last_block_seen = Instant::now();

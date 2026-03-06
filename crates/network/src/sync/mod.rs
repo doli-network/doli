@@ -19,5 +19,8 @@ pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;
 pub use fork_sync::{ForkSync, ForkSyncResult};
 pub use headers::HeaderDownloader;
-pub use manager::{ProductionAuthorization, SyncConfig, SyncManager, SyncState, VerifiedSnapshot};
+pub use manager::{
+    ProductionAuthorization, SyncConfig, SyncManager, SyncState, VerifiedSnapshot,
+    MAX_CONSECUTIVE_RESYNCS,
+};
 pub use reorg::{ReorgHandler, ReorgResult};
