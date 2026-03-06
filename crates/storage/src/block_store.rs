@@ -205,11 +205,45 @@ impl BlockStore {
         Ok(removed)
     }
 
+    /// Clear only index column families (height_index, slot_index, hash_to_height).
+    ///
+    /// Preserves block data (headers, bodies, presence) so blocks remain available
+    /// for future rollbacks/rebuilds. Indexes are rebuilt by `set_canonical_chain()`
+    /// when sync re-applies blocks.
+    ///
+    /// Used by `reset_state_only()` during automatic recovery — avoids the costly
+    /// re-download of block data while ensuring stale index entries (from fork blocks)
+    /// don't pollute queries like `get_last_rewarded_epoch()`.
+    pub fn clear_indexes(&self) -> Result<(), StorageError> {
+        let index_cfs = [CF_HEIGHT_INDEX, CF_SLOT_INDEX, CF_HASH_TO_HEIGHT];
+
+        for cf_name in &index_cfs {
+            let cf = self.db.cf_handle(cf_name).unwrap();
+            let mut batch = rocksdb::WriteBatch::default();
+            let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+            let mut count = 0u64;
+            for (key, _) in iter.flatten() {
+                batch.delete_cf(&cf, &key);
+                count += 1;
+            }
+            if count > 0 {
+                self.db.write(batch)?;
+                info!(
+                    "[BLOCK_STORE] Cleared {} index entries from CF '{}'",
+                    count, cf_name
+                );
+            }
+        }
+
+        info!("[BLOCK_STORE] Index column families cleared (block data preserved)");
+        Ok(())
+    }
+
     /// Clear all block data from the store.
     ///
     /// Removes all entries from every column family (headers, bodies,
-    /// height_index, slot_index, presence). Used during force resync
-    /// from genesis to purge stale fork blocks.
+    /// height_index, slot_index, presence). Used only by manual CLI
+    /// `recover --yes` as a last resort.
     pub fn clear(&self) -> Result<(), StorageError> {
         let cf_names = [
             CF_HEADERS,
