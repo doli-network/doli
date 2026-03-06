@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772685040,
-    "message": "Genesis v4 - Network reset 2026-03-05",
+    "timestamp": 1772830020,
+    "message": "Genesis v5 - Network reset 2026-03-06",
     "initial_reward": 100000000
   },
   "consensus": {
