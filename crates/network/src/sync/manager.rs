@@ -426,8 +426,9 @@ pub struct SyncManager {
     snap_blacklisted_peers: HashSet<PeerId>,
     /// Peers that returned empty headers (blacklisted with cooldown)
     header_blacklisted_peers: HashMap<PeerId, Instant>,
-    /// Set after a snap sync failure to skip snap sync for one cycle
-    snap_sync_failed: bool,
+    /// Number of consecutive snap sync failures. After 3 failures, falls back
+    /// to header-first sync. Reset on successful sync or state reset.
+    snap_sync_attempts: u8,
     /// When a fresh node first started waiting for 3 peers (for snap sync timeout)
     fresh_node_wait_start: Option<Instant>,
     /// After snap sync, block production until at least one canonical gossip block
@@ -507,7 +508,7 @@ impl SyncManager {
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
             header_blacklisted_peers: HashMap::new(),
-            snap_sync_failed: false,
+            snap_sync_attempts: 0,
             fresh_node_wait_start: None,
             awaiting_canonical_block: false,
         }
@@ -1805,7 +1806,7 @@ impl SyncManager {
             let gap = best_height.saturating_sub(self.local_height);
             let enough_peers = self.peers.len() >= 3;
             let should_snap = enough_peers
-                && !self.snap_sync_failed
+                && self.snap_sync_attempts < 3
                 && (self.local_height == 0 || gap > self.snap_sync_threshold);
 
             // Fresh node optimization: don't start slow header-first sync.
@@ -1814,7 +1815,7 @@ impl SyncManager {
             // BUT: timeout after 60s to avoid deadlock when <3 peers are discoverable.
             if self.local_height == 0
                 && !enough_peers
-                && !self.snap_sync_failed
+                && self.snap_sync_attempts < 3
                 && gap > self.snap_sync_threshold
             {
                 let wait_start = self.fresh_node_wait_start.get_or_insert(Instant::now());
@@ -1946,7 +1947,7 @@ impl SyncManager {
                              attempting snap sync before genesis resync (gap={})",
                             self.consecutive_empty_headers, gap
                         );
-                        self.snap_sync_failed = false;
+                        self.snap_sync_attempts = 0;
                         self.consecutive_empty_headers = 0;
                         self.state = SyncState::Idle;
                         self.start_sync();
@@ -2497,7 +2498,7 @@ impl SyncManager {
                 height, slot, self.network_tip_height, self.network_tip_slot
             );
             self.state = SyncState::Synchronized;
-            self.snap_sync_failed = false; // Reset snap sync fallback flag
+            self.snap_sync_attempts = 0;
             self.header_blacklisted_peers.clear();
 
             // If we were in a resync, complete it now
@@ -2606,10 +2607,8 @@ impl SyncManager {
         // Clear snap sync production gate (genesis resync starts fresh)
         self.awaiting_canonical_block = false;
 
-        // Reset snap_sync_failed so the next sync attempt can use snap sync.
-        // Without this, a failed snap → force_resync → height 0 loop uses slow
-        // header-first sync instead of snap, causing resync death loops.
-        self.snap_sync_failed = false;
+        // Reset snap sync attempt counter so recovery gets fresh tries.
+        self.snap_sync_attempts = 0;
 
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
@@ -2809,9 +2808,18 @@ impl SyncManager {
     }
 
     /// Fall back from snap sync to normal header-first sync.
+    /// Increments the snap attempt counter; after 3 failures, snap sync is skipped.
     pub fn snap_fallback_to_normal(&mut self) {
-        warn!("[SNAP_SYNC] Falling back to normal header-first sync");
-        self.snap_sync_failed = true; // Skip snap sync for one cycle
+        self.snap_sync_attempts += 1;
+        warn!(
+            "[SNAP_SYNC] Attempt {}/3 failed, {}",
+            self.snap_sync_attempts,
+            if self.snap_sync_attempts >= 3 {
+                "falling back to header-first sync"
+            } else {
+                "will retry with different peer"
+            }
+        );
         self.state = SyncState::Idle;
         if self.should_sync() {
             self.start_sync();
