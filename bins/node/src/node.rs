@@ -2295,13 +2295,13 @@ impl Node {
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
                 "Fork sync reorg: block store incomplete (snap-synced node). \
-                 Cannot rebuild UTXO from genesis. Falling back to full resync."
+                 Cannot rebuild UTXO from genesis. Recovering from peers."
             );
             {
                 let mut sync = self.sync_manager.write().await;
                 sync.reset_sync_for_rollback();
             }
-            self.force_resync_from_genesis().await?;
+            self.recover_from_peers().await?;
             return Ok(());
         }
 
@@ -2370,10 +2370,10 @@ impl Node {
                 if err_msg.contains("missing block") || err_msg.contains("UTXO rebuild") {
                     warn!(
                         "Fork sync reorg failed due to incomplete block store: {}. \
-                         Falling back to full resync.",
+                         Recovering from peers.",
                         e
                     );
-                    self.force_resync_from_genesis().await?;
+                    self.recover_from_peers().await?;
                     return Ok(());
                 }
 
@@ -2603,7 +2603,7 @@ impl Node {
     ///
     /// Auto-resync when fork detection has blocked production for too long.
     ///
-    /// Triggers `force_resync_from_genesis()` after N consecutive fork-blocked
+    /// Triggers `recover_from_peers()` after N consecutive fork-blocked
     /// slots, respecting cooldown to prevent resync loops.
     async fn maybe_auto_resync(&mut self, current_slot: u32) {
         // Threshold: trigger resync after 10 consecutive fork-blocked slots
@@ -2703,11 +2703,9 @@ impl Node {
                     info!("Mainnet fork recovery: 1-block rollback succeeded");
                 }
                 Ok(false) => {
-                    warn!(
-                        "Mainnet fork recovery: rollback not possible, triggering genesis resync"
-                    );
-                    if let Err(e) = self.force_resync_from_genesis().await {
-                        error!("Mainnet fork recovery resync failed: {}", e);
+                    warn!("Mainnet fork recovery: rollback not possible, recovering from peers");
+                    if let Err(e) = self.recover_from_peers().await {
+                        error!("Mainnet fork recovery failed: {}", e);
                     }
                 }
                 Err(e) => {
@@ -2726,8 +2724,8 @@ impl Node {
 
         self.consecutive_fork_blocks = 0;
         self.last_resync_time = Some(Instant::now());
-        if let Err(e) = self.force_resync_from_genesis().await {
-            error!("Fork recovery resync failed: {}", e);
+        if let Err(e) = self.recover_from_peers().await {
+            error!("Fork recovery failed: {}", e);
         }
     }
 
@@ -2852,124 +2850,146 @@ impl Node {
     /// - producer_gset: cleared
     /// - Production timing state: reset
     ///
-    /// Production is blocked by the sync manager's ProductionGate until:
-    /// 1. Sync completes (caught up with peers)
-    /// 2. Grace period expires (default 30s, with exponential backoff)
-    async fn force_resync_from_genesis(&mut self) -> Result<()> {
-        warn!("Force resync initiated - performing COMPLETE state reset to genesis");
+    /// Automatic recovery: reset state and let snap sync restore from peers.
+    ///
+    /// Guard: skips recovery if the node is already at >90% of the network tip,
+    /// since a near-tip node should wait for reorg rather than wipe state.
+    ///
+    /// Calls `reset_state_only()` (layers 1-9 + index clear) then lets the sync
+    /// manager pick up snap sync on the next tick (h=0 + gap > threshold + peers >= 3).
+    ///
+    /// Block data (headers/bodies) is preserved — only indexes are cleared.
+    /// This is the ONLY automatic recovery path; `force_resync_from_genesis()`
+    /// (which also wipes block data) is reserved for manual `recover --yes`.
+    async fn recover_from_peers(&mut self) -> Result<()> {
+        let local_height = self.chain_state.read().await.best_height;
+        let best_peer = self.sync_manager.read().await.best_peer_height();
 
-        // Get genesis hash before clearing state
+        // Guard: don't wipe a node that's close to the tip — let reorg handle it
+        if best_peer > 0 && local_height > best_peer * 90 / 100 {
+            warn!(
+                "Recovery: at {}% of network tip (h={}/{}), skipping state wipe — waiting for reorg",
+                local_height * 100 / best_peer,
+                local_height,
+                best_peer
+            );
+            return Ok(());
+        }
+
+        warn!(
+            "Recovery: resetting state (preserving block data), snap sync will restore (local h={}, peer h={})",
+            local_height, best_peer
+        );
+
+        self.reset_state_only().await?;
+
+        info!(
+            "State reset complete (height 0). Block data preserved. \
+             Production blocked until sync completes + grace period."
+        );
+
+        Ok(())
+    }
+
+    /// Reset all mutable state to genesis WITHOUT wiping block data.
+    ///
+    /// Layers 1-9: sync manager, chain state, UTXO, producers, StateDb, caches.
+    /// Block store: only indexes cleared (height_index, slot_index, hash_to_height).
+    /// Block data (headers, bodies, presence) preserved for future rollbacks.
+    ///
+    /// After this, snap sync activates on next tick: h=0 + gap > threshold + peers >= 3.
+    async fn reset_state_only(&mut self) -> Result<()> {
         let genesis_hash = self.chain_state.read().await.genesis_hash;
 
-        // =========================================================================
-        // LAYER 1: Reset sync manager FIRST (blocks production via ProductionGate)
-        // =========================================================================
+        // LAYER 1: Reset sync manager (blocks production via ProductionGate)
         {
             let mut sync = self.sync_manager.write().await;
-            // This calls start_resync() internally, blocking production
             sync.reset_local_state(genesis_hash);
         }
 
-        // =========================================================================
         // LAYER 2: Reset chain state to genesis
-        // =========================================================================
         {
             let mut state = self.chain_state.write().await;
             state.best_height = 0;
             state.best_hash = genesis_hash;
             state.best_slot = 0;
-            // Note: genesis_timestamp preserved for consistency
         }
 
-        // =========================================================================
-        // LAYER 3: Clear UTXO set (in-memory) completely
-        // =========================================================================
+        // LAYER 3: Clear UTXO set (in-memory)
         {
             let mut utxo = self.utxo_set.write().await;
             utxo.clear();
         }
 
-        // =========================================================================
-        // LAYER 4: Clear producer set (CRITICAL - this was the bug!)
-        //
-        // This forces the node into TRUE bootstrap mode where sync-before-produce
-        // checks are properly enforced. Without this, the node would take the
-        // "normal mode" path and skip sync checks.
-        // =========================================================================
+        // LAYER 4: Clear producer set (forces true bootstrap mode)
         {
             let mut producers = self.producer_set.write().await;
             producers.clear();
-            info!("Producer set cleared - will rebuild from synced blocks");
         }
 
-        // =========================================================================
         // LAYER 4.5: Atomic clear of StateDb (UTXOs + producers + chain state)
-        // Single WriteBatch: either old state survives or genesis state is written.
-        // =========================================================================
         {
             let genesis_cs = ChainState::new(genesis_hash);
             self.state_db.clear_and_write_genesis(&genesis_cs);
-            info!("StateDb atomically reset to genesis");
         }
 
-        // =========================================================================
         // LAYER 5: Clear known producers list
-        // =========================================================================
         {
             let mut known = self.known_producers.write().await;
             known.clear();
         }
 
-        // =========================================================================
         // LAYER 6: Clear fork block cache
-        // =========================================================================
         {
             let mut cache = self.fork_block_cache.write().await;
             cache.clear();
         }
 
-        // =========================================================================
-        // LAYER 7: Clear equivocation detector (signatures from old chain invalid)
-        // =========================================================================
+        // LAYER 7: Clear equivocation detector
         {
             let mut detector = self.equivocation_detector.write().await;
             detector.clear();
         }
 
-        // =========================================================================
         // LAYER 8: Clear producer discovery CRDT
-        // =========================================================================
         {
             let mut gset = self.producer_gset.write().await;
             gset.clear();
         }
 
-        // =========================================================================
-        // LAYER 9: Reset all production timing state
-        // =========================================================================
+        // LAYER 9: Reset production timing state
         self.last_produced_slot = None;
         self.first_peer_connected = None;
         self.last_producer_list_change = None;
-        // Note: last_resync_time is set by the caller before calling this function
-        // to implement the cooldown between resyncs
 
-        // =========================================================================
-        // LAYER 10: Clear RocksDB block store (purge stale fork blocks)
-        //
-        // Without this, old fork blocks remain in HEIGHT_INDEX and SLOT_INDEX,
-        // polluting queries like get_last_rewarded_epoch() which iterates from
-        // the end of HEIGHT_INDEX and would hit stale fork entries first.
-        // =========================================================================
+        // LAYER 9.5: Clear block store INDEXES only (not block data).
+        // Stale indexes from fork blocks would pollute get_last_rewarded_epoch()
+        // and other height-based queries. Block data stays for future rollbacks.
+        if let Err(e) = self.block_store.clear_indexes() {
+            error!("Failed to clear block store indexes during recovery: {}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Nuclear reset: wipe ALL state INCLUDING block data.
+    ///
+    /// This is `reset_state_only()` + full block store clear.
+    /// Reserved for manual CLI `recover --yes` — NEVER called automatically.
+    #[allow(dead_code)]
+    async fn force_resync_from_genesis(&mut self) -> Result<()> {
+        warn!("Force resync initiated - performing COMPLETE state reset to genesis (including block data)");
+
+        self.reset_state_only().await?;
+
+        // LAYER 10: Clear block store entirely (headers, bodies, indexes)
         if let Err(e) = self.block_store.clear() {
             error!("Failed to clear block store during resync: {}", e);
-            // Non-fatal: sync will overwrite canonical entries, but stale
-            // entries beyond best_height remain. Log and continue.
         }
 
         info!(
-            "Complete state reset to genesis (height 0). \
-             Production blocked until sync completes + grace period. \
-             Will actively request blocks from peers."
+            "Complete state reset to genesis (height 0, block store wiped). \
+             Production blocked until sync completes + grace period."
         );
 
         Ok(())
@@ -4474,7 +4494,7 @@ impl Node {
         // weights, AND we're not in genesis phase, this indicates an inconsistent
         // state - possibly a failed or incomplete resync.
         //
-        // After a proper resync via force_resync_from_genesis(), the producer_set
+        // After a proper resync via recover_from_peers(), the producer_set
         // should be cleared. If it's not, we're in a dangerous state where
         // production could create orphan blocks.
         //
@@ -5765,13 +5785,13 @@ impl Node {
         }
 
         // Pre-check: snap-synced nodes don't have blocks from height 1.
-        // UTXO/producer rebuild would fail. Fall back to full resync.
+        // UTXO/producer rebuild would fail. Recover from peers instead.
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
                 "Rollback: block store incomplete (snap-synced node). \
-                 Cannot rebuild state. Falling back to full resync."
+                 Cannot rebuild state. Recovering from peers."
             );
-            self.force_resync_from_genesis().await?;
+            self.recover_from_peers().await?;
             return Ok(true);
         }
 
@@ -5998,7 +6018,7 @@ impl Node {
         }
 
         // SAFETY NET: If fork recovery exceeded max depth, the fork is too deep
-        // for reorg. Escalate to force_resync_from_genesis() to recover.
+        // for reorg. Recover from peers (snap sync).
         {
             let exceeded = self
                 .sync_manager
@@ -6006,8 +6026,8 @@ impl Node {
                 .await
                 .take_fork_exceeded_max_depth();
             if exceeded {
-                warn!("Fork recovery exceeded max depth — escalating to genesis resync");
-                self.force_resync_from_genesis().await?;
+                warn!("Fork recovery exceeded max depth — recovering from peers");
+                self.recover_from_peers().await?;
             }
         }
 
@@ -6143,24 +6163,22 @@ impl Node {
 
         // GENESIS RESYNC: sync manager detected persistent chain rejection.
         // Peers don't recognize our tip and the gap is too large for shallow fork recovery.
-        // Full state reset needed — force_resync_from_genesis() handles the 10-layer reset.
         {
             let needs_resync = self.sync_manager.read().await.needs_genesis_resync();
             if needs_resync {
-                warn!("Genesis resync triggered: peers consistently reject our chain tip. Full state reset.");
-                self.force_resync_from_genesis().await?;
+                warn!("Persistent chain rejection: peers reject our tip. Recovering from peers.");
+                self.recover_from_peers().await?;
                 return Ok(());
             }
         }
 
         // DEEP FORK ESCALATION: If peers consistently reject our chain tip (10+ empty
         // header responses), normal sync and fork recovery can't bridge the gap.
-        // Escalate to genesis resync — rebuild state from the canonical chain.
         {
             let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
             if is_deep_fork {
-                warn!("Deep fork detected: peers consistently reject our chain tip. Initiating genesis resync.");
-                self.force_resync_from_genesis().await?;
+                warn!("Deep fork detected: peers consistently reject our chain tip. Recovering from peers.");
+                self.recover_from_peers().await?;
                 return Ok(());
             }
         }
