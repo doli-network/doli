@@ -280,6 +280,7 @@ impl RpcContext {
         let result = match request.method.as_str() {
             "getBlockByHash" => self.get_block_by_hash(request.params).await,
             "getBlockByHeight" => self.get_block_by_height(request.params).await,
+            "getBlockRaw" => self.get_block_raw(request.params).await,
             "getTransaction" => self.get_transaction(request.params).await,
             "sendTransaction" => self.send_transaction(request.params).await,
             "getBalance" => self.get_balance(request.params).await,
@@ -350,6 +351,33 @@ impl RpcContext {
 
         let mut response = BlockResponse::from(&block);
         response.height = params.height;
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get raw bincode-serialized block by height (for archiver backfill via RPC)
+    async fn get_block_raw(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetBlockRawParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let block = self
+            .block_store
+            .get_block_by_height(params.height)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .ok_or_else(RpcError::block_not_found)?;
+
+        let data =
+            bincode::serialize(&block).map_err(|e| RpcError::internal_error(e.to_string()))?;
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        let checksum = crypto::hash::hash(&data).to_string();
+
+        let response = BlockRawResponse {
+            block: b64,
+            blake3: checksum,
+            height: params.height,
+        };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
