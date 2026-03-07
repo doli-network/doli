@@ -21,20 +21,20 @@ for port in 8545 8546 8547; do
     echo "N${node_num}: ${result}"
 done
 
-# N4 (72.60.70.166 via jump)
-result=$(ssh "ilozada@${HOST}" "ssh -p 50790 ilozada@72.60.70.166 \
-    'curl -s -X POST http://127.0.0.1:8545 \
-    -H \"Content-Type: application/json\" \
-    -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' 2>/dev/null" \
+# N4 (72.60.115.209 — direct from Mac, NOT via omegacortex)
+result=$(ssh -p 50790 "ilozada@72.60.115.209" \
+    "curl -s -X POST http://127.0.0.1:8545 \
+    -H 'Content-Type: application/json' \
+    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'" 2>/dev/null \
     | jq -r '.result | "height=\(.bestHeight) slot=\(.bestSlot) hash=\(.bestHash[0:16])"' 2>/dev/null \
     || echo "UNREACHABLE")
 echo "N4: ${result}"
 
-# N5 (72.60.115.209 via jump)
-result=$(ssh "ilozada@${HOST}" "ssh -p 50790 ilozada@72.60.115.209 \
-    'curl -s -X POST http://127.0.0.1:8545 \
-    -H \"Content-Type: application/json\" \
-    -d \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"method\\\":\\\"getChainInfo\\\",\\\"params\\\":{},\\\"id\\\":1}\"' 2>/dev/null" \
+# N5 (72.60.70.166 — direct from Mac, NOT via omegacortex)
+result=$(ssh -p 50790 "ilozada@72.60.70.166" \
+    "curl -s -X POST http://127.0.0.1:8545 \
+    -H 'Content-Type: application/json' \
+    -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}'" 2>/dev/null \
     | jq -r '.result | "height=\(.bestHeight) slot=\(.bestSlot) hash=\(.bestHash[0:16])"' 2>/dev/null \
     || echo "UNREACHABLE")
 echo "N5: ${result}"

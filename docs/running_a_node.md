@@ -542,6 +542,51 @@ cp ~/backup/node.key ~/.doli/mainnet/
 sudo systemctl start doli-node
 ```
 
+### 10.4. Block Archiver (Disaster Recovery)
+
+The block archiver continuously streams every block to a filesystem directory as individual files. This provides an off-chain backup that survives total node loss.
+
+**Enable archiving:**
+```bash
+# Add --archive-to to any node (producer or non-producer)
+doli-node run --archive-to /path/to/archive/
+
+# Example: dedicated archiver node
+doli-node run \
+    --archive-to ~/.doli/mainnet/archive \
+    --p2p-port 30306 \
+    --rpc-port 8548
+```
+
+**How it works:**
+- Each block is serialized and written atomically (tmp file + rename)
+- `manifest.json` tracks the latest archived height and hash
+- On startup, the archiver catches up any blocks missed while the node was down
+- Archiving is non-blocking — it never stalls block production or sync
+
+**Archive directory layout:**
+```
+archive/
+  0000000001.block    # Block at height 1 (bincode serialized)
+  0000000002.block    # Block at height 2
+  ...
+  manifest.json       # {"latest_height": N, "latest_hash": "abc..."}
+```
+
+**Restore from archive (disaster recovery):**
+```bash
+# Import all blocks from archive into a fresh node
+doli-node restore --from /path/to/archive/
+
+# Then rebuild state from imported blocks
+doli-node recover --yes
+```
+
+**Recommended setup:**
+- Run a dedicated non-producer archiver node
+- Periodically replicate the archive directory to off-site storage (rsync, S3, etc.)
+- This ensures recovery even if all nodes and servers are lost
+
 ---
 
 ## 11. Upgrading
@@ -608,6 +653,7 @@ doli-node export <file>           # Export blocks to file
 --no-dht                          # Disable DHT discovery
 --no-auto-update                  # Disable auto-updates
 --update-notify-only              # Notify only, don't apply updates
+--archive-to <path>               # Archive blocks to directory for disaster recovery
 ```
 
 ---

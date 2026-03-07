@@ -76,15 +76,15 @@ sudo systemctl status doli-mainnet-nodeN
 |------|------|----|------------------------|
 | N1 | omegacortex.ai | `ssh ilozada@omegacortex.ai` | 30303/8545/9090 |
 | N2 | omegacortex.ai | same host | 30304/8546/9091 |
-| N3 | 147.93.84.44 | via omegacortex jump | 30303/8545/9090 |
-| N4 | 72.60.70.166 | via omegacortex jump | 30303/8545/9090 |
-| N5 | 72.60.115.209 | via omegacortex jump | 30303/8545/9090 |
+| N3 | 147.93.84.44 | `ssh -p 50790 ilozada@147.93.84.44` (direct from Mac) | 30303/8545/9090 |
+| N4 | 72.60.115.209 | `ssh -p 50790 ilozada@72.60.115.209` (direct from Mac) | 30303/8545/9090 |
+| N5 | 72.60.70.166 | `ssh -p 50790 ilozada@72.60.70.166` (direct from Mac) | 30303/8545/9090 |
 
 **Key differences:**
 - N1/N2 share binary at `~/repos/doli/target/release/doli-node`, have Rust toolchain
-- N3: binary at `/home/ilozada/doli-node`, deployed via SCP
+- N3: binary at `/home/ilozada/doli-node`, deployed via SCP from Mac
 - N4/N5: binary at `/opt/doli/target/release/doli-node`, process user `isudoajl`, no Rust
-- N3/N4/N5: SSH only via omegacortex jump host (`ssh -p 50790`)
+- N3/N4/N5: SSH direct from Mac as `ilozada` on port 50790. **omegacortex CANNOT reach these nodes!**
 
 ## Deployment Procedure
 
@@ -94,20 +94,24 @@ sudo systemctl status doli-mainnet-nodeN
 ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
 ```
 
-### Step 2: Deploy to N4/N5
+### Step 2: Deploy to N3/N4/N5
+
+Deploy binaries from Mac directly (omegacortex cannot reach these nodes):
 
 ```bash
-# Compress
-ssh ilozada@omegacortex.ai "gzip -c ~/repos/doli/target/release/doli-node > /tmp/doli-node.gz"
+# First, get binary from omegacortex to Mac
+scp ilozada@omegacortex.ai:~/repos/doli/target/release/doli-node /tmp/doli-node
 
-# Copy to N4
-ssh ilozada@omegacortex.ai "scp -P 50790 /tmp/doli-node.gz ilozada@72.60.70.166:/tmp/"
+# Deploy to N3
+scp -P 50790 /tmp/doli-node ilozada@147.93.84.44:~/doli-node
 
-# Install on N4
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 \
-  'gunzip -f /tmp/doli-node.gz && sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'"
+# Deploy to N4
+scp -P 50790 /tmp/doli-node ilozada@72.60.115.209:/tmp/
+ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'
 
-# Repeat for N5 (72.60.115.209)
+# Deploy to N5
+scp -P 50790 /tmp/doli-node ilozada@72.60.70.166:/tmp/
+ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'
 ```
 
 ### Step 3: Stop nodes
@@ -116,8 +120,9 @@ ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 \
 # N1/N2/N3 (omegacortex - by PID pattern)
 ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node1')"
 
-# N4/N5 (via jump)
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo kill \$(pgrep doli-node) 2>/dev/null; echo done'"
+# N4/N5 (direct from Mac)
+ssh -p 50790 ilozada@72.60.115.209 'sudo kill $(pgrep doli-node) 2>/dev/null; echo done'  # N4
+ssh -p 50790 ilozada@72.60.70.166 'sudo kill $(pgrep doli-node) 2>/dev/null; echo done'   # N5
 ```
 
 ### Step 4: Start nodes
@@ -150,7 +155,7 @@ rm -rf blocks/ signed_slots.db/
 # 3. Restart - node will resync from peers
 ```
 
-**N4/N5 paths**: `/home/isudoajl/.doli/mainnet/` (no `data/` subdir)
+**N4/N5 paths**: `/home/isudoajl/.doli/mainnet/` (no `data/` subdir, process user `isudoajl`)
 **N1/N2/N3 paths**: `~/.doli/mainnet/nodeN/data/`
 
 ## Upgrade via GitHub

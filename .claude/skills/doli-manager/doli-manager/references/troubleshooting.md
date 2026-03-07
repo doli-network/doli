@@ -43,8 +43,9 @@ pgrep -la doli-node
 
 # Remote nodes
 ssh ilozada@omegacortex.ai "pgrep -la doli-node"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'"
-ssh ilozada@omegacortex.ai "ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'"
+# N4/N5: direct from Mac (omegacortex cannot reach them!)
+ssh -p 50790 ilozada@72.60.115.209 'sudo pgrep -la doli-node'  # N4
+ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'   # N5
 ```
 
 ## Common Issues

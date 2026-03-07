@@ -198,7 +198,7 @@ All commands implicitly wrapped in Nix develop shell.
 | `crypto` | BLAKE3, Ed25519, Merkle, Bech32m Addresses | `hash.rs`, `keys.rs`, `merkle.rs`, `address.rs` (Domain separated) |
 | `vdf` | Wesolowski (Reg) & Hash-Chain (Block) | `vdf.rs`, `proof.rs` (GMP/Rug) |
 | `network` | Gossipsub, Sync, Equivocation | `service.rs`, `sync/`, `gossip.rs` |
-| `storage` | RocksDB blocks + unified StateDb | `block_store.rs`, `state_db.rs`, `utxo.rs`, `producer.rs` |
+| `storage` | RocksDB blocks + unified StateDb + Block Archiver | `block_store.rs`, `state_db.rs`, `utxo.rs`, `producer.rs`, `archiver.rs` |
 | `mempool` | Tx Pool, Double-spend checks | `pool.rs`, `policy.rs` |
 | `updater` | 3/5 Multisig Auto-Update | `lib.rs`, `vote.rs` |
 
@@ -394,6 +394,7 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 | `state_db.rs` | Unified StateDb: atomic WriteBatch per block (UTXOs, producers, chain state) |
 | `utxo.rs` | In-memory UTXO working set for fast reads |
 | `producer.rs` | Producer registry (per-bond `StoredBondEntry` tracking, FIFO withdrawal) |
+| `archiver.rs` | Block archiver for disaster recovery (`--archive-to`, atomic file writes, catch-up) |
 
 **BlockStore Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
 **StateDb Column Families**: `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`
@@ -439,6 +440,40 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 - Investigation reports for complex bugs (root cause, fix, test results)
 - **Naming**: `REPORT_<BUG_NAME>.md` (e.g., `REPORT_UTXO_ROCKSDB_CRASH.md`)
 - **Workflow**: Create `REPORT.md` at repo root during investigation → move here on resolution
+
+## 📦 Block Archiver (Disaster Recovery)
+
+The block archiver streams every applied block to a filesystem directory for off-chain backup.
+
+**How it works:**
+- `--archive-to /path/` flag on `doli-node run` enables archiving
+- Each block is serialized (bincode) and written atomically (tmp + rename)
+- `manifest.json` tracks latest archived height + hash
+- On startup, catches up any missed blocks from BlockStore
+- Non-blocking: uses `mpsc::channel` with `try_send` — never stalls production
+
+**File layout:**
+```
+/path/archive/
+  0000000001.block
+  0000000002.block
+  ...
+  manifest.json    # {"latest_height": N, "latest_hash": "..."}
+```
+
+**Archiver node on omegacortex:**
+- Service: `doli-mainnet-archiver` (systemd)
+- Data: `~/.doli/mainnet/archiver/data`
+- Archive: `~/.doli/mainnet/archive/`
+- Ports: P2P=30306, RPC=8548, Metrics=9093
+- Non-producer, sync-only + archive
+- Log: `/var/log/doli/archiver.log`
+
+**Known limitation:** The archiver currently writes blocks at tip. Should only archive finalized blocks (past FinalityCheckpoint) to avoid archiving fork blocks that get reorged. Not yet implemented.
+
+**Recovery:** `restore_from_archive()` reads block files in order, deserializes, and imports to BlockStore via `put_block_canonical()`. After restore, run `recover --yes` to rebuild state from blocks.
+
+**Code:** `crates/storage/src/archiver.rs`
 
 ## 🖥 Operations & Deployment
 

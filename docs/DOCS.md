@@ -31,6 +31,7 @@ Master index for all DOLI documentation.
 | [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
+| [running_a_node.md § 10.4](./running_a_node.md#104-block-archiver-disaster-recovery) | Block archiver — disaster recovery via `--archive-to` |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
 | [buy_doli.md](./buy_doli.md) | DOLI/USDT exchange system - API, deployment, and operational guide |
 

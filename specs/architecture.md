@@ -39,6 +39,14 @@ A full node that additionally:
 - Creates and broadcasts blocks
 - Manages activation bond
 
+### Archiver Node
+A full node that additionally:
+- Streams every applied block to a filesystem directory (`--archive-to`)
+- Provides off-chain disaster recovery backup
+- Uses atomic writes (tmp + rename) to prevent corruption
+- Catches up missed blocks on restart from local BlockStore
+- Recommended: 1 per network, non-producer, dedicated
+
 ### Light Client
 A minimal client that:
 - Downloads and verifies block headers only
