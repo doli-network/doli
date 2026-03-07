@@ -1011,6 +1011,7 @@ version = "1.1.30"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bincode",
  "chrono",
  "clap",
@@ -3739,6 +3740,7 @@ name = "rpc"
 version = "1.1.30"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bincode",
  "crypto",
  "doli-core",
