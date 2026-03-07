@@ -470,8 +470,8 @@ async fn main() -> Result<()> {
         // on disk could change genesis_timestamp, causing slot schedule divergence and
         // chain forks. The embedded chainspec is the single source of truth.
         let chainspec_for_defaults: Option<std::path::PathBuf> =
-            if matches!(network, Network::Mainnet) {
-                // Mainnet: skip disk entirely — embedded chainspec applied later in run_node()
+            if matches!(network, Network::Mainnet | Network::Testnet) {
+                // Mainnet/Testnet: skip disk — embedded chainspec applied later in run_node()
                 None
             } else {
                 match &cli.command {
@@ -804,6 +804,24 @@ async fn run_node(
                 std::process::exit(1);
             }
         }
+    } else if matches!(network, Network::Testnet) {
+        const EMBEDDED_TESTNET_CHAINSPEC: &str = include_str!("../../../chainspec.testnet.json");
+        match serde_json::from_str::<ChainSpec>(EMBEDDED_TESTNET_CHAINSPEC) {
+            Ok(spec) => {
+                info!(
+                    "Testnet chainspec: embedded (genesis={}, slot={}s) — disk/CLI overrides disabled",
+                    spec.genesis.timestamp, spec.consensus.slot_duration
+                );
+                if chainspec_path.is_some() {
+                    warn!("SECURITY: --chainspec flag ignored for testnet — embedded chainspec is authoritative");
+                }
+                Some(spec)
+            }
+            Err(e) => {
+                error!("BUG: embedded testnet chainspec is invalid: {}", e);
+                std::process::exit(1);
+            }
+        }
     } else if let Some(ref path) = chainspec_path {
         info!("Loading chainspec from {:?}", path);
         match ChainSpec::load(path) {
@@ -817,7 +835,7 @@ async fn run_node(
             }
         }
     } else {
-        // Testnet/Devnet: try disk, then embedded fallback
+        // Devnet: try disk, then none
         let default_path = data_dir.join("chainspec.json");
         if default_path.exists() {
             match ChainSpec::load(&default_path) {
@@ -994,6 +1012,7 @@ async fn run_node(
     let (vote_tx, pending_update) = updater::spawn_update_service(
         update_config,
         data_dir.clone(),
+        network,
         producer_count_fn,
         is_producer_fn,
         maintainer_keys_fn,
@@ -1123,7 +1142,7 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Resul
     match action {
         UpdateCommands::Check => {
             info!("Checking for updates...");
-            match updater::fetch_latest_release(None).await {
+            match updater::fetch_latest_release(None, None).await {
                 Ok(Some(release)) => {
                     let current = updater::current_version();
                     if updater::is_newer_version(&release.version, current) {
@@ -1444,7 +1463,7 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Resul
                 Some(r) => Some(r),
                 None => {
                     info!("Fetching latest release to verify...");
-                    match updater::fetch_latest_release(None).await {
+                    match updater::fetch_latest_release(None, None).await {
                         Ok(Some(r)) if r.version == version => Some(r),
                         Ok(Some(r)) => {
                             println!("║                                                                  ║");

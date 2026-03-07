@@ -1,0 +1,16 @@
+{
+  "name": "DOLI Testnet",
+  "id": "testnet",
+  "network": "Testnet",
+  "genesis": {
+    "timestamp": 0,
+    "message": "DOLI Testnet v2 Genesis - 2026-03-06",
+    "initial_reward": 100000000
+  },
+  "consensus": {
+    "slot_duration": 10,
+    "slots_per_epoch": 360,
+    "bond_amount": 1000000000
+  },
+  "genesis_producers": []
+}

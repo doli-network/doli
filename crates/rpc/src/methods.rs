@@ -111,6 +111,8 @@ pub struct RpcContext {
     /// On-chain maintainer set (shared with Node — bootstrapped from first 5 producers,
     /// updated via MaintainerAdd/Remove governance txs)
     pub maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
+    /// Vesting quarter duration in slots (network-specific: mainnet=3,153,600, testnet=2,160)
+    pub vesting_quarter_slots: u64,
 }
 
 impl RpcContext {
@@ -152,6 +154,7 @@ impl RpcContext {
                 })
             }),
             maintainer_state: None,
+            vesting_quarter_slots: net_params.vesting_quarter_slots,
         }
     }
 
@@ -197,6 +200,7 @@ impl RpcContext {
                     })
                 }),
                 maintainer_state: None,
+                vesting_quarter_slots: doli_core::consensus::VESTING_QUARTER_SLOTS as u64,
             }
         }
     }
@@ -1087,9 +1091,10 @@ impl RpcContext {
 
     /// Get bond vesting details for a producer (per-bond granularity)
     async fn get_bond_details(&self, params: Value) -> Result<Value, RpcError> {
-        use doli_core::consensus::{
-            withdrawal_penalty_rate, VESTING_PERIOD_SLOTS, VESTING_QUARTER_SLOTS,
-        };
+        use doli_core::consensus::withdrawal_penalty_rate_with_quarter;
+
+        let quarter = self.vesting_quarter_slots;
+        let period = 4 * quarter;
 
         let params: GetBondDetailsParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
@@ -1116,14 +1121,14 @@ impl RpcContext {
             .iter()
             .map(|entry| {
                 let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
-                let penalty = withdrawal_penalty_rate(age as u32);
+                let penalty = withdrawal_penalty_rate_with_quarter(age as u32, quarter as u32);
                 BondEntryResponse {
                     creation_slot: entry.creation_slot,
                     amount: entry.amount,
                     age_slots: age,
                     penalty_pct: penalty,
-                    vested: age >= VESTING_PERIOD_SLOTS as u64,
-                    maturation_slot: entry.creation_slot as u64 + VESTING_PERIOD_SLOTS as u64,
+                    vested: age >= period,
+                    maturation_slot: entry.creation_slot as u64 + period,
                 }
             })
             .collect();
@@ -1137,8 +1142,8 @@ impl RpcContext {
         };
         for entry in &info.bond_entries {
             let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
-            let quarters = age / VESTING_QUARTER_SLOTS as u64;
-            match quarters {
+            let quarters_elapsed = age / quarter;
+            match quarters_elapsed {
                 0 => summary.q1 += 1,
                 1 => summary.q2 += 1,
                 2 => summary.q3 += 1,
@@ -1152,11 +1157,12 @@ impl RpcContext {
             .first()
             .map(|e| (current_slot as u64).saturating_sub(e.creation_slot as u64))
             .unwrap_or(0);
-        let overall_penalty = withdrawal_penalty_rate(oldest_age as u32);
-        let all_vested = info.bond_entries.iter().all(|e| {
-            (current_slot as u64).saturating_sub(e.creation_slot as u64)
-                >= VESTING_PERIOD_SLOTS as u64
-        });
+        let overall_penalty =
+            withdrawal_penalty_rate_with_quarter(oldest_age as u32, quarter as u32);
+        let all_vested = info
+            .bond_entries
+            .iter()
+            .all(|e| (current_slot as u64).saturating_sub(e.creation_slot as u64) >= period);
 
         let response = BondDetailsResponse {
             public_key: params.public_key,
@@ -1169,10 +1175,10 @@ impl RpcContext {
             maturation_slot: info
                 .bond_entries
                 .last()
-                .map(|e| e.creation_slot as u64 + VESTING_PERIOD_SLOTS as u64)
+                .map(|e| e.creation_slot as u64 + period)
                 .unwrap_or(0),
-            vesting_quarter_slots: VESTING_QUARTER_SLOTS as u64,
-            vesting_period_slots: VESTING_PERIOD_SLOTS as u64,
+            vesting_quarter_slots: quarter,
+            vesting_period_slots: period,
             summary,
             bonds,
             withdrawal_pending_count: info.withdrawal_pending_count,
