@@ -259,6 +259,18 @@ doli balance --address f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf6420031
 doli -w ~/.doli/mainnet/keys/producer_1.json send doli1recipient... 20
 ```
 
+**Network flag** (`-n`/`--network`): Controls address prefix and default RPC endpoint:
+```bash
+# Testnet (tdoli1 prefix, RPC :18545)
+doli -n testnet -w ~/.doli/testnet/keys/nt1.json balance
+
+# Devnet (ddoli1 prefix, RPC :28545)
+doli -n devnet -w ~/.doli/devnet/wallet.json balance
+
+# Mainnet (default — doli1 prefix, RPC :8545)
+doli -w ~/.doli/mainnet/keys/producer_1.json balance
+```
+
 **Fee**: Auto-calculated as `max(1000, inputs * 500)` units. Override with `--fee` if needed.
 
 **Code**: `crates/crypto/src/address.rs` (encode, decode, from_pubkey, resolve)
@@ -501,7 +513,7 @@ The block archiver streams every applied block to a filesystem directory for off
 All operational procedures are in the ops runbook: **`.claude/skills/doli-ops/SKILL.md`**
 
 **Always read the ops skill before any infrastructure task.** Key sections:
-- **Section 2**: Node inventory (N1-N6), SSH access, service management, logs
+- **Section 2**: Node inventory (N1-N12, NT1-NT12), SSH access, service management, logs
 - **Section 3**: Deployment procedures (consensus-critical simultaneous vs rolling)
 - **Section 4**: Auto-update system (signing, veto, grace period)
 - **Section 5**: doli-node upgrade procedures
@@ -511,6 +523,17 @@ All operational procedures are in the ops runbook: **`.claude/skills/doli-ops/SK
 - **Section 9**: N6 node details
 - **Section 10**: Chainspec rules, DNS/bootstrap, snap sync
 - **Section 11**: On-chain protocol activation (consensus-critical changes)
+
+### Binary Segregation (Mainnet vs Testnet)
+
+Testnet and mainnet use **completely separate binaries** to allow independent upgrades:
+
+| Network | Binary Path | Hosts |
+|---------|-------------|-------|
+| Mainnet | `~/repos/doli/target/release/doli-node` (omegacortex) or `/opt/doli/target/release/doli-node` (N3/N4/N5) | All |
+| Testnet | `/opt/doli/testnet/doli-node` | omegacortex, N3, N5 |
+
+**Rule**: Never deploy to testnet by rebuilding `target/release/` — always copy to `/opt/doli/testnet/` separately. This prevents testnet upgrades from affecting mainnet production nodes.
 
 ### Block Archiver (Disaster Recovery)
 
