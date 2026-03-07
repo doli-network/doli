@@ -373,6 +373,7 @@ impl NetworkParams {
                 bootstrap_nodes: vec![
                     "/dns4/seed1.doli.network/tcp/30303".to_string(),
                     "/dns4/seed2.doli.network/tcp/30303".to_string(),
+                    "/dns4/archive.doli.network/tcp/30306".to_string(),
                 ],
 
                 // Timing
