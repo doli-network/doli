@@ -896,10 +896,11 @@ mod tests {
         assert!(Network::Mainnet.is_in_genesis(360));
         assert!(!Network::Mainnet.is_in_genesis(361));
 
-        // Testnet has no genesis phase (pre-registered producers)
-        assert_eq!(Network::Testnet.genesis_blocks(), 0);
-        assert!(!Network::Testnet.is_in_genesis(0));
-        assert!(!Network::Testnet.is_in_genesis(1));
+        // Testnet has 1-hour genesis phase (same as mainnet)
+        assert_eq!(Network::Testnet.genesis_blocks(), 360);
+        assert!(Network::Testnet.is_in_genesis(1));
+        assert!(Network::Testnet.is_in_genesis(360));
+        assert!(!Network::Testnet.is_in_genesis(361));
     }
 
     #[test]

@@ -454,7 +454,7 @@ impl NetworkParams {
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
                 automatic_genesis_bond: consensus::BOND_UNIT,
-                genesis_blocks: 0,
+                genesis_blocks: 360, // 1 hour — same as mainnet
 
                 // VDF (800K iterations ~= 55ms, same as mainnet)
                 vdf_iterations: 800_000,
