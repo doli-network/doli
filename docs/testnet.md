@@ -271,7 +271,7 @@ Community and partner nodes running on testnet.
 
 | Operator | Host | Wallet Address | Joined |
 |----------|------|----------------|--------|
-| atinoco | doli02 | `doli17axj5cjstmwqs8a4zg6xxy5qjwnd7j7dnggyrhy3gya37x7ckrhsxulrwf` | 2026-03-07 |
+| atinoco | doli02 | `tdoli17axj5cjstmwqs8a4zg6xxy5qjwnd7j7dnggyrhy3gya37x7ckrhsefjvfy` | 2026-03-07 |
 
 ---
 
