@@ -45,7 +45,16 @@ A full node that additionally:
 - Provides off-chain disaster recovery backup
 - Uses atomic writes (tmp + rename) to prevent corruption
 - Catches up missed blocks on restart from local BlockStore
+- BLAKE3 checksum sidecar (`.blake3`) for each block file
+- Supports selective backfill (`restore --backfill`) for filling snap sync gaps
 - Recommended: 1 per network, non-producer, dedicated
+
+### P2P Historical Backfill
+Built into every node (no configuration needed):
+- Detects snap sync gaps on startup (missing blocks before first available)
+- Background task requests missing blocks via `GetBlockByHeight` from peers
+- Rate-limited (100ms between requests), non-blocking, resumable across restarts
+- Stores blocks for historical record only — no state rebuild
 
 ### Light Client
 A minimal client that:
