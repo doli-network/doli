@@ -2888,10 +2888,8 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
 
             // Show running node version
             if let Ok(info) = rpc.get_node_info().await {
-                let node_version =
-                    info.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                let network =
-                    info.get("network").and_then(|v| v.as_str()).unwrap_or("?");
+                let node_version = info.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                let network = info.get("network").and_then(|v| v.as_str()).unwrap_or("?");
                 println!("Node version: v{}", node_version);
                 println!("Network:      {}", network);
                 println!();
