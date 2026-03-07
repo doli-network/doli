@@ -32,7 +32,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY bins/ bins/
 COPY testing/ testing/
-COPY chainspec.mainnet.json ./
+COPY chainspec.mainnet.json chainspec.testnet.json ./
 
 # Build release binary
 RUN cargo build --release --package doli-node
