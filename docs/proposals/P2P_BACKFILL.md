@@ -1,7 +1,8 @@
 # Proposal: P2P Historical Block Backfill via archive.doli.network
 
-> **Status: IMPLEMENTED** (commit `7ee401c`). Backfill runs automatically on every node.
-> Implementation in `bins/node/src/node.rs` — `detect_backfill_gap()`, `maybe_backfill_block()`, `handle_backfill_response()`.
+> **Status: SUPERSEDED** — P2P backfill was removed in favor of the archiver as the sole source of truth for historical block recovery. Use `doli-node restore --from /path/to/archive --backfill --yes` instead. The archiver provides BLAKE3-verified blocks with genesis_hash validation, which is more reliable than requesting blocks from arbitrary peers.
+>
+> Original implementation was in `bins/node/src/node.rs` — `detect_backfill_gap()`, `maybe_backfill_block()`, `handle_backfill_response()` (all removed).
 
 ## Problem
 
