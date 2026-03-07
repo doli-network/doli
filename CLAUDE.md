@@ -213,8 +213,8 @@ All commands implicitly wrapped in Nix develop shell.
 | **VDF Reg** | 600M iter (~10m) | 5M | `T_REGISTER_BASE` (Anti-Sybil) |
 | **Bond** | 10 DOLI | 1 DOLI | `BOND_UNIT` |
 | **Max Bonds** | 3,000/producer | 3,000 | `MAX_BONDS_PER_PRODUCER` (30K DOLI max stake) |
-| **Vesting** | 1 day (8,640 slots) | configurable | `VESTING_PERIOD_SLOTS` (per-bond FIFO) |
-| **Vesting Quarter** | 6h (2,160 slots) | configurable | `VESTING_QUARTER_SLOTS` |
+| **Vesting** | 4yr (12,614,400 slots) | 1d (8,640) / configurable | `VESTING_PERIOD_SLOTS` (per-bond FIFO) |
+| **Vesting Quarter** | 1yr (3,153,600 slots) | 6h (2,160) / configurable | `VESTING_QUARTER_SLOTS` |
 | **Selection** | `slot % bonds` | - | Sequential 2s exclusive windows |
 | **Fallback** | 5 ranks | 5 ranks | `MAX_FALLBACK_RANKS`, `FALLBACK_TIMEOUT_MS=2000` |
 | **Clock Drift** | 1s / 200ms | 1s / 200ms | `MAX_DRIFT=1`, `MAX_DRIFT_MS=200` |
@@ -315,9 +315,22 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 1 day, per-bond FIFO), Reg Fees
 - **Bond Unit**: Fixed at 10 DOLI across all eras (never decreases)
 
-### Bond Vesting (Per-Bond FIFO — 1-day, quarter-based)
+### Bond Vesting (Per-Bond FIFO — Network-Differentiated)
 
 Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **FIFO order** (oldest first), with per-bond penalty based on individual age. **Instant payout** — funds available in the same block, no delay. Bonds removed at next epoch boundary.
+
+**Mainnet** (4-year, 1-year quarters):
+
+| Quarter | Age | Penalty |
+|---------|-----|---------|
+| Y1 | 0-1yr | 75% Burn |
+| Y2 | 1-2yr | 50% Burn |
+| Y3 | 2-3yr | 25% Burn |
+| Y4+ | 3yr+ | 0% |
+
+`VESTING_QUARTER_SLOTS = 3,153,600` (1yr), `VESTING_PERIOD_SLOTS = 12,614,400` (4yr).
+
+**Testnet** (1-day, 6h quarters):
 
 | Quarter | Age | Penalty |
 |---------|-----|---------|
@@ -326,7 +339,7 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 | Q3 | 12-18h | 25% Burn |
 | Q4+ | 18h+ | 0% |
 
-`VESTING_QUARTER_SLOTS = 2,160` (6h), `VESTING_PERIOD_SLOTS = 8,640` (1 day). Configurable on devnet via `DOLI_VESTING_QUARTER_SLOTS`.
+Testnet: `vesting_quarter_slots = 2,160` (6h) via `NetworkParams`. Devnet configurable via `DOLI_VESTING_QUARTER_SLOTS`.
 
 **Key fields on ProducerInfo**: `bond_entries: Vec<StoredBondEntry>`, `withdrawal_pending_count: u32` (prevents double-withdrawal in same epoch).
 
@@ -348,7 +361,8 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 ### Chain Identity (genesis_hash)
 - `genesis_hash = BLAKE3(genesis_time || network_id || slot_duration || message)`
 - Present in every BlockHeader (v2+), included in block hash
-- Mainnet chainspec is embedded in binary — disk files and `--chainspec` ignored
+- Mainnet and testnet chainspecs are embedded in binary — disk files and `--chainspec` ignored
+- Devnet uses disk chainspec or CLI `--chainspec` flag
 - Prevents genesis-time-hijack attacks (even 1s difference → different hash → rejected)
 
 ### Transaction Validation
@@ -366,6 +380,9 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 ### Governance
 - **Maintainers**: First 5 registered producers (on-chain); `BOOTSTRAP_MAINTAINER_KEYS` as fallback pre-sync
 - **Updates**: 3/5 multisig required for release signatures
+- **Network targeting**: `metadata.json` in GitHub Release assets controls which networks receive an update
+  - `{"networks": ["mainnet", "testnet"]}` = both, `["testnet"]` = testnet only (staged rollout)
+  - Missing metadata.json = targets all networks (backward compat)
 - **Veto**: 40% stake can block (5-min veto period early network; target 7 days)
 
 ## 📂 File Map
