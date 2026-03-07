@@ -208,6 +208,7 @@ enum Commands {
     ///
     /// Imports all blocks from the archive, verifies BLAKE3 checksums,
     /// then rebuilds UTXO/producer/chain state automatically.
+    /// Use --backfill to only import missing blocks (fills snap sync gaps).
     Restore {
         /// Path to the archive directory
         #[arg(long)]
@@ -216,6 +217,10 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// Only import missing blocks (skip existing). Does not rebuild state.
+        #[arg(long)]
+        backfill: bool,
     },
 
     /// Rebuild canonical chain index from block headers
@@ -567,8 +572,12 @@ async fn main() -> Result<()> {
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
         }
-        Some(Commands::Restore { from, yes }) => {
-            restore_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
+        Some(Commands::Restore { from, yes, backfill }) => {
+            if backfill {
+                backfill_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
+            } else {
+                restore_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
+            }
         }
         Some(Commands::Reindex) => {
             reindex_canonical_chain(&data_dir)?;
@@ -2062,6 +2071,55 @@ fn show_status(data_dir: &PathBuf) -> Result<()> {
 
     // TODO: Load chain state and show status
     println!("Status: Not implemented yet");
+
+    Ok(())
+}
+
+fn backfill_from_archive(
+    network: Network,
+    data_dir: &Path,
+    archive_dir: &Path,
+    skip_confirm: bool,
+) -> Result<()> {
+    use storage::BlockStore;
+
+    println!("=== DOLI Backfill from Archive ===");
+    println!();
+    println!("Archive:   {:?}", archive_dir);
+    println!("Data dir:  {:?}", data_dir);
+    println!("Network:   {}", network.name());
+    println!();
+    println!("This will import ONLY missing blocks without rebuilding state.");
+    println!();
+
+    if !archive_dir.exists() {
+        return Err(anyhow!(
+            "Archive directory does not exist: {:?}",
+            archive_dir
+        ));
+    }
+
+    if !skip_confirm {
+        println!("Press Ctrl+C to cancel, or wait 5 seconds to proceed...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    let blocks_path = data_dir.join("blocks");
+    std::fs::create_dir_all(&blocks_path)?;
+    let block_store = BlockStore::open(&blocks_path)?;
+
+    let genesis_hash = doli_core::genesis::genesis_hash(network);
+
+    let imported =
+        storage::archiver::backfill_from_archive(archive_dir, &block_store, Some(&genesis_hash))
+            .map_err(|e| anyhow!("{}", e))?;
+
+    println!();
+    if imported > 0 {
+        println!("Backfill complete: {} missing blocks imported.", imported);
+    } else {
+        println!("Backfill complete: no missing blocks found.");
+    }
 
     Ok(())
 }

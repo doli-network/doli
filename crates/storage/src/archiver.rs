@@ -224,6 +224,27 @@ pub fn restore_from_archive(
     block_store: &super::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
 ) -> Result<u64, String> {
+    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, false)
+}
+
+/// Backfill missing blocks from an archive directory. Returns the number of blocks imported.
+///
+/// Like `restore_from_archive` but skips blocks that already exist in the BlockStore.
+/// Designed for filling gaps left by snap sync without touching existing state.
+pub fn backfill_from_archive(
+    archive_dir: &Path,
+    block_store: &super::BlockStore,
+    expected_genesis_hash: Option<&crypto::Hash>,
+) -> Result<u64, String> {
+    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true)
+}
+
+fn import_archive_blocks(
+    archive_dir: &Path,
+    block_store: &super::BlockStore,
+    expected_genesis_hash: Option<&crypto::Hash>,
+    skip_existing: bool,
+) -> Result<u64, String> {
     let manifest_height = read_manifest_height_from(archive_dir)
         .ok_or_else(|| "No manifest.json found in archive directory".to_string())?;
 
@@ -241,13 +262,23 @@ pub fn restore_from_archive(
         }
     }
 
+    let mode = if skip_existing { "Backfilling" } else { "Restoring" };
     info!(
-        "[ARCHIVER] Restoring from archive: {} blocks available",
-        manifest_height
+        "[ARCHIVER] {} from archive: {} blocks available",
+        mode, manifest_height
     );
 
     let mut imported = 0u64;
+    let mut skipped = 0u64;
     for h in 1..=manifest_height {
+        // Skip blocks that already exist in the BlockStore
+        if skip_existing {
+            if let Ok(Some(_)) = block_store.get_block_by_height(h) {
+                skipped += 1;
+                continue;
+            }
+        }
+
         let block_path = archive_dir.join(format!("{:010}.block", h));
         let data = std::fs::read(&block_path)
             .map_err(|e| format!("Failed to read block file at height {}: {}", h, e))?;
@@ -284,9 +315,10 @@ pub fn restore_from_archive(
             .map_err(|e| format!("Failed to store block {}: {}", h, e))?;
 
         imported += 1;
-        if h.is_multiple_of(1000) {
+        if imported.is_multiple_of(100) {
             info!(
-                "[ARCHIVER] Restored {}/{} blocks (hash={}...)",
+                "[ARCHIVER] {} {}/{} blocks (hash={}...)",
+                mode,
                 h,
                 manifest_height,
                 &hash_str[..16]
@@ -294,10 +326,17 @@ pub fn restore_from_archive(
         }
     }
 
-    info!(
-        "[ARCHIVER] Restore complete: {} blocks imported. Run 'doli-node recover --yes' to rebuild state.",
-        imported
-    );
+    if skip_existing {
+        info!(
+            "[ARCHIVER] Backfill complete: {} blocks imported, {} already present",
+            imported, skipped
+        );
+    } else {
+        info!(
+            "[ARCHIVER] Restore complete: {} blocks imported. Run 'doli-node recover --yes' to rebuild state.",
+            imported
+        );
+    }
 
     Ok(imported)
 }
