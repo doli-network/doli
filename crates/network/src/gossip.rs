@@ -194,14 +194,16 @@ pub fn topics_for_tier(tier: u8, region: Option<u32>) -> Vec<String> {
         }
         3 => {
             topics.push(HEADERS_TOPIC.to_string());
+            topics.push(ATTESTATION_TOPIC.to_string());
         }
         _ => {
-            // Tier 0 / legacy
+            // Tier 0 / legacy — includes attestations so all nodes can track finality
             topics.extend([
                 BLOCKS_TOPIC.to_string(),
                 TRANSACTIONS_TOPIC.to_string(),
                 HEARTBEATS_TOPIC.to_string(),
                 HEADERS_TOPIC.to_string(),
+                ATTESTATION_TOPIC.to_string(),
             ]);
         }
     }
@@ -629,7 +631,8 @@ mod tests {
         assert!(topics.contains(&VOTES_TOPIC.to_string()));
         // Tier 0 should NOT have tier1-specific topics
         assert!(!topics.contains(&TIER1_BLOCKS_TOPIC.to_string()));
-        assert!(!topics.contains(&ATTESTATION_TOPIC.to_string()));
+        // But all tiers receive attestations for finality tracking
+        assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
     }
 
     #[test]
@@ -647,10 +650,11 @@ mod tests {
         assert!(topics.contains(&HEADERS_TOPIC.to_string()));
         assert!(topics.contains(&PRODUCERS_TOPIC.to_string()));
         assert!(topics.contains(&VOTES_TOPIC.to_string()));
+        assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
         assert!(!topics.contains(&BLOCKS_TOPIC.to_string()));
         assert!(!topics.contains(&TRANSACTIONS_TOPIC.to_string()));
         assert!(!topics.contains(&HEARTBEATS_TOPIC.to_string()));
-        assert_eq!(topics.len(), 3);
+        assert_eq!(topics.len(), 4);
     }
 
     #[test]
