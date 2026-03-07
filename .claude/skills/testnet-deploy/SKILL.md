@@ -530,3 +530,331 @@ All 12 testnet systemd services confirmed pointing to `/opt/doli/testnet/doli-no
 | omegacortex | NT1-NT5 | All have `--relay-server --rpc-bind 0.0.0.0 --yes --force-start` |
 | N3 | NT6-NT8 | `--yes --force-start`, NT7-NT8 bootstrap N3:40303 + omegacortex:40303 |
 | N5 | NT9-NT12 | `--yes --force-start`, bootstrap omegacortex:40303 |
+
+---
+
+## 15. MAINNET AUTO-UPDATE ACTIVATION (Post-Release)
+
+> **When to use**: After Ivan has explicitly requested a version bump + tag + GitHub Release,
+> and the release is published and verified on GitHub. This section activates the auto-update
+> pipeline so all mainnet nodes worldwide pick up and apply the new binary automatically.
+
+### 15.0 Prerequisites (ALL must be true)
+
+| Check | How to verify |
+|-------|---------------|
+| GitHub Release exists | `gh release view v<VERSION>` shows the release |
+| Release has tarball assets | `gh release view v<VERSION>` lists `.tar.gz` for linux-x64 |
+| Testnet validated | All 13 testnet nodes running the same version, chain progressing |
+| Ivan approved | Explicit "proceed" from Ivan for mainnet activation |
+
+> **CRITICAL**: If CI did not produce tarball assets, the auto-update system has nothing to
+> download. Nodes will detect the new version but `auto_apply_from_github()` will fail.
+> In that case, use manual deployment (see ops runbook Section 3).
+
+### 15.1 How the auto-update system works (reference)
+
+```
+1. GitHub Release published with CHECKSUMS.txt (CI builds tarballs)
+2. Maintainers sign the release (3 of 5 required) → SIGNATURES.json uploaded
+3. Running nodes poll GitHub API every 6h (mainnet) for new releases
+4. Node sees newer version → downloads SIGNATURES.json → verifies 3/5 sigs
+5. Veto period begins (5 min early network, target 7 days)
+6. If <40% veto weight → APPROVED → grace period → auto-apply + restart
+7. If >=40% veto weight → REJECTED → no update
+```
+
+**Key files:**
+- `CHECKSUMS.txt` — SHA-256 hashes per platform tarball (CI-generated)
+- `SIGNATURES.json` — 3/5 maintainer signatures over `"version:sha256(CHECKSUMS.txt)"`
+- `metadata.json` — Network targeting (`{"networks":["mainnet","testnet"]}`)
+
+### 15.2 Step 1: Verify release assets on GitHub
+
+```bash
+gh release view v<VERSION>
+```
+
+Confirm:
+- Title and tag match expected version
+- Asset list includes platform tarballs (e.g. `doli-node-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz`)
+- `CHECKSUMS.txt` is present (CI-generated)
+
+If `CHECKSUMS.txt` is missing (no CI pipeline yet), generate it manually:
+
+```bash
+# On omegacortex after building release binaries
+cd ~/repos/doli/target/release
+sha256sum doli-node doli > /tmp/CHECKSUMS.txt
+cat /tmp/CHECKSUMS.txt
+gh release upload v<VERSION> /tmp/CHECKSUMS.txt
+```
+
+### 15.3 Step 2: Sign the release (3 of 5 maintainer keys)
+
+Each maintainer runs `doli release sign` with their producer key. This downloads
+`CHECKSUMS.txt` from the GitHub Release, computes its SHA-256, and signs `"version:sha256"`.
+
+**Maintainer keys (N1-N5 = first 5 registered producers = maintainers):**
+
+| Maintainer | Key Location | Server |
+|------------|-------------|--------|
+| N1 | `~/.doli/mainnet/keys/producer_1.json` | omegacortex |
+| N2 | `~/.doli/mainnet/keys/producer_2.json` | omegacortex |
+| N3 | `~/.doli/mainnet/keys/producer_3.json` | omegacortex |
+| N4 | `~/.doli/mainnet/keys/producer_5.json` | N4 (72.60.115.209) |
+| N5 | `~/.doli/mainnet/keys/producer_4.json` | N5 (72.60.70.166) |
+
+> **Reminder**: N4/N5 keys are SWAPPED (N4=producer_5, N5=producer_4). This is intentional.
+
+**Sign with N1, N2, N3 (all on omegacortex — easiest 3/5):**
+
+```bash
+# SSH to omegacortex
+ssh ilozada@72.60.228.233
+
+# Sign with N1
+~/repos/doli/target/release/doli release sign --version v<VERSION> \
+  --key ~/.doli/mainnet/keys/producer_1.json 2>/dev/null
+
+# Sign with N2
+~/repos/doli/target/release/doli release sign --version v<VERSION> \
+  --key ~/.doli/mainnet/keys/producer_2.json 2>/dev/null
+
+# Sign with N3
+~/repos/doli/target/release/doli release sign --version v<VERSION> \
+  --key ~/.doli/mainnet/keys/producer_3.json 2>/dev/null
+```
+
+Each command outputs a JSON block:
+```json
+{
+  "public_key": "202047256a8072a8...",
+  "signature": "a1b2c3d4e5f6..."
+}
+```
+
+### 15.4 Step 3: Assemble and upload SIGNATURES.json
+
+Collect the 3 signature blocks and assemble into `SIGNATURES.json`:
+
+```bash
+cat > /tmp/SIGNATURES.json << 'SIGEOF'
+{
+  "version": "<VERSION>",
+  "checksums_sha256": "<SHA256_OF_CHECKSUMS_TXT>",
+  "signatures": [
+    {
+      "public_key": "<N1_PUBKEY>",
+      "signature": "<N1_SIG>"
+    },
+    {
+      "public_key": "<N2_PUBKEY>",
+      "signature": "<N2_SIG>"
+    },
+    {
+      "public_key": "<N3_PUBKEY>",
+      "signature": "<N3_SIG>"
+    }
+  ]
+}
+SIGEOF
+```
+
+> The `checksums_sha256` value is printed by `doli release sign` in the message line:
+> `Message: "1.1.31:abc123..."` — the part after the colon is the checksums SHA-256.
+
+Upload to the GitHub Release:
+
+```bash
+gh release upload v<VERSION> /tmp/SIGNATURES.json --clobber
+```
+
+### 15.5 Step 4: Upload network targeting metadata (optional)
+
+By default, a release targets ALL networks. To restrict (e.g., mainnet-only or staged rollout):
+
+```bash
+# Target both mainnet and testnet (default behavior)
+echo '{"version":"<VERSION>","networks":["mainnet","testnet"]}' > /tmp/metadata.json
+
+# Target mainnet only
+echo '{"version":"<VERSION>","networks":["mainnet"]}' > /tmp/metadata.json
+
+# Target testnet only (staged rollout — test before mainnet)
+echo '{"version":"<VERSION>","networks":["testnet"]}' > /tmp/metadata.json
+
+gh release upload v<VERSION> /tmp/metadata.json --clobber
+```
+
+If `metadata.json` is not uploaded, the release targets all networks (backward compat).
+
+### 15.6 Step 5: Verify the release is discoverable
+
+From any node, test that the auto-update system can find and validate the release:
+
+```bash
+# Check from omegacortex (mainnet node)
+ssh ilozada@72.60.228.233 '~/repos/doli/target/release/doli update check'
+```
+
+Expected output:
+```
+New update available: v<CURRENT> -> v<NEW>
+Signatures: 3/5 valid (verified)
+Status: Veto period active (Xm remaining)
+```
+
+### 15.7 Step 6: Monitor auto-update propagation
+
+After SIGNATURES.json is uploaded, the auto-update lifecycle begins:
+
+```
+T+0:00   SIGNATURES.json uploaded → nodes start detecting new version
+T+0:00   Veto period begins (5 min early network)
+T+5:00   Veto period ends → if <40% veto → APPROVED
+T+5:00   Grace period begins (1h mainnet)
+T+65:00  Grace period ends → enforcement active
+T+65:00  Nodes auto-download, verify, apply, restart
+```
+
+**Monitor progress across all mainnet nodes:**
+
+```bash
+echo "=== N1-N2, N6 (omegacortex) ==="
+ssh ilozada@72.60.228.233 '
+for port in 8545 8546 8547; do
+  echo -n "PORT $port: "
+  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" 2>/dev/null)
+  echo "$R" | grep -oP "\"bestHeight\":\d+|\"version\":\"[^\"]*\"" | tr "\n" " "; echo
+done'
+
+echo ""
+echo "=== N3 ==="
+ssh -p 50790 ilozada@147.93.84.44 '
+  echo -n "PORT 8545: "
+  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" 2>/dev/null)
+  echo "$R" | grep -oP "\"bestHeight\":\d+|\"version\":\"[^\"]*\"" | tr "\n" " "; echo'
+
+echo ""
+echo "=== N4 + N8-N12 ==="
+ssh -p 50790 ilozada@72.60.115.209 '
+for port in 8545 8546 8547 8548 8549 8550; do
+  echo -n "PORT $port: "
+  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" 2>/dev/null)
+  echo "$R" | grep -oP "\"bestHeight\":\d+|\"version\":\"[^\"]*\"" | tr "\n" " "; echo
+done'
+
+echo ""
+echo "=== N5 + N7 ==="
+ssh -p 50790 ilozada@72.60.70.166 '
+for port in 8545 8546; do
+  echo -n "PORT $port: "
+  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" 2>/dev/null)
+  echo "$R" | grep -oP "\"bestHeight\":\d+|\"version\":\"[^\"]*\"" | tr "\n" " "; echo
+done'
+```
+
+**Success criteria**: All nodes report `"version":"<NEW_VERSION>"` and heights within 2 slots.
+
+### 15.8 Step 7: Verify chain health post-update
+
+After all nodes have updated, confirm the chain is healthy:
+
+```bash
+# Wait 30 seconds, then check heights again
+sleep 30
+
+# Quick check: N1 height is advancing
+ssh ilozada@72.60.228.233 'for i in 1 2; do
+  echo -n "Check $i: "
+  curl -s -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | grep -oP "\"bestHeight\":\d+"
+  sleep 15
+done'
+```
+
+Heights should advance by ~1-2 every 10 seconds.
+
+### 15.9 Troubleshooting auto-update
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Node doesn't detect update | Check interval is 6h | Wait, or restart node to trigger immediate check |
+| "Insufficient signatures" | SIGNATURES.json missing or <3 valid sigs | Re-sign and re-upload |
+| "Download failed" | Tarball asset missing from release | Upload tarball or use manual deploy |
+| Node stuck on old version | `notify_only: true` in config | SSH in, run `doli update apply` manually |
+| Veto rejected update | >40% stake vetoed | Investigate why, fix issues, publish new release |
+| Update applied but node crashed | Bad binary | Watchdog auto-rollbacks after 3 crashes in 1h |
+
+### 15.10 Emergency: Force manual update on specific node
+
+If auto-update fails on a node and manual intervention is needed:
+
+```bash
+# SSH to the node's server
+# Stop the service
+sudo systemctl stop doli-mainnet-<service>
+
+# Backup current binary
+sudo cp /path/to/doli-node /path/to/doli-node.bak
+
+# Copy new binary (from omegacortex build or download)
+sudo cp /tmp/new-doli-node /path/to/doli-node
+sudo chmod +x /path/to/doli-node
+
+# Restart
+sudo systemctl start doli-mainnet-<service>
+```
+
+> **CRITICAL**: Follow the N1/N2 protection rule — never stop N1 or N2 while any other
+> node is syncing or broken. Only touch N1/N2 when ALL nodes are fully synchronized.
+
+### 15.11 Complete auto-update activation checklist
+
+```
+MAINNET AUTO-UPDATE — v<VERSION> — <DATE>
+
+PREREQUISITES
+[ ] GitHub Release v<VERSION> exists
+[ ] CHECKSUMS.txt asset present
+[ ] Testnet validated on same version
+[ ] Ivan approved mainnet activation
+
+SIGNING (3 of 5 maintainer keys)
+[ ] N1 signed: public_key=________, signature=________
+[ ] N2 signed: public_key=________, signature=________
+[ ] N3 signed: public_key=________, signature=________
+[ ] checksums_sha256 = ________________
+[ ] All 3 signatures use same checksums_sha256
+
+ASSEMBLY & UPLOAD
+[ ] SIGNATURES.json assembled with 3 signatures
+[ ] SIGNATURES.json uploaded to release: gh release upload v<VERSION> SIGNATURES.json
+[ ] metadata.json uploaded (if network targeting needed)
+
+VERIFICATION
+[ ] `doli update check` detects new version
+[ ] Signature verification: "3/5 valid"
+[ ] Veto period status displayed
+
+MONITORING (after veto + grace period)
+[ ] All mainnet nodes report new version
+[ ] Heights within 2 slots across all nodes
+[ ] Chain progressing (heights advancing)
+[ ] No crashes in logs
+
+SIGN-OFF
+[ ] Mainnet auto-update verified by: _______________
+[ ] External producers notified (if applicable)
+```
