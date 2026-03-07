@@ -32,6 +32,7 @@ use doli_core::{
     Transaction,
 };
 use doli_core::{DeterministicScheduler, ScheduledProducer};
+use network::protocols::{SyncRequest, SyncResponse};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
     NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
@@ -148,6 +149,12 @@ pub struct Node {
     archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
     /// Blocks waiting for finality before being archived
     pending_archive: std::collections::VecDeque<ArchiveBlock>,
+    /// P2P backfill: next height to request (None = complete or not yet detected)
+    backfill_next_height: Option<u64>,
+    /// P2P backfill: peer we sent the last request to (to identify response)
+    backfill_peer: Option<PeerId>,
+    /// P2P backfill: last time we sent a backfill request (rate limiting)
+    backfill_last_request: Option<Instant>,
 }
 
 impl Node {
@@ -681,6 +688,9 @@ impl Node {
             maintainer_state: None,
             archive_tx: None,
             pending_archive: std::collections::VecDeque::new(),
+            backfill_next_height: None,
+            backfill_peer: None,
+            backfill_last_request: None,
         })
     }
 
@@ -727,6 +737,123 @@ impl Node {
                 let block = self.pending_archive.pop_front().unwrap();
                 let _ = tx.try_send(block);
             }
+        }
+    }
+
+    /// Detect if there's a gap in historical blocks (e.g., from snap sync).
+    /// Sets `backfill_next_height` to the first missing height if blocks don't start at 1.
+    fn detect_backfill_gap(&mut self) {
+        // Find the first available block
+        let mut first_available = None;
+        for h in 1..=1000 {
+            if let Ok(Some(_)) = self.block_store.get_block_by_height(h) {
+                first_available = Some(h);
+                break;
+            }
+        }
+
+        match first_available {
+            Some(1) => {
+                info!("[BACKFILL] Block history complete from height 1");
+            }
+            Some(h) => {
+                info!(
+                    "[BACKFILL] Gap detected: first block at height {}, missing 1..{}",
+                    h,
+                    h - 1
+                );
+                self.backfill_next_height = Some(1);
+            }
+            None => {
+                info!("[BACKFILL] No blocks in store yet, skipping backfill");
+            }
+        }
+    }
+
+    /// Request the next missing historical block from a connected peer.
+    /// Called periodically from run_periodic_tasks. Rate-limited to 1 req/100ms.
+    async fn maybe_backfill_block(&mut self) {
+        let next = match self.backfill_next_height {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Rate limit: 100ms between requests
+        if let Some(last) = self.backfill_last_request {
+            if last.elapsed() < Duration::from_millis(100) {
+                return;
+            }
+        }
+
+        // Skip if block already exists (e.g., filled by another mechanism)
+        if let Ok(Some(_)) = self.block_store.get_block_by_height(next) {
+            self.advance_backfill(next);
+            return;
+        }
+
+        // Pick a connected peer
+        let peer = {
+            let sync = self.sync_manager.read().await;
+            let peers: Vec<_> = sync.peer_ids().collect();
+            peers.into_iter().next()
+        };
+
+        let peer = match peer {
+            Some(p) => p,
+            None => return, // No peers yet
+        };
+
+        // Send request
+        if let Some(ref network) = self.network {
+            let request = SyncRequest::GetBlockByHeight { height: next };
+            if network.request_sync(peer, request).await.is_ok() {
+                self.backfill_peer = Some(peer);
+                self.backfill_last_request = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Handle a block response that might be from backfill.
+    /// Returns true if the response was consumed by backfill.
+    fn handle_backfill_response(
+        &mut self,
+        peer: PeerId,
+        block: &doli_core::Block,
+    ) -> bool {
+        if self.backfill_peer != Some(peer) || self.backfill_next_height.is_none() {
+            return false;
+        }
+
+        let expected = self.backfill_next_height.unwrap();
+        let height = block.header.slot; // slot == height for sequential chain
+
+        // Store the block (BlockStore put is idempotent)
+        if let Err(e) = self.block_store.put_block_canonical(block, expected) {
+            warn!("[BACKFILL] Failed to store block {}: {}", expected, e);
+            return true;
+        }
+
+        if expected % 100 == 0 {
+            info!("[BACKFILL] Stored block {}", expected);
+        }
+
+        self.advance_backfill(expected);
+        true
+    }
+
+    /// Advance backfill to the next missing height, or mark complete.
+    fn advance_backfill(&mut self, current: u64) {
+        let next = current + 1;
+        // If the next height already has a block, the gap is filled
+        if let Ok(Some(_)) = self.block_store.get_block_by_height(next) {
+            info!(
+                "[BACKFILL] Complete — filled {} missing blocks (1..{})",
+                current, current
+            );
+            self.backfill_next_height = None;
+            self.backfill_peer = None;
+        } else {
+            self.backfill_next_height = Some(next);
         }
     }
 
@@ -928,6 +1055,9 @@ impl Node {
         if self.config.rpc.enabled {
             self.start_rpc().await?;
         }
+
+        // Detect historical block gaps (from snap sync) for P2P backfill
+        self.detect_backfill_gap();
 
         // Main event loop
         self.run_event_loop().await?;
@@ -1683,6 +1813,15 @@ impl Node {
 
             NetworkEvent::SyncResponse { peer_id, response } => {
                 debug!("Sync response from {}", peer_id);
+
+                // Intercept backfill responses before sync manager
+                if let SyncResponse::Block(Some(ref block)) = response {
+                    if self.handle_backfill_response(peer_id, block) {
+                        // Consumed by backfill — don't pass to sync manager
+                        return Ok(());
+                    }
+                }
+
                 // P1 #5: Note that this peer is sending data (active), not just reachable
                 self.sync_manager
                     .write()
@@ -4080,8 +4219,6 @@ impl Node {
         request: network::protocols::SyncRequest,
         channel: network::ResponseChannel<network::protocols::SyncResponse>,
     ) -> Result<()> {
-        use network::protocols::{SyncRequest, SyncResponse};
-
         let response = match request {
             SyncRequest::GetHeaders {
                 start_hash,
@@ -6116,6 +6253,9 @@ impl Node {
                 }
             }
         }
+
+        // P2P BACKFILL: Request missing historical blocks from peers
+        self.maybe_backfill_block().await;
 
         // STALE CHAIN DETECTION (Ethereum-style):
         // If we haven't received any block (gossip or sync) for 3 slots, something is wrong.
