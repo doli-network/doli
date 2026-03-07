@@ -2886,6 +2886,17 @@ async fn cmd_update(wallet_path: &Path, rpc_endpoint: &str, command: UpdateComma
             println!("{:-<60}", "");
             println!();
 
+            // Show running node version
+            if let Ok(info) = rpc.get_node_info().await {
+                let node_version =
+                    info.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                let network =
+                    info.get("network").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("Node version: v{}", node_version);
+                println!("Network:      {}", network);
+                println!();
+            }
+
             match rpc.get_update_status().await {
                 Ok(status) => {
                     if let Some(pending) = status.get("pending_update") {
