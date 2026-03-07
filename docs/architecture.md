@@ -512,12 +512,12 @@ doli-node
 └── updater::Updater       (auto-updates)
 ```
 
-### 7.2. doli-cli
+### 7.2. doli (CLI)
 
 Lightweight wallet:
 
 ```
-doli-cli
+doli
 ├── wallet::Wallet         (key management)
 │   ├── KeyStore           (Ed25519 keys)
 │   └── AddressBook        (labeled addresses)

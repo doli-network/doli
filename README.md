@@ -102,7 +102,7 @@ DOLI is implemented as a Rust workspace with the following crates:
 | `doli-storage` | Persistent storage layer (RocksDB) |
 | `doli-network` | P2P networking (libp2p-based) with equivocation detection |
 | `doli-node` | Full node binary |
-| `doli-cli` | Command-line wallet and utilities |
+| `doli` | Command-line wallet and utilities |
 
 ## Documentation
 

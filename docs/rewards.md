@@ -209,7 +209,7 @@ With the bond stacking system (up to 100 bonds per producer):
 ### Check Current Reward
 
 ```bash
-doli-cli info reward
+doli info reward
 ```
 
 Shows current block reward based on chain height:
@@ -227,7 +227,7 @@ Next Halving:           12,614,400 (11,379,833 blocks remaining)
 ### View Producer Earnings
 
 ```bash
-doli-cli producer earnings [--address <ADDRESS>]
+doli producer earnings [--address <ADDRESS>]
 ```
 
 Shows coinbase outputs earned by a producer:

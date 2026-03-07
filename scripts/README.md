@@ -169,7 +169,7 @@ done
 | **Path** | `scripts/deploy_producers.sh` |
 | **Purpose** | Interactively deploy N new producer nodes to a running devnet |
 | **What it does** | Creates wallets, funds producers, registers with bonds, starts nodes |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, running devnet |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, running devnet |
 | **Run time** | Interactive (depends on N and wait time) |
 | **Output** | `~/.doli/devnet/` (keys, data, logs, pids) |
 
@@ -345,7 +345,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | **Path** | `scripts/test_3node_proportional_rewards.sh` |
 | **Purpose** | Test proportional reward distribution based on block production |
 | **What it tests** | Proportional vs equal rewards across epochs |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo`, `doli-node`, `doli` |
 | **Run time** | ~6 minutes |
 | **Output** | `/tmp/doli-3node-test/` (logs) |
 
@@ -372,7 +372,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | **Path** | `scripts/test_5node_epoch_rewards_consistency.sh` |
 | **Purpose** | Milestone 6 test: Verify deterministic epoch rewards across 5 nodes with restart |
 | **What it tests** | Node sync, epoch reward consistency, mid-epoch restart recovery |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo`, `doli-node`, `doli` |
 | **Run time** | ~2 minutes |
 | **Output** | `/tmp/doli-5node-epoch-rewards-test/` (logs) |
 
@@ -402,7 +402,7 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 | **Path** | `scripts/test_devnet_3node_rewards.sh` |
 | **Purpose** | Test 3-node devnet with staggered joins and detailed rewards analysis |
 | **What it tests** | Exact reward distribution (8 decimal precision), epoch boundaries, round-robin convergence |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo`, `doli-node`, `doli` |
 | **Run time** | ~5 minutes |
 | **Output** | `/tmp/doli-devnet-3node/` (logs, reports) |
 
@@ -535,7 +535,7 @@ This script is kept for historical reference only.
 | **Path** | `scripts/test_whitepaper_full.sh` |
 | **Purpose** | Comprehensive test of ALL WHITEPAPER.md functionalities |
 | **What it tests** | Genesis, VDF, multi-node sync, producer selection, rewards, inactivity, fallback, seniority weights |
-| **Dependencies** | `cargo build --release`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo build --release`, `doli-node`, `doli` |
 | **Run time** | ~5-10 minutes |
 | **Output** | `/tmp/doli-whitepaper-test-*/` (logs, reports) |
 
@@ -570,7 +570,7 @@ This script is kept for historical reference only.
 | **Path** | `scripts/test_critical_features.sh` |
 | **Purpose** | E2E validation of critical whitepaper features on REAL devnet nodes |
 | **What it tests** | Block production, reward maturity, round-robin selection, sync, seniority, inactivity, VDF timing, genesis, epochs |
-| **Dependencies** | `cargo build --release`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo build --release`, `doli-node`, `doli` |
 | **Run time** | ~3-5 minutes |
 | **Output** | `/tmp/doli-critical-test-*/` (logs, summary) |
 
@@ -606,7 +606,7 @@ This script is kept for historical reference only.
 | **Path** | `scripts/test_12node_governance.sh` |
 | **Purpose** | Test 12-node network with era progression and governance system |
 | **What it tests** | Multi-node sync, era transitions, vote submission RPC |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, `jq` |
 | **Run time** | ~20 minutes (2 eras) |
 | **Output** | `/tmp/doli-12node-governance-*/` (logs, reports) |
 
@@ -629,7 +629,7 @@ DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
 | **Path** | `scripts/test_autoupdate_e2e.sh` |
 | **Purpose** | End-to-end test of complete auto-update flow with real nodes |
 | **What it tests** | Version reporting, vote submission, approval/rejection flows, vote propagation |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq`, `python3` |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, `jq`, `python3` |
 | **Run time** | ~2 minutes |
 | **Output** | `/tmp/doli-autoupdate-e2e-*/` (logs, reports, mock server) |
 
@@ -661,7 +661,7 @@ DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
 | **Path** | `scripts/test_governance_scenarios.sh` |
 | **Purpose** | Test ALL governance approval/rejection scenarios with real nodes |
 | **What it tests** | Veto threshold calculations, vote submission, edge cases |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, `jq` |
 | **Run time** | ~2 minutes |
 | **Output** | `/tmp/doli-governance-scenarios-*/` (logs, reports) |
 
@@ -691,7 +691,7 @@ DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
 | **Path** | `scripts/test_update_notification.sh` |
 | **Purpose** | Test the mandatory update notification system and CLI commands |
 | **What it tests** | Update status display, vote auto-detection, CLI commands |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, `jq` |
 | **Run time** | ~10 seconds |
 | **Output** | `/tmp/doli-notification-test-*/` (test artifacts) |
 
@@ -724,7 +724,7 @@ DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
 | **Path** | `scripts/test_version_enforcement.sh` |
 | **Purpose** | Test the "No Update = No Produce" version enforcement system |
 | **What it tests** | Veto period, grace period, enforcement, apply command |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli`, `jq` |
+| **Dependencies** | `cargo`, `doli-node`, `doli`, `jq` |
 | **Run time** | ~10 seconds |
 | **Output** | `/tmp/doli-enforcement-test-*/` (test artifacts) |
 
@@ -862,7 +862,7 @@ doli-node release sign --key producer_3.json --version v0.2.0 > sig3.json
 | **Path** | `scripts/test_maintainer_bootstrap.sh` |
 | **Purpose** | Test maintainer bootstrap system (first 5 producers become maintainers) |
 | **What it tests** | getMaintainerSet RPC, maintainer CLI commands, update CLI commands, 3/5 threshold |
-| **Dependencies** | `cargo`, `doli-node`, `doli-cli` |
+| **Dependencies** | `cargo`, `doli-node`, `doli` |
 | **Run time** | ~2 minutes |
 | **Output** | `/tmp/doli-maintainer-bootstrap-*/` (logs, reports) |
 
