@@ -135,22 +135,16 @@ pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
 
 /// Testnet genesis producers (pubkey hex, bond_count)
 ///
-/// These 12 producers are registered at genesis with 1 bond each.
-/// The pubkeys are derived from the testnet producer private keys (nt1-nt12).
+/// These 6 producers are registered at genesis with 1 bond each.
+/// The pubkeys are derived from the testnet producer private keys (nt1-nt6).
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
-    ("273a257357a0fefeba0d97f4e61ea069e2cb2758239b315824ea73410d06a199", 1), // nt1
-    ("d70259cb4fc7acaeddb5028014a62b8d359a8e9fbd98b6cc7b8ca6e9bb1270df", 1), // nt2
-    ("f23fb0840f985b781cdce2a8f9996e58dc154909e6fc36eb419b2b31a88fcc7f", 1), // nt3
-    ("7e5f6f49f934099c78edfbc7967143d8e32c88feb36a10864e8f5575b4f0028b", 1), // nt4
-    ("952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d", 1), // nt5
-    ("4bbf3faee0c8976bbe4dddc79a45bdea278b68bac2cd11b89b181b9948251d33", 1), // nt6
-    ("3f148939583bf75b886131b4d473ede1fcdc3636254c1acb3594b3209266f6e7", 1), // nt7
-    ("32cf99541e4a9b529af804f24461debe0dc5222e6095ed48b355ff0dfa44aba6", 1), // nt8
-    ("1fab68d41874614b3c17e367e2d698f335e79a820386efac6ed2c3fac8f898a9", 1), // nt9
-    ("8e2c7a34193fcbcd98d4835479a3cd4770f59e29c0ab192bc4369e73764f0794", 1), // nt10
-    ("03a33391dfad32562c6dd040896c4a29b528ea0603e4f84ff370bc47fd52b539", 1), // nt11
-    ("6dc5ea728cdcdd6782d7624f9042cbfdc6522a72c66a744edb8843f8d2766833", 1), // nt12
+    ("273a257357a0fefeba0d97f4e61ea069e2cb2758239b315824ea73410d06a199", 1), // nt1 — omegacortex
+    ("d70259cb4fc7acaeddb5028014a62b8d359a8e9fbd98b6cc7b8ca6e9bb1270df", 1), // nt2 — omegacortex
+    ("f23fb0840f985b781cdce2a8f9996e58dc154909e6fc36eb419b2b31a88fcc7f", 1), // nt3 — omegacortex
+    ("7e5f6f49f934099c78edfbc7967143d8e32c88feb36a10864e8f5575b4f0028b", 1), // nt4 — omegacortex
+    ("952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d", 1), // nt5 — omegacortex
+    ("4bbf3faee0c8976bbe4dddc79a45bdea278b68bac2cd11b89b181b9948251d33", 1), // nt6 — N3 (147.93.84.44)
 ];
 
 /// Parse testnet genesis producers into (PublicKey, bond_count) pairs
