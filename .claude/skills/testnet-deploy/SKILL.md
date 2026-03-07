@@ -564,7 +564,7 @@ All 12 testnet systemd services confirmed pointing to `/opt/doli/testnet/doli-no
 ```
 1. GitHub Release published with CHECKSUMS.txt (CI builds tarballs)
 2. Maintainers sign the release (3 of 5 required) → SIGNATURES.json uploaded
-3. Running nodes poll GitHub API every 6h (mainnet) for new releases
+3. Running nodes poll GitHub API every ~10 min (mainnet/testnet early network) for new releases
 4. Node sees newer version → downloads SIGNATURES.json → verifies 3/5 sigs
 5. Veto period begins (5 min early network, target 7 days)
 6. If <40% veto weight → APPROVED → grace period → auto-apply + restart
@@ -742,10 +742,11 @@ Expected: `Signatures: 3/5` with the N1, N2, N3 public key prefixes.
 After SIGNATURES.json is uploaded, the process is **fully automatic** — no manual intervention needed.
 
 **How nodes detect the update:**
-- Each node's UpdateService polls GitHub API every **6 hours** (`check_interval_secs`)
+- Each node's UpdateService polls GitHub API every **~10 minutes** (`update_check_interval_secs` in NetworkParams — early network setting)
 - The first poll fires immediately on node startup (via `tokio::time::interval`)
-- Already-running nodes will detect the update at their **next 6h poll cycle**
-- No restart is needed — just wait (up to 6h worst case)
+- Already-running nodes will detect the update at their **next ~10 min poll cycle**
+- No restart is needed — just wait (up to ~10 min worst case)
+- Note: the default `CHECK_INTERVAL` constant is 6h, but mainnet/testnet override it to 10 min during early network phase
 
 **Timeline per node (from detection, NOT from upload):**
 
@@ -756,7 +757,7 @@ T+5:00   Veto period ends → if <40% veto → APPROVED
 T+5:00   auto_apply_from_github() → download tarball, verify SHA-256, install, exec() restart
 ```
 
-> **Key insight**: Different nodes will detect at different times (spread over 6h).
+> **Key insight**: Different nodes will detect at different times (spread over ~10 min).
 > Each node runs its own independent veto+apply cycle. This is a natural rolling upgrade.
 
 **Monitor detection via `getUpdateStatus` RPC (shows pending update before apply):**
@@ -849,7 +850,7 @@ Heights should advance by ~1-2 every 10 seconds.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Node doesn't detect update | Check interval is 6h | Wait, or restart node to trigger immediate check |
+| Node doesn't detect update | Check interval is ~10 min (early network) | Wait, or restart node to trigger immediate check |
 | "Insufficient signatures" | SIGNATURES.json missing or <3 valid sigs | Re-sign and re-upload |
 | "Download failed" | Tarball asset missing from release | Upload tarball or use manual deploy |
 | Node stuck on old version | `notify_only: true` in config | SSH in, run `doli update apply` manually |
@@ -906,7 +907,7 @@ VERIFICATION (immediate)
 [ ] Downloaded SIGNATURES.json from GitHub has 3/5 signatures
 [ ] Public key prefixes match N1, N2, N3
 
-PROPAGATION (automatic — wait up to 6h, no manual action needed)
+PROPAGATION (automatic — wait up to ~10 min, no manual action needed)
 [ ] Nodes detect via getUpdateStatus RPC: "pending_update":"<VERSION>"
 [ ] After veto (5 min) + auto-apply: nodes report new version via getChainInfo
 [ ] Heights within 2 slots across all nodes

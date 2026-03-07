@@ -507,6 +507,14 @@ impl RpcClient {
         self.call("getUpdateStatus", Params {}).await
     }
 
+    /// Get node info (version, network, peers)
+    pub async fn get_node_info(&self) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("getNodeInfo", Params {}).await
+    }
+
     /// Submit a vote for a pending update
     pub async fn submit_vote(&self, vote_json: serde_json::Value) -> Result<serde_json::Value> {
         #[derive(Serialize)]
