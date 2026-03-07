@@ -146,6 +146,8 @@ pub struct Node {
     maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
     /// Channel to send blocks to the archiver (if --archive-to is set)
     archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
+    /// Blocks waiting for finality before being archived
+    pending_archive: std::collections::VecDeque<ArchiveBlock>,
 }
 
 impl Node {
@@ -678,6 +680,7 @@ impl Node {
             port_check_done: false,
             maintainer_state: None,
             archive_tx: None,
+            pending_archive: std::collections::VecDeque::new(),
         })
     }
 
@@ -703,6 +706,28 @@ impl Node {
     /// Get a reference to the block store (for archiver catch-up)
     pub fn block_store(&self) -> &Arc<BlockStore> {
         &self.block_store
+    }
+
+    /// Flush pending archive blocks up to the last finalized height.
+    /// Only blocks that the protocol has declared irreversible get archived.
+    async fn flush_finalized_to_archive(&mut self) {
+        let finalized_height = {
+            let sync = self.sync_manager.read().await;
+            match sync.last_finalized_height() {
+                Some(h) => h,
+                None => return, // No finality yet
+            }
+        };
+
+        if let Some(ref tx) = self.archive_tx {
+            while let Some(front) = self.pending_archive.front() {
+                if front.height > finalized_height {
+                    break;
+                }
+                let block = self.pending_archive.pop_front().unwrap();
+                let _ = tx.try_send(block);
+            }
+        }
     }
 
     /// Get the current chain tip height
@@ -1858,6 +1883,9 @@ impl Node {
                             &attestation.block_hash,
                             attestation.attester_weight,
                         );
+                        drop(sync);
+                        // Flush any blocks that just reached finality
+                        self.flush_finalized_to_archive().await;
                     } else {
                         debug!("Received invalid attestation signature");
                     }
@@ -3989,15 +4017,17 @@ impl Node {
             }
         }
 
-        // Send block to archiver (non-blocking — drop if channel full)
-        if let Some(ref tx) = self.archive_tx {
+        // Buffer block for archiving (will be flushed when finalized)
+        if self.archive_tx.is_some() {
             if let Ok(data) = bincode::serialize(&block) {
-                let _ = tx.try_send(ArchiveBlock {
+                self.pending_archive.push_back(ArchiveBlock {
                     height,
                     hash: block_hash,
                     data,
                 });
             }
+            // Flush any blocks that just reached finality
+            self.flush_finalized_to_archive().await;
         }
 
         // Note: Don't broadcast here. Blocks received from the network should not be
@@ -5412,6 +5442,9 @@ impl Node {
         // Self-attest: producer immediately attests to their own block
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
+
+        // Flush any blocks that just reached finality
+        self.flush_finalized_to_archive().await;
 
         Ok(())
     }
