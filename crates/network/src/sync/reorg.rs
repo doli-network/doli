@@ -234,23 +234,13 @@ impl ReorgHandler {
         let parent_weight = self.chain_weight(&prev_hash);
         let new_chain_weight = parent_weight.saturating_add(block_producer_weight);
 
-        // Only reorg if the new chain is heavier (weight-based fork choice)
-        // When weights are equal, use lower block hash as deterministic tie-breaker
-        let should_reorg = if new_chain_weight > self.current_chain_weight {
-            true
-        } else if new_chain_weight == self.current_chain_weight && new_chain_weight > 0 {
-            // Tie-break: lower block hash wins (deterministic, all nodes converge)
-            block_hash.as_bytes() < current_tip.as_bytes()
-        } else {
-            false
-        };
-
-        if !should_reorg {
+        // Only reorg if the new chain is strictly heavier (weight-based fork choice).
+        // Incumbent wins ties — equal-weight reorgs are unnecessary churn and were
+        // the trigger for the epoch-boundary fork bug (weight_delta=+0 reorg).
+        if new_chain_weight <= self.current_chain_weight {
             debug!(
-                "Ignoring fork: new_weight={} vs current_weight={}, hash_tiebreak={}",
-                new_chain_weight,
-                self.current_chain_weight,
-                block_hash.as_bytes() < current_tip.as_bytes()
+                "Ignoring fork: new_weight={} vs current_weight={} (incumbent wins ties)",
+                new_chain_weight, self.current_chain_weight,
             );
             return None;
         }
