@@ -2210,15 +2210,40 @@ async fn restore_from_rpc(
         .get("bestHeight")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow!("Missing bestHeight"))?;
-    let remote_genesis = result
-        .get("genesisHash")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("Missing genesisHash"))?;
 
-    // Step 2: Validate genesis hash (prefer existing block data over embedded chainspec)
+    // Step 2: Validate genesis hash by fetching block 1 from archiver
+    // (getChainInfo.genesisHash uses embedded chainspec which may differ from
+    // the actual chain genesis on relaunched networks)
     let blocks_path = data_dir.join("blocks");
     std::fs::create_dir_all(&blocks_path)?;
     let block_store = BlockStore::open(&blocks_path)?;
+
+    let block1_resp: serde_json::Value = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getBlockRaw",
+            "params": { "height": 1 },
+            "id": 0
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let block1_result = block1_resp
+        .get("result")
+        .ok_or_else(|| anyhow!("Archiver has no block 1 — cannot validate genesis"))?;
+    let b64_block1 = block1_result
+        .get("block")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing block data for block 1"))?;
+    let block1_data = base64::engine::general_purpose::STANDARD
+        .decode(b64_block1)
+        .map_err(|e| anyhow!("Base64 decode error for block 1: {}", e))?;
+    let block1: doli_core::Block = bincode::deserialize(&block1_data)
+        .map_err(|e| anyhow!("Deserialize error for block 1: {}", e))?;
+    let remote_genesis = block1.header.genesis_hash;
 
     let local_genesis = {
         let mut found = None;
@@ -2230,17 +2255,18 @@ async fn restore_from_rpc(
         }
         found.unwrap_or_else(|| doli_core::genesis::genesis_hash(network))
     };
-    let local_genesis_str = local_genesis.to_string();
-    if remote_genesis != local_genesis_str {
+
+    if remote_genesis != local_genesis {
         return Err(anyhow!(
             "Genesis hash mismatch: remote={}, local={}. Wrong chain!",
-            &remote_genesis[..16],
-            &local_genesis_str[..16]
+            &remote_genesis.to_string()[..16],
+            &local_genesis.to_string()[..16]
         ));
     }
 
+    let genesis_str = remote_genesis.to_string();
     println!("Archiver height: {}", remote_height);
-    println!("Genesis hash:    {} (match)", &remote_genesis[..16]);
+    println!("Genesis hash:    {} (match)", &genesis_str[..16]);
     println!();
 
     if !skip_confirm {
