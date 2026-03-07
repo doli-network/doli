@@ -587,13 +587,17 @@ doli-node --network mainnet restore --from /path/to/archive/ --backfill --yes
 
 **Backfill snap sync gaps:**
 
-Nodes that joined via snap sync are missing historical blocks. Use the archiver to fill these gaps:
+Nodes that joined via snap sync are missing historical blocks. Two options:
 
 ```bash
+# Option A: From local archive copy (requires rsync/scp access)
 doli-node --network mainnet restore --from /path/to/archive --backfill --yes
+
+# Option B: From archiver RPC (no SSH needed)
+doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --backfill --yes
 ```
 
-This imports only missing blocks from the archive, verifying BLAKE3 checksums. No state rebuild needed. See [disaster-recovery.md](disaster-recovery.md#backfill-only-fill-snap-sync-gaps) for details.
+Both verify BLAKE3 checksums on every block. No state rebuild needed. See [disaster-recovery.md](disaster-recovery.md) for details.
 
 **DOLI mainnet archiver:**
 - Service: `doli-mainnet-archiver` on omegacortex.ai (`archive.doli.network`)
