@@ -501,30 +501,41 @@ impl Node {
             let genesis_blocks = config.network.genesis_blocks();
             let best_height = chain_state.read().await.best_height;
             if genesis_blocks > 0 && best_height > genesis_blocks && set.active_count() > 0 {
-                let mut seen = std::collections::HashSet::new();
-                let mut chain_genesis_count = 0usize;
-                for h in 1..=genesis_blocks {
-                    if let Ok(Some(block)) = block_store.get_block_by_height(h) {
-                        for tx in &block.transactions {
-                            if tx.tx_type == TxType::Registration {
-                                if let Some(reg_data) = tx.registration_data() {
-                                    if reg_data.vdf_output.len() == 32
-                                        && seen.insert(reg_data.public_key)
-                                    {
-                                        chain_genesis_count += 1;
+                // Check if genesis blocks exist (snap-synced nodes may be missing them)
+                let has_genesis_blocks =
+                    block_store.get_block_by_height(1).ok().flatten().is_some();
+                if !has_genesis_blocks {
+                    info!(
+                        "[STARTUP] Snap sync detected (genesis blocks missing). \
+                         Trusting StateDb producer set ({} producers).",
+                        set.active_count()
+                    );
+                } else {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut chain_genesis_count = 0usize;
+                    for h in 1..=genesis_blocks {
+                        if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                            for tx in &block.transactions {
+                                if tx.tx_type == TxType::Registration {
+                                    if let Some(reg_data) = tx.registration_data() {
+                                        if reg_data.vdf_output.len() == 32
+                                            && seen.insert(reg_data.public_key)
+                                        {
+                                            chain_genesis_count += 1;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                if chain_genesis_count > 0 && chain_genesis_count != set.active_count() {
-                    warn!(
-                        "[STARTUP] Genesis producer mismatch: StateDb has {} producers but block store has {}. \
-                         This can happen after genesis-crossing reorgs. ProducerSet will be rebuilt from blocks.",
-                        set.active_count(),
-                        chain_genesis_count
-                    );
+                    if chain_genesis_count > 0 && chain_genesis_count != set.active_count() {
+                        warn!(
+                            "[STARTUP] Genesis producer mismatch: StateDb has {} producers but block store has {}. \
+                             This can happen after genesis-crossing reorgs. ProducerSet will be rebuilt from blocks.",
+                            set.active_count(),
+                            chain_genesis_count
+                        );
+                    }
                 }
             }
 
@@ -6469,6 +6480,37 @@ impl Node {
                             }
                         }
                     }
+                }
+
+                if proven_producers.is_empty() {
+                    // Snap-synced nodes don't have genesis blocks — fall back to
+                    // hardcoded chainspec producers to avoid breaking the scheduler.
+                    let fallback: Vec<PublicKey> = match self.config.network {
+                        Network::Mainnet => {
+                            use doli_core::genesis::mainnet_genesis_producers;
+                            mainnet_genesis_producers()
+                                .into_iter()
+                                .map(|(pk, _)| pk)
+                                .collect()
+                        }
+                        Network::Testnet => {
+                            use doli_core::genesis::testnet_genesis_producers;
+                            testnet_genesis_producers()
+                                .into_iter()
+                                .map(|(pk, _)| pk)
+                                .collect()
+                        }
+                        Network::Devnet => Vec::new(),
+                    };
+                    if !fallback.is_empty() {
+                        warn!(
+                            "[GENESIS] Blocks 1..={} missing (snap sync). Using {} chainspec \
+                             genesis producers as fallback.",
+                            genesis_blocks,
+                            fallback.len()
+                        );
+                    }
+                    return fallback;
                 }
 
                 info!(
