@@ -262,7 +262,11 @@ fn import_archive_blocks(
         }
     }
 
-    let mode = if skip_existing { "Backfilling" } else { "Restoring" };
+    let mode = if skip_existing {
+        "Backfilling"
+    } else {
+        "Restoring"
+    };
     info!(
         "[ARCHIVER] {} from archive: {} blocks available",
         mode, manifest_height

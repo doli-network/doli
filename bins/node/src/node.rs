@@ -815,17 +815,12 @@ impl Node {
 
     /// Handle a block response that might be from backfill.
     /// Returns true if the response was consumed by backfill.
-    fn handle_backfill_response(
-        &mut self,
-        peer: PeerId,
-        block: &doli_core::Block,
-    ) -> bool {
+    fn handle_backfill_response(&mut self, peer: PeerId, block: &doli_core::Block) -> bool {
         if self.backfill_peer != Some(peer) || self.backfill_next_height.is_none() {
             return false;
         }
 
         let expected = self.backfill_next_height.unwrap();
-        let height = block.header.slot; // slot == height for sequential chain
 
         // Store the block (BlockStore put is idempotent)
         if let Err(e) = self.block_store.put_block_canonical(block, expected) {
@@ -833,7 +828,7 @@ impl Node {
             return true;
         }
 
-        if expected % 100 == 0 {
+        if expected.is_multiple_of(100) {
             info!("[BACKFILL] Stored block {}", expected);
         }
 

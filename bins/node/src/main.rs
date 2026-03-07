@@ -572,7 +572,11 @@ async fn main() -> Result<()> {
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
         }
-        Some(Commands::Restore { from, yes, backfill }) => {
+        Some(Commands::Restore {
+            from,
+            yes,
+            backfill,
+        }) => {
             if backfill {
                 backfill_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
             } else {
