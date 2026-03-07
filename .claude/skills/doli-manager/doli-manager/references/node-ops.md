@@ -216,6 +216,9 @@ A non-producing archive node runs on omegacortex as `doli-mainnet-archiver`:
 |---------|------------------------|-------------|
 | `doli-mainnet-archiver` | 30306/8548/9093 | `~/.doli/mainnet/archive/` |
 
+- **DNS**: `archive.doli.network` → 72.60.228.233
+- **Bootstrap peer**: included in mainnet bootstrap list (P2P port 30306)
+
 Archives finality-gated blocks (only blocks confirmed by 67% attestation threshold). Each block stored as `{height:010}.block` with `.blake3` checksum sidecar. `manifest.json` tracks latest archived height.
 
 ```bash
