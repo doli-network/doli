@@ -109,7 +109,7 @@ pub use producer::{
     VETO_THRESHOLD_PERCENT,
 };
 pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
-pub use state_db::{BlockBatch, LastApplied, StateDb};
+pub use state_db::{BlockBatch, LastApplied, StateDb, UndoData};
 pub use update::UpdateState;
 pub use utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet};
 pub use utxo_rocks::RocksDbUtxoStore;

@@ -13,6 +13,7 @@
 //! | `cf_producers` | pubkey_hash (32B) | ProducerInfo (bincode) |
 //! | `cf_exit_history` | pubkey_hash (32B) | exit_height (8B LE) |
 //! | `cf_meta` | string key | varies |
+//! | `cf_undo` | height (8B LE) | UndoData (bincode) |
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -22,10 +23,28 @@ use crypto::Hash;
 use doli_core::types::{Amount, BlockHeight};
 use tracing::info;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chain_state::ChainState;
 use crate::producer::{PendingProducerUpdate, ProducerInfo, ProducerSet};
 use crate::utxo::{Outpoint, UtxoEntry};
 use crate::StorageError;
+
+/// Reverse diff for a single block — enough to undo all state changes.
+///
+/// Stored in `cf_undo` keyed by block height. Enables O(rollback_depth) reorgs
+/// instead of O(chain_height) rebuild-from-genesis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UndoData {
+    /// UTXOs that were spent by this block (restore on rollback).
+    pub spent_utxos: Vec<(Outpoint, UtxoEntry)>,
+    /// UTXOs that were created by this block (delete on rollback).
+    pub created_utxos: Vec<Outpoint>,
+    /// Serialized ProducerSet snapshot BEFORE this block was applied.
+    /// Producer state is complex (bonds, pending updates, epoch boundaries)
+    /// so we snapshot instead of tracking individual deltas.
+    pub producer_snapshot: Vec<u8>,
+}
 
 // Column family names
 const CF_UTXO: &str = "cf_utxo";
@@ -33,6 +52,7 @@ const CF_UTXO_BY_PUBKEY: &str = "cf_utxo_by_pubkey";
 const CF_PRODUCERS: &str = "cf_producers";
 const CF_EXIT_HISTORY: &str = "cf_exit_history";
 const CF_META: &str = "cf_meta";
+const CF_UNDO: &str = "cf_undo";
 
 // Meta keys
 const META_CHAIN_STATE: &[u8] = b"chain_state";
@@ -109,6 +129,7 @@ impl StateDb {
             CF_PRODUCERS,
             CF_EXIT_HISTORY,
             CF_META,
+            CF_UNDO,
         ];
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
@@ -742,6 +763,58 @@ impl StateDb {
         }
 
         result
+    }
+
+    // ==================== Undo Log ====================
+
+    /// Store undo data for a block height.
+    pub fn put_undo(&self, height: BlockHeight, undo: &UndoData) {
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let key = height.to_le_bytes();
+        let value = bincode::serialize(undo).expect("UndoData serialization");
+        self.db.put_cf(cf, key, value).expect("RocksDB put undo");
+    }
+
+    /// Get undo data for a block height.
+    pub fn get_undo(&self, height: BlockHeight) -> Option<UndoData> {
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let key = height.to_le_bytes();
+        let bytes = self.db.get_cf(cf, key).ok()??;
+        bincode::deserialize(&bytes).ok()
+    }
+
+    /// Delete undo data for a block height.
+    pub fn delete_undo(&self, height: BlockHeight) {
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let key = height.to_le_bytes();
+        let _ = self.db.delete_cf(cf, key);
+    }
+
+    /// Prune undo data older than `keep_height`.
+    /// Called after apply_block to keep only the last N blocks of undo data.
+    pub fn prune_undo_before(&self, keep_height: BlockHeight) {
+        if keep_height == 0 {
+            return;
+        }
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut count = 0u64;
+        for (key, _) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if key.len() == 8 {
+                let h = u64::from_le_bytes(key[..8].try_into().unwrap());
+                if h < keep_height {
+                    batch.delete_cf(cf, &key);
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            let _ = self.db.write(batch);
+        }
     }
 
     // ==================== Batch Creation ====================
