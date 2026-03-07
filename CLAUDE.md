@@ -456,22 +456,26 @@ The block archiver streams every applied block to a filesystem directory for off
 ```
 /path/archive/
   0000000001.block
+  0000000001.blake3   # BLAKE3 checksum sidecar
   0000000002.block
+  0000000002.blake3
   ...
-  manifest.json    # {"latest_height": N, "latest_hash": "..."}
+  manifest.json    # {"latest_height": N, "latest_hash": "...", "genesis_hash": "..."}
 ```
 
 **Archiver node on omegacortex:**
 - Service: `doli-mainnet-archiver` (systemd)
+- DNS: `archive.doli.network` → 198.51.100.1 (omegacortex)
 - Data: `~/.doli/mainnet/archiver/data`
 - Archive: `~/.doli/mainnet/archive/`
 - Ports: P2P=30306, RPC=8548, Metrics=9093
 - Non-producer, sync-only + archive
 - Log: `/var/log/doli/archiver.log`
 
-**Known limitation:** The archiver currently writes blocks at tip. Should only archive finalized blocks (past FinalityCheckpoint) to avoid archiving fork blocks that get reorged. Not yet implemented.
-
-**Recovery:** `restore_from_archive()` reads block files in order, deserializes, and imports to BlockStore via `put_block_canonical()`. After restore, run `recover --yes` to rebuild state from blocks.
+**Recovery options:**
+- **Full restore**: `restore --from /path/to/archive --yes` — imports all blocks + rebuilds state
+- **Backfill only**: `restore --from /path/to/archive --backfill --yes` — fills snap sync gaps, no state rebuild
+- **P2P backfill**: Automatic — node detects gaps on startup, requests missing blocks from peers in background
 
 **Code:** `crates/storage/src/archiver.rs`
 
@@ -500,10 +504,12 @@ A dedicated sync-only node (`doli-mainnet-archiver` on omegacortex) streams fina
 | DNS | `archive.doli.network` |
 | Service | `doli-mainnet-archiver` |
 | Archive dir | `~/.doli/mainnet/archive/` |
-| RPC | 8548 (local only) |
+| RPC | 8548 |
 
 **Key design**: Finality-gated — blocks are only archived after FinalityTracker declares them irreversible (67%+ attestation weight). Each block has a BLAKE3 checksum sidecar (`.blake3`) and `manifest.json` includes `genesis_hash`.
 
-**Restore**: `doli-node --network mainnet restore --from /path/to/archive --yes` imports blocks, verifies checksums + genesis_hash, then auto-rebuilds state.
+**Restore**: `doli-node --network mainnet restore --from /path/to/archive --yes` imports blocks, verifies checksums + genesis_hash, then auto-rebuilds state. Use `--backfill` to fill snap sync gaps without state rebuild.
 
-**Code**: `crates/storage/src/archiver.rs`, integration in `bins/node/src/node.rs` and `bins/node/src/main.rs`.
+**P2P backfill**: Every node automatically detects and fills historical block gaps on startup via `GetBlockByHeight` requests to peers. Background, rate-limited (100ms), resumable. No configuration needed.
+
+**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/node.rs` (P2P backfill: `detect_backfill_gap`, `maybe_backfill_block`, `handle_backfill_response`), `bins/node/src/main.rs` (CLI `--backfill` flag).
