@@ -6,23 +6,18 @@ Official DOLI testnet for testing and development.
 
 ---
 
-## Testnet v2 (Fresh Genesis with Mainnet Parameters)
+## Testnet v3 (March 2026 Relaunch)
 
-The testnet has been relaunched with parameters matching mainnet exactly.
+The testnet has been relaunched with 12 genesis producers and parameters matching mainnet exactly.
 
 | Status | Value |
 |--------|-------|
-| Genesis | January 29, 2026 22:00 UTC |
+| Genesis | March 7, 2026 07:40:52 UTC |
 | Block Reward | **1 tDOLI** (matches mainnet) |
-| Genesis Producers | 5 pre-registered |
+| Genesis Producers | 12 pre-registered (NT1-NT12) |
 | Slot Duration | 10 seconds |
 | Epoch Length | 360 blocks (1 hour) |
-
-**What's new in v2:**
-- Block reward now 1 tDOLI (was 50, now matches mainnet exactly)
-- 5 genesis producers pre-registered at genesis
-- Epoch state persistence (rewards distribute correctly after restart)
-- All consensus parameters match mainnet
+| Bootstrap DNS | `bootstrap1.testnet.doli.network:40303` / `bootstrap2.testnet.doli.network:40304` |
 
 **To join:**
 - Run with `--producer` flag to participate in block production
@@ -58,7 +53,7 @@ doli info -w ~/.doli/testnet/producer.json
 doli-node --network testnet run --producer --producer-key ~/.doli/testnet/producer.json
 ```
 
-Your node auto-connects to `testnet.doli.network` and starts producing blocks immediately.
+Your node auto-connects via `bootstrap1.testnet.doli.network` and starts syncing immediately.
 
 Once synced, you'll see:
 ```
@@ -78,9 +73,10 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Slot Duration | 10 seconds |
 | Block Reward | **1 tDOLI** |
 | Epoch Length | 360 blocks (1 hour) |
-| Genesis Producers | 5 |
+| Genesis Producers | 12 (NT1-NT12) |
 | P2P Port | 40303 |
 | RPC Port | 18545 |
+| Bootstrap | `bootstrap1.testnet.doli.network:40303` |
 
 ---
 
@@ -253,14 +249,29 @@ journalctl -u doli-testnet | grep -i "height\|produced"
 
 ---
 
-## Seed Server
+## Seed / Bootstrap Servers
 
-The testnet runs on `testnet.doli.network` (72.60.228.233).
+| DNS | IP | Port | Node |
+|-----|-----|------|------|
+| `bootstrap1.testnet.doli.network` | 72.60.228.233 | 40303 | NT1 (omegacortex) |
+| `bootstrap2.testnet.doli.network` | 72.60.228.233 | 40304 | NT2 (omegacortex) |
+
+Both are relay-enabled and embedded as defaults in the binary — no `--bootstrap` flag needed.
 
 ### Maintainer Keys (Auto-Update System)
 
 5 keys control protocol updates (3-of-5 threshold).
 Hardcoded in binary at `crates/updater/src/lib.rs` for security.
+
+---
+
+## External Producers
+
+Community and partner nodes running on testnet.
+
+| Operator | Host | Wallet Address | Joined |
+|----------|------|----------------|--------|
+| atinoco | doli02 | `doli17axj5cjstmwqs8a4zg6xxy5qjwnd7j7dnggyrhy3gya37x7ckrhsxulrwf` | 2026-03-07 |
 
 ---
 
