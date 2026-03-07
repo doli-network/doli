@@ -7,6 +7,7 @@
 //! - Network interaction
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,9 +27,13 @@ struct Cli {
     #[arg(short, long, default_value = "~/.doli/wallet.json")]
     wallet: String,
 
-    /// Node RPC endpoint (default: seed1.doli.network for mainnet)
-    #[arg(short, long, default_value = "http://seed1.doli.network:8545")]
-    rpc: String,
+    /// Node RPC endpoint (auto-detected from --network if not set)
+    #[arg(short, long)]
+    rpc: Option<String>,
+
+    /// Network (mainnet, testnet, devnet)
+    #[arg(short, long, default_value = "mainnet")]
+    network: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -428,6 +433,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let wallet = expand_tilde(&cli.wallet);
 
+    // Set address prefix from network
+    let _ = ADDRESS_PREFIX.set(prefix_for_network(&cli.network).to_string());
+
+    // Resolve RPC endpoint: explicit flag > network default
+    let rpc_endpoint = cli
+        .rpc
+        .unwrap_or_else(|| default_rpc_for_network(&cli.network).to_string());
+
     match cli.command {
         Commands::New { name } => {
             cmd_new(&wallet, name)?;
@@ -442,13 +455,13 @@ async fn main() -> Result<()> {
             cmd_addresses(&wallet)?;
         }
         Commands::Balance { address } => {
-            cmd_balance(&wallet, &cli.rpc, address).await?;
+            cmd_balance(&wallet, &rpc_endpoint, address).await?;
         }
         Commands::Send { to, amount, fee } => {
-            cmd_send(&wallet, &cli.rpc, &to, &amount, fee).await?;
+            cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee).await?;
         }
         Commands::History { limit } => {
-            cmd_history(&wallet, &cli.rpc, limit).await?;
+            cmd_history(&wallet, &rpc_endpoint, limit).await?;
         }
         Commands::Export { output } => {
             cmd_export(&wallet, &output)?;
@@ -470,19 +483,19 @@ async fn main() -> Result<()> {
             cmd_verify(&message, &signature, &pubkey)?;
         }
         Commands::Producer { command } => {
-            cmd_producer(&wallet, &cli.rpc, command).await?;
+            cmd_producer(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Rewards { command } => {
-            cmd_rewards(&wallet, &cli.rpc, command).await?;
+            cmd_rewards(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Chain => {
-            cmd_chain(&cli.rpc).await?;
+            cmd_chain(&rpc_endpoint).await?;
         }
         Commands::Update { command } => {
-            cmd_update(&wallet, &cli.rpc, command).await?;
+            cmd_update(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Maintainer { command } => {
-            cmd_maintainer(&cli.rpc, command).await?;
+            cmd_maintainer(&rpc_endpoint, command).await?;
         }
         Commands::Upgrade {
             version,
@@ -496,7 +509,7 @@ async fn main() -> Result<()> {
             cmd_release(&wallet, command).await?;
         }
         Commands::Protocol { command } => {
-            cmd_protocol(&wallet, &cli.rpc, command).await?;
+            cmd_protocol(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Wipe {
             network,
@@ -510,8 +523,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Default address prefix (mainnet). Used when no node connection is available.
-const DEFAULT_PREFIX: &str = "doli";
+/// Address prefix resolved from --network flag at startup.
+static ADDRESS_PREFIX: OnceLock<String> = OnceLock::new();
+
+fn address_prefix() -> &'static str {
+    ADDRESS_PREFIX.get().map(|s| s.as_str()).unwrap_or("doli")
+}
+
+fn prefix_for_network(network: &str) -> &'static str {
+    match network {
+        "testnet" => "tdoli",
+        "devnet" => "ddoli",
+        _ => "doli",
+    }
+}
+
+fn default_rpc_for_network(network: &str) -> &'static str {
+    match network {
+        "testnet" => "http://127.0.0.1:18545",
+        "devnet" => "http://127.0.0.1:28545",
+        _ => "http://127.0.0.1:8545",
+    }
+}
 
 fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     if wallet_path.exists() {
@@ -535,7 +568,7 @@ fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     }
     std::fs::write(&seed_path, &seed_content)?;
 
-    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+    let bech32_addr = wallet.primary_bech32_address(address_prefix());
 
     println!();
     println!("  Your wallet has been created.");
@@ -589,7 +622,7 @@ fn cmd_restore(wallet_path: &PathBuf, name: Option<String>) -> Result<()> {
     let wallet = Wallet::from_seed_phrase(&name, phrase)?;
     wallet.save(wallet_path)?;
 
-    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+    let bech32_addr = wallet.primary_bech32_address(address_prefix());
 
     println!();
     println!("  Wallet restored successfully.");
@@ -610,7 +643,7 @@ fn cmd_address(wallet_path: &Path, label: Option<String>) -> Result<()> {
     // Display bech32m for the newly generated address (last in list)
     let new_addr = wallet.addresses().last().expect("just added");
     let pubkey_bytes = hex::decode(&new_addr.public_key)?;
-    let bech32 = crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+    let bech32 = crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     println!("New address: {}", bech32);
 
@@ -624,7 +657,7 @@ fn cmd_addresses(wallet_path: &Path) -> Result<()> {
     for (i, addr) in wallet.addresses().iter().enumerate() {
         let label = addr.label.as_deref().unwrap_or("");
         let pubkey_bytes = hex::decode(&addr.public_key)?;
-        let bech32 = crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+        let bech32 = crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         let label_str = if label.is_empty() {
             String::new()
@@ -700,7 +733,7 @@ async fn cmd_balance(
         let pubkey_hash =
             crypto::address::resolve(addr, None).map_err(|e| anyhow::anyhow!("{}", e))?;
         let pubkey_hash_hex = pubkey_hash.to_hex();
-        let display_addr = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
+        let display_addr = crypto::address::encode(&pubkey_hash, address_prefix())
             .unwrap_or_else(|_| pubkey_hash_hex.clone());
         vec![(pubkey_hash_hex, display_addr)]
     } else {
@@ -713,7 +746,7 @@ async fn cmd_balance(
                     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
                 let pubkey_hash_hex = pubkey_hash.to_hex();
                 let label = wallet_addr.label.as_deref().unwrap_or("");
-                let bech32 = crypto::address::encode(&pubkey_hash, DEFAULT_PREFIX)
+                let bech32 = crypto::address::encode(&pubkey_hash, address_prefix())
                     .unwrap_or_else(|_| pubkey_hash_hex.clone());
                 let display = if !label.is_empty() {
                     format!("{} ({})", bech32, label)
@@ -842,7 +875,7 @@ async fn cmd_send(
         None
     };
 
-    let recipient_display = crypto::address::encode(&recipient_hash, DEFAULT_PREFIX)
+    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
         .unwrap_or_else(|_| recipient_hash.to_hex());
 
     // Get the sender's pubkey_hash for UTXO lookup
@@ -1061,7 +1094,7 @@ fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
 fn cmd_info(wallet_path: &Path) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
-    let bech32_addr = wallet.primary_bech32_address(DEFAULT_PREFIX);
+    let bech32_addr = wallet.primary_bech32_address(address_prefix());
 
     println!("Wallet: {}", wallet.name());
     println!("Addresses: {}", wallet.addresses().len());
@@ -1994,7 +2027,7 @@ async fn cmd_producer(
                 Ok(info) => {
                     let addr_display = hex::decode(&info.public_key)
                         .ok()
-                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
+                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, address_prefix()).ok())
                         .unwrap_or_else(|| {
                             format!(
                                 "{}...{}",
@@ -2125,7 +2158,7 @@ async fn cmd_producer(
                         let pk_display = hex::decode(&pk)
                             .ok()
                             .and_then(|bytes| {
-                                crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok()
+                                crypto::address::from_pubkey(&bytes, address_prefix()).ok()
                             })
                             .unwrap_or_else(|| {
                                 format!("{}...{}", &pk[..16], &pk[pk.len().saturating_sub(8)..])
@@ -2245,7 +2278,7 @@ async fn cmd_producer(
                         for p in &producers {
                             let addr_display = if let Ok(pubkey_bytes) = hex::decode(&p.public_key)
                             {
-                                crypto::address::from_pubkey(&pubkey_bytes, DEFAULT_PREFIX)
+                                crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
                                     .map(|a| format!("{}...", &a[..16]))
                                     .unwrap_or_else(|_| {
                                         format!(
@@ -2405,7 +2438,7 @@ async fn cmd_producer(
                     .ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?,
             };
 
-            let dest_display = crypto::address::encode(&dest_hash, DEFAULT_PREFIX)
+            let dest_display = crypto::address::encode(&dest_hash, address_prefix())
                 .unwrap_or_else(|_| dest_hash.to_hex());
 
             // Fetch per-bond details for FIFO breakdown
@@ -2698,7 +2731,7 @@ async fn cmd_producer(
 
             let producer_addr = hex::decode(&block1_resp.producer)
                 .ok()
-                .and_then(|bytes| crypto::address::from_pubkey(&bytes, DEFAULT_PREFIX).ok())
+                .and_then(|bytes| crypto::address::from_pubkey(&bytes, address_prefix()).ok())
                 .unwrap_or_else(|| block1_resp.producer.clone());
 
             println!();
@@ -3265,8 +3298,8 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         let cli = cli.unwrap();
-        assert_eq!(cli.wallet, PathBuf::from("/tmp/test_wallet.json"));
-        assert_eq!(cli.rpc, "http://localhost:9999");
+        assert_eq!(cli.wallet, "/tmp/test_wallet.json");
+        assert_eq!(cli.rpc, Some("http://localhost:9999".to_string()));
     }
 
     #[test]
