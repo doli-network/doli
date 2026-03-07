@@ -3,7 +3,7 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1772867835,
+    "timestamp": 1772868415,
     "message": "DOLI Testnet v2 Genesis - 2026-03-07",
     "initial_reward": 100000000
   },
