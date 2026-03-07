@@ -339,6 +339,24 @@ pub struct GetBlockByHeightParams {
     pub height: u64,
 }
 
+/// Parameters for getBlockRaw
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBlockRawParams {
+    /// Block height
+    pub height: u64,
+}
+
+/// Response for getBlockRaw — bincode-serialized block as base64
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockRawResponse {
+    /// Base64-encoded bincode(Block)
+    pub block: String,
+    /// BLAKE3 checksum of the raw bincode bytes (hex)
+    pub blake3: String,
+    /// Block height
+    pub height: u64,
+}
+
 /// Parameters for getTransaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTransactionParams {

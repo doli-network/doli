@@ -210,9 +210,13 @@ enum Commands {
     /// then rebuilds UTXO/producer/chain state automatically.
     /// Use --backfill to only import missing blocks (fills snap sync gaps).
     Restore {
-        /// Path to the archive directory
-        #[arg(long)]
-        from: PathBuf,
+        /// Path to the archive directory (local files)
+        #[arg(long, conflicts_with = "from_rpc")]
+        from: Option<PathBuf>,
+
+        /// RPC URL of an archiver node (e.g. http://archive.testnet.doli.network:18550)
+        #[arg(long, conflicts_with = "from")]
+        from_rpc: Option<String>,
 
         /// Skip confirmation prompt
         #[arg(long)]
@@ -574,13 +578,20 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Restore {
             from,
+            from_rpc,
             yes,
             backfill,
         }) => {
-            if backfill {
-                backfill_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
+            if let Some(rpc_url) = from_rpc {
+                restore_from_rpc(network, &data_dir, &rpc_url, backfill, yes).await?;
+            } else if let Some(path) = from {
+                if backfill {
+                    backfill_from_archive(network, &data_dir, &expand_tilde_path(&path), yes)?;
+                } else {
+                    restore_from_archive(network, &data_dir, &expand_tilde_path(&path), yes)?;
+                }
             } else {
-                restore_from_archive(network, &data_dir, &expand_tilde_path(&from), yes)?;
+                anyhow::bail!("Either --from <PATH> or --from-rpc <URL> is required");
             }
         }
         Some(Commands::Reindex) => {
@@ -2153,6 +2164,168 @@ fn backfill_from_archive(
         println!("Backfill complete: {} missing blocks imported.", imported);
     } else {
         println!("Backfill complete: no missing blocks found.");
+    }
+
+    Ok(())
+}
+
+async fn restore_from_rpc(
+    network: Network,
+    data_dir: &Path,
+    rpc_url: &str,
+    backfill: bool,
+    skip_confirm: bool,
+) -> Result<()> {
+    use base64::Engine;
+    use storage::BlockStore;
+
+    let mode = if backfill { "Backfill" } else { "Restore" };
+    println!("=== DOLI {} from RPC ===", mode);
+    println!();
+    println!("RPC URL:   {}", rpc_url);
+    println!("Data dir:  {:?}", data_dir);
+    println!("Network:   {}", network.name());
+    println!();
+
+    let client = reqwest::Client::new();
+
+    // Step 1: Get chain info from archiver
+    let chain_info: serde_json::Value = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getChainInfo",
+            "params": {},
+            "id": 1
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let result = chain_info
+        .get("result")
+        .ok_or_else(|| anyhow!("No result in getChainInfo response"))?;
+    let remote_height = result
+        .get("bestHeight")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("Missing bestHeight"))?;
+    let remote_genesis = result
+        .get("genesisHash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing genesisHash"))?;
+
+    // Step 2: Validate genesis hash
+    let local_genesis = doli_core::genesis::genesis_hash(network);
+    let local_genesis_str = local_genesis.to_string();
+    if remote_genesis != local_genesis_str {
+        return Err(anyhow!(
+            "Genesis hash mismatch: remote={}, local={}. Wrong chain!",
+            &remote_genesis[..16],
+            &local_genesis_str[..16]
+        ));
+    }
+
+    println!("Archiver height: {}", remote_height);
+    println!("Genesis hash:    {} (match)", &remote_genesis[..16]);
+    println!();
+
+    if !skip_confirm {
+        println!(
+            "This will {} blocks 1..{} via RPC.",
+            mode.to_lowercase(),
+            remote_height
+        );
+        println!("Press Ctrl+C to cancel, or wait 5 seconds to proceed...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    // Step 3: Open BlockStore
+    let blocks_path = data_dir.join("blocks");
+    std::fs::create_dir_all(&blocks_path)?;
+    let block_store = BlockStore::open(&blocks_path)?;
+
+    // Step 4: Download and store blocks
+    let mut imported = 0u64;
+    let mut skipped = 0u64;
+
+    for h in 1..=remote_height {
+        // Skip existing blocks in backfill mode
+        if backfill {
+            if let Ok(Some(_)) = block_store.get_block_by_height(h) {
+                skipped += 1;
+                continue;
+            }
+        }
+
+        // Request raw block
+        let resp: serde_json::Value = client
+            .post(rpc_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "getBlockRaw",
+                "params": { "height": h },
+                "id": h
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let block_result = resp
+            .get("result")
+            .ok_or_else(|| anyhow!("No result for block {} (block may not exist)", h))?;
+        let b64_data = block_result
+            .get("block")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing block data at height {}", h))?;
+        let expected_checksum = block_result
+            .get("blake3")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing blake3 checksum at height {}", h))?;
+
+        // Decode base64
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .map_err(|e| anyhow!("Base64 decode error at height {}: {}", h, e))?;
+
+        // Verify BLAKE3 checksum
+        let actual_checksum = crypto::hash::hash(&data).to_string();
+        if actual_checksum != expected_checksum {
+            return Err(anyhow!(
+                "BLAKE3 mismatch at height {}: expected={}, got={}",
+                h,
+                &expected_checksum[..16],
+                &actual_checksum[..16]
+            ));
+        }
+
+        // Deserialize and store
+        let block: doli_core::Block = bincode::deserialize(&data)
+            .map_err(|e| anyhow!("Deserialize error at {}: {}", h, e))?;
+
+        block_store
+            .put_block_canonical(&block, h)
+            .map_err(|e| anyhow!("Store error at {}: {}", h, e))?;
+
+        imported += 1;
+        if imported.is_multiple_of(100) {
+            println!(
+                "[{}] {}/{} blocks (skipped {})",
+                mode, h, remote_height, skipped
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "{} complete: {} blocks imported, {} skipped.",
+        mode, imported, skipped
+    );
+
+    if !backfill && imported > 0 {
+        println!();
+        println!("Run 'doli-node recover --yes' to rebuild UTXO/producer state.");
     }
 
     Ok(())
