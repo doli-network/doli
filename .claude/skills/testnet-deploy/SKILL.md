@@ -544,13 +544,20 @@ All 12 testnet systemd services confirmed pointing to `/opt/doli/testnet/doli-no
 | Check | How to verify |
 |-------|---------------|
 | GitHub Release exists | `gh release view v<VERSION>` shows the release |
-| Release has tarball assets | `gh release view v<VERSION>` lists `.tar.gz` for linux-x64 |
+| CI workflow completed | GitHub Actions "chore: bump version" workflow shows green |
+| Release has tarball assets | `gh release view v<VERSION> --json assets --jq '.assets[].name'` lists `.tar.gz` for linux-x64 |
+| Release has CHECKSUMS.txt | Same command shows `CHECKSUMS.txt` (CI-generated) |
+| Release has skeleton SIGNATURES.json | Same command shows `SIGNATURES.json` (CI creates it with 0 signatures) |
 | Testnet validated | All 13 testnet nodes running the same version, chain progressing |
 | Ivan approved | Explicit "proceed" from Ivan for mainnet activation |
 
-> **CRITICAL**: If CI did not produce tarball assets, the auto-update system has nothing to
-> download. Nodes will detect the new version but `auto_apply_from_github()` will fail.
-> In that case, use manual deployment (see ops runbook Section 3).
+> **CI produces all assets automatically.** When you push a version bump commit, CI builds
+> tarballs for all platforms, generates `CHECKSUMS.txt` with SHA-256 hashes, and creates a
+> skeleton `SIGNATURES.json` (version + checksums_sha256 filled in, signatures array empty).
+> The only manual step is signing with 3 maintainer keys and re-uploading SIGNATURES.json.
+>
+> **If CI failed**: Check GitHub Actions. Without tarball assets, nodes will detect the
+> new version but `auto_apply_from_github()` will fail. Fix CI or use manual deployment.
 
 ### 15.1 How the auto-update system works (reference)
 
@@ -572,23 +579,33 @@ All 12 testnet systemd services confirmed pointing to `/opt/doli/testnet/doli-no
 ### 15.2 Step 1: Verify release assets on GitHub
 
 ```bash
-gh release view v<VERSION>
+gh release view v<VERSION> --json assets --jq '.assets[].name'
+```
+
+**Expected CI-generated assets:**
+```
+CHECKSUMS.txt
+SIGNATURES.json
+doli-v<VERSION>-aarch64-apple-darwin.pkg
+doli-v<VERSION>-aarch64-apple-darwin.tar.gz
+doli-v<VERSION>-x86_64-unknown-linux-gnu.deb
+doli-v<VERSION>-x86_64-unknown-linux-gnu.rpm
+doli-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Confirm:
-- Title and tag match expected version
-- Asset list includes platform tarballs (e.g. `doli-node-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz`)
-- `CHECKSUMS.txt` is present (CI-generated)
+- `doli-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` exists (all mainnet nodes are linux-x64)
+- `CHECKSUMS.txt` exists with SHA-256 hashes
+- `SIGNATURES.json` exists (skeleton with 0 signatures — we'll fill it next)
 
-If `CHECKSUMS.txt` is missing (no CI pipeline yet), generate it manually:
+**Verify the skeleton SIGNATURES.json has the checksums_sha256 we need:**
 
 ```bash
-# On omegacortex after building release binaries
-cd ~/repos/doli/target/release
-sha256sum doli-node doli > /tmp/CHECKSUMS.txt
-cat /tmp/CHECKSUMS.txt
-gh release upload v<VERSION> /tmp/CHECKSUMS.txt
+gh release download v<VERSION> --pattern "SIGNATURES.json" --dir /tmp/v<VERSION> --clobber
+cat /tmp/v<VERSION>/SIGNATURES.json
 ```
+
+Note the `checksums_sha256` value — all 3 maintainer signatures must match this.
 
 ### 15.3 Step 2: Sign the release (3 of 5 maintainer keys)
 
@@ -609,8 +626,12 @@ Each maintainer runs `doli release sign` with their producer key. This downloads
 
 **Sign with N1, N2, N3 (all on omegacortex — easiest 3/5):**
 
+> **Note**: The CLI binary version used for signing doesn't matter — it just downloads
+> CHECKSUMS.txt from GitHub and signs with the key. The mainnet CLI at
+> `~/repos/doli/target/release/doli` works even if it's an older version.
+
 ```bash
-# SSH to omegacortex
+# All 3 commands run from omegacortex (via SSH or directly)
 ssh ilozada@72.60.228.233
 
 # Sign with N1
@@ -626,12 +647,17 @@ ssh ilozada@72.60.228.233
   --key ~/.doli/mainnet/keys/producer_3.json 2>/dev/null
 ```
 
-Each command outputs a JSON block:
+Each command outputs a JSON block AND a message line with the checksums_sha256:
 ```json
 {
   "public_key": "202047256a8072a8...",
   "signature": "a1b2c3d4e5f6..."
 }
+```
+```
+Message: "1.1.31:3854fbfb8f72774e..."
+               ^--- checksums_sha256 (must match across all 3 signs)
+```
 ```
 
 ### 15.4 Step 3: Assemble and upload SIGNATURES.json
@@ -689,36 +715,69 @@ gh release upload v<VERSION> /tmp/metadata.json --clobber
 
 If `metadata.json` is not uploaded, the release targets all networks (backward compat).
 
-### 15.6 Step 5: Verify the release is discoverable
+### 15.6 Step 5: Verify SIGNATURES.json was uploaded correctly
 
-From any node, test that the auto-update system can find and validate the release:
+Download the uploaded SIGNATURES.json and confirm it has 3 signatures:
 
 ```bash
-# Check from omegacortex (mainnet node)
-ssh ilozada@72.60.228.233 '~/repos/doli/target/release/doli update check'
+gh release download v<VERSION> --pattern "SIGNATURES.json" --dir /tmp/verify --clobber
+python3 -c "
+import json
+d = json.load(open('/tmp/verify/SIGNATURES.json'))
+print(f'Version: {d[\"version\"]}')
+print(f'Signatures: {len(d[\"signatures\"])}/5')
+for s in d['signatures']:
+    print(f'  - {s[\"public_key\"][:16]}...')
+"
 ```
 
-Expected output:
-```
-New update available: v<CURRENT> -> v<NEW>
-Signatures: 3/5 valid (verified)
-Status: Veto period active (Xm remaining)
-```
+Expected: `Signatures: 3/5` with the N1, N2, N3 public key prefixes.
+
+> **Do NOT use `doli update check` to verify.** That command compares against the CLI
+> binary's own version — if the CLI is already v<VERSION> it will say "up to date" even
+> though the running nodes haven't detected the update yet.
 
 ### 15.7 Step 6: Monitor auto-update propagation
 
-After SIGNATURES.json is uploaded, the auto-update lifecycle begins:
+After SIGNATURES.json is uploaded, the process is **fully automatic** — no manual intervention needed.
+
+**How nodes detect the update:**
+- Each node's UpdateService polls GitHub API every **6 hours** (`check_interval_secs`)
+- The first poll fires immediately on node startup (via `tokio::time::interval`)
+- Already-running nodes will detect the update at their **next 6h poll cycle**
+- No restart is needed — just wait (up to 6h worst case)
+
+**Timeline per node (from detection, NOT from upload):**
 
 ```
-T+0:00   SIGNATURES.json uploaded → nodes start detecting new version
+T+0:00   Node polls GitHub → detects v<VERSION> → verifies 3/5 sigs
 T+0:00   Veto period begins (5 min early network)
 T+5:00   Veto period ends → if <40% veto → APPROVED
-T+5:00   Grace period begins (1h mainnet)
-T+65:00  Grace period ends → enforcement active
-T+65:00  Nodes auto-download, verify, apply, restart
+T+5:00   auto_apply_from_github() → download tarball, verify SHA-256, install, exec() restart
 ```
 
-**Monitor progress across all mainnet nodes:**
+> **Key insight**: Different nodes will detect at different times (spread over 6h).
+> Each node runs its own independent veto+apply cycle. This is a natural rolling upgrade.
+
+**Monitor detection via `getUpdateStatus` RPC (shows pending update before apply):**
+
+```bash
+echo "=== Update detection status ==="
+ssh ilozada@72.60.228.233 '
+for port in 8545 8546 8547; do
+  echo -n "PORT $port: "
+  curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getUpdateStatus\",\"params\":{},\"id\":1}" 2>/dev/null \
+    | grep -oP "\"pending_update\":[^,}]+|\"veto_period_active\":[^,}]+"
+  echo
+done'
+```
+
+When a node detects the update: `"pending_update":"1.1.31"` and `"veto_period_active":true`.
+After auto-apply: node restarts with new version, `pending_update` returns to `null`.
+
+**Monitor version propagation across all mainnet nodes (post-apply):**
 
 ```bash
 echo "=== N1-N2, N6 (omegacortex) ==="
@@ -827,29 +886,29 @@ MAINNET AUTO-UPDATE — v<VERSION> — <DATE>
 
 PREREQUISITES
 [ ] GitHub Release v<VERSION> exists
-[ ] CHECKSUMS.txt asset present
+[ ] CI workflow completed (green)
+[ ] CI assets present: .tar.gz, CHECKSUMS.txt, skeleton SIGNATURES.json
 [ ] Testnet validated on same version
 [ ] Ivan approved mainnet activation
 
-SIGNING (3 of 5 maintainer keys)
+SIGNING (3 of 5 maintainer keys — all on omegacortex)
 [ ] N1 signed: public_key=________, signature=________
 [ ] N2 signed: public_key=________, signature=________
 [ ] N3 signed: public_key=________, signature=________
-[ ] checksums_sha256 = ________________
-[ ] All 3 signatures use same checksums_sha256
+[ ] checksums_sha256 = ________________ (must match across all 3 signs)
 
 ASSEMBLY & UPLOAD
 [ ] SIGNATURES.json assembled with 3 signatures
-[ ] SIGNATURES.json uploaded to release: gh release upload v<VERSION> SIGNATURES.json
+[ ] SIGNATURES.json uploaded: gh release upload v<VERSION> /tmp/SIGNATURES.json --clobber
 [ ] metadata.json uploaded (if network targeting needed)
 
-VERIFICATION
-[ ] `doli update check` detects new version
-[ ] Signature verification: "3/5 valid"
-[ ] Veto period status displayed
+VERIFICATION (immediate)
+[ ] Downloaded SIGNATURES.json from GitHub has 3/5 signatures
+[ ] Public key prefixes match N1, N2, N3
 
-MONITORING (after veto + grace period)
-[ ] All mainnet nodes report new version
+PROPAGATION (automatic — wait up to 6h, no manual action needed)
+[ ] Nodes detect via getUpdateStatus RPC: "pending_update":"<VERSION>"
+[ ] After veto (5 min) + auto-apply: nodes report new version via getChainInfo
 [ ] Heights within 2 slots across all nodes
 [ ] Chain progressing (heights advancing)
 [ ] No crashes in logs
