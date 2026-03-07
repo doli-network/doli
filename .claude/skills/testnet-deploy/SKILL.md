@@ -3,7 +3,7 @@
 > **Classification**: Internal QA Infrastructure
 > **Scope**: Development, compilation, distribution, and validation of DOLI testnet binaries
 > **Owner**: E. Weil
-> **Last updated**: 2026-03-07
+> **Last updated**: 2026-03-07 (rev2: post-deployment lessons applied)
 
 ---
 
@@ -52,7 +52,7 @@ Both binaries are ALWAYS distributed together to maintain version consistency.
 
 | Host | Binary Path | Services Using It |
 |------|-------------|-------------------|
-| omegacortex (72.60.228.233) | `/opt/doli/testnet/doli-node` | `doli-testnet-nt{1,2,3,4,5}` |
+| omegacortex (72.60.228.233) | `/opt/doli/testnet/doli-node` | `doli-testnet-nt{1,2,3,4,5}`, `doli-testnet-archiver` |
 | omegacortex | `/opt/doli/testnet/doli` | CLI for testnet operations |
 | N3 (147.93.84.44:50790) | `/opt/doli/testnet/doli-node` | `doli-testnet-nt{6,7,8}` |
 | N3 | `/opt/doli/testnet/doli` | CLI for testnet operations |
