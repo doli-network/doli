@@ -502,7 +502,20 @@ claim_withdrawal_tx = {
 
 **Vesting Schedule (Early Withdrawal Penalties):**
 
-Bonds vest over 1 day (4 quarters of 6 hours each). Early withdrawal incurs penalties (burned, not redistributed):
+Bond vesting is network-differentiated:
+
+**Mainnet** — 4-year vesting (1-year quarters):
+
+| Bond Age | Penalty | Net Return |
+|----------|---------|------------|
+| Y1 (0-1 year) | 75% burned | 25% returned |
+| Y2 (1-2 years) | 50% burned | 50% returned |
+| Y3 (2-3 years) | 25% burned | 75% returned |
+| Y4+ (3+ years) | 0% (fully vested) | 100% returned |
+
+`VESTING_QUARTER_SLOTS = 3,153,600` (1 year), `VESTING_PERIOD_SLOTS = 12,614,400` (4 years).
+
+**Testnet** — 1-day vesting (6h quarters):
 
 | Bond Age | Penalty | Net Return |
 |----------|---------|------------|
@@ -511,7 +524,7 @@ Bonds vest over 1 day (4 quarters of 6 hours each). Early withdrawal incurs pena
 | Q3 (12-18 hours) | 25% burned | 75% returned |
 | Q4+ (18+ hours) | 0% (fully vested) | 100% returned |
 
-Vesting quarter duration is configurable via `DOLI_VESTING_QUARTER_SLOTS` (locked for mainnet at 2,160 slots = 6 hours).
+Testnet `vesting_quarter_slots = 2,160` via `NetworkParams`. Devnet configurable via `DOLI_VESTING_QUARTER_SLOTS`.
 
 Penalty calculation uses FIFO order - oldest bonds are withdrawn first, ensuring
 bonds that have vested longer receive lower penalties.
@@ -1331,10 +1344,10 @@ Result:
 | BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
 | MAX_BONDS_PER_PRODUCER | 3,000                |
 | WITHDRAWAL_DELAY_SLOTS | 60,480 (~7 days)     |
-| YEAR_IN_SLOTS      | 3,153,600 (seniority only) |
-| VESTING_QUARTER_SLOTS | 2,160 (~6 hours)      |
-| VESTING_PERIOD_SLOTS | 8,640 (~1 day)          |
-| COMMITMENT_PERIOD  | 8,640 (~1 day)             |
+| YEAR_IN_SLOTS      | 3,153,600                  |
+| VESTING_QUARTER_SLOTS | 3,153,600 (mainnet=1yr, testnet=2,160=6h) |
+| VESTING_PERIOD_SLOTS | 12,614,400 (mainnet=4yr, testnet=8,640=1d) |
+| COMMITMENT_PERIOD  | 12,614,400 (= VESTING_PERIOD_SLOTS) |
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 100                      |
@@ -1351,14 +1364,14 @@ Result:
 | MIN_MAINTAINERS    | 3                        |
 | MAX_MAINTAINERS    | 5                        |
 
-**Vesting Penalties (1-day, quarter-based):**
+**Vesting Penalties (mainnet: 4yr/1yr quarters, testnet: 1d/6h quarters):**
 
-| Bond Age | Penalty Rate |
-|----------|-------------|
-| Q1 (0-6h) | 75%       |
-| Q2 (6-12h) | 50%      |
-| Q3 (12-18h) | 25%     |
-| Q4+ (18h+) | 0%       |
+| Mainnet | Testnet | Penalty Rate |
+|---------|---------|-------------|
+| Y1 (0-1yr) | Q1 (0-6h) | 75%  |
+| Y2 (1-2yr) | Q2 (6-12h) | 50% |
+| Y3 (2-3yr) | Q3 (12-18h) | 25% |
+| Y4+ (3yr+) | Q4+ (18h+) | 0%  |
 
 ---
 
@@ -1373,14 +1386,25 @@ release = {
     binary_url_template: string, // URL with {platform} placeholder
     changelog: string,
     published_at: uint64,        // Unix timestamp
-    signatures: signature[]
+    signatures: signature[],
+    target_networks: string[]    // From metadata.json; empty = all networks
 }
 
 signature = {
     public_key: string,          // Maintainer public key (hex)
     signature: string            // Signature over "version:binary_sha256"
 }
+
+metadata = {                     // metadata.json (optional release asset)
+    version: string,
+    networks: string[],          // ["mainnet"], ["testnet"], ["mainnet","testnet"]
+    min_protocol_version: uint32 // Optional
+}
 ```
+
+**Network targeting:** Each GitHub Release may include a `metadata.json` asset specifying
+which networks the release targets. If present, nodes filter releases by their `--network`.
+If absent, the release targets all networks (backward compatibility).
 
 ### 9.2 Verification
 
