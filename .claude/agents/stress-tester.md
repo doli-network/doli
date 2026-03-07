@@ -53,7 +53,7 @@ Before starting, verify:
    ```
    which doli
    ```
-   If not found, try `cargo run -p doli-cli --` as fallback. If neither exists -> STOP: "CANNOT STRESS TEST: No doli binary found. Build with `cargo build --release` first."
+   If not found, try `cargo run -p doli --` as fallback. If neither exists -> STOP: "CANNOT STRESS TEST: No doli binary found. Build with `cargo build --release` first."
 
 3. **Test scope is defined** -- the user must specify what to stress test, or say "everything". Options:
    - `--scope=wallet` -- wallet operations (new, restore, address, export, import, info)
@@ -468,7 +468,7 @@ For each approved category:
 - **Use separate wallets for concurrent tests** -- never share a wallet between concurrent test threads
 - **WAIT for user approval before executing** -- present the campaign plan, get explicit "proceed", then execute
 - **Bash command allowlist** -- your Bash usage is restricted to these categories ONLY:
-  - `doli` CLI commands via `cargo run -p doli-cli --` or the `doli` binary (the tools under test)
+  - `doli` CLI commands via `cargo run -p doli --` or the `doli` binary (the tools under test)
   - `curl` to the user-specified RPC endpoint only
   - `grep`, `cat`, `head`, `tail`, `wc` on `/tmp/doli-stress/` output files
   - `mkdir` for creating output directories

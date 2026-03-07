@@ -62,22 +62,25 @@ When asked for "node status" or "all nodes", check ALL of these:
 |------|----------|---------|-----|
 | Archiver | 8548 | `doli-mainnet-archiver` | `archive.doli.network` |
 
-### Remote Producer Nodes (via omegacortex jump host)
+### Remote Producer Nodes (direct SSH from Mac — NOT via omegacortex)
 
 | Node | Server | RPC Port | SSH |
 |------|--------|----------|-----|
-| N3 | 147.93.84.44 | 8545 | `ssh -p 50790 ilozada@147.93.84.44` |
-| N4 | 72.60.70.166 | 8545 | `ssh -p 50790 ilozada@72.60.70.166` |
-| N5 | 72.60.115.209 | 8545 | `ssh -p 50790 ilozada@72.60.115.209` |
+| N3 | 147.93.84.44 | 8545 (localhost) | `ssh -p 50790 ilozada@147.93.84.44` |
+| N4 | 72.60.115.209 | 8545 (localhost) | `ssh -p 50790 ilozada@72.60.115.209` |
+| N5 | 72.60.70.166 | 8545 (localhost) | `ssh -p 50790 ilozada@72.60.70.166` |
 
-### Testnet Nodes (NT1-NT18)
+N3/N4/N5 RPC is localhost-only. Must SSH in first, then curl 127.0.0.1.
+
+### Testnet Nodes (NT1-NT12)
 
 | Server | Nodes | RPC Ports |
 |--------|-------|-----------|
-| omegacortex | NT1-NT5 | 9001-9005 |
-| N3 (147.93.84.44) | NT6-NT8 | 9001-9003 |
-| N4 (72.60.70.166) | NT9-NT13 | 9001-9005 |
-| N5 (72.60.115.209) | NT14-NT18 | 9001-9005 |
+| omegacortex | NT1-NT5 | 18545-18549 |
+| N3 (147.93.84.44) | NT6-NT8 | 18545-18547 |
+| N5 (72.60.70.166) | NT9-NT12 | 18545-18548 |
+
+Testnet RPC is localhost-only on all hosts. N4 has no testnet nodes.
 
 ## Multi-Node Status (testnet example with 5 nodes)
 ```bash

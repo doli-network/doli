@@ -232,12 +232,12 @@ cargo +nightly fuzz run fuzz_merkle -- -runs=500000
 
 | Operation | Command | Expected | Status |
 |-----------|---------|----------|--------|
-| Create wallet | `doli-cli wallet new` | New keypair generated | [ ] |
-| Import wallet | `doli-cli wallet import` | Restore from mnemonic | [ ] |
-| Check balance | `doli-cli wallet balance <addr>` | Correct balance | [ ] |
-| Send transaction | `doli-cli wallet send` | TX broadcast, confirmed | [ ] |
-| List UTXOs | `doli-cli wallet utxos <addr>` | All UTXOs listed | [ ] |
-| Export keys | `doli-cli wallet export` | Keys exported securely | [ ] |
+| Create wallet | `doli new -w wallet.json` | New keypair generated | [ ] |
+| Import wallet | `doli import` | Restore from mnemonic | [ ] |
+| Check balance | `doli -w wallet.json -r http://127.0.0.1:8545 balance` | Correct balance | [ ] |
+| Send transaction | `doli -w wallet.json send <addr> <amount>` | TX broadcast, confirmed | [ ] |
+| List UTXOs | `doli -w wallet.json -r http://127.0.0.1:8545 utxos` | All UTXOs listed | [ ] |
+| Export keys | `doli -w wallet.json info` | Keys displayed securely | [ ] |
 
 **CLI Error Handling**:
 

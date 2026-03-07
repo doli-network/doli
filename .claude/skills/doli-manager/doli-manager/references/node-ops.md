@@ -74,12 +74,14 @@ sudo systemctl status doli-mainnet-nodeN
 
 | Node | Host | SSH | Ports (P2P/RPC/Metrics) |
 |------|------|----|------------------------|
-| N1 | omegacortex.ai | `ssh ilozada@omegacortex.ai` | 30303/8545/9090 |
-| N2 | omegacortex.ai | same host | 30304/8546/9091 |
+| N1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` | 30303/8545/9090 |
+| N2 | 72.60.228.233 | same host | 30304/8546/9091 |
 | N3 | 147.93.84.44 | `ssh -p 50790 ilozada@147.93.84.44` (direct from Mac) | 30303/8545/9090 |
 | N4 | 72.60.115.209 | `ssh -p 50790 ilozada@72.60.115.209` (direct from Mac) | 30303/8545/9090 |
 | N5 | 72.60.70.166 | `ssh -p 50790 ilozada@72.60.70.166` (direct from Mac) | 30303/8545/9090 |
-| N6 | omegacortex.ai | same host | 30305/8547/9092 |
+| N6 | 72.60.228.233 | same host | 30305/8547/9092 |
+
+N1/N2 RPC is externally accessible (--rpc-bind 0.0.0.0). N3/N4/N5/N6 RPC is localhost-only — must SSH in first.
 
 ### Binaries
 
@@ -113,7 +115,7 @@ sudo systemctl status doli-mainnet-nodeN
 ### Step 1: Build on omegacortex
 
 ```bash
-ssh ilozada@omegacortex.ai "cd ~/repos/doli && git pull && cargo build --release"
+ssh ilozada@72.60.228.233 "cd ~/repos/doli && git pull && cargo build --release"
 ```
 
 ### Step 2: Deploy to N3/N4/N5
@@ -122,7 +124,7 @@ Deploy binaries from Mac directly (omegacortex cannot reach these nodes):
 
 ```bash
 # First, get binary from omegacortex to Mac
-scp ilozada@omegacortex.ai:~/repos/doli/target/release/doli-node /tmp/doli-node
+scp ilozada@72.60.228.233:~/repos/doli/target/release/doli-node /tmp/doli-node
 
 # Deploy to N3
 scp -P 50790 /tmp/doli-node ilozada@147.93.84.44:~/doli-node
@@ -139,8 +141,8 @@ ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/relea
 ### Step 3: Stop nodes
 
 ```bash
-# N1/N2/N3 (omegacortex - by PID pattern)
-ssh ilozada@omegacortex.ai "kill \$(pgrep -f 'data-dir.*node1')"
+# N1/N2/N6 (omegacortex - use systemd, NOT kill)
+ssh ilozada@72.60.228.233 "sudo systemctl stop doli-mainnet-node1"
 
 # N4/N5 (direct from Mac)
 ssh -p 50790 ilozada@72.60.115.209 'sudo kill $(pgrep doli-node) 2>/dev/null; echo done'  # N4
@@ -155,7 +157,7 @@ Start N1 first (bootstrap), then N2, then N3/N4/N5. See CLAUDE.md for exact comm
 
 ```bash
 # All same height?
-ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do \
+ssh ilozada@72.60.228.233 "for p in 8545 8546 8547; do \
   echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
   -H 'Content-Type: application/json' \
   -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
@@ -183,15 +185,41 @@ rm -rf blocks/ signed_slots.db/
 
 ### Balance Check Commands
 
+**IMPORTANT**: The CLI on omegacortex MUST use `~/repos/doli/target/release/doli` (current build).
+The old binary at `~/doli/target/release/doli` is from Jan 26 and does NOT support bech32m — it will silently return 0.
+The CLI needs `-r http://127.0.0.1:<RPC_PORT>` to connect (default RPC endpoint `seed1.doli.network` does not resolve).
+
 ```bash
-# N1 (omegacortex)
-ssh ilozada@omegacortex.ai "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_1.json balance"
+# N1 (omegacortex — CLI needs -r flag)
+ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_1.json -r http://127.0.0.1:8545 balance"
 
-# N4 (direct from Mac — note swapped key name!)
-ssh -p 50790 ilozada@72.60.115.209 "sudo -u isudoajl /usr/local/bin/doli -w /home/isudoajl/.doli/mainnet/keys/producer_5.json balance"
+# N2 (omegacortex)
+ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_2.json -r http://127.0.0.1:8545 balance"
 
-# N5 (direct from Mac — note swapped key name!)
-ssh -p 50790 ilozada@72.60.70.166 "sudo -u isudoajl /usr/local/bin/doli -w /home/isudoajl/.doli/mainnet/keys/producer_4.json balance"
+# N6 (omegacortex)
+ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_6.json -r http://127.0.0.1:8545 balance"
+
+# N3 (producer_3 key also on omegacortex)
+ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_3.json -r http://127.0.0.1:8545 balance"
+
+# N4/N5: keys not on omegacortex — use RPC with bech32m addresses instead:
+# N4 (producer_5): doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
+# N5 (producer_4): doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
+curl -s -X POST http://72.60.228.233:8545 -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc"},"id":1}'
+```
+
+**CRITICAL**: `getBalance` MUST use bech32m addresses (`doli1...`), NOT raw public keys.
+Raw 64-char public keys return 0 because UTXOs are keyed by `BLAKE3("DOLI_ADDR_V1" || pubkey)`.
+
+#### All bech32m addresses (mainnet genesis producers)
+```
+N1 (producer_1): doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
+N2 (producer_2): doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz
+N3 (producer_3): doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql
+N4 (producer_5): doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
+N5 (producer_4): doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
+N6 (producer_6): doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
 ```
 
 ## Upgrade via GitHub

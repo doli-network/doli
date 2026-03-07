@@ -179,8 +179,8 @@ To run a block producer, you need to provide your producer key.
 # Create keys directory
 mkdir -p keys
 
-# Generate a key (using doli-cli)
-doli-cli wallet new --output keys/producer.key
+# Generate a key
+doli new -w keys/producer.json
 
 # Run with key file mounted
 docker run -d \

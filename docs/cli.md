@@ -3,7 +3,7 @@
 Complete reference for all DOLI CLI operations. Every operation described in the [WHITEPAPER.md](/WHITEPAPER.md) can be performed via CLI.
 
 DOLI provides two binaries:
-- **doli-cli** (`doli`): Wallet operations, transactions, producer management
+- **doli**: Wallet operations, transactions, producer management
 - **doli-node**: Node operations, updates, maintainer management
 
 ---
@@ -17,7 +17,7 @@ All commands must be run inside the Nix development environment:
 nix --extra-experimental-features "nix-command flakes" develop
 
 # Then run commands
-cargo run -p doli-cli -- <command>
+cargo run -p doli -- <command>
 cargo run -p doli-node -- <command>
 
 # Or use the built binaries

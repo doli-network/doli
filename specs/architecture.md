@@ -690,7 +690,7 @@ doli/
 ├── bins/
 │   ├── node/           # Full node binary (doli-node) (~6,000 lines)
 │   │   └── producer/   # Producer-specific logic (signed slots, guards)
-│   └── cli/            # Wallet CLI (doli-cli) (~2,500 lines)
+│   └── cli/            # Wallet CLI (doli) (~2,500 lines)
 ├── crates/
 │   ├── core/           # Types, consensus, validation (~23,000 lines)
 │   │   ├── tpop/       # Telemetry (heartbeat, presence - NOT consensus)
@@ -718,7 +718,7 @@ doli/
 ### Crate Dependency Flow
 
 ```
-bins/node (doli-node)          bins/cli (doli-cli)
+bins/node (doli-node)          bins/cli (doli)
     │                              │
     ├─→ network ─┐                 │
     ├─→ rpc ─────┤                 │
@@ -888,7 +888,7 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 | `producer/signed_slots.rs` | 194 | Double-sign prevention |
 | `producer/guard.rs` | 112 | Lock file for single instance |
 
-**bins/cli** (doli-cli) - ~2,500 lines:
+**bins/cli** (doli) - ~2,500 lines:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `main.rs` | 1,667 | CLI commands (wallet, tx, producer) |
