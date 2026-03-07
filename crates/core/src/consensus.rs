@@ -255,14 +255,16 @@ pub const WITHDRAWAL_DELAY_SLOTS: Slot = 60_480; // 7 days * 24 * 360 slots/hour
 /// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
 pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 
-/// One vesting quarter (6 hours = 2,160 slots at 10s/slot)
-pub const VESTING_QUARTER_SLOTS: Slot = 2_160;
+/// One vesting quarter (1 year = 3,153,600 slots at 10s/slot)
+/// Mainnet: 4-year vesting with 1-year quarters (75/50/25/0% at Y1/Y2/Y3/Y4)
+/// Testnet overrides to 2,160 (6h) via NetworkParams
+pub const VESTING_QUARTER_SLOTS: Slot = YEAR_IN_SLOTS;
 
-/// Full vesting period (1 day = 4 quarters = 8,640 slots)
+/// Full vesting period (4 years = 4 quarters = 12,614,400 slots)
 pub const VESTING_PERIOD_SLOTS: Slot = 4 * VESTING_QUARTER_SLOTS;
 
-/// Commitment period for full vesting (1 day = 4 quarters)
-/// After 1 day, bonds can be withdrawn with 0% penalty
+/// Commitment period for full vesting (4 years = 4 quarters)
+/// After 4 years, bonds can be withdrawn with 0% penalty
 pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 
 /// Unbonding period for exit (~7 days at 10-second slots)
@@ -270,16 +272,18 @@ pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 /// 60,480 slots = 7 days (matches WITHDRAWAL_DELAY_SLOTS)
 pub const UNBONDING_PERIOD: BlockHeight = 60_480;
 
-/// Lock duration for bonds (1 day for full vesting)
+/// Lock duration for bonds (4 years for full vesting on mainnet)
 pub const BOND_LOCK_BLOCKS: BlockHeight = COMMITMENT_PERIOD;
 
 /// Calculate withdrawal penalty rate based on bond age.
 ///
-/// # Vesting Schedule (1-day, quarter-based)
-/// - Q1 (0-6h): 75% penalty
-/// - Q2 (6-12h): 50% penalty
-/// - Q3 (12-18h): 25% penalty
-/// - Q4+ (18h+): 0% penalty (fully vested)
+/// # Vesting Schedule (4-year, year-based — mainnet)
+/// - Y1 (0-1yr): 75% penalty
+/// - Y2 (1-2yr): 50% penalty
+/// - Y3 (2-3yr): 25% penalty
+/// - Y4+ (3yr+): 0% penalty (fully vested)
+///
+/// Testnet uses 1-day schedule (6h quarters) via NetworkParams.
 ///
 /// # Arguments
 /// - `bond_age_slots`: How many slots since the bond was created
@@ -367,11 +371,13 @@ pub struct ExitTerms {
 ///
 /// For the new bond stacking system, use `ProducerBonds::request_withdrawal()` instead.
 ///
-/// # Vesting Schedule (1-day, quarter-based)
-/// - Q1 (0-6h): 75% penalty
-/// - Q2 (6-12h): 50% penalty
-/// - Q3 (12-18h): 25% penalty
-/// - Q4+ (18h+): 0% penalty (fully vested)
+/// # Vesting Schedule (4-year, year-based — mainnet)
+/// - Y1 (0-1yr): 75% penalty
+/// - Y2 (1-2yr): 50% penalty
+/// - Y3 (2-3yr): 25% penalty
+/// - Y4+ (3yr+): 0% penalty (fully vested)
+///
+/// Testnet uses 1-day schedule (6h quarters) via NetworkParams.
 ///
 /// # Arguments
 /// - `bond_amount`: The producer's bond amount
@@ -4164,6 +4170,21 @@ mod tests {
             GENESIS_TIME, chainspec_time,
             "GENESIS_TIME ({}) is out of sync with chainspec.mainnet.json ({})",
             GENESIS_TIME, chainspec_time
+        );
+    }
+
+    #[test]
+    fn test_testnet_genesis_time_matches_chainspec() {
+        use crate::network::Network;
+        use crate::network_params::NetworkParams;
+        let json = include_str!("../../../chainspec.testnet.json");
+        let spec: serde_json::Value = serde_json::from_str(json).unwrap();
+        let chainspec_time = spec["genesis"]["timestamp"].as_u64().unwrap();
+        let params = NetworkParams::defaults(Network::Testnet);
+        assert_eq!(
+            params.genesis_time, chainspec_time,
+            "Testnet genesis_time ({}) out of sync with chainspec.testnet.json ({})",
+            params.genesis_time, chainspec_time
         );
     }
 }

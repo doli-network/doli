@@ -393,6 +393,7 @@ fn display_enforcement_notification(pending: &PendingUpdate) {
 /// The update service that runs in the background
 pub struct UpdateService {
     config: UpdateConfig,
+    network: doli_core::network::Network,
     pending: Arc<RwLock<Option<PendingUpdate>>>,
     vote_tx: mpsc::Sender<VoteMessage>,
     vote_rx: mpsc::Receiver<VoteMessage>,
@@ -406,7 +407,11 @@ const NOTIFICATION_INTERVAL_SECS: u64 = 6 * 3600;
 
 impl UpdateService {
     /// Create a new update service
-    pub fn new(config: UpdateConfig, data_dir: PathBuf) -> Self {
+    pub fn new(
+        config: UpdateConfig,
+        data_dir: PathBuf,
+        network: doli_core::network::Network,
+    ) -> Self {
         let (vote_tx, vote_rx) = mpsc::channel(100);
 
         // Try to load existing pending update from disk
@@ -421,6 +426,7 @@ impl UpdateService {
 
         Self {
             config,
+            network,
             pending: Arc::new(RwLock::new(pending)),
             vote_tx,
             vote_rx,
@@ -516,17 +522,19 @@ impl UpdateService {
     ) {
         debug!("Checking for updates...");
 
-        let release = match fetch_latest_release(self.config.custom_url.as_deref()).await {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                debug!("No release info available");
-                return;
-            }
-            Err(e) => {
-                warn!("Failed to check for updates: {}", e);
-                return;
-            }
-        };
+        let release =
+            match fetch_latest_release(self.config.custom_url.as_deref(), Some(self.network)).await
+            {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    debug!("No release info available");
+                    return;
+                }
+                Err(e) => {
+                    warn!("Failed to check for updates: {}", e);
+                    return;
+                }
+            };
 
         // Check if newer than current
         if !is_newer_version(&release.version, current_version()) {
@@ -831,6 +839,7 @@ enum UpdateTransition {
 pub fn spawn_update_service(
     config: UpdateConfig,
     data_dir: PathBuf,
+    network: doli_core::network::Network,
     producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
     is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
     maintainer_keys_fn: impl Fn() -> Vec<String> + Send + Sync + 'static,
@@ -838,7 +847,7 @@ pub fn spawn_update_service(
     mpsc::Sender<VoteMessage>,
     Arc<RwLock<Option<PendingUpdate>>>,
 ) {
-    let service = UpdateService::new(config, data_dir);
+    let service = UpdateService::new(config, data_dir, network);
     let vote_tx = service.vote_sender();
     let pending = service.pending_state();
 

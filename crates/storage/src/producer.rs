@@ -29,7 +29,8 @@ use std::path::Path;
 use crypto::hash::hash as crypto_hash;
 use crypto::{Hash, PublicKey};
 use doli_core::consensus::{
-    withdrawal_penalty_rate, BOND_UNIT as CORE_BOND_UNIT, MAX_BONDS_PER_PRODUCER,
+    withdrawal_penalty_rate_with_quarter, BOND_UNIT as CORE_BOND_UNIT, MAX_BONDS_PER_PRODUCER,
+    VESTING_QUARTER_SLOTS,
 };
 use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
@@ -794,7 +795,20 @@ impl ProducerInfo {
     ///
     /// Returns `(net_amount, penalty_amount)` for withdrawing `count` oldest bonds.
     /// Returns `None` if not enough bonds available (considering pending withdrawals).
+    /// Uses the mainnet vesting quarter (VESTING_QUARTER_SLOTS).
     pub fn calculate_withdrawal(&self, count: u32, current_slot: u32) -> Option<(u64, u64)> {
+        self.calculate_withdrawal_with_quarter(count, current_slot, VESTING_QUARTER_SLOTS as u64)
+    }
+
+    /// Calculate FIFO withdrawal amounts with a custom quarter duration.
+    ///
+    /// Network-aware: pass `network_params.vesting_quarter_slots` for correct penalties.
+    pub fn calculate_withdrawal_with_quarter(
+        &self,
+        count: u32,
+        current_slot: u32,
+        quarter_slots: u64,
+    ) -> Option<(u64, u64)> {
         let available = self
             .bond_count
             .saturating_sub(self.withdrawal_pending_count);
@@ -807,7 +821,7 @@ impl ProducerInfo {
 
         for entry in self.bond_entries.iter().take(count as usize) {
             let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64) as u32;
-            let penalty_pct = withdrawal_penalty_rate(age);
+            let penalty_pct = withdrawal_penalty_rate_with_quarter(age, quarter_slots as u32);
             let penalty = (entry.amount * penalty_pct as u64) / 100;
             let net = entry.amount - penalty;
             total_net += net;

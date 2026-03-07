@@ -1174,6 +1174,7 @@ async fn cmd_upgrade(
                 binary_url_template: String::new(),
                 changelog: String::new(),
                 published_at: 0,
+                target_networks: vec![],
             };
             match updater::verify_release_signatures(&sig_release) {
                 Ok(()) => {

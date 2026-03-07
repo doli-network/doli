@@ -293,6 +293,15 @@ impl Default for UpdateParams {
 // Types
 // ============================================================================
 
+/// Release metadata for network targeting (metadata.json in GitHub Releases)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseMetadata {
+    pub version: String,
+    pub networks: Vec<String>,
+    #[serde(default)]
+    pub min_protocol_version: Option<u32>,
+}
+
 /// A signed release from maintainers
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Release {
@@ -314,6 +323,10 @@ pub struct Release {
 
     /// Maintainer signatures
     pub signatures: Vec<MaintainerSignature>,
+
+    /// Target networks from metadata.json. Empty = all networks (backward compat).
+    #[serde(default)]
+    pub target_networks: Vec<String>,
 }
 
 /// A maintainer's signature on a release

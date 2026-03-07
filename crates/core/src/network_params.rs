@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1769738400, // 2026-01-29T22:00:00Z (Testnet specific)
+                genesis_time: 0, // Placeholder — set at deployment via embedded chainspec
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
@@ -482,8 +482,8 @@ impl NetworkParams {
                 max_fallback_ranks: consensus::MAX_FALLBACK_RANKS,
                 network_margin_ms: consensus::NETWORK_MARGIN_MS,
 
-                // Vesting (same as mainnet)
-                vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
+                // Vesting (1-day: 6h quarters — faster than mainnet for testing)
+                vesting_quarter_slots: 2_160,
 
                 // Gossip mesh (standard for DHT-enabled networks)
                 mesh_n: 6,
