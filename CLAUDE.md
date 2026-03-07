@@ -504,8 +504,6 @@ The block archiver streams every applied block to a filesystem directory for off
 **Recovery options:**
 - **Full restore**: `restore --from /path/to/archive --yes` — imports all blocks + rebuilds state
 - **Backfill only**: `restore --from /path/to/archive --backfill --yes` — fills snap sync gaps, no state rebuild
-- **P2P backfill**: Automatic — node detects gaps on startup, requests missing blocks from peers in background
-
 **Code:** `crates/storage/src/archiver.rs`
 
 ## 🖥 Operations & Deployment
@@ -550,6 +548,6 @@ A dedicated sync-only node (`doli-mainnet-archiver` on omegacortex) streams fina
 
 **Restore**: `doli-node --network mainnet restore --from /path/to/archive --yes` imports blocks, verifies checksums + genesis_hash, then auto-rebuilds state. Use `--backfill` to fill snap sync gaps without state rebuild.
 
-**P2P backfill**: Every node automatically detects and fills historical block gaps on startup via `GetBlockByHeight` requests to peers. Background, rate-limited (100ms), resumable. No configuration needed.
+**Backfill**: Use `restore --from /path/to/archive --backfill --yes` to fill snap sync gaps from the archiver. P2P backfill was removed — the archiver is the source of truth for historical block recovery.
 
-**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/node.rs` (P2P backfill: `detect_backfill_gap`, `maybe_backfill_block`, `handle_backfill_response`), `bins/node/src/main.rs` (CLI `--backfill` flag).
+**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (CLI `--backfill` flag).
