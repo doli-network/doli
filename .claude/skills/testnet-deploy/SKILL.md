@@ -733,9 +733,8 @@ for s in d['signatures']:
 
 Expected: `Signatures: 3/5` with the N1, N2, N3 public key prefixes.
 
-> **Do NOT use `doli update check` to verify.** That command compares against the CLI
-> binary's own version — if the CLI is already v<VERSION> it will say "up to date" even
-> though the running nodes haven't detected the update yet.
+> **Note:** `doli update check` queries the **running node's** version via RPC (getNodeInfo),
+> not the CLI binary's version. Point it at the correct RPC endpoint to verify a specific node.
 
 ### 15.7 Step 6: Monitor auto-update propagation
 
