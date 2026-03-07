@@ -8,9 +8,10 @@
 //! - Free hosting
 
 use crate::{
-    platform_identifier, MaintainerSignature, Release, Result, SignaturesFile, UpdateError,
-    FALLBACK_MIRROR, GITHUB_RELEASES_URL,
+    platform_identifier, MaintainerSignature, Release, ReleaseMetadata, Result, SignaturesFile,
+    UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
 };
+use doli_core::network::Network;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
@@ -109,12 +110,20 @@ pub fn verify_hash(binary: &[u8], expected_hash: &str) -> Result<()> {
 /// 1. Custom URL (if provided)
 /// 2. GitHub API (gets latest release tag, then downloads release.json)
 /// 3. Fallback mirror (legacy releases.doli.network/latest.json)
-pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Release>> {
+pub async fn fetch_latest_release(
+    custom_url: Option<&str>,
+    network: Option<Network>,
+) -> Result<Option<Release>> {
     // If custom URL provided, use it directly
     if let Some(url) = custom_url {
         debug!("Checking custom URL: {}", url);
         match fetch_release_from_url(&format!("{}/latest.json", url)).await {
-            Ok(release) => return Ok(Some(release)),
+            Ok(release) => {
+                if let Some(filtered) = filter_release_by_network(release, network) {
+                    return Ok(Some(filtered));
+                }
+                return Ok(None);
+            }
             Err(e) => {
                 warn!("Failed to fetch from custom URL: {}", e);
                 return Ok(None);
@@ -126,8 +135,12 @@ pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Rel
     debug!("Checking GitHub for latest release...");
     match fetch_from_github().await {
         Ok(Some(release)) => {
-            info!("Found latest release v{} from GitHub", release.version);
-            return Ok(Some(release));
+            if let Some(filtered) = filter_release_by_network(release, network) {
+                info!("Found latest release v{} from GitHub", filtered.version);
+                return Ok(Some(filtered));
+            }
+            // Release exists but not for our network
+            return Ok(None);
         }
         Ok(None) => {
             debug!("No releases found on GitHub");
@@ -143,8 +156,11 @@ pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Rel
 
     match fetch_release_from_url(&fallback_url).await {
         Ok(release) => {
-            info!("Found release v{} from fallback mirror", release.version);
-            return Ok(Some(release));
+            if let Some(filtered) = filter_release_by_network(release, network) {
+                info!("Found release v{} from fallback mirror", filtered.version);
+                return Ok(Some(filtered));
+            }
+            return Ok(None);
         }
         Err(e) => {
             warn!("Fallback mirror failed: {}", e);
@@ -154,6 +170,28 @@ pub async fn fetch_latest_release(custom_url: Option<&str>) -> Result<Option<Rel
     // All sources failed
     warn!("Could not fetch release info from any source");
     Ok(None)
+}
+
+/// Filter a release by network. Returns None if the release is not for the given network.
+/// Empty target_networks = targets all networks (backward compat for releases without metadata.json).
+fn filter_release_by_network(release: Release, network: Option<Network>) -> Option<Release> {
+    if let Some(net) = network {
+        if !release.target_networks.is_empty()
+            && !release
+                .target_networks
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(net.name()))
+        {
+            info!(
+                "Release v{} not for {} (targets: {:?}), skipping",
+                release.version,
+                net.name(),
+                release.target_networks
+            );
+            return None;
+        }
+    }
+    Some(release)
 }
 
 /// Fetch release info from GitHub API
@@ -253,6 +291,33 @@ async fn fetch_from_github() -> Result<Option<Release>> {
         vec![]
     };
 
+    // Try to download metadata.json (optional — may not exist for older releases)
+    let target_networks: Vec<String> = if let Some(meta_url) = assets.and_then(|a| {
+        a.iter()
+            .find(|a| a["name"].as_str() == Some("metadata.json"))
+            .and_then(|a| a["browser_download_url"].as_str())
+    }) {
+        match download_from_url(meta_url).await {
+            Ok(body) => match serde_json::from_slice::<ReleaseMetadata>(&body) {
+                Ok(meta) => {
+                    info!("metadata.json: networks={:?}", meta.networks);
+                    meta.networks
+                }
+                Err(e) => {
+                    warn!("Failed to parse metadata.json: {}", e);
+                    vec![]
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download metadata.json: {}", e);
+                vec![]
+            }
+        }
+    } else {
+        debug!("No metadata.json in release assets — targeting all networks");
+        vec![]
+    };
+
     Ok(Some(Release {
         version: version.to_string(),
         binary_sha256: checksums_sha256,
@@ -263,6 +328,7 @@ async fn fetch_from_github() -> Result<Option<Release>> {
         changelog,
         published_at,
         signatures,
+        target_networks,
     }))
 }
 

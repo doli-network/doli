@@ -3571,8 +3571,11 @@ impl Node {
                                 );
                             } else {
                                 // Validate: output amount <= FIFO net calculation
-                                let expected =
-                                    info.calculate_withdrawal(data.bond_count, block.header.slot);
+                                let expected = info.calculate_withdrawal_with_quarter(
+                                    data.bond_count,
+                                    block.header.slot,
+                                    self.config.network.params().vesting_quarter_slots,
+                                );
                                 let tx_output = tx.outputs.first().map(|o| o.amount).unwrap_or(0);
                                 if let Some((expected_net, _penalty)) = expected {
                                     if tx_output > expected_net {
