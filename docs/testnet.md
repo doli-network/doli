@@ -294,6 +294,7 @@ Community and partner nodes.
 | Operator | Host | Wallet Address | Joined |
 |----------|------|----------------|--------|
 | atinoco | doli02 | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | 2026-03-07 |
+| antonio | — | `doli1nc3erj8tqew5yz09s60ang7n77p3ftjh7e9m370w3v5c95aaj38qvv98wl` | 2026-03-07 |
 | daniel | — | `doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh` | 2026-03-07 |
 
 
