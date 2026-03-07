@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772833222,
+    "timestamp": 1772854324,
     "message": "Genesis v6 - Network reset 2026-03-06",
     "initial_reward": 100000000
   },
