@@ -2215,8 +2215,21 @@ async fn restore_from_rpc(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Missing genesisHash"))?;
 
-    // Step 2: Validate genesis hash
-    let local_genesis = doli_core::genesis::genesis_hash(network);
+    // Step 2: Validate genesis hash (prefer existing block data over embedded chainspec)
+    let blocks_path = data_dir.join("blocks");
+    std::fs::create_dir_all(&blocks_path)?;
+    let block_store = BlockStore::open(&blocks_path)?;
+
+    let local_genesis = {
+        let mut found = None;
+        for h in 1..=10000 {
+            if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                found = Some(block.header.genesis_hash);
+                break;
+            }
+        }
+        found.unwrap_or_else(|| doli_core::genesis::genesis_hash(network))
+    };
     let local_genesis_str = local_genesis.to_string();
     if remote_genesis != local_genesis_str {
         return Err(anyhow!(
@@ -2240,12 +2253,7 @@ async fn restore_from_rpc(
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
-    // Step 3: Open BlockStore
-    let blocks_path = data_dir.join("blocks");
-    std::fs::create_dir_all(&blocks_path)?;
-    let block_store = BlockStore::open(&blocks_path)?;
-
-    // Step 4: Download and store blocks
+    // Step 3: Download and store blocks (BlockStore already opened in Step 2)
     let mut imported = 0u64;
     let mut skipped = 0u64;
 
