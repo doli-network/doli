@@ -551,10 +551,11 @@ The block archiver continuously streams every block to a filesystem directory as
 # Add --archive-to to any node (producer or non-producer)
 doli-node run --archive-to /path/to/archive/
 
-# Example: dedicated archiver node
+# Example: dedicated archiver node with public RPC
 doli-node run \
     --archive-to ~/.doli/mainnet/archive \
     --p2p-port 30306 \
+    --rpc-bind 0.0.0.0 \
     --rpc-port 8548
 ```
 
@@ -568,19 +569,29 @@ doli-node run \
 ```
 archive/
   0000000001.block    # Block at height 1 (bincode serialized)
+  0000000001.blake3   # BLAKE3 checksum sidecar
   0000000002.block    # Block at height 2
+  0000000002.blake3
   ...
-  manifest.json       # {"latest_height": N, "latest_hash": "abc..."}
+  manifest.json       # {"latest_height": N, "latest_hash": "abc...", "genesis_hash": "d34..."}
 ```
 
 **Restore from archive (disaster recovery):**
 ```bash
-# Import all blocks from archive into a fresh node
-doli-node restore --from /path/to/archive/
+# Full restore — imports all blocks + rebuilds state
+doli-node --network mainnet restore --from /path/to/archive/ --yes
 
-# Then rebuild state from imported blocks
-doli-node recover --yes
+# Backfill only — fills snap sync gaps without state rebuild
+doli-node --network mainnet restore --from /path/to/archive/ --backfill --yes
 ```
+
+**Automatic P2P backfill:**
+
+Nodes that joined via snap sync are missing historical blocks. The node automatically detects this gap on startup and fills it by requesting blocks from connected peers in the background. No configuration needed — it just works. See [disaster-recovery.md](disaster-recovery.md#automatic-p2p-backfill) for details.
+
+**DOLI mainnet archiver:**
+- Service: `doli-mainnet-archiver` on omegacortex.ai (`archive.doli.network`)
+- Archive dir: `~/.doli/mainnet/archive/`
 
 **Recommended setup:**
 - Run a dedicated non-producer archiver node

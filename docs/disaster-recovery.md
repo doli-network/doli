@@ -6,7 +6,9 @@ How to back up and restore a DOLI node from the block archive.
 
 DOLI maintains a block archive — a flat-file copy of every finalized block, each with a BLAKE3 integrity checksum. If a node's database is corrupted or lost, you can restore the full chain from this archive in minutes.
 
-The archive is hosted at `archive.doli.network` (omegacortex.ai) and can be copied to any location via rsync.
+The archive is hosted at `archive.doli.network` (omegacortex.ai). It can be copied to any location via rsync.
+
+**For nodes that joined via snap sync**, historical blocks are filled automatically via P2P backfill — no manual intervention needed. See [Automatic P2P Backfill](#automatic-p2p-backfill) below.
 
 ## Archive Format
 
@@ -85,6 +87,22 @@ doli-node --network mainnet run
 doli-node --network mainnet --data-dir /new/data/dir restore --from /path/to/archive --yes
 ```
 
+### Backfill only (fill snap sync gaps)
+
+Nodes that joined via snap sync have correct state but are missing historical blocks (e.g., heights 1 to ~475). Use `--backfill` to import only the missing blocks without rebuilding state:
+
+```bash
+doli-node --network mainnet restore --from /path/to/archive --backfill --yes
+```
+
+This command:
+1. Scans the archive directory for block files
+2. Skips blocks that already exist in the BlockStore
+3. Imports only missing blocks, verifying BLAKE3 checksums
+4. Does **not** rebuild UTXO set, producer registry, or chain state (they're already correct from snap sync)
+
+Typical output: `Backfill complete: imported 469 blocks (skipped 588 existing)`
+
 ## Verifying Archive Integrity
 
 You can manually verify any block's checksum:
@@ -128,6 +146,35 @@ The block archiver runs as part of a `doli-node` process with the `--archive-to`
 
 The archiver never slows down block production — it uses non-blocking channel sends (`try_send`) and runs on a separate async task.
 
+## Automatic P2P Backfill
+
+Nodes that joined the network via snap sync are missing historical blocks (heights before their snap sync point). The P2P backfill system fills these gaps automatically — no manual intervention needed.
+
+**How it works:**
+1. On startup, the node scans heights 1–1000 to detect the first available block
+2. If blocks before that height are missing, a background backfill task starts
+3. The task requests missing blocks one at a time via `GetBlockByHeight` from connected peers
+4. Blocks are stored in the BlockStore for historical record (no state rebuild)
+5. Rate-limited to 100ms between requests to avoid overwhelming peers
+
+**Key properties:**
+- **Background, non-blocking**: Never interferes with forward sync, block production, or validation
+- **Uses existing protocol**: `GetBlockByHeight` — no new P2P messages
+- **Any peer can serve**: Not limited to the archiver; any peer with the blocks will respond
+- **Resumable**: Progress tracked via BlockStore; restarts pick up where they left off
+- **No state rebuild**: Blocks inserted for historical record only; state is correct from snap sync
+
+**Logs:**
+```
+[BACKFILL] Gap detected: first block at height 470, missing 1..469
+[BACKFILL] Stored block at height 1 from peer 12D3KooW...
+[BACKFILL] Stored block at height 2 from peer 12D3KooW...
+...
+[BACKFILL] Complete — filled 469 missing blocks (1..469)
+```
+
+No configuration needed. P2P backfill runs automatically whenever a gap is detected.
+
 ## Architecture
 
 ```
@@ -141,9 +188,8 @@ Producer nodes (N1-N6)
        ▼
   ~/.doli/mainnet/archive/
        │
-       │ rsync / rclone
-       ▼
-  Off-site backup (S3, remote server, etc.)
+       ├── rsync / rclone → Off-site backup (S3, remote server, etc.)
+       └── P2P backfill → Any node can request historical blocks from peers
 ```
 
 ## DNS
