@@ -2108,7 +2108,18 @@ fn backfill_from_archive(
     std::fs::create_dir_all(&blocks_path)?;
     let block_store = BlockStore::open(&blocks_path)?;
 
-    let genesis_hash = doli_core::genesis::genesis_hash(network);
+    // Read genesis_hash from an existing block in the store (not from embedded chainspec,
+    // which may differ from the actual chain if a custom chainspec was used at launch).
+    let genesis_hash = {
+        let mut found = None;
+        for h in 1..=10000 {
+            if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+                found = Some(block.header.genesis_hash);
+                break;
+            }
+        }
+        found.unwrap_or_else(|| doli_core::genesis::genesis_hash(network))
+    };
 
     let imported =
         storage::archiver::backfill_from_archive(archive_dir, &block_store, Some(&genesis_hash))
