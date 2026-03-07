@@ -2027,7 +2027,9 @@ async fn cmd_producer(
                 Ok(info) => {
                     let addr_display = hex::decode(&info.public_key)
                         .ok()
-                        .and_then(|bytes| crypto::address::from_pubkey(&bytes, address_prefix()).ok())
+                        .and_then(|bytes| {
+                            crypto::address::from_pubkey(&bytes, address_prefix()).ok()
+                        })
                         .unwrap_or_else(|| {
                             format!(
                                 "{}...{}",
