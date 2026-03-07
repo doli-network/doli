@@ -3163,6 +3163,8 @@ fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> Result<()> {
         "producer_gset.bin",
         "peers.cache",
         "node_key",
+        "maintainer_state.bin",
+        "producer.lock",
     ];
     let preserve_targets = ["keys", ".env"];
 
