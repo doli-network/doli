@@ -287,7 +287,17 @@ Hardcoded in binary at `crates/updater/src/lib.rs` for security.
 
 ## External Producers
 
-Community and partner nodes running on testnet.
+Community and partner nodes.
+
+### Mainnet
+
+| Operator | Host | Wallet Address | Joined |
+|----------|------|----------------|--------|
+| atinoco | doli02 | `doli17f7pqlkfjweddk88ry6gtc23hvmptsqk2epxx7h6x9a8gvan3crsfl243e` | 2026-03-07 |
+| daniel | — | `doli1p7s6hcacnm6t64nk670leeu9w3tvnkvwc688r9zlvh2f3573f6vs4cynzh` | 2026-03-07 |
+
+
+### Testnet
 
 | Operator | Host | Wallet Address | Joined |
 |----------|------|----------------|--------|
