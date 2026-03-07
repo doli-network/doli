@@ -490,3 +490,20 @@ All operational procedures are in the ops runbook: **`.claude/skills/doli-ops/SK
 - **Section 9**: N6/N8 node details
 - **Section 10**: Chainspec rules, DNS/bootstrap, snap sync
 - **Section 11**: On-chain protocol activation (consensus-critical changes)
+
+### Block Archiver (Disaster Recovery)
+
+A dedicated sync-only node (`doli-mainnet-archiver` on omegacortex) streams finalized blocks to flat files for disaster recovery.
+
+| Property | Value |
+|----------|-------|
+| DNS | `archive.doli.network` |
+| Service | `doli-mainnet-archiver` |
+| Archive dir | `~/.doli/mainnet/archive/` |
+| RPC | 8548 (local only) |
+
+**Key design**: Finality-gated — blocks are only archived after FinalityTracker declares them irreversible (67%+ attestation weight). Each block has a BLAKE3 checksum sidecar (`.blake3`) and `manifest.json` includes `genesis_hash`.
+
+**Restore**: `doli-node --network mainnet restore --from /path/to/archive --yes` imports blocks, verifies checksums + genesis_hash, then auto-rebuilds state.
+
+**Code**: `crates/storage/src/archiver.rs`, integration in `bins/node/src/node.rs` and `bins/node/src/main.rs`.
