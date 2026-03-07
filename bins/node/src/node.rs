@@ -5955,8 +5955,11 @@ impl Node {
             producers.process_unbonding(height, UNBONDING_PERIOD);
         }
 
-        // Apply any remaining pending updates (e.g. if target_height doesn't land on a boundary)
-        producers.apply_pending_updates();
+        // DO NOT apply remaining pending_updates here. If target_height doesn't
+        // land on an epoch boundary, pending updates must stay deferred — they will
+        // be applied when apply_block() processes the next epoch boundary. Applying
+        // them early produces a producer set that never existed on-chain, causing
+        // "invalid producer for slot" failures during reorg block validation.
 
         Ok(())
     }
