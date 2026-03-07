@@ -10,6 +10,8 @@ The archive is hosted at `archive.doli.network` (omegacortex.ai). It can be copi
 
 **For nodes that joined via snap sync**, historical blocks can be filled from the archive using `restore --backfill`. See [Backfill only](#backfill-only-fill-snap-sync-gaps) below.
 
+**No SSH access to the archive server?** Use `restore --from-rpc` to download blocks directly from any archiver's RPC endpoint. See [Restore from RPC](#restore-from-rpc) below.
+
 ## Archive Format
 
 ```
@@ -103,6 +105,63 @@ This command:
 
 Typical output: `Backfill complete: imported 469 blocks (skipped 588 existing)`
 
+## Restore from RPC
+
+If you don't have SSH or filesystem access to the archive, you can restore directly from any archiver node's RPC endpoint using `--from-rpc`:
+
+### Backfill via RPC (most common)
+
+```bash
+doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --backfill --yes
+```
+
+### Full restore via RPC
+
+```bash
+doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --yes
+```
+
+After a full restore, rebuild state: `doli-node recover --yes`
+
+### How it works
+
+1. Queries `getChainInfo` to determine the archiver's best height
+2. Fetches block 1 via `getBlockRaw` to validate genesis hash (prevents cross-chain imports)
+3. Downloads each block as base64-encoded bincode via `getBlockRaw`
+4. Verifies BLAKE3 checksum on every block before storing
+5. In backfill mode, skips blocks that already exist in the local BlockStore
+
+### RPC method: `getBlockRaw`
+
+Returns the raw bincode-serialized block with its BLAKE3 checksum.
+
+**Request:**
+```json
+{"jsonrpc": "2.0", "method": "getBlockRaw", "params": {"height": 42}, "id": 1}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "block": "<base64-encoded bincode>",
+    "blake3": "a1b2c3d4...",
+    "height": 42
+  },
+  "id": 1
+}
+```
+
+Unlike `getBlockByHeight` (which returns JSON — lossy for signatures and VDF proofs), `getBlockRaw` returns the exact bincode bytes that can be deserialized back into a `Block` struct.
+
+### Comparison
+
+| Method | Requires SSH? | Requires file transfer? | RPC only? |
+|--------|:---:|:---:|:---:|
+| `--from /path` (file-based) | Yes | Yes (rsync/scp) | No |
+| `--from-rpc <URL>` | **No** | **No** | **Yes** |
+
 ## Verifying Archive Integrity
 
 You can manually verify any block's checksum:
@@ -160,7 +219,8 @@ Producer nodes (N1-N6)
   ~/.doli/mainnet/archive/
        │
        ├── rsync / rclone → Off-site backup (S3, remote server, etc.)
-       └── restore --backfill → Operator fills snap sync gaps from archive
+       ├── restore --backfill → Operator fills snap sync gaps from local archive copy
+       └── restore --from-rpc → Operator fills gaps via RPC (no SSH needed)
 ```
 
 ## DNS

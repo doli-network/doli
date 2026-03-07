@@ -23,7 +23,18 @@ If something is broken after deployment, STOP and report. Do not attempt fixes a
 
 ## MANDATORY: Ops Runbook
 
-**Before ANY deployment, node management, upgrade, or infrastructure task**, read `.claude/skills/doli-ops/SKILL.md`. It contains exact CLI syntax (flag order matters!), node SSH details, deployment checklists, and troubleshooting procedures.
+**Before ANY deployment, node management, upgrade, or infrastructure task**, read `~/.omega/skills/doli-ops/SKILL.md`. It contains exact CLI syntax (flag order matters!), node SSH details, deployment checklists, and troubleshooting procedures.
+
+## MANDATORY: Ops Data Presentation Rules
+
+When querying or presenting ANY DOLI operational data (balances, status, node info):
+
+1. **Authoritative source**: `~/.omega/skills/doli-ops/SKILL.md` — follow its scripts, addresses, SSH patterns, and output format EXACTLY
+2. **Balances in DOLI**: Always divide raw RPC values by 100,000,000. Display as DOLI (mainnet) or tDOLI (testnet). NEVER show raw satoshi values
+3. **RPC balance fields**: `confirmed`, `immature`, `total`, `unconfirmed` — NEVER use `balance` or `spendable` (they don't exist)
+4. **Addresses**: Copy exact addresses from the ops skill scripts. NEVER guess, derive, or rediscover addresses
+5. **SSH access**: N3/N4/N5 DIRECT from Mac (`ssh -p 50790`). NEVER use omegacortex as jump host
+6. **Output format**: Use the emoji template from the ops skill (✅❌⚠️💰🔒📦📊)
 
 # FIRST PRINCIPLE:
 Elon Musk says: The best engine part is the one you can remove. In other words, less is more! Let this be our approach, even for the most complex problems: Always opt for the simplest solution without compromising safety.
@@ -502,13 +513,16 @@ The block archiver streams every applied block to a filesystem directory for off
 - Log: `/var/log/doli/archiver.log`
 
 **Recovery options:**
-- **Full restore**: `restore --from /path/to/archive --yes` — imports all blocks + rebuilds state
-- **Backfill only**: `restore --from /path/to/archive --backfill --yes` — fills snap sync gaps, no state rebuild
-**Code:** `crates/storage/src/archiver.rs`
+- **Full restore (file)**: `restore --from /path/to/archive --yes` — imports all blocks + rebuilds state
+- **Backfill (file)**: `restore --from /path/to/archive --backfill --yes` — fills snap sync gaps, no state rebuild
+- **Full restore (RPC)**: `restore --from-rpc http://archive.doli.network:8548 --yes` — no SSH/rsync needed
+- **Backfill (RPC)**: `restore --from-rpc http://archive.doli.network:8548 --backfill --yes` — fills gaps via RPC
+
+**Code:** `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (`restore_from_rpc`)
 
 ## 🖥 Operations & Deployment
 
-All operational procedures are in the ops runbook: **`.claude/skills/doli-ops/SKILL.md`**
+All operational procedures are in the ops runbook: **`~/.omega/skills/doli-ops/SKILL.md`**
 
 **Always read the ops skill before any infrastructure task.** Key sections:
 - **Section 2**: Node inventory (N1-N12, NT1-NT12), SSH access, service management, logs
@@ -546,8 +560,9 @@ A dedicated sync-only node (`doli-mainnet-archiver` on omegacortex) streams fina
 
 **Key design**: Finality-gated — blocks are only archived after FinalityTracker declares them irreversible (67%+ attestation weight). Each block has a BLAKE3 checksum sidecar (`.blake3`) and `manifest.json` includes `genesis_hash`.
 
-**Restore**: `doli-node --network mainnet restore --from /path/to/archive --yes` imports blocks, verifies checksums + genesis_hash, then auto-rebuilds state. Use `--backfill` to fill snap sync gaps without state rebuild.
+**Restore (file)**: `doli-node restore --from /path/to/archive --yes` — imports blocks, verifies checksums + genesis_hash, rebuilds state.
+**Restore (RPC)**: `doli-node restore --from-rpc http://archive.doli.network:8548 --yes` — same but via RPC, no SSH/rsync needed. Uses `getBlockRaw` to fetch base64 bincode blocks with BLAKE3 verification.
 
-**Backfill**: Use `restore --from /path/to/archive --backfill --yes` to fill snap sync gaps from the archiver. P2P backfill was removed — the archiver is the source of truth for historical block recovery.
+Add `--backfill` to either method to fill snap sync gaps without state rebuild. The archiver is the sole source of truth for historical block recovery.
 
-**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (CLI `--backfill` flag).
+**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (`restore_from_rpc`, CLI `--from-rpc`/`--backfill` flags), `crates/rpc/src/methods.rs` (`getBlockRaw`).
