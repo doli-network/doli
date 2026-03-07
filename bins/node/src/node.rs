@@ -2355,14 +2355,14 @@ impl Node {
         // Snap-synced nodes don't have early blocks — reorg would fail in an infinite loop.
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
-                "Fork sync reorg: block store incomplete (snap-synced node). \
-                 Cannot rebuild UTXO from genesis. Recovering from peers."
+                "Fork sync reorg: snap sync gap detected (block 1 missing). \
+                 Forcing re-snap sync to get fresh state from peers."
             );
             {
                 let mut sync = self.sync_manager.write().await;
                 sync.reset_sync_for_rollback();
             }
-            self.recover_from_peers().await?;
+            self.reset_state_only().await?;
             return Ok(());
         }
 
@@ -2429,12 +2429,20 @@ impl Node {
 
                 let err_msg = e.to_string();
                 if err_msg.contains("missing block") || err_msg.contains("UTXO rebuild") {
-                    warn!(
-                        "Fork sync reorg failed due to incomplete block store: {}. \
-                         Recovering from peers.",
-                        e
-                    );
-                    self.recover_from_peers().await?;
+                    if self.block_store.get_block_by_height(1)?.is_none() {
+                        warn!(
+                            "Fork sync reorg failed due to snap sync gap: {}. \
+                             Forcing re-snap sync.",
+                            e
+                        );
+                        self.reset_state_only().await?;
+                    } else {
+                        warn!(
+                            "Reorg failed with block store intact — possible corruption: {}",
+                            e
+                        );
+                        self.recover_from_peers().await?;
+                    }
                     return Ok(());
                 }
 
