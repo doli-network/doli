@@ -8,13 +8,13 @@ Official DOLI testnet for testing and development.
 
 ## Testnet v3 (March 2026 Relaunch)
 
-The testnet has been relaunched with 12 genesis producers and parameters matching mainnet exactly.
+The testnet has been relaunched with 6 genesis producers and parameters matching mainnet exactly. Additional producers (NT7-NT12) register on-chain after genesis.
 
 | Status | Value |
 |--------|-------|
 | Genesis | March 7, 2026 07:40:52 UTC |
 | Block Reward | **1 tDOLI** (matches mainnet) |
-| Genesis Producers | 12 pre-registered (NT1-NT12) |
+| Genesis Producers | 6 pre-registered (NT1-NT6) |
 | Slot Duration | 10 seconds |
 | Epoch Length | 360 blocks (1 hour) |
 | Bootstrap DNS | `bootstrap1.testnet.doli.network:40303` / `bootstrap2.testnet.doli.network:40304` |
@@ -73,7 +73,7 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Slot Duration | 10 seconds |
 | Block Reward | **1 tDOLI** |
 | Epoch Length | 360 blocks (1 hour) |
-| Genesis Producers | 12 (NT1-NT12) |
+| Genesis Producers | 6 (NT1-NT6), NT7-NT12 register on-chain |
 | P2P Port | 40303 |
 | RPC Port | 18545 |
 | Bootstrap | `bootstrap1.testnet.doli.network:40303` |
@@ -86,39 +86,39 @@ To earn block rewards, you need to register as a producer with bonds:
 
 ```bash
 # Check your wallet balance
-doli balance -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
+doli -n testnet -w ~/.doli/testnet/producer.json balance
 
 # Register with 1 bond (10 tDOLI)
-doli producer register --bonds 1 -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
+doli -n testnet -w ~/.doli/testnet/producer.json producer register --bonds 1
 
 # Check registration status
-doli producer status -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
+doli -n testnet -w ~/.doli/testnet/producer.json producer status
 
 # List all network producers
-doli producer list --rpc http://127.0.0.1:18545
+doli -n testnet -w ~/.doli/testnet/producer.json producer list
 ```
 
 **Bond stacking** - Add more bonds to increase your selection probability:
 ```bash
-doli producer add-bond --count 2 -w ~/.doli/testnet/producer.json --rpc http://127.0.0.1:18545
+doli -n testnet -w ~/.doli/testnet/producer.json producer add-bond --count 2
 ```
 
 ---
 
 ## CLI Commands
 
-Set the RPC endpoint once:
+Use `-n testnet` to auto-detect RPC and address prefix (`tdoli1`):
 ```bash
-export DOLI_RPC=http://127.0.0.1:18545
+doli -n testnet -w <wallet> balance                    # Check balance
+doli -n testnet -w <wallet> send <address> <amount>    # Send tDOLI
+doli -n testnet -w <wallet> chain                      # Chain info
+doli -n testnet -w <wallet> producer status             # Producer status
+doli -n testnet -w <wallet> producer list               # List all producers
 ```
 
-Then use:
+Or use explicit RPC:
 ```bash
-doli balance                    # Check balance
-doli send <address> <amount>    # Send tDOLI
-doli chain                      # Chain info
-doli producer status            # Producer status
-doli producer list              # List all producers
+doli -n testnet -r http://198.51.100.1:18545 -w <wallet> balance
 ```
 
 ---
@@ -246,6 +246,26 @@ sudo ufw status                     # Check firewall
 ```bash
 journalctl -u doli-testnet | grep -i "height\|produced"
 ```
+
+---
+
+## Binary Segregation
+
+Testnet and mainnet use **separate binaries** to allow independent upgrades without affecting production.
+
+| Network | Binary Path | Purpose |
+|---------|-------------|---------|
+| Mainnet | `/opt/doli/target/release/doli-node` (N3/N4/N5) or `~/repos/doli/target/release/doli-node` (omegacortex) | Production |
+| Testnet | `/opt/doli/testnet/doli-node` (all hosts) | Testing |
+
+**Upgrade testnet only:**
+```bash
+# Build new version, copy to testnet path
+sudo cp /tmp/doli-node-new /opt/doli/testnet/doli-node
+sudo systemctl restart doli-testnet-nt*
+```
+
+This ensures testnet deployments never touch mainnet nodes.
 
 ---
 
