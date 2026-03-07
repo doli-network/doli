@@ -337,6 +337,11 @@ pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError>
         .subscribe(&headers_topic)
         .map_err(|e| GossipError::Subscribe(format!("headers: {}", e)))?;
 
+    let attestation_topic = IdentTopic::new(ATTESTATION_TOPIC);
+    gossipsub
+        .subscribe(&attestation_topic)
+        .map_err(|e| GossipError::Subscribe(format!("attestations: {}", e)))?;
+
     Ok(())
 }
 
@@ -665,14 +670,14 @@ mod tests {
         // Start with Tier 0 (legacy) subscriptions
         subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
         let initial_count = gs.topics().count();
-        assert_eq!(initial_count, 6); // blocks, txs, heartbeats, headers, producers, votes
+        assert_eq!(initial_count, 7); // blocks, txs, heartbeats, headers, attestations, producers, votes
 
         // Reconfigure to Tier 3 (header-only)
         // BLOCKS_TOPIC and TRANSACTIONS_TOPIC are protected — never unsubscribed
         reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
         let final_count = gs.topics().count();
-        // headers + producers + votes + blocks(protected) + txs(protected) = 5
-        assert_eq!(final_count, 5);
+        // headers + attestations + producers + votes + blocks(protected) + txs(protected) = 6
+        assert_eq!(final_count, 6);
     }
 
     #[test]
