@@ -70,7 +70,7 @@ sudo systemctl status doli-mainnet-nodeN
 | `--no-auto-update` | off | Disable auto-updates |
 | `--yes` | off | Skip confirmations |
 
-## Mainnet Infrastructure (5 Nodes)
+## Mainnet Infrastructure (6 Nodes)
 
 | Node | Host | SSH | Ports (P2P/RPC/Metrics) |
 |------|------|----|------------------------|
@@ -79,12 +79,34 @@ sudo systemctl status doli-mainnet-nodeN
 | N3 | 147.93.84.44 | `ssh -p 50790 ilozada@147.93.84.44` (direct from Mac) | 30303/8545/9090 |
 | N4 | 72.60.115.209 | `ssh -p 50790 ilozada@72.60.115.209` (direct from Mac) | 30303/8545/9090 |
 | N5 | 72.60.70.166 | `ssh -p 50790 ilozada@72.60.70.166` (direct from Mac) | 30303/8545/9090 |
+| N6 | omegacortex.ai | same host | 30305/8547/9092 |
 
-**Key differences:**
-- N1/N2 share binary at `~/repos/doli/target/release/doli-node`, have Rust toolchain
-- N3: binary at `/home/ilozada/doli-node`, deployed via SCP from Mac
-- N4/N5: binary at `/opt/doli/target/release/doli-node`, process user `isudoajl`, no Rust
+### Binaries
+
+| Node | doli-node | doli (CLI) | Rust? |
+|------|-----------|------------|-------|
+| N1/N2/N6 | `~/repos/doli/target/release/doli-node` | `~/repos/doli/target/release/doli` | Yes |
+| N3 | `/home/ilozada/doli-node` | `/home/ilozada/doli` | No (SCP from Mac) |
+| N4/N5 | `/opt/doli/target/release/doli-node` | `/usr/local/bin/doli` | No (SCP from Mac) |
+
+### Wallet Keys
+
+| Node | Key File | Process User |
+|------|----------|--------------|
+| N1 | `~/.doli/mainnet/keys/producer_1.json` | ilozada |
+| N2 | `~/.doli/mainnet/keys/producer_2.json` | ilozada |
+| N3 | `~/.doli/mainnet/keys/producer_3.json` | ilozada |
+| N4 | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | isudoajl |
+| N5 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | isudoajl |
+| N6 | `~/.doli/mainnet/keys/producer_6.json` | ilozada |
+
+> **⚠️ N4/N5 keys are swapped**: N4 runs `producer_5.json`, N5 runs `producer_4.json`. This is intentional — do NOT "fix" it.
+
+### Connectivity
+
+- N1/N2/N6: on omegacortex, accessed directly
 - N3/N4/N5: SSH direct from Mac as `ilozada` on port 50790. **omegacortex CANNOT reach these nodes!**
+- N4/N5 SSH aliases: `fpx` (N4), `kv1-fpx` (N5) — but these use user `isudoajl` with passphrase key, prefer explicit `ssh -p 50790 ilozada@<IP>`
 
 ## Deployment Procedure
 
@@ -156,7 +178,21 @@ rm -rf blocks/ signed_slots.db/
 ```
 
 **N4/N5 paths**: `/home/isudoajl/.doli/mainnet/` (no `data/` subdir, process user `isudoajl`)
-**N1/N2/N3 paths**: `~/.doli/mainnet/nodeN/data/`
+**N1/N2/N6 paths**: `~/.doli/mainnet/nodeN/data/` (on omegacortex)
+**N3 paths**: `~/.doli/mainnet/data/`
+
+### Balance Check Commands
+
+```bash
+# N1 (omegacortex)
+ssh ilozada@omegacortex.ai "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_1.json balance"
+
+# N4 (direct from Mac — note swapped key name!)
+ssh -p 50790 ilozada@72.60.115.209 "sudo -u isudoajl /usr/local/bin/doli -w /home/isudoajl/.doli/mainnet/keys/producer_5.json balance"
+
+# N5 (direct from Mac — note swapped key name!)
+ssh -p 50790 ilozada@72.60.70.166 "sudo -u isudoajl /usr/local/bin/doli -w /home/isudoajl/.doli/mainnet/keys/producer_4.json balance"
+```
 
 ## Upgrade via GitHub
 
@@ -171,6 +207,28 @@ doli-node upgrade --version 0.3.0 --yes   # specific version
 |-------------|----------|
 | Consensus-critical (validation, scheduling, VDF, economics) | Stop ALL, deploy, start all |
 | Non-consensus (sync, networking, RPC, logging) | Rolling: one at a time, verify health |
+
+## Archiver Node
+
+A non-producing archive node runs on omegacortex as `doli-mainnet-archiver`:
+
+| Service | Ports (P2P/RPC/Metrics) | Archive Dir |
+|---------|------------------------|-------------|
+| `doli-mainnet-archiver` | 30306/8548/9093 | `~/.doli/mainnet/archive/` |
+
+Archives finality-gated blocks (only blocks confirmed by 67% attestation threshold). Each block stored as `{height:010}.block` with `.blake3` checksum sidecar. `manifest.json` tracks latest archived height.
+
+```bash
+# Check archiver status
+sudo systemctl status doli-mainnet-archiver
+
+# Check latest archived block
+cat ~/.doli/mainnet/archive/manifest.json
+
+# Restore from archive (disaster recovery)
+doli-node restore --archive-dir ~/.doli/mainnet/archive/ --data-dir ~/.doli/mainnet/nodeN/data/
+# Then: doli-node recover --yes --data-dir ~/.doli/mainnet/nodeN/data/
+```
 
 ## Snap Sync
 

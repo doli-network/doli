@@ -480,14 +480,14 @@ The block archiver streams every applied block to a filesystem directory for off
 All operational procedures are in the ops runbook: **`.claude/skills/doli-ops/SKILL.md`**
 
 **Always read the ops skill before any infrastructure task.** Key sections:
-- **Section 2**: Node inventory (N1-N8), SSH access, service management, logs
+- **Section 2**: Node inventory (N1-N6), SSH access, service management, logs
 - **Section 3**: Deployment procedures (consensus-critical simultaneous vs rolling)
 - **Section 4**: Auto-update system (signing, veto, grace period)
 - **Section 5**: doli-node upgrade procedures
 - **Section 6**: Producer bond management (registration, add-bond, withdrawal)
 - **Section 7**: Troubleshooting (fork recovery, sync issues, RocksDB)
 - **Section 8**: Producer key registry & balance checking
-- **Section 9**: N6/N8 node details
+- **Section 9**: N6 node details
 - **Section 10**: Chainspec rules, DNS/bootstrap, snap sync
 - **Section 11**: On-chain protocol activation (consensus-critical changes)
 

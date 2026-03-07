@@ -17,12 +17,13 @@
 # Local node
 doli chain
 
-# Remote (all 5 mainnet nodes)
-ssh ilozada@omegacortex.ai "for p in 8545 8546 8547; do \
-  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
+# Remote — omegacortex nodes (N1/N2/N6 + archiver)
+ssh ilozada@omegacortex.ai "for p in 8545 8546 8547 8548; do \
+  echo \"port \$p: \$(curl -s -X POST http://127.0.0.1:\$p \
   -H 'Content-Type: application/json' \
   -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
   | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
+# Port mapping: 8545=N1, 8546=N2, 8547=N6, 8548=Archiver
 ```
 
 ### Network Info

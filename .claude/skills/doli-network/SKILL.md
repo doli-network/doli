@@ -70,12 +70,6 @@ When asked for "node status" or "all nodes", check ALL of these:
 | N4 | 72.60.70.166 | 8545 | `ssh -p 50790 ilozada@72.60.70.166` |
 | N5 | 72.60.115.209 | 8545 | `ssh -p 50790 ilozada@72.60.115.209` |
 
-### Local Node (macOS)
-
-| Node | RPC Port | Service |
-|------|----------|---------|
-| N8 | 8547 | `network.doli.mainnet.node8` (launchd) |
-
 ### Testnet Nodes (NT1-NT18)
 
 | Server | Nodes | RPC Ports |
