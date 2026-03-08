@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772984430,
-    "message": "Genesis v10 - Full HA reset 2026-03-08T15:40:30Z",
+    "timestamp": 1772986105,
+    "message": "Genesis v11 - 5+5 producers 2026-03-08T16:08:25Z",
     "initial_reward": 100000000
   },
   "consensus": {
