@@ -106,14 +106,14 @@ pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
         "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
         1,
     ),
-    // N4 — pro-KVM1 — producer_4.json
+    // N4 — producer_4.json (regenerated — original VPS decommissioned)
     (
-        "a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d",
+        "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
         1,
     ),
-    // N5 — fpx — producer_5.json
+    // N5 — producer_5.json (regenerated — original VPS decommissioned)
     (
-        "c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9",
+        "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
         1,
     ),
 ];
