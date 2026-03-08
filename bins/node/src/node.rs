@@ -2340,6 +2340,19 @@ impl Node {
             return Ok(());
         }
 
+        // Guard: don't reorg to a shorter chain — this causes cascading height loss
+        let new_chain_height =
+            result.ancestor_height + result.canonical_blocks.len() as u64;
+        if new_chain_height < current_height {
+            warn!(
+                "Fork sync: new chain ({}) shorter than current ({}) — aborting reorg",
+                new_chain_height, current_height
+            );
+            let mut sync = self.sync_manager.write().await;
+            sync.reset_sync_for_rollback();
+            return Ok(());
+        }
+
         // Pre-check: verify block store has blocks from height 1 (required for UTXO rebuild).
         // Snap-synced nodes don't have early blocks — reorg would fail in an infinite loop.
         if self.block_store.get_block_by_height(1)?.is_none() {
@@ -2363,6 +2376,45 @@ impl Node {
             }
         }
 
+        // Compute weight of new canonical blocks vs rolled-back blocks
+        let new_chain_weight: i64 = {
+            let producers = self.producer_set.read().await;
+            result
+                .canonical_blocks
+                .iter()
+                .map(|b| {
+                    producers
+                        .get_by_pubkey(&b.header.producer)
+                        .map(|p| p.effective_weight(current_height) as i64)
+                        .unwrap_or(1)
+                })
+                .sum()
+        };
+        let old_chain_weight: i64 = {
+            let producers = self.producer_set.read().await;
+            let mut weight = 0i64;
+            for height in (result.ancestor_height + 1)..=current_height {
+                if let Some(block) = self.block_store.get_block_by_height(height)? {
+                    weight += producers
+                        .get_by_pubkey(&block.header.producer)
+                        .map(|p| p.effective_weight(current_height) as i64)
+                        .unwrap_or(1);
+                }
+            }
+            weight
+        };
+        let weight_delta = new_chain_weight - old_chain_weight;
+
+        if weight_delta <= 0 {
+            info!(
+                "Fork sync: new chain not heavier (delta={}, new={}, old={}) — keeping current",
+                weight_delta, new_chain_weight, old_chain_weight
+            );
+            let mut sync = self.sync_manager.write().await;
+            sync.reset_sync_for_rollback();
+            return Ok(());
+        }
+
         // Insert canonical blocks into fork_block_cache so execute_reorg can find them
         let new_block_hashes: Vec<crypto::Hash> =
             result.canonical_blocks.iter().map(|b| b.hash()).collect();
@@ -2380,7 +2432,7 @@ impl Node {
             rollback,
             common_ancestor: result.ancestor_hash,
             new_blocks: new_block_hashes,
-            weight_delta: 1, // Positive = new chain is preferred (peers chose it)
+            weight_delta,
         };
 
         // Execute the reorg using the existing atomic reorg path.
