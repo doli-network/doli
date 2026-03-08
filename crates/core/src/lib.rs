@@ -138,6 +138,7 @@ pub use block::{Block, BlockBuilder, BlockHeader};
 pub use consensus::{
     allowed_producer_rank,
     allowed_producer_rank_ms,
+    calculate_exit_with_quarter,
     // Tiered architecture
     compute_tier1_set,
     eligible_rank_at_ms,
