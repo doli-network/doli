@@ -1441,13 +1441,13 @@ pub enum NetworkError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::KeyPair;
+    use crypto::{Hash, KeyPair};
     use doli_core::{encode_producer_set, ProducerAnnouncement, ProducerBloomFilter};
 
     #[test]
     fn test_network_event_announcement_type() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let event = NetworkEvent::ProducerAnnouncementsReceived(vec![ann.clone()]);
 
         if let NetworkEvent::ProducerAnnouncementsReceived(anns) = event {
@@ -1496,7 +1496,7 @@ mod tests {
     #[test]
     fn test_network_command_broadcast_announcements() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let command = NetworkCommand::BroadcastProducerAnnouncements(vec![ann.clone()]);
 
         if let NetworkCommand::BroadcastProducerAnnouncements(anns) = command {
@@ -1522,7 +1522,7 @@ mod tests {
     #[test]
     fn test_network_command_send_delta() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let peer_id = PeerId::random();
         let command = NetworkCommand::SendProducerDelta {
             peer_id,
@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn test_gossip_message_encoding() {
         let keypair = KeyPair::generate();
-        let anns = vec![ProducerAnnouncement::new(&keypair, 1, 0)];
+        let anns = vec![ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO)];
         let bytes = encode_producer_set(&anns);
 
         // Should be reasonable size: ~130 bytes for single announcement
@@ -1564,7 +1564,7 @@ mod tests {
         assert!(is_legacy_bincode_format(&bincode_bytes));
 
         // New protobuf format
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let proto_bytes = encode_producer_set(&[ann]);
         assert!(!is_legacy_bincode_format(&proto_bytes));
     }

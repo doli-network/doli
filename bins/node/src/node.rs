@@ -640,7 +640,9 @@ impl Node {
         let gset_path = config.data_dir.join("producer_gset.bin");
         let network_id = config.network.id();
         let producer_gset = Arc::new(RwLock::new(ProducerGSet::new_with_persistence(
-            network_id, gset_path,
+            network_id,
+            genesis_hash,
+            gset_path,
         )));
 
         // Initialize adaptive gossip controller
@@ -860,8 +862,9 @@ impl Node {
                 self.announcement_sequence
                     .store(start_seq, std::sync::atomic::Ordering::SeqCst);
 
+                let gh = self.chain_state.read().await.genesis_hash;
                 let announcement =
-                    ProducerAnnouncement::new(key, self.config.network.id(), start_seq);
+                    ProducerAnnouncement::new(key, self.config.network.id(), start_seq, gh);
 
                 // Add to GSet (new format)
                 {
@@ -1345,7 +1348,8 @@ impl Node {
                             // Update our producer announcement if we're a producer
                             if let Some(ref key) = self.producer_key {
                                 let seq = self.announcement_sequence.fetch_add(1, Ordering::SeqCst);
-                                let announcement = ProducerAnnouncement::new(key, self.config.network.id(), seq);
+                                let gh = self.chain_state.read().await.genesis_hash;
+                                let announcement = ProducerAnnouncement::new(key, self.config.network.id(), seq, gh);
 
                                 {
                                     let mut gset = self.producer_gset.write().await;
@@ -3248,6 +3252,32 @@ impl Node {
                 let known = self.known_producers.read().await;
                 bp = known.clone();
             }
+
+            // ACTIVATION_DELAY filter: mirror the production code's filtering
+            // (node.rs try_produce_block lines 4993-5014). Without this, the
+            // validation path may compute a different producer count N than
+            // production, causing slot % N mismatches → "invalid producer for slot".
+            {
+                let producers = self.producer_set.read().await;
+                bp.retain(|pk| match producers.get_by_pubkey(pk) {
+                    Some(info) => {
+                        if !info.is_active() {
+                            return false;
+                        }
+                        // Genesis producers: always eligible
+                        if info.registered_at == 0 {
+                            return true;
+                        }
+                        // Late joiners: must wait activation delay
+                        height >= info.registered_at + storage::ACTIVATION_DELAY
+                    }
+                    None => {
+                        // Not registered (gossip-discovered): include in bootstrap
+                        true
+                    }
+                });
+            }
+
             bp.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
             // Build liveness split
