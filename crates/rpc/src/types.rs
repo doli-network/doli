@@ -396,6 +396,9 @@ pub struct GetHistoryParams {
     /// Maximum number of transactions to return
     #[serde(default = "default_history_limit")]
     pub limit: usize,
+    /// Start scanning from this height (exclusive). Omit to start from chain tip.
+    #[serde(default)]
+    pub before_height: Option<u64>,
 }
 
 fn default_history_limit() -> usize {

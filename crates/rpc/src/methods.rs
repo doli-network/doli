@@ -787,7 +787,10 @@ impl RpcContext {
         let limit = params.limit.min(100);
         let max_blocks_to_scan: u64 = 1000;
 
-        let start_height = best_height;
+        let start_height = params
+            .before_height
+            .map(|h| h.saturating_sub(1).min(best_height))
+            .unwrap_or(best_height);
         let end_height = start_height.saturating_sub(max_blocks_to_scan);
 
         // Build a tx output cache as we scan: tx_hash -> Vec<Output>
