@@ -426,9 +426,34 @@ impl RpcContext {
             }
         }
 
-        // Confirmed transaction lookup requires a transaction index
-        // which is not yet implemented in BlockStore
-        // For now, return not found for confirmed transactions
+        // Look up confirmed transaction via tx index
+        let height = self
+            .block_store
+            .get_tx_block_height(&hash)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .ok_or_else(RpcError::tx_not_found)?;
+
+        let block = self
+            .block_store
+            .get_block_by_height(height)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .ok_or_else(RpcError::tx_not_found)?;
+
+        let block_hash = block.hash().to_hex();
+        let best_height = self.chain_state.read().await.best_height;
+        let confirmations = best_height.saturating_sub(height) + 1;
+
+        for tx in &block.transactions {
+            if tx.hash() == hash {
+                let mut response = TransactionResponse::from(tx);
+                response.block_hash = Some(block_hash);
+                response.block_height = Some(height);
+                response.confirmations = Some(confirmations);
+                return serde_json::to_value(response)
+                    .map_err(|e| RpcError::internal_error(e.to_string()));
+            }
+        }
+
         Err(RpcError::tx_not_found())
     }
 

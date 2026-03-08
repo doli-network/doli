@@ -148,6 +148,9 @@ pub struct TransactionResponse {
     /// Block hash (if confirmed)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_hash: Option<String>,
+    /// Block height (if confirmed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<u64>,
     /// Confirmations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmations: Option<u64>,
@@ -183,6 +186,7 @@ impl From<&Transaction> for TransactionResponse {
             size: tx.size(),
             fee: None,
             block_hash: None,
+            block_height: None,
             confirmations: None,
         }
     }
