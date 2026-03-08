@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1772869252, // Testnet genesis - 2026-03-07 07:40:52 UTC
+                genesis_time: 1772960040, // Testnet genesis - 2026-03-08 08:54:00 UTC
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,

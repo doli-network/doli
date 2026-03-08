@@ -253,19 +253,29 @@ journalctl -u doli-testnet | grep -i "height\|produced"
 
 Testnet and mainnet use **separate binaries** to allow independent upgrades without affecting production.
 
-| Network | Binary Path | Purpose |
-|---------|-------------|---------|
-| Mainnet | `/opt/doli/target/release/doli-node` (N3/N4/N5) or `~/repos/doli/target/release/doli-node` (omegacortex) | Production |
-| Testnet | `/opt/doli/testnet/doli-node` (all hosts) | Testing |
+| Network | Binary Path | Hosts |
+|---------|-------------|-------|
+| Mainnet | `~/repos/doli/target/release/doli-node` | ai1, ai2 |
+| Mainnet | `/opt/doli/target/release/doli-node` | N3, N4, N5 |
+| Testnet | `/opt/doli/testnet/doli-node` | ai1, ai2, N3, N5 |
 
-**Upgrade testnet only:**
+**Upgrade testnet (all hosts):**
 ```bash
-# Build new version, copy to testnet path
-sudo cp /tmp/doli-node-new /opt/doli/testnet/doli-node
-sudo systemctl restart doli-testnet-nt*
+# ai1 (omegacortex):
+ssh ilozada@72.60.228.233 "sudo systemctl stop doli-testnet-nt{1..5} doli-testnet-archiver && sleep 1 && \
+  sudo cp /tmp/doli-node-new /opt/doli/testnet/doli-node && sudo chmod 755 /opt/doli/testnet/doli-node && \
+  sudo systemctl start doli-testnet-nt{1..5} doli-testnet-archiver"
+
+# ai2:
+ssh ilozada@omegacortex.ai2 "sudo systemctl stop doli-testnet-nt{1..5} doli-testnet-archiver && sleep 1 && \
+  cp ~/repos/doli/target/release/doli-node /opt/doli/testnet/doli-node && \
+  cp ~/repos/doli/target/release/doli /opt/doli/testnet/doli && \
+  sudo systemctl start doli-testnet-nt{1..5} doli-testnet-archiver"
+
+# N3, N5: same pattern as ai1
 ```
 
-This ensures testnet deployments never touch mainnet nodes.
+This ensures testnet deployments never touch mainnet nodes. ai2 testnet binaries are copied from the local release build (no auto-updater for testnet path).
 
 ---
 
@@ -273,10 +283,21 @@ This ensures testnet deployments never touch mainnet nodes.
 
 | DNS | IP | Port | Node |
 |-----|-----|------|------|
-| `bootstrap1.testnet.doli.network` | 72.60.228.233 | 40303 | NT1 (omegacortex) |
-| `bootstrap2.testnet.doli.network` | 72.60.228.233 | 40304 | NT2 (omegacortex) |
+| `bootstrap1.testnet.doli.network` | 72.60.228.233 | 40303 | NT1 (ai1) |
+| `bootstrap2.testnet.doli.network` | 72.60.228.233 | 40304 | NT2 (ai1) |
 
 Both are relay-enabled and embedded as defaults in the binary — no `--bootstrap` flag needed.
+
+### Mirror (ai2 — 187.124.95.188)
+
+ai2 runs non-producing mirror copies of NT1-NT5 + testnet archiver on the same ports. DNS round-robin distributes seed traffic across both servers.
+
+| DNS | IPs (round-robin) |
+|-----|-------------------|
+| `seed1.doli.network` | 72.60.228.233 + 187.124.95.188 |
+| `seed2.doli.network` | 72.60.228.233 + 187.124.95.188 |
+| `testnet.doli.network` | 187.124.95.188 |
+| `archive.doli.network` | 187.124.95.188 |
 
 ### Maintainer Keys (Auto-Update System)
 
