@@ -1,14 +1,23 @@
 //! RPC method handlers
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crypto::Hash;
 use doli_core::Transaction;
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
+
+/// Shared state for live backfill progress tracking.
+pub struct BackfillState {
+    pub running: AtomicBool,
+    pub imported: AtomicU64,
+    pub total: AtomicU64,
+    pub error: RwLock<Option<String>>,
+}
 
 use crate::error::RpcError;
 use crate::types::*;
@@ -113,6 +122,8 @@ pub struct RpcContext {
     pub maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
     /// Vesting quarter duration in slots (network-specific: mainnet=3,153,600, testnet=2,160)
     pub vesting_quarter_slots: u64,
+    /// Shared backfill state for live hot-backfill
+    pub backfill_state: Arc<BackfillState>,
 }
 
 impl RpcContext {
@@ -155,6 +166,12 @@ impl RpcContext {
             }),
             maintainer_state: None,
             vesting_quarter_slots: net_params.vesting_quarter_slots,
+            backfill_state: Arc::new(BackfillState {
+                running: AtomicBool::new(false),
+                imported: AtomicU64::new(0),
+                total: AtomicU64::new(0),
+                error: RwLock::new(None),
+            }),
         }
     }
 
@@ -201,6 +218,12 @@ impl RpcContext {
                 }),
                 maintainer_state: None,
                 vesting_quarter_slots: doli_core::consensus::VESTING_QUARTER_SLOTS as u64,
+                backfill_state: Arc::new(BackfillState {
+                    running: AtomicBool::new(false),
+                    imported: AtomicU64::new(0),
+                    total: AtomicU64::new(0),
+                    error: RwLock::new(None),
+                }),
             }
         }
     }
@@ -299,6 +322,8 @@ impl RpcContext {
             "getEpochInfo" => self.get_epoch_info().await,
             "getNetworkParams" => self.get_network_params().await,
             "getBondDetails" => self.get_bond_details(request.params).await,
+            "backfillFromPeer" => self.backfill_from_peer(request.params).await,
+            "backfillStatus" => self.backfill_status().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -1210,6 +1235,233 @@ impl RpcContext {
             summary,
             bonds,
             withdrawal_pending_count: info.withdrawal_pending_count,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Start a live backfill from a peer's RPC endpoint.
+    async fn backfill_from_peer(&self, params: Value) -> Result<Value, RpcError> {
+        let params: BackfillParams =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        // Check if already running
+        if self.backfill_state.running.load(Ordering::SeqCst) {
+            return Err(RpcError::internal_error(
+                "Backfill already in progress. Use backfillStatus to check progress.",
+            ));
+        }
+
+        // Find the gap: look for the lowest existing block
+        let tip_height = self.chain_state.read().await.best_height;
+        if tip_height == 0 {
+            return Err(RpcError::internal_error("Node has no blocks yet"));
+        }
+
+        // Check if block 1 exists — if so, no gap
+        let has_block_1 = self
+            .block_store
+            .get_block_by_height(1)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .is_some();
+        if has_block_1 {
+            return Ok(serde_json::json!({
+                "started": false,
+                "message": "No gap detected — block 1 exists. Chain is complete."
+            }));
+        }
+
+        // Find lowest existing block (binary search)
+        let mut lo = 1u64;
+        let mut hi = tip_height;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let exists = self
+                .block_store
+                .get_block_by_height(mid)
+                .map_err(|e| RpcError::internal_error(e.to_string()))?
+                .is_some();
+            if exists {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let lowest_existing = lo;
+        let gap_end = lowest_existing - 1; // blocks 1..=gap_end are missing
+
+        // Reset state
+        self.backfill_state.imported.store(0, Ordering::SeqCst);
+        self.backfill_state.total.store(gap_end, Ordering::SeqCst);
+        *self.backfill_state.error.write().await = None;
+        self.backfill_state.running.store(true, Ordering::SeqCst);
+
+        // Spawn background task
+        let block_store = self.block_store.clone();
+        let state = self.backfill_state.clone();
+        let rpc_url = params.rpc_url.clone();
+
+        tokio::spawn(async move {
+            info!(
+                "Backfill started: fetching blocks 1..={} from {}",
+                gap_end, rpc_url
+            );
+
+            let client = reqwest::Client::new();
+            let mut imported = 0u64;
+
+            for h in 1..=gap_end {
+                // Check if block already exists (idempotent)
+                if let Ok(Some(_)) = block_store.get_block_by_height(h) {
+                    imported += 1;
+                    state.imported.store(imported, Ordering::SeqCst);
+                    continue;
+                }
+
+                // Fetch block from peer
+                let resp = match client
+                    .post(&rpc_url)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "getBlockRaw",
+                        "params": { "height": h },
+                        "id": h
+                    }))
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let msg = format!("HTTP error at height {}: {}", h, e);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                let body: serde_json::Value = match resp.json().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let msg = format!("JSON parse error at height {}: {}", h, e);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                let block_result = match body.get("result") {
+                    Some(r) => r,
+                    None => {
+                        let msg = format!("No result for block {} (peer may not have it)", h);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                let b64_data = match block_result.get("block").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => {
+                        let msg = format!("Missing block data at height {}", h);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                let expected_checksum = block_result
+                    .get("blake3")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Decode and verify
+                use base64::Engine;
+                let data = match base64::engine::general_purpose::STANDARD.decode(b64_data) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let msg = format!("Base64 decode error at height {}: {}", h, e);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                if !expected_checksum.is_empty() {
+                    let actual = crypto::hash::hash(&data).to_string();
+                    if actual != expected_checksum {
+                        let msg = format!("BLAKE3 mismatch at height {}", h);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                }
+
+                let block: doli_core::Block = match bincode::deserialize(&data) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let msg = format!("Deserialize error at height {}: {}", h, e);
+                        warn!("Backfill failed: {}", msg);
+                        *state.error.write().await = Some(msg);
+                        state.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+
+                if let Err(e) = block_store.put_block_canonical(&block, h) {
+                    let msg = format!("Store error at height {}: {}", h, e);
+                    warn!("Backfill failed: {}", msg);
+                    *state.error.write().await = Some(msg);
+                    state.running.store(false, Ordering::SeqCst);
+                    return;
+                }
+
+                imported += 1;
+                state.imported.store(imported, Ordering::SeqCst);
+
+                if imported.is_multiple_of(500) {
+                    info!("Backfill progress: {}/{} blocks", imported, gap_end);
+                }
+
+                // Yield every 100 blocks to avoid starving other tasks
+                if imported.is_multiple_of(100) {
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            info!(
+                "Backfill complete: {} blocks imported (1..={})",
+                imported, gap_end
+            );
+            state.running.store(false, Ordering::SeqCst);
+        });
+
+        Ok(serde_json::json!({
+            "started": true,
+            "gaps": format!("1-{}", gap_end),
+            "total": gap_end
+        }))
+    }
+
+    /// Get backfill progress status.
+    async fn backfill_status(&self) -> Result<Value, RpcError> {
+        let running = self.backfill_state.running.load(Ordering::SeqCst);
+        let imported = self.backfill_state.imported.load(Ordering::SeqCst);
+        let total = self.backfill_state.total.load(Ordering::SeqCst);
+        let pct = if total > 0 { imported * 100 / total } else { 0 };
+        let error = self.backfill_state.error.read().await.clone();
+
+        let response = BackfillStatusResponse {
+            running,
+            imported,
+            total,
+            pct,
+            error,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
