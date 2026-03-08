@@ -369,7 +369,6 @@ mod tests {
         // Build a minimal tarball with both doli-node and doli entries
         use flate2::write::GzEncoder;
         use flate2::Compression;
-        use std::io::Write;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         {
