@@ -4,7 +4,7 @@
 //! and related types. It supports forward compatibility with unknown fields
 //! and provides conversion traits between Rust types and protobuf messages.
 
-use crypto::{PublicKey, Signature};
+use crypto::{Hash, PublicKey, Signature};
 use prost::Message;
 
 use super::{ProducerAnnouncement, ProducerBloomFilter};
@@ -52,6 +52,7 @@ impl From<ProducerAnnouncement> for producer::ProducerAnnouncement {
             sequence: ann.sequence,
             timestamp: ann.timestamp,
             signature: ann.signature.as_bytes().to_vec(),
+            genesis_hash: ann.genesis_hash.as_bytes().to_vec(),
         }
     }
 }
@@ -74,9 +75,18 @@ impl TryFrom<producer::ProducerAnnouncement> for ProducerAnnouncement {
         let sig_bytes: [u8; 64] = proto.signature.try_into().unwrap();
         let signature = Signature::from_bytes(sig_bytes);
 
+        // Parse genesis_hash (default to ZERO for backward compat with old messages)
+        let genesis_hash = if proto.genesis_hash.len() == 32 {
+            let hash_bytes: [u8; 32] = proto.genesis_hash.try_into().unwrap();
+            Hash::from_bytes(hash_bytes)
+        } else {
+            Hash::ZERO
+        };
+
         Ok(Self {
             pubkey,
             network_id: proto.network_id,
+            genesis_hash,
             sequence: proto.sequence,
             timestamp: proto.timestamp,
             signature,
@@ -201,7 +211,7 @@ mod tests {
     #[test]
     fn test_proto_announcement_roundtrip() {
         let keypair = KeyPair::generate();
-        let rust_ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let rust_ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
 
         // Convert to protobuf
         let proto_ann: producer::ProducerAnnouncement = rust_ann.clone().into();
@@ -222,7 +232,7 @@ mod tests {
     fn test_proto_forward_compatibility() {
         // Simulate receiving a message with unknown fields (future version)
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let proto_ann: producer::ProducerAnnouncement = ann.into();
 
         let mut bytes = proto_ann.encode_to_vec();
@@ -241,7 +251,7 @@ mod tests {
         let announcements: Vec<_> = (0..5)
             .map(|i| {
                 let keypair = KeyPair::generate();
-                ProducerAnnouncement::new(&keypair, 1, i)
+                ProducerAnnouncement::new(&keypair, 1, i, Hash::ZERO)
             })
             .collect();
 
@@ -302,7 +312,7 @@ mod tests {
     #[test]
     fn test_proto_response() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let proto_ann: producer::ProducerAnnouncement = ann.into();
 
         let response = producer::ProducerSetResponse {
@@ -325,6 +335,7 @@ mod tests {
             sequence: 0,
             timestamp: 0,
             signature: vec![0u8; 64],
+            genesis_hash: vec![0u8; 32],
         };
         let result: Result<ProducerAnnouncement, _> = proto.try_into();
         assert!(matches!(result, Err(ProtoError::InvalidPublicKey(16))));
@@ -338,6 +349,7 @@ mod tests {
             sequence: 0,
             timestamp: 0,
             signature: vec![0u8; 32], // Wrong length
+            genesis_hash: vec![0u8; 32],
         };
         let result: Result<ProducerAnnouncement, _> = proto.try_into();
         assert!(matches!(result, Err(ProtoError::InvalidSignature(32))));
@@ -354,7 +366,7 @@ mod tests {
 
         // Create protobuf format
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let proto_bytes = encode_producer_set(&[ann]);
         assert!(!is_legacy_bincode_format(&proto_bytes));
     }
@@ -362,7 +374,7 @@ mod tests {
     #[test]
     fn test_encode_decode_helpers() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 42);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 42, Hash::ZERO);
 
         // Test single announcement
         let bytes = encode_announcement(&ann);
@@ -393,7 +405,7 @@ mod tests {
     #[test]
     fn test_proto_message_size() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let bytes = encode_announcement(&ann);
 
         // Single announcement should be ~130 bytes
@@ -411,7 +423,7 @@ mod tests {
         let announcements: Vec<_> = (0..100)
             .map(|i| {
                 let keypair = KeyPair::generate();
-                ProducerAnnouncement::new(&keypair, 1, i)
+                ProducerAnnouncement::new(&keypair, 1, i, Hash::ZERO)
             })
             .collect();
 
