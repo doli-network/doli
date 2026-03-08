@@ -50,8 +50,9 @@ A full node that additionally:
 - Recommended: 1 per network, non-producer, dedicated
 
 Historical block recovery (e.g., filling snap sync gaps) is an explicit operator action:
-- **File-based**: `doli-node restore --from /path/to/archive --backfill --yes` (requires archive copy via rsync/scp)
-- **RPC-based**: `doli-node restore --from-rpc http://archive.doli.network:8548 --backfill --yes` (no SSH needed, uses `getBlockRaw` RPC)
+- **File-based** (offline): `doli-node restore --from /path/to/archive --backfill --yes` (requires archive copy via rsync/scp)
+- **RPC-based** (offline): `doli-node restore --from-rpc http://archive.doli.network:8548 --backfill --yes` (no SSH needed, uses `getBlockRaw` RPC)
+- **Hot backfill** (live): `backfillFromPeer` RPC endpoint — fills gaps without stopping the node. Verifies BLAKE3, chain-linking (parent hash continuity), and anchor connection to existing chain
 
 ### Light Client
 A minimal client that:

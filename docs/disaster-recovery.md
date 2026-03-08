@@ -223,6 +223,74 @@ Producer nodes (N1-N6)
        └── restore --from-rpc → Operator fills gaps via RPC (no SSH needed)
 ```
 
+## Hot Backfill (Live RPC — No Restart Required)
+
+For nodes that are **already running** and synced to tip but missing historical blocks (snap sync gap), the `backfillFromPeer` RPC endpoint fills the gap **without stopping the node**. The node continues producing and syncing normally while backfill runs in the background.
+
+### Usage
+
+**Start backfill:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://archive.doli.network:8548"},"id":1}'
+```
+
+**Response:**
+```json
+{
+  "result": {
+    "started": true,
+    "gaps": "1-6291",
+    "total": 6291
+  }
+}
+```
+
+**Monitor progress:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
+```
+
+**Response:**
+```json
+{
+  "result": {
+    "running": true,
+    "imported": 3994,
+    "total": 6291,
+    "pct": 63,
+    "error": null
+  }
+}
+```
+
+### How it works
+
+1. Detects the gap via binary search for the lowest existing block
+2. Spawns a background tokio task (non-blocking — production continues)
+3. Fetches each missing block via `getBlockRaw` from the source peer's RPC
+4. **Chain-linking verification**: every block's `prev_hash` must match the previous block's hash
+5. **Anchor verification**: the last backfilled block must connect to the lowest existing block
+6. BLAKE3 checksum verified on every block
+7. Only one backfill can run at a time (atomic guard)
+
+### Comparison of backfill methods
+
+| Method | Requires restart? | Source | Chain verification |
+|--------|:-:|--------|:--:|
+| `restore --from /path --backfill` | **Yes** (offline) | Local archive files | BLAKE3 only |
+| `restore --from-rpc <URL> --backfill` | **Yes** (offline) | Any archiver RPC | BLAKE3 only |
+| **`backfillFromPeer` RPC** | **No** (hot) | Any node's RPC | BLAKE3 + chain-linking + anchor |
+
+### Security
+
+- **Chain-linking**: Each block's `parent_hash` is verified against the previous block, starting from `genesis_hash` for block 1. A malicious peer cannot inject fabricated blocks — the chain must link continuously from genesis to the anchor.
+- **Anchor verification**: After backfill completes, the hash of the last backfilled block is verified against the `prev_hash` of the lowest existing block. This ensures the backfilled chain connects to the node's existing validated chain.
+- **RPC access**: Only accessible from localhost on most nodes (N3/N4/N5). External RPC nodes (N1/N2) are protected by the chain-linking verification.
+
 ## DNS
 
 | Record | Type | Value | Purpose |
