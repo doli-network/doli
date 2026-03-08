@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772987712,
-    "message": "Genesis v12 - 5+5 producers 2026-03-08T16:35:12Z",
+    "timestamp": 1772988027,
+    "message": "Genesis v13 - 5+5 producers 2026-03-08T16:40:27Z",
     "initial_reward": 100000000
   },
   "consensus": {
