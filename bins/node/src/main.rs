@@ -1149,7 +1149,11 @@ fn load_producer_key(path: &PathBuf) -> Result<KeyPair> {
     Ok(KeyPair::from_private_key(private_key))
 }
 
-async fn handle_update_command(action: UpdateCommands, data_dir: &Path, network: Network) -> Result<()> {
+async fn handle_update_command(
+    action: UpdateCommands,
+    data_dir: &Path,
+    network: Network,
+) -> Result<()> {
     match action {
         UpdateCommands::Check => {
             info!("Checking for updates...");
@@ -1631,8 +1635,14 @@ async fn handle_maintainer_command(
                 Network::Testnet => "testnet",
                 Network::Devnet => "devnet",
             };
-            println!("║  Bootstrap keys ({}, fallback before sync):              ║", net_label);
-            for (i, key) in updater::bootstrap_maintainer_keys(network).iter().enumerate() {
+            println!(
+                "║  Bootstrap keys ({}, fallback before sync):              ║",
+                net_label
+            );
+            for (i, key) in updater::bootstrap_maintainer_keys(network)
+                .iter()
+                .enumerate()
+            {
                 println!(
                     "║  {}. {}...{}                          ║",
                     i + 1,

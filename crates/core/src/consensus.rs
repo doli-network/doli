@@ -391,8 +391,23 @@ pub fn calculate_exit(
     registered_at: BlockHeight,
     current_height: BlockHeight,
 ) -> ExitTerms {
+    calculate_exit_with_quarter(
+        bond_amount,
+        registered_at,
+        current_height,
+        VESTING_QUARTER_SLOTS,
+    )
+}
+
+/// Calculate exit terms with custom quarter duration (network-aware).
+pub fn calculate_exit_with_quarter(
+    bond_amount: Amount,
+    registered_at: BlockHeight,
+    current_height: BlockHeight,
+    quarter_slots: Slot,
+) -> ExitTerms {
     let slots_served = current_height.saturating_sub(registered_at);
-    let penalty_rate = withdrawal_penalty_rate(slots_served as Slot);
+    let penalty_rate = withdrawal_penalty_rate_with_quarter(slots_served as Slot, quarter_slots);
 
     if penalty_rate == 0 {
         // Fully vested: full bond returned
@@ -405,7 +420,7 @@ pub fn calculate_exit(
         }
     } else {
         // Early exit: apply penalty based on vesting schedule
-        let quarters = slots_served as Slot / VESTING_QUARTER_SLOTS;
+        let quarters = slots_served as Slot / quarter_slots;
         let commitment_percent = ((quarters * 25) as u8).min(100);
 
         // Calculate penalty
@@ -586,22 +601,44 @@ impl BondEntry {
         current_slot.saturating_sub(self.creation_slot)
     }
 
-    /// Calculate withdrawal penalty for this bond
+    /// Calculate withdrawal penalty for this bond.
+    /// Uses mainnet quarter duration. For network-aware code, use `penalty_rate_with_quarter`.
     pub fn penalty_rate(&self, current_slot: Slot) -> u8 {
-        withdrawal_penalty_rate(self.age(current_slot))
+        self.penalty_rate_with_quarter(current_slot, VESTING_QUARTER_SLOTS)
     }
 
-    /// Calculate net amount if withdrawn now
+    /// Calculate withdrawal penalty with custom quarter duration (network-aware).
+    pub fn penalty_rate_with_quarter(&self, current_slot: Slot, quarter_slots: Slot) -> u8 {
+        withdrawal_penalty_rate_with_quarter(self.age(current_slot), quarter_slots)
+    }
+
+    /// Calculate net amount if withdrawn now.
+    /// Uses mainnet quarter duration. For network-aware code, use `withdrawal_amount_with_quarter`.
     pub fn withdrawal_amount(&self, current_slot: Slot) -> (Amount, Amount) {
-        let penalty_rate = self.penalty_rate(current_slot);
+        self.withdrawal_amount_with_quarter(current_slot, VESTING_QUARTER_SLOTS)
+    }
+
+    /// Calculate net amount with custom quarter duration (network-aware).
+    pub fn withdrawal_amount_with_quarter(
+        &self,
+        current_slot: Slot,
+        quarter_slots: Slot,
+    ) -> (Amount, Amount) {
+        let penalty_rate = self.penalty_rate_with_quarter(current_slot, quarter_slots);
         let penalty = (self.amount * penalty_rate as u64) / 100;
         let net = self.amount - penalty;
         (net, penalty)
     }
 
-    /// Check if this bond is fully vested (1+ day old, i.e. 4 quarters)
+    /// Check if this bond is fully vested (4 quarters old).
+    /// Uses mainnet quarter duration. For network-aware code, use `is_vested_with_quarter`.
     pub fn is_vested(&self, current_slot: Slot) -> bool {
-        self.age(current_slot) >= VESTING_PERIOD_SLOTS
+        self.is_vested_with_quarter(current_slot, VESTING_QUARTER_SLOTS)
+    }
+
+    /// Check if fully vested with custom quarter duration (network-aware).
+    pub fn is_vested_with_quarter(&self, current_slot: Slot, quarter_slots: Slot) -> bool {
+        self.age(current_slot) >= 4 * quarter_slots
     }
 }
 
@@ -694,11 +731,28 @@ impl ProducerBonds {
     ///
     /// Returns the pending withdrawal with calculated amounts.
     /// Penalty is 100% burned (not sent anywhere).
+    /// Uses mainnet quarter duration. For network-aware code, use `request_withdrawal_with_quarter`.
     pub fn request_withdrawal(
         &mut self,
         count: u32,
         current_slot: Slot,
         destination: crypto::Hash,
+    ) -> Result<PendingWithdrawal, BondError> {
+        self.request_withdrawal_with_quarter(
+            count,
+            current_slot,
+            destination,
+            VESTING_QUARTER_SLOTS,
+        )
+    }
+
+    /// Request withdrawal with custom quarter duration (network-aware).
+    pub fn request_withdrawal_with_quarter(
+        &mut self,
+        count: u32,
+        current_slot: Slot,
+        destination: crypto::Hash,
+        quarter_slots: Slot,
     ) -> Result<PendingWithdrawal, BondError> {
         if count == 0 {
             return Err(BondError::ZeroWithdrawal);
@@ -718,7 +772,8 @@ impl ProducerBonds {
         // Remove oldest bonds first (FIFO)
         for _ in 0..count {
             if let Some(bond) = self.bonds.first() {
-                let (net, penalty) = bond.withdrawal_amount(current_slot);
+                let (net, penalty) =
+                    bond.withdrawal_amount_with_quarter(current_slot, quarter_slots);
                 total_net += net;
                 total_penalty += penalty;
                 self.bonds.remove(0);
@@ -750,12 +805,22 @@ impl ProducerBonds {
         Ok(self.pending_withdrawals.remove(idx))
     }
 
-    /// Get summary of bonds by vesting quarter
+    /// Get summary of bonds by vesting quarter.
+    /// Uses mainnet quarter duration. For network-aware code, use `maturity_summary_with_quarter`.
     pub fn maturity_summary(&self, current_slot: Slot) -> BondsMaturitySummary {
+        self.maturity_summary_with_quarter(current_slot, VESTING_QUARTER_SLOTS)
+    }
+
+    /// Get summary with custom quarter duration (network-aware).
+    pub fn maturity_summary_with_quarter(
+        &self,
+        current_slot: Slot,
+        quarter_slots: Slot,
+    ) -> BondsMaturitySummary {
         let mut summary = BondsMaturitySummary::default();
 
         for bond in &self.bonds {
-            let quarters = bond.age(current_slot) / VESTING_QUARTER_SLOTS;
+            let quarters = bond.age(current_slot) / quarter_slots;
             match quarters {
                 0 => summary.q1 += 1,
                 1 => summary.q2 += 1,
@@ -767,11 +832,24 @@ impl ProducerBonds {
         summary
     }
 
-    /// Calculate total penalty if all bonds withdrawn now
+    /// Calculate total penalty if all bonds withdrawn now.
+    /// Uses mainnet quarter duration. For network-aware code, use `total_withdrawal_penalty_with_quarter`.
     pub fn total_withdrawal_penalty(&self, current_slot: Slot) -> Amount {
+        self.total_withdrawal_penalty_with_quarter(current_slot, VESTING_QUARTER_SLOTS)
+    }
+
+    /// Calculate total penalty with custom quarter duration (network-aware).
+    pub fn total_withdrawal_penalty_with_quarter(
+        &self,
+        current_slot: Slot,
+        quarter_slots: Slot,
+    ) -> Amount {
         self.bonds
             .iter()
-            .map(|b| b.withdrawal_amount(current_slot).1)
+            .map(|b| {
+                b.withdrawal_amount_with_quarter(current_slot, quarter_slots)
+                    .1
+            })
             .sum()
     }
 

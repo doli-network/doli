@@ -63,20 +63,32 @@ curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
 
 ### Producer Nodes
 
+N1-N5 = producers + maintainers. N6-N12 = producers only. Currently running: N1-N6. N7-N12 ready but not started.
+
 | Node | Server | P2P | RPC | Service | Key |
 |------|--------|-----|-----|---------|-----|
 | N1 | ai1 | 30301 | 8501 | `doli-mainnet-n1` | `/mainnet/n1/keys/producer.json` |
 | N2 | ai2 | 30302 | 8502 | `doli-mainnet-n2` | `/mainnet/n2/keys/producer.json` |
 | N3 | ai1 | 30303 | 8503 | `doli-mainnet-n3` | `/mainnet/n3/keys/producer.json` |
+| N4 | ai2 | 30304 | 8504 | `doli-mainnet-n4` | `/mainnet/n4/keys/producer.json` |
+| N5 | ai1 | 30305 | 8505 | `doli-mainnet-n5` | `/mainnet/n5/keys/producer.json` |
 | N6 | ai2 | 30306 | 8506 | `doli-mainnet-n6` | `/mainnet/n6/keys/producer.json` |
+| N7 | ai1 | 30307 | 8507 | `doli-mainnet-n7` | `/mainnet/n7/keys/producer.json` |
+| N8 | ai2 | 30308 | 8508 | `doli-mainnet-n8` | `/mainnet/n8/keys/producer.json` |
+| N9 | ai1 | 30309 | 8509 | `doli-mainnet-n9` | `/mainnet/n9/keys/producer.json` |
+| N10 | ai2 | 30310 | 8510 | `doli-mainnet-n10` | `/mainnet/n10/keys/producer.json` |
+| N11 | ai1 | 30311 | 8511 | `doli-mainnet-n11` | `/mainnet/n11/keys/producer.json` |
+| N12 | ai2 | 30312 | 8512 | `doli-mainnet-n12` | `/mainnet/n12/keys/producer.json` |
 
-Binary: `/mainnet/bin/doli-node`. Logs: `/var/log/doli/mainnet/nN.log`.
+Binary: `/mainnet/bin/doli-node`. Logs: `/var/log/doli/mainnet/nN.log`. Data: `/mainnet/n{N}/data/`.
+
+Key backups (all 12): `/mainnet/keys/producer_{N}.json` on BOTH servers.
 
 ### Check All Mainnet Nodes
 ```bash
-# From ai1 (seed, N1, N3)
+# From ai1 (seed + odd producers)
 ssh ilozada@72.60.228.233 '
-for entry in "8500:Seed" "8501:N1" "8503:N3"; do
+for entry in "8500:Seed" "8501:N1" "8503:N3" "8505:N5"; do
   port=${entry%%:*}; name=${entry##*:}
   result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -86,9 +98,9 @@ for entry in "8500:Seed" "8501:N1" "8503:N3"; do
   printf "%-6s h=%-6s v=%s\n" "$name" "$h" "$v"
 done'
 
-# From ai2 (seed, N2, N6)
+# From ai2 (seed + even producers)
 ssh ilozada@187.124.95.188 '
-for entry in "8500:Seed" "8502:N2" "8506:N6"; do
+for entry in "8500:Seed" "8502:N2" "8504:N4" "8506:N6"; do
   port=${entry%%:*}; name=${entry##*:}
   result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -110,6 +122,8 @@ done'
 
 ### Producer Nodes
 
+NT1-NT5 = producers + maintainers. NT6-NT12 = producers only. Currently running: NT1-NT6. NT7-NT12 ready but not started.
+
 | Node | Server | P2P | RPC | Service | Key |
 |------|--------|-----|-----|---------|-----|
 | NT1 | ai1 | 40301 | 18501 | `doli-testnet-nt1` | `/testnet/nt1/keys/producer.json` |
@@ -118,8 +132,16 @@ done'
 | NT4 | ai2 | 40304 | 18504 | `doli-testnet-nt4` | `/testnet/nt4/keys/producer.json` |
 | NT5 | ai1 | 40305 | 18505 | `doli-testnet-nt5` | `/testnet/nt5/keys/producer.json` |
 | NT6 | ai2 | 40306 | 18506 | `doli-testnet-nt6` | `/testnet/nt6/keys/producer.json` |
+| NT7 | ai1 | 40307 | 18507 | `doli-testnet-nt7` | `/testnet/nt7/keys/producer.json` |
+| NT8 | ai2 | 40308 | 18508 | `doli-testnet-nt8` | `/testnet/nt8/keys/producer.json` |
+| NT9 | ai1 | 40309 | 18509 | `doli-testnet-nt9` | `/testnet/nt9/keys/producer.json` |
+| NT10 | ai2 | 40310 | 18510 | `doli-testnet-nt10` | `/testnet/nt10/keys/producer.json` |
+| NT11 | ai1 | 40311 | 18511 | `doli-testnet-nt11` | `/testnet/nt11/keys/producer.json` |
+| NT12 | ai2 | 40312 | 18512 | `doli-testnet-nt12` | `/testnet/nt12/keys/producer.json` |
 
-Binary: `/testnet/bin/doli-node`. Logs: `/var/log/doli/testnet/ntN.log`.
+Binary: `/testnet/bin/doli-node`. Logs: `/var/log/doli/testnet/ntN.log`. Data: `/testnet/nt{N}/data/`.
+
+Key backups (all 12): `/testnet/keys/nt{N}.json` on BOTH servers.
 
 ### Check All Testnet Nodes
 ```bash
@@ -194,3 +216,12 @@ done
 | Mainnet | 360 | 10s | 1 hour |
 | Testnet | 360 | 10s | 1 hour |
 | Devnet | 30 | 1s | 30 seconds |
+
+## Critical Ops Notes
+
+- **Node placement**: ai1 = ODD nodes only, ai2 = EVEN nodes only. NEVER create cross-server node dirs (slashing risk).
+- **Data dir**: Services use `--data-dir <node>/data`. Runtime data (signed_slots.db, state_db, blocks, etc.) lives in `<node>/data/`, NOT `<node>/` top level.
+- **Chain reset wipe**: Must wipe `<node>/data/` contents. If `signed_slots.db` survives, nodes hit SLASHING PROTECTION and refuse to produce.
+- **Genesis timestamp**: 4 sources must be updated (consensus.rs, network_params.rs, chainspec.mainnet.json, chainspec.testnet.json). Chainspecs are embedded via `include_str!` — requires recompilation.
+- **Compilation**: Done on ai2 (`cargo build --release`, no nix). Transfer to ai1 via ssh pipe. Verify md5 on all deployed binaries.
+- **RPC binding**: Producers bind to 127.0.0.1 only. Seeds bind to 0.0.0.0. Must SSH to server to query producers.

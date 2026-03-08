@@ -18,14 +18,13 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 pub use updater::{
-    apply_update, auto_apply_from_github, backup_current, calculate_veto_result,
-    check_production_allowed, current_binary_path, current_version, download_from_url,
-    extract_binary_from_tarball, fetch_github_release, fetch_latest_release, install_binary,
-    is_newer_version, restart_node, rollback, sign_release_hash, verify_hash,
+    apply_update, auto_apply_from_github, backup_current, bootstrap_maintainer_keys,
+    calculate_veto_result, check_production_allowed, current_binary_path, current_version,
+    download_from_url, extract_binary_from_tarball, fetch_github_release, fetch_latest_release,
+    install_binary, is_newer_version, restart_node, rollback, sign_release_hash, verify_hash,
     verify_release_signatures, verify_release_signatures_with_keys, veto_deadline,
     veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement, Vote,
-    VoteMessage, VoteTracker, bootstrap_maintainer_keys,
-    GITHUB_RELEASES_URL, VETO_THRESHOLD_PERCENT,
+    VoteMessage, VoteTracker, GITHUB_RELEASES_URL, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -555,7 +554,8 @@ impl UpdateService {
 
         // Verify signatures using on-chain maintainer keys (falls back to bootstrap keys)
         let on_chain_keys = maintainer_keys_fn();
-        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys, self.network) {
+        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys, self.network)
+        {
             error!("Release {} has invalid signatures: {}", release.version, e);
             return;
         }

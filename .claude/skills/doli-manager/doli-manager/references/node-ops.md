@@ -70,157 +70,143 @@ sudo systemctl status doli-mainnet-nodeN
 | `--no-auto-update` | off | Disable auto-updates |
 | `--yes` | off | Skip confirmations |
 
-## Mainnet Infrastructure (6 Nodes)
+## Infrastructure (v2 — March 8, 2026)
 
-| Node | Host | SSH | Ports (P2P/RPC/Metrics) |
-|------|------|----|------------------------|
-| N1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` | 30303/8545/9090 |
-| N2 | 72.60.228.233 | same host | 30304/8546/9091 |
-| N3 | 147.93.84.44 | `ssh -p 50790 ilozada@147.93.84.44` (direct from Mac) | 30303/8545/9090 |
-| N4 | 72.60.115.209 | `ssh -p 50790 ilozada@72.60.115.209` (direct from Mac) | 30303/8545/9090 |
-| N5 | 72.60.70.166 | `ssh -p 50790 ilozada@72.60.70.166` (direct from Mac) | 30303/8545/9090 |
-| N6 | 72.60.228.233 | same host | 30305/8547/9092 |
+2-server HA setup. Odd nodes on ai1, even on ai2. Seeds separated from producers.
 
-N1/N2 RPC is externally accessible (--rpc-bind 0.0.0.0). N3/N4/N5/N6 RPC is localhost-only — must SSH in first.
+| Server | IP | SSH | Hosts |
+|--------|-----|-----|-------|
+| ai1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` | ODD nodes (N1,N3,N5,N7,N9,N11 + NT1,NT3,NT5,NT7,NT9,NT11) + seeds |
+| ai2 | 187.124.95.188 | `ssh ilozada@187.124.95.188` | EVEN nodes (N2,N4,N6,N8,N10,N12 + NT2,NT4,NT6,NT8,NT10,NT12) + seeds |
 
-### Binaries
+**Port formula**: Mainnet P2P=30300+N, RPC=8500+N, Metrics=9000+N. Testnet P2P=40300+N, RPC=18500+N, Metrics=19000+N. Seeds use +0.
 
-| Node | doli-node | doli (CLI) | Rust? |
-|------|-----------|------------|-------|
-| N1/N2/N6 | `~/repos/doli/target/release/doli-node` | `~/repos/doli/target/release/doli` | Yes |
-| N3 | `/home/ilozada/doli-node` | `/home/ilozada/doli` | No (SCP from Mac) |
-| N4/N5 | `/opt/doli/target/release/doli-node` | `/usr/local/bin/doli` | No (SCP from Mac) |
+**RPC**: Producers bind 127.0.0.1. Seeds bind 0.0.0.0.
 
-### Wallet Keys
+### Binaries (shared, not per-node)
 
-| Node | Key File | Process User |
-|------|----------|--------------|
-| N1 | `~/.doli/mainnet/keys/producer_1.json` | ilozada |
-| N2 | `~/.doli/mainnet/keys/producer_2.json` | ilozada |
-| N3 | `~/.doli/mainnet/keys/producer_3.json` | ilozada |
-| N4 | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` | isudoajl |
-| N5 | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` | isudoajl |
-| N6 | `~/.doli/mainnet/keys/producer_6.json` | ilozada |
+| Network | doli-node | doli (CLI) |
+|---------|-----------|------------|
+| Mainnet | `/mainnet/bin/doli-node` | `/mainnet/bin/doli` |
+| Testnet | `/testnet/bin/doli-node` | `/testnet/bin/doli` |
 
-> **⚠️ N4/N5 keys are swapped**: N4 runs `producer_5.json`, N5 runs `producer_4.json`. This is intentional — do NOT "fix" it.
+### Paths
 
-### Connectivity
+| Item | Path |
+|------|------|
+| Node dir | `/mainnet/n{N}/` or `/testnet/nt{N}/` |
+| Data dir | `/mainnet/n{N}/data/` or `/testnet/nt{N}/data/` |
+| Keys | `/mainnet/n{N}/keys/producer.json` or `/testnet/nt{N}/keys/producer.json` |
+| Key backups | `/mainnet/keys/producer_{N}.json` or `/testnet/keys/nt{N}.json` (all 12 on BOTH servers) |
+| Logs | `/var/log/doli/mainnet/n{N}.log` or `/var/log/doli/testnet/nt{N}.log` |
 
-- N1/N2/N6: on omegacortex, accessed directly
-- N3/N4/N5: SSH direct from Mac as `ilozada` on port 50790. **omegacortex CANNOT reach these nodes!**
-- N4/N5 SSH aliases: `fpx` (N4), `kv1-fpx` (N5) — but these use user `isudoajl` with passphrase key, prefer explicit `ssh -p 50790 ilozada@<IP>`
+### CRITICAL: Node Placement
+
+- ai1 must NEVER have even node dirs. ai2 must NEVER have odd node dirs.
+- Creating a node dir on the wrong server risks double-spending and slashing.
+- Key backups in `/mainnet/keys/` and `/testnet/keys/` are safe (just files, no services).
+
+### Producers & Maintainers
+
+- N1-N5: mainnet producers + maintainers (3-of-5 governance)
+- N6-N12: mainnet producers only
+- NT1-NT5: testnet producers + maintainers
+- NT6-NT12: testnet producers only
+- All dirs owned by `ilozada:doliadmin` (GID 2000), permissions `2770`
 
 ## Deployment Procedure
 
-### Step 1: Build on omegacortex
+### Step 1: Compile on ai2
 
 ```bash
-ssh ilozada@72.60.228.233 "cd ~/repos/doli && git pull && cargo build --release"
+ssh ilozada@187.124.95.188 'cd ~/repos/doli && git pull && export PATH="$HOME/.cargo/bin:$PATH" && cargo build --release'
 ```
 
-### Step 2: Deploy to N3/N4/N5
+ai2 does NOT have nix — use cargo directly.
 
-Deploy binaries from Mac directly (omegacortex cannot reach these nodes):
+### Step 2: Record md5
 
 ```bash
-# First, get binary from omegacortex to Mac
-scp ilozada@72.60.228.233:~/repos/doli/target/release/doli-node /tmp/doli-node
-
-# Deploy to N3
-scp -P 50790 /tmp/doli-node ilozada@147.93.84.44:~/doli-node
-
-# Deploy to N4
-scp -P 50790 /tmp/doli-node ilozada@72.60.115.209:/tmp/
-ssh -p 50790 ilozada@72.60.115.209 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'
-
-# Deploy to N5
-scp -P 50790 /tmp/doli-node ilozada@72.60.70.166:/tmp/
-ssh -p 50790 ilozada@72.60.70.166 'sudo cp /tmp/doli-node /opt/doli/target/release/doli-node && sudo chmod +x /opt/doli/target/release/doli-node'
+ssh ilozada@187.124.95.188 'md5sum ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli'
 ```
 
-### Step 3: Stop nodes
+### Step 3: Deploy on ai2
 
 ```bash
-# N1/N2/N6 (omegacortex - use systemd, NOT kill)
-ssh ilozada@72.60.228.233 "sudo systemctl stop doli-mainnet-node1"
-
-# N4/N5 (direct from Mac)
-ssh -p 50790 ilozada@72.60.115.209 'sudo kill $(pgrep doli-node) 2>/dev/null; echo done'  # N4
-ssh -p 50790 ilozada@72.60.70.166 'sudo kill $(pgrep doli-node) 2>/dev/null; echo done'   # N5
+ssh ilozada@187.124.95.188 'sudo cp ~/repos/doli/target/release/doli-node /mainnet/bin/doli-node && \
+  sudo cp ~/repos/doli/target/release/doli /mainnet/bin/doli && \
+  sudo cp ~/repos/doli/target/release/doli-node /testnet/bin/doli-node && \
+  sudo cp ~/repos/doli/target/release/doli /testnet/bin/doli'
 ```
 
-### Step 4: Start nodes
-
-Start N1 first (bootstrap), then N2, then N3/N4/N5. See CLAUDE.md for exact commands per node.
-
-### Step 5: Verify
+### Step 4: Transfer to ai1 and deploy
 
 ```bash
-# All same height?
-ssh ilozada@72.60.228.233 "for p in 8545 8546 8547; do \
-  echo \"N\$((p-8544)): \$(curl -s -X POST http://127.0.0.1:\$p \
-  -H 'Content-Type: application/json' \
-  -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
-  | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
+# Transfer via ssh pipe
+ssh ilozada@187.124.95.188 'cat ~/repos/doli/target/release/doli-node' | \
+  ssh ilozada@72.60.228.233 'cat > /tmp/doli-node && chmod +x /tmp/doli-node'
+ssh ilozada@187.124.95.188 'cat ~/repos/doli/target/release/doli' | \
+  ssh ilozada@72.60.228.233 'cat > /tmp/doli && chmod +x /tmp/doli'
+
+# Deploy on ai1
+ssh ilozada@72.60.228.233 'sudo cp /tmp/doli-node /mainnet/bin/doli-node && \
+  sudo cp /tmp/doli /mainnet/bin/doli && \
+  sudo cp /tmp/doli-node /testnet/bin/doli-node && \
+  sudo cp /tmp/doli /testnet/bin/doli'
 ```
 
-Run twice 15s apart to confirm height advancing.
+### Step 5: Verify md5
+
+```bash
+ssh ilozada@72.60.228.233 'md5sum /mainnet/bin/doli-node /testnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli'
+ssh ilozada@187.124.95.188 'md5sum /mainnet/bin/doli-node /testnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli'
+```
+
+All 4 must match the build output from Step 2.
+
+### Step 6: Restart services
+
+Seeds first, then producers. Use systemd only.
+
+```bash
+# Seeds
+ssh ilozada@72.60.228.233 'sudo systemctl restart doli-mainnet-seed doli-testnet-seed'
+ssh ilozada@187.124.95.188 'sudo systemctl restart doli-mainnet-seed doli-testnet-seed'
+
+# Producers
+ssh ilozada@72.60.228.233 'sudo systemctl restart doli-mainnet-n{1,3,5} doli-testnet-nt{1,3,5}'
+ssh ilozada@187.124.95.188 'sudo systemctl restart doli-mainnet-n{2,4,6} doli-testnet-nt{2,4,6}'
+```
+
+### Step 7: Verify
+
+```bash
+# Check all nodes via getChainInfo (JSON-RPC POST to http://127.0.0.1:<port>/)
+# Run twice 15s apart to confirm height advancing
+```
 
 ## Wipe & Resync
 
-When a node is forked or corrupted:
+When a node is forked or corrupted, or for a full chain reset:
+
+**CRITICAL**: Services use `--data-dir <node>/data`. Runtime data lives in `<node>/data/`, NOT `<node>/` top level.
 
 ```bash
 # 1. Stop the node
-# 2. Delete state files (NOT keys or chainspec)
-rm -f chain_state.bin producers.bin utxo.bin
-rm -rf blocks/ signed_slots.db/
+sudo systemctl stop doli-mainnet-n{N}
 
-# 3. Restart - node will resync from peers
+# 2. Wipe data/ subdirectory (PRIMARY — this is where signed_slots.db lives)
+find /mainnet/n{N}/data -mindepth 1 -delete
+
+# 3. Also clean top-level stale files from older layouts
+rm -f /mainnet/n{N}/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin}
+rm -rf /mainnet/n{N}/{blocks,signed_slots.db,utxo_rocks,state_db}
+
+# 4. Restart - node will resync from peers
+sudo systemctl start doli-mainnet-n{N}
 ```
 
-**N4/N5 paths**: `/home/isudoajl/.doli/mainnet/` (no `data/` subdir, process user `isudoajl`)
-**N1/N2/N6 paths**: `~/.doli/mainnet/nodeN/data/` (on omegacortex)
-**N3 paths**: `~/.doli/mainnet/data/`
-
-### Balance Check Commands
-
-**IMPORTANT**: The CLI on omegacortex MUST use `~/repos/doli/target/release/doli` (current build).
-The old binary at `~/doli/target/release/doli` is from Jan 26 and does NOT support bech32m — it will silently return 0.
-The CLI needs `-r http://127.0.0.1:<RPC_PORT>` to connect (default RPC endpoint `seed1.doli.network` does not resolve).
-
-```bash
-# N1 (omegacortex — CLI needs -r flag)
-ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_1.json -r http://127.0.0.1:8545 balance"
-
-# N2 (omegacortex)
-ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_2.json -r http://127.0.0.1:8545 balance"
-
-# N6 (omegacortex)
-ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_6.json -r http://127.0.0.1:8545 balance"
-
-# N3 (producer_3 key also on omegacortex)
-ssh ilozada@72.60.228.233 "~/repos/doli/target/release/doli -w ~/.doli/mainnet/keys/producer_3.json -r http://127.0.0.1:8545 balance"
-
-# N4/N5: keys not on omegacortex — use RPC with bech32m addresses instead:
-# N4 (producer_5): doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
-# N5 (producer_4): doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
-curl -s -X POST http://72.60.228.233:8545 -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc"},"id":1}'
-```
-
-**CRITICAL**: `getBalance` MUST use bech32m addresses (`doli1...`), NOT raw public keys.
-Raw 64-char public keys return 0 because UTXOs are keyed by `BLAKE3("DOLI_ADDR_V1" || pubkey)`.
-
-#### All bech32m addresses (mainnet genesis producers)
-```
-N1 (producer_1): doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
-N2 (producer_2): doli12uaj6e7nkl90ry9q2ze27la7w0cg23ny7zk5csyj7ffrlcttcansfzx4mz
-N3 (producer_3): doli109t8uyux22qqrx9ewzrpxww25scjt5cl49cunkn6m72me2txrgpsqd3rql
-N4 (producer_5): doli1fznp4jddlf39qzg3kc94qvnsptrhkt0z3pehwq3cnpurk7ylauqstxsxyc
-N5 (producer_4): doli1eduw95x5c6erx4dpacpfm90dylhjvjjn43j3nwag3huym6d20sdqzcqyq6
-N6 (producer_6): doli1dy5scma8lrc5uyez7pyhpq7q7xeakyzyyc5xrrfyuusgvzkakh9swnrr0s
-```
+**WARNING**: If `signed_slots.db` inside `data/` is not wiped during a genesis reset, nodes will hit SLASHING PROTECTION and refuse to produce blocks. This is the #1 chain reset failure mode.
 
 ## Upgrade via GitHub
 
@@ -236,30 +222,18 @@ doli-node upgrade --version 0.3.0 --yes   # specific version
 | Consensus-critical (validation, scheduling, VDF, economics) | Stop ALL, deploy, start all |
 | Non-consensus (sync, networking, RPC, logging) | Rolling: one at a time, verify health |
 
-## Archiver Node
+## Seed / Archive Nodes
 
-A non-producing archive node runs on omegacortex as `doli-mainnet-archiver`:
+Seeds double as archive + relay nodes. One on each server for redundancy.
 
-| Service | Ports (P2P/RPC/Metrics) | Archive Dir |
-|---------|------------------------|-------------|
-| `doli-mainnet-archiver` | 30306/8548/9093 | `~/.doli/mainnet/archive/` |
+| Network | Server | Service | P2P | RPC | Data |
+|---------|--------|---------|-----|-----|------|
+| Mainnet | ai1 | `doli-mainnet-seed` | 30300 | 8500 | `/mainnet/seed/data/` |
+| Mainnet | ai2 | `doli-mainnet-seed` | 30300 | 8500 | `/mainnet/seed/data/` |
+| Testnet | ai1 | `doli-testnet-seed` | 40300 | 18500 | `/testnet/seed/data/` |
+| Testnet | ai2 | `doli-testnet-seed` | 40300 | 18500 | `/testnet/seed/data/` |
 
-- **DNS**: `archive.doli.network` → 72.60.228.233
-- **Bootstrap peer**: included in mainnet bootstrap list (P2P port 30306)
-
-Archives finality-gated blocks (only blocks confirmed by 67% attestation threshold). Each block stored as `{height:010}.block` with `.blake3` checksum sidecar. `manifest.json` tracks latest archived height.
-
-```bash
-# Check archiver status
-sudo systemctl status doli-mainnet-archiver
-
-# Check latest archived block
-cat ~/.doli/mainnet/archive/manifest.json
-
-# Restore from archive (disaster recovery)
-doli-node restore --archive-dir ~/.doli/mainnet/archive/ --data-dir ~/.doli/mainnet/nodeN/data/
-# Then: doli-node recover --yes --data-dir ~/.doli/mainnet/nodeN/data/
-```
+DNS: `seed1.doli.network` + `seed2.doli.network` (round-robin both IPs). `archive.doli.network` (round-robin).
 
 ## Snap Sync
 
