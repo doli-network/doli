@@ -15,6 +15,7 @@ const CF_HEIGHT_INDEX: &str = "height_index";
 const CF_SLOT_INDEX: &str = "slot_index";
 const CF_PRESENCE: &str = "presence";
 const CF_HASH_TO_HEIGHT: &str = "hash_to_height";
+const CF_TX_INDEX: &str = "tx_index";
 
 /// Block store
 pub struct BlockStore {
@@ -41,15 +42,16 @@ impl BlockStore {
             CF_SLOT_INDEX,
             CF_PRESENCE,
             CF_HASH_TO_HEIGHT,
+            CF_TX_INDEX,
         ];
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
-        // One-time migration: populate hash_to_height from height_index
-        // for blocks stored before this index was added.
+        // One-time migrations
         let store = Self { db };
         store.migrate_hash_to_height_index();
         store.cleanup_presence_cf();
+        store.migrate_tx_index();
 
         Ok(store)
     }
@@ -134,6 +136,77 @@ impl BlockStore {
                 info!(
                     "[BLOCK_STORE] Cleaned up deprecated presence CF: {} entries removed",
                     count
+                );
+            }
+        }
+    }
+
+    /// Populate tx_index from existing canonical blocks.
+    /// Runs once on first startup after the index is added. No-op if already populated.
+    fn migrate_tx_index(&self) {
+        let cf_tx = self.db.cf_handle(CF_TX_INDEX).unwrap();
+
+        // Skip if index already has entries
+        if self
+            .db
+            .iterator_cf(cf_tx, rocksdb::IteratorMode::Start)
+            .flatten()
+            .next()
+            .is_some()
+        {
+            return;
+        }
+
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut tx_count = 0u64;
+        let mut block_count = 0u64;
+
+        for (height_bytes, hash_bytes) in self
+            .db
+            .iterator_cf(cf_height, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            // Fetch block body
+            let body_bytes = match self.db.get_cf(cf_bodies, &hash_bytes) {
+                Ok(Some(b)) => b,
+                _ => continue,
+            };
+            let transactions: Vec<doli_core::Transaction> = match bincode::deserialize(&body_bytes)
+            {
+                Ok(txs) => txs,
+                Err(_) => continue,
+            };
+
+            for tx in &transactions {
+                let tx_hash = tx.hash();
+                batch.put_cf(cf_tx, tx_hash.as_bytes(), &height_bytes);
+                tx_count += 1;
+            }
+            block_count += 1;
+
+            // Write in batches of 10k blocks to avoid huge memory usage
+            if block_count.is_multiple_of(10_000) {
+                if let Err(e) = self.db.write(std::mem::take(&mut batch)) {
+                    warn!("Failed to write tx_index batch: {}", e);
+                    return;
+                }
+                info!(
+                    "[BLOCK_STORE] tx_index migration progress: {} blocks, {} txs",
+                    block_count, tx_count
+                );
+            }
+        }
+
+        if tx_count > 0 {
+            if let Err(e) = self.db.write(batch) {
+                warn!("Failed to migrate tx_index: {}", e);
+            } else {
+                info!(
+                    "[BLOCK_STORE] Migrated tx_index: {} txs from {} blocks",
+                    tx_count, block_count
                 );
             }
         }
@@ -303,6 +376,14 @@ impl BlockStore {
         // Update slot index
         let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
         self.db.put_cf(cf_slot, slot.to_le_bytes(), hash_bytes)?;
+
+        // Update tx index: tx_hash → block height
+        let cf_tx = self.db.cf_handle(CF_TX_INDEX).unwrap();
+        for tx in &block.transactions {
+            let tx_hash = tx.hash();
+            self.db
+                .put_cf(cf_tx, tx_hash.as_bytes(), height.to_le_bytes())?;
+        }
 
         Ok(())
     }
@@ -606,6 +687,23 @@ impl BlockStore {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
         Ok(Some(Hash::from_bytes(arr)))
+    }
+
+    /// Look up which block height contains a given transaction hash.
+    pub fn get_tx_block_height(&self, tx_hash: &Hash) -> Result<Option<u64>, StorageError> {
+        let cf_tx = self.db.cf_handle(CF_TX_INDEX).unwrap();
+        let bytes = match self.db.get_cf(cf_tx, tx_hash.as_bytes())? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        if bytes.len() != 8 {
+            return Err(StorageError::Serialization(
+                "invalid tx_index height length".into(),
+            ));
+        }
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&bytes);
+        Ok(Some(u64::from_le_bytes(arr)))
     }
 
     /// Get block by height
