@@ -2923,6 +2923,17 @@ impl Node {
         let local_height = self.chain_state.read().await.best_height;
         let best_peer = self.sync_manager.read().await.best_peer_height();
 
+        // Snap-synced nodes missing genesis blocks can never reorg — force re-snap
+        if self.block_store.get_block_by_height(1)?.is_none() {
+            warn!(
+                "Recovery: snap sync gap detected (block 1 missing). \
+                 Forcing re-snap sync (local h={}, peer h={})",
+                local_height, best_peer
+            );
+            self.reset_state_only().await?;
+            return Ok(());
+        }
+
         // Guard: don't wipe a node that's close to the tip — let reorg handle it
         if best_peer > 0 && local_height > best_peer * 90 / 100 {
             warn!(
