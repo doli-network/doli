@@ -770,3 +770,25 @@ mod tests {
         assert_eq!(parsed.confirmations, 50);
     }
 }
+
+/// Parameters for backfillFromPeer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackfillParams {
+    /// RPC URL of a peer with complete block history
+    pub rpc_url: String,
+}
+
+/// Response for backfillStatus
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackfillStatusResponse {
+    /// Whether a backfill is currently running
+    pub running: bool,
+    /// Number of blocks imported so far
+    pub imported: u64,
+    /// Total number of blocks to import
+    pub total: u64,
+    /// Progress percentage (0-100)
+    pub pct: u64,
+    /// Error message if backfill failed
+    pub error: Option<String>,
+}
