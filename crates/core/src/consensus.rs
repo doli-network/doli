@@ -85,7 +85,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1772983704;
+pub const GENESIS_TIME: u64 = 1772984430;
 
 // ==================== Proof of Time Parameters ====================
 
