@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crypto::PublicKey;
+use crypto::{Hash, PublicKey};
 use tracing::{info, warn};
 
 use super::{
@@ -28,11 +28,11 @@ use super::{
 ///
 /// ```rust
 /// use doli_core::discovery::{ProducerGSet, ProducerAnnouncement};
-/// use crypto::KeyPair;
+/// use crypto::{KeyPair, Hash};
 ///
-/// let mut gset = ProducerGSet::new(1); // network_id = 1
+/// let mut gset = ProducerGSet::new(1, Hash::ZERO); // network_id = 1
 /// let keypair = KeyPair::generate();
-/// let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+/// let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
 ///
 /// let result = gset.merge_one(announcement);
 /// assert!(result.is_ok());
@@ -52,6 +52,9 @@ pub struct ProducerGSet {
     /// Network ID this GSet is configured for.
     network_id: u32,
 
+    /// Genesis hash this GSet is configured for (prevents cross-genesis contamination).
+    genesis_hash: Hash,
+
     /// Optional path for disk persistence.
     storage_path: Option<PathBuf>,
 }
@@ -69,18 +72,20 @@ pub enum MergeOneResult {
 }
 
 impl ProducerGSet {
-    /// Create a new empty ProducerGSet for the given network.
+    /// Create a new empty ProducerGSet for the given network and genesis.
     ///
     /// # Arguments
     ///
     /// * `network_id` - The network ID (1=mainnet, 2=testnet, 99=devnet)
+    /// * `genesis_hash` - The genesis hash for this chain
     #[must_use]
-    pub fn new(network_id: u32) -> Self {
+    pub fn new(network_id: u32, genesis_hash: Hash) -> Self {
         Self {
             producers: HashMap::new(),
             sequences: HashMap::new(),
             last_modified: Instant::now(),
             network_id,
+            genesis_hash,
             storage_path: None,
         }
     }
@@ -88,19 +93,21 @@ impl ProducerGSet {
     /// Create a new ProducerGSet with disk persistence.
     ///
     /// If the file exists, it will be loaded and verified.
-    /// Only announcements that pass signature verification will be loaded.
+    /// Only announcements that pass signature and genesis_hash verification will be loaded.
     ///
     /// # Arguments
     ///
     /// * `network_id` - The network ID (1=mainnet, 2=testnet, 99=devnet)
+    /// * `genesis_hash` - The genesis hash for this chain
     /// * `path` - Path to the persistence file
     #[must_use]
-    pub fn new_with_persistence(network_id: u32, path: PathBuf) -> Self {
+    pub fn new_with_persistence(network_id: u32, genesis_hash: Hash, path: PathBuf) -> Self {
         let mut gset = Self {
             producers: HashMap::new(),
             sequences: HashMap::new(),
             last_modified: Instant::now(),
             network_id,
+            genesis_hash,
             storage_path: Some(path),
         };
 
@@ -153,6 +160,17 @@ impl ProducerGSet {
                 expected: self.network_id,
                 got: announcement.network_id,
             });
+        }
+
+        // Step 2b: Check genesis hash (prevents cross-genesis contamination)
+        if announcement.genesis_hash != self.genesis_hash {
+            info!(
+                "GSet merge_one {}: REJECT genesis_hash_mismatch expected={} got={}",
+                pubkey_hex,
+                hex::encode(&self.genesis_hash.as_bytes()[..8]),
+                hex::encode(&announcement.genesis_hash.as_bytes()[..8]),
+            );
+            return Err(ProducerSetError::GenesisHashMismatch);
         }
 
         // Step 3: Check timestamp bounds
@@ -426,6 +444,12 @@ impl ProducerGSet {
         self.network_id
     }
 
+    /// Get the genesis hash this GSet is configured for.
+    #[must_use]
+    pub fn genesis_hash(&self) -> Hash {
+        self.genesis_hash
+    }
+
     /// Get the current sequence number for a producer.
     ///
     /// Returns 0 if the producer is not known.
@@ -512,6 +536,12 @@ impl ProducerGSet {
                 continue;
             }
 
+            // Check genesis hash
+            if ann.genesis_hash != self.genesis_hash {
+                rejected += 1;
+                continue;
+            }
+
             // Add to state (no timestamp check for persisted data)
             if let Some(&current_seq) = self.sequences.get(&ann.pubkey) {
                 if ann.sequence <= current_seq {
@@ -580,14 +610,14 @@ impl ProducerGSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::KeyPair;
+    use crypto::{Hash, KeyPair};
     use std::time::Duration;
 
     #[test]
     fn test_gset_merge_valid_announcement() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
 
         let result = gset.merge_one(announcement);
         assert!(matches!(result, Ok(MergeOneResult::NewProducer)));
@@ -597,9 +627,9 @@ mod tests {
 
     #[test]
     fn test_gset_reject_invalid_signature() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
-        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         announcement.sequence = 999; // Tamper
 
         let result = gset.merge_one(announcement);
@@ -609,9 +639,9 @@ mod tests {
 
     #[test]
     fn test_gset_reject_wrong_network() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 2, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 2, 0, Hash::ZERO);
 
         let result = gset.merge_one(announcement);
         assert!(matches!(
@@ -624,8 +654,21 @@ mod tests {
     }
 
     #[test]
+    fn test_gset_reject_wrong_genesis_hash() {
+        let hash_a = Hash::from_bytes([0xAA; 32]);
+        let hash_b = Hash::from_bytes([0xBB; 32]);
+        let mut gset = ProducerGSet::new(1, hash_a);
+        let keypair = KeyPair::generate();
+        // Announcement signed for a different genesis
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, hash_b);
+
+        let result = gset.merge_one(announcement);
+        assert!(matches!(result, Err(ProducerSetError::GenesisHashMismatch)));
+    }
+
+    #[test]
     fn test_gset_reject_stale_announcement() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
 
         // Create announcement with timestamp 2 hours ago
@@ -636,7 +679,7 @@ mod tests {
         let stale_timestamp = now - 7200; // 2 hours ago
 
         let announcement =
-            ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, stale_timestamp);
+            ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, stale_timestamp, Hash::ZERO);
 
         let result = gset.merge_one(announcement);
         assert!(matches!(result, Err(ProducerSetError::StaleAnnouncement)));
@@ -644,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_gset_reject_future_timestamp() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
 
         // Create announcement with timestamp 10 minutes in future
@@ -655,7 +698,7 @@ mod tests {
         let future_timestamp = now + 600; // 10 minutes ahead
 
         let announcement =
-            ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, future_timestamp);
+            ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, future_timestamp, Hash::ZERO);
 
         let result = gset.merge_one(announcement);
         assert!(matches!(result, Err(ProducerSetError::FutureTimestamp)));
@@ -663,25 +706,25 @@ mod tests {
 
     #[test]
     fn test_gset_sequence_version_vector() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
 
         // First announcement with sequence 0
-        let ann1 = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann1 = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         assert!(matches!(
             gset.merge_one(ann1),
             Ok(MergeOneResult::NewProducer)
         ));
 
         // Second announcement with sequence 1 should update
-        let ann2 = ProducerAnnouncement::new(&keypair, 1, 1);
+        let ann2 = ProducerAnnouncement::new(&keypair, 1, 1, Hash::ZERO);
         assert!(matches!(
             gset.merge_one(ann2),
             Ok(MergeOneResult::SequenceUpdate)
         ));
 
         // Old sequence should be rejected (no change)
-        let ann3 = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann3 = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         assert!(matches!(
             gset.merge_one(ann3),
             Ok(MergeOneResult::Duplicate)
@@ -693,16 +736,16 @@ mod tests {
 
     #[test]
     fn test_gset_merge_batch() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let mut announcements = Vec::new();
         for _ in 0..5 {
             let keypair = KeyPair::generate();
-            announcements.push(ProducerAnnouncement::new(&keypair, 1, 0));
+            announcements.push(ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO));
         }
         // Add one invalid (tampered)
         let keypair = KeyPair::generate();
-        let mut invalid = ProducerAnnouncement::new(&keypair, 1, 0);
+        let mut invalid = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         invalid.sequence = 999; // Tamper
         announcements.push(invalid);
 
@@ -713,11 +756,11 @@ mod tests {
 
     #[test]
     fn test_gset_sorted_producers_deterministic() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let keypairs: Vec<_> = (0..5).map(|_| KeyPair::generate()).collect();
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -733,11 +776,11 @@ mod tests {
 
     #[test]
     fn test_gset_export_all_announcements() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         for _ in 0..3 {
             let keypair = KeyPair::generate();
-            let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+            let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -750,14 +793,14 @@ mod tests {
 
     #[test]
     fn test_gset_stability_tracking() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         // Initially stable (no changes)
         assert!(gset.is_stable(Duration::from_millis(0)));
 
         // Add producer - resets stability
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         gset.merge_one(ann).unwrap();
 
         // Not stable immediately
@@ -770,16 +813,16 @@ mod tests {
 
     #[test]
     fn test_gset_empty() {
-        let gset = ProducerGSet::new(1);
+        let gset = ProducerGSet::new(1, Hash::ZERO);
         assert!(gset.is_empty());
         assert_eq!(gset.len(), 0);
     }
 
     #[test]
     fn test_gset_get() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         gset.merge_one(ann.clone()).unwrap();
 
         let retrieved = gset.get(keypair.public_key());
@@ -789,24 +832,24 @@ mod tests {
 
     #[test]
     fn test_gset_network_id() {
-        let gset = ProducerGSet::new(99);
+        let gset = ProducerGSet::new(99, Hash::ZERO);
         assert_eq!(gset.network_id(), 99);
     }
 
     #[test]
     fn test_gset_duplicate_announcement() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypair = KeyPair::generate();
 
         // Add same announcement twice
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         assert!(matches!(
             gset.merge_one(ann.clone()),
             Ok(MergeOneResult::NewProducer)
         ));
 
         // Same sequence number - should be duplicate
-        let ann2 = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann2 = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         assert!(matches!(
             gset.merge_one(ann2),
             Ok(MergeOneResult::Duplicate)
@@ -817,16 +860,16 @@ mod tests {
 
     #[test]
     fn test_gset_merge_multiple_producers() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let kp1 = KeyPair::generate();
         let kp2 = KeyPair::generate();
         let kp3 = KeyPair::generate();
 
         let announcements = vec![
-            ProducerAnnouncement::new(&kp1, 1, 0),
-            ProducerAnnouncement::new(&kp2, 1, 0),
-            ProducerAnnouncement::new(&kp3, 1, 0),
+            ProducerAnnouncement::new(&kp1, 1, 0, Hash::ZERO),
+            ProducerAnnouncement::new(&kp2, 1, 0, Hash::ZERO),
+            ProducerAnnouncement::new(&kp3, 1, 0, Hash::ZERO),
         ];
 
         let result = gset.merge(announcements);
@@ -839,17 +882,17 @@ mod tests {
 
     #[test]
     fn test_gset_no_persistence_by_default() {
-        let gset = ProducerGSet::new(1);
+        let gset = ProducerGSet::new(1, Hash::ZERO);
         assert!(!gset.has_persistence());
     }
 
     #[test]
     fn test_gset_to_bloom_filter() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
         let keypairs: Vec<_> = (0..10).map(|_| KeyPair::generate()).collect();
 
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -872,12 +915,12 @@ mod tests {
 
     #[test]
     fn test_gset_delta_sync() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         // Add 10 producers
         let keypairs: Vec<_> = (0..10).map(|_| KeyPair::generate()).collect();
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -903,11 +946,11 @@ mod tests {
 
     #[test]
     fn test_gset_delta_empty_peer() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let keypairs: Vec<_> = (0..5).map(|_| KeyPair::generate()).collect();
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -921,11 +964,11 @@ mod tests {
 
     #[test]
     fn test_gset_delta_peer_knows_all() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let keypairs: Vec<_> = (0..5).map(|_| KeyPair::generate()).collect();
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).unwrap();
         }
 
@@ -945,7 +988,7 @@ mod tests {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
-    use crypto::KeyPair;
+    use crypto::{Hash, KeyPair};
     use tempfile::tempdir;
 
     #[test]
@@ -954,11 +997,11 @@ mod persistence_tests {
         let path = dir.path().join("producers.bin");
 
         // Create and populate
-        let mut gset = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let mut keypairs = Vec::new();
         for _ in 0..3 {
             let keypair = KeyPair::generate();
-            let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+            let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
             gset.merge_one(ann).expect("merge should succeed");
             keypairs.push(keypair);
         }
@@ -967,7 +1010,7 @@ mod persistence_tests {
 
         // Drop and reload
         drop(gset);
-        let loaded = ProducerGSet::new_with_persistence(1, path);
+        let loaded = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
 
         assert_eq!(loaded.len(), original_count);
         assert_eq!(loaded.sorted_producers(), original_sorted);
@@ -979,9 +1022,9 @@ mod persistence_tests {
         let path = dir.path().join("producers.bin");
 
         // Create valid gset
-        let mut gset = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         gset.merge_one(ann).expect("merge should succeed");
 
         // Corrupt the file
@@ -993,7 +1036,7 @@ mod persistence_tests {
         std::fs::write(&path, data).expect("write should succeed");
 
         // Reload should handle corruption gracefully
-        let loaded = ProducerGSet::new_with_persistence(1, path);
+        let loaded = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
         // Either empty (complete corruption) or fewer (partial)
         assert!(loaded.len() <= 1);
     }
@@ -1003,14 +1046,14 @@ mod persistence_tests {
         let dir = tempdir().expect("tempdir should be created");
         let path = dir.path().join("producers.bin");
 
-        let mut gset = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+        let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         gset.merge_one(ann).expect("merge should succeed");
 
         // File should exist and be valid
         assert!(path.exists());
-        let loaded = ProducerGSet::new_with_persistence(1, path);
+        let loaded = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
         assert_eq!(loaded.len(), 1);
     }
 
@@ -1019,7 +1062,7 @@ mod persistence_tests {
         let dir = tempdir().expect("tempdir should be created");
         let path = dir.path().join("producers.bin");
 
-        let gset = ProducerGSet::new_with_persistence(1, path);
+        let gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
         assert!(gset.has_persistence());
     }
 
@@ -1029,7 +1072,7 @@ mod persistence_tests {
         let path = dir.path().join("nonexistent.bin");
 
         // Should not panic, just create empty gset
-        let gset = ProducerGSet::new_with_persistence(1, path);
+        let gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
         assert_eq!(gset.len(), 0);
     }
 
@@ -1039,27 +1082,27 @@ mod persistence_tests {
         let path = dir.path().join("producers.bin");
 
         // Create with one producer
-        let mut gset = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let kp1 = KeyPair::generate();
-        gset.merge_one(ProducerAnnouncement::new(&kp1, 1, 0))
+        gset.merge_one(ProducerAnnouncement::new(&kp1, 1, 0, Hash::ZERO))
             .expect("merge should succeed");
 
         // Reload and verify
-        let loaded1 = ProducerGSet::new_with_persistence(1, path.clone());
+        let loaded1 = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         assert_eq!(loaded1.len(), 1);
 
         // Add another producer
         drop(loaded1);
-        let mut gset2 = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset2 = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let kp2 = KeyPair::generate();
         gset2
-            .merge_one(ProducerAnnouncement::new(&kp2, 1, 0))
+            .merge_one(ProducerAnnouncement::new(&kp2, 1, 0, Hash::ZERO))
             .expect("merge should succeed");
         assert_eq!(gset2.len(), 2);
 
         // Reload and verify both are present
         drop(gset2);
-        let loaded2 = ProducerGSet::new_with_persistence(1, path);
+        let loaded2 = ProducerGSet::new_with_persistence(1, Hash::ZERO, path);
         assert_eq!(loaded2.len(), 2);
     }
 
@@ -1069,14 +1112,14 @@ mod persistence_tests {
         let path = dir.path().join("producers.bin");
 
         // Create with network 1
-        let mut gset = ProducerGSet::new_with_persistence(1, path.clone());
+        let mut gset = ProducerGSet::new_with_persistence(1, Hash::ZERO, path.clone());
         let keypair = KeyPair::generate();
-        gset.merge_one(ProducerAnnouncement::new(&keypair, 1, 0))
+        gset.merge_one(ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO))
             .expect("merge should succeed");
         drop(gset);
 
         // Try to load with network 2 - should reject
-        let loaded = ProducerGSet::new_with_persistence(2, path);
+        let loaded = ProducerGSet::new_with_persistence(2, Hash::ZERO, path);
         assert_eq!(loaded.len(), 0); // Rejected due to network mismatch
     }
 }
@@ -1093,13 +1136,13 @@ mod stress_tests {
     /// This verifies the GSet can handle production-scale producer counts.
     #[test]
     fn test_stress_100_producers() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         // Generate 100 unique producers
         let keypairs: Vec<_> = (0..100).map(|_| KeyPair::generate()).collect();
         let announcements: Vec<_> = keypairs
             .iter()
-            .map(|kp| ProducerAnnouncement::new(kp, 1, 0))
+            .map(|kp| ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
             .collect();
 
         // Merge all at once
@@ -1123,21 +1166,21 @@ mod stress_tests {
     /// Extended stress test with 500 producers and multiple sequence updates.
     #[test]
     fn test_stress_500_producers_with_updates() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         // Generate 500 producers
         let keypairs: Vec<_> = (0..500).map(|_| KeyPair::generate()).collect();
 
         // Add all with sequence 0
         for kp in &keypairs {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             gset.merge_one(ann).expect("merge should succeed");
         }
         assert_eq!(gset.len(), 500);
 
         // Update half with sequence 1
         for kp in &keypairs[0..250] {
-            let ann = ProducerAnnouncement::new(kp, 1, 1);
+            let ann = ProducerAnnouncement::new(kp, 1, 1, Hash::ZERO);
             assert!(
                 matches!(gset.merge_one(ann), Ok(MergeOneResult::SequenceUpdate)),
                 "Update should succeed"
@@ -1165,7 +1208,7 @@ mod stress_tests {
     /// 12.5: Fuzz-like test with random announcement patterns.
     #[test]
     fn test_fuzz_random_announcements() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         // Generate a pool of producers
         let keypairs: Vec<_> = (0..50).map(|_| KeyPair::generate()).collect();
@@ -1178,7 +1221,7 @@ mod stress_tests {
             let kp_idx = (rng_seed as usize) % keypairs.len();
             let seq = (rng_seed >> 32) % 10;
 
-            let ann = ProducerAnnouncement::new(&keypairs[kp_idx], 1, seq);
+            let ann = ProducerAnnouncement::new(&keypairs[kp_idx], 1, seq, Hash::ZERO);
             // All operations should succeed without panic
             let _ = gset.merge_one(ann);
         }
@@ -1194,7 +1237,7 @@ mod stress_tests {
     /// Test handling of invalid/tampered announcements at scale.
     #[test]
     fn test_stress_invalid_announcements() {
-        let mut gset = ProducerGSet::new(1);
+        let mut gset = ProducerGSet::new(1, Hash::ZERO);
 
         let mut valid_count = 0;
         let mut _invalid_count = 0;
@@ -1202,7 +1245,7 @@ mod stress_tests {
         // Mix of valid and invalid announcements
         for i in 0..100 {
             let keypair = KeyPair::generate();
-            let mut ann = ProducerAnnouncement::new(&keypair, 1, 0);
+            let mut ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
 
             if i % 4 == 0 {
                 // Tamper every 4th announcement
@@ -1237,7 +1280,7 @@ mod stress_tests {
             let keypairs: Vec<_> = (0..size).map(|_| KeyPair::generate()).collect();
             let announcements: Vec<_> = keypairs
                 .iter()
-                .map(|kp| ProducerAnnouncement::new(kp, 1, 0))
+                .map(|kp| ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
                 .collect();
 
             // Encode using protobuf
@@ -1299,9 +1342,9 @@ mod stress_tests {
             let keypairs: Vec<_> = (0..size).map(|_| KeyPair::generate()).collect();
 
             // Create full gset
-            let mut gset = ProducerGSet::new(1);
+            let mut gset = ProducerGSet::new(1, Hash::ZERO);
             for kp in &keypairs {
-                let ann = ProducerAnnouncement::new(kp, 1, 0);
+                let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
                 gset.merge_one(ann).unwrap();
             }
 
@@ -1369,31 +1412,31 @@ mod stress_tests {
         let keypairs: Vec<_> = (0..30).map(|_| KeyPair::generate()).collect();
 
         // Node 1 knows producers 0-19
-        let mut node1 = ProducerGSet::new(1);
+        let mut node1 = ProducerGSet::new(1, Hash::ZERO);
         for kp in &keypairs[0..20] {
             node1
-                .merge_one(ProducerAnnouncement::new(kp, 1, 0))
+                .merge_one(ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
                 .unwrap();
         }
 
         // Node 2 knows producers 10-29
-        let mut node2 = ProducerGSet::new(1);
+        let mut node2 = ProducerGSet::new(1, Hash::ZERO);
         for kp in &keypairs[10..30] {
             node2
-                .merge_one(ProducerAnnouncement::new(kp, 1, 0))
+                .merge_one(ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
                 .unwrap();
         }
 
         // Node 3 knows producers 0-9 and 20-29
-        let mut node3 = ProducerGSet::new(1);
+        let mut node3 = ProducerGSet::new(1, Hash::ZERO);
         for kp in &keypairs[0..10] {
             node3
-                .merge_one(ProducerAnnouncement::new(kp, 1, 0))
+                .merge_one(ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
                 .unwrap();
         }
         for kp in &keypairs[20..30] {
             node3
-                .merge_one(ProducerAnnouncement::new(kp, 1, 0))
+                .merge_one(ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO))
                 .unwrap();
         }
 
@@ -1432,21 +1475,21 @@ mod stress_tests {
         let keypairs: Vec<_> = (0..20).map(|_| KeyPair::generate()).collect();
 
         // Two partitions that develop independently
-        let mut partition_a1 = ProducerGSet::new(1);
-        let mut partition_a2 = ProducerGSet::new(1);
-        let mut partition_b1 = ProducerGSet::new(1);
-        let mut partition_b2 = ProducerGSet::new(1);
+        let mut partition_a1 = ProducerGSet::new(1, Hash::ZERO);
+        let mut partition_a2 = ProducerGSet::new(1, Hash::ZERO);
+        let mut partition_b1 = ProducerGSet::new(1, Hash::ZERO);
+        let mut partition_b2 = ProducerGSet::new(1, Hash::ZERO);
 
         // Partition A learns producers 0-9
         for kp in &keypairs[0..10] {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             partition_a1.merge_one(ann.clone()).unwrap();
             partition_a2.merge_one(ann).unwrap();
         }
 
         // Partition B learns producers 10-19
         for kp in &keypairs[10..20] {
-            let ann = ProducerAnnouncement::new(kp, 1, 0);
+            let ann = ProducerAnnouncement::new(kp, 1, 0, Hash::ZERO);
             partition_b1.merge_one(ann.clone()).unwrap();
             partition_b2.merge_one(ann).unwrap();
         }

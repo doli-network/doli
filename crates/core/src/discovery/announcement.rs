@@ -3,7 +3,7 @@
 //! A cryptographically signed producer announcement with replay protection.
 //! This is the fundamental building block for the producer discovery system.
 
-use crypto::{signature, KeyPair, PrivateKey, PublicKey, Signature};
+use crypto::{signature, Hash, KeyPair, PrivateKey, PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,16 +16,17 @@ use super::PRODUCER_ANNOUNCEMENT_DOMAIN;
 /// - Impersonation (signature verification)
 /// - Replay attacks (sequence numbers)
 /// - Cross-network attacks (network_id binding)
+/// - Cross-genesis attacks (genesis_hash binding)
 /// - Clock drift attacks (timestamp bounds)
 ///
 /// # Example
 ///
 /// ```rust
 /// use doli_core::discovery::ProducerAnnouncement;
-/// use crypto::KeyPair;
+/// use crypto::{KeyPair, Hash};
 ///
 /// let keypair = KeyPair::generate();
-/// let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+/// let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
 /// assert!(announcement.verify());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +37,9 @@ pub struct ProducerAnnouncement {
     /// Network ID this announcement is for (prevents cross-network replay).
     pub network_id: u32,
 
+    /// Genesis hash binding (prevents cross-genesis contamination on same network).
+    pub genesis_hash: Hash,
+
     /// Monotonically increasing sequence number for this producer.
     /// Higher sequence numbers supersede lower ones.
     pub sequence: u64,
@@ -43,7 +47,7 @@ pub struct ProducerAnnouncement {
     /// Unix timestamp (seconds since epoch) when the announcement was created.
     pub timestamp: u64,
 
-    /// Ed25519 signature over (network_id || sequence || timestamp || pubkey).
+    /// Ed25519 signature over (network_id || genesis_hash || sequence || timestamp || pubkey).
     pub signature: Signature,
 }
 
@@ -60,26 +64,28 @@ impl ProducerAnnouncement {
     /// * `keypair` - The producer's keypair for signing
     /// * `network_id` - The network ID (1=mainnet, 2=testnet, 99=devnet)
     /// * `sequence` - Monotonically increasing sequence number
+    /// * `genesis_hash` - The genesis hash for this chain
     ///
     /// # Example
     ///
     /// ```rust
     /// use doli_core::discovery::ProducerAnnouncement;
-    /// use crypto::KeyPair;
+    /// use crypto::{KeyPair, Hash};
     ///
     /// let keypair = KeyPair::generate();
-    /// let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+    /// let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
     /// assert!(ann.verify());
     /// ```
     #[must_use]
-    pub fn new(keypair: &KeyPair, network_id: u32, sequence: u64) -> Self {
+    pub fn new(keypair: &KeyPair, network_id: u32, sequence: u64, genesis_hash: Hash) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
             .as_secs();
 
         let pubkey = *keypair.public_key();
-        let message = Self::message_bytes_inner(network_id, sequence, timestamp, &pubkey);
+        let message =
+            Self::message_bytes_inner(network_id, &genesis_hash, sequence, timestamp, &pubkey);
         let signature = signature::sign_with_domain(
             PRODUCER_ANNOUNCEMENT_DOMAIN,
             &message,
@@ -89,6 +95,7 @@ impl ProducerAnnouncement {
         Self {
             pubkey,
             network_id,
+            genesis_hash,
             sequence,
             timestamp,
             signature,
@@ -106,15 +113,18 @@ impl ProducerAnnouncement {
     /// * `network_id` - The network ID
     /// * `sequence` - Monotonically increasing sequence number
     /// * `timestamp` - Unix timestamp to use
+    /// * `genesis_hash` - The genesis hash for this chain
     #[must_use]
     pub fn new_with_timestamp(
         keypair: &KeyPair,
         network_id: u32,
         sequence: u64,
         timestamp: u64,
+        genesis_hash: Hash,
     ) -> Self {
         let pubkey = *keypair.public_key();
-        let message = Self::message_bytes_inner(network_id, sequence, timestamp, &pubkey);
+        let message =
+            Self::message_bytes_inner(network_id, &genesis_hash, sequence, timestamp, &pubkey);
         let signature = signature::sign_with_domain(
             PRODUCER_ANNOUNCEMENT_DOMAIN,
             &message,
@@ -124,6 +134,7 @@ impl ProducerAnnouncement {
         Self {
             pubkey,
             network_id,
+            genesis_hash,
             sequence,
             timestamp,
             signature,
@@ -138,10 +149,10 @@ impl ProducerAnnouncement {
     ///
     /// ```rust
     /// use doli_core::discovery::ProducerAnnouncement;
-    /// use crypto::KeyPair;
+    /// use crypto::{KeyPair, Hash};
     ///
     /// let keypair = KeyPair::generate();
-    /// let ann = ProducerAnnouncement::new(&keypair, 1, 0);
+    /// let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
     /// assert!(ann.verify());
     ///
     /// // Tampering with any field will cause verification to fail
@@ -165,25 +176,34 @@ impl ProducerAnnouncement {
     ///
     /// The message format is:
     /// - 4 bytes: network_id (little-endian)
+    /// - 32 bytes: genesis_hash
     /// - 8 bytes: sequence (little-endian)
     /// - 8 bytes: timestamp (little-endian)
     /// - 32 bytes: pubkey
     ///
-    /// Total: 52 bytes
+    /// Total: 84 bytes
     #[must_use]
     pub fn message_bytes(&self) -> Vec<u8> {
-        Self::message_bytes_inner(self.network_id, self.sequence, self.timestamp, &self.pubkey)
+        Self::message_bytes_inner(
+            self.network_id,
+            &self.genesis_hash,
+            self.sequence,
+            self.timestamp,
+            &self.pubkey,
+        )
     }
 
     /// Internal helper to construct message bytes.
     fn message_bytes_inner(
         network_id: u32,
+        genesis_hash: &Hash,
         sequence: u64,
         timestamp: u64,
         pubkey: &PublicKey,
     ) -> Vec<u8> {
-        let mut message = Vec::with_capacity(52);
+        let mut message = Vec::with_capacity(84);
         message.extend_from_slice(&network_id.to_le_bytes());
+        message.extend_from_slice(genesis_hash.as_bytes());
         message.extend_from_slice(&sequence.to_le_bytes());
         message.extend_from_slice(&timestamp.to_le_bytes());
         message.extend_from_slice(pubkey.as_bytes());
@@ -194,20 +214,27 @@ impl ProducerAnnouncement {
     ///
     /// This allows creating announcements without a full KeyPair.
     #[must_use]
-    pub fn new_from_private_key(private_key: &PrivateKey, network_id: u32, sequence: u64) -> Self {
+    pub fn new_from_private_key(
+        private_key: &PrivateKey,
+        network_id: u32,
+        sequence: u64,
+        genesis_hash: Hash,
+    ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
             .as_secs();
 
         let pubkey = private_key.public_key();
-        let message = Self::message_bytes_inner(network_id, sequence, timestamp, &pubkey);
+        let message =
+            Self::message_bytes_inner(network_id, &genesis_hash, sequence, timestamp, &pubkey);
         let signature =
             signature::sign_with_domain(PRODUCER_ANNOUNCEMENT_DOMAIN, &message, private_key);
 
         Self {
             pubkey,
             network_id,
+            genesis_hash,
             sequence,
             timestamp,
             signature,
@@ -219,6 +246,7 @@ impl PartialEq for ProducerAnnouncement {
     fn eq(&self, other: &Self) -> bool {
         self.pubkey == other.pubkey
             && self.network_id == other.network_id
+            && self.genesis_hash == other.genesis_hash
             && self.sequence == other.sequence
             && self.timestamp == other.timestamp
             && self.signature == other.signature
@@ -231,6 +259,7 @@ impl std::hash::Hash for ProducerAnnouncement {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.pubkey.as_bytes().hash(state);
         self.network_id.hash(state);
+        self.genesis_hash.as_bytes().hash(state);
         self.sequence.hash(state);
         self.timestamp.hash(state);
         self.signature.as_bytes().hash(state);
@@ -244,14 +273,14 @@ mod tests {
     #[test]
     fn test_announcement_create_and_verify() {
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         assert!(announcement.verify());
     }
 
     #[test]
     fn test_announcement_invalid_signature() {
         let keypair = KeyPair::generate();
-        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         announcement.sequence = 999; // Tamper with data
         assert!(!announcement.verify());
     }
@@ -259,21 +288,33 @@ mod tests {
     #[test]
     fn test_announcement_network_id_included() {
         let keypair = KeyPair::generate();
-        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
-        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 2, 0, 1000);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 2, 0, 1000, Hash::ZERO);
         // Different network_id should produce different signatures
+        assert_ne!(ann1.signature, ann2.signature);
+    }
+
+    #[test]
+    fn test_announcement_genesis_hash_included() {
+        let keypair = KeyPair::generate();
+        let hash1 = Hash::ZERO;
+        let hash2 = Hash::from_bytes([1u8; 32]);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, hash1);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, hash2);
+        // Different genesis_hash should produce different signatures
         assert_ne!(ann1.signature, ann2.signature);
     }
 
     #[test]
     fn test_announcement_serialization_roundtrip() {
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let bytes = bincode::serialize(&announcement).expect("serialize should succeed");
         let restored: ProducerAnnouncement =
             bincode::deserialize(&bytes).expect("deserialize should succeed");
         assert_eq!(announcement.pubkey, restored.pubkey);
         assert_eq!(announcement.network_id, restored.network_id);
+        assert_eq!(announcement.genesis_hash, restored.genesis_hash);
         assert_eq!(announcement.sequence, restored.sequence);
         assert_eq!(announcement.timestamp, restored.timestamp);
         assert!(restored.verify());
@@ -282,7 +323,7 @@ mod tests {
     #[test]
     fn test_announcement_timestamp_is_recent() {
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time should be after epoch")
@@ -294,32 +335,33 @@ mod tests {
     #[test]
     fn test_announcement_message_bytes_length() {
         let keypair = KeyPair::generate();
-        let announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         let bytes = announcement.message_bytes();
-        // 4 (network_id) + 8 (sequence) + 8 (timestamp) + 32 (pubkey) = 52
-        assert_eq!(bytes.len(), 52);
+        // 4 (network_id) + 32 (genesis_hash) + 8 (sequence) + 8 (timestamp) + 32 (pubkey) = 84
+        assert_eq!(bytes.len(), 84);
     }
 
     #[test]
     fn test_announcement_different_sequences_different_signatures() {
         let keypair = KeyPair::generate();
-        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
-        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 1, 1000);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 1, 1000, Hash::ZERO);
         assert_ne!(ann1.signature, ann2.signature);
     }
 
     #[test]
     fn test_announcement_different_timestamps_different_signatures() {
         let keypair = KeyPair::generate();
-        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
-        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 2000);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 2000, Hash::ZERO);
         assert_ne!(ann1.signature, ann2.signature);
     }
 
     #[test]
     fn test_announcement_from_private_key() {
         let keypair = KeyPair::generate();
-        let ann = ProducerAnnouncement::new_from_private_key(keypair.private_key(), 1, 0);
+        let ann =
+            ProducerAnnouncement::new_from_private_key(keypair.private_key(), 1, 0, Hash::ZERO);
         assert!(ann.verify());
         assert_eq!(ann.pubkey, *keypair.public_key());
     }
@@ -327,8 +369,8 @@ mod tests {
     #[test]
     fn test_announcement_equality() {
         let keypair = KeyPair::generate();
-        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
-        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
         assert_eq!(ann1, ann2);
     }
 
@@ -336,8 +378,8 @@ mod tests {
     fn test_announcement_hash() {
         use std::collections::HashSet;
         let keypair = KeyPair::generate();
-        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000);
-        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 1, 1000);
+        let ann1 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 0, 1000, Hash::ZERO);
+        let ann2 = ProducerAnnouncement::new_with_timestamp(&keypair, 1, 1, 1000, Hash::ZERO);
 
         let mut set = HashSet::new();
         set.insert(ann1.clone());
@@ -352,15 +394,23 @@ mod tests {
     #[test]
     fn test_announcement_tamper_network_id() {
         let keypair = KeyPair::generate();
-        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         announcement.network_id = 2;
+        assert!(!announcement.verify());
+    }
+
+    #[test]
+    fn test_announcement_tamper_genesis_hash() {
+        let keypair = KeyPair::generate();
+        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
+        announcement.genesis_hash = Hash::from_bytes([0xFFu8; 32]);
         assert!(!announcement.verify());
     }
 
     #[test]
     fn test_announcement_tamper_timestamp() {
         let keypair = KeyPair::generate();
-        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0);
+        let mut announcement = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
         announcement.timestamp += 1;
         assert!(!announcement.verify());
     }
@@ -369,7 +419,7 @@ mod tests {
     fn test_announcement_tamper_pubkey() {
         let keypair1 = KeyPair::generate();
         let keypair2 = KeyPair::generate();
-        let mut announcement = ProducerAnnouncement::new(&keypair1, 1, 0);
+        let mut announcement = ProducerAnnouncement::new(&keypair1, 1, 0, Hash::ZERO);
         announcement.pubkey = *keypair2.public_key();
         assert!(!announcement.verify());
     }

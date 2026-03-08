@@ -17,8 +17,11 @@ message ProducerAnnouncement {
     // Unix timestamp in seconds when announcement was created
     uint64 timestamp = 4;
 
-    // Ed25519 signature over (pubkey || network_id || sequence || timestamp)
+    // Ed25519 signature over (network_id || genesis_hash || sequence || timestamp || pubkey)
     bytes signature = 5;
+
+    // Genesis hash binding (32 bytes) - prevents cross-genesis contamination
+    bytes genesis_hash = 6;
 }
 
 // A set of producer announcements for full synchronization.

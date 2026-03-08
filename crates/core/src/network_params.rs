@@ -436,12 +436,12 @@ impl NetworkParams {
                 default_metrics_port: 19090,
                 bootstrap_nodes: vec![
                     "/dns4/bootstrap1.testnet.doli.network/tcp/40303".to_string(),
-                    "/dns4/bootstrap2.testnet.doli.network/tcp/40304".to_string(),
+                    "/dns4/bootstrap2.testnet.doli.network/tcp/40303".to_string(),
                 ],
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1772994018, // Testnet v10 genesis - 2026-03-08 18:20:18 UTC
+                genesis_time: 1773002175, // Testnet v14 genesis - 2026-03-08 20:36:15 UTC
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,

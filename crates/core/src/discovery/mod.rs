@@ -74,6 +74,10 @@ pub enum ProducerSetError {
         got: u32,
     },
 
+    /// Announcement is for a different genesis (same network, different chain).
+    #[error("genesis hash mismatch: announcement signed for different genesis")]
+    GenesisHashMismatch,
+
     /// Announcement has an older sequence number than currently known.
     #[error("sequence regression: current sequence is {current}, received {received}")]
     SequenceRegression {
