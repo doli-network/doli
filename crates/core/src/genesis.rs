@@ -86,8 +86,9 @@ pub const GENESIS_PUBKEY: [u8; 32] = [0u8; 32];
 
 /// Mainnet genesis producers (pubkey hex, bond_count)
 ///
-/// These 5 producers are registered at genesis with 1 bond each.
-/// Keys match BOOTSTRAP_MAINTAINER_KEYS in `crates/updater/src/lib.rs`.
+/// N1-N5 are both **producers AND maintainers** (dual role, 3-of-5 release signing).
+/// N6-N12 register on-chain after genesis as producers only.
+/// Keys match BOOTSTRAP_MAINTAINER_KEYS_MAINNET in `crates/updater/src/lib.rs`.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const MAINNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
     // N1 — omegacortex — producer_1.json
@@ -135,8 +136,9 @@ pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
 
 /// Testnet genesis producers (pubkey hex, bond_count)
 ///
-/// These 6 producers are registered at genesis with 1 bond each.
-/// The pubkeys are derived from the testnet producer private keys (nt1-nt6).
+/// NT1-NT5 are both **producers AND maintainers** (dual role, 3-of-5 release signing).
+/// NT6-NT12 register on-chain after genesis as producers only.
+/// Keys for NT1-NT5 match BOOTSTRAP_MAINTAINER_KEYS_TESTNET in `crates/updater/src/lib.rs`.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
     (

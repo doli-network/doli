@@ -568,7 +568,7 @@ async fn main() -> Result<()> {
             export_blocks(&data_dir, &path, from, to)?;
         }
         Some(Commands::Update { action }) => {
-            handle_update_command(action, &data_dir).await?;
+            handle_update_command(action, &data_dir, network).await?;
         }
         Some(Commands::Maintainer { action }) => {
             handle_maintainer_command(action, &data_dir, network).await?;
@@ -1012,7 +1012,7 @@ async fn run_node(
     let maintainer_state = Arc::new(RwLock::new(
         storage::MaintainerState::load(&data_dir).unwrap_or_default(),
     ));
-    // Return empty → updater always uses BOOTSTRAP_MAINTAINER_KEYS (raw Ed25519 keys).
+    // Return empty → updater falls back to network-specific bootstrap maintainer keys.
     // On-chain ProducerInfo stores BLAKE3 pubkey hashes, not raw Ed25519 keys,
     // so MaintainerState members can't be used for signature verification.
     // TODO: Store raw Ed25519 keys on-chain to enable dynamic maintainer key lookup.
@@ -1149,7 +1149,7 @@ fn load_producer_key(path: &PathBuf) -> Result<KeyPair> {
     Ok(KeyPair::from_private_key(private_key))
 }
 
-async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Result<()> {
+async fn handle_update_command(action: UpdateCommands, data_dir: &Path, network: Network) -> Result<()> {
     match action {
         UpdateCommands::Check => {
             info!("Checking for updates...");
@@ -1518,7 +1518,7 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Resul
                         "║  MAINTAINER SIGNATURES                                           ║"
                     );
 
-                    match updater::verify_release_signatures(&release) {
+                    match updater::verify_release_signatures(&release, network) {
                         Ok(()) => {
                             for sig in &release.signatures {
                                 if sig.public_key.len() >= 16 {
@@ -1561,7 +1561,7 @@ async fn handle_update_command(action: UpdateCommands, data_dir: &Path) -> Resul
 async fn handle_maintainer_command(
     action: MaintainerCommands,
     data_dir: &Path,
-    _network: Network,
+    network: Network,
 ) -> Result<()> {
     use doli_core::maintainer::{
         MaintainerChangeData, MaintainerSignature, INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD,
@@ -1626,8 +1626,13 @@ async fn handle_maintainer_command(
 
             // Always show bootstrap keys as reference
             println!("║                                                                  ║");
-            println!("║  Bootstrap keys (fallback before chain sync):                  ║");
-            for (i, key) in updater::BOOTSTRAP_MAINTAINER_KEYS.iter().enumerate() {
+            let net_label = match network {
+                Network::Mainnet => "mainnet",
+                Network::Testnet => "testnet",
+                Network::Devnet => "devnet",
+            };
+            println!("║  Bootstrap keys ({}, fallback before sync):              ║", net_label);
+            for (i, key) in updater::bootstrap_maintainer_keys(network).iter().enumerate() {
                 println!(
                     "║  {}. {}...{}                          ║",
                     i + 1,

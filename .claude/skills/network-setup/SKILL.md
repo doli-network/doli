@@ -16,7 +16,7 @@ version: 3.2.0
 | **Epoch Length** | 6 slots (1 min) | 360 slots (1 hr) | 360 slots (1 hr) |
 | **P2P Port** | 50303 | 40303 | 30303 |
 | **RPC Port** | 28545 | 18545 | 8545 |
-| **Bootstrap** | None (local DHT) | `testnet.doli.network` | `doli.network` |
+| **Bootstrap** | None (local DHT) | `bootstrap1.testnet.doli.network:40300` | `seed1.doli.network:30300` |
 | **Block Reward** | 20 dDOLI | 1 tDOLI | 1 DOLI |
 | **Bond Unit** | 1 DOLI | 10 DOLI | 10 DOLI |
 | **ACTIVATION_DELAY** | 10 blocks (~100s) | 10 blocks (~100s) | 10 blocks (~100s) |

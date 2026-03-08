@@ -5,13 +5,32 @@ description: Monitor and manage DOLI blockchain nodes. Use when checking chain s
 
 # DOLI Network Operations
 
+## Architecture (v2 — March 8, 2026)
+
+2-server HA setup. Seeds (archive+relay) separated from producers. Odd nodes on ai1, even on ai2.
+
+### Servers
+
+| Server | IP | SSH |
+|--------|-----|-----|
+| ai1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` |
+| ai2 | 187.124.95.188 | `ssh ilozada@187.124.95.188` |
+
+### Port Formula
+
+```
+Mainnet:  P2P = 30300 + N    RPC = 8500 + N    Metrics = 9000 + N
+Testnet:  P2P = 40300 + N    RPC = 18500 + N   Metrics = 19000 + N
+Seeds:    suffix 00 → P2P 30300/40300, RPC 8500/18500, Metrics 9000/19000
+```
+
 ## RPC Endpoints by Network
 
-| Network | RPC Port |
-|---------|----------|
-| Mainnet | 8545 |
-| Testnet | 18545 |
-| Devnet | 28545 |
+| Network | Seed RPC | Producer RPC range |
+|---------|----------|-------------------|
+| Mainnet | 8500 (seed) | 8501-8506 (producers) |
+| Testnet | 18500 (seed) | 18501-18506 (producers) |
+| Devnet | 28545 | — |
 
 ## Essential RPC Commands
 
@@ -33,153 +52,98 @@ curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getBlockByHeight","params":{"height":HEIGHT},"id":1}' | jq '.result'
 ```
 
-### Block by Hash
-```bash
-curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"getBlockByHash","params":{"hash":"HASH"},"id":1}' | jq '.result'
-```
-
-## Check Running Nodes
-```bash
-ps aux | grep "doli-node" | grep -v grep
-```
-
 ## Mainnet Node Inventory
 
-When asked for "node status" or "all nodes", check ALL of these:
+### Seed Nodes (Archive + Relay)
 
-### Producer Nodes (omegacortex — 72.60.228.233)
+| Node | Server | P2P | RPC | Service | DNS |
+|------|--------|-----|-----|---------|-----|
+| Seed1 | ai1 (72.60.228.233) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
+| Seed2 | ai2 (187.124.95.188) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
 
-| Node | RPC Port | Service |
-|------|----------|---------|
-| N1 | 8545 | `doli-mainnet-node1` |
-| N2 | 8546 | `doli-mainnet-node2` |
-| N6 | 8547 | `doli-mainnet-node6` |
+### Producer Nodes
 
-### Archive Node (omegacortex — 72.60.228.233)
+| Node | Server | P2P | RPC | Service | Key |
+|------|--------|-----|-----|---------|-----|
+| N1 | ai1 | 30301 | 8501 | `doli-mainnet-n1` | `/mainnet/n1/keys/producer.json` |
+| N2 | ai2 | 30302 | 8502 | `doli-mainnet-n2` | `/mainnet/n2/keys/producer.json` |
+| N3 | ai1 | 30303 | 8503 | `doli-mainnet-n3` | `/mainnet/n3/keys/producer.json` |
+| N6 | ai2 | 30306 | 8506 | `doli-mainnet-n6` | `/mainnet/n6/keys/producer.json` |
 
-| Node | RPC Port | Service | DNS |
-|------|----------|---------|-----|
-| Archiver | 8548 | `doli-mainnet-archiver` | `archive.doli.network` |
+Binary: `/mainnet/bin/doli-node`. Logs: `/var/log/doli/mainnet/nN.log`.
 
-### Remote Producer Nodes (direct SSH from Mac — NOT via omegacortex)
-
-| Node | Server | RPC Port | SSH |
-|------|--------|----------|-----|
-| N3 | 147.93.84.44 | 8545 (localhost) | `ssh -p 50790 ilozada@147.93.84.44` |
-| N4 | 72.60.115.209 | 8545 (localhost) | `ssh -p 50790 ilozada@72.60.115.209` |
-| N5 | 72.60.70.166 | 8545 (localhost) | `ssh -p 50790 ilozada@72.60.70.166` |
-
-N3/N4/N5 RPC is localhost-only. Must SSH in first, then curl 127.0.0.1.
-
-### Later Producer Nodes N7-N12 (not yet registered, syncing)
-
-| Node | Server | P2P Port | RPC Port | Metrics | Service | Key Path | Data Dir | Log |
-|------|--------|----------|----------|---------|---------|----------|----------|-----|
-| N7 | N5 (72.60.70.166) | 30304 | 8546 | 9091 | `doli-mainnet-node7` | `~/.doli/mainnet/keys/n7.json` | `~/.doli/mainnet/n7/data` | `/var/log/doli/node7.log` |
-| N8 | N4 (72.60.115.209) | 30304 | 8546 | 9091 | `doli-mainnet-node8` | `~/.doli/mainnet/keys/n8.json` | `~/.doli/mainnet/n8/data` | `/var/log/doli/node8.log` |
-| N9 | N4 (72.60.115.209) | 30305 | 8547 | 9092 | `doli-mainnet-node9` | `~/.doli/mainnet/keys/n9.json` | `~/.doli/mainnet/n9/data` | `/var/log/doli/node9.log` |
-| N10 | N4 (72.60.115.209) | 30306 | 8548 | 9093 | `doli-mainnet-node10` | `~/.doli/mainnet/keys/n10.json` | `~/.doli/mainnet/n10/data` | `/var/log/doli/node10.log` |
-| N11 | N4 (72.60.115.209) | 30307 | 8549 | 9094 | `doli-mainnet-node11` | `~/.doli/mainnet/keys/n11.json` | `~/.doli/mainnet/n11/data` | `/var/log/doli/node11.log` |
-| N12 | N4 (72.60.115.209) | 30308 | 8550 | 9095 | `doli-mainnet-node12` | `~/.doli/mainnet/keys/n12.json` | `~/.doli/mainnet/n12/data` | `/var/log/doli/node12.log` |
-
-All N7-N12 use binary `/opt/doli/target/release/doli-node`, owner `ilozada`, `--force-start --yes`.
-N7 bootstraps from omegacortex + N4. N8-N12 bootstrap from omegacortex + N3.
-
-#### Check N7-N12 Status
+### Check All Mainnet Nodes
 ```bash
-# N7 (on N5)
-ssh -p 50790 -o ConnectTimeout=5 ilozada@72.60.70.166 \
-  'curl -s -X POST http://127.0.0.1:8546 -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}"'
-
-# N8-N12 (on N4)
-ssh -p 50790 -o ConnectTimeout=5 ilozada@72.60.115.209 '
-for p in 8546 8547 8548 8549 8550; do
-  echo "PORT $p:"
-  curl -s --connect-timeout 3 -X POST http://127.0.0.1:$p \
+# From ai1 (seed, N1, N3)
+ssh ilozada@72.60.228.233 '
+for entry in "8500:Seed" "8501:N1" "8503:N3"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}"
-  echo
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  v=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"version\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%-6s v=%s\n" "$name" "$h" "$v"
+done'
+
+# From ai2 (seed, N2, N6)
+ssh ilozada@187.124.95.188 '
+for entry in "8500:Seed" "8502:N2" "8506:N6"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  v=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"version\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%-6s v=%s\n" "$name" "$h" "$v"
 done'
 ```
 
-### Testnet Nodes (NT1-NT12)
+## Testnet Node Inventory
 
-#### NT1-NT5 (omegacortex — 72.60.228.233)
+### Seed Nodes (Archive + Relay)
 
-| Node | P2P | RPC | Metrics | Service | Key | Binary |
-|------|-----|-----|---------|---------|-----|--------|
-| NT1 | 40303 | 18545 | 19090 | `doli-testnet-nt1` | `~/doli-test/keys/nt1.json` | `~/repos/doli/target/release/doli-node` |
-| NT2 | 40304 | 18546 | 19091 | `doli-testnet-nt2` | `~/doli-test/keys/nt2.json` | same |
-| NT3 | 40305 | 18547 | 19092 | `doli-testnet-nt3` | `~/doli-test/keys/nt3.json` | same |
-| NT4 | 40306 | 18548 | 19093 | `doli-testnet-nt4` | `~/doli-test/keys/nt4.json` | same |
-| NT5 | 40307 | 18549 | 19094 | `doli-testnet-nt5` | `~/doli-test/keys/nt5.json` | same |
+| Node | Server | P2P | RPC | Service | DNS |
+|------|--------|-----|-----|---------|-----|
+| Seed1 | ai1 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap1.testnet.doli.network` |
+| Seed2 | ai2 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap2.testnet.doli.network` |
 
-NT1+NT2 have `--relay-server --rpc-bind 0.0.0.0`. Logs: `~/doli-test/ntN/node.log`.
+### Producer Nodes
 
-#### NT6-NT8 (N3 — 147.93.84.44, SSH port 50790)
+| Node | Server | P2P | RPC | Service | Key |
+|------|--------|-----|-----|---------|-----|
+| NT1 | ai1 | 40301 | 18501 | `doli-testnet-nt1` | `/testnet/nt1/keys/producer.json` |
+| NT2 | ai2 | 40302 | 18502 | `doli-testnet-nt2` | `/testnet/nt2/keys/producer.json` |
+| NT3 | ai1 | 40303 | 18503 | `doli-testnet-nt3` | `/testnet/nt3/keys/producer.json` |
+| NT4 | ai2 | 40304 | 18504 | `doli-testnet-nt4` | `/testnet/nt4/keys/producer.json` |
+| NT5 | ai1 | 40305 | 18505 | `doli-testnet-nt5` | `/testnet/nt5/keys/producer.json` |
+| NT6 | ai2 | 40306 | 18506 | `doli-testnet-nt6` | `/testnet/nt6/keys/producer.json` |
 
-| Node | P2P | RPC | Metrics | Service | Key | Binary |
-|------|-----|-----|---------|---------|-----|--------|
-| NT6 | 40303 | 18545 | 19090 | `doli-testnet-nt6` | `~/doli-test/keys/nt6.json` | `~/doli-node` |
-| NT7 | 40304 | 18546 | 19091 | `doli-testnet-nt7` | `~/doli-test/keys/nt7.json` | same |
-| NT8 | 40305 | 18547 | 19092 | `doli-testnet-nt8` | `~/doli-test/keys/nt8.json` | same |
+Binary: `/testnet/bin/doli-node`. Logs: `/var/log/doli/testnet/ntN.log`.
 
-Logs: `~/doli-test/ntN/node.log`. Bootstrap: omegacortex:40303.
-
-#### NT9-NT12 (N5 — 72.60.70.166, SSH port 50790)
-
-| Node | P2P | RPC | Metrics | Service | Key | Binary |
-|------|-----|-----|---------|---------|-----|--------|
-| NT9 | 40303 | 18545 | 19090 | `doli-testnet-nt9` | `~/doli-test/keys/nt9.json` | `/opt/doli/target/release/doli-node` |
-| NT10 | 40304 | 18546 | 19091 | `doli-testnet-nt10` | `~/doli-test/keys/nt10.json` | same |
-| NT11 | 40305 | 18547 | 19092 | `doli-testnet-nt11` | `~/doli-test/keys/nt11.json` | same |
-| NT12 | 40306 | 18548 | 19093 | `doli-testnet-nt12` | `~/doli-test/keys/nt12.json` | same |
-
-Logs: `~/doli-test/ntN/node.log`. Bootstrap: omegacortex:40303.
-
-Testnet RPC is localhost-only on all hosts. N4 has no testnet nodes.
-
-#### Check All Testnet Nodes
+### Check All Testnet Nodes
 ```bash
-# NT1-NT5 (omegacortex)
-ssh -o ConnectTimeout=5 ilozada@72.60.228.233 '
-for port in 18545 18546 18547 18548 18549; do
-  echo "PORT $port:"
-  curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+# From ai1 (seed, NT1, NT3, NT5)
+ssh ilozada@72.60.228.233 '
+for entry in "18500:Seed" "18501:NT1" "18503:NT3" "18505:NT5"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}"
-  echo
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
 done'
 
-# NT6-NT8 (N3)
-ssh -p 50790 -o ConnectTimeout=5 ilozada@147.93.84.44 '
-for port in 18545 18546 18547; do
-  echo "PORT $port:"
-  curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
+# From ai2 (seed, NT2, NT4, NT6)
+ssh ilozada@187.124.95.188 '
+for entry in "18500:Seed" "18502:NT2" "18504:NT4" "18506:NT6"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}"
-  echo
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
 done'
-
-# NT9-NT12 (N5)
-ssh -p 50790 -o ConnectTimeout=5 ilozada@72.60.70.166 '
-for port in 18545 18546 18547 18548; do
-  echo "PORT $port:"
-  curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
-    -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}"
-  echo
-done'
-```
-
-## Multi-Node Status (testnet example with 5 nodes)
-```bash
-for port in 18545 18546 18547 18548 18549; do
-  echo "=== RPC $port ==="
-  curl -s -X POST http://127.0.0.1:$port -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -c '.result | {height: .bestHeight, slot: .bestSlot}'
-done
 ```
 
 ## Key Response Fields
@@ -203,10 +167,10 @@ done
 ### From Node Logs
 ```bash
 # Count blocks produced per node
-grep -c "Block.*produced" /path/to/node.log
+grep -c "Block.*produced" /var/log/doli/mainnet/n1.log
 
 # Show block production details
-grep "Block.*produced" /path/to/node.log | tail -10
+grep "Block.*produced" /var/log/doli/mainnet/n1.log | tail -10
 ```
 
 ### From RPC - Scan Chain for Producer
@@ -220,45 +184,6 @@ for h in $(seq 1 100); do
   if [[ "$PRODUCER" == "$PRODUCER_PREFIX"* ]]; then
     echo "Height $h: Producer $PRODUCER"
   fi
-done
-```
-
-## Checking Epoch Rewards
-
-### From Node Logs
-```bash
-# Show epoch reward distribution
-grep "Epoch.*rewards:" /path/to/node.log
-
-# Show all epoch reward inclusions
-grep "Including.*epoch reward" /path/to/node.log
-```
-
-### Find Epoch Boundary Blocks
-```bash
-# Devnet: 30 slots/epoch, Testnet: 360 slots/epoch
-SLOTS_PER_EPOCH=30  # For devnet
-
-for h in $(seq 1 200); do
-  BLOCK=$(curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockByHeight\",\"params\":{\"height\":$h},\"id\":1}")
-  SLOT=$(echo $BLOCK | jq -r '.result.slot // 0')
-  TX_COUNT=$(echo $BLOCK | jq -r '.result.txCount // 0')
-  EPOCH=$((SLOT / SLOTS_PER_EPOCH))
-
-  # First block of new epoch has reward transactions
-  if [ "$TX_COUNT" -gt 0 ]; then
-    echo "Height $h (Slot $SLOT, Epoch $EPOCH): $TX_COUNT transactions"
-  fi
-done
-```
-
-### Multi-Node Block Production Summary
-```bash
-# For 5-node testnet logs
-for i in 1 2 3 4 5; do
-  COUNT=$(grep -c "Block.*produced" /path/to/logs/node$i.log 2>/dev/null || echo "0")
-  echo "Node $i: $COUNT blocks produced"
 done
 ```
 

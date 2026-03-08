@@ -17,7 +17,7 @@ The testnet has been relaunched with 6 genesis producers and parameters matching
 | Genesis Producers | 6 pre-registered (NT1-NT6) |
 | Slot Duration | 10 seconds |
 | Epoch Length | 360 blocks (1 hour) |
-| Bootstrap DNS | `bootstrap1.testnet.doli.network:40303` / `bootstrap2.testnet.doli.network:40304` |
+| Bootstrap DNS | `bootstrap1.testnet.doli.network:40300` / `bootstrap2.testnet.doli.network:40300` |
 
 **To join:**
 - Run with `--producer` flag to participate in block production
@@ -76,7 +76,7 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Genesis Producers | 6 (NT1-NT6), NT7-NT12 register on-chain |
 | P2P Port | 40303 |
 | RPC Port | 18545 |
-| Bootstrap | `bootstrap1.testnet.doli.network:40303` |
+| Bootstrap | `bootstrap1.testnet.doli.network:40300` |
 
 ---
 
@@ -251,58 +251,57 @@ journalctl -u doli-testnet | grep -i "height\|produced"
 
 ## Binary Segregation
 
-Testnet and mainnet use **separate binaries** to allow independent upgrades without affecting production.
+Testnet and mainnet use **separate binaries** at standardized paths on both servers.
 
-| Network | Binary Path | Hosts |
-|---------|-------------|-------|
-| Mainnet | `~/repos/doli/target/release/doli-node` | ai1, ai2 |
-| Mainnet | `/opt/doli/target/release/doli-node` | N3, N4, N5 |
-| Testnet | `/opt/doli/testnet/doli-node` | ai1, ai2, N3, N5 |
+| Network | Binary Path | Servers |
+|---------|-------------|---------|
+| Mainnet | `/mainnet/bin/doli-node` | ai1, ai2 |
+| Testnet | `/testnet/bin/doli-node` | ai1, ai2 |
 
-**Upgrade testnet (all hosts):**
+**Upgrade testnet (both servers):**
 ```bash
-# ai1 (omegacortex):
-ssh ilozada@72.60.228.233 "sudo systemctl stop doli-testnet-nt{1..5} doli-testnet-archiver && sleep 1 && \
-  sudo cp /tmp/doli-node-new /opt/doli/testnet/doli-node && sudo chmod 755 /opt/doli/testnet/doli-node && \
-  sudo systemctl start doli-testnet-nt{1..5} doli-testnet-archiver"
+# ai1:
+ssh ilozada@72.60.228.233 "sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node && \
+  sudo systemctl restart doli-testnet-seed && sleep 5 && \
+  sudo systemctl restart doli-testnet-nt1 doli-testnet-nt3 doli-testnet-nt5"
 
 # ai2:
-ssh ilozada@omegacortex.ai2 "sudo systemctl stop doli-testnet-nt{1..5} doli-testnet-archiver && sleep 1 && \
-  cp ~/repos/doli/target/release/doli-node /opt/doli/testnet/doli-node && \
-  cp ~/repos/doli/target/release/doli /opt/doli/testnet/doli && \
-  sudo systemctl start doli-testnet-nt{1..5} doli-testnet-archiver"
-
-# N3, N5: same pattern as ai1
+ssh ilozada@187.124.95.188 "sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node && \
+  sudo systemctl restart doli-testnet-seed && sleep 5 && \
+  sudo systemctl restart doli-testnet-nt2 doli-testnet-nt4 doli-testnet-nt6"
 ```
-
-This ensures testnet deployments never touch mainnet nodes. ai2 testnet binaries are copied from the local release build (no auto-updater for testnet path).
 
 ---
 
 ## Seed / Bootstrap Servers
 
-| DNS | IP | Port | Node |
-|-----|-----|------|------|
-| `bootstrap1.testnet.doli.network` | 72.60.228.233 | 40303 | NT1 (ai1) |
-| `bootstrap2.testnet.doli.network` | 72.60.228.233 | 40304 | NT2 (ai1) |
+Dedicated archive+relay seed nodes, separated from producers for security and HA.
 
-Both are relay-enabled and embedded as defaults in the binary — no `--bootstrap` flag needed.
+| DNS | IP | Port | Server | Role |
+|-----|-----|------|--------|------|
+| `bootstrap1.testnet.doli.network` | 72.60.228.233 | 40300 | ai1 | Seed + Archive + Relay |
+| `bootstrap2.testnet.doli.network` | 187.124.95.188 | 40300 | ai2 | Seed + Archive + Relay |
 
-### Mirror (ai2 — 187.124.95.188)
+Both run as `doli-testnet-seed` systemd service with `--relay-server --archive-to /testnet/seed/blocks`.
 
-ai2 runs non-producing mirror copies of NT1-NT5 + testnet archiver on the same ports. DNS round-robin distributes seed traffic across both servers.
+### DNS Records
 
-| DNS | IPs (round-robin) |
-|-----|-------------------|
-| `seed1.doli.network` | 72.60.228.233 + 187.124.95.188 |
-| `seed2.doli.network` | 72.60.228.233 + 187.124.95.188 |
-| `testnet.doli.network` | 187.124.95.188 |
-| `archive.doli.network` | 187.124.95.188 |
+| DNS | IP | Purpose |
+|-----|-----|---------|
+| `seed1.doli.network` | 72.60.228.233 (ai1) | Mainnet P2P seed |
+| `seed2.doli.network` | 187.124.95.188 (ai2) | Mainnet P2P seed |
+| `bootstrap1.testnet.doli.network` | 72.60.228.233 (ai1) | Testnet P2P seed |
+| `bootstrap2.testnet.doli.network` | 187.124.95.188 (ai2) | Testnet P2P seed |
+| `testnet.doli.network` | 187.124.95.188 | Testnet web |
+| `archive.doli.network` | 187.124.95.188 | Archive RPC |
 
 ### Maintainer Keys (Auto-Update System)
 
-5 keys control protocol updates (3-of-5 threshold).
+Each network has its own set of 5 maintainer keys (3-of-5 threshold for release signing).
 Hardcoded in binary at `crates/updater/src/lib.rs` for security.
+
+- **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
+- **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.
 
 ---
 

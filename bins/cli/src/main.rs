@@ -1209,7 +1209,7 @@ async fn cmd_upgrade(
                 published_at: 0,
                 target_networks: vec![],
             };
-            match updater::verify_release_signatures(&sig_release) {
+            match updater::verify_release_signatures(&sig_release, doli_core::Network::Mainnet) {
                 Ok(()) => {
                     println!("Verified: 3/5 maintainer signatures on CHECKSUMS.txt");
                 }
