@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1772864653,
-    "message": "Genesis v7 - Mainnet/Testnet separation 2026-03-07",
+    "timestamp": 1772960040,
+    "message": "Genesis v8 - Chain reset 2026-03-08",
     "initial_reward": 100000000
   },
   "consensus": {
