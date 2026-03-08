@@ -24,8 +24,8 @@ pub use updater::{
     is_newer_version, restart_node, rollback, sign_release_hash, verify_hash,
     verify_release_signatures, verify_release_signatures_with_keys, veto_deadline,
     veto_period_ended, ProductionBlocked, Release, UpdateConfig, VersionEnforcement, Vote,
-    VoteMessage, VoteTracker, BOOTSTRAP_MAINTAINER_KEYS, GITHUB_RELEASES_URL,
-    VETO_THRESHOLD_PERCENT,
+    VoteMessage, VoteTracker, bootstrap_maintainer_keys,
+    GITHUB_RELEASES_URL, VETO_THRESHOLD_PERCENT,
 };
 
 /// ANSI color codes for terminal output
@@ -555,7 +555,7 @@ impl UpdateService {
 
         // Verify signatures using on-chain maintainer keys (falls back to bootstrap keys)
         let on_chain_keys = maintainer_keys_fn();
-        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys) {
+        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys, self.network) {
             error!("Release {} has invalid signatures: {}", release.version, e);
             return;
         }
