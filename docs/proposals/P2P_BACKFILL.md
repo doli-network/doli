@@ -1,8 +1,14 @@
 # Proposal: P2P Historical Block Backfill via archive.doli.network
 
-> **Status: SUPERSEDED** — P2P backfill was removed in favor of the archiver as the sole source of truth for historical block recovery. Use `doli-node restore --from /path/to/archive --backfill --yes` instead. The archiver provides BLAKE3-verified blocks with genesis_hash validation, which is more reliable than requesting blocks from arbitrary peers.
+> **Status: SUPERSEDED** — P2P backfill was removed in favor of the archiver as the sole source of truth for historical block recovery. Two backfill methods are now available:
 >
-> Original implementation was in `bins/node/src/node.rs` — `detect_backfill_gap()`, `maybe_backfill_block()`, `handle_backfill_response()` (all removed).
+> 1. **Offline** (requires restart): `doli-node restore --from /path/to/archive --backfill --yes` or `restore --from-rpc <URL> --backfill --yes`
+> 2. **Hot** (no restart): `backfillFromPeer` RPC endpoint — fills gaps while the node continues producing. Added in v1.1.32. Includes chain-linking verification (parent hash continuity from genesis) and anchor verification (connects to existing chain).
+>
+> Both use `getBlockRaw` RPC and BLAKE3 checksums. The hot backfill adds stronger verification (chain-linking + anchor) compared to the offline methods (BLAKE3 only).
+>
+> Original P2P implementation was in `bins/node/src/node.rs` — `detect_backfill_gap()`, `maybe_backfill_block()`, `handle_backfill_response()` (all removed).
+> Hot backfill implementation: `crates/rpc/src/methods.rs` — `backfill_from_peer()`, `backfill_status()`.
 
 ## Problem
 

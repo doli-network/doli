@@ -597,7 +597,23 @@ doli-node --network mainnet restore --from /path/to/archive --backfill --yes
 doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --backfill --yes
 ```
 
-Both verify BLAKE3 checksums on every block. No state rebuild needed. See [disaster-recovery.md](disaster-recovery.md) for details.
+Both verify BLAKE3 checksums on every block. No state rebuild needed.
+
+**Option C: Hot backfill via RPC (no restart needed):**
+
+For nodes already running and synced to tip, use the `backfillFromPeer` RPC endpoint to fill gaps without stopping the node:
+
+```bash
+# Start backfill (node keeps producing)
+curl -X POST http://127.0.0.1:8545 -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://archive.doli.network:8548"},"id":1}'
+
+# Monitor progress
+curl -X POST http://127.0.0.1:8545 -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
+```
+
+Verifies BLAKE3 checksums, chain-linking (parent hash continuity), and anchor connection. See [disaster-recovery.md](disaster-recovery.md) for details.
 
 **DOLI mainnet archiver:**
 - Service: `doli-mainnet-archiver` on omegacortex.ai (`archive.doli.network`)
