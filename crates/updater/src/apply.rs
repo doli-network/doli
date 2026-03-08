@@ -204,9 +204,39 @@ pub async fn auto_apply_from_github(version: &str) -> Result<()> {
     // 5. Backup current
     let _backup = backup_current().await?;
 
-    // 6. Install
+    // 6. Install doli-node
     let target = current_binary_path()?;
     install_binary(&binary, &target).await?;
+    info!("doli-node installed to {:?}", target);
+
+    // 7. Also update the CLI binary (doli) — it's in the same tarball
+    //    Best-effort: CLI failure must never block the node update.
+    if let Some(dir) = target.parent() {
+        let cli_path = dir.join("doli");
+        if cli_path.exists() && cli_path != target {
+            match extract_named_binary_from_tarball(&tarball, "doli") {
+                Ok(cli_binary) => {
+                    // Backup CLI
+                    let cli_backup = cli_path.with_extension("backup");
+                    if cli_backup.exists() {
+                        let _ = fs::remove_file(&cli_backup).await;
+                    }
+                    let _ = fs::copy(&cli_path, &cli_backup).await;
+
+                    match install_binary(&cli_binary, &cli_path).await {
+                        Ok(()) => info!("doli CLI also updated to v{} at {:?}", version, cli_path),
+                        Err(e) => warn!(
+                            "Failed to update doli CLI at {:?}: {} (non-fatal)",
+                            cli_path, e
+                        ),
+                    }
+                }
+                Err(e) => warn!("doli CLI not found in tarball: {} (non-fatal)", e),
+            }
+        } else if !cli_path.exists() {
+            debug!("No doli CLI found at {:?}, skipping CLI update", cli_path);
+        }
+    }
 
     info!(
         "Auto-apply complete: v{} installed to {:?}",
@@ -332,5 +362,56 @@ mod tests {
 
         let result = backup_path();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tarball_contains_both_binaries() {
+        // Build a minimal tarball with both doli-node and doli entries
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut encoder);
+
+            let node_content = b"fake-doli-node-binary";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(node_content.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "doli-v1.0.0-x86_64-unknown-linux-gnu/doli-node",
+                    &node_content[..],
+                )
+                .unwrap();
+
+            let cli_content = b"fake-doli-cli-binary";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(cli_content.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "doli-v1.0.0-x86_64-unknown-linux-gnu/doli",
+                    &cli_content[..],
+                )
+                .unwrap();
+
+            builder.finish().unwrap();
+        }
+        let tarball = encoder.finish().unwrap();
+
+        // Both binaries must be extractable
+        let node = extract_named_binary_from_tarball(&tarball, "doli-node");
+        assert!(node.is_ok(), "doli-node must be in tarball");
+        assert_eq!(node.unwrap(), b"fake-doli-node-binary");
+
+        let cli = extract_named_binary_from_tarball(&tarball, "doli");
+        assert!(cli.is_ok(), "doli CLI must be in tarball");
+        assert_eq!(cli.unwrap(), b"fake-doli-cli-binary");
     }
 }
