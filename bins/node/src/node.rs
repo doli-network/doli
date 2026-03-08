@@ -2341,8 +2341,7 @@ impl Node {
         }
 
         // Guard: don't reorg to a shorter chain — this causes cascading height loss
-        let new_chain_height =
-            result.ancestor_height + result.canonical_blocks.len() as u64;
+        let new_chain_height = result.ancestor_height + result.canonical_blocks.len() as u64;
         if new_chain_height < current_height {
             warn!(
                 "Fork sync: new chain ({}) shorter than current ({}) — aborting reorg",
