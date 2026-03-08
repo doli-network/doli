@@ -563,6 +563,8 @@ A dedicated sync-only node (`doli-mainnet-archiver` on omegacortex) streams fina
 **Restore (file)**: `doli-node restore --from /path/to/archive --yes` — imports blocks, verifies checksums + genesis_hash, rebuilds state.
 **Restore (RPC)**: `doli-node restore --from-rpc http://archive.doli.network:8548 --yes` — same but via RPC, no SSH/rsync needed. Uses `getBlockRaw` to fetch base64 bincode blocks with BLAKE3 verification.
 
-Add `--backfill` to either method to fill snap sync gaps without state rebuild. The archiver is the sole source of truth for historical block recovery.
+Add `--backfill` to either method to fill snap sync gaps without state rebuild.
 
-**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (`restore_from_rpc`, CLI `--from-rpc`/`--backfill` flags), `crates/rpc/src/methods.rs` (`getBlockRaw`).
+**Hot backfill (live, no restart)**: `backfillFromPeer` RPC endpoint fills snap sync gaps while the node runs. Fetches blocks via `getBlockRaw` from any peer's RPC, verifies BLAKE3 + chain-linking (parent hash from genesis) + anchor connection. Monitor with `backfillStatus`.
+
+**Code**: `crates/storage/src/archiver.rs` (file-based), `bins/node/src/main.rs` (`restore_from_rpc`, CLI `--from-rpc`/`--backfill` flags), `crates/rpc/src/methods.rs` (`getBlockRaw`, `backfillFromPeer`, `backfillStatus`).
