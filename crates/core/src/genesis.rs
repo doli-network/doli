@@ -161,10 +161,6 @@ pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
         "952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d",
         1,
     ), // nt5 — omegacortex
-    (
-        "4bbf3faee0c8976bbe4dddc79a45bdea278b68bac2cd11b89b181b9948251d33",
-        1,
-    ), // nt6 — N3 (147.93.84.44)
 ];
 
 /// Parse testnet genesis producers into (PublicKey, bond_count) pairs
