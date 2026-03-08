@@ -1305,6 +1305,7 @@ impl RpcContext {
                 RpcError::internal_error(format!("Anchor block {} not found", lowest_existing))
             })?;
         let anchor_prev_hash = anchor_block.header.prev_hash;
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
 
         // Spawn background task
         let block_store = self.block_store.clone();
@@ -1319,7 +1320,7 @@ impl RpcContext {
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
-            let mut prev_hash = crypto::hash::Hash::ZERO; // genesis parent is zero
+            let mut prev_hash = genesis_hash; // block 1's parent is the genesis hash
 
             for h in 1..=gap_end {
                 // Check if block already exists (idempotent)
