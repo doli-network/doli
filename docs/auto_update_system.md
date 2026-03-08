@@ -64,7 +64,12 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 
 ## 2. Maintainer Bootstrap System
 
-Unlike other blockchains that hardcode maintainer keys in configuration files, DOLI derives its maintainer set directly from the blockchain. The first 5 registered producers automatically become maintainers.
+Unlike other blockchains that hardcode maintainer keys in configuration files, DOLI derives its maintainer set directly from the blockchain. The first 5 registered producers automatically become maintainers. Each network has its own independent maintainer set:
+
+- **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
+- **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.
+
+Bootstrap keys are hardcoded per-network in `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` (`crates/updater/src/lib.rs`).
 
 ### 2.1 Automatic Bootstrap
 
@@ -206,7 +211,7 @@ MaintainerState {
 2. On epoch boundary: bootstrapped from first 5 producers (one-time, if not yet bootstrapped)
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
 4. On release verification: `maintainer_keys_fn` reads members from `MaintainerState`
-5. Pre-bootstrap fallback: empty set → `BOOTSTRAP_MAINTAINER_KEYS` used by UpdateService
+5. Pre-bootstrap fallback: empty set → network-specific `BOOTSTRAP_MAINTAINER_KEYS_{MAINNET,TESTNET}` used by UpdateService
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
 
@@ -221,7 +226,7 @@ Downloads SIGNATURES.json (3+ signatures)
     ↓
 maintainer_keys_fn() called:
     ├─ MaintainerState bootstrapped? → Return on-chain member keys
-    └─ Not bootstrapped (empty)?     → Return empty → fallback to BOOTSTRAP_MAINTAINER_KEYS
+    └─ Not bootstrapped (empty)?     → Return empty → fallback to BOOTSTRAP_MAINTAINER_KEYS_{MAINNET,TESTNET}
     ↓
 verify_release_signatures_with_keys():
     For each signature in SIGNATURES.json:

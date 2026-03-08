@@ -818,15 +818,15 @@ impl Node {
     pub async fn run(&mut self) -> Result<()> {
         info!("Node starting...");
 
-        // Check for placeholder maintainer keys on mainnet
-        if self.config.network == Network::Mainnet && is_using_placeholder_keys() {
+        // Check for placeholder maintainer keys
+        if self.config.network == Network::Mainnet && is_using_placeholder_keys(Network::Mainnet) {
             error!("CRITICAL: Placeholder maintainer keys detected!");
             error!("This node is NOT suitable for mainnet operation.");
-            error!("Replace BOOTSTRAP_MAINTAINER_KEYS in doli-updater/src/lib.rs with real Ed25519 keys.");
+            error!("Replace BOOTSTRAP_MAINTAINER_KEYS_MAINNET in doli-updater/src/lib.rs with real Ed25519 keys.");
             return Err(anyhow::anyhow!(
                 "Cannot start mainnet node with placeholder maintainer keys"
             ));
-        } else if is_using_placeholder_keys() {
+        } else if is_using_placeholder_keys(self.config.network) {
             warn!("Using placeholder maintainer keys - this is OK for testnet/devnet");
         }
 

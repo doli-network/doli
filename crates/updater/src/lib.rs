@@ -5,7 +5,7 @@
 //! # Rules (no exceptions)
 //! - ALL updates: 2-epoch veto period (configurable per network)
 //! - 40% of producers can veto any update
-//! - 3 of 5 maintainer signatures required (via SIGNATURES.json in GitHub Releases)
+//! - 3 of 5 maintainer signatures required per network (via SIGNATURES.json in GitHub Releases)
 //!
 //! # Flow
 //! 1. Release published on GitHub (CI creates CHECKSUMS.txt)
@@ -73,36 +73,58 @@ pub const VETO_THRESHOLD_PERCENT: u8 = 40;
 /// Required maintainer signatures: 3 of 5
 pub const REQUIRED_SIGNATURES: usize = 3;
 
-/// Bootstrap maintainer public keys (Ed25519, hex-encoded)
+/// Bootstrap maintainer public keys for mainnet (Ed25519, hex-encoded)
 ///
-/// These keys are used as a **fallback** for release signature verification
-/// before on-chain state is available (e.g., during initial sync or CLI commands
-/// without a running node). Once the node has synced and the on-chain maintainer
-/// set is derived from the first 5 registered producers, those on-chain keys
-/// take precedence.
-///
-/// See `verify_release_signatures_with_keys()` for the key selection logic.
-pub const BOOTSTRAP_MAINTAINER_KEYS: [&str; 5] = [
-    // Bootstrap keys (first 5 registered producers on mainnet)
-    // These are overridden by on-chain state once the node is synced
-    // N1 — omegacortex — producer_1.json
+/// N1-N5 are both **producers AND maintainers** on mainnet (dual role).
+/// N6-N12 are producers only — they produce blocks but cannot sign releases.
+/// These keys are used as fallback for release signature verification (3-of-5)
+/// before on-chain state is available. Once synced, on-chain keys take precedence.
+pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
+    // N1 — producer + maintainer
     "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
-    // N2 — omegacortex — producer_2.json
+    // N2 — producer + maintainer
     "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
-    // N3 — omegacortex — producer_3.json
+    // N3 — producer + maintainer
     "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
-    // N4 — pro-KVM1 — producer.json
+    // N4 — producer + maintainer
     "a1596a36fd3344bae323f8cdb7a0be7f4ca2a118de3cca184b465608e9beda1d",
-    // N5 — fpx — producer.json
+    // N5 — producer + maintainer
     "c5acb5b359c7a2093b8c788862cf57c5418e94de8b1fc6a254dc0862ee3c03a9",
 ];
+
+/// Bootstrap maintainer public keys for testnet (Ed25519, hex-encoded)
+///
+/// NT1-NT5 are both **producers AND maintainers** on testnet (dual role).
+/// NT6-NT12 are producers only — they produce blocks but cannot sign releases.
+/// These keys are used as fallback for release signature verification (3-of-5)
+/// before on-chain state is available. Once synced, on-chain keys take precedence.
+pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
+    // NT1 — producer + maintainer
+    "273a257357a0fefeba0d97f4e61ea069e2cb2758239b315824ea73410d06a199",
+    // NT2 — producer + maintainer
+    "d70259cb4fc7acaeddb5028014a62b8d359a8e9fbd98b6cc7b8ca6e9bb1270df",
+    // NT3 — producer + maintainer
+    "f23fb0840f985b781cdce2a8f9996e58dc154909e6fc36eb419b2b31a88fcc7f",
+    // NT4 — producer + maintainer
+    "7e5f6f49f934099c78edfbc7967143d8e32c88feb36a10864e8f5575b4f0028b",
+    // NT5 — producer + maintainer
+    "952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d",
+];
+
+/// Get the bootstrap maintainer keys for a specific network
+pub fn bootstrap_maintainer_keys(network: Network) -> &'static [&'static str; 5] {
+    match network {
+        Network::Mainnet => &BOOTSTRAP_MAINTAINER_KEYS_MAINNET,
+        Network::Testnet | Network::Devnet => &BOOTSTRAP_MAINTAINER_KEYS_TESTNET,
+    }
+}
 
 /// Check if the bootstrap maintainer keys are still placeholders
 ///
 /// Returns `true` if any key starts with "00000000" (placeholder pattern).
 /// This MUST return `false` before mainnet launch.
-pub fn is_using_placeholder_keys() -> bool {
-    BOOTSTRAP_MAINTAINER_KEYS
+pub fn is_using_placeholder_keys(network: Network) -> bool {
+    bootstrap_maintainer_keys(network)
         .iter()
         .any(|k| k.starts_with("00000000"))
 }
@@ -110,26 +132,28 @@ pub fn is_using_placeholder_keys() -> bool {
 /// Verify that bootstrap maintainer keys are production-ready
 ///
 /// Panics if placeholder keys are detected.
-/// Call this during mainnet node initialization.
-pub fn assert_production_keys() {
-    if is_using_placeholder_keys() {
+/// Call this during node initialization.
+pub fn assert_production_keys(network: Network) {
+    if is_using_placeholder_keys(network) {
         panic!(
-            "FATAL: Placeholder bootstrap maintainer keys detected!\n\
-             This build cannot be used for mainnet.\n\
-             Replace BOOTSTRAP_MAINTAINER_KEYS in doli-updater/src/lib.rs with real keys."
+            "FATAL: Placeholder bootstrap maintainer keys detected for {:?}!\n\
+             This build cannot be used for {}.\n\
+             Replace bootstrap maintainer keys in doli-updater/src/lib.rs with real keys.",
+            network,
+            network.name()
         );
     }
 }
 
-/// Get the bootstrap maintainer public keys
+/// Get the bootstrap maintainer public keys for a network
 ///
-/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns bootstrap keys.
-/// For on-chain maintainer keys, use `verify_release_signatures_with_keys()`.
-pub fn get_maintainer_keys() -> Vec<&'static str> {
+/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns
+/// the network-specific bootstrap keys.
+pub fn get_maintainer_keys(network: Network) -> Vec<&'static str> {
     if should_use_test_keys() {
         test_maintainer_pubkeys()
     } else {
-        BOOTSTRAP_MAINTAINER_KEYS.to_vec()
+        bootstrap_maintainer_keys(network).to_vec()
     }
 }
 
@@ -620,18 +644,19 @@ pub fn sign_release_hash(
 ///
 /// Use this for CLI commands and contexts where on-chain state is not available.
 /// For the running node, prefer `verify_release_signatures_with_keys()`.
-pub fn verify_release_signatures(release: &Release) -> Result<()> {
-    verify_release_signatures_with_keys(release, &[])
+pub fn verify_release_signatures(release: &Release, network: Network) -> Result<()> {
+    verify_release_signatures_with_keys(release, &[], network)
 }
 
 /// Verify that a release has sufficient valid maintainer signatures
 ///
 /// If `on_chain_keys` is non-empty, those keys are used for verification
 /// (derived from first 5 registered producers on-chain). If empty, falls
-/// back to `BOOTSTRAP_MAINTAINER_KEYS`.
+/// back to the network-specific bootstrap maintainer keys.
 pub fn verify_release_signatures_with_keys(
     release: &Release,
     on_chain_keys: &[String],
+    network: Network,
 ) -> Result<()> {
     let message = format!("{}:{}", release.version, release.binary_sha256);
     let message_bytes = message.as_bytes();
@@ -645,8 +670,11 @@ pub fn verify_release_signatures_with_keys(
         );
         on_chain_keys.iter().map(|s| s.as_str()).collect()
     } else {
-        debug!("Verifying release signatures with bootstrap maintainer keys");
-        BOOTSTRAP_MAINTAINER_KEYS.to_vec()
+        debug!(
+            "Verifying release signatures with {:?} bootstrap maintainer keys",
+            network
+        );
+        bootstrap_maintainer_keys(network).to_vec()
     };
 
     let mut valid_count = 0;
