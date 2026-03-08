@@ -1296,6 +1296,16 @@ impl RpcContext {
         *self.backfill_state.error.write().await = None;
         self.backfill_state.running.store(true, Ordering::SeqCst);
 
+        // Fetch the lowest existing block to verify chain linking at the end
+        let anchor_block = self
+            .block_store
+            .get_block_by_height(lowest_existing)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .ok_or_else(|| {
+                RpcError::internal_error(format!("Anchor block {} not found", lowest_existing))
+            })?;
+        let anchor_prev_hash = anchor_block.header.prev_hash;
+
         // Spawn background task
         let block_store = self.block_store.clone();
         let state = self.backfill_state.clone();
@@ -1309,10 +1319,12 @@ impl RpcContext {
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
+            let mut prev_hash = crypto::hash::Hash::ZERO; // genesis parent is zero
 
             for h in 1..=gap_end {
                 // Check if block already exists (idempotent)
-                if let Ok(Some(_)) = block_store.get_block_by_height(h) {
+                if let Ok(Some(existing)) = block_store.get_block_by_height(h) {
+                    prev_hash = existing.hash();
                     imported += 1;
                     state.imported.store(imported, Ordering::SeqCst);
                     continue;
@@ -1413,6 +1425,21 @@ impl RpcContext {
                     }
                 };
 
+                // Chain linking: verify parent_hash matches previous block
+                if block.header.prev_hash != prev_hash {
+                    let msg = format!(
+                        "Chain link broken at height {}: expected parent {}, got {}",
+                        h,
+                        hex::encode(prev_hash.as_bytes()),
+                        hex::encode(block.header.prev_hash.as_bytes()),
+                    );
+                    warn!("Backfill failed: {}", msg);
+                    *state.error.write().await = Some(msg);
+                    state.running.store(false, Ordering::SeqCst);
+                    return;
+                }
+                prev_hash = block.hash();
+
                 if let Err(e) = block_store.put_block_canonical(&block, h) {
                     let msg = format!("Store error at height {}: {}", h, e);
                     warn!("Backfill failed: {}", msg);
@@ -1434,8 +1461,22 @@ impl RpcContext {
                 }
             }
 
+            // Verify the last backfilled block connects to the anchor
+            if prev_hash != anchor_prev_hash {
+                let msg = format!(
+                    "Anchor mismatch: last backfilled hash {} != anchor block {} parent {}",
+                    hex::encode(prev_hash.as_bytes()),
+                    lowest_existing,
+                    hex::encode(anchor_prev_hash.as_bytes()),
+                );
+                warn!("Backfill failed: {}", msg);
+                *state.error.write().await = Some(msg);
+                state.running.store(false, Ordering::SeqCst);
+                return;
+            }
+
             info!(
-                "Backfill complete: {} blocks imported (1..={})",
+                "Backfill complete: {} blocks imported (1..={}), chain verified",
                 imported, gap_end
             );
             state.running.store(false, Ordering::SeqCst);

@@ -3746,6 +3746,7 @@ dependencies = [
  "doli-core",
  "hex",
  "mempool",
+ "reqwest",
  "serde",
  "serde_json",
  "storage",
