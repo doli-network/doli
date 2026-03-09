@@ -480,6 +480,8 @@ pub struct SubmitVoteParams {
 pub struct ProducerResponse {
     /// Public key (hex)
     pub public_key: String,
+    /// Address hash (hex) — BLAKE3(ADDRESS_DOMAIN || pubkey), used for balance lookups
+    pub address_hash: String,
     /// Registration height
     pub registration_height: u64,
     /// Bond amount (total)
