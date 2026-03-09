@@ -2299,8 +2299,11 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             });
         }
 
-        // Check lock time
-        if !utxo.output.is_spendable_at(ctx.current_height) {
+        // Check lock time — skip for WithdrawalRequest/Exit (they unlock Bond UTXOs)
+        if tx.tx_type != TxType::RequestWithdrawal
+            && tx.tx_type != TxType::Exit
+            && !utxo.output.is_spendable_at(ctx.current_height)
+        {
             return Err(ValidationError::OutputLocked {
                 lock_height: utxo.output.lock_until,
                 current_height: ctx.current_height,

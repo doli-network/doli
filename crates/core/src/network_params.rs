@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773025537, // Testnet v15 genesis - lock/unlock bonds 2026-03-09 03:05:37 UTC
+                genesis_time: 1773026863, // Testnet v16 genesis - bond unlock validation fix 2026-03-09 03:27:43 UTC
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
