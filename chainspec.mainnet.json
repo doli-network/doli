@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773063417,
-    "message": "Genesis v17 - UTXO extra_data extensibility 2026-03-09T13:36:57Z",
+    "timestamp": 1773077580,
+    "message": "Genesis v18 - bond UTXO simplification 2026-03-09T17:33:00Z",
     "initial_reward": 100000000
   },
   "consensus": {
