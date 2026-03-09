@@ -39,20 +39,24 @@ A full node that additionally:
 - Creates and broadcasts blocks
 - Manages activation bond
 
-### Archiver Node
-A full node that additionally:
-- Streams every applied block to a filesystem directory (`--archive-to`)
-- Provides off-chain disaster recovery backup
-- Uses atomic writes (tmp + rename) to prevent corruption
-- Catches up missed blocks on restart from local BlockStore
-- BLAKE3 checksum sidecar (`.blake3`) for each block file
-- **Source of truth for historical block recovery** — `restore --backfill` fills snap sync gaps
-- Recommended: 1 per network, non-producer, dedicated
+### Archiver / Seed Node
+A full sync-only node that serves three roles simultaneously:
+- **P2P Seed**: DNS-registered network entry point (`seed1/seed2.doli.network`) with relay capability
+- **Block Archive**: Streams every applied block to flat files with BLAKE3 checksums (`--archive-to`)
+- **Public RPC**: Bound to `0.0.0.0`, serves the block explorer (`doli.network/explorer.html`) and external queries
 
-Historical block recovery (e.g., filling snap sync gaps) is an explicit operator action:
-- **File-based** (offline): `doli-node restore --from /path/to/archive --backfill --yes` (requires archive copy via rsync/scp)
-- **RPC-based** (offline): `doli-node restore --from-rpc http://archive.doli.network:8548 --backfill --yes` (no SSH needed, uses `getBlockRaw` RPC)
-- **Hot backfill** (live): `backfillFromPeer` RPC endpoint — fills gaps without stopping the node. Verifies BLAKE3, chain-linking (parent hash continuity), and anchor connection to existing chain
+Key properties:
+- Atomic writes (tmp + rename) — crash-safe
+- Non-blocking streaming via `mpsc::channel` — never stalls sync
+- Catches up missed blocks on restart from local BlockStore
+- 2 per network (ai1 + ai2) for full redundancy
+
+Recovery methods (all verify BLAKE3 + genesis_hash):
+- **File-based** (offline): `doli-node restore --from /path/to/archive --backfill --yes`
+- **RPC-based** (offline): `doli-node restore --from-rpc http://seed2.doli.network:8500 --backfill --yes`
+- **Hot backfill** (live): `backfillFromPeer` RPC — fills gaps without restart, with chain-linking + anchor verification
+
+See [docs/archiver.md](/docs/archiver.md) for full details.
 
 ### Light Client
 A minimal client that:
