@@ -276,6 +276,32 @@ impl RocksDbUtxoStore {
             .sum()
     }
 
+    /// Count Bond UTXOs for this address
+    pub fn count_bonds(&self, pubkey_hash: &Hash) -> u32 {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .count() as u32
+    }
+
+    /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO, FIFO-ordered
+    pub fn get_bond_entries(
+        &self,
+        pubkey_hash: &Hash,
+    ) -> Vec<(crate::utxo::Outpoint, u32, doli_core::types::Amount)> {
+        let mut bonds: Vec<_> = self
+            .get_by_pubkey_hash(pubkey_hash)
+            .into_iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(op, entry)| {
+                let slot = entry.output.bond_creation_slot().unwrap_or(0);
+                (op, slot, entry.output.amount)
+            })
+            .collect();
+        bonds.sort_by_key(|(_, slot, _)| *slot);
+        bonds
+    }
+
     /// Clear all UTXOs
     pub fn clear(&self) {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();

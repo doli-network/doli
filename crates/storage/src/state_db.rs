@@ -1004,13 +1004,19 @@ impl<'a> BlockBatch<'a> {
         tx: &doli_core::transaction::Transaction,
         height: BlockHeight,
         is_coinbase: bool,
+        slot: u32,
     ) {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
         for (index, output) in tx.outputs.iter().enumerate() {
             let outpoint = Outpoint::new(tx_hash, index as u32);
+            // Stamp Bond outputs with the block's slot as creation_slot
+            let mut stamped_output = output.clone();
+            if stamped_output.output_type == doli_core::OutputType::Bond {
+                stamped_output.extra_data = slot.to_le_bytes().to_vec();
+            }
             let entry = UtxoEntry {
-                output: output.clone(),
+                output: stamped_output,
                 height,
                 is_coinbase,
                 is_epoch_reward,

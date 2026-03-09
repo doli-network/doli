@@ -235,6 +235,27 @@ Seeds double as archive + relay nodes. One on each server for redundancy.
 
 DNS: `seed1.doli.network` + `seed2.doli.network` (round-robin both IPs). `archive.doli.network` (round-robin).
 
+## Chain Integrity & Backfill
+
+### Verify chain completeness (v2.0.29+)
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"verifyChainIntegrity","params":[],"id":1}' | jq '.result'
+```
+Returns `complete: true/false`, `missing` ranges, and `missing_count`. ~10-30s for 1M blocks.
+
+### Hot backfill from seed (no restart)
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://SEED:PORT"},"id":1}'
+```
+
+### Check backfill progress
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}' | jq '.result'
+```
+
 ## Snap Sync
 
 Nodes >1000 blocks behind with 3+ peers use snap sync: download full state snapshot instead of replaying blocks. Takes seconds vs hours. Logs prefixed `[SNAP_SYNC]`.

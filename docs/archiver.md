@@ -264,6 +264,27 @@ Returns current backfill progress.
 {"result": {"running": true, "imported": 3994, "total": 6291, "pct": 63, "error": null}}
 ```
 
+### verifyChainIntegrity
+
+Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain — not just at the start. Uses lightweight height-index lookups (no block deserialization).
+
+**Request:**
+```json
+{"jsonrpc": "2.0", "method": "verifyChainIntegrity", "params": [], "id": 1}
+```
+
+**Response (complete):**
+```json
+{"result": {"complete": true, "tip": 1223, "scanned": 1223, "missing": [], "missing_count": 0}}
+```
+
+**Response (gaps found):**
+```json
+{"result": {"complete": false, "tip": 1000000, "scanned": 1000000, "missing": ["45-67", "1234"], "missing_count": 24}}
+```
+
+Missing heights are compressed into ranges. Performance: ~10-30s for 1M blocks on SSD. Added in v2.0.29.
+
 ---
 
 ## 7. Running Your Own Archiver
@@ -311,5 +332,5 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /mainnet/seed/blocks/
 | File | Purpose |
 |------|---------|
 | `crates/storage/src/archiver.rs` | BlockArchiver, catch-up, restore/backfill from files |
-| `crates/rpc/src/methods.rs` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus` RPC handlers |
+| `crates/rpc/src/methods.rs` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers |
 | `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`), `restore_from_rpc()` |

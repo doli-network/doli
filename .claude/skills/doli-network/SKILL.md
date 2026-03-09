@@ -184,6 +184,28 @@ done'
 - `era`: Current era
 - `pendingWithdrawals`: List of pending bond withdrawals
 
+### verifyChainIntegrity
+Full scan of every height from 1 to tip. Detects gaps anywhere in the chain.
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"verifyChainIntegrity","params":[],"id":1}' | jq '.result'
+# Returns: { "complete": true/false, "tip": N, "scanned": N, "missing": ["45-67", ...], "missing_count": 0 }
+```
+
+### backfillFromPeer
+Hot backfill missing blocks from a remote seed node (no restart needed).
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://SEED:PORT"},"id":1}'
+```
+
+### backfillStatus
+Check progress of an active backfill.
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}' | jq '.result'
+```
+
 ## Checking Blocks Produced
 
 ### From Node Logs

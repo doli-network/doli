@@ -148,9 +148,19 @@ output = {
     output_type:   uint8,        // 0 = normal, 1 = bond
     amount:        uint64,       // Amount in base units
     pubkey_hash:   32 bytes,     // HASH(public_key)
-    lock_until:    uint64        // 0 for normal, height for bonds
+    lock_until:    uint64,       // 0 for normal, u64::MAX for bonds
+    extra_data:    bytes         // Empty for normal; 4 bytes LE creation_slot for bond
 }
 ```
+
+**Bond UTXO extra_data format:**
+```
+extra_data = creation_slot as u32 (4 bytes, little-endian)
+```
+
+Bond UTXOs are self-descriptive: the UTXO set is the single source of truth for
+bond tracking. `creation_slot` in extra_data enables per-bond vesting penalty
+calculation without a separate registry. Normal outputs have empty extra_data.
 
 ### 3.4 Transaction Hash
 
@@ -426,14 +436,21 @@ Validators recalculate expected rewards from BlockStore and require exact match:
 
 ### 3.12 AddBond Transaction
 
-Allows a producer to add additional bonds (1-100 max total).
+Allows a producer to add additional bonds. Each bond creates a Bond UTXO with
+`creation_slot` in extra_data.
 
 ```
 add_bond_tx = {
     version: 1,
     type: 7,
     inputs: [...],               // Funds to become bonds
-    outputs: [],                 // Must be empty (funds go into bond state)
+    outputs: [{                  // One Bond UTXO per bond unit
+        output_type: 1,          // Bond
+        amount: BOND_UNIT,       // 10 DOLI per bond
+        pubkey_hash: producer_pubkey_hash,
+        lock_until: u64::MAX,    // Locked until withdrawal
+        extra_data: creation_slot as u32 LE  // 4 bytes
+    }, ...],
     extra_data: {
         producer_pubkey: 32 bytes,
         bond_count: uint32       // Number of bonds to add (must be positive)
@@ -444,61 +461,50 @@ add_bond_tx = {
 **Validation rules:**
 - Producer must be registered
 - `bond_count` must be > 0
-- Input amount must equal `bond_count × BOND_UNIT`
-- Total bonds after addition must not exceed MAX_BONDS (100)
+- Input amount must equal `bond_count × BOND_UNIT` (plus fees)
+- Each output must be type Bond with correct amount, lock_until=u64::MAX, and 4-byte extra_data
+- Total bonds after addition must not exceed MAX_BONDS (10,000)
 
-### 3.13 RequestWithdrawal Transaction
+### 3.13 WithdrawalRequest Transaction
 
-Initiates a 7-day withdrawal delay for partial bond withdrawal.
+Instant bond withdrawal. Consumes Bond UTXOs (FIFO — oldest first), creates a
+Normal output with the net amount after vesting penalties. Penalty is the
+difference between input (bond) and output (payout) — burned naturally via
+UTXO accounting. **No delay. Funds available in the same block.**
 
 ```
-request_withdrawal_tx = {
+withdrawal_request_tx = {
     version: 1,
     type: 8,
-    inputs: [],                  // Must be empty (state-only operation)
-    outputs: [],                 // Must be empty (funds locked until claim)
+    inputs: [{                   // Bond UTXOs to consume (FIFO order)
+        prev_tx_hash: ...,       // References a Bond UTXO
+        output_index: ...,
+        signature: ...
+    }, ...],
+    outputs: [{
+        output_type: 0,          // Normal output (payout)
+        amount: net_amount,      // Bond value minus vesting penalty
+        pubkey_hash: destination,
+        lock_until: 0,
+        extra_data: []           // Empty for normal outputs
+    }],
     extra_data: {
-        producer_pubkey: 32 bytes,
-        bond_count: uint32,      // Number of bonds to withdraw (must be positive)
-        destination: 32 bytes    // Pubkey hash to receive funds
+        producer_pubkey: 32 bytes
     }
 }
 ```
 
 **Validation rules:**
 - Producer must be registered
-- `bond_count` must be > 0
-- `bond_count` must not exceed producer's current bonds
-- `destination` must not be zero hash
-- Creates a pending withdrawal with 7-day delay
+- All inputs must reference Bond UTXOs (output_type == 1)
+- Inputs must be owned by the producer (pubkey_hash matches)
+- Validation bypasses `is_spendable_at()` for Bond UTXOs (lock_until=u64::MAX)
+- Vesting penalty per bond: derived from `creation_slot` in the Bond UTXO's extra_data
+- `net_amount = sum(bond_amounts) - sum(penalties)`
+- Penalty = `sum(inputs) - sum(outputs)` (burned, not redistributed)
+- Bond count update takes effect at next epoch boundary (PendingProducerUpdate)
 
-### 3.14 ClaimWithdrawal Transaction
-
-Completes a withdrawal after the 7-day delay period.
-
-```
-claim_withdrawal_tx = {
-    version: 1,
-    type: 9,
-    inputs: [],                  // Must be empty
-    outputs: [{
-        output_type: 0,          // Normal output
-        amount: net_amount,      // Bond value minus any early exit penalty
-        pubkey_hash: destination,
-        lock_until: 0
-    }],
-    extra_data: {
-        producer_pubkey: 32 bytes,
-        withdrawal_index: uint32 // Index of the pending withdrawal
-    }
-}
-```
-
-**Validation rules:**
-- Pending withdrawal must exist at the specified index
-- 7-day delay period must have elapsed
-- Output must be exactly one Normal output
-- Amount equals net bond value after any penalties
+**Note:** TxType 9 (ClaimWithdrawal) is reserved but unused — withdrawal is instant.
 
 **Vesting Schedule (Early Withdrawal Penalties):**
 
@@ -526,8 +532,10 @@ Bond vesting is network-differentiated:
 
 Testnet `vesting_quarter_slots = 2,160` via `NetworkParams`. Devnet configurable via `DOLI_VESTING_QUARTER_SLOTS`.
 
-Penalty calculation uses FIFO order - oldest bonds are withdrawn first, ensuring
-bonds that have vested longer receive lower penalties.
+Penalty calculation uses FIFO order — oldest Bond UTXOs are consumed first,
+ensuring bonds that have vested longer incur lower penalties. The `creation_slot`
+stored in each Bond UTXO's `extra_data` (4 bytes LE) determines the bond's age
+and therefore its penalty tier.
 
 ### 3.15 RemoveMaintainer Transaction
 
@@ -804,10 +812,24 @@ A block B is valid if ALL conditions hold.
 
 ### 5.4 Producer Selection (Deterministic Round-Robin)
 
-DOLI uses **deterministic round-robin rotation**, NOT probabilistic lottery:
+DOLI uses **deterministic round-robin rotation**, NOT probabilistic lottery.
+
+**Epoch Bond Snapshot:** At each epoch boundary, the scheduler scans all Bond UTXOs
+in the UTXO set and builds a `HashMap<PublicKey, u32>` (bond count per producer).
+This snapshot is frozen for the entire epoch — mid-epoch AddBond/Withdrawal
+transactions do NOT affect the current epoch's schedule. Changes take effect at
+the next epoch boundary via `PendingProducerUpdate`.
 
 ```python
-def selected_producer(slot, active_producers):
+def epoch_bond_snapshot(utxo_set):
+    """Scan Bond UTXOs once per epoch (~10ms at 250K producers)."""
+    snapshot = {}
+    for utxo in utxo_set.all_bond_utxos():
+        pubkey = utxo.pubkey_hash
+        snapshot[pubkey] = snapshot.get(pubkey, 0) + 1
+    return snapshot
+
+def selected_producer(slot, active_producers, bond_snapshot):
     """
     Deterministic rotation based on bond count (tickets).
 
@@ -820,8 +842,8 @@ def selected_producer(slot, active_producers):
     # Sort by pubkey for deterministic ordering
     sorted_producers = sorted(active_producers, key=lambda p: p.pubkey)
 
-    # Calculate total tickets (sum of bond counts)
-    total_tickets = sum(p.bond_count for p in sorted_producers)
+    # Calculate total tickets from epoch snapshot
+    total_tickets = sum(bond_snapshot.get(p.pubkey, 0) for p in sorted_producers)
 
     # Deterministic selection: slot mod total_tickets
     ticket_index = slot % total_tickets
@@ -829,7 +851,7 @@ def selected_producer(slot, active_producers):
     # Find ticket owner
     cumulative = 0
     for producer in sorted_producers:
-        cumulative += producer.bond_count
+        cumulative += bond_snapshot.get(producer.pubkey, 0)
         if ticket_index < cumulative:
             return producer.pubkey
 ```
@@ -975,7 +997,7 @@ registration_tx = {
         vdf_proof: bytes,
         prev_registration_hash: 32 bytes,  // Chain to previous registration
         sequence_number: uint64,           // Monotonic counter
-        bond_count: uint32                 // On-chain bond count (consensus-critical)
+        bond_count: uint32                 // Initial bond count at registration
     }
 }
 ```
@@ -990,6 +1012,11 @@ BOND_UNIT = 1_000_000_000        // 10 DOLI per bond
 MAX_BONDS = 10_000               // Maximum bonds per producer
 LOCK_DURATION = VESTING_PERIOD_SLOTS  // 1 day (4 quarters × 6h) for full vesting
 ```
+
+**Bond tracking:** Registration creates Bond UTXOs (one per bond unit) with
+`creation_slot` in extra_data. The bond count for scheduling is derived from
+the UTXO set at each epoch boundary (epoch bond snapshot), not stored in
+ProducerInfo. See Section 5.4 for the epoch snapshot mechanism.
 
 ### 6.3 Registration VDF
 
@@ -1440,10 +1467,11 @@ Only active producers can vote. Votes propagate via gossip.
 
 ### 9.4 Veto Calculation
 
-Votes are weighted by `bond_count × seniority_multiplier`:
+Votes are weighted by bond count (from epoch bond snapshot) × seniority:
 
 ```
 seniority_multiplier = 1.0 + min(years_active, 4) × 0.75
+bond_count = epoch_bond_snapshot[producer_pubkey]  // derived from UTXO set
 vote_weight = bond_count × seniority_multiplier
 
 total_veto_weight = sum(vote_weight for each VETO vote)

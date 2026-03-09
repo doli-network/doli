@@ -2040,6 +2040,7 @@ async fn cmd_producer(
                 required_amount,
                 pubkey_hash_for_bond,
                 lock_until,
+                0, // creation_slot stamped by node at block application
             );
 
             let mut tx = Transaction {
