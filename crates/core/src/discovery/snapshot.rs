@@ -72,10 +72,12 @@ impl EpochSnapshot {
     /// Assign non-Tier1 producers to regions using deterministic hashing.
     fn assign_regions(all_producers: &[PublicKey], tier1_set: &[PublicKey]) -> Vec<Vec<PublicKey>> {
         let mut regions: Vec<Vec<PublicKey>> = (0..NUM_REGIONS).map(|_| Vec::new()).collect();
+        // HashSet for O(1) lookup instead of O(n) per producer
+        let tier1: std::collections::HashSet<&PublicKey> = tier1_set.iter().collect();
 
         for pk in all_producers {
             // Skip Tier 1 producers (they don't have regional assignment)
-            if tier1_set.contains(pk) {
+            if tier1.contains(pk) {
                 continue;
             }
             let region = crate::consensus::producer_region(pk);

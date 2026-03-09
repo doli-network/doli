@@ -741,6 +741,9 @@ impl RpcContext {
         let current_height = chain_state.best_height;
         let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
 
+        // Build pending updates index once — O(M) instead of O(N×M)
+        let pending_by_pubkey = producers.pending_updates_by_pubkey();
+
         let responses: Vec<ProducerResponse> = producer_list
             .iter()
             .map(|info| {
@@ -764,11 +767,10 @@ impl RpcContext {
                         Vec::new()
                     };
 
-                let pending_updates: Vec<PendingUpdateInfo> = producers
-                    .pending_updates_for(&info.public_key)
-                    .into_iter()
-                    .map(pending_update_to_info)
-                    .collect();
+                let pending_updates: Vec<PendingUpdateInfo> = pending_by_pubkey
+                    .get(&info.public_key)
+                    .map(|updates| updates.iter().map(|u| pending_update_to_info(u)).collect())
+                    .unwrap_or_default();
 
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),

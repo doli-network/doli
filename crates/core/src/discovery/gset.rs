@@ -248,6 +248,10 @@ impl ProducerGSet {
     #[must_use]
     pub fn merge(&mut self, announcements: Vec<ProducerAnnouncement>) -> MergeResult {
         let mut result = MergeResult::default();
+        // Rate limit: bail early if too many consecutive rejections (DoS protection)
+        let max_rejections = 50;
+        let mut consecutive_rejections: u32 = 0;
+        let total_count = announcements.len();
 
         for ann in announcements {
             let pubkey_prefix = hex::encode(&ann.pubkey.as_bytes()[..4]);
@@ -255,12 +259,27 @@ impl ProducerGSet {
                 Ok(MergeOneResult::NewProducer) => {
                     result.added += 1;
                     result.new_producers += 1;
+                    consecutive_rejections = 0;
                 }
                 Ok(MergeOneResult::SequenceUpdate) => {
                     result.added += 1;
+                    consecutive_rejections = 0;
                 }
-                Ok(MergeOneResult::Duplicate) => result.duplicates += 1,
+                Ok(MergeOneResult::Duplicate) => {
+                    result.duplicates += 1;
+                    consecutive_rejections = 0;
+                }
                 Err(e) => {
+                    consecutive_rejections += 1;
+                    if consecutive_rejections >= max_rejections {
+                        warn!(
+                            "GSet merge: aborting after {} consecutive rejections (DoS protection)",
+                            max_rejections
+                        );
+                        result.rejected +=
+                            total_count - result.added - result.duplicates - result.rejected;
+                        break;
+                    }
                     warn!("GSet rejected announcement from {}: {}", pubkey_prefix, e);
                     result.rejected += 1;
                 }
