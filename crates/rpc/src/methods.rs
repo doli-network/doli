@@ -1221,7 +1221,7 @@ impl RpcContext {
             .ok_or_else(RpcError::producer_not_found)?;
 
         // Derive bond data from UTXO set (source of truth)
-        let pubkey_hash = crypto::hash::hash(pubkey.as_bytes());
+        let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
         let utxo_set = self.utxo_set.read().await;
         let utxo_bonds = utxo_set.get_bond_entries(&pubkey_hash);
         let bond_count = utxo_bonds.len() as u32;
