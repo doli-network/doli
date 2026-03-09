@@ -136,9 +136,9 @@ crypto ──► bins/cli (wallet binary)
 4. Coinbase - Block reward
 5. ClaimReward - Claim epoch rewards
 6. ClaimBond - Claim bond after unbonding
-7. AddBond - Bond stacking
-8. RequestWithdrawal - Start 7-day withdrawal
-9. ClaimWithdrawal - Complete withdrawal
+7. AddBond - Bond stacking (creates Bond UTXOs with creation_slot in extra_data)
+8. WithdrawalRequest - Instant bond withdrawal (consumes Bond UTXOs, FIFO penalty)
+9. Reserved (unused — withdrawal is instant via TxType 8)
 10. EpochReward - Epoch distribution
 11. SlashProducer - Slash equivocator
 
@@ -183,7 +183,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 | `state_db.rs` | Unified state: UTXOs, producers, chain state (RocksDB) |
 | `utxo.rs` | In-memory UTXO working set for fast reads |
 | `chain_state.rs` | Consensus state tracking |
-| `producer.rs` | Producer registry |
+| `producer.rs` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
 
 **ChainState fields:**
 - `best_hash` - Current chain tip hash
@@ -398,26 +398,29 @@ Producer Selection (deterministic round-robin)
 
 ### 5.2. Producer Selection
 
-Deterministic round-robin based on bond count:
+Deterministic round-robin based on bond count from epoch bond snapshot:
 
 ```python
-def select_producer(slot, active_producers):
+def select_producer(slot, epoch_bond_snapshot):
+    # epoch_bond_snapshot: Dict[PublicKey, u32] — frozen at epoch boundary from UTXO set
     # Sort by public key for determinism
-    sorted_producers = sorted(active_producers, key=lambda p: p.public_key)
+    sorted_producers = sorted(epoch_bond_snapshot.items(), key=lambda p: p[0])
 
     # Calculate total tickets (sum of all bond counts)
-    total_tickets = sum(p.bond_count for p in sorted_producers)
+    total_tickets = sum(count for _, count in sorted_producers)
 
     # Deterministic ticket index
     ticket_index = slot % total_tickets
 
     # Find producer owning this ticket
     accumulated = 0
-    for producer in sorted_producers:
-        accumulated += producer.bond_count
+    for pubkey, bond_count in sorted_producers:
+        accumulated += bond_count
         if ticket_index < accumulated:
-            return producer
+            return pubkey
 ```
+
+The **epoch bond snapshot** is built at each epoch boundary by scanning the UTXO set for Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`). This snapshot is frozen for the entire epoch, providing consistent scheduling even if bonds change mid-epoch.
 
 ### 5.3. Fork Choice
 
@@ -474,7 +477,7 @@ one atomic WriteBatch per block:
 
 - **cf_utxo**: `Outpoint → UtxoEntry` (primary UTXO index)
 - **cf_utxo_by_pubkey**: `pubkey_hash ++ outpoint → 0x00` (secondary index)
-- **cf_producers**: `pubkey_hash → ProducerInfo` (producer registry)
+- **cf_producers**: `pubkey_hash → ProducerInfo` (simplified: public_key, registered_at, status, seniority_weight — bond data derived from UTXO set)
 - **cf_exit_history**: `pubkey_hash → exit_height` (anti-Sybil tracking)
 - **cf_meta**: `"chain_state"`, `"pending_updates"`, `"last_applied"` (bookkeeping)
 

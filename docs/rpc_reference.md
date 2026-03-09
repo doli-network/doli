@@ -28,6 +28,11 @@ This document describes the DOLI node JSON-RPC API.
 | **Epoch** | `getEpochInfo` | Implemented |
 | **Producer** | `getBondDetails` | Implemented |
 | **Network** | `getNetworkParams` | Implemented |
+| **Chain** | `getChainStats` | Implemented |
+| **Archive** | `getBlockRaw` | Implemented |
+| **Archive** | `backfillFromPeer` | Implemented |
+| **Archive** | `backfillStatus` | Implemented |
+| **Archive** | `verifyChainIntegrity` | Implemented |
 
 ### Not Yet Implemented
 
@@ -421,16 +426,14 @@ Returns all producers in the network.
     {
         "publicKey": "0x...",
         "registrationHeight": 100000,
-        "bondAmount": 5000000000000,
         "bondCount": 5,
         "status": "active",
-        "era": 0,
-        "pendingWithdrawals": []
+        "era": 0
     }
 ]
 ```
 
-**Note:** `pendingWithdrawals` is currently always empty (pending ProducerBonds integration).
+**Note:** `bondCount` is derived from the UTXO set (count of Bond UTXOs for the producer's pubkey_hash). It reflects the current live count, not the epoch snapshot used for scheduling.
 
 **Example:**
 ```bash
@@ -455,26 +458,19 @@ Returns information about a specific producer.
 {
     "publicKey": "0x...",
     "registrationHeight": 100000,
-    "bondAmount": 5000000000000,
     "bondCount": 5,
     "status": "active",
-    "era": 0,
-    "pendingWithdrawals": [
-        {
-            "bondCount": 2,
-            "requestSlot": 45000,
-            "netAmount": 1800000000000,
-            "claimable": true
-        }
-    ]
+    "era": 0
 }
 ```
+
+**Note:** `bondCount` is derived from the UTXO set. Withdrawal is instant
+(no pending withdrawals list).
 
 **Status values:**
 | Status | Description |
 |--------|-------------|
 | active | Producing blocks |
-| unbonding | Exit requested, in unbonding period |
 | exited | Completed exit |
 | slashed | Slashed for misbehavior |
 
@@ -489,7 +485,8 @@ curl -X POST http://127.0.0.1:8545 \
 
 ### getBondDetails
 
-Returns bond vesting details for a producer, including penalty percentages and maturation info.
+Returns per-bond vesting details derived from Bond UTXOs in the UTXO set.
+Each Bond UTXO carries its `creation_slot` in `extra_data` (4 bytes LE).
 
 **Parameters:**
 | Name | Type | Description |
@@ -502,22 +499,30 @@ Returns bond vesting details for a producer, including penalty percentages and m
     "publicKey": "0x...",
     "bondCount": 10,
     "totalStaked": 10000000000,
-    "registrationSlot": 5000,
-    "ageSlots": 3000,
-    "penaltyPct": 50,
-    "vested": false,
-    "maturationSlot": 13640,
     "vestingQuarterSlots": 2160,
     "vestingPeriodSlots": 8640,
+    "bonds": [
+        {
+            "outpoint": "txhash:index",
+            "creationSlot": 500,
+            "ageSlots": 3000,
+            "penaltyPct": 50,
+            "vested": false,
+            "quarter": "Q2"
+        }
+    ],
     "summary": {
         "q1": 0,
         "q2": 10,
         "q3": 0,
         "vested": 0
-    },
-    "pendingWithdrawals": []
+    }
 }
 ```
+
+**Data source:** Bond details are read directly from Bond UTXOs (output_type=1)
+owned by the producer. `creationSlot` is decoded from the Bond UTXO's `extra_data`
+field. No separate bond registry is consulted.
 
 **Vesting quarters:**
 | Quarter | Bond Age | Penalty |
@@ -932,4 +937,92 @@ Future subscription topics:
 
 ---
 
-*API version: 1.0*
+## 15. Archive & Integrity Methods
+
+### `getBlockRaw`
+
+Retrieve a raw block by height (for archiving/backfill).
+
+**Parameters:**
+- `height` (integer) — Block height to retrieve
+
+**Response:**
+```json
+{
+  "hash": "abc123...",
+  "height": 100,
+  "raw": "<hex-encoded block bytes>"
+}
+```
+
+### `backfillFromPeer`
+
+Trigger hot backfill of missing blocks from a remote seed/archive node.
+
+**Parameters:**
+- `rpc_url` (string) — RPC URL of the source node (e.g., `"http://127.0.0.1:18500"`)
+
+**Response:**
+```json
+{
+  "status": "started",
+  "gap_start": 1,
+  "gap_end": 977,
+  "source": "http://127.0.0.1:18500"
+}
+```
+
+### `backfillStatus`
+
+Check the progress of an active backfill operation.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+  "active": true,
+  "progress": 450,
+  "total": 977,
+  "source": "http://127.0.0.1:18500"
+}
+```
+
+### `verifyChainIntegrity`
+
+Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain, not just at the start. Uses lightweight height-index lookups (no block deserialization), so ~10-30 seconds for 1M blocks on SSD.
+
+**Parameters:** None
+
+**Response (complete chain):**
+```json
+{
+  "complete": true,
+  "tip": 1223,
+  "scanned": 1223,
+  "missing": [],
+  "missing_count": 0
+}
+```
+
+**Response (gaps found):**
+```json
+{
+  "complete": false,
+  "tip": 1000000,
+  "scanned": 1000000,
+  "missing": ["45-67", "1234", "50000-50100"],
+  "missing_count": 125
+}
+```
+
+**Notes:**
+- Missing heights are returned as compressed ranges (e.g., `"45-67"` means blocks 45 through 67 are missing)
+- Single missing blocks are returned as individual strings (e.g., `"1234"`)
+- `missing_count` is the total number of missing blocks across all ranges
+- Runs in a background thread to avoid blocking the RPC event loop
+- Added in v2.0.29
+
+---
+
+*API version: 1.1*

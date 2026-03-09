@@ -175,14 +175,33 @@ impl Output {
         }
     }
 
-    /// Create a bond output
-    pub fn bond(amount: Amount, pubkey_hash: Hash, lock_until: BlockHeight) -> Self {
+    /// Create a bond output with creation_slot encoded in extra_data (4 bytes LE)
+    pub fn bond(
+        amount: Amount,
+        pubkey_hash: Hash,
+        lock_until: BlockHeight,
+        creation_slot: u32,
+    ) -> Self {
         Self {
             output_type: OutputType::Bond,
             amount,
             pubkey_hash,
             lock_until,
-            extra_data: Vec::new(),
+            extra_data: creation_slot.to_le_bytes().to_vec(),
+        }
+    }
+
+    /// Extract creation_slot from a Bond output's extra_data (4 bytes LE)
+    pub fn bond_creation_slot(&self) -> Option<u32> {
+        if self.output_type == OutputType::Bond && self.extra_data.len() == 4 {
+            Some(u32::from_le_bytes([
+                self.extra_data[0],
+                self.extra_data[1],
+                self.extra_data[2],
+                self.extra_data[3],
+            ]))
+        } else {
+            None
         }
     }
 
@@ -777,7 +796,7 @@ impl Transaction {
 
         // Create bond output (locked to producer's pubkey)
         let pubkey_hash = crypto::hash::hash(public_key.as_bytes());
-        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until);
+        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until, 0);
 
         Self {
             version: 1,
@@ -916,7 +935,7 @@ impl Transaction {
         // Lock/unlock model: create Bond UTXO (locked, visible on-chain)
         let pubkey_hash =
             crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
-        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until);
+        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until, 0);
 
         Self {
             version: 1,
@@ -1283,7 +1302,7 @@ mod tests {
         assert!(normal.is_spendable_at(0));
         assert!(normal.is_spendable_at(100));
 
-        let bond = Output::bond(100, Hash::ZERO, 1000);
+        let bond = Output::bond(100, Hash::ZERO, 1000, 0);
         assert!(!bond.is_spendable_at(0));
         assert!(!bond.is_spendable_at(999));
         assert!(bond.is_spendable_at(1000));
@@ -1884,7 +1903,7 @@ mod tests {
         )
             .prop_map(|(amount, pubkey_hash, is_bond, lock)| {
                 if is_bond {
-                    Output::bond(amount, pubkey_hash, lock.max(1))
+                    Output::bond(amount, pubkey_hash, lock.max(1), 0)
                 } else {
                     Output::normal(amount, pubkey_hash)
                 }
@@ -1953,7 +1972,7 @@ mod tests {
         /// Output spendability: bond outputs respect lock time
         #[test]
         fn prop_bond_respects_lock(amount in 1u64..u64::MAX/2, lock_height in 1u64..u64::MAX/2) {
-            let output = Output::bond(amount, Hash::ZERO, lock_height);
+            let output = Output::bond(amount, Hash::ZERO, lock_height, 0);
             // Not spendable before lock
             if lock_height > 0 {
                 prop_assert!(!output.is_spendable_at(lock_height - 1));

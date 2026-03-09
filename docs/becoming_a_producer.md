@@ -333,31 +333,22 @@ Increase your stake (up to 10,000 bonds / 100,000 DOLI):
 
 ### 6.3. Requesting Withdrawal
 
-Start the withdrawal process (7-day delay). **Withdrawals follow FIFO order** - oldest bonds are withdrawn first:
+**Instant withdrawal.** Consumes Bond UTXOs in FIFO order (oldest first), returns net amount after vesting penalty in the same block. No delay.
 
 ```bash
-# Request withdrawal of 1 bond (10 DOLI, oldest bond)
+# Withdraw 1 bond (oldest Bond UTXO, instant payout)
 ./target/release/doli producer request-withdrawal --count 1
 ```
 
-### 6.4. Claiming Withdrawal
+The penalty is the difference between bond value and payout — burned naturally via UTXO accounting. Bond count update takes effect at next epoch boundary.
 
-After 7-day delay (60,480 slots):
-
-```bash
-./target/release/doli producer claim-withdrawal
-```
-
-### 6.5. Exiting
+### 6.4. Exiting
 
 Full exit from producer set:
 
 ```bash
-# Exit (starts 7-day unbonding for all bonds)
+# Exit (withdraws all bonds instantly with vesting penalties)
 ./target/release/doli producer exit
-
-# After 7 days, claim bond
-./target/release/doli producer claim-bond
 ```
 
 ### 6.6. Vesting Schedule and Early Withdrawal Penalties
