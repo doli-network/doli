@@ -1701,6 +1701,21 @@ impl SyncManager {
         self.fork_sync.as_ref()?.search_complete_ancestor_height()
     }
 
+    /// Check if fork sync binary search bottomed out at the floor without finding
+    /// a common ancestor. Signals the node to do a full resync.
+    pub fn fork_sync_bottomed_out(&self) -> bool {
+        self.fork_sync
+            .as_ref()
+            .map(|fs| fs.search_bottomed_out())
+            .unwrap_or(false)
+    }
+
+    /// Clear fork sync state without resetting empty headers counter.
+    pub fn fork_sync_clear(&mut self) {
+        self.fork_sync = None;
+        self.state = SyncState::Idle;
+    }
+
     /// Set the ancestor hash to complete the search→download transition.
     pub fn fork_sync_set_ancestor(&mut self, ancestor_height: u64, ancestor_hash: Hash) {
         if let Some(ref mut fs) = self.fork_sync {
