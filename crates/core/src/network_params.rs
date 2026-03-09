@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773081140, // Testnet v19 genesis - fix ADDRESS_DOMAIN hash 2026-03-09 18:32:20 UTC
+                genesis_time: 1773082627, // Testnet v20 genesis - fix stale timestamp in block production 2026-03-09 18:57:07 UTC
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
