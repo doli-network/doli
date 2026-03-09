@@ -5481,6 +5481,27 @@ impl Node {
             builder.add_transaction(tx.clone());
         }
 
+        // Recapture timestamp just before building the block.
+        // The original `now` (line ~4508) can be 1-2 seconds stale due to async
+        // work between capture and here (GSet reads, liveness filtering, VDF, etc).
+        // If the stale timestamp maps to a different 2s rank window than the one
+        // we passed eligibility for, validation rejects our own block as
+        // "invalid producer for slot". Using a fresh timestamp ensures the block's
+        // header.timestamp matches the rank window we were actually eligible in.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Sanity: abort if we crossed into a different slot during production
+        if self.params.timestamp_to_slot(now) != current_slot {
+            warn!(
+                "Slot boundary crossed during block production (started slot {}, now slot {}) - aborting",
+                current_slot,
+                self.params.timestamp_to_slot(now)
+            );
+            return Ok(());
+        }
+
         // Build header + finalized transaction list. The merkle root is computed from
         // exactly these transactions, guaranteeing header-body consistency.
         let (header, transactions) = match builder.build(now) {
