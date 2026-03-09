@@ -619,6 +619,91 @@ pub struct BondsSummaryResponse {
     pub vested: u32,
 }
 
+/// Parameters for getSlotSchedule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSlotScheduleParams {
+    /// Starting slot (default = current slot)
+    #[serde(default, alias = "fromSlot")]
+    pub from_slot: Option<u32>,
+    /// Number of slots to return (default = 20, max 360)
+    #[serde(default, alias = "count")]
+    pub count: Option<u32>,
+}
+
+/// Slot schedule entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotScheduleEntry {
+    /// Slot number
+    pub slot: u32,
+    /// Producer public key (hex)
+    pub producer: String,
+    /// Rank (0 = primary producer)
+    pub rank: usize,
+}
+
+/// Response for getSlotSchedule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotScheduleResponse {
+    /// Scheduled slots
+    pub slots: Vec<SlotScheduleEntry>,
+    /// Current slot
+    pub current_slot: u32,
+    /// Current epoch
+    pub epoch: u64,
+    /// Slots remaining in current epoch
+    pub slots_remaining_in_epoch: u64,
+    /// Total bonds across all producers
+    pub total_bonds: u64,
+    /// Slot duration in seconds
+    pub slot_duration: u64,
+    /// Genesis time (unix timestamp)
+    pub genesis_time: u64,
+}
+
+/// Parameters for getProducerSchedule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetProducerScheduleParams {
+    /// Producer public key (hex)
+    #[serde(alias = "publicKey")]
+    pub public_key: String,
+}
+
+/// Response for getProducerSchedule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducerScheduleResponse {
+    /// Producer public key (hex)
+    pub public_key: String,
+    /// Current slot
+    pub current_slot: u32,
+    /// Current epoch
+    pub epoch: u64,
+    /// Next slot where this producer is primary
+    pub next_slot: Option<u32>,
+    /// Seconds until next assigned slot
+    pub seconds_until_next: Option<u64>,
+    /// All slots this epoch where producer is primary
+    pub slots_this_epoch: Vec<u32>,
+    /// Number of assigned slots this epoch
+    pub assigned_count: u32,
+    /// Number of blocks actually produced this epoch
+    pub produced_count: u32,
+    /// Fill rate (produced / assigned)
+    pub fill_rate: f64,
+    /// Producer's bond count
+    pub bond_count: u32,
+    /// Total network bonds
+    pub total_network_bonds: u64,
+    /// Estimated weekly earnings (base units)
+    pub weekly_earnings: u64,
+    /// Weeks until bond investment doubles from rewards
+    pub doubling_weeks: f64,
+    /// Current block reward (base units)
+    pub block_reward: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
