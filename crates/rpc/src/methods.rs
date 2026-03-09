@@ -1345,49 +1345,53 @@ impl RpcContext {
             return Err(RpcError::internal_error("Node has no blocks yet"));
         }
 
-        // Determine start height: 0 if genesis block missing, else 1
-        let has_block_0 = self
-            .block_store
-            .get_block_by_height(0)
-            .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .is_some();
-        let start_height: u64 = if has_block_0 { 1 } else { 0 };
-
-        // Check if block at start_height exists — if so, check block 1
-        if start_height == 1 {
-            let has_block_1 = self
-                .block_store
-                .get_block_by_height(1)
-                .map_err(|e| RpcError::internal_error(e.to_string()))?
-                .is_some();
-            if has_block_1 {
-                return Ok(serde_json::json!({
-                    "started": false,
-                    "message": "No gap detected — block 1 exists. Chain is complete."
-                }));
+        // Full scan: find ALL missing heights (leading, mid-chain, and trailing gaps)
+        let block_store_scan = self.block_store.clone();
+        let missing_heights: Vec<u64> = tokio::task::spawn_blocking(move || {
+            let mut missing = Vec::new();
+            for h in 0..=tip_height {
+                let exists = block_store_scan
+                    .get_hash_by_height(h)
+                    .map(|opt| opt.is_some())
+                    .unwrap_or(false);
+                if !exists {
+                    missing.push(h);
+                }
             }
+            missing
+        })
+        .await
+        .map_err(|e| RpcError::internal_error(e.to_string()))?;
+
+        if missing_heights.is_empty() {
+            return Ok(serde_json::json!({
+                "started": false,
+                "message": "No gaps detected — chain is complete."
+            }));
         }
 
-        // Find lowest existing block (binary search from start_height+1)
-        let search_start = if start_height == 0 { 0u64 } else { 1u64 };
-        let mut lo = search_start;
-        let mut hi = tip_height;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let exists = self
-                .block_store
-                .get_block_by_height(mid)
-                .map_err(|e| RpcError::internal_error(e.to_string()))?
-                .is_some();
-            if exists {
-                hi = mid;
-            } else {
-                lo = mid + 1;
+        let total_to_fetch = missing_heights.len() as u64;
+
+        // Format gap ranges for response
+        let gaps_str = {
+            let mut ranges = Vec::new();
+            let mut i = 0;
+            while i < missing_heights.len() {
+                let start = missing_heights[i];
+                let mut end = start;
+                while i + 1 < missing_heights.len() && missing_heights[i + 1] == end + 1 {
+                    i += 1;
+                    end = missing_heights[i];
+                }
+                if start == end {
+                    ranges.push(format!("{}", start));
+                } else {
+                    ranges.push(format!("{}-{}", start, end));
+                }
+                i += 1;
             }
-        }
-        let lowest_existing = lo;
-        let gap_end = lowest_existing - 1; // blocks start_height..=gap_end are missing
-        let total_to_fetch = gap_end - start_height + 1;
+            ranges.join(", ")
+        };
 
         // Reset state
         self.backfill_state.imported.store(0, Ordering::SeqCst);
@@ -1397,16 +1401,6 @@ impl RpcContext {
         *self.backfill_state.error.write().await = None;
         self.backfill_state.running.store(true, Ordering::SeqCst);
 
-        // Fetch the lowest existing block to verify chain linking at the end
-        let anchor_block = self
-            .block_store
-            .get_block_by_height(lowest_existing)
-            .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(|| {
-                RpcError::internal_error(format!("Anchor block {} not found", lowest_existing))
-            })?;
-        let anchor_prev_hash = anchor_block.header.prev_hash;
-
         // Spawn background task
         let block_store = self.block_store.clone();
         let state = self.backfill_state.clone();
@@ -1414,24 +1408,14 @@ impl RpcContext {
 
         tokio::spawn(async move {
             info!(
-                "Backfill started: fetching blocks {}..={} from {}",
-                start_height, gap_end, rpc_url
+                "Backfill started: fetching {} missing blocks from {}",
+                total_to_fetch, rpc_url
             );
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
-            // For height 0, prev_hash check is skipped; for height 1+, set from block 0
-            let mut prev_hash = crypto::Hash::default();
 
-            for h in start_height..=gap_end {
-                // Check if block already exists (idempotent)
-                if let Ok(Some(existing)) = block_store.get_block_by_height(h) {
-                    prev_hash = existing.hash();
-                    imported += 1;
-                    state.imported.store(imported, Ordering::SeqCst);
-                    continue;
-                }
-
+            for &h in &missing_heights {
                 // Fetch block from peer
                 let resp = match client
                     .post(&rpc_url)
@@ -1527,21 +1511,6 @@ impl RpcContext {
                     }
                 };
 
-                // Chain linking: verify parent_hash matches previous block (skip for genesis)
-                if h > 0 && block.header.prev_hash != prev_hash {
-                    let msg = format!(
-                        "Chain link broken at height {}: expected parent {}, got {}",
-                        h,
-                        hex::encode(prev_hash.as_bytes()),
-                        hex::encode(block.header.prev_hash.as_bytes()),
-                    );
-                    warn!("Backfill failed: {}", msg);
-                    *state.error.write().await = Some(msg);
-                    state.running.store(false, Ordering::SeqCst);
-                    return;
-                }
-                prev_hash = block.hash();
-
                 if let Err(e) = block_store.put_block_canonical(&block, h) {
                     let msg = format!("Store error at height {}: {}", h, e);
                     warn!("Backfill failed: {}", msg);
@@ -1554,7 +1523,7 @@ impl RpcContext {
                 state.imported.store(imported, Ordering::SeqCst);
 
                 if imported.is_multiple_of(500) {
-                    info!("Backfill progress: {}/{} blocks", imported, gap_end);
+                    info!("Backfill progress: {}/{} blocks", imported, total_to_fetch);
                 }
 
                 // Yield every 100 blocks to avoid starving other tasks
@@ -1563,30 +1532,16 @@ impl RpcContext {
                 }
             }
 
-            // Verify the last backfilled block connects to the anchor
-            if prev_hash != anchor_prev_hash {
-                let msg = format!(
-                    "Anchor mismatch: last backfilled hash {} != anchor block {} parent {}",
-                    hex::encode(prev_hash.as_bytes()),
-                    lowest_existing,
-                    hex::encode(anchor_prev_hash.as_bytes()),
-                );
-                warn!("Backfill failed: {}", msg);
-                *state.error.write().await = Some(msg);
-                state.running.store(false, Ordering::SeqCst);
-                return;
-            }
-
             info!(
-                "Backfill complete: {} blocks imported (1..={}), chain verified",
-                imported, gap_end
+                "Backfill complete: {} blocks imported, chain filled",
+                imported
             );
             state.running.store(false, Ordering::SeqCst);
         });
 
         Ok(serde_json::json!({
             "started": true,
-            "gaps": format!("{}-{}", start_height, gap_end),
+            "gaps": gaps_str,
             "total": total_to_fetch
         }))
     }
