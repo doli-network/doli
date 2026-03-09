@@ -73,6 +73,10 @@ pub struct ForkSync {
     canonical_blocks: Vec<Block>,
     /// When this session started
     started_at: Instant,
+    /// True when at least one probe matched (low moved via a real match).
+    /// If false when search completes, the floor is unverified — fork is
+    /// deeper than MAX_FORK_SYNC_DEPTH.
+    low_verified: bool,
 }
 
 impl ForkSync {
@@ -98,6 +102,7 @@ impl ForkSync {
             canonical_headers: Vec::new(),
             canonical_blocks: Vec::new(),
             started_at: Instant::now(),
+            low_verified: false,
         }
     }
 
@@ -208,6 +213,7 @@ impl ForkSync {
         if matches {
             // Same block at this height — ancestor is at or above this height
             self.low = height;
+            self.low_verified = true;
             debug!("Fork sync: match at height {} — low={}", height, self.low);
         } else {
             // Different block — ancestor is below this height
@@ -336,16 +342,32 @@ impl ForkSync {
     }
 
     /// Check if search is complete and we're waiting for Node to provide the ancestor hash.
-    /// Returns Some(ancestor_height) when ready for transition.
+    /// Returns Some(ancestor_height) when a verified common ancestor was found.
+    /// Returns None if still searching, or if the search bottomed out at the floor
+    /// without any probe matching (fork deeper than MAX_FORK_SYNC_DEPTH).
     pub fn search_complete_ancestor_height(&self) -> Option<u64> {
         if matches!(self.phase, ForkSyncPhase::Searching)
             && self.high <= self.low + 1
             && self.pending_height.is_none()
         {
+            if !self.low_verified && self.low > 0 {
+                // Floor hit without any match — fork deeper than search range
+                return None;
+            }
             Some(self.low)
         } else {
             None
         }
+    }
+
+    /// Returns true when the binary search completed but hit the floor without
+    /// finding a common ancestor. Signals the node to do a full resync.
+    pub fn search_bottomed_out(&self) -> bool {
+        matches!(self.phase, ForkSyncPhase::Searching)
+            && self.high <= self.low + 1
+            && self.pending_height.is_none()
+            && !self.low_verified
+            && self.low > 0
     }
 
     /// Current phase (for logging)
@@ -433,6 +455,7 @@ mod tests {
             canonical_headers: vec![],
             canonical_blocks: vec![],
             started_at: Instant::now() - Duration::from_secs(120),
+            low_verified: false,
         };
         assert!(fs.is_timed_out());
     }
