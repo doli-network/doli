@@ -376,12 +376,18 @@ fn test_add_bond_transaction() {
     // Create mock input (normally from UTXO)
     let input = doli_core::Input::new(Hash::ZERO, 0);
 
-    let tx = Transaction::new_add_bond(vec![input], *keypair.public_key(), 5);
+    let tx = Transaction::new_add_bond(
+        vec![input],
+        *keypair.public_key(),
+        5,
+        5 * BOND_UNIT,
+        10_000_000,
+    );
 
     assert_eq!(tx.tx_type, TxType::AddBond);
     assert!(tx.is_add_bond());
     assert_eq!(tx.inputs.len(), 1);
-    assert_eq!(tx.outputs.len(), 0); // No outputs - funds become bonds
+    assert_eq!(tx.outputs.len(), 1); // Bond UTXO (lock/unlock model)
 
     let data = tx.add_bond_data().unwrap();
     assert_eq!(data.bond_count, 5);
@@ -394,11 +400,18 @@ fn test_request_withdrawal_transaction() {
     let destination = hash(b"destination");
     let net_amount = 3 * BOND_UNIT; // 3 bonds, fully vested
 
-    let tx = Transaction::new_request_withdrawal(*keypair.public_key(), 3, destination, net_amount);
+    let bond_inputs = vec![doli_core::Input::new(hash(b"bond_utxo"), 0)];
+    let tx = Transaction::new_request_withdrawal(
+        bond_inputs,
+        *keypair.public_key(),
+        3,
+        destination,
+        net_amount,
+    );
 
     assert_eq!(tx.tx_type, TxType::RequestWithdrawal);
     assert!(tx.is_request_withdrawal());
-    assert_eq!(tx.inputs.len(), 0);
+    assert_eq!(tx.inputs.len(), 1); // Bond UTXO input (lock/unlock model)
     assert_eq!(tx.outputs.len(), 1);
     assert_eq!(tx.outputs[0].amount, net_amount);
     assert_eq!(tx.outputs[0].pubkey_hash, destination);

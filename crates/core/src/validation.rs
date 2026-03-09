@@ -1865,11 +1865,24 @@ fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
         ));
     }
 
-    // May have Normal outputs for change, but no Bond outputs
+    // Must have at least one Bond output (lock/unlock model)
+    let bond_outputs: Vec<_> = tx
+        .outputs
+        .iter()
+        .filter(|o| o.output_type == OutputType::Bond)
+        .collect();
+
+    if bond_outputs.is_empty() {
+        return Err(ValidationError::InvalidAddBond(
+            "add bond must have a Bond output".to_string(),
+        ));
+    }
+
+    // Non-bond outputs must be Normal (for change)
     for output in &tx.outputs {
-        if output.output_type != OutputType::Normal {
+        if output.output_type != OutputType::Normal && output.output_type != OutputType::Bond {
             return Err(ValidationError::InvalidAddBond(
-                "add bond outputs must be Normal type (for change only)".to_string(),
+                "add bond outputs must be Bond or Normal type".to_string(),
             ));
         }
     }
@@ -1888,7 +1901,7 @@ fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
     // Note: These validations are done at node level:
     // - Producer is registered
     // - New total doesn't exceed MAX_BONDS_PER_PRODUCER
-    // - Input amount matches bond_count * BOND_UNIT
+    // - Bond output amount matches bond_count * BOND_UNIT
 
     Ok(())
 }
@@ -1896,18 +1909,18 @@ fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationError> {
 /// Validate withdrawal request transaction data.
 ///
 /// Structural validation for RequestWithdrawal transactions:
-/// - Must have no inputs (state-only operation)
+/// - Must have inputs (Bond UTXOs being consumed — lock/unlock model)
 /// - Must have exactly 1 normal output (payout to destination)
 /// - Must have valid withdrawal request data
 /// - Output amount must be > 0
 /// - Output pubkey_hash must match destination in withdrawal data
 ///
-/// Note: Producer bond holdings and FIFO calculation done at node level.
+/// Note: Bond UTXO ownership, producer bond holdings, and FIFO calculation done at node level.
 fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), ValidationError> {
-    // Must have no inputs
-    if !tx.inputs.is_empty() {
+    // Must have inputs (Bond UTXOs being unlocked)
+    if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidWithdrawalRequest(
-            "withdrawal request must have no inputs".to_string(),
+            "withdrawal request must have Bond UTXO inputs".to_string(),
         ));
     }
 
@@ -3421,12 +3434,13 @@ mod tests {
         let prev_tx_hash = crypto::hash::hash(b"prev_tx");
         let input = Input::new(prev_tx_hash, 0);
 
-        let tx = Transaction::new_add_bond(vec![input], pubkey, 5);
+        let tx = Transaction::new_add_bond(vec![input], pubkey, 5, 5_000_000_000, 10_000_000);
 
         assert!(tx.is_add_bond());
         assert_eq!(tx.tx_type, TxType::AddBond);
         assert_eq!(tx.inputs.len(), 1);
-        assert!(tx.outputs.is_empty());
+        assert_eq!(tx.outputs.len(), 1); // Bond output
+        assert_eq!(tx.outputs[0].output_type, OutputType::Bond);
 
         // Verify add bond data can be parsed
         let bond_data = tx.add_bond_data().unwrap();
@@ -3445,7 +3459,7 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Create AddBond with no inputs (invalid)
-        let tx = Transaction::new_add_bond(vec![], pubkey, 5);
+        let tx = Transaction::new_add_bond(vec![], pubkey, 5, 5_000_000_000, 10_000_000);
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
@@ -3461,46 +3475,49 @@ mod tests {
         let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash(b"test");
 
-        // Create AddBond with Normal output (valid - for change)
+        // Create AddBond with Bond output + Normal change output (valid)
         let bond_data = crate::transaction::AddBondData::new(pubkey, 5);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::AddBond,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
-            outputs: vec![Output::normal(100, pubkey_hash)], // Normal outputs OK for change
+            outputs: vec![
+                Output::bond(5_000_000_000, pubkey_hash, 10_000_000), // Bond output required
+                Output::normal(100, pubkey_hash),                     // Normal change OK
+            ],
             extra_data: bond_data.to_bytes(),
         };
 
-        // Should pass structural validation (Normal outputs allowed for change)
+        // Should pass structural validation (Bond + Normal outputs allowed)
         let result = validate_transaction(&tx, &ctx);
         assert!(
             result.is_ok(),
-            "AddBond with Normal outputs should pass: {:?}",
+            "AddBond with Bond + Normal outputs should pass: {:?}",
             result
         );
     }
 
     #[test]
-    fn test_add_bond_rejects_bond_outputs() {
+    fn test_add_bond_requires_bond_output() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
         let pubkey_hash = crypto::hash::hash(b"test");
 
-        // Create AddBond with Bond output (invalid - only Normal allowed)
+        // Create AddBond with only Normal output (invalid - must have Bond output)
         let bond_data = crate::transaction::AddBondData::new(pubkey, 5);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::AddBond,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
-            outputs: vec![Output::bond(100, pubkey_hash, 1000)], // Bond outputs NOT allowed
+            outputs: vec![Output::normal(100, pubkey_hash)], // No Bond output = invalid
             extra_data: bond_data.to_bytes(),
         };
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
             result,
-            Err(ValidationError::InvalidAddBond(msg)) if msg.contains("must be Normal type")
+            Err(ValidationError::InvalidAddBond(msg)) if msg.contains("must have a Bond output")
         ));
     }
 
@@ -3509,10 +3526,17 @@ mod tests {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
+        let pubkey_hash = crypto::hash::hash(pubkey.as_bytes());
 
-        // Create AddBond with zero bond count (invalid)
-        let tx =
-            Transaction::new_add_bond(vec![Input::new(crypto::hash::hash(b"prev"), 0)], pubkey, 0);
+        // Create AddBond with valid Bond output but zero bond_count in data
+        let bond_data = crate::transaction::AddBondData::new(pubkey, 0);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::AddBond,
+            inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
+            outputs: vec![Output::bond(1_000_000_000, pubkey_hash, 10_000_000)],
+            extra_data: bond_data.to_bytes(),
+        };
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
@@ -3526,8 +3550,13 @@ mod tests {
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
 
-        let tx =
-            Transaction::new_add_bond(vec![Input::new(crypto::hash::hash(b"prev"), 0)], pubkey, 10);
+        let tx = Transaction::new_add_bond(
+            vec![Input::new(crypto::hash::hash(b"prev"), 0)],
+            pubkey,
+            10,
+            10_000_000_000,
+            10_000_000,
+        );
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -3549,11 +3578,14 @@ mod tests {
         let destination = crypto::hash::hash(b"destination");
         let net_amount = 3_000_000_000u64; // 3 bonds worth
 
-        let tx = Transaction::new_request_withdrawal(pubkey, 3, destination, net_amount);
+        // Lock/unlock: withdrawal requires Bond UTXO inputs
+        let bond_inputs = vec![Input::new(crypto::hash::hash(b"bond_utxo"), 0)];
+        let tx =
+            Transaction::new_request_withdrawal(bond_inputs, pubkey, 3, destination, net_amount);
 
         assert!(tx.is_request_withdrawal());
         assert_eq!(tx.tx_type, TxType::RequestWithdrawal);
-        assert!(tx.inputs.is_empty());
+        assert_eq!(tx.inputs.len(), 1); // Bond UTXO input
         assert_eq!(tx.outputs.len(), 1);
         assert_eq!(tx.outputs[0].amount, net_amount);
         assert_eq!(tx.outputs[0].pubkey_hash, destination);
@@ -3570,19 +3602,19 @@ mod tests {
     }
 
     #[test]
-    fn test_request_withdrawal_with_inputs() {
+    fn test_request_withdrawal_without_inputs() {
         let ctx = test_context();
         let keypair = crypto::KeyPair::generate();
         let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        // Create RequestWithdrawal with inputs (invalid)
+        // Create RequestWithdrawal without inputs (invalid — must have Bond UTXO inputs)
         let withdrawal_data =
             crate::transaction::WithdrawalRequestData::new(pubkey, 3, destination);
         let tx = Transaction {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
-            inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)], // Should be empty
+            inputs: vec![], // Must have Bond UTXO inputs
             outputs: vec![Output::normal(100, destination)],
             extra_data: withdrawal_data.to_bytes(),
         };
@@ -3590,7 +3622,7 @@ mod tests {
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
             result,
-            Err(ValidationError::InvalidWithdrawalRequest(msg)) if msg.contains("must have no inputs")
+            Err(ValidationError::InvalidWithdrawalRequest(msg)) if msg.contains("must have Bond UTXO inputs")
         ));
     }
 
@@ -3607,8 +3639,8 @@ mod tests {
         let tx = Transaction {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
-            inputs: vec![],
-            outputs: vec![], // Must have exactly 1
+            inputs: vec![Input::new(crypto::hash::hash(b"bond"), 0)], // Bond UTXO input
+            outputs: vec![],                                          // Must have exactly 1
             extra_data: withdrawal_data.to_bytes(),
         };
 
@@ -3627,7 +3659,13 @@ mod tests {
         let destination = crypto::hash::hash(b"destination");
 
         // Create RequestWithdrawal with zero bond count (invalid)
-        let tx = Transaction::new_request_withdrawal(pubkey, 0, destination, 100);
+        let tx = Transaction::new_request_withdrawal(
+            vec![Input::new(crypto::hash::hash(b"bond"), 0)],
+            pubkey,
+            0,
+            destination,
+            100,
+        );
 
         let result = validate_transaction(&tx, &ctx);
         assert!(matches!(
@@ -3643,7 +3681,13 @@ mod tests {
         let pubkey = *keypair.public_key();
 
         // Create RequestWithdrawal with zero destination (invalid)
-        let tx = Transaction::new_request_withdrawal(pubkey, 3, Hash::ZERO, 100);
+        let tx = Transaction::new_request_withdrawal(
+            vec![Input::new(crypto::hash::hash(b"bond"), 0)],
+            pubkey,
+            3,
+            Hash::ZERO,
+            100,
+        );
 
         let result = validate_transaction(&tx, &ctx);
         // General output validation catches zero pubkey_hash before withdrawal-specific checks
@@ -3656,7 +3700,13 @@ mod tests {
         let pubkey = *keypair.public_key();
         let destination = crypto::hash::hash(b"destination");
 
-        let tx = Transaction::new_request_withdrawal(pubkey, 7, destination, 5_000_000_000);
+        let tx = Transaction::new_request_withdrawal(
+            vec![Input::new(crypto::hash::hash(b"bond"), 0)],
+            pubkey,
+            7,
+            destination,
+            5_000_000_000,
+        );
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes).unwrap();
 

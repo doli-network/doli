@@ -323,7 +323,9 @@ pub struct BalanceResponse {
     pub unconfirmed: u64,
     /// Immature balance (coinbase/rewards pending maturity)
     pub immature: u64,
-    /// Total balance (confirmed + unconfirmed + immature)
+    /// Bonded balance (locked in Bond UTXOs)
+    pub bonded: u64,
+    /// Total balance (confirmed + unconfirmed + immature + bonded)
     pub total: u64,
 }
 
@@ -667,6 +669,7 @@ mod tests {
             confirmed: 1_000_000,
             unconfirmed: 500,
             immature: 0,
+            bonded: 0,
             total: 1_000_500,
         };
 

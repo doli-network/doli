@@ -3541,8 +3541,17 @@ impl Node {
                         let tx_hash = tx.hash();
                         let bond_count = add_bond_data.bond_count;
 
-                        let bond_outpoints: Vec<(crypto::Hash, u32)> =
-                            (0..bond_count).map(|i| (tx_hash, i)).collect();
+                        // Lock/unlock: Bond output is a real UTXO in the UTXO set.
+                        // Find Bond output indices for outpoint references.
+                        let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
+                            .outputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, o)| {
+                                o.output_type == doli_core::transaction::OutputType::Bond
+                            })
+                            .map(|(i, _)| (tx_hash, i as u32))
+                            .collect();
 
                         let bond_unit = self.config.network.bond_unit();
                         producers.queue_update(PendingProducerUpdate::AddBond {
@@ -3552,7 +3561,7 @@ impl Node {
                             creation_slot: block.header.slot,
                         });
                         info!(
-                            "Queued AddBond ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
+                            "Queued AddBond ({} bonds, lock/unlock) for producer {} at height {} (deferred to epoch boundary)",
                             bond_count,
                             crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
                             height
@@ -4019,6 +4028,22 @@ impl Node {
 
                     // Create deterministic bond hash for tracking
                     let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
+
+                    // Lock/unlock: create Bond UTXO backing the bond
+                    let bond_outpoint = storage::Outpoint::new(bond_hash, 0);
+                    let bond_entry = storage::UtxoEntry {
+                        output: doli_core::transaction::Output::bond(
+                            bond_unit,
+                            pubkey_hash,
+                            u64::MAX, // locked until withdrawal
+                        ),
+                        height,
+                        is_coinbase: false,
+                        is_epoch_reward: false,
+                    };
+                    undo_created_utxos.push(bond_outpoint); // Undo log
+                    utxo.insert(bond_outpoint, bond_entry.clone());
+                    batch.add_utxo(bond_outpoint, bond_entry); // Batch: atomic persistence
 
                     // Return change if we consumed more than bond_unit
                     let change = consumed_amount.saturating_sub(bond_unit);
@@ -5913,9 +5938,15 @@ impl Node {
                     TxType::AddBond => {
                         if let Some(add_bond_data) = tx.add_bond_data() {
                             let tx_hash = tx.hash();
-                            let bond_outpoints: Vec<(crypto::Hash, u32)> = (0..add_bond_data
-                                .bond_count)
-                                .map(|i| (tx_hash, i))
+                            // Lock/unlock: Bond output indices from actual TX outputs
+                            let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
+                                .outputs
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, o)| {
+                                    o.output_type == doli_core::transaction::OutputType::Bond
+                                })
+                                .map(|(i, _)| (tx_hash, i as u32))
                                 .collect();
                             producers.queue_update(PendingProducerUpdate::AddBond {
                                 pubkey: add_bond_data.producer_pubkey,

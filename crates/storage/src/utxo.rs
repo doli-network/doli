@@ -302,6 +302,15 @@ impl InMemoryUtxoStore {
             .sum()
     }
 
+    /// Get bonded balance (sum of Bond UTXOs for this address)
+    pub fn get_bonded_balance(&self, pubkey_hash: &Hash) -> Amount {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
         self.utxos.insert(outpoint, entry);
     }
@@ -517,6 +526,14 @@ impl UtxoSet {
             UtxoSet::RocksDb(store) => {
                 store.get_immature_balance_with_maturity(pubkey_hash, height, maturity)
             }
+        }
+    }
+
+    /// Get bonded balance (sum of Bond UTXOs for this address)
+    pub fn get_bonded_balance(&self, pubkey_hash: &Hash) -> Amount {
+        match self {
+            UtxoSet::InMemory(store) => store.get_bonded_balance(pubkey_hash),
+            UtxoSet::RocksDb(store) => store.get_bonded_balance(pubkey_hash),
         }
     }
 
