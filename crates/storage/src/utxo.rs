@@ -47,30 +47,34 @@ pub fn reward_maturity_for_network(network: Network) -> BlockHeight {
 }
 
 impl UtxoEntry {
-    /// Canonical 59-byte serialization for state root computation.
+    /// Canonical serialization for state root computation.
     ///
     /// Fixed-field encoding immune to bincode struct evolution.
-    /// Adding/removing fields from `UtxoEntry` will never affect this encoding.
+    /// Format: `[1B output_type][8B amount][32B pubkey_hash][8B lock_until]
+    ///          [8B height][1B is_coinbase][1B is_epoch_reward]
+    ///          [2B extra_data_len (u16 LE)][NB extra_data]`
     ///
-    /// Format:
-    /// `[1B output_type][8B amount][32B pubkey_hash][8B lock_until][8B height][1B is_coinbase][1B is_epoch_reward]`
-    pub fn serialize_canonical_bytes(&self) -> [u8; 59] {
-        let mut buf = [0u8; 59];
-        buf[0] = self.output.output_type as u8;
-        buf[1..9].copy_from_slice(&self.output.amount.to_le_bytes());
-        buf[9..41].copy_from_slice(self.output.pubkey_hash.as_bytes());
-        buf[41..49].copy_from_slice(&self.output.lock_until.to_le_bytes());
-        buf[49..57].copy_from_slice(&self.height.to_le_bytes());
-        buf[57] = self.is_coinbase as u8;
-        buf[58] = self.is_epoch_reward as u8;
+    /// Base size: 61 bytes (59 + 2 for length=0 when extra_data is empty).
+    pub fn serialize_canonical_bytes(&self) -> Vec<u8> {
+        let extra_len = self.output.extra_data.len();
+        let mut buf = Vec::with_capacity(61 + extra_len);
+        buf.push(self.output.output_type as u8);
+        buf.extend_from_slice(&self.output.amount.to_le_bytes());
+        buf.extend_from_slice(self.output.pubkey_hash.as_bytes());
+        buf.extend_from_slice(&self.output.lock_until.to_le_bytes());
+        buf.extend_from_slice(&self.height.to_le_bytes());
+        buf.push(self.is_coinbase as u8);
+        buf.push(self.is_epoch_reward as u8);
+        buf.extend_from_slice(&(extra_len as u16).to_le_bytes());
+        buf.extend_from_slice(&self.output.extra_data);
         buf
     }
 
-    /// Reconstruct a `UtxoEntry` from canonical 59-byte encoding.
+    /// Reconstruct a `UtxoEntry` from canonical encoding.
     ///
     /// Returns `None` if the bytes are too short or the output type is unknown.
     pub fn deserialize_canonical_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 59 {
+        if bytes.len() < 61 {
             return None;
         }
         let output_type = OutputType::from_u8(bytes[0])?;
@@ -80,17 +84,32 @@ impl UtxoEntry {
         let height = u64::from_le_bytes(bytes[49..57].try_into().ok()?);
         let is_coinbase = bytes[57] != 0;
         let is_epoch_reward = bytes[58] != 0;
+        let extra_len = u16::from_le_bytes(bytes[59..61].try_into().ok()?) as usize;
+        let extra_data = if extra_len > 0 {
+            if bytes.len() < 61 + extra_len {
+                return None;
+            }
+            bytes[61..61 + extra_len].to_vec()
+        } else {
+            Vec::new()
+        };
         Some(UtxoEntry {
             output: Output {
                 output_type,
                 amount,
                 pubkey_hash,
                 lock_until,
+                extra_data,
             },
             height,
             is_coinbase,
             is_epoch_reward,
         })
+    }
+
+    /// Size of this entry's canonical serialization in bytes.
+    pub fn canonical_byte_size(&self) -> usize {
+        61 + self.output.extra_data.len()
     }
 
     /// Check if the UTXO is spendable at the given height for a specific network
@@ -334,8 +353,8 @@ impl InMemoryUtxoStore {
         entries.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
 
         let count = entries.len() as u64;
-        // 36 bytes outpoint key + 59 bytes canonical entry value + 8 bytes header
-        let mut buf = Vec::with_capacity(8 + entries.len() * 95);
+        // 36 bytes outpoint key + 61+ bytes canonical entry value + 8 bytes header
+        let mut buf = Vec::with_capacity(8 + entries.len() * 97);
         buf.extend_from_slice(&count.to_le_bytes());
 
         for (outpoint, entry) in entries {
@@ -798,7 +817,11 @@ mod tests {
             is_epoch_reward: false,
         };
         let bytes = entry.serialize_canonical_bytes();
-        assert_eq!(bytes.len(), 59, "canonical entry must be exactly 59 bytes");
+        assert_eq!(
+            bytes.len(),
+            61,
+            "canonical entry base size must be 61 bytes (59 + 2 for extra_data len)"
+        );
     }
 
     #[test]
@@ -811,6 +834,7 @@ mod tests {
                 amount: 5_000_000,
                 pubkey_hash: pk_hash,
                 lock_until: 0,
+                extra_data: vec![],
             },
             height: 1337,
             is_coinbase: false,
@@ -840,6 +864,7 @@ mod tests {
                 amount: 10_000_000_000,
                 pubkey_hash: pk_hash,
                 lock_until: 9999,
+                extra_data: vec![],
             },
             height: 500,
             is_coinbase: false,
@@ -865,8 +890,8 @@ mod tests {
         let bytes = store.serialize_canonical();
         let count = u64::from_le_bytes(bytes[..8].try_into().unwrap());
         assert_eq!(count, 2, "count header must reflect number of UTXOs");
-        // Total size: 8 (header) + 2 * (36 outpoint + 59 entry) = 8 + 190 = 198
-        assert_eq!(bytes.len(), 8 + 2 * (36 + 59));
+        // Total size: 8 (header) + 2 * (36 outpoint + 61 entry) = 8 + 194 = 202
+        assert_eq!(bytes.len(), 8 + 2 * (36 + 61));
     }
 
     #[test]
@@ -884,6 +909,7 @@ mod tests {
                 amount: 1_000,
                 pubkey_hash: pk,
                 lock_until: 0,
+                extra_data: vec![],
             },
             height: 10,
             is_coinbase: true,

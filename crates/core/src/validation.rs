@@ -33,6 +33,7 @@ use crate::tpop::heartbeat::verify_hash_chain_vdf;
 use crate::transaction::{
     AddBondData, ClaimBondData, ClaimData, ClaimWithdrawalData, ExitData, Input, Output,
     OutputType, RegistrationData, SlashData, Transaction, TxType, WithdrawalRequestData,
+    MAX_EXTRA_DATA_SIZE,
 };
 use crate::types::{Amount, BlockHeight};
 use crypto::{Hash, PublicKey};
@@ -1386,6 +1387,16 @@ fn validate_outputs(outputs: &[Output]) -> Result<Amount, ValidationError> {
                     context: format!("output total at index {}", i),
                 })?;
 
+        // Validate extra_data size limit (all output types)
+        if output.extra_data.len() > MAX_EXTRA_DATA_SIZE {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "output {} extra_data exceeds max size ({} > {})",
+                i,
+                output.extra_data.len(),
+                MAX_EXTRA_DATA_SIZE,
+            )));
+        }
+
         // Validate output type consistency
         match output.output_type {
             OutputType::Normal => {
@@ -1396,12 +1407,26 @@ fn validate_outputs(outputs: &[Output]) -> Result<Amount, ValidationError> {
                         i
                     )));
                 }
+                // Normal outputs must not carry extra_data
+                if !output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "normal output {} has non-empty extra_data",
+                        i
+                    )));
+                }
             }
             OutputType::Bond => {
                 // Bond outputs must have a future lock time
                 if output.lock_until == 0 {
                     return Err(ValidationError::InvalidBond(format!(
                         "bond output {} has zero lock_until",
+                        i
+                    )));
+                }
+                // Bond outputs must not carry extra_data
+                if !output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "bond output {} has non-empty extra_data",
                         i
                     )));
                 }
@@ -2917,6 +2942,7 @@ mod tests {
             amount: 100,
             pubkey_hash,
             lock_until: 0, // Invalid for bond
+            extra_data: vec![],
         };
 
         let tx = Transaction {
@@ -2942,6 +2968,7 @@ mod tests {
             amount: 100,
             pubkey_hash,
             lock_until: 1000, // Invalid for normal
+            extra_data: vec![],
         };
 
         let tx = Transaction {
@@ -3205,6 +3232,7 @@ mod tests {
                 amount,
                 pubkey_hash: Hash::from_bytes(hash),
                 lock_until: 0,
+                extra_data: vec![],
             };
             let result = validate_outputs(&[output]);
             prop_assert!(result.is_err());
@@ -3220,6 +3248,7 @@ mod tests {
                 amount,
                 pubkey_hash: Hash::from_bytes(hash),
                 lock_until: lock,
+                extra_data: vec![],
             };
             let result = validate_outputs(&[output]);
             prop_assert!(result.is_err());
