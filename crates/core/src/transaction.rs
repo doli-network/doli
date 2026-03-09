@@ -141,6 +141,11 @@ impl Input {
     }
 }
 
+/// Maximum size of extra_data in an output (bytes).
+/// Reserved for future contract types (scripts, conditions, metadata).
+/// Normal and Bond outputs must have empty extra_data.
+pub const MAX_EXTRA_DATA_SIZE: usize = 256;
+
 /// Transaction output
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Output {
@@ -152,6 +157,10 @@ pub struct Output {
     pub pubkey_hash: Hash,
     /// Lock until height (0 for normal, >0 for bonds)
     pub lock_until: BlockHeight,
+    /// Extensible data for future output types (empty for Normal/Bond).
+    /// Interpretation depends on output_type. Max 256 bytes.
+    #[serde(default)]
+    pub extra_data: Vec<u8>,
 }
 
 impl Output {
@@ -162,6 +171,7 @@ impl Output {
             amount,
             pubkey_hash,
             lock_until: 0,
+            extra_data: Vec::new(),
         }
     }
 
@@ -172,6 +182,7 @@ impl Output {
             amount,
             pubkey_hash,
             lock_until,
+            extra_data: Vec::new(),
         }
     }
 
@@ -187,6 +198,9 @@ impl Output {
         bytes.extend_from_slice(&self.amount.to_le_bytes());
         bytes.extend_from_slice(self.pubkey_hash.as_bytes());
         bytes.extend_from_slice(&self.lock_until.to_le_bytes());
+        // extra_data: length-prefixed (u16 LE) + raw bytes
+        bytes.extend_from_slice(&(self.extra_data.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(&self.extra_data);
         bytes
     }
 }

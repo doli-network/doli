@@ -82,6 +82,26 @@ A transaction is valid if:
 
 The difference between inputs and outputs constitutes the fee for the block producer.
 
+### 2.2. Output Structure
+
+Each unspent output contains five fields:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Output (UTXO)                         │
+├──────────────┬───────────────────────────────────────────┤
+│ type         │ What kind of value (transfer, bond, ...)  │
+│ amount       │ How much                                  │
+│ owner        │ Who can spend (public key hash)           │
+│ lock_until   │ When it becomes spendable                 │
+│ extra_data   │ Extensible spending conditions            │
+└──────────────┴───────────────────────────────────────────┘
+```
+
+The first four fields cover all cash operations. The fifth field — `extra_data` — reserves space for arbitrary spending conditions without requiring changes to the output format.
+
+For basic transfers and bonds, `extra_data` is empty. New output types define how `extra_data` is interpreted, adding validation rules to the protocol while the structure remains fixed from genesis.
+
 ---
 
 ## 3. Timestamp Server
@@ -768,19 +788,97 @@ Explorer:   https://doli.network
 
 ---
 
-## 19. Scope
+## 19. Programmable Outputs
 
-DOLI is a cash system. It processes value transfers, not arbitrary computation. This is by design.
+The `extra_data` field in every output (Section 2.2) makes DOLI outputs programmable without a virtual machine, without gas, and without a Turing-complete scripting language.
 
-Smart contract platforms optimize for generality at the cost of complexity, attack surface, and verification cost. Every additional opcode is a potential vulnerability. Every state transition rule is a consensus-critical surface that must be audited, fuzzed, and maintained forever.
+### 19.1. Design Principles
 
-DOLI optimizes for one thing: moving value with deterministic finality and predictable timing. The base layer is intentionally minimal — digital signatures, UTXO transfers, bond management, and time-anchored ordering. Nothing more.
+Smart contract platforms chose generality: a universal computer on every node, executing arbitrary code at every transaction. The cost is complexity, attack surface, and unpredictable execution.
 
-This constraint is a feature. A system that does one thing well is more secure, more auditable, and more resistant to governance capture than a system that attempts to be a universal computer. Bitcoin demonstrated that a focused protocol can sustain a trillion-dollar network. Complexity is not a prerequisite for value.
+DOLI chooses the opposite: **declarative conditions**. An output does not contain code to execute — it contains conditions to verify. The distinction matters:
+
+| Property | Ethereum (EVM) | Bitcoin Script | DOLI Conditions |
+|----------|---------------|----------------|-----------------|
+| Model | Account + VM | UTXO + Stack machine | UTXO + Native rules |
+| Execution | Turing-complete | Intentionally limited | Declarative verification |
+| Gas/Fees | Unpredictable (gas) | Fixed | Fixed (no metering) |
+| State | Mutable shared state | Stateless | Stateless |
+| Attack surface | Unbounded | Small | Minimal |
+| Runtime | Interpreted (slow) | Interpreted | Compiled (native) |
+
+Conditions are not interpreted at runtime — they are compiled into the node binary as native Rust validation rules. Each output type defines which conditions are valid and how `extra_data` is decoded. Adding a new condition type is a protocol upgrade, not a deployment.
+
+### 19.2. Condition Language
+
+Conditions are composable predicates. Each condition returns true or false. An output is spendable when all its conditions are satisfied.
+
+```
+Condition := Signature(pubkey_hash)
+           | Multisig(threshold, [pubkey_hash, ...])
+           | Hashlock(hash)
+           | Timelock(min_height)
+           | TimelockExpiry(max_height)
+           | And(Condition, Condition)
+           | Or(Condition, Condition)
+           | Threshold(n, [Condition, ...])
+```
+
+**Encoding:** Conditions are serialized into `extra_data` as a compact binary format. For basic transfers, `extra_data` is empty — the default condition is `Signature(owner)`.
+
+**Verification cost:** Every condition resolves to a fixed number of cryptographic operations (signature checks, hash comparisons, height comparisons). No loops. No recursion. No unbounded computation. Verification cost is known before execution.
+
+### 19.3. Native Output Types
+
+Each output type is a named pattern over the condition language:
+
+| Type | Conditions | Use Case |
+|------|-----------|----------|
+| Transfer | `Signature(owner)` | Standard payment |
+| Bond | `Signature(owner) AND Protocol(withdrawal)` | Producer stake |
+| Multisig | `Multisig(n, keys)` | Shared custody |
+| Hashlock | `Signature(owner) AND Hashlock(h)` | Atomic swaps |
+| HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Payment channels |
+| Escrow | `Threshold(2, [buyer, seller, arbiter])` | Trustless commerce |
+| Vesting | `Signature(owner) AND Timelock(unlock_height)` | Time-locked grants |
+
+These are not separate implementations — they are compositions of the same primitive conditions. A developer does not write a smart contract. A developer selects conditions.
+
+### 19.4. What This Enables
+
+**Without a virtual machine:**
+
+- **Decentralized exchanges:** Atomic swaps between DOLI and any chain that supports hash locks. No intermediary, no custody, no counterparty risk.
+- **Payment channels:** Off-chain transactions with on-chain settlement. HTLCs enable a Lightning-equivalent network natively.
+- **Multi-party custody:** Corporate treasuries, DAOs, inheritance — any scenario requiring N-of-M authorization.
+- **Trustless escrow:** Buyer, seller, and arbiter each hold a key. Any two can release funds.
+- **Vesting schedules:** Time-locked outputs for team allocations, grants, or contractual obligations.
+
+**Without shared mutable state:**
+
+Every output is independent. Spending one output cannot affect another. There is no reentrancy, no front-running, no MEV. Transactions are fully parallelizable — validation scales linearly with cores.
+
+### 19.5. What This Does Not Enable
+
+DOLI outputs cannot maintain persistent state across transactions. There is no on-chain storage, no loops, no arbitrary computation. This is deliberate.
+
+Applications requiring shared state — automated market makers, lending protocols, on-chain governance with complex voting — belong on Layer 2 or application-specific chains that settle to DOLI.
+
+The base layer provides: **value transfer, time-anchored ordering, and programmable spending conditions.** Everything else builds on top.
 
 ---
 
-## 20. Conclusion
+## 20. Scope
+
+DOLI optimizes for moving value with deterministic finality, predictable timing, and extensible spending conditions. The base layer is intentionally minimal — but extensible by design.
+
+This constraint is a feature. A system that does one thing well is more secure, more auditable, and more resistant to governance capture than a system that attempts to be a universal computer. Bitcoin demonstrated that a focused protocol can sustain a trillion-dollar network. Complexity is not a prerequisite for value.
+
+The difference: Bitcoin's output format was fixed in 2009. DOLI's output format was designed in 2026 with seventeen years of hindsight. The `extra_data` field exists from genesis — no SegWit, no Taproot, no backward-compatibility hacks required.
+
+---
+
+## 21. Conclusion
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
@@ -798,7 +896,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v1.0.26**
+**DOLI v2.0.26**
 
 *"Time is the only fair currency."*
 

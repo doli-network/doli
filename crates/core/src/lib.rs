@@ -267,6 +267,7 @@ pub use transaction::{
     Transaction,
     TxType,
     WithdrawalRequestData,
+    MAX_EXTRA_DATA_SIZE,
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
