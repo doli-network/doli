@@ -900,7 +900,8 @@ impl Transaction {
         let extra_data = bond_data.to_bytes();
 
         // Lock/unlock model: create Bond UTXO (locked, visible on-chain)
-        let pubkey_hash = crypto::hash::hash(producer_pubkey.as_bytes());
+        let pubkey_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
         let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until);
 
         Self {
