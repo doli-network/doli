@@ -182,6 +182,32 @@ impl RocksDbUtxoStore {
         self.len() == 0
     }
 
+    /// Count unique addresses (distinct pubkey hashes) in the UTXO set
+    pub fn address_count(&self) -> u64 {
+        let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
+        let mut count = 0u64;
+        let mut last_prefix = [0u8; 32];
+        let mut first = true;
+
+        for item in self
+            .db
+            .iterator_cf(cf_by_pk, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, _) = item;
+            if key.len() < 32 {
+                continue;
+            }
+            if first || key[..32] != last_prefix {
+                count += 1;
+                last_prefix.copy_from_slice(&key[..32]);
+                first = false;
+            }
+        }
+
+        count
+    }
+
     /// Get all UTXOs for a given pubkey hash via secondary index prefix scan
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();

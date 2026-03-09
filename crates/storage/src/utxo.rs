@@ -445,6 +445,27 @@ impl UtxoSet {
         }
     }
 
+    /// Convenience aliases for chain stats
+    pub fn total_supply(&self) -> u64 {
+        self.total_value()
+    }
+
+    pub fn utxo_count(&self) -> u64 {
+        self.len() as u64
+    }
+
+    /// Count unique addresses (pubkey hashes) in the UTXO set
+    pub fn address_count(&self) -> u64 {
+        match self {
+            UtxoSet::InMemory(store) => {
+                let addrs: std::collections::HashSet<_> =
+                    store.iter().map(|(_, e)| e.output.pubkey_hash).collect();
+                addrs.len() as u64
+            }
+            UtxoSet::RocksDb(store) => store.address_count(),
+        }
+    }
+
     /// Get all UTXOs for a given pubkey hash (returns owned entries)
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         match self {
