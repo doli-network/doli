@@ -29,7 +29,7 @@ The `DeterministicScheduler` with binary search over cumulative ticket boundarie
 VDF input = `HASH(prefix || prev_hash || tx_root || slot || producer_key)` — this binds VDF to block context and prevents grinding. At 55ms, an attacker can try ~18 configurations/sec, but since future slot selection uses `slot % total_tickets` (independent of block hash), grinding the VDF output gives zero advantage. **Anti-grinding holds at 55ms.**
 
 ### ✅ Weight-Based Fork Choice (`reorg.rs`)
-The `check_reorg_weighted()` function properly accumulates producer weight and only reorgs to heavier chains. The `MAX_REORG_DEPTH = 100` is reasonable. **This is the correct fork-choice rule for scale.**
+The `check_reorg_weighted()` function properly accumulates producer weight and only reorgs to heavier chains. The `MAX_REORG_DEPTH = 1000` handles network partitions up to ~2.7 hours. **This is the correct fork-choice rule for scale.**
 
 ### ✅ 10-Layer Production Gate (`sync/manager.rs:606-958`)
 Your defense-in-depth production authorization (explicit block → resync → active sync → bootstrap → grace period → peer count → behind peers → ahead of peers → sync failures → chain hash → gossip watchdog) is the most thorough I've seen in a blockchain codebase. The P0 bug fixes (sync deadlock, sticky network_tip, height-based BehindPeers) demonstrate real battle-testing. **This is production-grade.**

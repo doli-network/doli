@@ -732,8 +732,8 @@ cargo test -p integration partition_heal -- --nocapture
 - `should_reorg_by_weight()` returns true only if new chain > current chain
 
 *Minority Partition - Stops at Orphan Limit*:
-- `MAX_REORG_DEPTH = 100` (reorg.rs:22) limits reorg depth
-- Once a chain is >100 blocks behind, reorg becomes impossible
+- `MAX_REORG_DEPTH = 1000` (reorg.rs:22) limits reorg depth
+- Once a chain is >1000 blocks behind, reorg becomes impossible
 - Prevents long-range attacks and unbounded orphan accumulation
 
 **Peer Scoring Verified** (scoring.rs):
@@ -1000,7 +1000,7 @@ cargo bench sig_verification
 - FIFO order maintained via `by_fee_rate` sorted set
 
 *Reorg Limits*:
-- `MAX_REORG_DEPTH = 100` blocks maximum
+- `MAX_REORG_DEPTH = 1000` blocks maximum
 - `ReorgHandler.max_tracked = 10,000` blocks with LRU eviction
 
 *Storage*:

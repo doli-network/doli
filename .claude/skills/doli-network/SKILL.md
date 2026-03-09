@@ -179,7 +179,7 @@ done'
 ### getProducers
 - `publicKey`: Producer's public key
 - `bondCount`: Number of bonds
-- `bondAmount`: Total bonded amount (divide by 1e9 for DOLI)
+- `bondAmount`: Total bonded amount (divide by 1e8 for DOLI)
 - `status`: active/inactive
 - `era`: Current era
 - `pendingWithdrawals`: List of pending bond withdrawals
