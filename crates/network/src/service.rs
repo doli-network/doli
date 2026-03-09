@@ -307,8 +307,7 @@ impl NetworkService {
 
         info!("Network service listening on {}", listen_addr);
 
-        // Load cached peers and dial them before bootstrap
-        let mut dialed_cached = false;
+        // Load cached peers and dial them (in addition to bootstrap nodes)
         if let Some(ref cache_path) = config.peer_cache_path {
             if let Some(cache) = PeerCache::load(cache_path) {
                 let addrs = cache.addresses();
@@ -321,7 +320,6 @@ impl NetworkService {
                     for addr in addrs {
                         let _ = swarm.dial(addr);
                     }
-                    dialed_cached = true;
                 }
             }
         }
@@ -344,12 +342,12 @@ impl NetworkService {
             .await;
         });
 
-        // Connect to bootstrap nodes (skip if we already dialed cached peers)
-        if !dialed_cached {
-            for addr in &config.bootstrap_nodes {
-                if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
-                    let _ = command_tx.send(NetworkCommand::Connect(multiaddr)).await;
-                }
+        // Always connect to bootstrap nodes — even if cached peers exist.
+        // Cached peers may be stale or on a minority fork after a rolling restart.
+        // Bootstrap/seed nodes are the authoritative network entry points.
+        for addr in &config.bootstrap_nodes {
+            if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
+                let _ = command_tx.send(NetworkCommand::Connect(multiaddr)).await;
             }
         }
 

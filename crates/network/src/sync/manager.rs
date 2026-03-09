@@ -503,7 +503,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync defaults
             snap_sync_threshold: 1000,
-            snap_sync_quorum: 2, // 2 peers agreeing on (height, root) is sufficient
+            snap_sync_quorum: 3, // Minimum 3 peers for partition safety
             snap_root_timeout: Duration::from_secs(10),
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
@@ -1476,6 +1476,9 @@ impl SyncManager {
         self.consecutive_sync_failures = 0;
         self.fork_sync = None;
         self.state = SyncState::Idle;
+        // Clear stale weight history to prevent minority fork weights from
+        // contaminating future fork choice decisions after a resync.
+        self.reorg_handler.clear();
         self.pending_headers.clear();
         self.pending_blocks.clear();
         self.headers_needing_bodies.clear();
@@ -2699,9 +2702,9 @@ impl SyncManager {
         };
 
         // Reject votes from peers whose reported height is far below the
-        // target. A peer at height=0 when our target is height=61849 has
-        // an empty/stale state and must not contribute to quorum.
-        let min_acceptable = target_height.saturating_sub(self.snap_sync_threshold);
+        // target. Tight window (100 blocks ≈ 16 min) prevents stale peers
+        // from forming quorum during rolling deployments.
+        let min_acceptable = target_height.saturating_sub(100);
         if block_height < min_acceptable {
             warn!(
                 "[SNAP_SYNC] Rejecting stale state root vote from {} at height={} \
@@ -2717,8 +2720,9 @@ impl SyncManager {
             return;
         }
 
-        // Quorum: at least the configured minimum, or 25% of peers (whichever is larger).
-        let quorum = std::cmp::max(self.snap_sync_quorum, self.peers.len() / 4);
+        // Quorum: at least the configured minimum, or 2/3 of peers (whichever is larger).
+        // 2/3 majority prevents partition forks during rolling deployments.
+        let quorum = std::cmp::max(self.snap_sync_quorum, (self.peers.len() * 2 + 2) / 3);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
