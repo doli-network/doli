@@ -2335,6 +2335,22 @@ impl Node {
         let current_height = self.chain_state.read().await.best_height;
         let rollback_depth = current_height.saturating_sub(result.ancestor_height);
 
+        // If ancestor is at the binary search floor, divergence is deeper than
+        // MAX_FORK_SYNC_DEPTH — blocks below ancestor are from a different chain.
+        // Full resync is the only fix.
+        if rollback_depth >= 1000 {
+            warn!(
+                "Fork sync: ancestor at floor (h={}, depth={}) — divergence deeper than search range, triggering full resync",
+                result.ancestor_height, rollback_depth
+            );
+            {
+                let mut sync = self.sync_manager.write().await;
+                sync.reset_sync_for_rollback();
+            }
+            self.recover_from_peers().await?;
+            return Ok(());
+        }
+
         info!(
             "Fork sync reorg: rolling back {} blocks (height {} → {}), \
              applying {} canonical blocks",
