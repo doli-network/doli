@@ -108,9 +108,9 @@ ai1 also has its own SSL certificates for doli.network.
 
 ## Mainnet
 
-### Seed Nodes (Archive + Relay)
+### Seed / Archiver Nodes (Archive + Relay + Public RPC)
 
-Non-producing, sync-only, publicly accessible. These are the network entry points.
+Non-producing, sync-only, publicly accessible. These are the network entry points, block archive sources, and RPC backends for the block explorer (`doli.network/explorer.html`). See **[archiver.md](./archiver.md)** for full details.
 
 | Node | Server | P2P | RPC | Metrics | Service | DNS |
 |------|--------|-----|-----|---------|---------|-----|
@@ -192,7 +192,7 @@ All producers use DNS-based bootstrap:
 
 ## Testnet
 
-### Seed Nodes (Archive + Relay)
+### Seed / Archiver Nodes (Archive + Relay + Public RPC)
 
 | Node | Server | P2P | RPC | Metrics | Service | DNS |
 |------|--------|-----|-----|---------|---------|-----|

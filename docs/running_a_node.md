@@ -544,85 +544,25 @@ sudo systemctl start doli-node
 
 ### 10.4. Block Archiver (Disaster Recovery)
 
-The block archiver continuously streams every block to a filesystem directory as individual files. This provides an off-chain backup that survives total node loss.
+Any node can archive blocks by adding `--archive-to`:
 
-**Enable archiving:**
 ```bash
-# Add --archive-to to any node (producer or non-producer)
 doli-node run --archive-to /path/to/archive/
-
-# Example: dedicated archiver node with public RPC
-doli-node run \
-    --archive-to ~/.doli/mainnet/archive \
-    --p2p-port 30306 \
-    --rpc-bind 0.0.0.0 \
-    --rpc-port 8548
 ```
 
-**How it works:**
-- Each block is serialized and written atomically (tmp file + rename)
-- `manifest.json` tracks the latest archived height and hash
-- On startup, the archiver catches up any blocks missed while the node was down
-- Archiving is non-blocking — it never stalls block production or sync
+The archiver streams every applied block to flat files with BLAKE3 checksums. On the DOLI network, the seed/archiver nodes serve this role — they are the DNS-registered entry points, public RPC backends (powering `doli.network/explorer.html`), and disaster recovery sources.
 
-**Archive directory layout:**
-```
-archive/
-  0000000001.block    # Block at height 1 (bincode serialized)
-  0000000001.blake3   # BLAKE3 checksum sidecar
-  0000000002.block    # Block at height 2
-  0000000002.blake3
-  ...
-  manifest.json       # {"latest_height": N, "latest_hash": "abc...", "genesis_hash": "d34..."}
-```
-
-**Restore from archive (disaster recovery):**
+**Quick restore:**
 ```bash
-# Full restore — imports all blocks + rebuilds state
-doli-node --network mainnet restore --from /path/to/archive/ --yes
+# Full restore from seed RPC (no SSH needed)
+doli-node --network mainnet restore --from-rpc http://seed2.doli.network:8500 --yes
 
-# Backfill only — fills snap sync gaps without state rebuild
-doli-node --network mainnet restore --from /path/to/archive/ --backfill --yes
+# Backfill snap sync gaps (no restart needed)
+curl -X POST http://127.0.0.1:8501 -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://seed2.doli.network:8500"},"id":1}'
 ```
 
-**Backfill snap sync gaps:**
-
-Nodes that joined via snap sync are missing historical blocks. Two options:
-
-```bash
-# Option A: From local archive copy (requires rsync/scp access)
-doli-node --network mainnet restore --from /path/to/archive --backfill --yes
-
-# Option B: From archiver RPC (no SSH needed)
-doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --backfill --yes
-```
-
-Both verify BLAKE3 checksums on every block. No state rebuild needed.
-
-**Option C: Hot backfill via RPC (no restart needed):**
-
-For nodes already running and synced to tip, use the `backfillFromPeer` RPC endpoint to fill gaps without stopping the node:
-
-```bash
-# Start backfill (node keeps producing)
-curl -X POST http://127.0.0.1:8545 -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://archive.doli.network:8548"},"id":1}'
-
-# Monitor progress
-curl -X POST http://127.0.0.1:8545 -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
-```
-
-Verifies BLAKE3 checksums, chain-linking (parent hash continuity), and anchor connection. See [disaster-recovery.md](disaster-recovery.md) for details.
-
-**DOLI mainnet archiver:**
-- Service: `doli-mainnet-archiver` on omegacortex.ai (`archive.doli.network`)
-- Archive dir: `~/.doli/mainnet/archive/`
-
-**Recommended setup:**
-- Run a dedicated non-producer archiver node
-- Periodically replicate the archive directory to off-site storage (rsync, S3, etc.)
-- This ensures recovery even if all nodes and servers are lost
+For full details on archive format, all recovery methods, hot backfill, and seed infrastructure, see **[archiver.md](archiver.md)**.
 
 ---
 
