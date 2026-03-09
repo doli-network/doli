@@ -2375,8 +2375,22 @@ async fn cmd_producer(
             let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
                 .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
-            // Create add-bond transaction
-            let mut tx = Transaction::new_add_bond(inputs, producer_pubkey, count);
+            // Calculate lock_until for Bond UTXO (same as registration)
+            let chain_info = rpc.get_chain_info().await?;
+            let blocks_per_era: u64 = match chain_info.network.as_str() {
+                "devnet" => 576,
+                _ => 12_614_400,
+            };
+            let lock_until = chain_info.best_height + blocks_per_era + 1000;
+
+            // Create add-bond transaction (lock/unlock: creates Bond UTXO)
+            let mut tx = Transaction::new_add_bond(
+                inputs,
+                producer_pubkey,
+                count,
+                required_amount,
+                lock_until,
+            );
 
             // Add change output
             let change = total_input - required_amount - fee;
@@ -2421,7 +2435,6 @@ async fn cmd_producer(
 
         ProducerCommands::RequestWithdrawal { count, destination } => {
             let wallet = Wallet::load(wallet_path)?;
-            let _keypair = wallet.primary_keypair()?;
             let pubkey_hash = wallet.primary_pubkey_hash();
 
             println!("Request Withdrawal");
@@ -2505,9 +2518,56 @@ async fn cmd_producer(
             let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
                 .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
-            // Create request-withdrawal transaction with FIFO net amount
-            let tx =
-                Transaction::new_request_withdrawal(producer_pubkey, count, dest_hash, total_net);
+            // Lock/unlock: find Bond UTXOs to consume as inputs
+            let all_utxos = rpc.get_utxos(&pubkey_hash, false).await?;
+            let bond_utxos: Vec<_> = all_utxos
+                .iter()
+                .filter(|u| u.output_type == "bond")
+                .collect();
+
+            let bond_unit = {
+                let params = rpc.get_network_params().await?;
+                params.bond_unit
+            };
+            let required_bond_value = bond_unit * count as u64;
+            let available_bond_value: u64 = bond_utxos.iter().map(|u| u.amount).sum();
+
+            if available_bond_value < required_bond_value {
+                anyhow::bail!(
+                    "Insufficient Bond UTXOs. Need {} DOLI in bonds, have {}",
+                    format_balance(required_bond_value),
+                    format_balance(available_bond_value)
+                );
+            }
+
+            // Select Bond UTXOs to cover bond_count × bond_unit (any order)
+            let mut bond_inputs: Vec<Input> = Vec::new();
+            let mut bond_input_total = 0u64;
+            for utxo in &bond_utxos {
+                if bond_input_total >= required_bond_value {
+                    break;
+                }
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
+                bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+                bond_input_total += utxo.amount;
+            }
+
+            // Create request-withdrawal transaction with Bond UTXO inputs
+            let mut tx = Transaction::new_request_withdrawal(
+                bond_inputs,
+                producer_pubkey,
+                count,
+                dest_hash,
+                total_net,
+            );
+
+            // Sign Bond UTXO inputs
+            let keypair = wallet.primary_keypair()?;
+            let signing_message = tx.signing_message();
+            for input in &mut tx.inputs {
+                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            }
 
             let tx_hex = hex::encode(tx.serialize());
             println!("Submitting withdrawal request...");
@@ -2678,14 +2738,57 @@ async fn cmd_producer(
             let dest_hash = Hash::from_hex(&pubkey_hash)
                 .ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?;
 
-            // Create RequestWithdrawal for ALL bonds (instant payout + auto-exit at epoch boundary)
+            // Lock/unlock: find Bond UTXOs to consume as inputs
+            let all_utxos = rpc.get_utxos(&pubkey_hash, false).await?;
+            let bond_utxos: Vec<_> = all_utxos
+                .iter()
+                .filter(|u| u.output_type == "bond")
+                .collect();
+
+            let bond_unit = {
+                let params = rpc.get_network_params().await?;
+                params.bond_unit
+            };
+            let required_bond_value = bond_unit * withdraw_count as u64;
+            let available_bond_value: u64 = bond_utxos.iter().map(|u| u.amount).sum();
+
+            if available_bond_value < required_bond_value {
+                anyhow::bail!(
+                    "Insufficient Bond UTXOs for exit. Need {} DOLI, have {}",
+                    format_balance(required_bond_value),
+                    format_balance(available_bond_value)
+                );
+            }
+
+            let mut bond_inputs: Vec<Input> = Vec::new();
+            let mut bond_input_total = 0u64;
+            for utxo in &bond_utxos {
+                if bond_input_total >= required_bond_value {
+                    break;
+                }
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
+                bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+                bond_input_total += utxo.amount;
+            }
+
+            // Create RequestWithdrawal for ALL bonds with Bond UTXO inputs
             let total_net = breakdown.total_net;
-            let tx = Transaction::new_request_withdrawal(
+            let mut tx = Transaction::new_request_withdrawal(
+                bond_inputs,
                 producer_pubkey,
                 withdraw_count,
                 dest_hash,
                 total_net,
             );
+
+            // Sign Bond UTXO inputs
+            let keypair = wallet.primary_keypair()?;
+            let signing_message = tx.signing_message();
+            for input in &mut tx.inputs {
+                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            }
+
             let tx_hex = hex::encode(tx.serialize());
 
             println!("Submitting exit (withdrawal of all bonds)...");
