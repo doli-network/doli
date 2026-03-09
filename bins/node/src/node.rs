@@ -1200,8 +1200,9 @@ impl Node {
 
         let tier1_set = compute_tier1_set(&producers_with_weights);
         // Build sorted-by-weight list for producer_tier()
+        // Reuse same sort order as compute_tier1_set (weight desc, pubkey asc)
         let mut all_sorted = producers_with_weights.clone();
-        all_sorted.sort_by(|a, b| {
+        all_sorted.sort_unstable_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
         });
@@ -4183,7 +4184,7 @@ impl Node {
             let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
             let tier1 = compute_tier1_set(&pws);
             let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
-            all_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            all_pks.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             drop(producers);
 
             let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);

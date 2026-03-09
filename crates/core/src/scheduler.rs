@@ -103,8 +103,8 @@ impl DeterministicScheduler {
     /// Producers are sorted by public key for deterministic ordering.
     /// Each producer receives consecutive tickets equal to their bond units.
     pub fn new(mut producers: Vec<ScheduledProducer>) -> Self {
-        // Sort by pubkey for deterministic ordering
-        producers.sort_by(|a, b| a.pubkey.as_bytes().cmp(b.pubkey.as_bytes()));
+        // Sort by pubkey for deterministic ordering (unstable is safe: pubkeys are unique)
+        producers.sort_unstable_by(|a, b| a.pubkey.as_bytes().cmp(b.pubkey.as_bytes()));
 
         // Filter out producers with 0 bonds
         producers.retain(|p| p.bond_units > 0);
