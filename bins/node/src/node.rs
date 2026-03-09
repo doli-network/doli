@@ -149,6 +149,8 @@ pub struct Node {
     archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
     /// Blocks waiting for finality before being archived
     pending_archive: std::collections::VecDeque<ArchiveBlock>,
+    /// WebSocket broadcast sender for real-time events (new blocks, new txs)
+    ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
 }
 
 impl Node {
@@ -695,6 +697,7 @@ impl Node {
             maintainer_state: None,
             archive_tx: None,
             pending_archive: std::collections::VecDeque::new(),
+            ws_sender: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -1160,8 +1163,11 @@ impl Node {
             context.maintainer_state = Some(ms.clone());
         }
 
-        let server = RpcServer::new(rpc_config, context);
-        info!("Starting RPC server on {}", listen_addr);
+        let (ws_tx, _ws_rx) = rpc::ws::broadcast_channel();
+        *self.ws_sender.write().await = Some(ws_tx.clone());
+
+        let server = RpcServer::new(rpc_config, context, ws_tx);
+        info!("Starting RPC server on {} (WebSocket at /ws)", listen_addr);
         server.spawn();
 
         Ok(())
@@ -4184,6 +4190,18 @@ impl Node {
             self.flush_finalized_to_archive().await;
         }
 
+        // Broadcast new block event to WebSocket subscribers
+        if let Some(ref ws_tx) = *self.ws_sender.read().await {
+            let _ = ws_tx.send(rpc::WsEvent::NewBlock {
+                hash: block_hash.to_hex(),
+                height,
+                slot: block.header.slot,
+                timestamp: block.header.timestamp,
+                producer: hex::encode(block.header.producer.as_bytes()),
+                tx_count: block.transactions.len(),
+            });
+        }
+
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
         // should be broadcast explicitly by the caller (produce_block).
@@ -4215,6 +4233,16 @@ impl Node {
         match result {
             Ok(_) => {
                 info!("Added transaction {} to mempool", tx_hash);
+                // Broadcast to WebSocket subscribers
+                if let Some(ref ws_tx) = *self.ws_sender.read().await {
+                    let tx_type = format!("{:?}", tx.tx_type).to_lowercase();
+                    let _ = ws_tx.send(rpc::WsEvent::NewTx {
+                        hash: tx_hash.to_hex(),
+                        tx_type,
+                        size: tx.size(),
+                        fee: 0,
+                    });
+                }
                 // Broadcast to network
                 if let Some(ref network) = self.network {
                     let _ = network.broadcast_transaction(tx).await;

@@ -16,6 +16,7 @@ const CF_SLOT_INDEX: &str = "slot_index";
 const CF_PRESENCE: &str = "presence";
 const CF_HASH_TO_HEIGHT: &str = "hash_to_height";
 const CF_TX_INDEX: &str = "tx_index";
+const CF_ADDR_TX_INDEX: &str = "addr_tx_index";
 
 /// Block store
 pub struct BlockStore {
@@ -43,6 +44,7 @@ impl BlockStore {
             CF_PRESENCE,
             CF_HASH_TO_HEIGHT,
             CF_TX_INDEX,
+            CF_ADDR_TX_INDEX,
         ];
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
@@ -52,6 +54,7 @@ impl BlockStore {
         store.migrate_hash_to_height_index();
         store.cleanup_presence_cf();
         store.migrate_tx_index();
+        store.migrate_addr_tx_index();
 
         Ok(store)
     }
@@ -207,6 +210,82 @@ impl BlockStore {
                 info!(
                     "[BLOCK_STORE] Migrated tx_index: {} txs from {} blocks",
                     tx_count, block_count
+                );
+            }
+        }
+    }
+
+    /// Populate addr_tx_index from existing canonical blocks.
+    /// Runs once on first startup. No-op if already populated.
+    fn migrate_addr_tx_index(&self) {
+        let cf_addr = self.db.cf_handle(CF_ADDR_TX_INDEX).unwrap();
+
+        if self
+            .db
+            .iterator_cf(cf_addr, rocksdb::IteratorMode::Start)
+            .flatten()
+            .next()
+            .is_some()
+        {
+            return;
+        }
+
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
+
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut addr_count = 0u64;
+        let mut block_count = 0u64;
+
+        for (height_bytes, hash_bytes) in self
+            .db
+            .iterator_cf(cf_height, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let body_bytes = match self.db.get_cf(cf_bodies, &hash_bytes) {
+                Ok(Some(b)) => b,
+                _ => continue,
+            };
+            let transactions: Vec<doli_core::Transaction> = match bincode::deserialize(&body_bytes)
+            {
+                Ok(txs) => txs,
+                Err(_) => continue,
+            };
+
+            let mut seen = std::collections::HashSet::new();
+            for tx in &transactions {
+                for output in &tx.outputs {
+                    let addr_bytes = output.pubkey_hash.as_bytes();
+                    if seen.insert(*addr_bytes) {
+                        let mut key = [0u8; 40];
+                        key[..32].copy_from_slice(addr_bytes);
+                        key[32..].copy_from_slice(&height_bytes);
+                        batch.put_cf(cf_addr, key, []);
+                        addr_count += 1;
+                    }
+                }
+            }
+            block_count += 1;
+
+            if block_count.is_multiple_of(10_000) {
+                if let Err(e) = self.db.write(std::mem::take(&mut batch)) {
+                    warn!("Failed to write addr_tx_index batch: {}", e);
+                    return;
+                }
+                info!(
+                    "[BLOCK_STORE] addr_tx_index migration: {} blocks, {} entries",
+                    block_count, addr_count
+                );
+            }
+        }
+
+        if addr_count > 0 {
+            if let Err(e) = self.db.write(batch) {
+                warn!("Failed to migrate addr_tx_index: {}", e);
+            } else {
+                info!(
+                    "[BLOCK_STORE] Migrated addr_tx_index: {} entries from {} blocks",
+                    addr_count, block_count
                 );
             }
         }
@@ -379,10 +458,24 @@ impl BlockStore {
 
         // Update tx index: tx_hash → block height
         let cf_tx = self.db.cf_handle(CF_TX_INDEX).unwrap();
+        let cf_addr = self.db.cf_handle(CF_ADDR_TX_INDEX).unwrap();
+        let mut indexed_addrs = std::collections::HashSet::new();
         for tx in &block.transactions {
             let tx_hash = tx.hash();
             self.db
                 .put_cf(cf_tx, tx_hash.as_bytes(), height.to_le_bytes())?;
+
+            // Index output addresses: addr(32) || height(8 BE) → empty
+            for output in &tx.outputs {
+                let addr_bytes = output.pubkey_hash.as_bytes();
+                if indexed_addrs.insert(*addr_bytes) {
+                    let mut key = [0u8; 40];
+                    key[..32].copy_from_slice(addr_bytes);
+                    key[32..].copy_from_slice(&height.to_be_bytes());
+                    self.db.put_cf(cf_addr, key, [])?;
+                }
+            }
+            indexed_addrs.clear();
         }
 
         Ok(())
@@ -704,6 +797,54 @@ impl BlockStore {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
         Ok(Some(u64::from_le_bytes(arr)))
+    }
+
+    /// Get block heights containing transactions for a given address.
+    /// Returns heights in descending order, starting before `before_height` (exclusive).
+    pub fn get_address_heights(
+        &self,
+        pubkey_hash: &Hash,
+        before_height: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<u64>, StorageError> {
+        let cf_addr = self.db.cf_handle(CF_ADDR_TX_INDEX).unwrap();
+        let prefix = pubkey_hash.as_bytes();
+
+        // Build start key: addr || start_height (big-endian for ordered iteration)
+        let start_height = before_height.unwrap_or(u64::MAX);
+        let mut start_key = [0u8; 40];
+        start_key[..32].copy_from_slice(prefix);
+        start_key[32..].copy_from_slice(&start_height.to_be_bytes());
+
+        let mut heights = Vec::with_capacity(limit);
+        let iter = self.db.iterator_cf(
+            cf_addr,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Reverse),
+        );
+
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if key.len() != 40 || &key[..32] != prefix {
+                break; // Past this address's entries
+            }
+            let mut h_bytes = [0u8; 8];
+            h_bytes.copy_from_slice(&key[32..40]);
+            let h = u64::from_be_bytes(h_bytes);
+
+            // Skip the before_height itself (exclusive)
+            if let Some(bh) = before_height {
+                if h >= bh {
+                    continue;
+                }
+            }
+
+            heights.push(h);
+            if heights.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(heights)
     }
 
     /// Get block by height

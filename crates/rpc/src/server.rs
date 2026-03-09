@@ -8,9 +8,10 @@ use axum::{
     extract::State,
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
@@ -18,6 +19,7 @@ use tracing::{error, info};
 use crate::error::RpcError;
 use crate::methods::RpcContext;
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
+use crate::ws::{self, WsEvent};
 
 /// Maximum request body size (256 KB)
 const MAX_BODY_SIZE: usize = 256 * 1024;
@@ -51,23 +53,35 @@ impl Default for RpcServerConfig {
 pub struct RpcServer {
     config: RpcServerConfig,
     context: Arc<RpcContext>,
+    ws_sender: Arc<broadcast::Sender<WsEvent>>,
 }
 
 impl RpcServer {
     /// Create a new RPC server
-    pub fn new(config: RpcServerConfig, context: RpcContext) -> Self {
+    pub fn new(
+        config: RpcServerConfig,
+        context: RpcContext,
+        ws_sender: broadcast::Sender<WsEvent>,
+    ) -> Self {
         Self {
             config,
             context: Arc::new(context),
+            ws_sender: Arc::new(ws_sender),
         }
     }
 
     /// Run the server
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut app = Router::new()
+        let rpc_router = Router::new()
             .route("/", post(handle_rpc))
             .with_state(self.context.clone())
             .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE));
+
+        let ws_router = Router::new()
+            .route("/ws", get(ws::ws_handler))
+            .with_state(self.ws_sender.clone());
+
+        let mut app = rpc_router.merge(ws_router);
 
         // Add CORS if enabled
         if self.config.enable_cors {

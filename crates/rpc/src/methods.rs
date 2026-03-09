@@ -324,6 +324,8 @@ impl RpcContext {
             "getBondDetails" => self.get_bond_details(request.params).await,
             "backfillFromPeer" => self.backfill_from_peer(request.params).await,
             "backfillStatus" => self.backfill_status().await,
+            "getChainStats" => self.get_chain_stats().await,
+            "getMempoolTransactions" => self.get_mempool_transactions(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -797,7 +799,7 @@ impl RpcContext {
         serde_json::to_value(responses).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 
-    /// Get transaction history for an address
+    /// Get transaction history for an address (uses addr_tx_index for O(1) lookup)
     async fn get_history(&self, params: Value) -> Result<Value, RpcError> {
         let params: GetHistoryParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
@@ -808,42 +810,59 @@ impl RpcContext {
         let best_height = chain_state.best_height;
         drop(chain_state);
 
-        let mut history: Vec<HistoryEntryResponse> = Vec::new();
         let limit = params.limit.min(100);
-        let max_blocks_to_scan: u64 = 1000;
-
-        let start_height = params
+        let before_height = params
             .before_height
-            .map(|h| h.saturating_sub(1).min(best_height))
-            .unwrap_or(best_height);
-        let end_height = start_height.saturating_sub(max_blocks_to_scan);
+            .map(|h| h.min(best_height + 1))
+            .unwrap_or(best_height + 1);
 
-        // Build a tx output cache as we scan: tx_hash -> Vec<Output>
-        // This allows resolving inputs to their original outputs for amount_sent/fee
+        // Use address index to find relevant block heights (descending)
+        let heights = self
+            .block_store
+            .get_address_heights(&pubkey_hash, Some(before_height), limit * 2)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?;
+
+        // Build tx output cache for these blocks (for input resolution)
         let mut tx_output_cache: std::collections::HashMap<
             crypto::Hash,
             Vec<doli_core::transaction::Output>,
         > = std::collections::HashMap::new();
 
-        // First pass: collect all tx outputs in the scan range
-        for height in end_height..=start_height {
+        for &height in &heights {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
                 for tx in &block.transactions {
                     tx_output_cache.insert(tx.hash(), tx.outputs.clone());
+                    // Also cache parent tx outputs for input resolution
+                    for input in &tx.inputs {
+                        if !tx_output_cache.contains_key(&input.prev_tx_hash) {
+                            if let Ok(Some(parent_height)) =
+                                self.block_store.get_tx_block_height(&input.prev_tx_hash)
+                            {
+                                if let Ok(Some(parent_block)) =
+                                    self.block_store.get_block_by_height(parent_height)
+                                {
+                                    for ptx in &parent_block.transactions {
+                                        tx_output_cache.insert(ptx.hash(), ptx.outputs.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Second pass: build history entries
-        for height in (end_height..=start_height).rev() {
+        // Build history entries from indexed blocks
+        let mut history: Vec<HistoryEntryResponse> = Vec::new();
+
+        for &height in &heights {
             if history.len() >= limit {
                 break;
             }
 
             let block = match self.block_store.get_block_by_height(height) {
                 Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(_) => continue,
+                _ => continue,
             };
 
             let block_hash = block.hash();
@@ -856,7 +875,6 @@ impl RpcContext {
                 let mut total_input: u64 = 0;
                 let mut is_relevant = false;
 
-                // Check outputs for received amounts
                 for output in &tx.outputs {
                     if output.pubkey_hash == pubkey_hash {
                         amount_received += output.amount;
@@ -864,7 +882,6 @@ impl RpcContext {
                     }
                 }
 
-                // Check inputs for sent amounts
                 for input in &tx.inputs {
                     if let Some(prev_outputs) = tx_output_cache.get(&input.prev_tx_hash) {
                         if let Some(prev_output) = prev_outputs.get(input.output_index as usize) {
@@ -881,7 +898,6 @@ impl RpcContext {
                     continue;
                 }
 
-                // Fee = total inputs - total outputs (only for txs where we know all inputs)
                 let total_output: u64 = tx.outputs.iter().map(|o| o.amount).sum();
                 let fee = if total_input > 0 && total_input >= total_output {
                     total_input - total_output
@@ -1535,5 +1551,64 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get chain statistics (supply, address count, UTXO count, staking info)
+    async fn get_chain_stats(&self) -> Result<Value, RpcError> {
+        let chain_state = self.chain_state.read().await;
+        let height = chain_state.best_height;
+        drop(chain_state);
+
+        let utxo_set = self.utxo_set.read().await;
+        let total_supply = utxo_set.total_supply();
+        let address_count = utxo_set.address_count();
+        let utxo_count = utxo_set.utxo_count();
+        drop(utxo_set);
+
+        let (active_producers, total_staked) = if let Some(ref ps) = self.producer_set {
+            let producers = ps.read().await;
+            let active_list = producers.active_producers();
+            let staked: u64 = active_list.iter().map(|p| p.bond_amount).sum();
+            (active_list.len(), staked)
+        } else {
+            (0, 0)
+        };
+
+        let response = ChainStatsResponse {
+            total_supply,
+            address_count,
+            utxo_count,
+            active_producers,
+            total_staked,
+            height,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get pending mempool transactions
+    async fn get_mempool_transactions(&self, params: Value) -> Result<Value, RpcError> {
+        let params: GetMempoolTxsParams =
+            serde_json::from_value(params).unwrap_or(GetMempoolTxsParams { limit: 100 });
+        let limit = params.limit.min(500);
+
+        let mempool = self.mempool.read().await;
+        let mut txs: Vec<MempoolTxResponse> = mempool
+            .iter()
+            .take(limit)
+            .map(|(_hash, entry)| MempoolTxResponse {
+                hash: entry.tx_hash.to_hex(),
+                tx_type: format!("{:?}", entry.tx.tx_type).to_lowercase(),
+                size: entry.size,
+                fee: entry.fee,
+                fee_rate: entry.fee_rate,
+                added_time: entry.added_time,
+            })
+            .collect();
+
+        // Sort by fee rate descending (highest-fee first)
+        txs.sort_by(|a, b| b.fee_rate.cmp(&a.fee_rate));
+
+        serde_json::to_value(txs).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }

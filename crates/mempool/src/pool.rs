@@ -404,6 +404,11 @@ impl Mempool {
         selected
     }
 
+    /// Iterate all mempool entries
+    pub fn iter(&self) -> impl Iterator<Item = (&Hash, &MempoolEntry)> {
+        self.entries.iter()
+    }
+
     /// Get transactions for an address
     pub fn get_by_address(&self, pubkey_hash: &Hash) -> Vec<&MempoolEntry> {
         self.by_address

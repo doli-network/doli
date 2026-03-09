@@ -778,6 +778,54 @@ mod tests {
     }
 }
 
+/// Chain statistics response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainStatsResponse {
+    /// Total UTXO supply (base units)
+    pub total_supply: u64,
+    /// Number of unique addresses with UTXOs
+    pub address_count: u64,
+    /// Total UTXO count
+    pub utxo_count: u64,
+    /// Number of active producers
+    pub active_producers: usize,
+    /// Total bonds staked (base units)
+    pub total_staked: u64,
+    /// Chain height
+    pub height: u64,
+}
+
+/// Mempool transaction entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MempoolTxResponse {
+    /// Transaction hash
+    pub hash: String,
+    /// Transaction type
+    pub tx_type: String,
+    /// Size in bytes
+    pub size: usize,
+    /// Fee
+    pub fee: u64,
+    /// Fee rate (per byte)
+    pub fee_rate: u64,
+    /// Time added to mempool (unix timestamp)
+    pub added_time: u64,
+}
+
+/// Parameters for getMempoolTransactions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetMempoolTxsParams {
+    /// Maximum number of transactions to return (default 100)
+    #[serde(default = "default_mempool_limit")]
+    pub limit: usize,
+}
+
+fn default_mempool_limit() -> usize {
+    100
+}
+
 /// Parameters for backfillFromPeer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackfillParams {
