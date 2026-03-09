@@ -1345,21 +1345,32 @@ impl RpcContext {
             return Err(RpcError::internal_error("Node has no blocks yet"));
         }
 
-        // Check if block 1 exists — if so, no gap
-        let has_block_1 = self
+        // Determine start height: 0 if genesis block missing, else 1
+        let has_block_0 = self
             .block_store
-            .get_block_by_height(1)
+            .get_block_by_height(0)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
             .is_some();
-        if has_block_1 {
-            return Ok(serde_json::json!({
-                "started": false,
-                "message": "No gap detected — block 1 exists. Chain is complete."
-            }));
+        let start_height: u64 = if has_block_0 { 1 } else { 0 };
+
+        // Check if block at start_height exists — if so, check block 1
+        if start_height == 1 {
+            let has_block_1 = self
+                .block_store
+                .get_block_by_height(1)
+                .map_err(|e| RpcError::internal_error(e.to_string()))?
+                .is_some();
+            if has_block_1 {
+                return Ok(serde_json::json!({
+                    "started": false,
+                    "message": "No gap detected — block 1 exists. Chain is complete."
+                }));
+            }
         }
 
-        // Find lowest existing block (binary search)
-        let mut lo = 1u64;
+        // Find lowest existing block (binary search from start_height+1)
+        let search_start = if start_height == 0 { 0u64 } else { 1u64 };
+        let mut lo = search_start;
         let mut hi = tip_height;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -1375,11 +1386,14 @@ impl RpcContext {
             }
         }
         let lowest_existing = lo;
-        let gap_end = lowest_existing - 1; // blocks 1..=gap_end are missing
+        let gap_end = lowest_existing - 1; // blocks start_height..=gap_end are missing
+        let total_to_fetch = gap_end - start_height + 1;
 
         // Reset state
         self.backfill_state.imported.store(0, Ordering::SeqCst);
-        self.backfill_state.total.store(gap_end, Ordering::SeqCst);
+        self.backfill_state
+            .total
+            .store(total_to_fetch, Ordering::SeqCst);
         *self.backfill_state.error.write().await = None;
         self.backfill_state.running.store(true, Ordering::SeqCst);
 
@@ -1393,16 +1407,6 @@ impl RpcContext {
             })?;
         let anchor_prev_hash = anchor_block.header.prev_hash;
 
-        // Get block 0's hash for chain-linking (block 1's prev_hash points here)
-        let block0_hash = self
-            .block_store
-            .get_block_by_height(0)
-            .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(|| {
-                RpcError::internal_error("Genesis block (height 0) not found".to_string())
-            })?
-            .hash();
-
         // Spawn background task
         let block_store = self.block_store.clone();
         let state = self.backfill_state.clone();
@@ -1410,15 +1414,16 @@ impl RpcContext {
 
         tokio::spawn(async move {
             info!(
-                "Backfill started: fetching blocks 1..={} from {}",
-                gap_end, rpc_url
+                "Backfill started: fetching blocks {}..={} from {}",
+                start_height, gap_end, rpc_url
             );
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
-            let mut prev_hash = block0_hash; // block 1's parent is block 0's hash
+            // For height 0, prev_hash check is skipped; for height 1+, set from block 0
+            let mut prev_hash = crypto::Hash::default();
 
-            for h in 1..=gap_end {
+            for h in start_height..=gap_end {
                 // Check if block already exists (idempotent)
                 if let Ok(Some(existing)) = block_store.get_block_by_height(h) {
                     prev_hash = existing.hash();
@@ -1522,8 +1527,8 @@ impl RpcContext {
                     }
                 };
 
-                // Chain linking: verify parent_hash matches previous block
-                if block.header.prev_hash != prev_hash {
+                // Chain linking: verify parent_hash matches previous block (skip for genesis)
+                if h > 0 && block.header.prev_hash != prev_hash {
                     let msg = format!(
                         "Chain link broken at height {}: expected parent {}, got {}",
                         h,
@@ -1581,8 +1586,8 @@ impl RpcContext {
 
         Ok(serde_json::json!({
             "started": true,
-            "gaps": format!("1-{}", gap_end),
-            "total": gap_end
+            "gaps": format!("{}-{}", start_height, gap_end),
+            "total": total_to_fetch
         }))
     }
 
