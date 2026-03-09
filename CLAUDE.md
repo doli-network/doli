@@ -338,9 +338,15 @@ DOLI_FALLBACK_TIMEOUT_MS, DOLI_MAX_FALLBACK_RANKS, DOLI_NETWORK_MARGIN_MS
 - **Burnt**: Slashing (100%), Early Withdrawal (75%→0% over 1 day, per-bond FIFO), Reg Fees
 - **Bond Unit**: Fixed at 10 DOLI across all eras (never decreases)
 
-### Bond Vesting (Per-Bond FIFO — Network-Differentiated)
+### Bond Vesting (UTXO-Derived, Per-Bond FIFO — Network-Differentiated)
 
-Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **FIFO order** (oldest first), with per-bond penalty based on individual age. **Instant payout** — funds available in the same block, no delay. Bonds removed at next epoch boundary.
+Each bond is a Bond UTXO with `creation_slot` stored in `extra_data` (4 bytes LE). Withdrawal consumes Bond UTXOs in **FIFO order** (oldest first), with per-bond penalty derived from the UTXO's `extra_data`. **Instant payout** — funds available in the same block, no delay. Bond count update takes effect at next epoch boundary.
+
+**Bond tracking is UTXO-derived** — no bond fields in ProducerInfo:
+- `bond_count` = count of Bond UTXOs for a pubkey_hash
+- `creation_slot` = decoded from Bond UTXO's `extra_data`
+- `vesting_penalty` = computed from `creation_slot` vs current slot
+- **Epoch bond snapshot**: `HashMap<PublicKey, u32>` built at epoch boundary from UTXO set, frozen for scheduling
 
 **Mainnet** (4-year, 1-year quarters):
 
@@ -364,9 +370,17 @@ Each bond has its own `StoredBondEntry` with `creation_slot`. Withdrawal uses **
 
 Testnet: `vesting_quarter_slots = 2,160` (6h) via `NetworkParams`. Devnet configurable via `DOLI_VESTING_QUARTER_SLOTS`.
 
-**Key fields on ProducerInfo**: `bond_entries: Vec<StoredBondEntry>`, `withdrawal_pending_count: u32` (prevents double-withdrawal in same epoch).
+**ProducerInfo** (simplified — no bond fields):
+```rust
+pub struct ProducerInfo {
+    pub public_key: PublicKey,
+    pub registered_at: u32,
+    pub status: ProducerStatus,
+    pub seniority_weight: u8,
+}
+```
 
-**RPC**: `getBondDetails` returns real per-bond data (creation_slot, penalty_pct, vested status per bond).
+**RPC**: `getBondDetails` reads Bond UTXOs directly from the UTXO set (creation_slot, penalty_pct, vested status per bond).
 
 **CLI**: `producer status` shows per-bond maturation tiers. `producer request-withdrawal --count N` shows interactive FIFO breakdown with per-tier penalties before confirmation.
 
@@ -433,7 +447,7 @@ Testnet: `vesting_quarter_slots = 2,160` (6h) via `NetworkParams`. Devnet config
 | `block_store.rs` | RocksDB block storage (headers, bodies, indexes) |
 | `state_db.rs` | Unified StateDb: atomic WriteBatch per block (UTXOs, producers, chain state) |
 | `utxo.rs` | In-memory UTXO working set for fast reads |
-| `producer.rs` | Producer registry (per-bond `StoredBondEntry` tracking, FIFO withdrawal) |
+| `producer.rs` | Producer registry (simplified — bond data derived from UTXO set) |
 | `archiver.rs` | Block archiver for disaster recovery (`--archive-to`, atomic file writes, catch-up) |
 
 **BlockStore Column Families**: `headers`, `bodies`, `height_index`, `slot_index`, `presence`
@@ -449,8 +463,8 @@ Testnet: `vesting_quarter_slots = 2,160` (6h) via `NetworkParams`. Devnet config
 | 4 | ClaimBond | Claim unbonded stake |
 | 5 | Slash | Slash equivocating producer |
 | 6 | Coinbase | Block reward |
-| 7 | AddBond | Add to existing bond |
-| 8 | WithdrawalRequest | Instant bond withdrawal (FIFO, per-bond penalty, payout in same block) |
+| 7 | AddBond | Add bonds (creates Bond UTXOs with creation_slot in extra_data) |
+| 8 | WithdrawalRequest | Instant bond withdrawal (consumes Bond UTXOs FIFO, per-bond penalty, payout in same block) |
 | 9 | WithdrawalClaim | Reserved (unused — withdrawal is now instant via TxType 8) |
 | 10 | EpochReward | Epoch-level rewards |
 | 11 | MaintainerAdd | Add maintainer (governance) |

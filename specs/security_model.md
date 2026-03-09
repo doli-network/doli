@@ -272,14 +272,7 @@ The bond serves multiple security functions:
 | Accountability | Bond at risk for misbehavior |
 | Long-term alignment | Lock duration creates stake in network success |
 
-**Bond Schedule**:
-```
-Era 0 (years 0-4):   1,000 coins
-Era 1 (years 4-8):     700 coins (30% reduction)
-Era 2 (years 8-12):    490 coins
-Era 3 (years 12-16):   343 coins
-...
-```
+**Bond Unit**: Fixed at 10 DOLI per bond across all eras (never decreases). Producers can stake 1-10,000 bonds (10-100,000 DOLI). Bonds are stored as Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`) with `creation_slot` in `extra_data`.
 
 ### 4.2 Slashing Conditions
 
@@ -1196,7 +1189,7 @@ This checklist helps node operators and producers secure their DOLI infrastructu
 
 2. **Rotate producer key** if compromised
    - Generate new key on secure machine
-   - Withdraw bond (1-week cooldown)
+   - Withdraw bonds (instant — FIFO penalty based on bond age)
    - Re-register with new key
 
 3. **Investigate**

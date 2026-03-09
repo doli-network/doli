@@ -375,8 +375,7 @@ Producer Status
 Address:       doli17engd6utnqs4ag6l6xme7tdhvgh6rcd8ezay5qw0vssqxyw239ts9dygef
 Status:        active
 Registered at: block 0
-Bond Count:    10
-Bond Amount:   100.00000000 DOLI
+Bond Count:    10 (from UTXO set)
 Current Era:   1
 
 Bonds: 10 (100.00000000 DOLI):
@@ -414,14 +413,16 @@ doli producer bonds
 ```
 Bond Details (5 bonds, 50.00000000 DOLI staked)
 ------------------------------------------------------------
- #    Created (slot)   Age          Quarter    Penalty  Time to Next
- ----------------------------------------------------------------------
- 1    slot 361         23h 45m      Q4+        0%       Fully vested
- 2    slot 361         23h 45m      Q4+        0%       Fully vested
- 3    slot 2500        12h 10m      Q3         25%      ~5h 50m to 0%
- 4    slot 5000        5h 30m       Q2         50%      ~30m to 25%
- 5    slot 8000        1h 20m       Q1         75%      ~4h 40m to 50%
+ #    Outpoint              Created (slot)   Age          Quarter    Penalty  Time to Next
+ -----------------------------------------------------------------------------------------
+ 1    a1b2c3d4...:0         slot 361         23h 45m      Q4+        0%       Fully vested
+ 2    a1b2c3d4...:1         slot 361         23h 45m      Q4+        0%       Fully vested
+ 3    e5f6a7b8...:0         slot 2500        12h 10m      Q3         25%      ~5h 50m to 0%
+ 4    c9d0e1f2...:0         slot 5000        5h 30m       Q2         50%      ~30m to 25%
+ 5    f3a4b5c6...:0         slot 8000        1h 20m       Q1         75%      ~4h 40m to 50%
 ```
+
+Bond data is derived from Bond UTXOs in the UTXO set (`output_type=1`, `lock_until=u64::MAX`). The `creation_slot` is stored in the Bond UTXO's `extra_data` field (4 bytes, little-endian u32).
 
 **Vesting schedule** (1-day, quarter-based):
 
@@ -479,7 +480,7 @@ doli producer add-bond --count 3
 
 ### 4.6. Withdraw Bonds
 
-Withdraw bonds instantly using FIFO order (oldest first). Each bond's penalty depends on its individual vesting age. Funds are available immediately; bonds are removed at the next epoch boundary.
+Withdraw bonds instantly using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates a Normal output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). Funds are available immediately in the same block.
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]

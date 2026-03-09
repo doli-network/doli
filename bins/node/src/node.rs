@@ -3134,14 +3134,25 @@ impl Node {
         let state = self.chain_state.read().await;
         let height = state.best_height + 1;
 
-        // Build weighted producer list
+        // Build weighted producer list (bond counts derived from UTXO set)
         let producers = self.producer_set.read().await;
-        let active = producers.active_producers_at_height(height);
-        let weighted: Vec<(PublicKey, u64)> = active
+        let active: Vec<PublicKey> = producers
+            .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key, p.bond_count as u64))
+            .map(|p| p.public_key)
             .collect();
         drop(producers);
+
+        let utxo = self.utxo_set.read().await;
+        let weighted: Vec<(PublicKey, u64)> = active
+            .into_iter()
+            .map(|pk| {
+                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                (pk, count)
+            })
+            .collect();
+        drop(utxo);
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3224,15 +3235,26 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Build weighted producer list
+        // Build weighted producer list (bond counts from UTXO set)
         let producers = self.producer_set.read().await;
-        let active = producers.active_producers_at_height(height);
-        let weighted: Vec<(PublicKey, u64)> = active
+        let active: Vec<PublicKey> = producers
+            .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key, p.bond_count as u64))
+            .map(|p| p.public_key)
             .collect();
         let pending_keys = producers.pending_registration_keys();
         drop(producers);
+
+        let utxo = self.utxo_set.read().await;
+        let weighted: Vec<(PublicKey, u64)> = active
+            .into_iter()
+            .map(|pk| {
+                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                (pk, count)
+            })
+            .collect();
+        drop(utxo);
 
         // Build bootstrap producer list for validation.
         //
@@ -3433,7 +3455,7 @@ impl Node {
                 if !is_reward_tx {
                     let _ = batch.spend_transaction_utxos(tx);
                 }
-                batch.add_transaction_utxos(tx, height, is_reward_tx);
+                batch.add_transaction_utxos(tx, height, is_reward_tx, block.header.slot);
 
                 // Process registration transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::Registration {
@@ -3584,8 +3606,11 @@ impl Node {
                                     data.bond_count, available
                                 );
                             } else {
-                                // Validate: output amount <= FIFO net calculation
-                                let expected = info.calculate_withdrawal_with_quarter(
+                                // Validate: output amount <= FIFO net calculation (from UTXO bonds)
+                                let pubkey_hash = crypto_hash(data.producer_pubkey.as_bytes());
+                                let bond_entries = utxo.get_bond_entries(&pubkey_hash);
+                                let expected = storage::producer::calculate_withdrawal_from_bonds(
+                                    &bond_entries,
                                     data.bond_count,
                                     block.header.slot,
                                     self.config.network.params().vesting_quarter_slots,
@@ -4037,6 +4062,7 @@ impl Node {
                             bond_unit,
                             pubkey_hash,
                             u64::MAX, // locked until withdrawal
+                            0,        // genesis bond — slot 0
                         ),
                         height,
                         is_coinbase: false,
@@ -4734,18 +4760,30 @@ impl Node {
             }
         }
 
-        // Get active producers with their bond counts for weighted round-robin selection.
+        // Get active producers with bond counts derived from UTXO set.
         // Per WHITEPAPER Section 7: each bond unit = one ticket in the rotation.
         // Use active_producers_at_height to ensure all nodes have the same view -
         // new producers must wait ACTIVATION_DELAY blocks before entering the scheduler.
         let producers = self.producer_set.read().await;
-        let active_with_weights: Vec<(PublicKey, u64)> = producers
+        let active_producers: Vec<PublicKey> = producers
             .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key, p.bond_count as u64))
+            .map(|p| p.public_key)
             .collect();
         let total_producers = producers.total_count();
         drop(producers);
+
+        // Derive bond counts from UTXO set (source of truth for bonds)
+        let utxo = self.utxo_set.read().await;
+        let active_with_weights: Vec<(PublicKey, u64)> = active_producers
+            .into_iter()
+            .map(|pk| {
+                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                (pk, count)
+            })
+            .collect();
+        drop(utxo);
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
@@ -5718,7 +5756,10 @@ impl Node {
                             // No delegations: 100% to producer
                             reward_outputs.push((total_reward, pubkey_hash));
                         } else {
-                            let own_bonds = producer_info.bond_count as u64;
+                            // Derive own bond count from UTXO set
+                            let utxo = self.utxo_set.read().await;
+                            let own_bonds = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                            drop(utxo);
                             let delegated: u64 = producer_info
                                 .received_delegations
                                 .iter()

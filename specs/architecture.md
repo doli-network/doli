@@ -169,14 +169,27 @@ crash-inconsistency between state components.
 ```
 Column Families:
 ├── cf_utxo             # Outpoint (36B) → UtxoEntry (bincode)
+│                       #   Normal: {output_type:0, amount, pubkey_hash, lock_until:0, extra_data:[]}
+│                       #   Bond:   {output_type:1, amount, pubkey_hash, lock_until:MAX, extra_data:[creation_slot as u32 LE]}
 ├── cf_utxo_by_pubkey   # pubkey_hash(32B) ++ outpoint(36B) → 0x00
 ├── cf_producers        # pubkey_hash (32B) → ProducerInfo (bincode)
+│                       #   Simplified: {public_key, registered_at, status, seniority_weight}
+│                       #   Bond data derived from UTXO set (no bond fields in ProducerInfo)
 ├── cf_exit_history     # pubkey_hash (32B) → exit_height (8B LE)
 └── cf_meta             # string key → varies
     ├── "chain_state"       → ChainState (bincode)
     ├── "pending_updates"   → Vec<PendingProducerUpdate> (bincode)
     └── "last_applied"      → {height: u64, hash: Hash, slot: u32} (44B)
 ```
+
+**Bond tracking via UTXO set:** Bond count and vesting data are not stored in
+ProducerInfo. Instead, they are derived from Bond UTXOs in the UTXO set:
+- `bond_count`: count of Bond UTXOs for a given pubkey_hash
+- `creation_slot`: read from 4-byte extra_data in each Bond UTXO
+- `vesting_penalty`: computed from `creation_slot` vs current slot
+- **Epoch bond snapshot**: at each epoch boundary, a `HashMap<PublicKey, u32>`
+  is built by scanning all Bond UTXOs. This snapshot drives scheduling for the
+  entire epoch. Mid-epoch changes take effect at next epoch boundary.
 
 **Atomicity**: `apply_block()` creates a `BlockBatch` that collects all UTXO
 spends/adds, producer mutations, and chain state updates, then commits them

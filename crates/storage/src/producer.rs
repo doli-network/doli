@@ -426,6 +426,38 @@ pub fn bond_unit_for_network(network: Network) -> u64 {
     network.initial_bond()
 }
 
+/// Calculate FIFO withdrawal from UTXO-derived bond entries.
+///
+/// `bonds` must be sorted by creation_slot ascending (oldest first) —
+/// as returned by `UtxoSet::get_bond_entries()`.
+///
+/// Returns `Some((net_payout, total_penalty))` or `None` if count exceeds available.
+pub fn calculate_withdrawal_from_bonds(
+    bonds: &[(crate::utxo::Outpoint, u32, u64)],
+    count: u32,
+    current_slot: u32,
+    quarter_slots: u64,
+) -> Option<(u64, u64)> {
+    if count == 0 || count as usize > bonds.len() {
+        return None;
+    }
+
+    let mut total_net: u64 = 0;
+    let mut total_penalty: u64 = 0;
+
+    for &(_, creation_slot, amount) in bonds.iter().take(count as usize) {
+        let age = (current_slot as u64).saturating_sub(creation_slot as u64) as u32;
+        let penalty_pct =
+            doli_core::consensus::withdrawal_penalty_rate_with_quarter(age, quarter_slots as u32);
+        let penalty = (amount * penalty_pct as u64) / 100;
+        let net = amount - penalty;
+        total_net += net;
+        total_penalty += penalty;
+    }
+
+    Some((total_net, total_penalty))
+}
+
 impl ProducerInfo {
     /// Create a new active producer with a single bond
     ///

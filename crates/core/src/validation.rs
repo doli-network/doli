@@ -1423,11 +1423,12 @@ fn validate_outputs(outputs: &[Output]) -> Result<Amount, ValidationError> {
                         i
                     )));
                 }
-                // Bond outputs must not carry extra_data
-                if !output.extra_data.is_empty() {
+                // Bond outputs must carry exactly 4 bytes of extra_data (creation_slot)
+                if output.extra_data.len() != 4 {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "bond output {} has non-empty extra_data",
-                        i
+                        "bond output {} has {} bytes extra_data, expected 4 (creation_slot)",
+                        i,
+                        output.extra_data.len()
                     )));
                 }
             }
@@ -3137,7 +3138,7 @@ mod tests {
 
         let prev_tx_hash = crypto::hash::hash(b"prev_tx");
         // Output locked until height 1000
-        let prev_output = Output::bond(1000, pubkey_hash, 1000);
+        let prev_output = Output::bond(1000, pubkey_hash, 1000, 0);
 
         let mut utxo_provider = MockUtxoProvider::new();
         utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
@@ -3514,8 +3515,8 @@ mod tests {
             tx_type: TxType::AddBond,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
             outputs: vec![
-                Output::bond(5_000_000_000, pubkey_hash, 10_000_000), // Bond output required
-                Output::normal(100, pubkey_hash),                     // Normal change OK
+                Output::bond(5_000_000_000, pubkey_hash, 10_000_000, 0), // Bond output required
+                Output::normal(100, pubkey_hash),                        // Normal change OK
             ],
             extra_data: bond_data.to_bytes(),
         };
@@ -3566,7 +3567,7 @@ mod tests {
             version: 1,
             tx_type: TxType::AddBond,
             inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)],
-            outputs: vec![Output::bond(1_000_000_000, pubkey_hash, 10_000_000)],
+            outputs: vec![Output::bond(1_000_000_000, pubkey_hash, 10_000_000, 0)],
             extra_data: bond_data.to_bytes(),
         };
 
@@ -3869,7 +3870,7 @@ mod tests {
             version: 1,
             tx_type: TxType::ClaimWithdrawal,
             inputs: vec![],
-            outputs: vec![Output::bond(500_000_000, destination, 1000)], // Should be Normal
+            outputs: vec![Output::bond(500_000_000, destination, 1000, 0)], // Should be Normal
             extra_data: claim_data.to_bytes(),
         };
 
@@ -3988,9 +3989,10 @@ mod tests {
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
-        // Change to bond output (invalid)
+        // Change to bond output (invalid for epoch reward)
         tx.outputs[0].output_type = OutputType::Bond;
         tx.outputs[0].lock_until = 1000;
+        tx.outputs[0].extra_data = 0u32.to_le_bytes().to_vec();
 
         let ctx = test_context();
         let result = validate_transaction(&tx, &ctx);

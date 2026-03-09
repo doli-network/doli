@@ -1220,33 +1220,40 @@ impl RpcContext {
             .get_by_pubkey(&pubkey)
             .ok_or_else(RpcError::producer_not_found)?;
 
-        // Build real per-bond data from bond_entries
-        let bonds: Vec<BondEntryResponse> = info
-            .bond_entries
+        // Derive bond data from UTXO set (source of truth)
+        let pubkey_hash = crypto::hash::hash(pubkey.as_bytes());
+        let utxo_set = self.utxo_set.read().await;
+        let utxo_bonds = utxo_set.get_bond_entries(&pubkey_hash);
+        let bond_count = utxo_bonds.len() as u32;
+        let total_staked: u64 = utxo_bonds.iter().map(|(_, _, amt)| *amt).sum();
+        drop(utxo_set);
+
+        // Build per-bond response from UTXO entries (already FIFO-sorted)
+        let bonds: Vec<BondEntryResponse> = utxo_bonds
             .iter()
-            .map(|entry| {
-                let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
+            .map(|(_, creation_slot, amount)| {
+                let age = (current_slot as u64).saturating_sub(*creation_slot as u64);
                 let penalty = withdrawal_penalty_rate_with_quarter(age as u32, quarter as u32);
                 BondEntryResponse {
-                    creation_slot: entry.creation_slot,
-                    amount: entry.amount,
+                    creation_slot: *creation_slot,
+                    amount: *amount,
                     age_slots: age,
                     penalty_pct: penalty,
                     vested: age >= period,
-                    maturation_slot: entry.creation_slot as u64 + period,
+                    maturation_slot: *creation_slot as u64 + period,
                 }
             })
             .collect();
 
-        // Compute real summary from bond_entries
+        // Compute summary from UTXO bonds
         let mut summary = BondsSummaryResponse {
             q1: 0,
             q2: 0,
             q3: 0,
             vested: 0,
         };
-        for entry in &info.bond_entries {
-            let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64);
+        for (_, creation_slot, _) in &utxo_bonds {
+            let age = (current_slot as u64).saturating_sub(*creation_slot as u64);
             let quarters_elapsed = age / quarter;
             match quarters_elapsed {
                 0 => summary.q1 += 1,
@@ -1257,30 +1264,27 @@ impl RpcContext {
         }
 
         // Overall vesting based on oldest bond
-        let oldest_age = info
-            .bond_entries
+        let oldest_age = utxo_bonds
             .first()
-            .map(|e| (current_slot as u64).saturating_sub(e.creation_slot as u64))
+            .map(|(_, cs, _)| (current_slot as u64).saturating_sub(*cs as u64))
             .unwrap_or(0);
         let overall_penalty =
             withdrawal_penalty_rate_with_quarter(oldest_age as u32, quarter as u32);
-        let all_vested = info
-            .bond_entries
+        let all_vested = utxo_bonds
             .iter()
-            .all(|e| (current_slot as u64).saturating_sub(e.creation_slot as u64) >= period);
+            .all(|(_, cs, _)| (current_slot as u64).saturating_sub(*cs as u64) >= period);
 
         let response = BondDetailsResponse {
             public_key: params.public_key,
-            bond_count: info.bond_count,
-            total_staked: info.bond_amount,
+            bond_count,
+            total_staked,
             registration_slot: info.registered_at,
             age_slots: oldest_age,
             penalty_pct: overall_penalty,
             vested: all_vested,
-            maturation_slot: info
-                .bond_entries
+            maturation_slot: utxo_bonds
                 .last()
-                .map(|e| e.creation_slot as u64 + period)
+                .map(|(_, cs, _)| *cs as u64 + period)
                 .unwrap_or(0),
             vesting_quarter_slots: quarter,
             vesting_period_slots: period,

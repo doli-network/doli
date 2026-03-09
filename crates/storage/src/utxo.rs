@@ -330,6 +330,29 @@ impl InMemoryUtxoStore {
             .sum()
     }
 
+    /// Count Bond UTXOs for this address
+    pub fn count_bonds(&self, pubkey_hash: &Hash) -> u32 {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .count() as u32
+    }
+
+    /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO, FIFO-ordered
+    pub fn get_bond_entries(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, u32, Amount)> {
+        let mut bonds: Vec<(Outpoint, u32, Amount)> = self
+            .get_by_pubkey_hash(pubkey_hash)
+            .into_iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(op, entry)| {
+                let slot = entry.output.bond_creation_slot().unwrap_or(0);
+                (op, slot, entry.output.amount)
+            })
+            .collect();
+        bonds.sort_by_key(|(_, slot, _)| *slot); // FIFO: oldest first
+        bonds
+    }
+
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
         self.utxos.insert(outpoint, entry);
     }
@@ -553,6 +576,22 @@ impl UtxoSet {
         match self {
             UtxoSet::InMemory(store) => store.get_bonded_balance(pubkey_hash),
             UtxoSet::RocksDb(store) => store.get_bonded_balance(pubkey_hash),
+        }
+    }
+
+    /// Count Bond UTXOs for this address
+    pub fn count_bonds(&self, pubkey_hash: &Hash) -> u32 {
+        match self {
+            UtxoSet::InMemory(store) => store.count_bonds(pubkey_hash),
+            UtxoSet::RocksDb(store) => store.count_bonds(pubkey_hash),
+        }
+    }
+
+    /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO, FIFO-ordered
+    pub fn get_bond_entries(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, u32, Amount)> {
+        match self {
+            UtxoSet::InMemory(store) => store.get_bond_entries(pubkey_hash),
+            UtxoSet::RocksDb(store) => store.get_bond_entries(pubkey_hash),
         }
     }
 
