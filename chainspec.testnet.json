@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773025537,
-    "message": "DOLI Testnet v15 Genesis - lock/unlock bonds 2026-03-09T03:05:37Z",
+    "timestamp": 1773026863,
+    "message": "DOLI Testnet v16 Genesis - bond unlock validation fix 2026-03-09T03:27:43Z",
     "initial_reward": 100000000
   },
   "consensus": {
