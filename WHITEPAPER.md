@@ -99,7 +99,7 @@ Each unspent output contains five fields:
 
 The first four fields cover all cash operations. The fifth field — `extra_data` — reserves space for arbitrary spending conditions without requiring changes to the output format.
 
-For basic transfers and bonds, `extra_data` is empty. New output types define how `extra_data` is interpreted, adding validation rules to the protocol while the structure remains fixed from genesis.
+For basic transfers, `extra_data` is empty. For bonds, `extra_data` encodes the bond creation slot (4 bytes, little-endian), enabling per-bond FIFO vesting calculations directly from the UTXO set. New output types define how `extra_data` is interpreted, adding validation rules to the protocol while the structure remains fixed from genesis.
 
 ---
 
@@ -288,19 +288,15 @@ An epoch is 360 slots (1 hour). At epoch boundaries, the active producer set upd
 | Day   | 8,640      | 24 hours  |
 | Era   | 12,614,400 | ~4 years  |
 
-### 5.3. Dynamic Calibration
+### 5.3. Iteration Parameters
 
-To maintain consistent timing (~55ms) regardless of hardware, iterations adjust dynamically:
+Each network defines a fixed iteration count calibrated for ~55ms on modern CPUs:
 
 ```
-TARGET_TIME    = 55ms
-TOLERANCE      = 10%
-MAX_ADJUSTMENT = 20% per cycle
+T_BLOCK = 800,000 iterations (~55ms)
 ```
 
-If measured VDF time deviates more than 10%, iterations adjust by up to 20% per cycle. This allows heterogeneous hardware to participate while maintaining consistent block times.
-
-With 10-second slots, the VDF takes ~55ms, leaving the remainder for block construction and propagation.
+With 10-second slots, the VDF takes ~55ms, leaving the remainder for block construction and propagation. The fixed iteration count ensures all nodes compute identical proofs — no per-node calibration or dynamic adjustment is needed.
 
 Every consensus system enforces a scarce resource. In DOLI, that resource is sequential time.
 
@@ -468,12 +464,11 @@ The bond has a 4-year commitment period with per-bond FIFO tracking:
 
 ```
 T_commitment = 12,614,400 blocks (~4 years)
-T_withdrawal = next epoch boundary (max 1 hour)
 ```
 
 Each bond tracks its own creation time. Withdrawal uses FIFO order (oldest bonds first), with penalty calculated individually per bond based on its age.
 
-**Withdrawal is instant** — funds are returned in the same epoch boundary. No 7-day delay. No separate claim step.
+**Withdrawal payout is instant** — funds are returned in the same block. No 7-day delay. No separate claim step. Bond removal from the active set takes effect at the next epoch boundary.
 
 Early withdrawal incurs a tiered penalty based on individual bond age:
 
@@ -634,12 +629,11 @@ The producer loses the slot opportunity. The bond remains intact.
 
 ### 11.2. Inactivity
 
-If a producer fails to produce for 60,480 consecutive blocks (~7 days):
+If a producer fails to produce when selected for 50 consecutive slots:
 
-- Classified as inactive
-- Excluded from block scheduling
+- Removed from the active set
 - Bond remains locked (no penalty for inactivity)
-- Reactivates automatically upon resuming production
+- Can reactivate with a new registration VDF
 
 Inactivity is not punished — it is tolerated. A producer who goes offline loses income (missed block rewards) but not capital (bond remains intact). This is a deliberate design choice: penalizing downtime would discourage small operators with less reliable infrastructure.
 
@@ -831,7 +825,7 @@ When a new version is published, producers have 7 days to review. Any producer c
 | < 40%      | Approved |
 | ≥ 40%      | Rejected |
 
-The threshold is weighted by seniority. An attacker cannot create many new nodes to force an update through.
+The threshold is weighted by stake and seniority (bonds × seniority multiplier). An attacker cannot create many new nodes to force an update through.
 
 ### 18.3. Adoption
 
@@ -895,7 +889,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v2.0.27**
+**DOLI v2.0.30**
 
 *"Time is the only fair currency."*
 
