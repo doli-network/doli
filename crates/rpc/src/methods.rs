@@ -536,6 +536,7 @@ impl RpcContext {
             chain_state.best_height,
             maturity,
         );
+        let bonded = utxo_set.get_bonded_balance(&pubkey_hash);
 
         // Get incoming (change outputs) and outgoing (spent UTXOs) from mempool
         let (incoming, outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
@@ -543,13 +544,17 @@ impl RpcContext {
         // Spendable = confirmed minus mempool-spent UTXOs (matches getUtxos filtering)
         let spendable = confirmed.saturating_sub(outgoing);
 
-        // Total = all assets: spendable + pending change + immature rewards
-        let total = spendable.saturating_add(incoming).saturating_add(immature);
+        // Total = all assets: spendable + pending change + immature rewards + bonded
+        let total = spendable
+            .saturating_add(incoming)
+            .saturating_add(immature)
+            .saturating_add(bonded);
 
         let response = BalanceResponse {
             confirmed: spendable,
             unconfirmed: incoming,
             immature,
+            bonded,
             total,
         };
 

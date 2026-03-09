@@ -885,19 +885,29 @@ impl Transaction {
 
     /// Create an add bond transaction.
     ///
-    /// Inputs: bond amount (must be multiple of BOND_UNIT = 1,000 DOLI)
-    /// Outputs: none (funds go into bond state)
+    /// Inputs: Normal UTXOs covering bond amount + fee
+    /// Outputs: Bond UTXO (locked) + optional change
     ///
     /// The producer must already be registered.
-    pub fn new_add_bond(inputs: Vec<Input>, producer_pubkey: PublicKey, bond_count: u32) -> Self {
+    pub fn new_add_bond(
+        inputs: Vec<Input>,
+        producer_pubkey: PublicKey,
+        bond_count: u32,
+        bond_amount: Amount,
+        lock_until: BlockHeight,
+    ) -> Self {
         let bond_data = AddBondData::new(producer_pubkey, bond_count);
         let extra_data = bond_data.to_bytes();
+
+        // Lock/unlock model: create Bond UTXO (locked, visible on-chain)
+        let pubkey_hash = crypto::hash::hash(producer_pubkey.as_bytes());
+        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until);
 
         Self {
             version: 1,
             tx_type: TxType::AddBond,
             inputs,
-            outputs: Vec::new(), // No outputs - funds become bonds
+            outputs: vec![bond_output],
             extra_data,
         }
     }
@@ -917,10 +927,11 @@ impl Transaction {
 
     /// Create a withdrawal request transaction.
     ///
-    /// Bonds are removed at the next epoch boundary. Payout is included
-    /// directly in the transaction output — no separate claim step needed.
-    /// Penalty is implicitly burned (bond_value × count − net_amount = burned).
+    /// Lock/unlock model: Bond UTXOs are consumed as inputs, Normal UTXO created as output.
+    /// Penalty is implicitly burned (sum(bond inputs) − net_amount = burned).
+    /// Bonds are removed from registry at next epoch boundary.
     pub fn new_request_withdrawal(
+        inputs: Vec<Input>,
         producer_pubkey: PublicKey,
         bond_count: u32,
         destination: Hash,
@@ -932,7 +943,7 @@ impl Transaction {
         Self {
             version: 1,
             tx_type: TxType::RequestWithdrawal,
-            inputs: Vec::new(), // No inputs - payout comes from bond release
+            inputs, // Bond UTXOs consumed (lock → unlock)
             outputs: vec![Output::normal(net_amount, destination)],
             extra_data,
         }

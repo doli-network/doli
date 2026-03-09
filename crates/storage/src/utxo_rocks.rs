@@ -267,6 +267,15 @@ impl RocksDbUtxoStore {
             .sum()
     }
 
+    /// Get bonded balance (sum of Bond UTXOs for this address)
+    pub fn get_bonded_balance(&self, pubkey_hash: &Hash) -> Amount {
+        self.get_by_pubkey_hash(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
     /// Clear all UTXOs
     pub fn clear(&self) {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
