@@ -2,15 +2,17 @@
 
 How to back up and restore a DOLI node from the block archive.
 
+> **See also:** [archiver.md](./archiver.md) for the full archiver architecture, seed/relay role, block explorer integration, and RPC methods.
+
 ## Overview
 
-DOLI maintains a block archive — a flat-file copy of every finalized block, each with a BLAKE3 integrity checksum. If a node's database is corrupted or lost, you can restore the full chain from this archive in minutes.
+DOLI maintains a block archive — a flat-file copy of every applied block, each with a BLAKE3 integrity checksum. If a node's database is corrupted or lost, you can restore the full chain from this archive in minutes.
 
-The archive is hosted at `archive.doli.network` (omegacortex.ai). It can be copied to any location via rsync.
+The archive is served by the seed/archiver nodes (`seed1.doli.network`, `seed2.doli.network`). It can be copied via rsync or fetched directly over RPC.
 
 **For nodes that joined via snap sync**, historical blocks can be filled from the archive using `restore --backfill`. See [Backfill only](#backfill-only-fill-snap-sync-gaps) below.
 
-**No SSH access to the archive server?** Use `restore --from-rpc` to download blocks directly from any archiver's RPC endpoint. See [Restore from RPC](#restore-from-rpc) below.
+**No SSH access to the archive server?** Use `restore --from-rpc` to download blocks directly from any seed node's RPC endpoint. See [Restore from RPC](#restore-from-rpc) below.
 
 ## Archive Format
 
@@ -193,106 +195,6 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /path/to/archive/
 
 Schedule periodic rsync for continuous off-site backup.
 
-## How the Archiver Works
+## Archiver Architecture & Hot Backfill
 
-The block archiver runs as part of a `doli-node` process with the `--archive-to` flag:
-
-1. **Catch-up on startup**: reads missing blocks from the local BlockStore up to chain tip
-2. **Real-time streaming**: as new blocks are applied, they're buffered in memory
-3. **Finality gate**: buffered blocks are only written to disk when the FinalityTracker confirms them as irreversible (67%+ attestation weight from active producers)
-4. **Atomic writes**: each file is written to a `.tmp` path first, then renamed — safe against crashes
-5. **BLAKE3 checksums**: a `.blake3` sidecar is written alongside each block for integrity verification
-
-The archiver never slows down block production — it uses non-blocking channel sends (`try_send`) and runs on a separate async task.
-
-## Architecture
-
-```
-Producer nodes (N1-N6)
-       │
-       │ gossip (blocks + attestations)
-       ▼
-  Archive node (sync-only, --archive-to)
-       │
-       │ finality gate (67%+ attestations)
-       ▼
-  ~/.doli/mainnet/archive/
-       │
-       ├── rsync / rclone → Off-site backup (S3, remote server, etc.)
-       ├── restore --backfill → Operator fills snap sync gaps from local archive copy
-       └── restore --from-rpc → Operator fills gaps via RPC (no SSH needed)
-```
-
-## Hot Backfill (Live RPC — No Restart Required)
-
-For nodes that are **already running** and synced to tip but missing historical blocks (snap sync gap), the `backfillFromPeer` RPC endpoint fills the gap **without stopping the node**. The node continues producing and syncing normally while backfill runs in the background.
-
-### Usage
-
-**Start backfill:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://archive.doli.network:8548"},"id":1}'
-```
-
-**Response:**
-```json
-{
-  "result": {
-    "started": true,
-    "gaps": "1-6291",
-    "total": 6291
-  }
-}
-```
-
-**Monitor progress:**
-```bash
-curl -X POST http://127.0.0.1:8545 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
-```
-
-**Response:**
-```json
-{
-  "result": {
-    "running": true,
-    "imported": 3994,
-    "total": 6291,
-    "pct": 63,
-    "error": null
-  }
-}
-```
-
-### How it works
-
-1. Detects the gap via binary search for the lowest existing block
-2. Spawns a background tokio task (non-blocking — production continues)
-3. Fetches each missing block via `getBlockRaw` from the source peer's RPC
-4. **Chain-linking verification**: every block's `prev_hash` must match the previous block's hash
-5. **Anchor verification**: the last backfilled block must connect to the lowest existing block
-6. BLAKE3 checksum verified on every block
-7. Only one backfill can run at a time (atomic guard)
-
-### Comparison of backfill methods
-
-| Method | Requires restart? | Source | Chain verification |
-|--------|:-:|--------|:--:|
-| `restore --from /path --backfill` | **Yes** (offline) | Local archive files | BLAKE3 only |
-| `restore --from-rpc <URL> --backfill` | **Yes** (offline) | Any archiver RPC | BLAKE3 only |
-| **`backfillFromPeer` RPC** | **No** (hot) | Any node's RPC | BLAKE3 + chain-linking + anchor |
-
-### Security
-
-- **Chain-linking**: Each block's `parent_hash` is verified against the previous block, starting from `genesis_hash` for block 1. A malicious peer cannot inject fabricated blocks — the chain must link continuously from genesis to the anchor.
-- **Anchor verification**: After backfill completes, the hash of the last backfilled block is verified against the `prev_hash` of the lowest existing block. This ensures the backfilled chain connects to the node's existing validated chain.
-- **RPC access**: Only accessible from localhost on most nodes (N3/N4/N5). External RPC nodes (N1/N2) are protected by the chain-linking verification.
-
-## DNS
-
-| Record | Type | Value | Purpose |
-|--------|------|-------|---------|
-| `archive.doli.network` | A | `198.51.100.1` | Archive server (omegacortex) |
+For detailed archiver architecture, service configuration, RPC methods (`getBlockRaw`, `backfillFromPeer`, `backfillStatus`), hot backfill, and DNS infrastructure, see **[archiver.md](./archiver.md)**.
