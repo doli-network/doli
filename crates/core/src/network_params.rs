@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773077580, // Testnet v18 genesis - bond UTXO simplification 2026-03-09 17:33:00 UTC
+                genesis_time: 1773081140, // Testnet v19 genesis - fix ADDRESS_DOMAIN hash 2026-03-09 18:32:20 UTC
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
