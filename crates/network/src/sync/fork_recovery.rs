@@ -15,7 +15,7 @@ use libp2p::PeerId;
 use tracing::{info, warn};
 
 /// Maximum parent chain walk depth (matches MAX_REORG_DEPTH in reorg.rs)
-const MAX_RECOVERY_DEPTH: usize = 100;
+const MAX_RECOVERY_DEPTH: usize = 1000;
 
 /// Cooldown between recovery attempts
 const RECOVERY_COOLDOWN: Duration = Duration::from_secs(30);

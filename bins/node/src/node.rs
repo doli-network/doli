@@ -4194,7 +4194,7 @@ impl Node {
         self.state_db.put_undo(height, &undo);
 
         // Prune old undo data (keep last MAX_REORG_DEPTH blocks)
-        const UNDO_KEEP_DEPTH: u64 = 200; // 2x MAX_REORG_DEPTH for safety margin
+        const UNDO_KEEP_DEPTH: u64 = 2000; // 2x MAX_REORG_DEPTH for safety margin
         if height > UNDO_KEEP_DEPTH {
             self.state_db.prune_undo_before(height - UNDO_KEEP_DEPTH);
         }

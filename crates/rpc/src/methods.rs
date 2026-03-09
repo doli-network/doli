@@ -796,7 +796,10 @@ impl RpcContext {
                     .map(|updates| updates.iter().map(|u| pending_update_to_info(u)).collect())
                     .unwrap_or_default();
 
-                let addr_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, info.public_key.as_bytes());
+                let addr_hash = crypto::hash::hash_with_domain(
+                    crypto::ADDRESS_DOMAIN,
+                    info.public_key.as_bytes(),
+                );
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),
                     address_hash: hex::encode(addr_hash.as_bytes()),
@@ -814,7 +817,8 @@ impl RpcContext {
         // Append pending registrations (not yet in producer set)
         let mut responses = responses;
         for info in producers.pending_registrations() {
-            let addr_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, info.public_key.as_bytes());
+            let addr_hash =
+                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, info.public_key.as_bytes());
             responses.push(ProducerResponse {
                 public_key: hex::encode(info.public_key.as_bytes()),
                 address_hash: hex::encode(addr_hash.as_bytes()),

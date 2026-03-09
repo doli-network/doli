@@ -771,6 +771,7 @@ mod tests {
     fn test_producer_response_with_withdrawals() {
         let response = ProducerResponse {
             public_key: "aabbcc".to_string(),
+            address_hash: "ddeeff".to_string(),
             registration_height: 100,
             bond_amount: 10_000_000_000,
             bond_count: 1,
@@ -798,6 +799,7 @@ mod tests {
     fn test_producer_response_empty_withdrawals() {
         let response = ProducerResponse {
             public_key: "aabbcc".to_string(),
+            address_hash: "ddeeff".to_string(),
             registration_height: 100,
             bond_amount: 10_000_000_000,
             bond_count: 1,
