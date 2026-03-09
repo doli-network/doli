@@ -16,7 +16,7 @@ use tracing::{debug, info};
 use crate::protocols::SyncRequest;
 
 /// Maximum reorg depth for fork sync (matches MAX_REORG_DEPTH in reorg.rs)
-const MAX_FORK_SYNC_DEPTH: u64 = 100;
+const MAX_FORK_SYNC_DEPTH: u64 = 1000;
 
 /// Timeout for entire fork sync session
 const FORK_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
