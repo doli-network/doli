@@ -3147,7 +3147,7 @@ impl Node {
         let weighted: Vec<(PublicKey, u64)> = active
             .into_iter()
             .map(|pk| {
-                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                 let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
                 (pk, count)
             })
@@ -3249,7 +3249,7 @@ impl Node {
         let weighted: Vec<(PublicKey, u64)> = active
             .into_iter()
             .map(|pk| {
-                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                 let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
                 (pk, count)
             })
@@ -3607,7 +3607,10 @@ impl Node {
                                 );
                             } else {
                                 // Validate: output amount <= FIFO net calculation (from UTXO bonds)
-                                let pubkey_hash = crypto_hash(data.producer_pubkey.as_bytes());
+                                let pubkey_hash = hash_with_domain(
+                                    ADDRESS_DOMAIN,
+                                    data.producer_pubkey.as_bytes(),
+                                );
                                 let bond_entries = utxo.get_bond_entries(&pubkey_hash);
                                 let expected = storage::producer::calculate_withdrawal_from_bonds(
                                     &bond_entries,
@@ -4778,7 +4781,7 @@ impl Node {
         let active_with_weights: Vec<(PublicKey, u64)> = active_producers
             .into_iter()
             .map(|pk| {
-                let pubkey_hash = crypto::hash::hash(pk.as_bytes());
+                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                 let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
                 (pk, count)
             })
