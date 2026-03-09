@@ -182,15 +182,24 @@ fn deserialize_canonical_utxo(bytes: &[u8]) -> Result<UtxoSet, StorageError> {
         })?;
         pos += 36;
 
-        // Read canonical 59-byte UtxoEntry
-        if pos + 59 > bytes.len() {
+        // Read canonical UtxoEntry (61+ bytes: 59 base + 2 length + N extra_data)
+        if pos + 61 > bytes.len() {
             return Err(StorageError::Serialization(
                 "truncated canonical UTXO entry".into(),
             ));
         }
-        let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + 59])
+        // Peek at extra_data length to determine full entry size
+        let extra_len =
+            u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap_or([0, 0])) as usize;
+        let entry_size = 61 + extra_len;
+        if pos + entry_size > bytes.len() {
+            return Err(StorageError::Serialization(
+                "truncated canonical UTXO extra_data".into(),
+            ));
+        }
+        let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + entry_size])
             .ok_or_else(|| StorageError::Serialization("invalid entry in canonical UTXO".into()))?;
-        pos += 59;
+        pos += entry_size;
 
         store.insert(outpoint, entry);
     }
