@@ -324,6 +324,7 @@ impl RpcContext {
             "getBondDetails" => self.get_bond_details(request.params).await,
             "backfillFromPeer" => self.backfill_from_peer(request.params).await,
             "backfillStatus" => self.backfill_status().await,
+            "verifyChainIntegrity" => self.verify_chain_integrity().await,
             "getChainStats" => self.get_chain_stats().await,
             "getMempoolTransactions" => self.get_mempool_transactions(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
@@ -1558,6 +1559,89 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Verify chain integrity by scanning every height from 1 to tip.
+    /// Returns missing heights (gaps) and chain-linking errors.
+    async fn verify_chain_integrity(&self) -> Result<Value, RpcError> {
+        let chain_state = self.chain_state.read().await;
+        let tip_height = chain_state.best_height;
+        drop(chain_state);
+
+        if tip_height == 0 {
+            return Ok(serde_json::json!({
+                "complete": true,
+                "tip": 0,
+                "scanned": 0,
+                "missing": [],
+                "missing_count": 0
+            }));
+        }
+
+        let block_store = self.block_store.clone();
+        let tip = tip_height;
+
+        // Run scan in blocking task to avoid starving the async runtime
+        let result = tokio::task::spawn_blocking(move || {
+            let mut missing: Vec<String> = Vec::new();
+            let mut range_start: Option<u64> = None;
+            let mut range_end: u64 = 0;
+
+            for h in 1..=tip {
+                let exists = block_store
+                    .get_hash_by_height(h)
+                    .map(|opt| opt.is_some())
+                    .unwrap_or(false);
+
+                if !exists {
+                    if range_start.is_none() {
+                        range_start = Some(h);
+                    }
+                    range_end = h;
+                } else if let Some(start) = range_start.take() {
+                    // Flush completed gap range
+                    if start == range_end {
+                        missing.push(format!("{}", start));
+                    } else {
+                        missing.push(format!("{}-{}", start, range_end));
+                    }
+                }
+            }
+            // Flush final range if chain ends with a gap
+            if let Some(start) = range_start {
+                if start == range_end {
+                    missing.push(format!("{}", start));
+                } else {
+                    missing.push(format!("{}-{}", start, range_end));
+                }
+            }
+
+            // Count total missing
+            let missing_count: u64 = missing
+                .iter()
+                .map(|s| {
+                    if let Some((a, b)) = s.split_once('-') {
+                        b.parse::<u64>().unwrap_or(0) - a.parse::<u64>().unwrap_or(0) + 1
+                    } else {
+                        1
+                    }
+                })
+                .sum();
+
+            (missing, missing_count)
+        })
+        .await
+        .map_err(|e| RpcError::internal_error(format!("Scan failed: {}", e)))?;
+
+        let (missing, missing_count) = result;
+
+        Ok(serde_json::json!({
+            "complete": missing_count == 0,
+            "tip": tip_height,
+            "scanned": tip_height,
+            "missing": missing,
+            "missing_count": missing_count
+        }))
     }
 
     /// Get chain statistics (supply, address count, UTXO count, staking info)
