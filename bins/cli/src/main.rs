@@ -1237,20 +1237,38 @@ async fn cmd_upgrade(
         .map_err(|e| anyhow::anyhow!("Failed to extract doli binary: {}", e))?;
     let cli_path = std::env::current_exe()?;
     println!("Installing doli to {:?}...", cli_path);
-    updater::install_binary(&cli_binary, &cli_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to install doli: {}", e))?;
+    if let Err(e) = updater::install_binary(&cli_binary, &cli_path).await {
+        if e.to_string().contains("Permission denied") || e.to_string().contains("os error 13") {
+            return Err(anyhow::anyhow!(
+                "Permission denied writing to {:?}.\n  Try: sudo doli upgrade{}",
+                cli_path,
+                if yes { " --yes" } else { "" }
+            ));
+        }
+        return Err(anyhow::anyhow!("Failed to install doli: {}", e));
+    }
 
-    // Extract and install doli-node (if found in tarball and on PATH)
+    // Extract and install doli-node (if found in tarball)
+    let mut installed_node_path: Option<std::path::PathBuf> = None;
     match updater::extract_named_binary_from_tarball(&tarball, "doli-node") {
         Ok(node_binary) => {
             // Use custom path if provided, otherwise auto-detect
             let node_path = doli_node_path.or_else(find_doli_node_path);
             if let Some(path) = node_path {
                 println!("Installing doli-node to {:?}...", path);
-                updater::install_binary(&node_binary, &path)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to install doli-node: {}", e))?;
+                if let Err(e) = updater::install_binary(&node_binary, &path).await {
+                    if e.to_string().contains("Permission denied")
+                        || e.to_string().contains("os error 13")
+                    {
+                        return Err(anyhow::anyhow!(
+                            "Permission denied writing to {:?}.\n  Try: sudo doli upgrade{}",
+                            path,
+                            if yes { " --yes" } else { "" }
+                        ));
+                    }
+                    return Err(anyhow::anyhow!("Failed to install doli-node: {}", e));
+                }
+                installed_node_path = Some(path);
             } else {
                 println!("doli-node not found on system, skipping node binary install.");
                 println!("  Hint: use --doli-node-path <PATH> to specify the doli-node location.");
@@ -1261,11 +1279,11 @@ async fn cmd_upgrade(
         }
     }
 
-    // Restart doli-node service
+    // Restart only the service that owns the installed binary
     if let Some(ref svc) = service {
         restart_specific_service(svc);
     } else {
-        restart_doli_service();
+        restart_doli_service(installed_node_path.as_deref());
     }
 
     println!();
@@ -1488,7 +1506,29 @@ async fn cmd_protocol_activate(
 
 /// Find the path to an installed doli-node binary
 fn find_doli_node_path() -> Option<std::path::PathBuf> {
-    // Check `which doli-node`
+    // Tier 1: Check running doli-node process to find its binary path
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("pgrep")
+            .args(["-a", "doli-node"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Take the first match's binary path (first token after PID)
+                if let Some(line) = stdout.lines().next() {
+                    if let Some(bin_path) = line.split_whitespace().nth(1) {
+                        let p = std::path::PathBuf::from(bin_path);
+                        if p.exists() {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Tier 2: Check `which doli-node`
     if let Ok(output) = std::process::Command::new("which")
         .arg("doli-node")
         .output()
@@ -1501,8 +1541,10 @@ fn find_doli_node_path() -> Option<std::path::PathBuf> {
         }
     }
 
-    // Fallback: check common install paths
+    // Tier 3: Check common install paths (most specific first)
     for path in &[
+        "/mainnet/bin/doli-node",
+        "/testnet/bin/doli-node",
         "/usr/local/bin/doli-node",
         "/opt/doli/target/release/doli-node",
     ] {
@@ -1530,12 +1572,14 @@ fn restart_specific_service(service: &str) {
     }
 }
 
-/// Detect and restart a running doli-node service (3-tier detection)
-fn restart_doli_service() {
-    // Tier 1: systemd (Linux) — list-unit-files finds ALL installed services, not just running
+/// Detect and restart the doli-node service that owns the installed binary.
+/// If `installed_path` is provided, only restart the service whose ExecStart
+/// references that path. Otherwise fall back to process detection.
+fn restart_doli_service(#[allow(unused_variables)] installed_path: Option<&std::path::Path>) {
+    // Tier 1: systemd (Linux) — find and restart only the owning service
     #[cfg(target_os = "linux")]
     {
-        if try_restart_systemd() {
+        if try_restart_systemd(installed_path) {
             return;
         }
     }
@@ -1556,9 +1600,11 @@ fn restart_doli_service() {
     println!("No doli-node service or process found. Restart manually if needed.");
 }
 
-/// Tier 1: Detect and restart doli-node via systemd (finds stopped/enabled services too)
+/// Tier 1: Detect and restart doli-node via systemd.
+/// If `installed_path` is provided, only restart the service whose ExecStart
+/// references that binary — prevents restarting unrelated services on multi-node servers.
 #[cfg(target_os = "linux")]
-fn try_restart_systemd() -> bool {
+fn try_restart_systemd(installed_path: Option<&std::path::Path>) -> bool {
     let output = match std::process::Command::new("systemctl")
         .args(["list-unit-files", "--type=service", "--no-pager"])
         .output()
@@ -1568,14 +1614,50 @@ fn try_restart_systemd() -> bool {
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let units: Vec<String> = stdout
+    let all_units: Vec<String> = stdout
         .lines()
         .filter(|line| line.contains("doli"))
-        .filter_map(|line| {
-            // First column is the unit file name (e.g. "doli-mainnet-node1.service")
-            line.split_whitespace().next().map(|s| s.to_string())
-        })
+        .filter_map(|line| line.split_whitespace().next().map(|s| s.to_string()))
         .collect();
+
+    if all_units.is_empty() {
+        return false;
+    }
+
+    // Filter to only services whose ExecStart matches the installed binary path
+    let units: Vec<String> = if let Some(bin_path) = installed_path {
+        let bin_str = bin_path.to_string_lossy();
+        all_units
+            .into_iter()
+            .filter(|unit| {
+                // Read the service's ExecStart to check if it uses our binary
+                if let Ok(cat_output) = std::process::Command::new("systemctl")
+                    .args(["cat", unit, "--no-pager"])
+                    .output()
+                {
+                    let cat_str = String::from_utf8_lossy(&cat_output.stdout);
+                    cat_str.contains(bin_str.as_ref())
+                } else {
+                    false
+                }
+            })
+            .collect()
+    } else {
+        // No path context — only restart services that are currently running
+        all_units
+            .into_iter()
+            .filter(|unit| {
+                if let Ok(is_active) = std::process::Command::new("systemctl")
+                    .args(["is-active", "--quiet", unit])
+                    .status()
+                {
+                    is_active.success()
+                } else {
+                    false
+                }
+            })
+            .collect()
+    };
 
     if units.is_empty() {
         return false;
