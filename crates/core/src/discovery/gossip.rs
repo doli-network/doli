@@ -14,8 +14,11 @@ const DEFAULT_INTERVAL_SECS: u64 = 5;
 /// Minimum gossip interval (1 second).
 const MIN_INTERVAL_SECS: u64 = 1;
 
-/// Maximum gossip interval (60 seconds).
+/// Base maximum gossip interval (60 seconds for small networks).
 const MAX_INTERVAL_SECS: u64 = 60;
+
+/// Absolute maximum gossip interval for large networks (5 minutes).
+const ABSOLUTE_MAX_INTERVAL_SECS: u64 = 300;
 
 /// Number of stable rounds before starting to back off.
 const BACKOFF_THRESHOLD: u32 = 3;
@@ -149,13 +152,25 @@ impl AdaptiveGossip {
             self.rounds_without_change += 1;
 
             if self.rounds_without_change > BACKOFF_THRESHOLD {
-                // Exponential backoff
+                // Exponential backoff with network-size-aware cap
                 let new_interval_ms =
                     (self.interval.as_millis() as f64 * BACKOFF_MULTIPLIER) as u64;
                 let new_interval = Duration::from_millis(new_interval_ms);
-                self.interval = new_interval.min(self.max_interval);
+                let effective_max = self.scaled_max_interval();
+                self.interval = new_interval.min(effective_max);
             }
         }
+    }
+
+    /// Compute the effective max interval based on network size.
+    ///
+    /// Small networks (< 1000): 60s (base)
+    /// Large networks: scales up to 300s (5 min) at 250K+ producers.
+    /// Formula: base + (network_size / 1000) * 60s, capped at 300s.
+    fn scaled_max_interval(&self) -> Duration {
+        let extra_secs = (self.estimated_network_size as u64 / 1000).min(4) * 60;
+        let max_secs = (MAX_INTERVAL_SECS + extra_secs).min(ABSOLUTE_MAX_INTERVAL_SECS);
+        self.max_interval.min(Duration::from_secs(max_secs))
     }
 
     /// Get the current recommended gossip interval.

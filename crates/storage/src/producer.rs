@@ -1325,6 +1325,27 @@ impl ProducerSet {
             .collect()
     }
 
+    /// Group all pending updates by their target public key in a single O(M) pass.
+    ///
+    /// Use this instead of calling `pending_updates_for()` N times (which is O(N×M)).
+    pub fn pending_updates_by_pubkey(&self) -> HashMap<PublicKey, Vec<&PendingProducerUpdate>> {
+        let mut map: HashMap<PublicKey, Vec<&PendingProducerUpdate>> =
+            HashMap::with_capacity(self.pending_updates.len());
+        for update in &self.pending_updates {
+            let pk = match update {
+                PendingProducerUpdate::Register { info, .. } => info.public_key,
+                PendingProducerUpdate::Exit { pubkey, .. } => *pubkey,
+                PendingProducerUpdate::Slash { pubkey, .. } => *pubkey,
+                PendingProducerUpdate::AddBond { pubkey, .. } => *pubkey,
+                PendingProducerUpdate::DelegateBond { delegator, .. } => *delegator,
+                PendingProducerUpdate::RevokeDelegation { delegator } => *delegator,
+                PendingProducerUpdate::RequestWithdrawal { pubkey, .. } => *pubkey,
+            };
+            map.entry(pk).or_default().push(update);
+        }
+        map
+    }
+
     /// Get public keys of all pending registrations (for duplicate detection).
     pub fn pending_registration_keys(&self) -> Vec<crypto::PublicKey> {
         self.pending_updates

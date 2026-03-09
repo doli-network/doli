@@ -2129,7 +2129,8 @@ pub fn compute_tier1_set(
 ) -> Vec<crypto::PublicKey> {
     let mut sorted = producers_with_weights.to_vec();
     // Sort by weight descending, then by pubkey bytes ascending for deterministic tiebreak
-    sorted.sort_by(|a, b| {
+    // (unstable is safe: pubkey tiebreak ensures unique ordering)
+    sorted.sort_unstable_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
     });
@@ -2162,7 +2163,10 @@ pub fn producer_tier(
     tier1_set: &[crypto::PublicKey],
     all_producers_sorted: &[crypto::PublicKey],
 ) -> u8 {
-    if tier1_set.contains(pubkey) {
+    // Build HashSet for O(1) lookup instead of O(n) linear scan.
+    // tier1_set is capped at 500 entries, so this is negligible.
+    let tier1: std::collections::HashSet<&crypto::PublicKey> = tier1_set.iter().collect();
+    if tier1.contains(pubkey) {
         return 1;
     }
     if let Some(pos) = all_producers_sorted.iter().position(|p| p == pubkey) {
