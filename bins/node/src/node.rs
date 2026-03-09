@@ -6511,6 +6511,14 @@ impl Node {
             }
 
             // Transition: search complete — provide ancestor hash from our block_store
+            // If search bottomed out (no common ancestor found within MAX_FORK_SYNC_DEPTH),
+            // the divergence is too deep — trigger full resync immediately.
+            if self.sync_manager.read().await.fork_sync_bottomed_out() {
+                warn!("Fork sync: binary search hit floor without finding common ancestor — full resync required");
+                self.sync_manager.write().await.fork_sync_clear();
+                self.recover_from_peers().await?;
+                return Ok(());
+            }
             let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
             if let Some(height) = ancestor_height {
                 let ancestor_hash = self
