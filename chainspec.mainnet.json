@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773186492,
+    "timestamp": 1773186873,
     "message": "Genesis v29 - Mandatory BLS + 5 producers + pool leak fix 2026-03-10",
     "initial_reward": 100000000
   },
