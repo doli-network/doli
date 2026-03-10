@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773123057,
-    "message": "DOLI Testnet v22 Genesis - per-bond UTXO fix 2026-03-10T06:10:57Z",
+    "timestamp": 1773123653,
+    "message": "DOLI Testnet v23 Genesis - clean reset 2026-03-10T06:20:53Z",
     "initial_reward": 100000000
   },
   "consensus": {
