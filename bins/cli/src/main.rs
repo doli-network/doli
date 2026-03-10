@@ -2052,20 +2052,25 @@ async fn cmd_producer(
             let extra_data = bincode::serialize(&reg_data)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize registration data: {}", e))?;
 
-            // Create bond output
-            let pubkey_hash_for_bond = crypto::hash::hash(producer_pubkey.as_bytes());
-            let bond_output = doli_core::transaction::Output::bond(
-                required_amount,
-                pubkey_hash_for_bond,
-                lock_until,
-                0, // creation_slot stamped by node at block application
-            );
+            // Create one Bond UTXO per bond (each with bond_unit amount)
+            let pubkey_hash_for_bond =
+                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
+            let outputs: Vec<Output> = (0..bonds)
+                .map(|_| {
+                    doli_core::transaction::Output::bond(
+                        bond_unit,
+                        pubkey_hash_for_bond,
+                        lock_until,
+                        0, // creation_slot stamped by node at block application
+                    )
+                })
+                .collect();
 
             let mut tx = Transaction {
                 version: 1,
                 tx_type: doli_core::transaction::TxType::Registration,
                 inputs,
-                outputs: vec![bond_output],
+                outputs,
                 extra_data,
             };
 

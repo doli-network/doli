@@ -3500,19 +3500,26 @@ impl Node {
                         }
                         // Skip immediate registration — handled at genesis end
                     } else if let Some(reg_data) = tx.registration_data() {
-                        // Find the bond output
-                        if let Some((bond_index, bond_output)) =
-                            tx.outputs.iter().enumerate().find(|(_, o)| {
+                        // Find all bond outputs and use the first as the primary outpoint
+                        let bond_outputs: Vec<(usize, &doli_core::transaction::Output)> = tx
+                            .outputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, o)| {
                                 o.output_type == doli_core::transaction::OutputType::Bond
                             })
-                        {
+                            .collect();
+
+                        if let Some(&(bond_index, _)) = bond_outputs.first() {
                             let tx_hash = tx.hash();
                             let era = self.params.height_to_era(height);
+                            let total_bond_amount: u64 =
+                                bond_outputs.iter().map(|(_, o)| o.amount).sum();
 
                             let producer_info = storage::ProducerInfo::new_with_bonds(
                                 reg_data.public_key,
                                 height,
-                                bond_output.amount,
+                                total_bond_amount,
                                 (tx_hash, bond_index as u32),
                                 era,
                                 reg_data.bond_count,
@@ -5988,17 +5995,24 @@ impl Node {
                             continue;
                         }
                         if let Some(reg_data) = tx.registration_data() {
-                            if let Some((bond_index, bond_output)) =
-                                tx.outputs.iter().enumerate().find(|(_, o)| {
+                            let bond_outputs: Vec<(usize, &doli_core::transaction::Output)> = tx
+                                .outputs
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, o)| {
                                     o.output_type == doli_core::transaction::OutputType::Bond
                                 })
-                            {
+                                .collect();
+
+                            if let Some(&(bond_index, _)) = bond_outputs.first() {
                                 let tx_hash = tx.hash();
                                 let era = self.params.height_to_era(height);
+                                let total_bond_amount: u64 =
+                                    bond_outputs.iter().map(|(_, o)| o.amount).sum();
                                 let producer_info = storage::ProducerInfo::new_with_bonds(
                                     reg_data.public_key,
                                     height,
-                                    bond_output.amount,
+                                    total_bond_amount,
                                     (tx_hash, bond_index as u32),
                                     era,
                                     reg_data.bond_count,

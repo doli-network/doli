@@ -387,7 +387,7 @@ fn test_add_bond_transaction() {
     assert_eq!(tx.tx_type, TxType::AddBond);
     assert!(tx.is_add_bond());
     assert_eq!(tx.inputs.len(), 1);
-    assert_eq!(tx.outputs.len(), 1); // Bond UTXO (lock/unlock model)
+    assert_eq!(tx.outputs.len(), 5); // One Bond UTXO per bond (per-bond FIFO)
 
     let data = tx.add_bond_data().unwrap();
     assert_eq!(data.bond_count, 5);
