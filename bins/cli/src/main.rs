@@ -2432,6 +2432,18 @@ async fn cmd_producer(
             let bond_display = bond_unit / 100_000_000; // Convert to DOLI per bond
             let required_amount = bond_unit * count as u64;
 
+            // Verify producer is registered before proceeding
+            let pk_hex = hex::encode(keypair.public_key().as_bytes());
+            let producers = rpc.get_producers(false).await?;
+            let is_registered = producers.iter().any(|p| p.public_key == pk_hex);
+            if !is_registered {
+                anyhow::bail!(
+                    "This key is not registered as a producer. Register first with 'doli producer register'.\n\
+                     Public key: {}",
+                    pk_hex
+                );
+            }
+
             println!(
                 "Adding {} bond(s) = {} DOLI",
                 count,

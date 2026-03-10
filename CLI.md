@@ -21,3 +21,15 @@
 - **Status**: Open
 - **Root Cause**: `bins/node/src/node.rs` line 2833 — `validate_block_for_apply()` called with `ValidationMode::Full` for all blocks, including synced historical blocks. The fix is to pass `ValidationMode` as a parameter to `apply_block()` and use `Light` for sync blocks in `run_periodic_tasks()` (line 5206).
 - **Workaround**: Snap sync activates automatically when gap >1000 blocks with 3+ peers, bypassing header-first sync entirely.
+
+## 2026-03-10 - `producer add-bond` accepts non-registered producers, burns funds
+
+- **Type**: Bug
+- **Command**: `doli producer add-bond -c 1`
+- **Observed**: CLI sends AddBond TX without checking if the pubkey is a registered producer. Node includes the TX in a block, consumes inputs, creates a Bond UTXO — but at epoch boundary `apply_pending_updates()` silently discards the update because the producer doesn't exist. Result: 10 DOLI per bond locked in an orphan Bond UTXO with `lock_until=12,615,975` (~4 years), irrecoverable.
+- **Expected**: CLI should reject with "not registered as a producer". Node should skip queuing AddBond for non-existent producers.
+- **Priority**: High
+- **Status**: Resolved
+- **Root Cause**: Three layers missing producer existence check: (1) CLI had no validation, (2) mempool/validation only does structural checks, (3) `apply_block()` queued the update without verifying the producer exists — only `apply_pending_updates()` checked, but by then the inputs were already consumed.
+- **Fix**: Added producer existence guard in CLI (`get_producers` RPC check before submit), in `apply_block()` AddBond processing (skip + warn if producer not registered or pending), and in `rebuild_producer_set_from_blocks()` (same guard for replay path).
+- **Impact**: 60 DOLI burned across N7-N12 mainnet (10 DOLI each in orphan Bond UTXOs). Funds are irrecoverable by design.
