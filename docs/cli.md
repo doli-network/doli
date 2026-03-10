@@ -948,8 +948,16 @@ doli-node import <path>
 # Export blocks to file
 doli-node export <path> --from 0 --to 1000
 
-# Recover chain state from blocks
+# Rebuild height index from block headers (fixes corrupt index)
+doli-node reindex
+
+# Recover chain state from blocks (rebuild UTXO/producers/state)
 doli-node recover [--yes]
+
+# Full repair pipeline (corrupt state with intact blocks):
+#   reindex rebuilds height_index → recover replays blocks → start node
+doli-node --network NETWORK --data-dir /path/to/data reindex
+doli-node --network NETWORK --data-dir /path/to/data recover --yes
 ```
 
 ---
