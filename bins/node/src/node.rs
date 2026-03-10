@@ -3590,34 +3590,50 @@ impl Node {
                 // Process AddBond transactions — deferred to epoch boundary
                 if tx.tx_type == TxType::AddBond {
                     if let Some(add_bond_data) = tx.add_bond_data() {
-                        let tx_hash = tx.hash();
-                        let bond_count = add_bond_data.bond_count;
-
-                        // Lock/unlock: Bond output is a real UTXO in the UTXO set.
-                        // Find Bond output indices for outpoint references.
-                        let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
-                            .outputs
+                        // Guard: producer must be registered (or have a pending registration)
+                        let pubkey = &add_bond_data.producer_pubkey;
+                        let is_registered = producers.get_by_pubkey(pubkey).is_some();
+                        let has_pending_reg = producers
+                            .pending_updates_for(pubkey)
                             .iter()
-                            .enumerate()
-                            .filter(|(_, o)| {
-                                o.output_type == doli_core::transaction::OutputType::Bond
-                            })
-                            .map(|(i, _)| (tx_hash, i as u32))
-                            .collect();
+                            .any(|u| matches!(u, PendingProducerUpdate::Register { .. }));
 
-                        let bond_unit = self.config.network.bond_unit();
-                        producers.queue_update(PendingProducerUpdate::AddBond {
-                            pubkey: add_bond_data.producer_pubkey,
-                            outpoints: bond_outpoints,
-                            bond_unit,
-                            creation_slot: block.header.slot,
-                        });
-                        info!(
-                            "Queued AddBond ({} bonds, lock/unlock) for producer {} at height {} (deferred to epoch boundary)",
-                            bond_count,
-                            crypto_hash(add_bond_data.producer_pubkey.as_bytes()),
-                            height
-                        );
+                        if !is_registered && !has_pending_reg {
+                            warn!(
+                                "AddBond ignored: producer {} is not registered (Bond UTXO orphaned at height {})",
+                                crypto_hash(pubkey.as_bytes()),
+                                height
+                            );
+                        } else {
+                            let tx_hash = tx.hash();
+                            let bond_count = add_bond_data.bond_count;
+
+                            // Lock/unlock: Bond output is a real UTXO in the UTXO set.
+                            // Find Bond output indices for outpoint references.
+                            let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
+                                .outputs
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, o)| {
+                                    o.output_type == doli_core::transaction::OutputType::Bond
+                                })
+                                .map(|(i, _)| (tx_hash, i as u32))
+                                .collect();
+
+                            let bond_unit = self.config.network.bond_unit();
+                            producers.queue_update(PendingProducerUpdate::AddBond {
+                                pubkey: add_bond_data.producer_pubkey,
+                                outpoints: bond_outpoints,
+                                bond_unit,
+                                creation_slot: block.header.slot,
+                            });
+                            info!(
+                                "Queued AddBond ({} bonds, lock/unlock) for producer {} at height {} (deferred to epoch boundary)",
+                                bond_count,
+                                crypto_hash(pubkey.as_bytes()),
+                                height
+                            );
+                        }
                     }
                 }
 
@@ -6036,23 +6052,33 @@ impl Node {
                     }
                     TxType::AddBond => {
                         if let Some(add_bond_data) = tx.add_bond_data() {
-                            let tx_hash = tx.hash();
-                            // Lock/unlock: Bond output indices from actual TX outputs
-                            let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
-                                .outputs
+                            // Guard: skip if producer not registered (orphan Bond UTXO)
+                            let pubkey = &add_bond_data.producer_pubkey;
+                            let is_registered = producers.get_by_pubkey(pubkey).is_some();
+                            let has_pending_reg = producers
+                                .pending_updates_for(pubkey)
                                 .iter()
-                                .enumerate()
-                                .filter(|(_, o)| {
-                                    o.output_type == doli_core::transaction::OutputType::Bond
-                                })
-                                .map(|(i, _)| (tx_hash, i as u32))
-                                .collect();
-                            producers.queue_update(PendingProducerUpdate::AddBond {
-                                pubkey: add_bond_data.producer_pubkey,
-                                outpoints: bond_outpoints,
-                                bond_unit,
-                                creation_slot: block.header.slot,
-                            });
+                                .any(|u| matches!(u, PendingProducerUpdate::Register { .. }));
+
+                            if is_registered || has_pending_reg {
+                                let tx_hash = tx.hash();
+                                // Lock/unlock: Bond output indices from actual TX outputs
+                                let bond_outpoints: Vec<(crypto::Hash, u32)> = tx
+                                    .outputs
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, o)| {
+                                        o.output_type == doli_core::transaction::OutputType::Bond
+                                    })
+                                    .map(|(i, _)| (tx_hash, i as u32))
+                                    .collect();
+                                producers.queue_update(PendingProducerUpdate::AddBond {
+                                    pubkey: add_bond_data.producer_pubkey,
+                                    outpoints: bond_outpoints,
+                                    bond_unit,
+                                    creation_slot: block.header.slot,
+                                });
+                            }
                         }
                     }
                     TxType::RequestWithdrawal => {
