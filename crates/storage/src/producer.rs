@@ -407,6 +407,12 @@ pub struct ProducerInfo {
     /// Reset to 0 when RequestWithdrawal is applied at epoch boundary.
     #[serde(default)]
     pub withdrawal_pending_count: u32,
+    /// BLS12-381 public key for aggregate attestation signatures (48 bytes).
+    ///
+    /// Set at registration time (with `PoP` verification). Empty for pre-BLS producers.
+    /// Used to verify aggregate attestation signatures in block validation.
+    #[serde(default)]
+    pub bls_pubkey: Vec<u8>,
 }
 
 /// Default bond count for backwards compatibility
@@ -511,6 +517,7 @@ impl ProducerInfo {
             received_delegations: Vec::new(),
             bond_entries,
             withdrawal_pending_count: 0,
+            bls_pubkey: Vec::new(),
         }
     }
 
@@ -558,6 +565,7 @@ impl ProducerInfo {
             received_delegations: Vec::new(),
             bond_entries,
             withdrawal_pending_count: 0,
+            bls_pubkey: Vec::new(),
         }
     }
 
@@ -608,6 +616,7 @@ impl ProducerInfo {
             received_delegations: Vec::new(),
             bond_entries,
             withdrawal_pending_count: 0,
+            bls_pubkey: Vec::new(),
         }
     }
 
@@ -1688,6 +1697,7 @@ impl ProducerSet {
             received_delegations: Vec::new(),
             bond_entries,
             withdrawal_pending_count: 0,
+            bls_pubkey: Vec::new(),
         };
 
         self.producers.insert(key, info);

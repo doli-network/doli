@@ -4,6 +4,9 @@
 //! Attestations are aggregated per region into `RegionAggregate` messages,
 //! then committed into the next block's `presence_root` field (version >= 2).
 
+use std::collections::{HashMap, HashSet};
+
+use crypto::{bls_sign, BlsKeyPair};
 use crypto::{signature, Hash, PrivateKey, PublicKey, Signature, ATTESTATION_DOMAIN};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +25,12 @@ pub struct Attestation {
     pub attester_weight: u64,
     /// Ed25519 signature over (ATTESTATION_DOMAIN || block_hash || slot).
     pub signature: Signature,
+    /// BLS12-381 signature over the attestation message (96 bytes).
+    ///
+    /// Present when the attester has a BLS key. Used for aggregate signature
+    /// verification in block validation. Empty for pre-BLS attestations.
+    #[serde(default)]
+    pub bls_signature: Vec<u8>,
 }
 
 /// Errors from attestation operations.
@@ -38,7 +47,7 @@ pub enum AttestationError {
 }
 
 impl Attestation {
-    /// Create and sign a new attestation.
+    /// Create and sign a new attestation (Ed25519 only, no BLS).
     pub fn new(
         block_hash: Hash,
         slot: u32,
@@ -57,6 +66,38 @@ impl Attestation {
             attester: public_key,
             attester_weight: weight,
             signature: sig,
+            bls_signature: Vec::new(),
+        }
+    }
+
+    /// Create and sign a new attestation with both Ed25519 and BLS signatures.
+    pub fn new_with_bls(
+        block_hash: Hash,
+        slot: u32,
+        height: u64,
+        weight: u64,
+        private_key: &PrivateKey,
+        public_key: PublicKey,
+        bls_key: &BlsKeyPair,
+    ) -> Self {
+        let msg = Self::signing_bytes(block_hash, slot);
+        let sig = signature::sign_with_domain(ATTESTATION_DOMAIN, &msg, private_key);
+
+        // BLS signs the attestation message: block_hash || slot
+        let bls_msg = crypto::attestation_message(&block_hash, slot);
+        let bls_bytes = match bls_sign(&bls_msg, bls_key.secret_key()) {
+            Ok(sig) => sig.as_bytes().to_vec(),
+            Err(_) => Vec::new(), // Graceful fallback — Ed25519 still works
+        };
+
+        Self {
+            block_hash,
+            slot,
+            height,
+            attester: public_key,
+            attester_weight: weight,
+            signature: sig,
+            bls_signature: bls_bytes,
         }
     }
 
@@ -173,6 +214,153 @@ impl RegionAggregate {
     }
 }
 
+// ==================== On-Chain Attestation Bitfield ====================
+//
+// Each block producer commits which producers attested the current minute
+// by packing a bitfield into the `presence_root` header field (32 bytes = 256 bits).
+//
+// Bit N = 1 means producer at index N (sorted by pubkey, same as DeterministicScheduler)
+// sent an attestation for this minute. At epoch boundary, scan all blocks to count
+// unique minutes per producer. ≥90% of 60 minutes = qualified for epoch rewards.
+//
+// Supports up to 256 producers. Beyond that, requires a body-stored bitfield (future).
+
+/// Slots per attestation minute (6 slots × 10s = 60s).
+pub const SLOTS_PER_ATTESTATION_MINUTE: u32 = 6;
+
+/// Attestation minutes per epoch (360 slots / 6 = 60 minutes).
+pub const ATTESTATION_MINUTES_PER_EPOCH: u32 = 60;
+
+/// Attestation qualification threshold: 90% of 60 = 54 minutes.
+pub const ATTESTATION_QUALIFICATION_THRESHOLD: u32 = 54;
+
+/// Compute the attestation minute from a slot number.
+///
+/// Each minute covers 6 slots (60 seconds at 10s/slot).
+/// Deterministic: all nodes compute the same minute from the same slot.
+#[inline]
+pub fn attestation_minute(slot: u32) -> u32 {
+    slot / SLOTS_PER_ATTESTATION_MINUTE
+}
+
+/// Encode an attestation bitfield into a Hash for `presence_root`.
+///
+/// `attested_indices` are indices into the sorted producer list.
+/// Bit N = 1 means producer at index N attested the current minute.
+/// Supports up to 256 producers (32 bytes × 8 bits).
+pub fn encode_attestation_bitfield(attested_indices: &[usize]) -> Hash {
+    let mut bytes = [0u8; 32];
+    for &idx in attested_indices {
+        if idx < 256 {
+            bytes[idx / 8] |= 1 << (idx % 8);
+        }
+    }
+    Hash::from_bytes(bytes)
+}
+
+/// Decode attestation bitfield from `presence_root`.
+///
+/// Returns indices of producers that attested this minute.
+/// `producer_count` limits the scan range.
+pub fn decode_attestation_bitfield(presence_root: &Hash, producer_count: usize) -> Vec<usize> {
+    let bytes = presence_root.as_bytes();
+    let max = producer_count.min(256);
+    let mut indices = Vec::new();
+    for idx in 0..max {
+        if bytes[idx / 8] & (1 << (idx % 8)) != 0 {
+            indices.push(idx);
+        }
+    }
+    indices
+}
+
+/// Validate that a presence_root bitfield has no bits set beyond `producer_count`.
+///
+/// Returns false if any stray bits are set (potential manipulation).
+pub fn validate_attestation_bitfield(presence_root: &Hash, producer_count: usize) -> bool {
+    if producer_count >= 256 {
+        return true; // All bits valid
+    }
+    let bytes = presence_root.as_bytes();
+    for idx in producer_count..256 {
+        if bytes[idx / 8] & (1 << (idx % 8)) != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// In-memory tracker for minute attestations received via gossip.
+///
+/// Used by the block producer to build the bitfield for `presence_root`
+/// and aggregate BLS signatures for the block body.
+/// NOT used for epoch reward qualification — that comes from scanning on-chain bitfields.
+pub struct MinuteAttestationTracker {
+    /// pubkey → set of minutes they attested in
+    attested: HashMap<PublicKey, HashSet<u32>>,
+    /// (pubkey, minute) → BLS signature bytes (latest per minute per producer)
+    bls_sigs: HashMap<(PublicKey, u32), Vec<u8>>,
+}
+
+impl MinuteAttestationTracker {
+    /// Create an empty tracker.
+    pub fn new() -> Self {
+        Self {
+            attested: HashMap::new(),
+            bls_sigs: HashMap::new(),
+        }
+    }
+
+    /// Record that a producer attested in a given minute.
+    pub fn record(&mut self, pubkey: PublicKey, minute: u32) {
+        self.attested.entry(pubkey).or_default().insert(minute);
+    }
+
+    /// Record that a producer attested in a given minute with a BLS signature.
+    pub fn record_with_bls(&mut self, pubkey: PublicKey, minute: u32, bls_sig: Vec<u8>) {
+        self.attested.entry(pubkey).or_default().insert(minute);
+        if !bls_sig.is_empty() {
+            self.bls_sigs.insert((pubkey, minute), bls_sig);
+        }
+    }
+
+    /// Get all producers that attested in a specific minute.
+    pub fn attested_in_minute(&self, minute: u32) -> Vec<&PublicKey> {
+        self.attested
+            .iter()
+            .filter(|(_, minutes)| minutes.contains(&minute))
+            .map(|(pk, _)| pk)
+            .collect()
+    }
+
+    /// Get BLS signatures for all producers that attested in a specific minute.
+    ///
+    /// Returns (pubkey, bls_sig_bytes) pairs. Only includes producers with BLS sigs.
+    pub fn bls_sigs_for_minute(&self, minute: u32) -> Vec<(&PublicKey, &[u8])> {
+        self.attested
+            .iter()
+            .filter(|(_, minutes)| minutes.contains(&minute))
+            .filter_map(|(pk, _)| {
+                self.bls_sigs
+                    .get(&(*pk, minute))
+                    .map(|sig| (pk, sig.as_slice()))
+            })
+            .collect()
+    }
+
+    /// Reset the tracker (at epoch boundary).
+    pub fn reset(&mut self) {
+        self.attested.clear();
+        self.bls_sigs.clear();
+    }
+}
+
+impl Default for MinuteAttestationTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +397,7 @@ mod tests {
             attester: *kp2.public_key(),
             attester_weight: 1,
             signature: sig,
+            bls_signature: Vec::new(),
         };
 
         assert!(att.verify().is_err());
@@ -260,6 +449,7 @@ mod tests {
             attester: *kp.public_key(), // wrong!
             attester_weight: 1,
             signature: bad_sig,
+            bls_signature: Vec::new(),
         };
 
         let agg = RegionAggregate {
@@ -292,5 +482,117 @@ mod tests {
 
         let result = RegionAggregate::from_attestations(vec![att1, att2], 0);
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod bitfield_tests {
+    use super::*;
+
+    #[test]
+    fn test_attestation_minute() {
+        assert_eq!(attestation_minute(0), 0);
+        assert_eq!(attestation_minute(5), 0);
+        assert_eq!(attestation_minute(6), 1);
+        assert_eq!(attestation_minute(11), 1);
+        assert_eq!(attestation_minute(12), 2);
+        assert_eq!(attestation_minute(359), 59);
+    }
+
+    #[test]
+    fn test_encode_decode_roundtrip() {
+        let indices = vec![0, 3, 7, 11];
+        let hash = encode_attestation_bitfield(&indices);
+        let decoded = decode_attestation_bitfield(&hash, 12);
+        assert_eq!(decoded, indices);
+    }
+
+    #[test]
+    fn test_encode_empty() {
+        let hash = encode_attestation_bitfield(&[]);
+        assert!(hash.is_zero());
+    }
+
+    #[test]
+    fn test_decode_zero_is_empty() {
+        let decoded = decode_attestation_bitfield(&Hash::ZERO, 12);
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_encode_all_producers() {
+        let indices: Vec<usize> = (0..12).collect();
+        let hash = encode_attestation_bitfield(&indices);
+        let decoded = decode_attestation_bitfield(&hash, 12);
+        assert_eq!(decoded, indices);
+    }
+
+    #[test]
+    fn test_validate_bitfield_clean() {
+        let indices = vec![0, 3, 7];
+        let hash = encode_attestation_bitfield(&indices);
+        assert!(validate_attestation_bitfield(&hash, 12));
+    }
+
+    #[test]
+    fn test_validate_bitfield_stray_bit() {
+        // Set bit 15 but claim only 12 producers
+        let hash = encode_attestation_bitfield(&[0, 15]);
+        assert!(!validate_attestation_bitfield(&hash, 12));
+    }
+
+    #[test]
+    fn test_validate_bitfield_256_producers() {
+        let hash = encode_attestation_bitfield(&[255]);
+        assert!(validate_attestation_bitfield(&hash, 256));
+    }
+
+    #[test]
+    fn test_tracker_basic() {
+        let mut tracker = MinuteAttestationTracker::new();
+        let pk = PublicKey::from_bytes([1u8; 32]);
+
+        tracker.record(pk, 5);
+        tracker.record(pk, 6);
+
+        let minute_5 = tracker.attested_in_minute(5);
+        assert_eq!(minute_5.len(), 1);
+        assert_eq!(*minute_5[0], pk);
+
+        let minute_7 = tracker.attested_in_minute(7);
+        assert!(minute_7.is_empty());
+    }
+
+    #[test]
+    fn test_tracker_multiple_producers() {
+        let mut tracker = MinuteAttestationTracker::new();
+        let pk1 = PublicKey::from_bytes([1u8; 32]);
+        let pk2 = PublicKey::from_bytes([2u8; 32]);
+
+        tracker.record(pk1, 5);
+        tracker.record(pk2, 5);
+        tracker.record(pk1, 6);
+
+        assert_eq!(tracker.attested_in_minute(5).len(), 2);
+        assert_eq!(tracker.attested_in_minute(6).len(), 1);
+    }
+
+    #[test]
+    fn test_tracker_reset() {
+        let mut tracker = MinuteAttestationTracker::new();
+        let pk = PublicKey::from_bytes([1u8; 32]);
+
+        tracker.record(pk, 5);
+        assert_eq!(tracker.attested_in_minute(5).len(), 1);
+
+        tracker.reset();
+        assert!(tracker.attested_in_minute(5).is_empty());
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(SLOTS_PER_ATTESTATION_MINUTE, 6);
+        assert_eq!(ATTESTATION_MINUTES_PER_EPOCH, 60);
+        assert_eq!(ATTESTATION_QUALIFICATION_THRESHOLD, 54);
     }
 }

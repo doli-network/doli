@@ -99,12 +99,44 @@ pub struct BlockResponse {
     /// Presence commitment (if available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence: Option<PresenceResponse>,
+    /// Attestation bitfield from presence_root (hex, 64 chars = 32 bytes).
+    /// Bit N = producer at sorted index N attested this minute.
+    /// "0000...0000" means no attestations committed in this block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_root: Option<String>,
+    /// BLS aggregate attestation signature (hex, 192 chars = 96 bytes).
+    /// Present when block producer aggregated BLS sigs from attesting producers.
+    /// Null/absent for pre-BLS blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_bls_sig: Option<String>,
+    /// Number of attestation bits set in the presence_root bitfield.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation_count: Option<u32>,
 }
 
 impl From<&Block> for BlockResponse {
     fn from(block: &Block) -> Self {
-        // NOTE: Presence removed in deterministic scheduler model
-        // Blocks no longer contain presence commitments
+        let pr_hex = block.header.presence_root.to_hex();
+        let pr_is_zero = block.header.presence_root == crypto::Hash::ZERO;
+
+        // Count set bits in presence_root
+        let att_count = if pr_is_zero {
+            0u32
+        } else {
+            block
+                .header
+                .presence_root
+                .as_bytes()
+                .iter()
+                .map(|b| b.count_ones())
+                .sum()
+        };
+
+        let agg_sig = if block.aggregate_bls_signature.is_empty() {
+            None
+        } else {
+            Some(hex::encode(&block.aggregate_bls_signature))
+        };
 
         Self {
             hash: block.hash().to_hex(),
@@ -121,7 +153,10 @@ impl From<&Block> for BlockResponse {
                 .map(|tx| tx.hash().to_hex())
                 .collect(),
             size: block.size(),
-            presence: None, // Deprecated in deterministic scheduler model
+            presence: None,
+            presence_root: if pr_is_zero { None } else { Some(pr_hex) },
+            aggregate_bls_sig: agg_sig,
+            attestation_count: if att_count > 0 { Some(att_count) } else { None },
         }
     }
 }
@@ -498,6 +533,10 @@ pub struct ProducerResponse {
     /// Pending epoch-deferred updates
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_updates: Vec<PendingUpdateInfo>,
+    /// BLS12-381 public key for aggregate attestation (hex, 96 chars = 48 bytes).
+    /// Empty string if producer registered before BLS was available.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bls_pubkey: String,
 }
 
 /// Pending withdrawal response
@@ -784,6 +823,7 @@ mod tests {
                 claimable: false,
             }],
             pending_updates: Vec::new(),
+            bls_pubkey: String::new(),
         };
 
         let json = serde_json::to_string(&response).unwrap();
@@ -807,6 +847,7 @@ mod tests {
             era: 0,
             pending_withdrawals: Vec::new(),
             pending_updates: Vec::new(),
+            bls_pubkey: String::new(),
         };
 
         let json = serde_json::to_string(&response).unwrap();
@@ -886,6 +927,46 @@ pub struct ChainStatsResponse {
     pub total_staked: u64,
     /// Chain height
     pub height: u64,
+}
+
+/// Attestation statistics for current epoch
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttestationStatsResponse {
+    /// Current epoch number
+    pub epoch: u32,
+    /// Epoch start height
+    pub epoch_start: u64,
+    /// Current chain height
+    pub current_height: u64,
+    /// Total blocks in this epoch so far
+    pub blocks_in_epoch: u64,
+    /// Blocks with non-zero presence_root (attestation bitfield committed)
+    pub blocks_with_attestations: u64,
+    /// Blocks with BLS aggregate signature
+    pub blocks_with_bls: u64,
+    /// Current attestation minute within the epoch
+    pub current_minute: u32,
+    /// Per-producer attestation stats (sorted by pubkey)
+    pub producers: Vec<ProducerAttestationStats>,
+}
+
+/// Per-producer attestation stats within the current epoch
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducerAttestationStats {
+    /// Producer public key (hex)
+    pub public_key: String,
+    /// Number of unique minutes this producer was attested (bit set in presence_root)
+    pub attested_minutes: u32,
+    /// Total minutes elapsed in epoch so far
+    pub total_minutes: u32,
+    /// Qualification threshold (54 minutes)
+    pub threshold: u32,
+    /// Whether this producer qualifies for epoch rewards
+    pub qualified: bool,
+    /// Whether this producer has a BLS key registered
+    pub has_bls: bool,
 }
 
 /// Mempool transaction entry

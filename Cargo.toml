@@ -34,6 +34,7 @@ ed25519-dalek = { version = "2.1", features = ["rand_core", "zeroize"] }
 rand = "0.8"
 rand_core = "0.6"
 zeroize = { version = "1.7", features = ["derive"] }
+blst = "0.3"    # BLS12-381 aggregate signatures (attestation)
 subtle = "2.5"  # Constant-time operations
 sha2 = "0.10"   # For compatibility and cross-verification
 bip39 = { version = "2.1", features = ["rand", "zeroize"] }

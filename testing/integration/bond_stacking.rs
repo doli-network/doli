@@ -579,6 +579,7 @@ fn test_bond_entries_migration() {
         received_delegations: Vec::new(),
         bond_entries: Vec::new(), // Empty — needs migration
         withdrawal_pending_count: 0,
+        bls_pubkey: Vec::new(),
     };
 
     // Should be empty before migration

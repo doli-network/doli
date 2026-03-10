@@ -766,6 +766,7 @@ mod tests {
                 vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
             },
             transactions: vec![],
+            aggregate_bls_signature: Vec::new(),
         };
 
         let result = handler.check_reorg_weighted(&fork, block2, 100);
@@ -803,6 +804,7 @@ mod tests {
                 vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
             },
             transactions: vec![],
+            aggregate_bls_signature: Vec::new(),
         };
 
         let result = handler.check_reorg_weighted(&fork, block2, 100);

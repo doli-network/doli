@@ -85,7 +85,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1773156373;
+pub const GENESIS_TIME: u64 = 1773163748;
 
 // ==================== Proof of Time Parameters ====================
 
@@ -141,12 +141,6 @@ pub const MIN_ATTESTATION_RATE: u32 = MIN_PRESENCE_RATE;
 pub const ATTESTATION_INTERVAL: u32 = 1;
 
 // ==================== Epoch Reward Qualification ====================
-
-/// Production rate threshold for epoch reward qualification (percentage).
-/// Producers must produce ≥90% of their scheduled slots to qualify.
-/// Determined from on-chain data: scan epoch blocks, compare production vs schedule.
-/// Non-qualifiers' share is redistributed to qualifiers (bond-weighted).
-pub const PRODUCTION_QUALIFICATION_PCT: u32 = 90;
 
 /// Slots per era (~4 years at 10-second slots)
 /// 4 years = 12,614,400 slots (halving interval)
