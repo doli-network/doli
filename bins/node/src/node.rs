@@ -2997,10 +2997,7 @@ impl Node {
     /// Block data (headers/bodies) is preserved — only indexes are cleared.
     /// This is the ONLY automatic recovery path; `force_resync_from_genesis()`
     /// (which also wipes block data) is reserved for manual `recover --yes`.
-    async fn recover_from_peers(&mut self) -> Result<()> {
-        self.recover_from_peers_inner(false).await
-    }
-
+    ///
     /// Force recovery bypassing the 90% guard — used when fork sync or deep
     /// fork detection has already proven the node is on a different chain.
     async fn force_recover_from_peers(&mut self) -> Result<()> {
