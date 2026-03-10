@@ -3,10 +3,32 @@
 use std::path::Path;
 
 use crypto::Hash;
+use doli_core::transaction::Transaction;
 use doli_core::{Block, BlockHeader};
 use tracing::{debug, info, warn};
 
 use crate::StorageError;
+
+/// Serializable block body (v2: includes BLS aggregate signature)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BlockBody {
+    transactions: Vec<Transaction>,
+    #[serde(default)]
+    aggregate_bls_signature: Vec<u8>,
+}
+
+/// Deserialize block body bytes with backward compatibility.
+/// Tries new `BlockBody` format first, falls back to plain `Vec<Transaction>`.
+fn deserialize_body(bytes: &[u8]) -> Result<(Vec<Transaction>, Vec<u8>), StorageError> {
+    // Try new format first
+    if let Ok(body) = bincode::deserialize::<BlockBody>(bytes) {
+        return Ok((body.transactions, body.aggregate_bls_signature));
+    }
+    // Fall back to legacy format (pre-BLS blocks)
+    let txs: Vec<Transaction> =
+        bincode::deserialize(bytes).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    Ok((txs, Vec::new()))
+}
 
 /// Column family names
 const CF_HEADERS: &str = "headers";
@@ -177,9 +199,8 @@ impl BlockStore {
                 Ok(Some(b)) => b,
                 _ => continue,
             };
-            let transactions: Vec<doli_core::Transaction> = match bincode::deserialize(&body_bytes)
-            {
-                Ok(txs) => txs,
+            let (transactions, _) = match deserialize_body(&body_bytes) {
+                Ok(b) => b,
                 Err(_) => continue,
             };
 
@@ -246,9 +267,8 @@ impl BlockStore {
                 Ok(Some(b)) => b,
                 _ => continue,
             };
-            let transactions: Vec<doli_core::Transaction> = match bincode::deserialize(&body_bytes)
-            {
-                Ok(txs) => txs,
+            let (transactions, _) = match deserialize_body(&body_bytes) {
+                Ok(b) => b,
                 Err(_) => continue,
             };
 
@@ -446,9 +466,13 @@ impl BlockStore {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
         self.db.put_cf(cf_headers, hash_bytes, &header_bytes)?;
 
-        // Store body (keyed by hash)
-        let body_bytes = bincode::serialize(&block.transactions)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        // Store body (keyed by hash) — includes BLS aggregate signature
+        let body = BlockBody {
+            transactions: block.transactions.clone(),
+            aggregate_bls_signature: block.aggregate_bls_signature.clone(),
+        };
+        let body_bytes =
+            bincode::serialize(&body).map_err(|e| StorageError::Serialization(e.to_string()))?;
         let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
         self.db.put_cf(cf_bodies, hash_bytes, &body_bytes)?;
 
@@ -725,13 +749,11 @@ impl BlockStore {
 
         let header: BlockHeader = bincode::deserialize(&header_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let transactions = bincode::deserialize(&body_bytes)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let (transactions, bls_sig) = deserialize_body(&body_bytes)?;
 
-        // NOTE: Presence loading removed - deterministic scheduler model
-        // uses coinbase rewards (100% to producer), not presence-based rewards
-
-        Ok(Some(Block::new(header, transactions)))
+        let mut block = Block::new(header, transactions);
+        block.aggregate_bls_signature = bls_sig;
+        Ok(Some(block))
     }
 
     /// Get a header by hash
