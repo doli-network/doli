@@ -794,15 +794,24 @@ impl Transaction {
         };
         let extra_data = bincode::serialize(&reg_data).unwrap_or_default();
 
-        // Create bond output (locked to producer's pubkey)
-        let pubkey_hash = crypto::hash::hash(public_key.as_bytes());
-        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until, 0);
+        // Create one Bond UTXO per bond (each with bond_unit amount)
+        // so each bond has its own creation_slot for FIFO vesting
+        let pubkey_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, public_key.as_bytes());
+        let bond_unit = if bond_count > 0 {
+            bond_amount / bond_count as u64
+        } else {
+            bond_amount
+        };
+        let outputs: Vec<Output> = (0..bond_count)
+            .map(|_| Output::bond(bond_unit, pubkey_hash, lock_until, 0))
+            .collect();
 
         Self {
             version: 1,
             tx_type: TxType::Registration,
             inputs,
-            outputs: vec![bond_output],
+            outputs,
             extra_data,
         }
     }
@@ -932,16 +941,24 @@ impl Transaction {
         let bond_data = AddBondData::new(producer_pubkey, bond_count);
         let extra_data = bond_data.to_bytes();
 
-        // Lock/unlock model: create Bond UTXO (locked, visible on-chain)
+        // Create one Bond UTXO per bond (each with bond_unit amount)
+        // so each bond has its own creation_slot for FIFO vesting
         let pubkey_hash =
             crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
-        let bond_output = Output::bond(bond_amount, pubkey_hash, lock_until, 0);
+        let bond_unit = if bond_count > 0 {
+            bond_amount / bond_count as u64
+        } else {
+            bond_amount
+        };
+        let outputs: Vec<Output> = (0..bond_count)
+            .map(|_| Output::bond(bond_unit, pubkey_hash, lock_until, 0))
+            .collect();
 
         Self {
             version: 1,
             tx_type: TxType::AddBond,
             inputs,
-            outputs: vec![bond_output],
+            outputs,
             extra_data,
         }
     }

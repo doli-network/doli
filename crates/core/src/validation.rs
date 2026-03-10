@@ -3472,8 +3472,10 @@ mod tests {
         assert!(tx.is_add_bond());
         assert_eq!(tx.tx_type, TxType::AddBond);
         assert_eq!(tx.inputs.len(), 1);
-        assert_eq!(tx.outputs.len(), 1); // Bond output
-        assert_eq!(tx.outputs[0].output_type, OutputType::Bond);
+        assert_eq!(tx.outputs.len(), 5); // One Bond output per bond
+        for output in &tx.outputs {
+            assert_eq!(output.output_type, OutputType::Bond);
+        }
 
         // Verify add bond data can be parsed
         let bond_data = tx.add_bond_data().unwrap();
