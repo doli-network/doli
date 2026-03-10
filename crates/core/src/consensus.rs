@@ -140,6 +140,14 @@ pub const MIN_ATTESTATION_RATE: u32 = MIN_PRESENCE_RATE;
 #[deprecated(note = "Attestations not used in Proof of Time")]
 pub const ATTESTATION_INTERVAL: u32 = 1;
 
+// ==================== Epoch Reward Qualification ====================
+
+/// Production rate threshold for epoch reward qualification (percentage).
+/// Producers must produce ≥90% of their scheduled slots to qualify.
+/// Determined from on-chain data: scan epoch blocks, compare production vs schedule.
+/// Non-qualifiers' share is redistributed to qualifiers (bond-weighted).
+pub const PRODUCTION_QUALIFICATION_PCT: u32 = 90;
+
 /// Slots per era (~4 years at 10-second slots)
 /// 4 years = 12,614,400 slots (halving interval)
 pub const SLOTS_PER_ERA: BlockHeight = 12_614_400;
