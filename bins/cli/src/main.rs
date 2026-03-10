@@ -107,6 +107,9 @@ enum Commands {
     /// Show wallet info
     Info,
 
+    /// Add BLS attestation key to an existing wallet
+    AddBls,
+
     /// Sign a message
     Sign {
         /// Message to sign
@@ -471,6 +474,9 @@ async fn main() -> Result<()> {
         }
         Commands::Info => {
             cmd_info(&wallet)?;
+        }
+        Commands::AddBls => {
+            cmd_add_bls(&wallet)?;
         }
         Commands::Sign { message, address } => {
             cmd_sign(&wallet, &message, address)?;
@@ -1102,8 +1108,36 @@ fn cmd_info(wallet_path: &Path) -> Result<()> {
     println!("Primary Address:");
     println!("  Address:    {}", bech32_addr);
     println!("  Public Key: {}", wallet.primary_public_key());
+    if let Some(bls_pub) = wallet.primary_bls_public_key() {
+        println!("  BLS Key:    {}", bls_pub);
+    } else {
+        println!("  BLS Key:    none (run 'doli add-bls' to generate)");
+    }
     println!();
     println!("Use the address above for sending and receiving DOLI.");
+
+    Ok(())
+}
+
+fn cmd_add_bls(wallet_path: &Path) -> Result<()> {
+    let mut wallet = Wallet::load(wallet_path)?;
+
+    if wallet.has_bls_key() {
+        println!("BLS key already exists in this wallet.");
+        println!(
+            "  BLS Public Key: {}",
+            wallet.primary_bls_public_key().unwrap_or("?")
+        );
+        return Ok(());
+    }
+
+    let bls_pub = wallet.add_bls_key()?;
+    wallet.save(wallet_path)?;
+
+    println!("BLS attestation key added.");
+    println!("  BLS Public Key: {}", bls_pub);
+    println!();
+    println!("Restart the node to load the new BLS key.");
 
     Ok(())
 }
