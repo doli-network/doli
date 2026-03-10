@@ -160,7 +160,7 @@ Both servers use the same layout:
 | Testnet doli-node | `/testnet/bin/doli-node` |
 | Testnet doli CLI | `/testnet/bin/doli` |
 
-**Upgrade procedure:**
+**Upgrade procedure (non-consensus changes only — UI, RPC, logging, etc.):**
 ```bash
 # 1. Copy new binary
 sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
@@ -171,6 +171,8 @@ sleep 10
 sudo systemctl restart doli-mainnet-n1
 # ... etc
 ```
+
+> **WARNING**: For consensus-critical changes, do NOT use rolling restarts. See [Consensus-Critical Deployment](#consensus-critical-deployment) below.
 
 ### Mainnet Bootstrap
 
@@ -281,14 +283,227 @@ sudo systemctl enable doli-mainnet-n1
 sudo systemctl stop doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n3
 ```
 
-### Upgrade Order
+### Upgrade Order (Non-Consensus Changes)
 
-**Always**: Seeds first, then producers. Testnet first, then mainnet.
+**Rolling restarts** — safe for: UI, RPC, logging, metrics, non-consensus bug fixes.
+
+Seeds first, then producers. Testnet first, then mainnet.
 
 ```
 Testnet: seed-ai1 → seed-ai2 → NT6 → NT5 → NT4 → NT3 → NT2 → NT1
 Mainnet: seed-ai1 → seed-ai2 → N6 → N3 → N2 → N1
 ```
+
+> For consensus-critical changes, see [Consensus-Critical Deployment](#consensus-critical-deployment) below.
+
+## Consensus-Critical Deployment
+
+**MANDATORY procedure for ANY change that affects block production, validation, or scheduling.**
+
+### What Is Consensus-Critical?
+
+A change is consensus-critical if different binary versions would produce or validate blocks differently. If the answer to "would running old and new binaries simultaneously cause a fork?" is YES or MAYBE, use this procedure.
+
+| Category | Examples | Consensus-Critical? |
+|----------|----------|:---:|
+| **Scheduling** | `count_bonds()`, `select_producer_for_slot()`, bond weights, sort order | **YES** |
+| **Validation** | Block validation rules, timestamp checks, VDF params | **YES** |
+| **Genesis** | Genesis timestamp, genesis message, network_id, slot_duration | **YES** (new genesis_hash) |
+| **Economics** | Reward calculation, halving schedule, bond_unit, vesting | **YES** |
+| **Transaction** | New TxType, changed validation for existing types | **YES** |
+| **RPC/Display** | RPC response format, logging, metrics, explorer | No |
+| **Networking** | Gossip optimization, peer scoring, NAT traversal | Usually no |
+| **CLI** | New subcommands, output formatting, wallet features | No |
+
+**Rule of thumb**: If it touches `scheduler.rs`, `consensus.rs`, `validation.rs`, or how `apply_block()` processes transactions — it is consensus-critical.
+
+### Procedure: Simultaneous Deployment
+
+**NEVER use rolling restarts for consensus-critical changes.** A rolling deployment creates a window where nodes run incompatible binaries, causing an irreconcilable fork. See `docs/legacy/bugs/REPORT_HA_FAILURE.md` for the incident analysis.
+
+#### Phase 1: Build & Distribute
+
+```bash
+# 1. Build on ai2 (build server)
+ssh ilozada@187.124.95.188
+cd ~/repos/doli && git pull && cargo build --release
+
+# 2. Copy binary to deployment staging on BOTH servers
+# ai2 (local)
+sudo cp target/release/doli-node /tmp/doli-node-new
+sudo cp target/release/doli /tmp/doli-new
+
+# ai1 (remote)
+ssh ilozada@72.60.228.233 'cat > /tmp/doli-node-new' < target/release/doli-node
+ssh ilozada@72.60.228.233 'cat > /tmp/doli-new' < target/release/doli
+
+# ai3 (remote — no SSH key to ai1/ai2, transfer via Mac or ai2)
+ssh ilozada@187.124.95.188 'cat target/release/doli-node' | ssh ai3 'cat > /tmp/doli-node-new'
+ssh ilozada@187.124.95.188 'cat target/release/doli' | ssh ai3 'cat > /tmp/doli-new'
+
+# 3. Verify checksums match on ALL THREE servers
+md5sum /tmp/doli-node-new
+ssh ilozada@72.60.228.233 'md5sum /tmp/doli-node-new'
+ssh ai3 'md5sum /tmp/doli-node-new'
+# All three must be identical
+```
+
+#### Phase 2: Stop ALL Nodes (All Servers Simultaneously)
+
+```bash
+# Open three terminals — one per server. Execute SIMULTANEOUSLY.
+
+# Terminal 1 (ai1):
+ssh ilozada@72.60.228.233 'sudo systemctl stop \
+  doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n3 \
+  doli-testnet-seed doli-testnet-nt1 doli-testnet-nt3 doli-testnet-nt5'
+
+# Terminal 2 (ai2):
+ssh ilozada@187.124.95.188 'sudo systemctl stop \
+  doli-mainnet-seed doli-mainnet-n2 doli-mainnet-n4 doli-mainnet-n6 \
+  doli-testnet-seed doli-testnet-nt2 doli-testnet-nt4 doli-testnet-nt6'
+
+# Terminal 3 (ai3 — seeds only):
+ssh ai3 'sudo systemctl stop doli-mainnet-seed doli-testnet-seed'
+```
+
+**WAIT until ALL nodes are confirmed stopped on ALL THREE servers before proceeding.**
+
+```bash
+# Verify no nodes running
+ssh ilozada@72.60.228.233 'pgrep -la doli-node || echo "ai1: all stopped"'
+ssh ilozada@187.124.95.188 'pgrep -la doli-node || echo "ai2: all stopped"'
+ssh ai3 'pgrep -la doli-node || echo "ai3: all stopped"'
+```
+
+#### Phase 3: Deploy Binary (Both Servers)
+
+```bash
+# ai1
+ssh ilozada@72.60.228.233 '
+  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
+  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
+  sudo cp /tmp/doli-new /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
+  sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
+
+# ai2
+ssh ilozada@187.124.95.188 '
+  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
+  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
+  sudo cp /tmp/doli-new /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
+  sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
+
+# ai3
+ssh ai3 '
+  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
+  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
+  sudo cp /tmp/doli-new /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
+  sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
+```
+
+#### Phase 4: Wipe Data (If Genesis Changed)
+
+Only needed if `genesis_hash` changed (timestamp, message, network_id, or slot_duration modified).
+
+```bash
+# ai1 — wipe ALL node data dirs
+ssh ilozada@72.60.228.233 '
+  for d in /mainnet/seed/data /mainnet/n1/data /mainnet/n3/data \
+           /testnet/seed/data /testnet/nt1/data /testnet/nt3/data /testnet/nt5/data; do
+    sudo rm -rf $d/* && echo "wiped $d"
+  done
+  sudo rm -rf /mainnet/seed/blocks/*'
+
+# ai2 — wipe ALL node data dirs
+ssh ilozada@187.124.95.188 '
+  for d in /mainnet/seed/data /mainnet/n2/data /mainnet/n4/data /mainnet/n6/data \
+           /testnet/seed/data /testnet/nt2/data /testnet/nt4/data /testnet/nt6/data; do
+    sudo rm -rf $d/* && echo "wiped $d"
+  done
+  sudo rm -rf /mainnet/seed/blocks/*'
+
+# ai3 — wipe seed data dirs
+ssh ai3 '
+  sudo rm -rf ~/.doli/mainnet/* ~/.doli/testnet/* && echo "wiped ai3 seed data"
+  sudo rm -rf /mainnet/seed/blocks/* /testnet/seed/blocks/*'
+```
+
+#### Phase 5: Start Nodes (Ordered)
+
+Start seeds first (all three servers), wait for them to peer, then start producers.
+
+```bash
+# Step 1: Start seeds on ALL THREE servers
+ssh ilozada@72.60.228.233 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+ssh ilozada@187.124.95.188 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+ssh ai3 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+
+# Wait 10 seconds for seeds to initialize and peer with each other
+sleep 10
+
+# Step 2: Start ai1 producers
+ssh ilozada@72.60.228.233 'sudo systemctl start \
+  doli-mainnet-n1 doli-mainnet-n3 \
+  doli-testnet-nt1 doli-testnet-nt3 doli-testnet-nt5'
+
+# Step 3: Start ai2 producers (immediately after ai1 — no need to wait)
+ssh ilozada@187.124.95.188 'sudo systemctl start \
+  doli-mainnet-n2 doli-mainnet-n4 doli-mainnet-n6 \
+  doli-testnet-nt2 doli-testnet-nt4 doli-testnet-nt6'
+```
+
+#### Phase 6: Verify Consensus
+
+Wait ~30 seconds, then confirm all nodes are on the same chain.
+
+```bash
+# ai1 mainnet
+ssh ilozada@72.60.228.233 '
+for entry in "8500:Seed" "8501:N1" "8503:N3"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
+done'
+
+# ai2 mainnet
+ssh ilozada@187.124.95.188 '
+for entry in "8500:Seed" "8502:N2" "8504:N4" "8506:N6"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
+done'
+
+# ai3 seed
+ssh ai3 '
+for entry in "8500:Seed3"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
+done'
+
+# All heights should be within ±1 of each other across ALL THREE servers
+# If heights diverge by >2, STOP and investigate — do NOT let the fork grow
+# Also check explorer.doli.network/network.html — Genesis should show "unified"
+```
+
+### Quick Decision Checklist
+
+Before deploying, answer these:
+
+- [ ] Does this change affect `slot % total_bonds` calculation? → **Simultaneous**
+- [ ] Does this change how blocks are validated? → **Simultaneous**
+- [ ] Does this change genesis_hash inputs? → **Simultaneous + wipe**
+- [ ] Does this change reward/penalty calculations? → **Simultaneous**
+- [ ] Is it RPC-only, logging, or CLI? → Rolling is safe
 
 ---
 

@@ -541,6 +541,7 @@ All operational procedures are in the ops runbook: **`~/.omega/skills/doli-ops/S
 **Always read the ops skill before any infrastructure task.** Key sections:
 - **Section 2**: Node inventory (N1-N12, NT1-NT12), SSH access, service management, logs
 - **Section 3**: Deployment procedures (consensus-critical simultaneous vs rolling)
+  - **CRITICAL**: Consensus-critical changes (scheduling, validation, rewards, genesis) MUST use simultaneous deployment. NEVER rolling. See `docs/infrastructure.md` "Consensus-Critical Deployment" and `docs/legacy/bugs/REPORT_HA_FAILURE.md`.
 - **Section 4**: Auto-update system (signing, veto, grace period)
 - **Section 5**: doli-node upgrade procedures
 - **Section 6**: Producer bond management (registration, add-bond, withdrawal)

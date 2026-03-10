@@ -5,16 +5,17 @@ description: Monitor and manage DOLI blockchain nodes. Use when checking chain s
 
 # DOLI Network Operations
 
-## Architecture (v2 — March 8, 2026)
+## Architecture (v3 — March 10, 2026)
 
-2-server HA setup. Seeds (archive+relay) separated from producers. Odd nodes on ai1, even on ai2.
+3-server setup. Seeds on ai1+ai2+ai3. Producers on ai1+ai2 only. Odd nodes on ai1, even on ai2. ai3 = seeds only.
 
 ### Servers
 
-| Server | IP | SSH |
-|--------|-----|-----|
-| ai1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` |
-| ai2 | 187.124.95.188 | `ssh ilozada@187.124.95.188` |
+| Server | IP | SSH | Role |
+|--------|-----|-----|------|
+| ai1 | 72.60.228.233 | `ssh ilozada@72.60.228.233` | Seeds + Producers (odd) |
+| ai2 | 187.124.95.188 | `ssh ilozada@187.124.95.188` | Seeds + Producers (even) |
+| ai3 | 187.124.148.93 | `ssh ai3` | Seeds only (no producers) |
 
 ### Port Formula
 
@@ -60,6 +61,7 @@ curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 (72.60.228.233) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
 | Seed2 | ai2 (187.124.95.188) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
+| Seed3 | ai3 (187.124.148.93) | 30300 | 8500 | `doli-mainnet-seed` | `seed3.doli.network` |
 
 ### Producer Nodes
 
@@ -109,6 +111,18 @@ for entry in "8500:Seed" "8502:N2" "8504:N4" "8506:N6"; do
   v=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"version\"])" 2>/dev/null || echo "?")
   printf "%-6s h=%-6s v=%s\n" "$name" "$h" "$v"
 done'
+
+# From ai3 (seed only)
+ssh ai3 '
+for entry in "8500:Seed3"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  v=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"version\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%-6s v=%s\n" "$name" "$h" "$v"
+done'
 ```
 
 ## Testnet Node Inventory
@@ -119,6 +133,7 @@ done'
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap1.testnet.doli.network` |
 | Seed2 | ai2 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap2.testnet.doli.network` |
+| Seed3 | ai3 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap3.testnet.doli.network` |
 
 ### Producer Nodes
 
@@ -159,6 +174,17 @@ done'
 # From ai2 (seed, NT2, NT4, NT6)
 ssh ilozada@187.124.95.188 '
 for entry in "18500:Seed" "18502:NT2" "18504:NT4" "18506:NT6"; do
+  port=${entry%%:*}; name=${entry##*:}
+  result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}")
+  h=$(echo $result | python3 -c "import sys,json; print(json.load(sys.stdin)[\"result\"][\"bestHeight\"])" 2>/dev/null || echo "?")
+  printf "%-6s h=%s\n" "$name" "$h"
+done'
+
+# From ai3 (seed only)
+ssh ai3 '
+for entry in "18500:Seed3"; do
   port=${entry%%:*}; name=${entry##*:}
   result=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -247,3 +273,4 @@ done
 - **Genesis timestamp**: 4 sources must be updated (consensus.rs, network_params.rs, chainspec.mainnet.json, chainspec.testnet.json). Chainspecs are embedded via `include_str!` — requires recompilation.
 - **Compilation**: Done on ai2 (`cargo build --release`, no nix). Transfer to ai1 via ssh pipe. Verify md5 on all deployed binaries.
 - **RPC binding**: Producers bind to 127.0.0.1 only. Seeds bind to 0.0.0.0. Must SSH to server to query producers.
+- **Consensus-critical deploys**: NEVER use rolling restarts for changes that affect scheduling, validation, or rewards. MUST use simultaneous deployment: stop ALL → deploy ALL → start seeds → start producers. Rolling deploys cause irreconcilable forks (see `docs/legacy/bugs/REPORT_HA_FAILURE.md`). Full procedure in `docs/infrastructure.md` "Consensus-Critical Deployment".
