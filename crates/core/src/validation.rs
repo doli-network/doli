@@ -23,6 +23,7 @@
 
 use thiserror::Error;
 
+use crate::attestation::decode_attestation_bitfield;
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{
     is_producer_eligible_ms, max_block_size, select_producer_for_slot, ConsensusParams, RewardMode,
@@ -461,6 +462,12 @@ pub struct ValidationContext {
     /// Public keys with pending (epoch-deferred) registrations.
     /// Used to reject duplicate registrations before epoch activation.
     pub pending_producer_keys: Vec<crypto::PublicKey>,
+    /// BLS public keys for active producers, sorted by Ed25519 pubkey (same as bitfield order).
+    ///
+    /// Index N corresponds to the producer at sorted index N in the bitfield.
+    /// Empty Vec at index N means that producer has no BLS key (pre-BLS registration).
+    #[allow(dead_code)]
+    pub producer_bls_keys: Vec<Vec<u8>>,
 }
 
 impl ValidationContext {
@@ -487,6 +494,7 @@ impl ValidationContext {
             stale_bootstrap_producers: Vec::new(),
             registration_chain: RegistrationChainState::default(),
             pending_producer_keys: Vec::new(),
+            producer_bls_keys: Vec::new(),
         }
     }
 
@@ -676,6 +684,13 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
 
     // 7. Validate producer eligibility (if not in bootstrap)
     validate_producer_eligibility(&block.header, ctx)?;
+
+    // 8. Verify BLS aggregate attestation signature (if present).
+    // Pre-BLS blocks have empty aggregate_bls_signature — accepted.
+    // Post-BLS blocks with a signature are verified against the bitfield.
+    if !block.aggregate_bls_signature.is_empty() {
+        validate_bls_aggregate(block, ctx)?;
+    }
 
     Ok(())
 }
@@ -1553,6 +1568,13 @@ fn validate_registration_data(
         )));
     }
 
+    // Validate BLS proof-of-possession (if present)
+    // Pre-BLS registrations have empty bls_pubkey — accepted for backward compat.
+    // Post-BLS registrations MUST have valid PoP to prevent rogue key attacks.
+    if !reg_data.bls_pubkey.is_empty() {
+        validate_bls_pop(&reg_data)?;
+    }
+
     // Verify VDF proof for registration
     // (The actual VDF verification happens here)
     validate_registration_vdf(&reg_data, ctx.network)?;
@@ -1644,6 +1666,74 @@ fn validate_registration_vdf(
             "VDF verification failed".to_string(),
         ));
     }
+
+    Ok(())
+}
+
+/// Verify the BLS aggregate attestation signature in a block.
+///
+/// Decodes the presence_root bitfield to determine which producers attested,
+/// gathers their BLS public keys from the validation context, and verifies
+/// the aggregate signature against the attestation message.
+fn validate_bls_aggregate(block: &Block, ctx: &ValidationContext) -> Result<(), ValidationError> {
+    // Decode aggregate signature
+    let agg_sig = crypto::BlsSignature::try_from_slice(&block.aggregate_bls_signature)
+        .map_err(|e| ValidationError::InvalidBlock(format!("invalid BLS aggregate sig: {}", e)))?;
+
+    // Decode bitfield to find which producers attested
+    let attested_indices =
+        decode_attestation_bitfield(&block.header.presence_root, ctx.producer_bls_keys.len());
+
+    if attested_indices.is_empty() {
+        return Err(ValidationError::InvalidBlock(
+            "BLS aggregate sig present but bitfield is empty".to_string(),
+        ));
+    }
+
+    // Gather BLS pubkeys of attesting producers (skip those without BLS keys)
+    let mut bls_pubkeys: Vec<crypto::BlsPublicKey> = Vec::new();
+    for &idx in &attested_indices {
+        if idx < ctx.producer_bls_keys.len() && !ctx.producer_bls_keys[idx].is_empty() {
+            if let Ok(pk) = crypto::BlsPublicKey::try_from_slice(&ctx.producer_bls_keys[idx]) {
+                bls_pubkeys.push(pk);
+            }
+        }
+    }
+
+    if bls_pubkeys.is_empty() {
+        // No BLS-capable producers in the bitfield — can't verify.
+        // This is a transitional state: block has aggregate sig but no BLS keys registered.
+        // Accept gracefully during migration.
+        return Ok(());
+    }
+
+    // Verify: aggregate sig must match the attestation message signed by these pubkeys
+    let msg = crypto::attestation_message(&block.hash(), block.header.slot);
+    crypto::bls_verify_aggregate(&msg, &agg_sig, &bls_pubkeys).map_err(|e| {
+        ValidationError::InvalidBlock(format!("BLS aggregate verification failed: {}", e))
+    })?;
+
+    Ok(())
+}
+
+/// Validate BLS proof-of-possession for a registration.
+///
+/// Verifies that the registrant controls the BLS secret key by checking
+/// a signature over the BLS public key itself (separate `PoP` DST).
+fn validate_bls_pop(reg_data: &RegistrationData) -> Result<(), ValidationError> {
+    let pubkey = crypto::BlsPublicKey::try_from_slice(&reg_data.bls_pubkey).map_err(|e| {
+        ValidationError::InvalidRegistration(format!("invalid BLS public key: {}", e))
+    })?;
+
+    let sig = crypto::BlsSignature::try_from_slice(&reg_data.bls_pop).map_err(|e| {
+        ValidationError::InvalidRegistration(format!("invalid BLS PoP signature: {}", e))
+    })?;
+
+    crypto::bls_verify_pop(&pubkey, &sig).map_err(|_| {
+        ValidationError::InvalidRegistration(
+            "BLS proof-of-possession verification failed".to_string(),
+        )
+    })?;
 
     Ok(())
 }
@@ -3453,6 +3543,7 @@ mod tests {
                     vdf_proof: vdf::VdfProof::empty(),
                         },
                 transactions: vec![tx1, tx2],
+                aggregate_bls_signature: Vec::new(),
             };
 
             let result = check_internal_double_spend(&block);
@@ -4111,6 +4202,7 @@ mod tests {
         Block {
             header,
             transactions,
+            aggregate_bls_signature: Vec::new(),
         }
     }
 
@@ -5486,6 +5578,7 @@ mod tests {
         let mut block = Block {
             header,
             transactions: vec![],
+            aggregate_bls_signature: Vec::new(),
         };
         // Fix merkle root to match (empty tx list)
         block.header.merkle_root = block.compute_merkle_root();

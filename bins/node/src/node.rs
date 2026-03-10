@@ -3,7 +3,7 @@
 //! Integrates all DOLI components: storage, networking, RPC, mempool, and sync.
 // v0.2.1-test: upgrade pipeline validation
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -28,8 +28,9 @@ use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 use doli_core::validation::ValidationMode;
 use doli_core::{
-    AdaptiveGossip, Attestation, Block, BlockHeader, Network, ProducerAnnouncement, ProducerGSet,
-    Transaction,
+    attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
+    Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
+    ProducerGSet, Transaction, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
 use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::protocols::{SyncRequest, SyncResponse};
@@ -74,6 +75,8 @@ pub struct Node {
     shutdown: Arc<RwLock<bool>>,
     /// Producer key (if producing blocks)
     producer_key: Option<KeyPair>,
+    /// BLS key pair for aggregate attestation signatures
+    bls_key: Option<crypto::BlsKeyPair>,
     /// Last slot we successfully produced a block for (to avoid double-producing).
     /// Set after successful broadcast — checked at the top of try_produce_block()
     /// before any eligibility/scheduler work to save CPU and silence fallback-rank noise.
@@ -151,6 +154,9 @@ pub struct Node {
     pending_archive: std::collections::VecDeque<ArchiveBlock>,
     /// WebSocket broadcast sender for real-time events (new blocks, new txs)
     ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
+    /// In-memory tracker for minute attestations received via gossip.
+    /// Used by block producer to build the presence_root bitfield.
+    minute_tracker: MinuteAttestationTracker,
 }
 
 impl Node {
@@ -166,6 +172,7 @@ impl Node {
     pub async fn new(
         config: NodeConfig,
         producer_key: Option<KeyPair>,
+        bls_key: Option<crypto::BlsKeyPair>,
         producer_set: Option<Arc<RwLock<ProducerSet>>>,
         signed_slots_db: Option<SignedSlotsDb>,
         shutdown_flag: Option<Arc<RwLock<bool>>>,
@@ -666,6 +673,7 @@ impl Node {
             sync_manager,
             shutdown,
             producer_key,
+            bls_key,
             last_produced_slot: None,
             _last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(Vec::new())),
@@ -698,6 +706,7 @@ impl Node {
             archive_tx: None,
             pending_archive: std::collections::VecDeque::new(),
             ws_sender: Arc::new(RwLock::new(None)),
+            minute_tracker: MinuteAttestationTracker::new(),
         })
     }
 
@@ -1260,8 +1269,19 @@ impl Node {
             return; // Not active, skip attestation
         }
 
-        let attestation =
-            Attestation::new(block_hash, slot, height, weight, &private_key, public_key);
+        let attestation = if let Some(ref bls_kp) = self.bls_key {
+            Attestation::new_with_bls(
+                block_hash,
+                slot,
+                height,
+                weight,
+                &private_key,
+                public_key,
+                bls_kp,
+            )
+        } else {
+            Attestation::new(block_hash, slot, height, weight, &private_key, public_key)
+        };
 
         // Add our own weight to finality tracker
         {
@@ -1902,7 +1922,7 @@ impl Node {
                 // Ignored - deterministic scheduler model doesn't use heartbeats
             }
             NetworkEvent::NewAttestation(data) => {
-                // Decode and apply attestation for finality tracking
+                // Decode and apply attestation for finality + liveness tracking
                 if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
                     if attestation.verify().is_ok() {
                         // Finality gadget: accumulate weight per block
@@ -1912,6 +1932,18 @@ impl Node {
                             attestation.attester_weight,
                         );
                         drop(sync);
+
+                        // Minute tracker: record for on-chain bitfield + BLS aggregation
+                        let minute = attestation_minute(attestation.slot);
+                        if attestation.bls_signature.is_empty() {
+                            self.minute_tracker.record(attestation.attester, minute);
+                        } else {
+                            self.minute_tracker.record_with_bls(
+                                attestation.attester,
+                                minute,
+                                attestation.bls_signature.clone(),
+                            );
+                        }
 
                         // Flush any blocks that just reached finality
                         self.flush_finalized_to_archive().await;
@@ -3520,7 +3552,7 @@ impl Node {
                             let total_bond_amount: u64 =
                                 bond_outputs.iter().map(|(_, o)| o.amount).sum();
 
-                            let producer_info = storage::ProducerInfo::new_with_bonds(
+                            let mut producer_info = storage::ProducerInfo::new_with_bonds(
                                 reg_data.public_key,
                                 height,
                                 total_bond_amount,
@@ -3528,6 +3560,7 @@ impl Node {
                                 era,
                                 reg_data.bond_count,
                             );
+                            producer_info.bls_pubkey = reg_data.bls_pubkey.clone();
 
                             producers.queue_update(PendingProducerUpdate::Register {
                                 info: Box::new(producer_info),
@@ -4277,11 +4310,27 @@ impl Node {
                 "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
                 epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
             );
+
+            // Reset minute tracker for the new epoch
+            self.minute_tracker.reset();
         }
 
-        // Per-block attestation: sign chain tip for finality gadget.
+        // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
             .await;
+        if let Some(ref kp) = self.producer_key {
+            let minute = attestation_minute(block.header.slot);
+            if let Some(ref bls_kp) = self.bls_key {
+                let bls_msg = crypto::attestation_message(&block_hash, block.header.slot);
+                let bls_sig = crypto::bls_sign(&bls_msg, bls_kp.secret_key())
+                    .map(|s| s.as_bytes().to_vec())
+                    .unwrap_or_default();
+                self.minute_tracker
+                    .record_with_bls(*kp.public_key(), minute, bls_sig);
+            } else {
+                self.minute_tracker.record(*kp.public_key(), minute);
+            }
+        }
 
         // Buffer block for archiving (will be flushed when finalized)
         if self.archive_tx.is_some() {
@@ -5500,6 +5549,17 @@ impl Node {
         // preventing retry in the canonical chain.
         if let Some(vdf_output_bytes) = self.genesis_vdf_output {
             if self.config.network.is_in_genesis(height) {
+                let (bls_pubkey_bytes, bls_pop_bytes) = if let Some(ref bls_kp) = self.bls_key {
+                    let pop = bls_kp
+                        .proof_of_possession()
+                        .expect("PoP signing cannot fail");
+                    (
+                        bls_kp.public_key().as_bytes().to_vec(),
+                        pop.as_bytes().to_vec(),
+                    )
+                } else {
+                    (vec![], vec![])
+                };
                 let reg_data = RegistrationData {
                     public_key: our_pubkey,
                     epoch: 0,
@@ -5508,6 +5568,8 @@ impl Node {
                     prev_registration_hash: Hash::ZERO,
                     sequence_number: 0,
                     bond_count: 0, // Zero bond — handled at genesis end
+                    bls_pubkey: bls_pubkey_bytes,
+                    bls_pop: bls_pop_bytes,
                 };
                 let extra_data = bincode::serialize(&reg_data)
                     .expect("RegistrationData serialization cannot fail");
@@ -5556,6 +5618,36 @@ impl Node {
             );
             return Ok(());
         }
+
+        // Build attestation bitfield for presence_root.
+        // Records which producers attested the current minute (from gossip).
+        // 6 blocks per minute from different producers → union mitigates censorship.
+        let current_minute = attestation_minute(current_slot);
+        let attested_pks = self.minute_tracker.attested_in_minute(current_minute);
+        let presence_root = if attested_pks.is_empty() {
+            Hash::ZERO
+        } else {
+            // Build sorted producer list (same ordering as DeterministicScheduler)
+            let sorted_producers: Vec<storage::producer::ProducerInfo> = {
+                let producers = self.producer_set.read().await;
+                let mut ps: Vec<storage::producer::ProducerInfo> = producers
+                    .active_producers()
+                    .iter()
+                    .map(|p| (*p).clone())
+                    .collect();
+                ps.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+                ps
+            };
+            // Map attesting pubkeys to sorted indices
+            let mut attested_indices = Vec::new();
+            for pk in &attested_pks {
+                if let Some(idx) = sorted_producers.iter().position(|p| &p.public_key == *pk) {
+                    attested_indices.push(idx);
+                }
+            }
+            encode_attestation_bitfield(&attested_indices)
+        };
+        let builder = builder.with_presence_root(presence_root);
 
         // Build header + finalized transaction list. The merkle root is computed from
         // exactly these transactions, guaranteeing header-body consistency.
@@ -5726,9 +5818,35 @@ impl Node {
 
         // Use the transactions from the builder — same list used for merkle root computation.
         // No duplicate transaction assembly needed.
+        // Aggregate BLS signatures from minute tracker for on-chain proof.
+        // Only includes producers that have BLS sigs for this minute.
+        let aggregate_bls_signature = {
+            let bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
+            if bls_sigs.is_empty() {
+                Vec::new()
+            } else {
+                let sigs: Vec<crypto::BlsSignature> = bls_sigs
+                    .iter()
+                    .filter_map(|(_, raw)| crypto::BlsSignature::try_from_slice(raw).ok())
+                    .collect();
+                if sigs.is_empty() {
+                    Vec::new()
+                } else {
+                    match crypto::bls_aggregate(&sigs) {
+                        Ok(agg) => agg.as_bytes().to_vec(),
+                        Err(e) => {
+                            warn!("BLS aggregation failed: {}", e);
+                            Vec::new()
+                        }
+                    }
+                }
+            }
+        };
+
         let block = Block {
             header: final_header,
             transactions,
+            aggregate_bls_signature,
         };
 
         let block_hash = block.hash();
@@ -5762,9 +5880,22 @@ impl Node {
             let _ = network.broadcast_block(block).await;
         }
 
-        // Attest our own block for finality gadget.
+        // Attest our own block for finality gadget + record in minute tracker.
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
+        if let Some(ref kp) = self.producer_key {
+            let minute = attestation_minute(current_slot);
+            if let Some(ref bls_kp) = self.bls_key {
+                let bls_msg = crypto::attestation_message(&block_hash, current_slot);
+                let bls_sig = crypto::bls_sign(&bls_msg, bls_kp.secret_key())
+                    .map(|s| s.as_bytes().to_vec())
+                    .unwrap_or_default();
+                self.minute_tracker
+                    .record_with_bls(*kp.public_key(), minute, bls_sig);
+            } else {
+                self.minute_tracker.record(*kp.public_key(), minute);
+            }
+        }
 
         // Flush any blocks that just reached finality
         self.flush_finalized_to_archive().await;
@@ -5772,11 +5903,11 @@ impl Node {
         Ok(())
     }
 
-    /// Calculate epoch rewards using on-chain production-rate qualification.
+    /// Calculate epoch rewards using on-chain attestation bitfield qualification.
     ///
-    /// Scans blocks in the completed epoch, builds a DeterministicScheduler from the
-    /// producer set, counts scheduled vs produced per producer. Producers with ≥90%
-    /// production rate qualify. Pool is distributed bond-weighted among qualifiers.
+    /// Scans blocks in the completed epoch, decodes each block's `presence_root`
+    /// bitfield, and counts unique attestation minutes per producer. Producers
+    /// with ≥54/60 minutes qualify. Pool is distributed bond-weighted among qualifiers.
     ///
     /// Formula: reward[i] = pool × bonds[i] / Σ(qualifying_bonds)
     /// Non-qualifiers' share is redistributed to qualifiers (not burned).
@@ -5787,74 +5918,63 @@ impl Node {
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
 
-        // Get active producers at epoch end (clone to release lock)
+        // Get active producers at epoch end, sorted by pubkey (same order as bitfield encoding)
         let sorted_producers: Vec<storage::producer::ProducerInfo> = {
             let producers = self.producer_set.read().await;
-            producers
+            let mut ps: Vec<storage::producer::ProducerInfo> = producers
                 .active_producers_at_height(epoch_end_height)
                 .iter()
                 .map(|p| (*p).clone())
-                .collect()
+                .collect();
+            ps.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+            ps
         };
 
         if sorted_producers.is_empty() {
             return Vec::new();
         }
 
-        // Build the DeterministicScheduler from active producers
-        let scheduled_producers: Vec<ScheduledProducer> = sorted_producers
-            .iter()
-            .map(|p| ScheduledProducer::new(p.public_key, p.selection_weight() as u32))
-            .collect();
-        let scheduler = DeterministicScheduler::new(scheduled_producers);
+        let producer_count = sorted_producers.len();
 
-        if scheduler.is_empty() {
-            return Vec::new();
-        }
+        // Scan all blocks in epoch, decode presence_root bitfield, track attested minutes per producer
+        // Key: producer index → set of attestation minutes they were attested in
+        let mut attested_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
 
-        // Count scheduled slots per producer (rank 0 = primary)
-        // The epoch covers slots corresponding to epoch_start_height..epoch_end_height.
-        // Each height maps to a slot; we use the scheduler to find the primary producer.
-        let mut scheduled_count: HashMap<PublicKey, u32> = HashMap::new();
-        let mut produced_count: HashMap<PublicKey, u32> = HashMap::new();
-
-        // For each height in the epoch, determine the scheduled primary and check if produced
         for h in epoch_start_height..epoch_end_height {
-            // Get the slot for this height — we need the block's slot, but if no block exists
-            // at this height, we derive the slot from the height offset + epoch start slot.
-            // For scheduling, we need the slot number. During the epoch, heights map 1:1 to slots
-            // when no blocks are missed (but slots can be empty).
-            //
-            // Strategy: look up the block at each height. If it exists, get its slot and producer.
-            // The scheduled primary is determined by the slot, not the height.
             if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
-                let slot = block.header.slot;
+                // Skip blocks with zero presence_root (no attestation data)
+                if block.header.presence_root.is_zero() {
+                    continue;
+                }
 
-                // Who was scheduled as primary for this slot?
-                if let Some(primary_pk) = scheduler.select_producer(slot, 0) {
-                    *scheduled_count.entry(*primary_pk).or_insert(0) += 1;
+                let minute = attestation_minute(block.header.slot);
+                let indices =
+                    decode_attestation_bitfield(&block.header.presence_root, producer_count);
 
-                    // Did this producer actually produce this block?
-                    if block.header.producer == *primary_pk {
-                        *produced_count.entry(*primary_pk).or_insert(0) += 1;
-                    }
+                // Union: for each producer index attested in this block, add the minute
+                for idx in indices {
+                    attested_minutes.entry(idx).or_default().insert(minute);
                 }
             }
-            // If no block at this height, the slot was empty — no one gets credit or blame
-            // (the chain may have gaps during initial sync or if all fallbacks missed)
         }
 
-        // Qualify producers: produced >= scheduled * 90 / 100
-        let qualification_pct = consensus::PRODUCTION_QUALIFICATION_PCT;
-        let qualified: Vec<&storage::producer::ProducerInfo> = sorted_producers
-            .iter()
-            .filter(|p| {
-                let scheduled = *scheduled_count.get(&p.public_key).unwrap_or(&0);
-                let produced = *produced_count.get(&p.public_key).unwrap_or(&0);
-                // Must have been scheduled at least once and met the threshold
-                scheduled > 0 && produced * 100 >= scheduled * qualification_pct
-            })
-            .collect();
+        // Qualify producers: attested in ≥ ATTESTATION_QUALIFICATION_THRESHOLD minutes
+        // Genesis epoch (epoch 0): all active producers qualify — no attestation data exists yet
+        let threshold = ATTESTATION_QUALIFICATION_THRESHOLD;
+        let qualified: Vec<&storage::producer::ProducerInfo> = if epoch == 0 {
+            info!("Epoch 0 (genesis): all active producers qualify for rewards");
+            sorted_producers.iter().collect()
+        } else {
+            sorted_producers
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| {
+                    let minutes = attested_minutes.get(idx).map(|s| s.len()).unwrap_or(0);
+                    minutes as u32 >= threshold
+                })
+                .map(|(_, p)| p)
+                .collect()
+        };
 
         if qualified.is_empty() {
             warn!(
@@ -5899,12 +6019,18 @@ impl Node {
             }
 
             let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
-            let scheduled = scheduled_count.get(&producer_info.public_key).unwrap_or(&0);
-            let produced = produced_count.get(&producer_info.public_key).unwrap_or(&0);
+
+            // Find this producer's index in sorted list for attestation minute count
+            let att_minutes = sorted_producers
+                .iter()
+                .position(|p| p.public_key == producer_info.public_key)
+                .and_then(|idx| attested_minutes.get(&idx))
+                .map(|s| s.len())
+                .unwrap_or(0);
 
             info!(
-                "Producer {} earned {} in epoch {} (produced: {}/{} slots, bonds: {})",
-                producer_info.public_key, reward, epoch, produced, scheduled, bonds
+                "Producer {} earned {} in epoch {} (attested: {}/60 minutes, bonds: {})",
+                producer_info.public_key, reward, epoch, att_minutes, bonds
             );
 
             // Split rewards if producer has received delegations
@@ -6080,7 +6206,7 @@ impl Node {
                                 let era = self.params.height_to_era(height);
                                 let total_bond_amount: u64 =
                                     bond_outputs.iter().map(|(_, o)| o.amount).sum();
-                                let producer_info = storage::ProducerInfo::new_with_bonds(
+                                let mut producer_info = storage::ProducerInfo::new_with_bonds(
                                     reg_data.public_key,
                                     height,
                                     total_bond_amount,
@@ -6088,6 +6214,7 @@ impl Node {
                                     era,
                                     reg_data.bond_count,
                                 );
+                                producer_info.bls_pubkey = reg_data.bls_pubkey.clone();
                                 producers.queue_update(PendingProducerUpdate::Register {
                                     info: Box::new(producer_info),
                                     height,

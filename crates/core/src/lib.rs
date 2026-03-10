@@ -132,7 +132,11 @@ pub mod transaction;
 pub mod types;
 pub mod validation;
 
-pub use attestation::{Attestation, AttestationError, RegionAggregate};
+pub use attestation::{
+    attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield,
+    validate_attestation_bitfield, Attestation, AttestationError, MinuteAttestationTracker,
+    RegionAggregate, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
+};
 pub use block::{Block, BlockBuilder, BlockHeader};
 #[allow(deprecated)]
 pub use consensus::{

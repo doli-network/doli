@@ -16,6 +16,7 @@ std = []
 [dependencies]
 bech32.workspace = true
 blake3.workspace = true
+blst.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
 rand_core.workspace = true

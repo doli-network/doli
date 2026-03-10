@@ -52,11 +52,17 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod address;
+pub mod bls;
 pub mod hash;
 pub mod keys;
 pub mod merkle;
 pub mod signature;
 
+pub use bls::{
+    attestation_message, bls_aggregate, bls_sign, bls_sign_pop, bls_verify, bls_verify_aggregate,
+    bls_verify_pop, BlsError, BlsKeyPair, BlsPublicKeyWrapped as BlsPublicKey, BlsSecretKey,
+    BlsSignature, BLS_PUBLIC_KEY_SIZE, BLS_SIGNATURE_SIZE,
+};
 pub use hash::{hash_with_domain, Hash, Hasher};
 pub use keys::{Address, KeyPair, PrivateKey, PublicKey};
 pub use signature::Signature;
@@ -91,8 +97,14 @@ pub const BLOCK_DOMAIN: &[u8] = b"DOLI_BLOCK_V1";
 /// Domain separation tag for VDF input.
 pub const VDF_DOMAIN: &[u8] = b"DOLI_VDF_V1";
 
-/// Domain separation tag for attestation signing (finality gadget).
+/// Domain separation tag for attestation signing (finality gadget, Ed25519).
 pub const ATTESTATION_DOMAIN: &[u8] = b"DOLI_ATTEST_V1";
+
+/// BLS attestation DST — re-exported from [`bls::ATTESTATION_DST`].
+///
+/// This is the actual DST used in BLS hash-to-curve operations.
+/// It follows the RFC 9380 / Ethereum convention.
+pub use bls::ATTESTATION_DST as BLS_ATTESTATION_DST;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

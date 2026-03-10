@@ -2048,6 +2048,8 @@ async fn cmd_producer(
                 prev_registration_hash: crypto::Hash::ZERO,
                 sequence_number: 0,
                 bond_count: bonds,
+                bls_pubkey: Vec::new(), // BLS key added via node wallet (Layer 4)
+                bls_pop: Vec::new(),
             };
             let extra_data = bincode::serialize(&reg_data)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize registration data: {}", e))?;

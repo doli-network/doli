@@ -257,6 +257,18 @@ pub struct RegistrationData {
     /// Stored on-chain to avoid re-deriving from bond_amount / local_bond_unit,
     /// which would break consensus if nodes have different bond_unit configs.
     pub bond_count: u32,
+    /// BLS12-381 public key for aggregate attestation signatures (48 bytes).
+    ///
+    /// Required for epoch reward qualification. Verified at registration time
+    /// via proof-of-possession to prevent rogue public key attacks.
+    #[serde(default)]
+    pub bls_pubkey: Vec<u8>,
+    /// BLS proof-of-possession: signature over the BLS pubkey using the `PoP` DST (96 bytes).
+    ///
+    /// Proves the registrant possesses the BLS secret key, preventing
+    /// rogue public key attacks on aggregate signature verification.
+    #[serde(default)]
+    pub bls_pop: Vec<u8>,
 }
 
 /// Exit data for producer exit transactions
@@ -791,6 +803,8 @@ impl Transaction {
             prev_registration_hash: Hash::ZERO,
             sequence_number: 0,
             bond_count,
+            bls_pubkey: Vec::new(),
+            bls_pop: Vec::new(),
         };
         let extra_data = bincode::serialize(&reg_data).unwrap_or_default();
 

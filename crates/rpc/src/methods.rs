@@ -329,6 +329,7 @@ impl RpcContext {
             "getMempoolTransactions" => self.get_mempool_transactions(request.params).await,
             "getSlotSchedule" => self.get_slot_schedule(request.params).await,
             "getProducerSchedule" => self.get_producer_schedule(request.params).await,
+            "getAttestationStats" => self.get_attestation_stats().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -737,6 +738,11 @@ impl RpcContext {
             era,
             pending_withdrawals,
             pending_updates,
+            bls_pubkey: if info.bls_pubkey.is_empty() {
+                String::new()
+            } else {
+                hex::encode(&info.bls_pubkey)
+            },
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
@@ -827,6 +833,11 @@ impl RpcContext {
                     era,
                     pending_withdrawals,
                     pending_updates,
+                    bls_pubkey: if info.bls_pubkey.is_empty() {
+                        String::new()
+                    } else {
+                        hex::encode(&info.bls_pubkey)
+                    },
                 }
             })
             .collect();
@@ -851,6 +862,11 @@ impl RpcContext {
                     update_type: "register".to_string(),
                     bond_count: Some(info.bond_count),
                 }],
+                bls_pubkey: if info.bls_pubkey.is_empty() {
+                    String::new()
+                } else {
+                    hex::encode(&info.bls_pubkey)
+                },
             });
         }
 
@@ -1924,4 +1940,132 @@ impl RpcContext {
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
+
+    /// Get attestation statistics for the current epoch.
+    ///
+    /// Scans all blocks in the current epoch, decodes presence_root bitfields,
+    /// and reports per-producer attestation minute counts.
+    async fn get_attestation_stats(&self) -> Result<Value, RpcError> {
+        use doli_core::attestation::{
+            attestation_minute, decode_attestation_bitfield, ATTESTATION_QUALIFICATION_THRESHOLD,
+        };
+        use doli_core::consensus::reward_epoch;
+        use std::collections::{HashMap, HashSet};
+
+        let blocks_per_epoch = self.blocks_per_reward_epoch;
+        let chain_state = self.chain_state.read().await;
+        let current_height = chain_state.best_height;
+        drop(chain_state);
+
+        let current_epoch = reward_epoch::from_height_with(current_height, blocks_per_epoch);
+        let (epoch_start, _epoch_end) =
+            reward_epoch::boundaries_with(current_epoch, blocks_per_epoch);
+
+        // Get sorted producer list (same order as bitfield)
+        let sorted_producers: Vec<(crypto::PublicKey, bool)> =
+            if let Some(ref ps) = self.producer_set {
+                let producers = ps.read().await;
+                let mut list: Vec<_> = producers
+                    .active_producers()
+                    .iter()
+                    .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
+                    .collect();
+                list.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                list
+            } else {
+                Vec::new()
+            };
+
+        let producer_count = sorted_producers.len();
+
+        // Scan epoch blocks for attestation data
+        let mut blocks_with_attestations = 0u64;
+        let mut blocks_with_bls = 0u64;
+        let mut per_producer_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
+
+        let scan_start = epoch_start.max(1);
+        for h in scan_start..=current_height {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                let pr = block.header.presence_root;
+                if pr != crypto::Hash::ZERO {
+                    blocks_with_attestations += 1;
+                    let slot = block.header.slot;
+                    let minute = attestation_minute(slot);
+                    let indices = decode_attestation_bitfield(&pr, producer_count);
+                    for idx in indices {
+                        per_producer_minutes.entry(idx).or_default().insert(minute);
+                    }
+                }
+                if !block.aggregate_bls_signature.is_empty() {
+                    blocks_with_bls += 1;
+                }
+            }
+        }
+
+        let blocks_in_epoch = current_height.saturating_sub(epoch_start) + 1;
+        let slots_elapsed = blocks_in_epoch as u32;
+        let current_min = if slots_elapsed > 0 {
+            attestation_minute(slots_elapsed - 1)
+        } else {
+            0
+        };
+        let total_minutes = current_min + 1;
+
+        let producer_stats: Vec<AttestationProducerResp> = sorted_producers
+            .iter()
+            .enumerate()
+            .map(|(idx, (pk, has_bls))| {
+                let attested = per_producer_minutes
+                    .get(&idx)
+                    .map(|s| s.len() as u32)
+                    .unwrap_or(0);
+                AttestationProducerResp {
+                    public_key: hex::encode(pk.as_bytes()),
+                    attested_minutes: attested,
+                    total_minutes,
+                    threshold: ATTESTATION_QUALIFICATION_THRESHOLD,
+                    qualified: attested >= ATTESTATION_QUALIFICATION_THRESHOLD,
+                    has_bls: *has_bls,
+                }
+            })
+            .collect();
+
+        let response = AttestationStatsResp {
+            epoch: current_epoch as u32,
+            epoch_start,
+            current_height,
+            blocks_in_epoch,
+            blocks_with_attestations,
+            blocks_with_bls,
+            current_minute: current_min,
+            producers: producer_stats,
+        };
+
+        serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+}
+
+// Inline types for getAttestationStats (avoid name collision with types.rs)
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttestationStatsResp {
+    epoch: u32,
+    epoch_start: u64,
+    current_height: u64,
+    blocks_in_epoch: u64,
+    blocks_with_attestations: u64,
+    blocks_with_bls: u64,
+    current_minute: u32,
+    producers: Vec<AttestationProducerResp>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttestationProducerResp {
+    public_key: String,
+    attested_minutes: u32,
+    total_minutes: u32,
+    threshold: u32,
+    qualified: bool,
+    has_bls: bool,
 }
