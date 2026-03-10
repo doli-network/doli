@@ -5822,6 +5822,12 @@ impl Node {
         // Only includes producers that have BLS sigs for this minute.
         let aggregate_bls_signature = {
             let bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
+            info!(
+                "BLS aggregate: minute={} sigs_count={} tracker_bls_total={}",
+                current_minute,
+                bls_sigs.len(),
+                self.minute_tracker.bls_sig_count()
+            );
             if bls_sigs.is_empty() {
                 Vec::new()
             } else {
