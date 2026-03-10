@@ -4080,12 +4080,15 @@ impl Node {
             info!("=== GENESIS PHASE COMPLETE at height {} ===", height);
 
             let genesis_producers = self.derive_genesis_producers_from_chain();
+            let genesis_bls = self.genesis_bls_pubkeys();
             let producer_count = genesis_producers.len();
 
             if producer_count > 0 {
                 info!(
-                    "Derived {} genesis producers from blockchain (blocks 1-{})...",
-                    producer_count, genesis_blocks
+                    "Derived {} genesis producers from blockchain (blocks 1-{}), {} with BLS keys",
+                    producer_count,
+                    genesis_blocks,
+                    genesis_bls.len()
                 );
 
                 let bond_unit = self.config.network.bond_unit();
@@ -4182,7 +4185,7 @@ impl Node {
                     // Register producer with real bond outpoint
                     // registered_at = 0: Genesis producers are exempt from ACTIVATION_DELAY
                     // (they've been producing since block 1, no propagation delay needed)
-                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                    let mut producer_info = storage::ProducerInfo::new_with_bonds(
                         *pubkey,
                         0,
                         bond_unit,
@@ -4190,6 +4193,9 @@ impl Node {
                         era,
                         1, // 1 bond
                     );
+                    if let Some(bls) = genesis_bls.get(pubkey) {
+                        producer_info.bls_pubkey = bls.clone();
+                    }
 
                     match producers.register(producer_info, height) {
                         Ok(()) => {
@@ -6350,11 +6356,12 @@ impl Node {
             // Genesis producers are registered immediately (not deferred).
             if genesis_blocks > 0 && height == genesis_blocks + 1 {
                 let genesis_producers = self.derive_genesis_producers_from_chain();
+                let genesis_bls = self.genesis_bls_pubkeys();
                 let era = self.params.height_to_era(height);
                 for pubkey in &genesis_producers {
                     let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
                     // registered_at = 0: Genesis producers exempt from ACTIVATION_DELAY
-                    let producer_info = storage::ProducerInfo::new_with_bonds(
+                    let mut producer_info = storage::ProducerInfo::new_with_bonds(
                         *pubkey,
                         0,
                         bond_unit,
@@ -6362,6 +6369,9 @@ impl Node {
                         era,
                         1,
                     );
+                    if let Some(bls) = genesis_bls.get(pubkey) {
+                        producer_info.bls_pubkey = bls.clone();
+                    }
                     let _ = producers.register(producer_info, height);
                 }
             }
@@ -7100,6 +7110,32 @@ impl Node {
                 proven_producers
             })
             .clone()
+    }
+
+    /// Extract BLS pubkeys from genesis registration TXs.
+    /// Returns a map from producer PublicKey → BLS pubkey bytes (48 bytes).
+    /// Only includes producers that included a BLS pubkey in their registration.
+    fn genesis_bls_pubkeys(&self) -> std::collections::HashMap<PublicKey, Vec<u8>> {
+        let genesis_blocks = self.config.network.genesis_blocks();
+        let mut bls_keys = std::collections::HashMap::new();
+
+        for height in 1..=genesis_blocks {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
+                for tx in &block.transactions {
+                    if tx.tx_type == TxType::Registration {
+                        if let Some(reg_data) = tx.registration_data() {
+                            if !reg_data.bls_pubkey.is_empty()
+                                && !bls_keys.contains_key(&reg_data.public_key)
+                            {
+                                bls_keys.insert(reg_data.public_key, reg_data.bls_pubkey.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        bls_keys
     }
 
     /// Consume genesis-era coinbase UTXOs for bond migration during UTXO rebuild.
