@@ -2347,7 +2347,7 @@ impl Node {
                 let mut sync = self.sync_manager.write().await;
                 sync.reset_sync_for_rollback();
             }
-            self.recover_from_peers().await?;
+            self.force_recover_from_peers().await?;
             return Ok(());
         }
 
@@ -2508,7 +2508,7 @@ impl Node {
                             "Reorg failed with block store intact — possible corruption: {}",
                             e
                         );
-                        self.recover_from_peers().await?;
+                        self.force_recover_from_peers().await?;
                     }
                     return Ok(());
                 }
@@ -2840,7 +2840,7 @@ impl Node {
                 }
                 Ok(false) => {
                     warn!("Mainnet fork recovery: rollback not possible, recovering from peers");
-                    if let Err(e) = self.recover_from_peers().await {
+                    if let Err(e) = self.force_recover_from_peers().await {
                         error!("Mainnet fork recovery failed: {}", e);
                     }
                 }
@@ -2860,7 +2860,7 @@ impl Node {
 
         self.consecutive_fork_blocks = 0;
         self.last_resync_time = Some(Instant::now());
-        if let Err(e) = self.recover_from_peers().await {
+        if let Err(e) = self.force_recover_from_peers().await {
             error!("Fork recovery failed: {}", e);
         }
     }
@@ -2998,6 +2998,16 @@ impl Node {
     /// This is the ONLY automatic recovery path; `force_resync_from_genesis()`
     /// (which also wipes block data) is reserved for manual `recover --yes`.
     async fn recover_from_peers(&mut self) -> Result<()> {
+        self.recover_from_peers_inner(false).await
+    }
+
+    /// Force recovery bypassing the 90% guard — used when fork sync or deep
+    /// fork detection has already proven the node is on a different chain.
+    async fn force_recover_from_peers(&mut self) -> Result<()> {
+        self.recover_from_peers_inner(true).await
+    }
+
+    async fn recover_from_peers_inner(&mut self, force: bool) -> Result<()> {
         let local_height = self.chain_state.read().await.best_height;
         let best_peer = self.sync_manager.read().await.best_peer_height();
 
@@ -3012,8 +3022,9 @@ impl Node {
             return Ok(());
         }
 
-        // Guard: don't wipe a node that's close to the tip — let reorg handle it
-        if best_peer > 0 && local_height > best_peer * 90 / 100 {
+        // Guard: don't wipe a node that's close to the tip — let reorg handle it.
+        // Bypassed when force=true (fork sync proved we're on a different chain).
+        if !force && best_peer > 0 && local_height > best_peer * 90 / 100 {
             warn!(
                 "Recovery: at {}% of network tip (h={}/{}), skipping state wipe — waiting for reorg",
                 local_height * 100 / best_peer,
@@ -3024,7 +3035,8 @@ impl Node {
         }
 
         warn!(
-            "Recovery: resetting state (preserving block data), snap sync will restore (local h={}, peer h={})",
+            "Recovery{}: resetting state (preserving block data), snap sync will restore (local h={}, peer h={})",
+            if force { " (forced)" } else { "" },
             local_height, best_peer
         );
 
@@ -6417,7 +6429,7 @@ impl Node {
                 .take_fork_exceeded_max_depth();
             if exceeded {
                 warn!("Fork recovery exceeded max depth — recovering from peers");
-                self.recover_from_peers().await?;
+                self.force_recover_from_peers().await?;
             }
         }
 
@@ -6532,7 +6544,7 @@ impl Node {
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
                 warn!("Fork sync: binary search hit floor without finding common ancestor — full resync required");
                 self.sync_manager.write().await.fork_sync_clear();
-                self.recover_from_peers().await?;
+                self.force_recover_from_peers().await?;
                 return Ok(());
             }
             let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
@@ -6565,7 +6577,7 @@ impl Node {
             let needs_resync = self.sync_manager.read().await.needs_genesis_resync();
             if needs_resync {
                 warn!("Persistent chain rejection: peers reject our tip. Recovering from peers.");
-                self.recover_from_peers().await?;
+                self.force_recover_from_peers().await?;
                 return Ok(());
             }
         }
@@ -6576,7 +6588,7 @@ impl Node {
             let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
             if is_deep_fork {
                 warn!("Deep fork detected: peers consistently reject our chain tip. Recovering from peers.");
-                self.recover_from_peers().await?;
+                self.force_recover_from_peers().await?;
                 return Ok(());
             }
         }
