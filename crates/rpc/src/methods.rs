@@ -1372,7 +1372,7 @@ impl RpcContext {
         let block_store_scan = self.block_store.clone();
         let missing_heights: Vec<u64> = tokio::task::spawn_blocking(move || {
             let mut missing = Vec::new();
-            for h in 0..=tip_height {
+            for h in 1..=tip_height {
                 let exists = block_store_scan
                     .get_hash_by_height(h)
                     .map(|opt| opt.is_some())
