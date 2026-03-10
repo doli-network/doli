@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773171957,
-    "message": "Genesis v27 - BLS attestation + genesis epoch rewards 2026-03-10",
+    "timestamp": 1773174510,
+    "message": "Genesis v28 - Reward pool system + COINBASE_MATURITY=6 2026-03-10",
     "initial_reward": 100000000
   },
   "consensus": {

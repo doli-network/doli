@@ -3507,6 +3507,25 @@ impl Node {
                     }
                 }
 
+                // EpochReward TX: consume all pool UTXOs (the pool collected per-block coinbase)
+                if tx.tx_type == TxType::EpochReward {
+                    let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+                    let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                    for (outpoint, entry) in &pool_utxos {
+                        undo_spent_utxos.push((*outpoint, entry.clone()));
+                        utxo.remove(outpoint);
+                        let _ = batch.spend_utxo(outpoint);
+                    }
+                    if !pool_utxos.is_empty() {
+                        let total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                        info!(
+                            "Consumed {} pool UTXOs ({} units) for epoch reward distribution",
+                            pool_utxos.len(),
+                            total
+                        );
+                    }
+                }
+
                 let _ = utxo.spend_transaction(tx); // In-memory
                 utxo.add_transaction(tx, height, is_reward_tx); // In-memory
 
@@ -4099,58 +4118,61 @@ impl Node {
                 // Clear bootstrap phantom producers — replace with real bond-backed ones
                 producers.clear();
 
+                // Consume pool UTXOs for genesis bonds.
+                // All per-block coinbase went to the reward pool — draw bonds from there.
+                let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+                let mut pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                pool_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
+                    a_entry
+                        .height
+                        .cmp(&b_entry.height)
+                        .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
+                        .then_with(|| a_op.index.cmp(&b_op.index))
+                });
+
+                let total_pool: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                let total_bonds_needed = bond_unit * producer_count as u64;
+                info!(
+                    "Genesis bond migration: pool={} DOLI, bonds_needed={} DOLI ({} producers × {} bond)",
+                    total_pool / 100_000_000,
+                    total_bonds_needed / 100_000_000,
+                    producer_count,
+                    bond_unit / 100_000_000
+                );
+
+                if total_pool < total_bonds_needed {
+                    warn!(
+                        "Pool has insufficient funds for all bonds ({} < {}), some producers may not bond",
+                        total_pool, total_bonds_needed
+                    );
+                }
+
+                // Consume all pool UTXOs (they'll be redistributed as bonds + remainder back to pool)
+                let mut pool_consumed: u64 = 0;
+                for (outpoint, entry) in &pool_utxos {
+                    undo_spent_utxos.push((*outpoint, entry.clone()));
+                    utxo.remove(outpoint);
+                    let _ = batch.spend_utxo(outpoint);
+                    pool_consumed += entry.output.amount;
+                }
+
+                // Create bonds for each producer from pool funds
+                let mut bonds_created: u64 = 0;
                 for pubkey in &genesis_producers {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
 
-                    // Find all UTXOs belonging to this producer
-                    let mut producer_utxos = utxo.get_by_pubkey_hash(&pubkey_hash);
-                    // Sort by (height, tx_hash, index) for deterministic selection
-                    producer_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
-                        a_entry
-                            .height
-                            .cmp(&b_entry.height)
-                            .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
-                            .then_with(|| a_op.index.cmp(&b_op.index))
-                    });
-
-                    let total_available: u64 =
-                        producer_utxos.iter().map(|(_, e)| e.output.amount).sum();
-
-                    if total_available < bond_unit {
+                    if pool_consumed - bonds_created < bond_unit {
                         warn!(
-                                "Genesis producer {} has insufficient balance ({} < {} bond_unit), skipping bond migration",
-                                hex::encode(&pubkey.as_bytes()[..8]),
-                                total_available,
-                                bond_unit
-                            );
+                            "Insufficient remaining pool for producer {} bond",
+                            hex::encode(&pubkey.as_bytes()[..8])
+                        );
                         continue;
-                    }
-
-                    // Select UTXOs to consume for the bond (oldest first)
-                    let mut consumed_amount: u64 = 0;
-                    let mut consumed_outpoints = Vec::new();
-                    for (outpoint, entry) in &producer_utxos {
-                        if consumed_amount >= bond_unit {
-                            break;
-                        }
-                        consumed_amount += entry.output.amount;
-                        consumed_outpoints.push(*outpoint);
-                    }
-
-                    // Remove consumed UTXOs from the set (in-memory + batch)
-                    for outpoint in &consumed_outpoints {
-                        // Undo log: capture genesis bond consumed UTXOs
-                        if let Some(entry) = utxo.get(outpoint) {
-                            undo_spent_utxos.push((*outpoint, entry));
-                        }
-                        utxo.remove(outpoint);
-                        let _ = batch.spend_utxo(outpoint); // Batch: atomic persistence
                     }
 
                     // Create deterministic bond hash for tracking
                     let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
 
-                    // Lock/unlock: create Bond UTXO backing the bond
+                    // Create Bond UTXO
                     let bond_outpoint = storage::Outpoint::new(bond_hash, 0);
                     let bond_entry = storage::UtxoEntry {
                         output: doli_core::transaction::Output::bond(
@@ -4163,24 +4185,10 @@ impl Node {
                         is_coinbase: false,
                         is_epoch_reward: false,
                     };
-                    undo_created_utxos.push(bond_outpoint); // Undo log
+                    undo_created_utxos.push(bond_outpoint);
                     utxo.insert(bond_outpoint, bond_entry.clone());
-                    batch.add_utxo(bond_outpoint, bond_entry); // Batch: atomic persistence
-
-                    // Return change if we consumed more than bond_unit
-                    let change = consumed_amount.saturating_sub(bond_unit);
-                    if change > 0 {
-                        let change_outpoint = storage::Outpoint::new(bond_hash, 1);
-                        let change_entry = storage::UtxoEntry {
-                            output: doli_core::transaction::Output::normal(change, pubkey_hash),
-                            height,
-                            is_coinbase: false,
-                            is_epoch_reward: false,
-                        };
-                        undo_created_utxos.push(change_outpoint); // Undo log
-                        utxo.insert(change_outpoint, change_entry.clone());
-                        batch.add_utxo(change_outpoint, change_entry); // Batch: atomic persistence
-                    }
+                    batch.add_utxo(bond_outpoint, bond_entry);
+                    bonds_created += bond_unit;
 
                     // Register producer with real bond outpoint
                     // registered_at = 0: Genesis producers are exempt from ACTIVATION_DELAY
@@ -4200,12 +4208,10 @@ impl Node {
                     match producers.register(producer_info, height) {
                         Ok(()) => {
                             info!(
-                                    "  Registered genesis producer {} with real bond ({} UTXOs consumed, {} DOLI bonded, {} DOLI change)",
-                                    hex::encode(&pubkey.as_bytes()[..8]),
-                                    consumed_outpoints.len(),
-                                    bond_unit / UNITS_PER_COIN,
-                                    change / UNITS_PER_COIN,
-                                );
+                                "  Registered genesis producer {} with bond from pool ({} DOLI bonded)",
+                                hex::encode(&pubkey.as_bytes()[..8]),
+                                bond_unit / UNITS_PER_COIN,
+                            );
                         }
                         Err(e) => {
                             warn!(
@@ -4217,12 +4223,34 @@ impl Node {
                     }
                 }
 
+                // Return remainder to pool (pool funds minus bonds)
+                let remainder = pool_consumed.saturating_sub(bonds_created);
+                if remainder > 0 {
+                    let remainder_hash = hash_with_domain(b"genesis_pool_remainder", b"doli");
+                    let remainder_outpoint = storage::Outpoint::new(remainder_hash, 0);
+                    let remainder_entry = storage::UtxoEntry {
+                        output: doli_core::transaction::Output::normal(remainder, pool_hash),
+                        height,
+                        is_coinbase: false,
+                        is_epoch_reward: false,
+                    };
+                    undo_created_utxos.push(remainder_outpoint);
+                    utxo.insert(remainder_outpoint, remainder_entry.clone());
+                    batch.add_utxo(remainder_outpoint, remainder_entry);
+                    info!(
+                        "Genesis pool remainder: {} DOLI returned to pool",
+                        remainder / UNITS_PER_COIN
+                    );
+                }
+
                 // Full producer write needed — clear + rebuild happened
                 needs_full_producer_write = true;
 
                 info!(
-                    "Genesis complete: {} producers now active in scheduler (real bonds)",
-                    producers.active_producers().len()
+                    "Genesis complete: {} producers active, {} DOLI bonded, {} DOLI in pool",
+                    producers.active_producers().len(),
+                    bonds_created / UNITS_PER_COIN,
+                    remainder / UNITS_PER_COIN,
                 );
             } else {
                 warn!("Genesis ended with no producers found in blockchain!");
@@ -5502,24 +5530,22 @@ impl Node {
         // Build the block — single transaction list used for both merkle root and block body.
         // All transactions MUST be added to the builder BEFORE build(), which computes the
         // merkle root from exactly the transactions that will be in the final block.
-        let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let mut builder =
             BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
 
-        if self.config.network.is_in_genesis(height) {
-            // GENESIS PHASE: per-block coinbase so producers accumulate funds for auto-bonding.
-            // At genesis end (height genesis_blocks+1), coinbase UTXOs are consumed to back bonds.
-            builder.add_coinbase(height, producer_pubkey_hash);
-        } else {
-            // POST-GENESIS: epoch rewards — pool distributed at epoch boundaries.
-            // Qualification: producer must have produced ≥90% of scheduled slots (on-chain data).
-            // Distribution: pool × bonds[i] / Σ(qualifying_bonds). Bond-weighted among qualifiers.
-            // Non-qualifiers get nothing — their share goes to qualifiers (redistribution).
+        // ALL blocks: coinbase goes to reward pool (built-in mining pool).
+        // No producer can spend rewards early — only the consensus engine distributes
+        // pool funds to qualified producers at epoch boundaries.
+        builder.add_coinbase(height, pool_hash);
+
+        if !self.config.network.is_in_genesis(height) {
+            // POST-GENESIS: distribute pool at epoch boundaries.
             let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
             if height > 0 && reward_epoch::is_epoch_start_with(height, blocks_per_epoch) {
                 let completed_epoch = (height / blocks_per_epoch) - 1;
                 info!(
-                    "Epoch {} completed at height {}, calculating production-qualified rewards...",
+                    "Epoch {} completed at height {}, distributing pool rewards...",
                     completed_epoch, height
                 );
 
@@ -6014,8 +6040,18 @@ impl Node {
             return Vec::new();
         }
 
-        // Calculate total pool for this epoch
-        let pool = self.params.total_epoch_reward(epoch_end_height);
+        // Calculate total pool from accumulated coinbase UTXOs in the reward pool.
+        // The pool collects per-block coinbase; no new coins are minted here.
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+        let pool = {
+            let utxo = self.utxo_set.read().await;
+            let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+            pool_utxos.iter().map(|(_, e)| e.output.amount).sum::<u64>()
+        };
+        info!(
+            "Epoch {} reward pool: {} units from accumulated coinbase",
+            epoch, pool
+        );
 
         // Bond-weighted distribution among qualifiers: pool × bonds[i] / qualifying_bonds
         // Uses u128 intermediates to prevent overflow
@@ -7138,59 +7174,75 @@ impl Node {
         bls_keys
     }
 
-    /// Consume genesis-era coinbase UTXOs for bond migration during UTXO rebuild.
+    /// Consume pool UTXOs for genesis bond migration during UTXO rebuild.
     ///
     /// Must be called at height == genesis_blocks + 1 in any UTXO rebuild loop
-    /// to match the apply_block() behavior. Without this, rebuilt UTXO sets
-    /// retain coinbase UTXOs that should have been consumed for bonds.
+    /// to match the apply_block() behavior. All per-block coinbase goes to the
+    /// reward pool — this consumes pool UTXOs to create bonds for each producer
+    /// and returns the remainder to the pool.
     fn consume_genesis_bond_utxos(
         utxo: &mut storage::UtxoSet,
         genesis_producers: &[PublicKey],
         bond_unit: u64,
         height: u64,
     ) {
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+
+        // Collect and sort all pool UTXOs (deterministic order)
+        let mut pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+        pool_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
+            a_entry
+                .height
+                .cmp(&b_entry.height)
+                .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
+                .then_with(|| a_op.index.cmp(&b_op.index))
+        });
+
+        // Consume all pool UTXOs
+        let mut pool_consumed: u64 = 0;
+        for (outpoint, entry) in &pool_utxos {
+            utxo.remove(outpoint);
+            pool_consumed += entry.output.amount;
+        }
+
+        // Create bonds for each producer from pool funds
+        let mut bonds_created: u64 = 0;
         for pubkey in genesis_producers {
             let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pubkey.as_bytes());
-            let mut producer_utxos = utxo.get_by_pubkey_hash(&pubkey_hash);
-            producer_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
-                a_entry
-                    .height
-                    .cmp(&b_entry.height)
-                    .then_with(|| a_op.tx_hash.cmp(&b_op.tx_hash))
-                    .then_with(|| a_op.index.cmp(&b_op.index))
-            });
 
-            let total_available: u64 = producer_utxos.iter().map(|(_, e)| e.output.amount).sum();
-            if total_available < bond_unit {
+            if pool_consumed - bonds_created < bond_unit {
                 continue;
             }
 
-            let mut consumed_amount: u64 = 0;
-            let mut consumed_outpoints = Vec::new();
-            for (outpoint, entry) in &producer_utxos {
-                if consumed_amount >= bond_unit {
-                    break;
-                }
-                consumed_amount += entry.output.amount;
-                consumed_outpoints.push(*outpoint);
-            }
-
-            for outpoint in &consumed_outpoints {
-                utxo.remove(outpoint);
-            }
-
             let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
-            let change = consumed_amount.saturating_sub(bond_unit);
-            if change > 0 {
-                let change_outpoint = storage::Outpoint::new(bond_hash, 1);
-                let change_entry = storage::UtxoEntry {
-                    output: doli_core::transaction::Output::normal(change, pubkey_hash),
-                    height,
-                    is_coinbase: false,
-                    is_epoch_reward: false,
-                };
-                utxo.insert(change_outpoint, change_entry);
-            }
+            let bond_outpoint = storage::Outpoint::new(bond_hash, 0);
+            let bond_entry = storage::UtxoEntry {
+                output: doli_core::transaction::Output::bond(
+                    bond_unit,
+                    pubkey_hash,
+                    u64::MAX, // locked until withdrawal
+                    0,        // genesis bond — slot 0
+                ),
+                height,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            };
+            utxo.insert(bond_outpoint, bond_entry);
+            bonds_created += bond_unit;
+        }
+
+        // Return remainder to pool
+        let remainder = pool_consumed.saturating_sub(bonds_created);
+        if remainder > 0 {
+            let remainder_hash = hash_with_domain(b"genesis_pool_remainder", b"doli");
+            let remainder_outpoint = storage::Outpoint::new(remainder_hash, 0);
+            let remainder_entry = storage::UtxoEntry {
+                output: doli_core::transaction::Output::normal(remainder, pool_hash),
+                height,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            };
+            utxo.insert(remainder_outpoint, remainder_entry);
         }
     }
 
