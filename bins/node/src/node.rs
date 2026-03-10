@@ -3173,7 +3173,9 @@ impl Node {
             .into_iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                let count = utxo
+                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                    .max(1) as u64;
                 (pk, count)
             })
             .collect();
@@ -3275,7 +3277,9 @@ impl Node {
             .into_iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                let count = utxo
+                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                    .max(1) as u64;
                 (pk, count)
             })
             .collect();
@@ -4807,7 +4811,9 @@ impl Node {
             .into_iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                let count = utxo
+                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                    .max(1) as u64;
                 (pk, count)
             })
             .collect();
@@ -5807,7 +5813,9 @@ impl Node {
                         } else {
                             // Derive own bond count from UTXO set
                             let utxo = self.utxo_set.read().await;
-                            let own_bonds = utxo.count_bonds(&pubkey_hash).max(1) as u64;
+                            let own_bonds = utxo
+                                .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                                .max(1) as u64;
                             drop(utxo);
                             let delegated: u64 = producer_info
                                 .received_delegations
