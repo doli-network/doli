@@ -1014,18 +1014,23 @@ fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), 
             ));
         }
 
-        // Calculate total distributed
+        // Calculate total distributed across all epoch reward outputs
         let total_distributed: Amount = epoch_rewards
             .iter()
-            .map(|tx| tx.outputs.first().map(|o| o.amount).unwrap_or(0))
+            .flat_map(|tx| tx.outputs.iter())
+            .map(|o| o.amount)
             .sum();
 
         // Expected pool for this epoch
         let expected_pool = ctx.params.total_epoch_reward(ctx.current_height);
 
-        if total_distributed != expected_pool {
+        // With attestation qualification, total_distributed ≤ pool:
+        // - All qualified: distributed == pool (remainder dust to first qualifier)
+        // - Some disqualified: distributed < pool (non-qualifier share burned)
+        // - None qualified: distributed == 0 (entire pool burned)
+        if total_distributed > expected_pool {
             return Err(ValidationError::InvalidBlock(format!(
-                "epoch rewards {} != expected pool {}",
+                "epoch rewards {} > expected pool {}",
                 total_distributed, expected_pool
             )));
         }
@@ -1044,14 +1049,16 @@ fn validate_block_rewards(block: &Block, ctx: &ValidationContext) -> Result<(), 
             }
         }
     } else {
-        // Non-boundary: NO rewards at all (pool accumulates)
-        if block
-            .transactions
-            .iter()
-            .any(|tx| tx.is_coinbase() || tx.is_epoch_reward())
-        {
+        // Non-boundary: NO coinbase, NO epoch rewards (pool accumulates)
+        if block.transactions.iter().any(|tx| tx.is_coinbase()) {
             return Err(ValidationError::InvalidBlock(
-                "rewards only distributed at epoch boundary in EpochPool mode".to_string(),
+                "coinbase transactions not allowed — rewards distributed at epoch boundary"
+                    .to_string(),
+            ));
+        }
+        if block.transactions.iter().any(|tx| tx.is_epoch_reward()) {
+            return Err(ValidationError::InvalidBlock(
+                "epoch rewards only distributed at epoch boundary".to_string(),
             ));
         }
     }
@@ -4190,21 +4197,46 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_block_rewards_total_must_match_pool() {
+    fn test_validate_block_rewards_partial_pool_ok() {
+        // With attestation qualification, total_distributed ≤ pool is valid:
+        // non-qualifying producers' share is burned (not distributed)
         let params = ConsensusParams::mainnet();
         let boundary_slot = params.slots_per_reward_epoch; // First epoch boundary
         let expected_epoch = params.slot_to_reward_epoch(boundary_slot);
 
         let ctx = epoch_pool_context_at_slot(boundary_slot);
 
-        // Create block with incorrect total (half of expected)
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let expected_pool = ctx.params.total_epoch_reward(boundary_slot as u64);
         let epoch_reward = Transaction::new_epoch_reward(
             expected_epoch as u64,
             *keypair.public_key(),
-            expected_pool / 2, // Wrong amount!
+            expected_pool / 2, // Half pool — valid when some producers disqualified
+            pubkey_hash,
+        );
+        let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
+
+        let result = validate_block_rewards(&block, &ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_rewards_exceeds_pool_rejected() {
+        // Total distributed > pool is always invalid (inflation attack)
+        let params = ConsensusParams::mainnet();
+        let boundary_slot = params.slots_per_reward_epoch;
+        let expected_epoch = params.slot_to_reward_epoch(boundary_slot);
+
+        let ctx = epoch_pool_context_at_slot(boundary_slot);
+
+        let keypair = crypto::KeyPair::generate();
+        let pubkey_hash = crypto::hash::hash(b"recipient");
+        let expected_pool = ctx.params.total_epoch_reward(boundary_slot as u64);
+        let epoch_reward = Transaction::new_epoch_reward(
+            expected_epoch as u64,
+            *keypair.public_key(),
+            expected_pool + 1, // Exceeds pool — inflation attack
             pubkey_hash,
         );
         let block = create_test_block_at_slot(boundary_slot, vec![epoch_reward]);
