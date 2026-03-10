@@ -20,7 +20,7 @@ use doli_core::consensus::{
     self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
     DELEGATE_REWARD_PCT, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
 };
-use doli_core::rewards::WeightedRewardCalculator;
+// WeightedRewardCalculator removed — replaced by attestation-qualified bond-weighted distribution
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::{RegistrationData, TxType};
@@ -1240,6 +1240,8 @@ impl Node {
     }
 
     /// Create an attestation for a block and broadcast it to the network.
+    ///
+    /// Adds attestation weight for the finality gadget.
     async fn create_and_broadcast_attestation(&self, block_hash: Hash, slot: u32, height: u64) {
         let (private_key, public_key, weight) = match &self.producer_key {
             Some(kp) => {
@@ -1900,15 +1902,17 @@ impl Node {
                 // Ignored - deterministic scheduler model doesn't use heartbeats
             }
             NetworkEvent::NewAttestation(data) => {
-                // Decode and apply attestation for finality gadget
+                // Decode and apply attestation for finality tracking
                 if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
                     if attestation.verify().is_ok() {
+                        // Finality gadget: accumulate weight per block
                         let mut sync = self.sync_manager.write().await;
                         sync.add_attestation_weight(
                             &attestation.block_hash,
                             attestation.attester_weight,
                         );
                         drop(sync);
+
                         // Flush any blocks that just reached finality
                         self.flush_finalized_to_archive().await;
                     } else {
@@ -4275,14 +4279,9 @@ impl Node {
             );
         }
 
-        // Attest to blocks we didn't produce (self-attestation for our own blocks
-        // is handled in try_produce_block after broadcast)
-        if let Some(ref kp) = self.producer_key {
-            if block.header.producer != *kp.public_key() {
-                self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
-                    .await;
-            }
-        }
+        // Per-block attestation: sign chain tip for finality gadget.
+        self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
+            .await;
 
         // Buffer block for archiving (will be flushed when finalized)
         if self.archive_tx.is_some() {
@@ -5451,45 +5450,47 @@ impl Node {
         let producer_pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, our_pubkey.as_bytes());
         let mut builder =
             BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
-        builder.add_coinbase(height, producer_pubkey_hash);
 
-        let block_reward = self.params.block_reward(height);
-        info!(
-            "Block coinbase: {} units to producer {}",
-            block_reward,
-            hex::encode(&producer_pubkey_hash.as_bytes()[..8])
-        );
-
-        // AUTOMATIC EPOCH REWARDS: At epoch boundaries, calculate and distribute
-        // rewards to all producers who were present in the completed epoch.
-        // Rewards are immediately available in producer wallets (no claim needed).
-        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-        if height > 0 && reward_epoch::is_epoch_start_with(height, blocks_per_epoch) {
-            let completed_epoch = (height / blocks_per_epoch) - 1;
-            info!(
-                "Epoch {} completed at height {}, calculating automatic rewards...",
-                completed_epoch, height
-            );
-
-            let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
-
-            if !epoch_outputs.is_empty() {
-                let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
+        if self.config.network.is_in_genesis(height) {
+            // GENESIS PHASE: per-block coinbase so producers accumulate funds for auto-bonding.
+            // At genesis end (height genesis_blocks+1), coinbase UTXOs are consumed to back bonds.
+            builder.add_coinbase(height, producer_pubkey_hash);
+        } else {
+            // POST-GENESIS: epoch rewards — pool distributed at epoch boundaries.
+            // Qualification: producer must have produced ≥90% of scheduled slots (on-chain data).
+            // Distribution: pool × bonds[i] / Σ(qualifying_bonds). Bond-weighted among qualifiers.
+            // Non-qualifiers get nothing — their share goes to qualifiers (redistribution).
+            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+            if height > 0 && reward_epoch::is_epoch_start_with(height, blocks_per_epoch) {
+                let completed_epoch = (height / blocks_per_epoch) - 1;
                 info!(
-                    "Distributing {} total reward to {} producers for epoch {}",
-                    total_reward,
-                    epoch_outputs.len(),
-                    completed_epoch
+                    "Epoch {} completed at height {}, calculating production-qualified rewards...",
+                    completed_epoch, height
                 );
 
-                let coinbase =
-                    Transaction::new_epoch_reward_coinbase(epoch_outputs, height, completed_epoch);
-                builder.add_transaction(coinbase);
-            } else {
-                debug!(
-                    "No producers present in epoch {}, skipping reward distribution",
-                    completed_epoch
-                );
+                let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
+
+                if !epoch_outputs.is_empty() {
+                    let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
+                    info!(
+                        "Distributing {} total reward to {} qualified producers for epoch {}",
+                        total_reward,
+                        epoch_outputs.len(),
+                        completed_epoch
+                    );
+
+                    let coinbase = Transaction::new_epoch_reward_coinbase(
+                        epoch_outputs,
+                        height,
+                        completed_epoch,
+                    );
+                    builder.add_transaction(coinbase);
+                } else {
+                    debug!(
+                        "No qualified producers in epoch {} — pool burned",
+                        completed_epoch
+                    );
+                }
             }
         }
 
@@ -5761,7 +5762,7 @@ impl Node {
             let _ = network.broadcast_block(block).await;
         }
 
-        // Self-attest: producer immediately attests to their own block
+        // Attest our own block for finality gadget.
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
 
@@ -5771,21 +5772,23 @@ impl Node {
         Ok(())
     }
 
-    /// Calculate epoch rewards for all present producers in the completed epoch.
+    /// Calculate epoch rewards using on-chain production-rate qualification.
     ///
-    /// This method scans all blocks in the specified epoch and calculates the
-    /// weighted presence reward for each producer who was present.
+    /// Scans blocks in the completed epoch, builds a DeterministicScheduler from the
+    /// producer set, counts scheduled vs produced per producer. Producers with ≥90%
+    /// production rate qualify. Pool is distributed bond-weighted among qualifiers.
     ///
-    /// Returns a vector of (amount, pubkey_hash) tuples for creating the
-    /// epoch reward coinbase transaction.
+    /// Formula: reward[i] = pool × bonds[i] / Σ(qualifying_bonds)
+    /// Non-qualifiers' share is redistributed to qualifiers (not burned).
+    ///
+    /// Returns a vector of (amount, pubkey_hash) tuples for the EpochReward transaction.
     async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-
-        // Calculate the height at the end of this epoch for producer eligibility
+        let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
 
-        // Get the list of producers eligible at epoch end (clone to release the lock)
-        let mut sorted_producers: Vec<storage::producer::ProducerInfo> = {
+        // Get active producers at epoch end (clone to release lock)
+        let sorted_producers: Vec<storage::producer::ProducerInfo> = {
             let producers = self.producer_set.read().await;
             producers
                 .active_producers_at_height(epoch_end_height)
@@ -5798,85 +5801,153 @@ impl Node {
             return Vec::new();
         }
 
-        // Sort producers by pubkey for deterministic ordering (same as presence commitment)
-        sorted_producers.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+        // Build the DeterministicScheduler from active producers
+        let scheduled_producers: Vec<ScheduledProducer> = sorted_producers
+            .iter()
+            .map(|p| ScheduledProducer::new(p.public_key, p.selection_weight() as u32))
+            .collect();
+        let scheduler = DeterministicScheduler::new(scheduled_producers);
 
-        // Create reward calculator with network-specific epoch size
-        let calculator = WeightedRewardCalculator::with_blocks_per_epoch(
-            self.block_store.as_ref(),
-            &self.params,
-            blocks_per_epoch,
-        );
+        if scheduler.is_empty() {
+            return Vec::new();
+        }
 
-        // Calculate rewards for each producer
-        let mut reward_outputs = Vec::new();
+        // Count scheduled slots per producer (rank 0 = primary)
+        // The epoch covers slots corresponding to epoch_start_height..epoch_end_height.
+        // Each height maps to a slot; we use the scheduler to find the primary producer.
+        let mut scheduled_count: HashMap<PublicKey, u32> = HashMap::new();
+        let mut produced_count: HashMap<PublicKey, u32> = HashMap::new();
 
-        for (index, producer_info) in sorted_producers.iter().enumerate() {
-            #[allow(deprecated)]
-            match calculator.calculate_producer_reward(&producer_info.public_key, index, epoch) {
-                Ok(result) => {
-                    if result.has_reward() {
-                        let total_reward = result.reward_amount;
-                        let pubkey_hash =
-                            hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
+        // For each height in the epoch, determine the scheduled primary and check if produced
+        for h in epoch_start_height..epoch_end_height {
+            // Get the slot for this height — we need the block's slot, but if no block exists
+            // at this height, we derive the slot from the height offset + epoch start slot.
+            // For scheduling, we need the slot number. During the epoch, heights map 1:1 to slots
+            // when no blocks are missed (but slots can be empty).
+            //
+            // Strategy: look up the block at each height. If it exists, get its slot and producer.
+            // The scheduled primary is determined by the slot, not the height.
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                let slot = block.header.slot;
 
-                        info!(
-                            "Producer {} earned {} in epoch {} (present in {}/{} blocks)",
-                            producer_info.public_key,
-                            total_reward,
-                            epoch,
-                            result.blocks_present,
-                            result.total_blocks
-                        );
+                // Who was scheduled as primary for this slot?
+                if let Some(primary_pk) = scheduler.select_producer(slot, 0) {
+                    *scheduled_count.entry(*primary_pk).or_insert(0) += 1;
 
-                        // Split rewards if producer has received delegations
-                        if producer_info.received_delegations.is_empty() {
-                            // No delegations: 100% to producer
-                            reward_outputs.push((total_reward, pubkey_hash));
-                        } else {
-                            // Derive own bond count from UTXO set
-                            let utxo = self.utxo_set.read().await;
-                            let own_bonds = utxo
-                                .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                                .max(1) as u64;
-                            drop(utxo);
-                            let delegated: u64 = producer_info
-                                .received_delegations
-                                .iter()
-                                .map(|(_, c)| *c as u64)
-                                .sum();
-                            let total_bonds = own_bonds + delegated;
-
-                            // Producer keeps: own_bond_share + DELEGATE_REWARD_PCT of delegated share
-                            let own_share = total_reward * own_bonds / total_bonds;
-                            let delegated_share = total_reward - own_share;
-                            let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
-                            let producer_total = own_share + delegate_fee;
-
-                            if producer_total > 0 {
-                                reward_outputs.push((producer_total, pubkey_hash));
-                            }
-
-                            // Distribute STAKER_REWARD_PCT to each delegator proportionally
-                            let staker_pool = delegated_share * STAKER_REWARD_PCT as u64 / 100;
-                            for (delegator_hash, bond_count) in &producer_info.received_delegations
-                            {
-                                let delegator_reward =
-                                    staker_pool * (*bond_count as u64) / delegated;
-                                if delegator_reward > 0 {
-                                    reward_outputs.push((delegator_reward, *delegator_hash));
-                                }
-                            }
-                        }
+                    // Did this producer actually produce this block?
+                    if block.header.producer == *primary_pk {
+                        *produced_count.entry(*primary_pk).or_insert(0) += 1;
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to calculate reward for producer {} in epoch {}: {}",
-                        producer_info.public_key, epoch, e
-                    );
+            }
+            // If no block at this height, the slot was empty — no one gets credit or blame
+            // (the chain may have gaps during initial sync or if all fallbacks missed)
+        }
+
+        // Qualify producers: produced >= scheduled * 90 / 100
+        let qualification_pct = consensus::PRODUCTION_QUALIFICATION_PCT;
+        let qualified: Vec<&storage::producer::ProducerInfo> = sorted_producers
+            .iter()
+            .filter(|p| {
+                let scheduled = *scheduled_count.get(&p.public_key).unwrap_or(&0);
+                let produced = *produced_count.get(&p.public_key).unwrap_or(&0);
+                // Must have been scheduled at least once and met the threshold
+                scheduled > 0 && produced * 100 >= scheduled * qualification_pct
+            })
+            .collect();
+
+        if qualified.is_empty() {
+            warn!(
+                "Epoch {}: no producers qualified — all rewards burned",
+                epoch
+            );
+            return Vec::new();
+        }
+
+        let disqualified_count = sorted_producers.len() - qualified.len();
+        if disqualified_count > 0 {
+            info!(
+                "Epoch {}: {}/{} producers qualified, {} disqualified (rewards redistributed)",
+                epoch,
+                qualified.len(),
+                sorted_producers.len(),
+                disqualified_count
+            );
+        }
+
+        // Sum qualifying bonds (includes delegated bonds via selection_weight)
+        let qualifying_bonds: u64 = qualified.iter().map(|p| p.selection_weight()).sum();
+
+        if qualifying_bonds == 0 {
+            return Vec::new();
+        }
+
+        // Calculate total pool for this epoch
+        let pool = self.params.total_epoch_reward(epoch_end_height);
+
+        // Bond-weighted distribution among qualifiers: pool × bonds[i] / qualifying_bonds
+        // Uses u128 intermediates to prevent overflow
+        let mut reward_outputs = Vec::new();
+        let mut distributed: u64 = 0;
+
+        for producer_info in &qualified {
+            let bonds = producer_info.selection_weight();
+            let reward = (pool as u128 * bonds as u128 / qualifying_bonds as u128) as u64;
+
+            if reward == 0 {
+                continue;
+            }
+
+            let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
+            let scheduled = scheduled_count.get(&producer_info.public_key).unwrap_or(&0);
+            let produced = produced_count.get(&producer_info.public_key).unwrap_or(&0);
+
+            info!(
+                "Producer {} earned {} in epoch {} (produced: {}/{} slots, bonds: {})",
+                producer_info.public_key, reward, epoch, produced, scheduled, bonds
+            );
+
+            // Split rewards if producer has received delegations
+            if producer_info.received_delegations.is_empty() {
+                reward_outputs.push((reward, pubkey_hash));
+            } else {
+                let utxo = self.utxo_set.read().await;
+                let own_bonds = utxo
+                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                    .max(1) as u64;
+                drop(utxo);
+                let delegated: u64 = producer_info
+                    .received_delegations
+                    .iter()
+                    .map(|(_, c)| *c as u64)
+                    .sum();
+                let total_bonds = own_bonds + delegated;
+
+                let own_share = reward * own_bonds / total_bonds;
+                let delegated_share = reward - own_share;
+                let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
+                let producer_total = own_share + delegate_fee;
+
+                if producer_total > 0 {
+                    reward_outputs.push((producer_total, pubkey_hash));
+                }
+
+                let staker_pool = delegated_share * STAKER_REWARD_PCT as u64 / 100;
+                for (delegator_hash, bond_count) in &producer_info.received_delegations {
+                    let delegator_reward = staker_pool * (*bond_count as u64) / delegated;
+                    if delegator_reward > 0 {
+                        reward_outputs.push((delegator_reward, *delegator_hash));
+                    }
                 }
             }
+
+            distributed += reward;
+        }
+
+        // Integer division remainder goes to first qualifier
+        let remainder = pool.saturating_sub(distributed);
+        if remainder > 0 && !reward_outputs.is_empty() {
+            reward_outputs[0].0 += remainder;
         }
 
         reward_outputs
