@@ -768,6 +768,9 @@ impl RpcContext {
         // Build pending updates index once — O(M) instead of O(N×M)
         let pending_by_pubkey = producers.pending_updates_by_pubkey();
 
+        // Derive bond data from UTXO set (source of truth)
+        let utxo_set = self.utxo_set.read().await;
+
         let responses: Vec<ProducerResponse> = producer_list
             .iter()
             .map(|info| {
@@ -778,13 +781,31 @@ impl RpcContext {
                     storage::ProducerStatus::Slashed { .. } => "slashed",
                 };
 
+                // Use UTXO-derived bond count/amount when available, fall back to ProducerInfo
+                let addr_hash = crypto::hash::hash_with_domain(
+                    crypto::ADDRESS_DOMAIN,
+                    info.public_key.as_bytes(),
+                );
+                let utxo_bond_count = utxo_set.count_bonds(&addr_hash, self.bond_unit);
+                let utxo_bond_amount = utxo_set.get_bonded_balance(&addr_hash);
+                let effective_bond_count = if utxo_bond_count > 0 {
+                    utxo_bond_count
+                } else {
+                    info.bond_count
+                };
+                let effective_bond_amount = if utxo_bond_amount > 0 {
+                    utxo_bond_amount
+                } else {
+                    info.bond_amount
+                };
+
                 let pending_withdrawals =
                     if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
                         let claimable = current_height >= started_at + unbonding_period;
                         vec![PendingWithdrawalResponse {
-                            bond_count: info.bond_count,
+                            bond_count: effective_bond_count,
                             request_slot: *started_at as u32,
-                            net_amount: info.bond_amount,
+                            net_amount: effective_bond_amount,
                             claimable,
                         }]
                     } else {
@@ -796,16 +817,12 @@ impl RpcContext {
                     .map(|updates| updates.iter().map(|u| pending_update_to_info(u)).collect())
                     .unwrap_or_default();
 
-                let addr_hash = crypto::hash::hash_with_domain(
-                    crypto::ADDRESS_DOMAIN,
-                    info.public_key.as_bytes(),
-                );
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),
                     address_hash: hex::encode(addr_hash.as_bytes()),
                     registration_height: info.registered_at,
-                    bond_amount: info.bond_amount,
-                    bond_count: info.bond_count,
+                    bond_amount: effective_bond_amount,
+                    bond_count: effective_bond_count,
                     status: status.to_string(),
                     era,
                     pending_withdrawals,
@@ -813,6 +830,8 @@ impl RpcContext {
                 }
             })
             .collect();
+
+        drop(utxo_set);
 
         // Append pending registrations (not yet in producer set)
         let mut responses = responses;
