@@ -176,6 +176,76 @@ sudo systemctl start doli-node
 
 ---
 
+### 1.8. Node Stuck at Height 0 (Corrupt State with Intact Blocks)
+
+**Symptom:** Node reports `bestHeight: 0` via RPC but logs show `"Block already in store, skipping apply"` and `"Sync chain mismatch: first pending header doesn't build on local tip"`. The node downloads blocks from peers, finds them already stored, skips them, clears the sync queue, and loops forever.
+
+**Cause:** The height index (RocksDB) is corrupt or was reset, but the block data (headers + bodies) is intact. The node's state thinks it's at genesis, sync downloads blocks but can't apply them because they already exist in the block store, and the height index can't map heights to blocks because it's empty.
+
+**Diagnosis:**
+```bash
+# Check if node reports height 0 but has blocks in the store
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq '.result.bestHeight'
+# Returns 0
+
+# Check block store has data (RocksDB SST files exist)
+ls -la /path/to/data/blocks/*.sst
+# SST files present = blocks exist but index is broken
+```
+
+**Fix — `reindex` → `recover` pipeline (no data loss):**
+```bash
+# 1. Stop the node
+sudo systemctl stop doli-testnet-nt6
+
+# 2. Rebuild the height index from raw block headers
+#    Scans ALL headers by hash, finds the chain tip, walks backwards
+#    via prev_hash to assign correct heights. Does NOT touch block data.
+doli-node --network testnet --data-dir /testnet/nt6/data reindex
+
+# 3. Rebuild UTXO set, producer registry, and chain state from blocks
+#    Replays every block in order using the now-correct height index.
+doli-node --network testnet --data-dir /testnet/nt6/data recover --yes
+
+# 4. Restart the node — it will sync remaining blocks from peers
+sudo systemctl start doli-testnet-nt6
+```
+
+**Why not just wipe?** The `reindex → recover` pipeline preserves all existing block data. Wiping forces a full resync (or snap sync with gaps). This pipeline rebuilds the index and state from what's already on disk — faster and no data loss.
+
+**Common cause:** Dirty shutdown during binary upgrade (stop + copy + start) when the process didn't flush the height index to disk before termination.
+
+---
+
+### 1.9. Missing Historical Blocks (Snap Sync Gaps)
+
+**Symptom:** Node is synced and producing, but `getBlockByHeight` returns "Block not found" for early heights. The explorer shows `GAP 1→N` in the chain column.
+
+**Cause:** Node joined via snap sync, which downloads only recent state and skips historical blocks. The node works correctly but lacks blocks before the snap sync point.
+
+**Fix — Hot backfill (no restart needed):**
+```bash
+# Backfill from any seed node's RPC — runs in the background while the node operates
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://127.0.0.1:SEED_PORT"},"id":1}'
+
+# Monitor progress
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
+```
+
+**Fix — Offline backfill (requires restart):**
+```bash
+sudo systemctl stop doli-node
+doli-node --network mainnet restore --from-rpc http://seed2.doli.network:8500 --backfill --yes
+sudo systemctl start doli-node
+```
+
+See [disaster-recovery.md](./disaster-recovery.md) for all recovery methods.
+
+---
+
 ## 2. Producer Issues
 
 ### 2.1. Not Producing Blocks
@@ -388,6 +458,7 @@ nc -zv boot1.doli.network 30303
 |----------------|----------|
 | Isolated from network | Add more peers |
 | Software bug | Update to latest version |
+| Consensus-critical rolling deployment | See below |
 | Intentional attack | Verify with multiple sources |
 
 **Check against known block:**
@@ -404,6 +475,20 @@ sudo systemctl stop doli-node
 rm -rf ~/.doli/mainnet/db/
 sudo systemctl start doli-node
 ```
+
+### 4.3. Consensus-Critical Fork (Network-Wide Split)
+
+**Symptom:** Multiple groups of nodes producing blocks but heights/hashes diverge across groups. Nodes stay connected but silently reject each other's blocks.
+
+**Cause:** A consensus-critical change (scheduling, validation, rewards) was deployed with a rolling restart, creating nodes running incompatible binary versions simultaneously.
+
+**This is NOT recoverable via normal reorg.** Both sides reject each other's blocks as `InvalidProducer`. The fork grows past `MAX_REORG_DEPTH` within minutes.
+
+**Resolution:** Full genesis reset required. See `docs/infrastructure.md` section "Consensus-Critical Deployment" for the correct procedure.
+
+**Prevention:** NEVER use rolling restarts for consensus-critical changes. Always use simultaneous deployment (stop ALL, deploy ALL, start ALL).
+
+> See `docs/legacy/bugs/REPORT_HA_FAILURE.md` for the full incident analysis.
 
 ---
 

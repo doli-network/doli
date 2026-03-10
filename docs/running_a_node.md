@@ -542,6 +542,21 @@ cp ~/backup/node.key ~/.doli/mainnet/
 sudo systemctl start doli-node
 ```
 
+**If the node is stuck at height 0 but has block data on disk** (e.g., after a dirty shutdown during upgrade), use the `reindex → recover` pipeline instead of wiping:
+
+```bash
+# 1. Rebuild height index from existing block headers
+doli-node --network mainnet --data-dir /path/to/data reindex
+
+# 2. Rebuild UTXO set, producer registry, and chain state
+doli-node --network mainnet --data-dir /path/to/data recover --yes
+
+# 3. Restart the node
+sudo systemctl start doli-node
+```
+
+This preserves all existing block data and avoids a full resync. See [disaster-recovery.md](disaster-recovery.md) for all recovery methods and a comparison table.
+
 ### 10.4. Block Archiver (Disaster Recovery)
 
 Any node can archive blocks by adding `--archive-to`:

@@ -178,6 +178,73 @@ cat 0000000042.blake3
 
 The `manifest.json` `genesis_hash` field lets you confirm the archive belongs to the correct network before importing.
 
+## Corrupt State Recovery (reindex → recover)
+
+When a node has intact block data but a corrupt height index or state (e.g., `bestHeight: 0` but blocks exist on disk), use the `reindex → recover` pipeline. This is the **preferred recovery method** when block data is preserved — it avoids resyncing from the network entirely.
+
+### Symptoms
+
+- Node reports `bestHeight: 0` but logs show `"Block already in store, skipping apply"`
+- Sync loops forever: downloads blocks → finds them already stored → clears → retries
+- `recover --yes` alone fails with "No blocks found" (because the height index is empty)
+
+### The pipeline
+
+```bash
+# 1. Stop the node
+sudo systemctl stop doli-node
+
+# 2. Rebuild height index from raw block headers (fast — seconds)
+#    Scans all headers by hash, finds chain tip by highest slot,
+#    walks prev_hash links to assign canonical heights.
+doli-node --network NETWORK --data-dir /path/to/data reindex
+
+# 3. Rebuild state from blocks (proportional to chain length)
+#    Replays all blocks in order, rebuilding UTXO set, producer
+#    registry, and chain state from scratch.
+doli-node --network NETWORK --data-dir /path/to/data recover --yes
+
+# 4. Restart — node syncs remaining blocks from peers
+sudo systemctl start doli-node
+```
+
+### What each command does
+
+| Command | Reads | Writes | Speed |
+|---------|-------|--------|-------|
+| `reindex` | Block headers (by hash scan) | `height_index` column family | Seconds (hash lookups only) |
+| `recover` | Blocks (by height, using rebuilt index) | `chain_state.bin`, `utxo/`, `producers.bin` | ~1 min per 10K blocks |
+
+### When to use which
+
+| Scenario | Fix |
+|----------|-----|
+| State corrupt, blocks intact (h=0 but SST files exist) | `reindex` → `recover` |
+| Blocks missing (snap sync gaps), state correct | `backfillFromPeer` (hot, no restart) or `restore --backfill` |
+| Everything lost (empty data dir) | `restore --from-rpc` or full resync |
+| Height index corrupt but state OK | `reindex` only (no `recover` needed) |
+
+---
+
+## Consensus-Critical Fork (Unrecoverable)
+
+If a consensus-critical change was deployed with a rolling restart (not simultaneously), the network may split into incompatible forks. **This cannot be recovered by restore or backfill** — both sides of the fork have valid-looking chains with the same `genesis_hash` but incompatible block histories.
+
+**Diagnosis**: Nodes stay connected but silently reject each other's blocks. Heights diverge across server groups. Logs show `InvalidProducer` warnings.
+
+**Resolution**: Full genesis reset required.
+
+1. Stop ALL nodes on ALL servers
+2. Update genesis timestamp in 4 places (`consensus.rs`, `network_params.rs`, `chainspec.mainnet.json`, `chainspec.testnet.json`)
+3. Rebuild binary
+4. Wipe ALL data directories
+5. Deploy and start using the simultaneous procedure
+
+See `docs/infrastructure.md` section "Consensus-Critical Deployment" for the full procedure.
+See `docs/legacy/bugs/REPORT_HA_FAILURE.md` for the incident analysis.
+
+**Prevention**: NEVER use rolling restarts for changes that affect scheduling, validation, or rewards.
+
 ## Off-Site Backup
 
 The archive is plain files — use any backup tool:
