@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773112630,
-    "message": "Genesis v21 - count_bonds fix, UTXO-derived scheduling 2026-03-10T03:17:10Z",
+    "timestamp": 1773123057,
+    "message": "Genesis v22 - per-bond UTXO fix 2026-03-10T06:10:57Z",
     "initial_reward": 100000000
   },
   "consensus": {
