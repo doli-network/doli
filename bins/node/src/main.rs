@@ -671,12 +671,13 @@ async fn run_node(
     std::fs::create_dir_all(&data_dir)?;
 
     // Load producer key if production is enabled
-    let (producer_key, producer_guard, signed_slots_db) = if producer {
+    let (producer_key, bls_key, producer_guard, signed_slots_db) = if producer {
         let key_path = producer_key_path
             .ok_or_else(|| anyhow!("--producer-key required when --producer is enabled"))?;
 
         info!("Loading producer key from {:?}", key_path);
         let key = load_producer_key(&key_path)?;
+        let bls = load_bls_key(&key_path);
         let pubkey_hex = key.public_key().to_hex();
         info!(
             "Producer key loaded: {}...{} (hash: {})",
@@ -712,7 +713,7 @@ async fn run_node(
         match producer::startup_checks(&data_dir, key.public_key(), force_start, None).await {
             Ok((guard, db)) => {
                 info!("Producer safety checks passed");
-                (Some(key), Some(guard), Some(db))
+                (Some(key), bls, Some(guard), Some(db))
             }
             Err(e) => {
                 error!("Producer startup blocked: {}", e);
@@ -720,7 +721,7 @@ async fn run_node(
             }
         }
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     // Keep guard alive for the duration of the process
@@ -1037,6 +1038,7 @@ async fn run_node(
     let mut node = node::Node::new(
         config,
         producer_key,
+        bls_key,
         Some(producer_set),
         signed_slots_db,
         Some(shutdown_flag_for_node),
@@ -1147,6 +1149,37 @@ fn load_producer_key(path: &PathBuf) -> Result<KeyPair> {
         .map_err(|e| anyhow!("Invalid private key: {}", e))?;
 
     Ok(KeyPair::from_private_key(private_key))
+}
+
+/// Load a BLS key from a JSON wallet file (optional — returns None if not present).
+///
+/// BLS keys are stored in the wallet alongside Ed25519 keys. Pre-BLS wallets
+/// simply won't have the field, so this gracefully returns None.
+fn load_bls_key(path: &PathBuf) -> Option<crypto::BlsKeyPair> {
+    let contents = std::fs::read_to_string(path).ok()?;
+
+    #[derive(serde::Deserialize)]
+    struct WalletAddress {
+        #[serde(default)]
+        bls_private_key: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Wallet {
+        addresses: Vec<WalletAddress>,
+    }
+
+    let wallet: Wallet = serde_json::from_str(&contents).ok()?;
+    let bls_hex = wallet.addresses.first()?.bls_private_key.as_ref()?;
+    let bls_bytes = hex::decode(bls_hex).ok()?;
+    let bls_arr: [u8; 32] = bls_bytes.try_into().ok()?;
+    let secret = crypto::BlsSecretKey::from_bytes(bls_arr).ok()?;
+    let kp = crypto::BlsKeyPair::from_secret_key(secret);
+    info!(
+        "BLS key loaded: {}",
+        &hex::encode(kp.public_key().as_bytes())[..16]
+    );
+    Some(kp)
 }
 
 async fn handle_update_command(

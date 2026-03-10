@@ -116,6 +116,13 @@ pub struct Block {
     pub header: BlockHeader,
     /// Block transactions
     pub transactions: Vec<Transaction>,
+    /// BLS aggregate signature over the attestation bitfield (96 bytes).
+    ///
+    /// Aggregates the BLS signatures of all producers whose bits are set in
+    /// `header.presence_root`. Empty for pre-BLS blocks (backward compat).
+    /// Stored in body (not header) to keep header hash stable.
+    #[serde(default)]
+    pub aggregate_bls_signature: Vec<u8>,
 }
 
 impl Block {
@@ -124,6 +131,7 @@ impl Block {
         Self {
             header,
             transactions,
+            aggregate_bls_signature: Vec::new(),
         }
     }
 
@@ -229,6 +237,7 @@ pub struct BlockBuilder {
     transactions: Vec<Transaction>,
     params: ConsensusParams,
     genesis_hash: Hash,
+    presence_root: Hash,
 }
 
 impl BlockBuilder {
@@ -243,6 +252,7 @@ impl BlockBuilder {
             transactions: Vec::new(),
             params,
             genesis_hash,
+            presence_root: Hash::ZERO,
         }
     }
 
@@ -250,6 +260,12 @@ impl BlockBuilder {
     pub fn with_params(mut self, params: ConsensusParams) -> Self {
         self.genesis_hash = params.genesis_hash;
         self.params = params;
+        self
+    }
+
+    /// Set the presence_root (attestation bitfield commitment).
+    pub fn with_presence_root(mut self, root: Hash) -> Self {
+        self.presence_root = root;
         self
     }
 
@@ -289,7 +305,7 @@ impl BlockBuilder {
             version: 2,
             prev_hash: self.prev_hash,
             merkle_root,
-            presence_root: Hash::ZERO, // Always ZERO in deterministic scheduler model
+            presence_root: self.presence_root,
             genesis_hash: self.genesis_hash,
             timestamp,
             slot,
