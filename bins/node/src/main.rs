@@ -678,6 +678,13 @@ async fn run_node(
         info!("Loading producer key from {:?}", key_path);
         let key = load_producer_key(&key_path)?;
         let bls = load_bls_key(&key_path);
+        if bls.is_none() {
+            return Err(anyhow!(
+                "Producer key missing BLS keypair. BLS is mandatory for all producers.\n\
+                 Fix: doli --wallet {} add-bls",
+                key_path.display()
+            ));
+        }
         let pubkey_hex = key.public_key().to_hex();
         info!(
             "Producer key loaded: {}...{} (hash: {})",
