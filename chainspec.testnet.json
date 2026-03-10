@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773163748,
-    "message": "DOLI Testnet v25 Genesis - BLS attestation + genesis epoch rewards 2026-03-10",
+    "timestamp": 1773171059,
+    "message": "DOLI Testnet v26 Genesis - BLS attestation + genesis epoch rewards 2026-03-10",
     "initial_reward": 100000000
   },
   "consensus": {
