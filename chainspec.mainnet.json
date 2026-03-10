@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773123653,
-    "message": "Genesis v23 - clean reset 2026-03-10T06:20:53Z",
+    "timestamp": 1773156373,
+    "message": "Genesis v24 - epoch rewards 2026-03-10T15:26:13Z",
     "initial_reward": 100000000
   },
   "consensus": {
