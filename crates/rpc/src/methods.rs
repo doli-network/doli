@@ -684,7 +684,7 @@ impl RpcContext {
         // Derive bond data from UTXO set (source of truth)
         let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
         let utxo_set = self.utxo_set.read().await;
-        let utxo_bond_count = utxo_set.count_bonds(&pubkey_hash);
+        let utxo_bond_count = utxo_set.count_bonds(&pubkey_hash, self.bond_unit);
         let utxo_bonds = utxo_set.get_bond_entries(&pubkey_hash);
         let utxo_bond_amount: u64 = utxo_bonds.iter().map(|(_, _, amt)| *amt).sum();
         drop(utxo_set);
@@ -1255,8 +1255,12 @@ impl RpcContext {
         let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
         let utxo_set = self.utxo_set.read().await;
         let utxo_bonds = utxo_set.get_bond_entries(&pubkey_hash);
-        let bond_count = utxo_bonds.len() as u32;
         let total_staked: u64 = utxo_bonds.iter().map(|(_, _, amt)| *amt).sum();
+        let bond_count = if self.bond_unit > 0 {
+            (total_staked / self.bond_unit) as u32
+        } else {
+            0
+        };
         drop(utxo_set);
 
         // Build per-bond response from UTXO entries (already FIFO-sorted)
@@ -1729,7 +1733,7 @@ impl RpcContext {
         for info in &active {
             let pubkey_hash =
                 crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, info.public_key.as_bytes());
-            let bonds = utxo_set.count_bonds(&pubkey_hash) as u64;
+            let bonds = utxo_set.count_bonds(&pubkey_hash, self.bond_unit) as u64;
             let effective = bonds.max(1);
             result.push((info.public_key, effective));
             total_bonds += effective;
@@ -1814,7 +1818,7 @@ impl RpcContext {
         let pubkey_hash =
             crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, target_pubkey.as_bytes());
         let utxo_set = self.utxo_set.read().await;
-        let bond_count = utxo_set.count_bonds(&pubkey_hash) as u64;
+        let bond_count = utxo_set.count_bonds(&pubkey_hash, self.bond_unit) as u64;
         drop(utxo_set);
         let effective_bonds = bond_count.max(1);
 
