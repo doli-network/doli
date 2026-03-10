@@ -348,6 +348,11 @@ impl MinuteAttestationTracker {
             .collect()
     }
 
+    /// Total BLS signatures stored (diagnostic).
+    pub fn bls_sig_count(&self) -> usize {
+        self.bls_sigs.len()
+    }
+
     /// Reset the tracker (at epoch boundary).
     pub fn reset(&mut self) {
         self.attested.clear();
