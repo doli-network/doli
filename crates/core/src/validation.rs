@@ -2162,18 +2162,20 @@ fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
         ));
     }
 
-    // Must have exactly one output
-    if tx.outputs.len() != 1 {
+    // Must have at least one output
+    if tx.outputs.is_empty() {
         return Err(ValidationError::InvalidEpochReward(
-            "epoch reward must have exactly one output".to_string(),
+            "epoch reward must have at least one output".to_string(),
         ));
     }
 
-    // Output must be Normal type
-    if tx.outputs[0].output_type != OutputType::Normal {
-        return Err(ValidationError::InvalidEpochReward(
-            "epoch reward output must be Normal type".to_string(),
-        ));
+    // All outputs must be Normal type
+    for output in &tx.outputs {
+        if output.output_type != OutputType::Normal {
+            return Err(ValidationError::InvalidEpochReward(
+                "epoch reward outputs must be Normal type".to_string(),
+            ));
+        }
     }
 
     Ok(())

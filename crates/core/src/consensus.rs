@@ -85,7 +85,14 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1773171957;
+pub const GENESIS_TIME: u64 = 1773174510;
+
+/// Deterministic reward pool address.
+/// All per-block coinbase goes here; distributed to qualified producers at epoch end.
+/// No private key exists for this address — only the consensus engine can move funds.
+pub fn reward_pool_pubkey_hash() -> crypto::Hash {
+    crypto::hash::hash_with_domain(b"REWARD_POOL", b"doli")
+}
 
 // ==================== Proof of Time Parameters ====================
 
@@ -227,7 +234,8 @@ pub const BLOCK_REWARD_POOL: Amount = INITIAL_REWARD;
 pub const EPOCH_REWARD_POOL: Amount = SLOTS_PER_REWARD_EPOCH as u64 * INITIAL_REWARD;
 
 /// Coinbase maturity (confirmations required before spending)
-pub const COINBASE_MATURITY: BlockHeight = 100;
+/// 6 blocks = ~60 seconds at 10s slots
+pub const COINBASE_MATURITY: BlockHeight = 6;
 
 // ==================== Bond Stacking System ====================
 //
