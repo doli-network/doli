@@ -4,7 +4,9 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
-use crypto::{hash::hash_with_domain, signature, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN};
+use crypto::{
+    hash::hash_with_domain, signature, BlsKeyPair, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN,
+};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -19,6 +21,12 @@ pub struct WalletAddress {
     private_key: String,
     /// Optional label
     pub label: Option<String>,
+    /// BLS private key (hex, 32 bytes) — for attestation signing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bls_private_key: Option<String>,
+    /// BLS public key (hex, 48 bytes) — for attestation verification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bls_public_key: Option<String>,
 }
 
 /// Wallet file format
@@ -48,11 +56,16 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
+        // Generate BLS keypair for attestation
+        let bls_kp = BlsKeyPair::generate();
+
         let primary = WalletAddress {
             address: kp.address().to_hex(),
             public_key: kp.public_key().to_hex(),
             private_key: kp.private_key().to_hex(),
             label: Some("primary".to_string()),
+            bls_private_key: Some(bls_kp.secret_key().to_hex()),
+            bls_public_key: Some(bls_kp.public_key().to_hex()),
         };
 
         let wallet = Self {
@@ -77,11 +90,15 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
+        let bls_kp = BlsKeyPair::generate();
+
         let primary = WalletAddress {
             address: kp.address().to_hex(),
             public_key: kp.public_key().to_hex(),
             private_key: kp.private_key().to_hex(),
             label: Some("primary".to_string()),
+            bls_private_key: Some(bls_kp.secret_key().to_hex()),
+            bls_public_key: Some(bls_kp.public_key().to_hex()),
         };
 
         Ok(Self {
@@ -181,12 +198,46 @@ impl Wallet {
             public_key: kp.public_key().to_hex(),
             private_key: kp.private_key().to_hex(),
             label: label.map(String::from),
+            bls_private_key: None,
+            bls_public_key: None,
         };
 
         let address = addr.address.clone();
         self.addresses.push(addr);
 
         Ok(address)
+    }
+
+    /// Check if the primary address has a BLS key
+    pub fn has_bls_key(&self) -> bool {
+        self.addresses
+            .first()
+            .and_then(|a| a.bls_private_key.as_ref())
+            .is_some()
+    }
+
+    /// Get the primary BLS public key hex (if present)
+    pub fn primary_bls_public_key(&self) -> Option<&str> {
+        self.addresses
+            .first()
+            .and_then(|a| a.bls_public_key.as_deref())
+    }
+
+    /// Add a BLS keypair to the primary address.
+    /// Returns the BLS public key hex. Errors if BLS key already exists.
+    pub fn add_bls_key(&mut self) -> Result<String> {
+        if self.has_bls_key() {
+            return Err(anyhow!("BLS key already exists in this wallet"));
+        }
+        let bls_kp = BlsKeyPair::generate();
+        let bls_pub_hex = bls_kp.public_key().to_hex();
+        let addr = self
+            .addresses
+            .first_mut()
+            .ok_or_else(|| anyhow!("Wallet has no addresses"))?;
+        addr.bls_private_key = Some(bls_kp.secret_key().to_hex());
+        addr.bls_public_key = Some(bls_pub_hex.clone());
+        Ok(bls_pub_hex)
     }
 
     /// Find address entry by address string
