@@ -330,12 +330,19 @@ impl InMemoryUtxoStore {
             .sum()
     }
 
-    /// Count Bond UTXOs for this address
-    pub fn count_bonds(&self, pubkey_hash: &Hash) -> u32 {
-        self.get_by_pubkey_hash(pubkey_hash)
+    /// Count bond units for this address (total bond amount / bond_unit)
+    pub fn count_bonds(&self, pubkey_hash: &Hash, bond_unit: u64) -> u32 {
+        let total: u64 = self
+            .get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
-            .count() as u32
+            .map(|(_, entry)| entry.output.amount)
+            .sum();
+        if bond_unit > 0 {
+            (total / bond_unit) as u32
+        } else {
+            0
+        }
     }
 
     /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO, FIFO-ordered
@@ -579,11 +586,11 @@ impl UtxoSet {
         }
     }
 
-    /// Count Bond UTXOs for this address
-    pub fn count_bonds(&self, pubkey_hash: &Hash) -> u32 {
+    /// Count bond units for this address (total bond amount / bond_unit)
+    pub fn count_bonds(&self, pubkey_hash: &Hash, bond_unit: u64) -> u32 {
         match self {
-            UtxoSet::InMemory(store) => store.count_bonds(pubkey_hash),
-            UtxoSet::RocksDb(store) => store.count_bonds(pubkey_hash),
+            UtxoSet::InMemory(store) => store.count_bonds(pubkey_hash, bond_unit),
+            UtxoSet::RocksDb(store) => store.count_bonds(pubkey_hash, bond_unit),
         }
     }
 
