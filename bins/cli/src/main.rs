@@ -1966,25 +1966,43 @@ async fn cmd_producer(
             // Get spendable UTXOs
             let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
-            let fee: u64 = 10000; // 0.0001 DOLI fee
 
-            if total_available < required_amount + fee {
-                anyhow::bail!(
-                    "Insufficient balance for bond. Required: {} DOLI, Available: {}",
-                    bonds as u64 * bond_display,
-                    format_balance(total_available)
-                );
-            }
-
-            // Select UTXOs
+            // Initial UTXO selection with minimum fee estimate
             let mut selected_utxos = Vec::new();
             let mut total_input = 0u64;
+            let mut fee = 1000u64.max(utxos.len() as u64 * 500);
             for utxo in &utxos {
                 if total_input >= required_amount + fee {
                     break;
                 }
                 selected_utxos.push(utxo.clone());
                 total_input += utxo.amount;
+            }
+
+            // Auto-calculate fee: max(1000, inputs * 500) — same as send
+            fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+
+            // Re-select if fee increased the requirement
+            if total_input < required_amount + fee {
+                selected_utxos.clear();
+                total_input = 0;
+                for utxo in &utxos {
+                    selected_utxos.push(utxo.clone());
+                    total_input += utxo.amount;
+                    fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+                    if total_input >= required_amount + fee {
+                        break;
+                    }
+                }
+            }
+
+            if total_available < required_amount + fee {
+                anyhow::bail!(
+                    "Insufficient balance for bond. Required: {} DOLI + {} fee, Available: {}",
+                    bonds as u64 * bond_display,
+                    format_balance(fee),
+                    format_balance(total_available)
+                );
             }
 
             // Build registration transaction
@@ -2413,7 +2431,6 @@ async fn cmd_producer(
             let bond_unit = network_params.bond_unit;
             let bond_display = bond_unit / 100_000_000; // Convert to DOLI per bond
             let required_amount = bond_unit * count as u64;
-            let fee: u64 = 10000;
 
             println!(
                 "Adding {} bond(s) = {} DOLI",
@@ -2426,23 +2443,42 @@ async fn cmd_producer(
             let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
-            if total_available < required_amount + fee {
-                anyhow::bail!(
-                    "Insufficient balance. Required: {} DOLI, Available: {}",
-                    count as u64 * bond_display,
-                    format_balance(total_available)
-                );
-            }
-
-            // Select UTXOs
+            // Initial UTXO selection with minimum fee estimate
             let mut selected_utxos = Vec::new();
             let mut total_input = 0u64;
+            let mut fee = 1000u64.max(utxos.len() as u64 * 500);
             for utxo in &utxos {
                 if total_input >= required_amount + fee {
                     break;
                 }
                 selected_utxos.push(utxo.clone());
                 total_input += utxo.amount;
+            }
+
+            // Auto-calculate fee: max(1000, inputs * 500) — same as send
+            fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+
+            // Re-select if fee increased the requirement
+            if total_input < required_amount + fee {
+                selected_utxos.clear();
+                total_input = 0;
+                for utxo in &utxos {
+                    selected_utxos.push(utxo.clone());
+                    total_input += utxo.amount;
+                    fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+                    if total_input >= required_amount + fee {
+                        break;
+                    }
+                }
+            }
+
+            if total_available < required_amount + fee {
+                anyhow::bail!(
+                    "Insufficient balance. Required: {} DOLI + {} fee, Available: {}",
+                    count as u64 * bond_display,
+                    format_balance(fee),
+                    format_balance(total_available)
+                );
             }
 
             // Build inputs
