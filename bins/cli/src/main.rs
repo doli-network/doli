@@ -2672,16 +2672,56 @@ async fn cmd_producer(
                 bond_input_total += utxo.amount;
             }
 
-            // Create request-withdrawal transaction with Bond UTXO inputs
+            // Select a normal UTXO to cover the tx fee
+            let normal_utxos: Vec<_> = all_utxos
+                .iter()
+                .filter(|u| u.output_type == "normal")
+                .collect();
+            let mut fee_input_total = 0u64;
+            let mut fee_inputs: Vec<Input> = Vec::new();
+            let fee_estimate = 1000u64.max((bond_inputs.len() as u64 + 2) * 500);
+            for utxo in &normal_utxos {
+                if fee_input_total >= fee_estimate {
+                    break;
+                }
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+                fee_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+                fee_input_total += utxo.amount;
+            }
+
+            // Combine bond + fee inputs
+            let mut all_inputs = bond_inputs;
+            all_inputs.extend(fee_inputs);
+
+            // Auto-calculate fee: max(1000, inputs * 500)
+            let fee = 1000u64.max(all_inputs.len() as u64 * 500);
+            if fee_input_total < fee {
+                anyhow::bail!(
+                    "Insufficient spendable balance for tx fee. Need {}, have {}",
+                    format_balance(fee),
+                    format_balance(fee_input_total)
+                );
+            }
+
+            // Create request-withdrawal transaction with Bond + fee inputs
             let mut tx = Transaction::new_request_withdrawal(
-                bond_inputs,
+                all_inputs,
                 producer_pubkey,
                 count,
                 dest_hash,
                 total_net,
             );
 
-            // Sign Bond UTXO inputs
+            // Add change output for fee UTXO remainder
+            let fee_change = fee_input_total - fee;
+            if fee_change > 0 {
+                let change_hash = Hash::from_hex(&pubkey_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+                tx.outputs.push(Output::normal(fee_change, change_hash));
+            }
+
+            // Sign all inputs
             let keypair = wallet.primary_keypair()?;
             let signing_message = tx.signing_message();
             for input in &mut tx.inputs {
@@ -2891,17 +2931,57 @@ async fn cmd_producer(
                 bond_input_total += utxo.amount;
             }
 
-            // Create RequestWithdrawal for ALL bonds with Bond UTXO inputs
+            // Select a normal UTXO to cover the tx fee
+            let normal_utxos: Vec<_> = all_utxos
+                .iter()
+                .filter(|u| u.output_type == "normal")
+                .collect();
+            let mut fee_input_total = 0u64;
+            let mut fee_inputs: Vec<Input> = Vec::new();
+            let fee_estimate = 1000u64.max((bond_inputs.len() as u64 + 2) * 500);
+            for utxo in &normal_utxos {
+                if fee_input_total >= fee_estimate {
+                    break;
+                }
+                let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+                fee_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+                fee_input_total += utxo.amount;
+            }
+
+            // Combine bond + fee inputs
+            let mut all_inputs = bond_inputs;
+            all_inputs.extend(fee_inputs);
+
+            // Auto-calculate fee: max(1000, inputs * 500)
+            let fee = 1000u64.max(all_inputs.len() as u64 * 500);
+            if fee_input_total < fee {
+                anyhow::bail!(
+                    "Insufficient spendable balance for tx fee. Need {}, have {}",
+                    format_balance(fee),
+                    format_balance(fee_input_total)
+                );
+            }
+
+            // Create RequestWithdrawal for ALL bonds with Bond + fee inputs
             let total_net = breakdown.total_net;
             let mut tx = Transaction::new_request_withdrawal(
-                bond_inputs,
+                all_inputs,
                 producer_pubkey,
                 withdraw_count,
                 dest_hash,
                 total_net,
             );
 
-            // Sign Bond UTXO inputs
+            // Add change output for fee UTXO remainder
+            let fee_change = fee_input_total - fee;
+            if fee_change > 0 {
+                let change_hash = Hash::from_hex(&pubkey_hash)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+                tx.outputs.push(Output::normal(fee_change, change_hash));
+            }
+
+            // Sign all inputs
             let keypair = wallet.primary_keypair()?;
             let signing_message = tx.signing_message();
             for input in &mut tx.inputs {
