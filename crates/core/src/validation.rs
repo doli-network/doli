@@ -1497,6 +1497,19 @@ fn validate_registration_data(
         let reg_data: RegistrationData = bincode::deserialize(&tx.extra_data).map_err(|e| {
             ValidationError::InvalidRegistration(format!("invalid registration data: {}", e))
         })?;
+        // BLS key is mandatory — every producer must have one
+        if reg_data.bls_pubkey.is_empty() {
+            return Err(ValidationError::InvalidRegistration(
+                "BLS public key required for registration".to_string(),
+            ));
+        }
+        if reg_data.bls_pop.is_empty() {
+            return Err(ValidationError::InvalidRegistration(
+                "BLS proof of possession required for registration".to_string(),
+            ));
+        }
+        validate_bls_pop(&reg_data)?;
+
         // Validate VDF proof (the only requirement for genesis registrations)
         validate_registration_vdf(&reg_data, ctx.network)?;
         return Ok(());
@@ -1579,12 +1592,18 @@ fn validate_registration_data(
         )));
     }
 
-    // Validate BLS proof-of-possession (if present)
-    // Pre-BLS registrations have empty bls_pubkey — accepted for backward compat.
-    // Post-BLS registrations MUST have valid PoP to prevent rogue key attacks.
-    if !reg_data.bls_pubkey.is_empty() {
-        validate_bls_pop(&reg_data)?;
+    // BLS key is mandatory — every producer must have one (like Ethereum validators)
+    if reg_data.bls_pubkey.is_empty() {
+        return Err(ValidationError::InvalidRegistration(
+            "BLS public key required for registration".to_string(),
+        ));
     }
+    if reg_data.bls_pop.is_empty() {
+        return Err(ValidationError::InvalidRegistration(
+            "BLS proof of possession required for registration".to_string(),
+        ));
+    }
+    validate_bls_pop(&reg_data)?;
 
     // Verify VDF proof for registration
     // (The actual VDF verification happens here)

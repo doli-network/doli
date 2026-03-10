@@ -158,14 +158,14 @@ fn test_epoch_reward_utxo_maturity() {
         is_epoch_reward: true,
     };
 
-    // Should NOT be spendable before maturity (100 confirmations)
+    // Should NOT be spendable before maturity (6 confirmations)
     assert!(!entry.is_spendable_at_for_network(100, Network::Mainnet)); // 0 confirmations
-    assert!(!entry.is_spendable_at_for_network(150, Network::Mainnet)); // 50 confirmations
-    assert!(!entry.is_spendable_at_for_network(199, Network::Mainnet)); // 99 confirmations
+    assert!(!entry.is_spendable_at_for_network(103, Network::Mainnet)); // 3 confirmations
+    assert!(!entry.is_spendable_at_for_network(105, Network::Mainnet)); // 5 confirmations
 
     // Should be spendable at and after maturity
-    assert!(entry.is_spendable_at_for_network(200, Network::Mainnet)); // Exactly 100 confirmations
-    assert!(entry.is_spendable_at_for_network(300, Network::Mainnet)); // 200 confirmations
+    assert!(entry.is_spendable_at_for_network(106, Network::Mainnet)); // Exactly 6 confirmations
+    assert!(entry.is_spendable_at_for_network(200, Network::Mainnet)); // 100 confirmations
 }
 
 #[test]
@@ -183,11 +183,11 @@ fn test_coinbase_maturity_unchanged() {
         is_epoch_reward: false,
     };
 
-    // Coinbase should also require 100 confirmations
+    // Coinbase should also require 6 confirmations
     assert!(!entry.is_spendable_at_for_network(50, Network::Mainnet)); // 0 confirmations
-    assert!(!entry.is_spendable_at_for_network(100, Network::Mainnet)); // 50 confirmations
-    assert!(!entry.is_spendable_at_for_network(149, Network::Mainnet)); // 99 confirmations
-    assert!(entry.is_spendable_at_for_network(150, Network::Mainnet)); // 100 confirmations
+    assert!(!entry.is_spendable_at_for_network(53, Network::Mainnet)); // 3 confirmations
+    assert!(!entry.is_spendable_at_for_network(55, Network::Mainnet)); // 5 confirmations
+    assert!(entry.is_spendable_at_for_network(56, Network::Mainnet)); // 6 confirmations
 }
 
 #[test]

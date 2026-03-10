@@ -441,7 +441,7 @@ impl NetworkParams {
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773174978, // Testnet v28 genesis - Reward pool system 2026-03-10
+                genesis_time: 1773186492, // Testnet v29 genesis - Mandatory BLS + 5 producers + leak fix 2026-03-10
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
