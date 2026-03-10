@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773082627,
-    "message": "DOLI Testnet v20 Genesis - fix stale timestamp in block production 2026-03-09T18:57:07Z",
+    "timestamp": 1773112630,
+    "message": "DOLI Testnet v21 Genesis - count_bonds fix, UTXO-derived scheduling 2026-03-10T03:17:10Z",
     "initial_reward": 100000000
   },
   "consensus": {
