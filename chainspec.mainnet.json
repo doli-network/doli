@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773174510,
+    "timestamp": 1773174978,
     "message": "Genesis v28 - Reward pool system + COINBASE_MATURITY=6 2026-03-10",
     "initial_reward": 100000000
   },

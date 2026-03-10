@@ -5544,6 +5544,15 @@ impl Node {
             let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
             if height > 0 && reward_epoch::is_epoch_start_with(height, blocks_per_epoch) {
                 let completed_epoch = (height / blocks_per_epoch) - 1;
+
+                // Skip epoch 0: genesis bonds consumed pool funds, remainder carries to E1.
+                // Distributing E0 would create coins from nothing (pool drained by bonds).
+                if completed_epoch == 0 {
+                    info!(
+                        "Epoch 0 (genesis): pool remainder carries to E1, no distribution"
+                    );
+                } else {
+
                 info!(
                     "Epoch {} completed at height {}, distributing pool rewards...",
                     completed_epoch, height
@@ -5572,6 +5581,8 @@ impl Node {
                         completed_epoch
                     );
                 }
+
+                } // else completed_epoch != 0
             }
         }
 

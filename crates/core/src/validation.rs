@@ -1155,6 +1155,17 @@ pub fn validate_block_rewards_exact<S: EpochBlockSource>(
     }
 
     if let Some(epoch) = epoch_to_reward {
+        // Epoch 0 (genesis): pool was consumed by genesis bonds, no distribution.
+        // Remainder carries to E1. Skip validation for E0.
+        if epoch == 0 {
+            if !block_epoch_rewards.is_empty() {
+                return Err(ValidationError::InvalidEpochReward(
+                    "epoch 0 must not distribute rewards (genesis pool used for bonds)".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
         // Block SHOULD include epoch rewards - validate exact distribution
 
         if block_epoch_rewards.is_empty() {
@@ -4067,22 +4078,18 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_epoch_reward_one_output() {
+    fn test_validate_epoch_reward_multiple_outputs_ok() {
         let keypair = crypto::KeyPair::generate();
         let pubkey_hash = crypto::hash::hash(b"recipient");
         let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
-        // Add extra output with valid pubkey_hash (invalid for epoch reward - must have exactly 1 output)
+        // Multiple Normal outputs are valid (one per producer in pool distribution)
         let extra_pubkey_hash = crypto::hash::hash(b"another_recipient");
         tx.outputs.push(Output::normal(500, extra_pubkey_hash));
 
         let ctx = test_context();
         let result = validate_transaction(&tx, &ctx);
-
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidEpochReward(_))
-        ));
+        assert!(result.is_ok());
     }
 
     #[test]
