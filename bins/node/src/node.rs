@@ -18,7 +18,7 @@ use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
-    DELEGATE_REWARD_PCT, SLOTS_PER_EPOCH, STAKER_REWARD_PCT, UNBONDING_PERIOD,
+    DELEGATE_REWARD_PCT, SLOTS_PER_EPOCH, UNBONDING_PERIOD,
 };
 // WeightedRewardCalculator removed — replaced by attestation-qualified bond-weighted distribution
 use doli_core::tpop::calibration::VdfCalibrator;
@@ -2777,7 +2777,7 @@ impl Node {
     ///
     /// Triggers `recover_from_peers()` after N consecutive fork-blocked
     /// slots, respecting cooldown to prevent resync loops.
-    async fn maybe_auto_resync(&mut self, current_slot: u32) {
+    async fn maybe_auto_resync(&mut self, _current_slot: u32) {
         // Threshold: trigger resync after 10 consecutive fork-blocked slots
         // This gives the node enough time for normal recovery (reorg, sync)
         // before escalating to a full resync.
@@ -2863,42 +2863,32 @@ impl Node {
             return;
         }
 
-        // Mainnet: direct 1-block rollback (bypasses resolve_shallow_fork's
-        // empty_headers precondition which is always 0 in same-height forks)
-        if self.config.network == Network::Mainnet {
-            warn!(
-                "FORK RECOVERY: {} consecutive fork-blocked slots on mainnet — rolling back 1 block",
-                self.consecutive_fork_blocks
-            );
-            match self.rollback_one_block().await {
-                Ok(true) => {
-                    info!("Mainnet fork recovery: 1-block rollback succeeded");
-                }
-                Ok(false) => {
-                    warn!("Mainnet fork recovery: rollback not possible, recovering from peers");
-                    if let Err(e) = self.force_recover_from_peers().await {
-                        error!("Mainnet fork recovery failed: {}", e);
-                    }
-                }
-                Err(e) => {
-                    error!("Mainnet fork recovery rollback failed: {}", e);
+        // All networks: try 1-block rollback first (lightweight).
+        // Only escalate to full snap sync if rollback fails.
+        // This prevents micro-forks from triggering expensive state wipes.
+        warn!(
+            "FORK RECOVERY: {} consecutive fork-blocked slots — rolling back 1 block",
+            self.consecutive_fork_blocks
+        );
+        match self.rollback_one_block().await {
+            Ok(true) => {
+                info!("Fork recovery: 1-block rollback succeeded");
+            }
+            Ok(false) => {
+                warn!("Fork recovery: rollback not possible, recovering from peers");
+                if let Err(e) = self.force_recover_from_peers().await {
+                    error!("Fork recovery failed: {}", e);
                 }
             }
-            self.consecutive_fork_blocks = 0;
-            self.last_resync_time = Some(Instant::now());
-            return;
+            Err(e) => {
+                error!("Fork recovery rollback failed: {}", e);
+                if let Err(e2) = self.force_recover_from_peers().await {
+                    error!("Fork recovery fallback also failed: {}", e2);
+                }
+            }
         }
-
-        error!(
-            "FORK RECOVERY: {} consecutive fork-blocked slots (threshold {}). Triggering auto-resync at slot {}.",
-            self.consecutive_fork_blocks, fork_resync_threshold, current_slot
-        );
-
         self.consecutive_fork_blocks = 0;
         self.last_resync_time = Some(Instant::now());
-        if let Err(e) = self.force_recover_from_peers().await {
-            error!("Fork recovery failed: {}", e);
-        }
     }
 
     /// Apply a snap sync snapshot: verify state root, replace local state, save to disk.
@@ -5548,40 +5538,36 @@ impl Node {
                 // Skip epoch 0: genesis bonds consumed pool funds, remainder carries to E1.
                 // Distributing E0 would create coins from nothing (pool drained by bonds).
                 if completed_epoch == 0 {
-                    info!(
-                        "Epoch 0 (genesis): pool remainder carries to E1, no distribution"
-                    );
+                    info!("Epoch 0 (genesis): pool remainder carries to E1, no distribution");
                 } else {
-
-                info!(
-                    "Epoch {} completed at height {}, distributing pool rewards...",
-                    completed_epoch, height
-                );
-
-                let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
-
-                if !epoch_outputs.is_empty() {
-                    let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
                     info!(
-                        "Distributing {} total reward to {} qualified producers for epoch {}",
-                        total_reward,
-                        epoch_outputs.len(),
-                        completed_epoch
+                        "Epoch {} completed at height {}, distributing pool rewards...",
+                        completed_epoch, height
                     );
 
-                    let coinbase = Transaction::new_epoch_reward_coinbase(
-                        epoch_outputs,
-                        height,
-                        completed_epoch,
-                    );
-                    builder.add_transaction(coinbase);
-                } else {
-                    debug!(
-                        "No qualified producers in epoch {} — pool burned",
-                        completed_epoch
-                    );
-                }
+                    let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
 
+                    if !epoch_outputs.is_empty() {
+                        let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
+                        info!(
+                            "Distributing {} total reward to {} qualified producers for epoch {}",
+                            total_reward,
+                            epoch_outputs.len(),
+                            completed_epoch
+                        );
+
+                        let coinbase = Transaction::new_epoch_reward_coinbase(
+                            epoch_outputs,
+                            height,
+                            completed_epoch,
+                        );
+                        builder.add_transaction(coinbase);
+                    } else {
+                        debug!(
+                            "No qualified producers in epoch {} — pool burned",
+                            completed_epoch
+                        );
+                    }
                 } // else completed_epoch != 0
             }
         }
@@ -6052,12 +6038,14 @@ impl Node {
         }
 
         // Calculate total pool from accumulated coinbase UTXOs in the reward pool.
-        // The pool collects per-block coinbase; no new coins are minted here.
+        // Include current block's coinbase (not yet in UTXO set during block production)
+        // so the distributed amount matches what the consume step will remove.
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let pool = {
             let utxo = self.utxo_set.read().await;
             let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
-            pool_utxos.iter().map(|(_, e)| e.output.amount).sum::<u64>()
+            let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+            utxo_total + self.params.block_reward(epoch_end_height)
         };
         info!(
             "Epoch {} reward pool: {} units from accumulated coinbase",
@@ -6111,18 +6099,26 @@ impl Node {
                 let own_share = reward * own_bonds / total_bonds;
                 let delegated_share = reward - own_share;
                 let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
-                let producer_total = own_share + delegate_fee;
+                let staker_pool = delegated_share - delegate_fee; // remainder to stakers, no dust
 
-                if producer_total > 0 {
-                    reward_outputs.push((producer_total, pubkey_hash));
-                }
-
-                let staker_pool = delegated_share * STAKER_REWARD_PCT as u64 / 100;
-                for (delegator_hash, bond_count) in &producer_info.received_delegations {
-                    let delegator_reward = staker_pool * (*bond_count as u64) / delegated;
+                // Distribute staker pool to delegators, last gets remainder
+                let mut staker_distributed = 0u64;
+                let delegators: Vec<_> = producer_info.received_delegations.iter().collect();
+                for (i, (delegator_hash, bond_count)) in delegators.iter().enumerate() {
+                    let delegator_reward = if i == delegators.len() - 1 {
+                        staker_pool - staker_distributed // last delegator gets remainder
+                    } else {
+                        staker_pool * (*bond_count as u64) / delegated
+                    };
+                    staker_distributed += delegator_reward;
                     if delegator_reward > 0 {
                         reward_outputs.push((delegator_reward, *delegator_hash));
                     }
+                }
+
+                let producer_total = own_share + delegate_fee;
+                if producer_total > 0 {
+                    reward_outputs.push((producer_total, pubkey_hash));
                 }
             }
 

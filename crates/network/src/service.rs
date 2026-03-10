@@ -5,7 +5,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Genesis mismatch peers are silently rejected for this duration.
+const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 3600; // 1 hour
 
 use futures::StreamExt;
 use libp2p::{
@@ -638,6 +641,10 @@ async fn run_swarm(
     let mut rate_limit_cleanup = tokio::time::interval(std::time::Duration::from_secs(300));
     rate_limit_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Genesis mismatch cooldown: peers that failed genesis check are silently
+    // rejected for 1 hour. Prevents reconnection spam from stale-chain nodes.
+    let mut genesis_mismatch_cooldown: HashMap<PeerId, Instant> = HashMap::new();
+
     // TX batching: buffer outbound transactions and flush every 100ms
     let mut tx_batch: Vec<Transaction> = Vec::new();
     let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
@@ -647,7 +654,7 @@ async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -702,6 +709,7 @@ async fn run_swarm(
 }
 
 /// Handle swarm events
+#[allow(clippy::too_many_arguments)]
 async fn handle_swarm_event(
     event: SwarmEvent<DoliBehaviourEvent>,
     swarm: &mut Swarm<DoliBehaviour>,
@@ -710,6 +718,7 @@ async fn handle_swarm_event(
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
     rate_limiter: &mut RateLimiter,
+    genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -767,6 +776,7 @@ async fn handle_swarm_event(
                 config,
                 peer_cache_path,
                 rate_limiter,
+                genesis_mismatch_cooldown,
             )
             .await;
         }
@@ -795,6 +805,7 @@ async fn handle_swarm_event(
 }
 
 /// Handle behaviour events
+#[allow(clippy::too_many_arguments)]
 async fn handle_behaviour_event(
     event: DoliBehaviourEvent,
     swarm: &mut Swarm<DoliBehaviour>,
@@ -803,6 +814,7 @@ async fn handle_behaviour_event(
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
     rate_limiter: &mut RateLimiter,
+    genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -1074,12 +1086,19 @@ async fn handle_behaviour_event(
                         return;
                     }
 
+                    // Genesis mismatch cooldown: silently reject peers we already know are on a different chain
+                    if let Some(cooldown_start) = genesis_mismatch_cooldown.get(&peer) {
+                        if cooldown_start.elapsed().as_secs() < GENESIS_MISMATCH_COOLDOWN_SECS {
+                            let _ = swarm.disconnect_peer_id(peer);
+                            return;
+                        }
+                        genesis_mismatch_cooldown.remove(&peer);
+                    }
+
                     // Validate genesis hash
                     if request.genesis_hash != config.genesis_hash {
-                        warn!(
-                            "Genesis hash mismatch with peer {}: different chain fork",
-                            peer
-                        );
+                        warn!("Genesis hash mismatch with peer {}: cooldown 1h", peer);
+                        genesis_mismatch_cooldown.insert(peer, Instant::now());
                         let _ = event_tx
                             .send(NetworkEvent::GenesisMismatch { peer_id: peer })
                             .await;
@@ -1115,12 +1134,19 @@ async fn handle_behaviour_event(
                         return;
                     }
 
+                    // Genesis mismatch cooldown: silently reject known-bad peers
+                    if let Some(cooldown_start) = genesis_mismatch_cooldown.get(&peer) {
+                        if cooldown_start.elapsed().as_secs() < GENESIS_MISMATCH_COOLDOWN_SECS {
+                            let _ = swarm.disconnect_peer_id(peer);
+                            return;
+                        }
+                        genesis_mismatch_cooldown.remove(&peer);
+                    }
+
                     // Validate genesis hash
                     if response.genesis_hash != config.genesis_hash {
-                        warn!(
-                            "Genesis hash mismatch with peer {}: different chain fork",
-                            peer
-                        );
+                        warn!("Genesis hash mismatch with peer {}: cooldown 1h", peer);
+                        genesis_mismatch_cooldown.insert(peer, Instant::now());
                         let _ = event_tx
                             .send(NetworkEvent::GenesisMismatch { peer_id: peer })
                             .await;
