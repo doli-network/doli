@@ -2720,9 +2720,9 @@ impl SyncManager {
             return;
         }
 
-        // Quorum: at least the configured minimum, or 2/3 of peers (whichever is larger).
-        // 2/3 majority prevents partition forks during rolling deployments.
-        let quorum = std::cmp::max(self.snap_sync_quorum, (self.peers.len() * 2 + 2) / 3);
+        // Quorum: at least 3 peers, or simple majority of connected peers.
+        // Prevents partition forks while remaining reachable within the 10s timeout.
+        let quorum = std::cmp::max(self.snap_sync_quorum, self.peers.len() / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
