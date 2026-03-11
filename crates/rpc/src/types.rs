@@ -261,6 +261,9 @@ pub struct OutputResponse {
     pub pubkey_hash: String,
     /// Lock height (for bonds)
     pub lock_until: u64,
+    /// Decoded covenant condition (only for conditioned output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<serde_json::Value>,
 }
 
 impl From<&doli_core::Output> for OutputResponse {
@@ -274,12 +277,66 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::Vesting => "vesting",
         };
 
+        // Decode covenant condition for conditioned outputs
+        let condition = if output.output_type.is_conditioned() {
+            output
+                .condition()
+                .and_then(|r| r.ok())
+                .map(|c| condition_to_json(&c))
+        } else {
+            None
+        };
+
         Self {
             output_type: output_type.to_string(),
             amount: output.amount,
             pubkey_hash: output.pubkey_hash.to_hex(),
             lock_until: output.lock_until,
+            condition,
         }
+    }
+}
+
+/// Convert a Condition to a human-readable JSON value.
+pub fn condition_to_json(cond: &doli_core::Condition) -> serde_json::Value {
+    use serde_json::json;
+    match cond {
+        doli_core::Condition::Signature(pkh) => json!({
+            "type": "signature",
+            "pubkeyHash": pkh.to_hex()
+        }),
+        doli_core::Condition::Multisig { threshold, keys } => json!({
+            "type": "multisig",
+            "threshold": threshold,
+            "keys": keys.iter().map(|k| k.to_hex()).collect::<Vec<_>>()
+        }),
+        doli_core::Condition::Hashlock(h) => json!({
+            "type": "hashlock",
+            "hash": h.to_hex()
+        }),
+        doli_core::Condition::Timelock(h) => json!({
+            "type": "timelock",
+            "minHeight": h
+        }),
+        doli_core::Condition::TimelockExpiry(h) => json!({
+            "type": "timelockExpiry",
+            "maxHeight": h
+        }),
+        doli_core::Condition::And(a, b) => json!({
+            "type": "and",
+            "left": condition_to_json(a),
+            "right": condition_to_json(b)
+        }),
+        doli_core::Condition::Or(a, b) => json!({
+            "type": "or",
+            "left": condition_to_json(a),
+            "right": condition_to_json(b)
+        }),
+        doli_core::Condition::Threshold { n, conditions } => json!({
+            "type": "threshold",
+            "n": n,
+            "conditions": conditions.iter().map(condition_to_json).collect::<Vec<_>>()
+        }),
     }
 }
 
@@ -301,6 +358,9 @@ pub struct UtxoResponse {
     pub height: u64,
     /// Whether spendable at current height
     pub spendable: bool,
+    /// Decoded covenant condition (only for conditioned output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<serde_json::Value>,
 }
 
 /// Chain info response

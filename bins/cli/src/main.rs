@@ -72,13 +72,45 @@ enum Commands {
         address: Option<String>,
     },
 
-    /// Send coins
+    /// Send coins (optionally with a covenant condition)
     Send {
         /// Recipient address
         to: String,
 
         /// Amount to send
         amount: String,
+
+        /// Fee (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+
+        /// Covenant condition on the output. Examples:
+        ///   multisig(2, addr1, addr2, addr3)
+        ///   hashlock(hex_hash)
+        ///   htlc(hex_hash, lock_height, expiry_height)
+        ///   timelock(min_height)
+        ///   vesting(addr, unlock_height)
+        #[arg(short, long)]
+        condition: Option<String>,
+    },
+
+    /// Spend a covenant-conditioned UTXO
+    Spend {
+        /// UTXO to spend: txhash:output_index
+        utxo: String,
+
+        /// Recipient address
+        to: String,
+
+        /// Amount to send (remaining goes to change)
+        amount: String,
+
+        /// Witness data to satisfy the condition. Examples:
+        ///   preimage(hex_secret)
+        ///   sign(wallet1.json, wallet2.json)
+        ///   branch(right, preimage(hex_secret))
+        #[arg(short, long)]
+        witness: String,
 
         /// Fee (default: auto)
         #[arg(short, long)]
@@ -460,8 +492,22 @@ async fn main() -> Result<()> {
         Commands::Balance { address } => {
             cmd_balance(&wallet, &rpc_endpoint, address).await?;
         }
-        Commands::Send { to, amount, fee } => {
-            cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee).await?;
+        Commands::Send {
+            to,
+            amount,
+            fee,
+            condition,
+        } => {
+            cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee, condition).await?;
+        }
+        Commands::Spend {
+            utxo,
+            to,
+            amount,
+            witness,
+            fee,
+        } => {
+            cmd_spend(&wallet, &rpc_endpoint, &utxo, &to, &amount, &witness, fee).await?;
         }
         Commands::History { limit } => {
             cmd_history(&wallet, &rpc_endpoint, limit).await?;
@@ -841,6 +887,7 @@ async fn cmd_send(
     to: &str,
     amount: &str,
     fee: Option<String>,
+    condition: Option<String>,
 ) -> Result<()> {
     use crypto::{signature, Hash};
     use doli_core::{Input, Output, Transaction};
@@ -971,8 +1018,17 @@ async fn cmd_send(
     // Build transaction outputs
     let mut outputs: Vec<Output> = Vec::new();
 
-    // Recipient output
-    outputs.push(Output::normal(amount_units, recipient_hash));
+    // Recipient output (with optional covenant condition)
+    if let Some(cond_str) = &condition {
+        let cond = parse_condition(cond_str)?;
+        let output_type = condition_to_output_type(&cond);
+        let output = Output::conditioned(output_type, amount_units, recipient_hash, &cond)
+            .map_err(|e| anyhow::anyhow!("Invalid condition: {}", e))?;
+        outputs.push(output);
+        println!("  Condition: {}", cond_str);
+    } else {
+        outputs.push(Output::normal(amount_units, recipient_hash));
+    }
 
     // Change output (if needed)
     let change = total_input - required;
@@ -1004,6 +1060,321 @@ async fn cmd_send(
     println!("Transaction size: {} bytes", tx_bytes.len());
 
     // Submit to network
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Transaction submitted successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error submitting transaction: {}", e);
+            return Err(anyhow::anyhow!("Transaction submission failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// COVENANT CONDITION PARSER
+// =============================================================================
+
+/// Parse a human-readable condition string into a Condition AST.
+///
+/// Supported formats:
+///   multisig(threshold, addr1, addr2, ...)
+///   hashlock(hex_hash)
+///   htlc(hex_hash, lock_height, expiry_height)
+///   timelock(min_height)
+///   timelock_expiry(max_height)
+///   vesting(addr, unlock_height)
+fn parse_condition(s: &str) -> Result<doli_core::Condition> {
+    let s = s.trim();
+
+    // Find the function name and arguments
+    let open = s
+        .find('(')
+        .ok_or_else(|| anyhow::anyhow!("Expected condition format: name(args...)"))?;
+    let close = s
+        .rfind(')')
+        .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
+    if close <= open {
+        anyhow::bail!("Invalid condition syntax");
+    }
+
+    let name = s[..open].trim().to_lowercase();
+    let args_str = &s[open + 1..close];
+    let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+
+    match name.as_str() {
+        "multisig" => {
+            if args.len() < 3 {
+                anyhow::bail!("multisig requires at least 3 args: threshold, key1, key2");
+            }
+            let threshold: u8 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid threshold: {}", args[0]))?;
+            let keys: Result<Vec<crypto::Hash>> = args[1..]
+                .iter()
+                .map(|a| resolve_to_hash(a))
+                .collect();
+            Ok(doli_core::Condition::multisig(threshold, keys?))
+        }
+        "hashlock" => {
+            if args.len() != 1 {
+                anyhow::bail!("hashlock requires 1 arg: hex_hash");
+            }
+            let hash = crypto::Hash::from_hex(args[0])
+                .ok_or_else(|| anyhow::anyhow!("Invalid hex hash: {}", args[0]))?;
+            Ok(doli_core::Condition::hashlock(hash))
+        }
+        "htlc" => {
+            if args.len() != 3 {
+                anyhow::bail!("htlc requires 3 args: hex_hash, lock_height, expiry_height");
+            }
+            let hash = crypto::Hash::from_hex(args[0])
+                .ok_or_else(|| anyhow::anyhow!("Invalid hex hash: {}", args[0]))?;
+            let lock: u64 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid lock_height: {}", args[1]))?;
+            let expiry: u64 = args[2]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid expiry_height: {}", args[2]))?;
+            Ok(doli_core::Condition::htlc(hash, lock, expiry))
+        }
+        "timelock" => {
+            if args.len() != 1 {
+                anyhow::bail!("timelock requires 1 arg: min_height");
+            }
+            let height: u64 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid height: {}", args[0]))?;
+            Ok(doli_core::Condition::timelock(height))
+        }
+        "timelock_expiry" => {
+            if args.len() != 1 {
+                anyhow::bail!("timelock_expiry requires 1 arg: max_height");
+            }
+            let height: u64 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid height: {}", args[0]))?;
+            Ok(doli_core::Condition::timelock_expiry(height))
+        }
+        "vesting" => {
+            if args.len() != 2 {
+                anyhow::bail!("vesting requires 2 args: addr, unlock_height");
+            }
+            let pkh = resolve_to_hash(args[0])?;
+            let height: u64 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid unlock_height: {}", args[1]))?;
+            Ok(doli_core::Condition::vesting(pkh, height))
+        }
+        _ => anyhow::bail!(
+            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, timelock_expiry, vesting",
+            name
+        ),
+    }
+}
+
+/// Resolve an address string (doli1... or hex) to a pubkey_hash.
+fn resolve_to_hash(addr: &str) -> Result<crypto::Hash> {
+    let addr = addr.trim();
+    // Try as hex first
+    if let Some(h) = crypto::Hash::from_hex(addr) {
+        return Ok(h);
+    }
+    // Try as bech32 address
+    crypto::address::resolve(addr, None)
+        .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", addr, e))
+}
+
+/// Map a Condition to the appropriate OutputType.
+fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core::OutputType {
+    match cond {
+        doli_core::Condition::Multisig { .. } => doli_core::OutputType::Multisig,
+        doli_core::Condition::Hashlock(_) => doli_core::OutputType::Hashlock,
+        doli_core::Condition::Or(_, _) => {
+            // HTLC is Or(And(Hashlock, Timelock), TimelockExpiry)
+            doli_core::OutputType::HTLC
+        }
+        doli_core::Condition::And(_, _) => {
+            // Vesting is And(Signature, Timelock)
+            doli_core::OutputType::Vesting
+        }
+        doli_core::Condition::Timelock(_) | doli_core::Condition::TimelockExpiry(_) => {
+            // Standalone timelock uses Vesting type
+            doli_core::OutputType::Vesting
+        }
+        doli_core::Condition::Signature(_) => doli_core::OutputType::Normal,
+        doli_core::Condition::Threshold { .. } => doli_core::OutputType::Multisig,
+    }
+}
+
+// =============================================================================
+// WITNESS PARSER
+// =============================================================================
+
+/// Parse a human-readable witness string into encoded Witness bytes.
+///
+/// Supported formats:
+///   preimage(hex_secret)
+///   sign(wallet1.json, wallet2.json, ...)
+///   branch(left|right)
+fn parse_witness(s: &str, signing_hash: &crypto::Hash) -> Result<Vec<u8>> {
+    let s = s.trim();
+    let open = s
+        .find('(')
+        .ok_or_else(|| anyhow::anyhow!("Expected witness format: name(args...)"))?;
+    let close = s
+        .rfind(')')
+        .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
+
+    let name = s[..open].trim().to_lowercase();
+    let args_str = &s[open + 1..close];
+    let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+
+    let mut witness = doli_core::Witness::default();
+
+    match name.as_str() {
+        "preimage" => {
+            if args.len() != 1 {
+                anyhow::bail!("preimage requires 1 arg: hex_secret");
+            }
+            let bytes = hex::decode(args[0])
+                .map_err(|_| anyhow::anyhow!("Invalid hex preimage: {}", args[0]))?;
+            if bytes.len() != 32 {
+                anyhow::bail!("Preimage must be exactly 32 bytes, got {}", bytes.len());
+            }
+            let mut preimage = [0u8; 32];
+            preimage.copy_from_slice(&bytes);
+            witness.preimage = Some(preimage);
+        }
+        "sign" => {
+            for wallet_path in &args {
+                let w = Wallet::load(Path::new(wallet_path))?;
+                let kp = w.primary_keypair()?;
+                let sig = crypto::signature::sign_hash(signing_hash, kp.private_key());
+                witness
+                    .signatures
+                    .push(doli_core::ConditionWitnessSignature {
+                        pubkey: *kp.public_key(),
+                        signature: sig,
+                    });
+            }
+        }
+        "branch" => {
+            for arg in &args {
+                match arg.to_lowercase().as_str() {
+                    "left" | "false" | "0" => witness.or_branches.push(false),
+                    "right" | "true" | "1" => witness.or_branches.push(true),
+                    _ => anyhow::bail!("Invalid branch: '{}' (use left/right)", arg),
+                }
+            }
+        }
+        _ => anyhow::bail!(
+            "Unknown witness type: '{}'. Supported: preimage, sign, branch",
+            name
+        ),
+    }
+
+    Ok(witness.encode())
+}
+
+// =============================================================================
+// SPEND COMMAND (for covenant UTXOs)
+// =============================================================================
+
+async fn cmd_spend(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    to: &str,
+    amount: &str,
+    witness_str: &str,
+    fee: Option<String>,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    // Parse UTXO reference: txhash:index
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index (e.g. abc123:0)");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash: {}", parts[0]))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
+
+    // Parse recipient
+    let recipient_hash = crypto::address::resolve(to, None)
+        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
+
+    // Parse amount
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    if amount_coins <= 0.0 {
+        anyhow::bail!("Amount must be greater than zero");
+    }
+    let amount_units = coins_to_units(amount_coins);
+
+    // Fee
+    let fee_units = if let Some(f) = &fee {
+        let fee_coins: f64 = f
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
+        coins_to_units(fee_coins)
+    } else {
+        1000 // Default fee for single-input spend
+    };
+
+    // Build transaction with single input
+    let input = Input::new(prev_tx_hash, output_index);
+    let outputs = vec![Output::normal(amount_units, recipient_hash)];
+    let mut tx = Transaction::new_transfer(vec![input], outputs);
+
+    // Parse witness and compute signing hash
+    let signing_hash = tx.signing_message();
+    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+
+    // Set covenant witness in tx.extra_data (SegWit-style)
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    // Also sign with the wallet key (for inputs that need a signature in the witness)
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
+        .unwrap_or_else(|_| recipient_hash.to_hex());
+
+    println!("Spending covenant UTXO:");
+    println!(
+        "  UTXO:    {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  To:      {}", recipient_display);
+    println!("  Amount:  {} DOLI", amount_coins);
+    println!("  Fee:     {}", format_balance(fee_units));
+    println!("  Witness: {}", witness_str);
+    println!("  TX Hash: {}", tx_hash.to_hex());
+    println!("  Size:    {} bytes", tx_bytes.len());
+
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
