@@ -330,7 +330,7 @@ pub const INACTIVITY_THRESHOLD: u32 = MAX_FAILURES;
 pub const EXCLUSION_SLOTS: Slot = 60_480;
 
 /// Reward maturity (confirmations required)
-pub const REWARD_MATURITY: BlockHeight = 100;
+pub const REWARD_MATURITY: BlockHeight = 6;
 
 // ==================== Exit and Slashing System ====================
 
