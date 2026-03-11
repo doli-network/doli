@@ -1321,7 +1321,7 @@ pub fn validate_transaction(
     }
 
     // 4. Validate all outputs
-    let total_output = validate_outputs(&tx.outputs)?;
+    let total_output = validate_outputs(&tx.outputs, ctx)?;
 
     // 5. Total output must not exceed max supply
     if total_output > TOTAL_SUPPLY {
@@ -1392,7 +1392,10 @@ pub fn validate_transaction(
 ///
 /// Returns the total output amount, or an error if any output is invalid
 /// or if the total would overflow.
-fn validate_outputs(outputs: &[Output]) -> Result<Amount, ValidationError> {
+fn validate_outputs(
+    outputs: &[Output],
+    ctx: &ValidationContext,
+) -> Result<Amount, ValidationError> {
     let mut total: Amount = 0;
 
     for (i, output) in outputs.iter().enumerate() {
@@ -1462,6 +1465,33 @@ fn validate_outputs(outputs: &[Output]) -> Result<Amount, ValidationError> {
                         "bond output {} has {} bytes extra_data, expected 4 (creation_slot)",
                         i,
                         output.extra_data.len()
+                    )));
+                }
+            }
+            // Covenant output types: validate activation and condition encoding
+            OutputType::Multisig
+            | OutputType::Hashlock
+            | OutputType::HTLC
+            | OutputType::Vesting => {
+                // Activation height gating: reject conditioned outputs before activation
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} has empty extra_data",
+                        i
+                    )));
+                }
+                // Validate condition decodes successfully
+                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} has invalid condition: {}",
+                        i, e
                     )));
                 }
             }
@@ -2465,8 +2495,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             });
         }
 
-        // Verify signature
-        verify_input_signature(input, &signing_hash, &utxo, i)?;
+        // Verify spending conditions (signature for Normal/Bond, condition evaluator for others)
+        verify_input_conditions(tx, input, &signing_hash, &utxo, i, ctx.current_height)?;
 
         // Add to total (with overflow check)
         total_input = total_input.checked_add(utxo.output.amount).ok_or_else(|| {
@@ -2488,7 +2518,67 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     Ok(())
 }
 
-/// Verify the signature on a transaction input.
+/// Verify spending conditions on a transaction input.
+///
+/// For Normal/Bond outputs: verify single Ed25519 signature (existing behavior).
+/// For conditioned outputs (Multisig, Hashlock, HTLC, Vesting):
+///   decode condition from output extra_data, decode witness from tx extra_data, evaluate.
+fn verify_input_conditions(
+    tx: &Transaction,
+    input: &Input,
+    signing_hash: &Hash,
+    utxo: &UtxoInfo,
+    input_index: usize,
+    current_height: crate::types::BlockHeight,
+) -> Result<(), ValidationError> {
+    if utxo.output.output_type.is_conditioned() {
+        // ---- Conditioned output: evaluate condition tree ----
+        let condition =
+            crate::conditions::Condition::decode(&utxo.output.extra_data).map_err(|e| {
+                ValidationError::InvalidTransaction(format!(
+                    "input {} references output with invalid condition: {}",
+                    input_index, e
+                ))
+            })?;
+
+        // Check ops limit
+        let ops = condition.ops_count();
+        if ops > crate::conditions::MAX_CONDITION_OPS {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "input {} condition has {} ops (max {})",
+                input_index,
+                ops,
+                crate::conditions::MAX_CONDITION_OPS
+            )));
+        }
+
+        // Decode witness from Transaction.extra_data (SegWit-style)
+        let witness_bytes = tx.get_covenant_witness(input_index).unwrap_or(&[]);
+        let witness = crate::conditions::Witness::decode(witness_bytes).map_err(|e| {
+            ValidationError::InvalidTransaction(format!(
+                "input {} has invalid witness data: {}",
+                input_index, e
+            ))
+        })?;
+
+        let ctx = crate::conditions::EvalContext {
+            current_height,
+            signing_hash,
+        };
+
+        let mut or_idx = 0;
+        if !crate::conditions::evaluate(&condition, &witness, &ctx, &mut or_idx) {
+            return Err(ValidationError::InvalidSignature { index: input_index });
+        }
+
+        Ok(())
+    } else {
+        // ---- Normal/Bond output: single signature verification ----
+        verify_input_signature(input, signing_hash, utxo, input_index)
+    }
+}
+
+/// Verify the signature on a transaction input (Normal/Bond outputs only).
 fn verify_input_signature(
     input: &Input,
     signing_hash: &Hash,
@@ -3329,7 +3419,7 @@ mod tests {
                     Output::normal(a, Hash::from_bytes(hash))
                 })
                 .collect();
-            let result = validate_outputs(&outputs);
+            let result = validate_outputs(&outputs, &test_context());
             prop_assert!(result.is_ok());
             prop_assert_eq!(result.unwrap(), amounts.iter().sum::<u64>());
         }
@@ -3340,7 +3430,7 @@ mod tests {
             let mut hash = seed;
             hash[0] = 1; // Non-zero
             let outputs = vec![Output::normal(0, Hash::from_bytes(hash))];
-            let result = validate_outputs(&outputs);
+            let result = validate_outputs(&outputs, &test_context());
             prop_assert!(result.is_err());
         }
 
@@ -3348,7 +3438,7 @@ mod tests {
         #[test]
         fn prop_zero_pubkey_hash_fails(amount in 1u64..1_000_000_000u64) {
             let outputs = vec![Output::normal(amount, Hash::ZERO)];
-            let result = validate_outputs(&outputs);
+            let result = validate_outputs(&outputs, &test_context());
             prop_assert!(result.is_err());
         }
 
@@ -3364,7 +3454,7 @@ mod tests {
                 lock_until: 0,
                 extra_data: vec![],
             };
-            let result = validate_outputs(&[output]);
+            let result = validate_outputs(&[output], &test_context());
             prop_assert!(result.is_err());
         }
 
@@ -3380,7 +3470,7 @@ mod tests {
                 lock_until: lock,
                 extra_data: vec![],
             };
-            let result = validate_outputs(&[output]);
+            let result = validate_outputs(&[output], &test_context());
             prop_assert!(result.is_err());
         }
 

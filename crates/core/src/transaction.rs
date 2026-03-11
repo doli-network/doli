@@ -90,10 +90,18 @@ impl TxType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OutputType {
-    /// Normal spendable output
+    /// Normal spendable output (default: single signature)
     Normal = 0,
-    /// Bond output (time-locked)
+    /// Bond output (time-locked, protocol-governed withdrawal)
     Bond = 1,
+    /// Multisig output (threshold-of-N signatures, also used for escrow)
+    Multisig = 2,
+    /// Hashlock output (requires preimage reveal)
+    Hashlock = 3,
+    /// HTLC output (hashlock + timelock OR expiry refund)
+    HTLC = 4,
+    /// Vesting output (signature + timelock)
+    Vesting = 5,
 }
 
 impl OutputType {
@@ -101,8 +109,20 @@ impl OutputType {
         match v {
             0 => Some(Self::Normal),
             1 => Some(Self::Bond),
+            2 => Some(Self::Multisig),
+            3 => Some(Self::Hashlock),
+            4 => Some(Self::HTLC),
+            5 => Some(Self::Vesting),
             _ => None,
         }
+    }
+
+    /// Returns true if this output type uses covenant conditions in extra_data.
+    pub fn is_conditioned(&self) -> bool {
+        matches!(
+            self,
+            Self::Multisig | Self::Hashlock | Self::HTLC | Self::Vesting
+        )
     }
 }
 
@@ -200,6 +220,79 @@ impl Output {
                 self.extra_data[2],
                 self.extra_data[3],
             ]))
+        } else {
+            None
+        }
+    }
+
+    /// Create a conditioned output. The condition is encoded into extra_data.
+    /// `pubkey_hash` is the primary recipient (for display/indexing purposes).
+    pub fn conditioned(
+        output_type: OutputType,
+        amount: Amount,
+        pubkey_hash: Hash,
+        condition: &crate::conditions::Condition,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let extra_data = condition.encode()?;
+        Ok(Self {
+            output_type,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
+    /// Create a multisig output.
+    pub fn multisig(
+        amount: Amount,
+        primary_pubkey_hash: Hash,
+        threshold: u8,
+        keys: Vec<Hash>,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let cond = crate::conditions::Condition::multisig(threshold, keys);
+        Self::conditioned(OutputType::Multisig, amount, primary_pubkey_hash, &cond)
+    }
+
+    /// Create a hashlock output.
+    pub fn hashlock(
+        amount: Amount,
+        pubkey_hash: Hash,
+        expected_hash: Hash,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let cond = crate::conditions::Condition::hashlock(expected_hash);
+        Self::conditioned(OutputType::Hashlock, amount, pubkey_hash, &cond)
+    }
+
+    /// Create an HTLC output.
+    pub fn htlc(
+        amount: Amount,
+        pubkey_hash: Hash,
+        expected_hash: Hash,
+        lock_height: BlockHeight,
+        expiry_height: BlockHeight,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
+        Self::conditioned(OutputType::HTLC, amount, pubkey_hash, &cond)
+    }
+
+    /// Create a vesting output (signature + timelock).
+    pub fn vesting(
+        amount: Amount,
+        pubkey_hash: Hash,
+        unlock_height: BlockHeight,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let cond = crate::conditions::Condition::vesting(pubkey_hash, unlock_height);
+        Self::conditioned(OutputType::Vesting, amount, pubkey_hash, &cond)
+    }
+
+    /// Decode the spending condition from extra_data (for conditioned output types).
+    /// Returns None for Normal/Bond outputs.
+    pub fn condition(
+        &self,
+    ) -> Option<Result<crate::conditions::Condition, crate::conditions::ConditionError>> {
+        if self.output_type.is_conditioned() && !self.extra_data.is_empty() {
+            Some(crate::conditions::Condition::decode(&self.extra_data))
         } else {
             None
         }
@@ -1127,6 +1220,57 @@ impl Transaction {
         self.hash()
     }
 
+    /// Encode covenant witness data into extra_data for a Transfer transaction.
+    ///
+    /// Witness map format: for each input, `[u16 LE length][witness bytes]`.
+    /// For inputs spending Normal/Bond outputs, length is 0.
+    /// For inputs spending conditioned outputs, length > 0 with encoded Witness.
+    ///
+    /// This is the DOLI equivalent of Bitcoin's SegWit: witness data lives in
+    /// extra_data (which IS part of the tx hash, preventing malleability).
+    pub fn set_covenant_witnesses(&mut self, witnesses: &[Vec<u8>]) {
+        assert_eq!(
+            witnesses.len(),
+            self.inputs.len(),
+            "witness count must match input count"
+        );
+        let mut buf = Vec::new();
+        for w in witnesses {
+            buf.extend_from_slice(&(w.len() as u16).to_le_bytes());
+            buf.extend_from_slice(w);
+        }
+        self.extra_data = buf;
+    }
+
+    /// Decode covenant witness data from extra_data.
+    /// Returns a witness bytes slice for each input, or None if extra_data
+    /// doesn't contain witness data (normal transfers, coinbase, etc.).
+    pub fn get_covenant_witness(&self, input_index: usize) -> Option<&[u8]> {
+        if self.extra_data.is_empty() || self.tx_type != TxType::Transfer {
+            return None;
+        }
+        let mut pos = 0;
+        let data = &self.extra_data;
+        for i in 0.. {
+            if pos + 2 > data.len() {
+                return None;
+            }
+            let len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+            pos += 2;
+            if i == input_index {
+                if len == 0 {
+                    return Some(&[]);
+                }
+                if pos + len > data.len() {
+                    return None;
+                }
+                return Some(&data[pos..pos + len]);
+            }
+            pos += len;
+        }
+        None // unreachable in practice
+    }
+
     /// Calculate total input amount (requires UTXO lookup - returns 0 here)
     pub fn total_output(&self) -> Amount {
         self.outputs.iter().map(|o| o.amount).sum()
@@ -1375,7 +1519,11 @@ mod tests {
     fn test_output_type_conversion() {
         assert_eq!(OutputType::from_u8(0), Some(OutputType::Normal));
         assert_eq!(OutputType::from_u8(1), Some(OutputType::Bond));
-        assert_eq!(OutputType::from_u8(2), None);
+        assert_eq!(OutputType::from_u8(2), Some(OutputType::Multisig));
+        assert_eq!(OutputType::from_u8(3), Some(OutputType::Hashlock));
+        assert_eq!(OutputType::from_u8(4), Some(OutputType::HTLC));
+        assert_eq!(OutputType::from_u8(5), Some(OutputType::Vesting));
+        assert_eq!(OutputType::from_u8(6), None);
         assert_eq!(OutputType::from_u8(u8::MAX), None);
     }
 

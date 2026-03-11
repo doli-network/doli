@@ -1594,6 +1594,18 @@ impl ConsensusParams {
         self.genesis_hash = spec.genesis_hash();
     }
 
+    /// Returns the activation height for covenant (conditioned) outputs.
+    ///
+    /// Before this height, nodes reject any OutputType >= 2 (Multisig, Hashlock, etc.).
+    /// This ensures coordinated activation: all nodes must upgrade before covenants activate.
+    pub fn covenants_activation_height(&self, network: &Network) -> BlockHeight {
+        match network {
+            Network::Devnet => 0,         // Immediate on devnet
+            Network::Testnet => u64::MAX, // TBD — set when ready for testnet
+            Network::Mainnet => u64::MAX, // TBD — set after testnet stabilizes
+        }
+    }
+
     /// Calculate max block size for a given height.
     ///
     /// Block size doubles every era until reaching the cap.
