@@ -662,12 +662,13 @@ mod tests {
         let outpoint = Outpoint::new(tx_hash, 0);
         assert!(utxo_set.contains(&outpoint));
 
-        // Check coinbase maturity
+        // Check coinbase maturity (COINBASE_MATURITY = 6)
         let entry = utxo_set.get(&outpoint).unwrap();
         #[allow(deprecated)]
         {
-            assert!(!entry.is_spendable_at(50)); // Not mature
-            assert!(entry.is_spendable_at(100)); // Mature
+            assert!(!entry.is_spendable_at(5)); // 5 confirmations - not mature
+            assert!(entry.is_spendable_at(6)); // 6 confirmations - mature
+            assert!(entry.is_spendable_at(100)); // well past maturity
         }
     }
 
@@ -700,14 +701,13 @@ mod tests {
         assert!(entry.is_epoch_reward);
         assert!(!entry.is_coinbase);
 
-        // Check maturity: needs REWARD_MATURITY (100) confirmations
+        // Check maturity: needs REWARD_MATURITY (6) confirmations
         #[allow(deprecated)]
         {
             assert!(!entry.is_spendable_at(100)); // 0 confirmations
-            assert!(!entry.is_spendable_at(150)); // 50 confirmations
-            assert!(!entry.is_spendable_at(199)); // 99 confirmations
-            assert!(entry.is_spendable_at(200)); // 100 confirmations (mature)
-            assert!(entry.is_spendable_at(300)); // 200 confirmations (mature)
+            assert!(!entry.is_spendable_at(105)); // 5 confirmations
+            assert!(entry.is_spendable_at(106)); // 6 confirmations (mature)
+            assert!(entry.is_spendable_at(200)); // well past maturity
         }
     }
 
@@ -727,12 +727,12 @@ mod tests {
         assert!(entry.is_coinbase);
         assert!(!entry.is_epoch_reward);
 
-        // Check maturity
+        // Check maturity (COINBASE_MATURITY = 6)
         #[allow(deprecated)]
         {
-            assert!(!entry.is_spendable_at(100)); // 50 confirmations
-            assert!(!entry.is_spendable_at(149)); // 99 confirmations
-            assert!(entry.is_spendable_at(150)); // 100 confirmations (mature)
+            assert!(!entry.is_spendable_at(55)); // 5 confirmations - not mature
+            assert!(entry.is_spendable_at(56)); // 6 confirmations (mature)
+            assert!(entry.is_spendable_at(150)); // well past maturity
         }
     }
 

@@ -14,7 +14,7 @@ DOLI uses a **direct coinbase** model for block rewards. The block producer rece
 |----------------|-------------|
 | **100% to Producer** | Block producer receives the entire block reward |
 | **Automatic** | No claiming required - rewards included via coinbase tx |
-| **Maturity Period** | 100 confirmations before spendable |
+| **Maturity Period** | 6 confirmations before spendable |
 | **Deflationary** | Halving every ~4 years reduces emission over time |
 
 ### Why Direct Coinbase?
@@ -50,12 +50,12 @@ Coinbase (TxType = 6):
 
 ### Coinbase Maturity
 
-Coinbase outputs are **locked** until 100 confirmations have passed:
+Coinbase outputs are **locked** until 6 confirmations have passed:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| **COINBASE_MATURITY** | 100 blocks | ~17 minutes at 10s slots |
-| **Lock Mechanism** | `lock_until` field | Set to `current_height + 100` |
+| **COINBASE_MATURITY** | 6 blocks | ~60 seconds at 10s slots |
+| **Lock Mechanism** | `lock_until` field | Set to `current_height + 6` |
 | **Spending** | After maturity | Normal UTXO spending rules |
 
 This maturity period prevents issues from chain reorganizations affecting recently minted coins.

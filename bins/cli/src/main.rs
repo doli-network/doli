@@ -891,7 +891,7 @@ async fn cmd_send(
     let utxos = rpc.get_utxos(&from_pubkey_hash, true).await?;
 
     if utxos.is_empty() {
-        anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require 100 confirmations before they can be spent.");
+        anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require {} confirmations before they can be spent.", doli_core::consensus::COINBASE_MATURITY);
     }
 
     // Select UTXOs with a preliminary fee estimate, then recalculate
