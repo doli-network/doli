@@ -39,7 +39,7 @@ pub struct UtxoEntry {
 /// **Deprecated**: Use `reward_maturity_for_network(network)` for network-aware calculations.
 /// Devnet uses 10 blocks for faster testing.
 #[deprecated(note = "Use reward_maturity_for_network(network) for network-aware calculations")]
-pub const DEFAULT_REWARD_MATURITY: BlockHeight = 100;
+pub const DEFAULT_REWARD_MATURITY: BlockHeight = 6;
 
 /// Get reward maturity for a specific network
 pub fn reward_maturity_for_network(network: Network) -> BlockHeight {
