@@ -4138,9 +4138,14 @@ async fn cmd_mint(
     let nft_output = Output::nft(amount_units, minter_hash, token_id, &content_bytes, &cond)
         .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
 
-    // Get spendable UTXOs for fee
+    // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
     let fee_units = 1500u64;
-    let utxos = rpc.get_utxos(&minter_pubkey_hash, true).await?;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&minter_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
     if utxos.is_empty() {
         anyhow::bail!("No spendable UTXOs available for fee");
     }
@@ -4493,9 +4498,14 @@ async fn cmd_issue_token(
         Output::fungible_asset(0, issuer_hash, placeholder_asset_id, supply, ticker, &cond)
             .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
 
-    // Get spendable UTXOs for fee
+    // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
     let fee_units = 1500u64;
-    let utxos = rpc.get_utxos(&issuer_pubkey_hash, true).await?;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&issuer_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
     if utxos.is_empty() {
         anyhow::bail!("No spendable UTXOs available for fee");
     }
@@ -4713,10 +4723,15 @@ async fn cmd_bridge_lock(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
 
-    // Get spendable UTXOs for funding
+    // Get spendable normal UTXOs for funding (exclude bonds, conditioned, etc.)
     let fee_units = 1500u64;
     let required = amount_units + fee_units;
-    let utxos = rpc.get_utxos(&from_pubkey_hash, true).await?;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&from_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
 
     let mut selected = Vec::new();
     let mut total_input = 0u64;
