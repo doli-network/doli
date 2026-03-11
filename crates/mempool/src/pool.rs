@@ -129,12 +129,14 @@ impl Mempool {
             if let Some(entry) = utxo_set.get(&outpoint) {
                 if entry.output.output_type.is_conditioned() {
                     use doli_core::conditions::{Condition, Witness, MAX_CONDITION_OPS};
-                    let condition = Condition::decode(&entry.output.extra_data).map_err(|e| {
-                        MempoolError::InvalidTransaction(format!(
-                            "input {} invalid condition: {}",
-                            i, e
-                        ))
-                    })?;
+                    let condition = Condition::decode_prefix(&entry.output.extra_data)
+                        .map(|(cond, _consumed)| cond)
+                        .map_err(|e| {
+                            MempoolError::InvalidTransaction(format!(
+                                "input {} invalid condition: {}",
+                                i, e
+                            ))
+                        })?;
                     if condition.ops_count() > MAX_CONDITION_OPS {
                         return Err(MempoolError::InvalidTransaction(format!(
                             "input {} condition exceeds ops limit",
