@@ -231,9 +231,14 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (1 connection per peer, max_peers total)
+        // Build connection limits (2 connections per peer, max_peers total).
+        // Allow 2 per-peer to survive the simultaneous-dial race condition
+        // (rust-libp2p#752): when both sides dial each other at the same time,
+        // both connections complete the handshake. With limit=1 the second is
+        // denied → rapid connect/disconnect loop on co-located nodes.
+        // Also required for DCUtR hole-punching (relay + direct coexist briefly).
         let limits = libp2p::connection_limits::ConnectionLimits::default()
-            .with_max_established_per_peer(Some(1))
+            .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(config.max_peers as u32))
             .with_max_established_outgoing(Some(config.max_peers as u32));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
@@ -1004,11 +1009,11 @@ async fn handle_behaviour_event(
 
         DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated { peer, .. }) => {
             info!("[DHT] Routing updated for peer: {}", peer);
-            // Dial the discovered peer to establish a connection
-            if !swarm.is_connected(&peer) {
-                info!("[DHT] Dialing discovered peer {}", peer);
-                let _ = swarm.dial(peer);
-            }
+            // Don't auto-dial on RoutingUpdated — this is the main trigger for
+            // the simultaneous-dial race on co-located nodes (rust-libp2p#752).
+            // The periodic DHT bootstrap (every 60s) and explicit bootstrap dials
+            // already handle peer discovery. Auto-dialing here is redundant and
+            // on localhost (latency ≈ 0) it guarantees the race fires.
         }
         DoliBehaviourEvent::Kademlia(_) => {
             // Other Kademlia events (query progress, etc.) — no action needed
