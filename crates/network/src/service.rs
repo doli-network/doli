@@ -1600,34 +1600,34 @@ mod tests {
 
     #[test]
     fn test_is_routable_rejects_loopback() {
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/30303".parse().unwrap();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr));
 
-        let addr6: Multiaddr = "/ip6/::1/tcp/30303".parse().unwrap();
+        let addr6: Multiaddr = "/ip6/::1/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr6));
     }
 
     #[test]
     fn test_is_routable_accepts_public() {
-        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/30303".parse().unwrap();
+        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
         assert!(is_routable_address(&addr));
 
-        let addr2: Multiaddr = "/ip4/147.93.84.44/tcp/30303".parse().unwrap();
+        let addr2: Multiaddr = "/ip4/147.93.84.44/tcp/30300".parse().unwrap();
         assert!(is_routable_address(&addr2));
     }
 
     #[test]
     fn test_is_routable_rejects_unspecified() {
-        let addr: Multiaddr = "/ip4/0.0.0.0/tcp/30303".parse().unwrap();
+        let addr: Multiaddr = "/ip4/0.0.0.0/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr));
 
-        let addr6: Multiaddr = "/ip6/::/tcp/30303".parse().unwrap();
+        let addr6: Multiaddr = "/ip6/::/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr6));
     }
 
     #[test]
     fn test_is_routable_rejects_link_local() {
-        let addr: Multiaddr = "/ip4/169.254.1.1/tcp/30303".parse().unwrap();
+        let addr: Multiaddr = "/ip4/169.254.1.1/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr));
     }
 }

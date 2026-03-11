@@ -202,7 +202,7 @@ done
 **Port allocation:**
 | Node N | P2P Port | RPC Port | Metrics Port |
 |--------|----------|----------|--------------|
-| N | 50303+N | 28545+N | 9090+N |
+| N | 50300+N | 28500+N | 9000+N |
 
 **Example session:**
 ```
@@ -253,7 +253,7 @@ Proceed with deployment? [y/N]: y
 **Features:**
 - Generates producer keys automatically
 - Creates helper scripts: `launch_both.sh`, `check_status.sh`
-- Configurable ports (P2P: 40303-40304, RPC: 18545-18546)
+- Configurable ports (P2P: 40300-40301, RPC: 18500-18501)
 
 ---
 
@@ -276,8 +276,8 @@ PRODUCER_COUNT=100 ./scripts/stress_test_600.sh  # Reduce for lower resources
 
 **Environment variables:**
 - `PRODUCER_COUNT` - Number of producers (default: 600)
-- `BASE_P2P_PORT` - Starting P2P port (default: 50303)
-- `BASE_RPC_PORT` - Starting RPC port (default: 28545)
+- `BASE_P2P_PORT` - Starting P2P port (default: 50300)
+- `BASE_RPC_PORT` - Starting RPC port (default: 28500)
 - `LOG_LEVEL` - Log level (default: warn)
 
 **Requirements:**

@@ -11,18 +11,18 @@ ARGS=""
 case "${DOLI_NETWORK:-mainnet}" in
     mainnet)
         ARGS="$ARGS"
-        DOLI_RPC_PORT="${DOLI_RPC_PORT:-8545}"
-        DOLI_P2P_PORT="${DOLI_P2P_PORT:-30303}"
+        DOLI_RPC_PORT="${DOLI_RPC_PORT:-8500}"
+        DOLI_P2P_PORT="${DOLI_P2P_PORT:-30300}"
         ;;
     testnet)
         ARGS="$ARGS --network testnet"
-        DOLI_RPC_PORT="${DOLI_RPC_PORT:-18545}"
-        DOLI_P2P_PORT="${DOLI_P2P_PORT:-40303}"
+        DOLI_RPC_PORT="${DOLI_RPC_PORT:-18500}"
+        DOLI_P2P_PORT="${DOLI_P2P_PORT:-40300}"
         ;;
     devnet)
         ARGS="$ARGS --network devnet"
-        DOLI_RPC_PORT="${DOLI_RPC_PORT:-28545}"
-        DOLI_P2P_PORT="${DOLI_P2P_PORT:-50303}"
+        DOLI_RPC_PORT="${DOLI_RPC_PORT:-28500}"
+        DOLI_P2P_PORT="${DOLI_P2P_PORT:-50300}"
         ;;
     *)
         echo "Error: Invalid DOLI_NETWORK value: ${DOLI_NETWORK}"

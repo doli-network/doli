@@ -15,9 +15,9 @@ services:
       - DOLI_DATA_DIR=/data
       - DOLI_LOG_LEVEL=info
     ports:
-      - "30303:30303"   # P2P
-      - "8545:8545"     # RPC
-      - "9090:9090"     # Metrics
+      - "30300:30300"   # P2P
+      - "8500:8500"     # RPC
+      - "9000:9000"     # Metrics
     volumes:
       - doli-mainnet-data:/data
     deploy:
@@ -27,7 +27,7 @@ services:
         reservations:
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -X POST http://localhost:8545 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep -q result"]
+      test: ["CMD-SHELL", "curl -sf -X POST http://localhost:8500 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' | grep -q result"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-04
 **Duration**: ~35 minutes
-**Target**: Mainnet, http://seed1.doli.network:8545
+**Target**: Mainnet, http://seed1.doli.network:8500
 **Scope**: All categories (wallet, transactions, producer, rewards, RPC, governance, signing, edge-cases)
 **CLI Version**: doli 1.1.0 (abc491d)
 
@@ -44,7 +44,7 @@ No CRITICAL findings. The CLI never panicked, segfaulted, or corrupted state.
 - **Reproduction**:
   ```bash
   # Hangs forever -- must be killed with Ctrl-C or timeout
-  /Users/ilozada/repos/doli/target/release/doli -r "http://192.0.2.1:8545" chain
+  /Users/ilozada/repos/doli/target/release/doli -r "http://192.0.2.1:8500" chain
 
   # Same with wrong port
   /Users/ilozada/repos/doli/target/release/doli -r "http://seed1.doli.network:9999" chain
@@ -84,11 +84,11 @@ No CRITICAL findings. The CLI never panicked, segfaulted, or corrupted state.
 - **Reproduction**:
   ```bash
   # Missing method field -- returns plain text
-  curl -s http://seed1.doli.network:8545 -X POST -H "Content-Type: application/json" \
+  curl -s http://seed1.doli.network:8500 -X POST -H "Content-Type: application/json" \
     --data '{"jsonrpc":"2.0","params":{},"id":1}'
 
   # Empty POST body -- returns plain text
-  curl -s http://seed1.doli.network:8545 -X POST -H "Content-Type: application/json" --data ''
+  curl -s http://seed1.doli.network:8500 -X POST -H "Content-Type: application/json" --data ''
   ```
 - **Expected**: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`
 - **Actual**:
@@ -105,7 +105,7 @@ No CRITICAL findings. The CLI never panicked, segfaulted, or corrupted state.
 - **Reproduction**:
   ```bash
   python3 -c "import json; d={'jsonrpc':'2.0','method':'getChainInfo','params':{'data':'A'*1048576},'id':1}; open('/tmp/bigpayload.json','w').write(json.dumps(d))"
-  curl -s http://seed1.doli.network:8545 -X POST -H "Content-Type: application/json" -d @/tmp/bigpayload.json --max-time 10
+  curl -s http://seed1.doli.network:8500 -X POST -H "Content-Type: application/json" -d @/tmp/bigpayload.json --max-time 10
   ```
 - **Expected**: HTTP 413 (Payload Too Large) or JSON-RPC error
 - **Actual**: Request accepted, parsed, and processed normally. Returns valid getChainInfo response
@@ -150,11 +150,11 @@ No CRITICAL findings. The CLI never panicked, segfaulted, or corrupted state.
 - **Reproduction**:
   ```bash
   # getProducers returns camelCase: "publicKey"
-  curl -s http://seed1.doli.network:8545 -X POST -H "Content-Type: application/json" \
+  curl -s http://seed1.doli.network:8500 -X POST -H "Content-Type: application/json" \
     --data '{"jsonrpc":"2.0","method":"getProducers","params":{},"id":1}'
 
   # getBondDetails expects snake_case: "public_key"
-  curl -s http://seed1.doli.network:8545 -X POST -H "Content-Type: application/json" \
+  curl -s http://seed1.doli.network:8500 -X POST -H "Content-Type: application/json" \
     --data '{"jsonrpc":"2.0","method":"getBondDetails","params":{"publicKey":"abc..."},"id":1}'
   # Returns: "missing field `public_key`"
   ```

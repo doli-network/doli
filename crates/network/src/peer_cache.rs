@@ -152,7 +152,7 @@ mod tests {
         let path = dir.path().join("peers.cache");
 
         let mut cache = PeerCache::default();
-        cache.add("peer_1", "/ip4/1.2.3.4/tcp/30303");
+        cache.add("peer_1", "/ip4/1.2.3.4/tcp/30300");
         cache.save(&path);
 
         let loaded = PeerCache::load(&path).unwrap();
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_addresses() {
         let mut cache = PeerCache::default();
-        cache.add("peer_1", "/ip4/1.2.3.4/tcp/30303");
+        cache.add("peer_1", "/ip4/1.2.3.4/tcp/30300");
         cache.add("peer_2", "invalid_addr");
         let addrs = cache.addresses();
         assert_eq!(addrs.len(), 1);
@@ -186,9 +186,9 @@ mod tests {
     #[test]
     fn test_reject_loopback() {
         let mut cache = PeerCache::default();
-        cache.add("peer_1", "/ip4/127.0.0.1/tcp/30303/p2p/12D3KooWTest");
-        cache.add("peer_2", "/ip6/::1/tcp/30303/p2p/12D3KooWTest2");
-        cache.add("peer_3", "/ip4/198.51.100.1/tcp/30303/p2p/12D3KooWReal");
+        cache.add("peer_1", "/ip4/127.0.0.1/tcp/30300/p2p/12D3KooWTest");
+        cache.add("peer_2", "/ip6/::1/tcp/30300/p2p/12D3KooWTest2");
+        cache.add("peer_3", "/ip4/198.51.100.1/tcp/30300/p2p/12D3KooWReal");
         assert_eq!(cache.peers.len(), 1);
         assert_eq!(cache.peers[0].peer_id, "peer_3");
     }

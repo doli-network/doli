@@ -50,9 +50,9 @@
 //!
 //! // Create network configuration
 //! let config = NetworkConfig {
-//!     listen_addr: "0.0.0.0:30303".parse().unwrap(),
+//!     listen_addr: "0.0.0.0:30300".parse().unwrap(),
 //!     bootstrap_nodes: vec![
-//!         "/ip4/seed1.doli.network/tcp/30303/p2p/12D3...".to_string(),
+//!         "/ip4/seed1.doli.network/tcp/30300/p2p/12D3...".to_string(),
 //!     ],
 //!     max_peers: 50,
 //!     ..Default::default()
@@ -98,7 +98,7 @@ pub use libp2p::{Multiaddr, PeerId};
 /// Default P2P port for DOLI nodes.
 ///
 /// Nodes listen on this port by default for incoming peer connections.
-pub const DEFAULT_PORT: u16 = 30303;
+pub const DEFAULT_PORT: u16 = 30300;
 
 /// Protocol identifier for libp2p.
 ///
