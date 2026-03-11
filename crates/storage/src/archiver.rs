@@ -51,7 +51,9 @@ impl BlockArchiver {
         info!("[ARCHIVER] Channel closed, shutting down");
     }
 
-    /// Catch up: archive all blocks from `last_archived+1` to `tip` using the BlockStore.
+    /// Catch up: archive all blocks from 1 to `tip` using the BlockStore.
+    /// Skips blocks whose .block file already exists on disk to avoid redundant I/O.
+    /// Fixes gaps left when the manifest advanced but intermediate files are missing.
     pub fn catch_up(
         dir: &Path,
         block_store: &super::BlockStore,
@@ -59,13 +61,15 @@ impl BlockArchiver {
     ) -> Result<u64, std::io::Error> {
         std::fs::create_dir_all(dir)?;
 
-        let last = read_manifest_height_from(dir).unwrap_or(0);
-        if last >= tip {
-            return Ok(0);
-        }
-
         let mut archived = 0u64;
-        for h in (last + 1)..=tip {
+        let mut last_hash = None;
+        let mut last_genesis_hash = None;
+        for h in 1..=tip {
+            let block_path = dir.join(format!("{:010}.block", h));
+            if block_path.exists() {
+                continue;
+            }
+
             let block = match block_store.get_block_by_height(h) {
                 Ok(Some(b)) => b,
                 Ok(None) => {
@@ -89,20 +93,26 @@ impl BlockArchiver {
                 }
             };
 
-            let hash = block.hash();
-            let genesis_hash = block.header.genesis_hash;
+            last_hash = Some(block.hash());
+            last_genesis_hash = Some(block.header.genesis_hash);
             write_block_file(dir, h, &data)?;
             write_checksum_file(dir, h, &data)?;
-            write_manifest(dir, h, &hash, &genesis_hash)?;
             archived += 1;
+
+            if archived.is_multiple_of(100) {
+                info!("[ARCHIVER] Catch-up progress: {}/{}", h, tip);
+            }
+        }
+
+        // Update manifest to reflect actual tip
+        if let (Some(hash), Some(genesis_hash)) = (last_hash, last_genesis_hash) {
+            write_manifest(dir, tip, &hash, &genesis_hash)?;
         }
 
         if archived > 0 {
             info!(
-                "[ARCHIVER] Catch-up complete: archived {} blocks ({} to {})",
-                archived,
-                last + 1,
-                last + archived
+                "[ARCHIVER] Catch-up complete: filled {} missing blocks (1 to {})",
+                archived, tip
             );
         }
 
