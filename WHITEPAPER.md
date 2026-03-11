@@ -12,9 +12,9 @@
 
 We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
 
-Block production follows deterministic rotation: a participant with one bond knows exactly when their next block will be produced. Pools are unnecessary. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
+Block production follows deterministic rotation: a participant with one bond knows exactly when their next block will be produced. The protocol distributes rewards every epoch through a built-in pool — no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
-A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. No lottery. No variance. No pools. Just time.
+A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through BLS-aggregated liveness attestations — producers who are online and following the chain qualify for their share. No lottery. No variance. No pools. Just time.
 
 Transactions are ordered through verifiable delay functions that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
@@ -270,7 +270,7 @@ Input: prev_hash ∥ slot ∥ producer_key
 The network defines time as follows:
 
 ```
-GENESIS_TIME = 2026-02-01T00:00:00Z (UTC)
+GENESIS_TIME = 2026-03-10T23:54:33Z (UTC)
 ```
 
 A slot is 10 seconds. A slot number derives deterministically from the timestamp:
@@ -511,14 +511,14 @@ Each rank has an exclusive 2-second window. A block from rank *N* is valid only 
 
 ### 8.2. Comparison with Existing Systems
 
-Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic round-robin eliminates variance entirely (see Section 7.3).
+Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic round-robin eliminates variance entirely (see Section 7.3), and the built-in epoch reward pool (Section 10.5) distributes rewards directly on-chain to all qualified producers. External pools cannot offer a better deal.
 
 | System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
 |--------------|---------------------------|----------|-------|---------------|-----------------|
 | Bitcoin      | Lottery (hashpower)       | High     | Yes   | ~150 TWh/yr   | ASIC ($5,000+)  |
 | Ethereum PoS | Lottery (stake)           | Medium   | Yes   | ~2.6 GWh/yr   | 32 ETH ($100K+)  |
 | Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | $10,000+ server  |
-| DOLI PoT     | Deterministic round-robin | **Zero** | **No**| **Negligible**| **Any CPU ($5/mo)**|
+| DOLI PoT     | Deterministic round-robin | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
 
 Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the VDF purely as a heartbeat — leader selection is a pure function of `(slot, ActiveSet(epoch))`. No hardware advantage exists.
 
@@ -551,7 +551,7 @@ This prevents attacks where an attacker creates many new-producer blocks to outp
 
 ## 10. Incentive
 
-By convention, the first transaction in a block is a special transaction that creates new coins owned by the producer of the block. This adds an incentive for nodes to support the network and provides a way to initially distribute coins into circulation.
+Rewards are not distributed per block. Instead, the protocol accumulates block rewards into an **epoch pool** and distributes them once per epoch (every 360 blocks, ~1 hour) to all producers who proved continuous presence during the epoch. The protocol acts as a **built-in pool** — no external mining pools, no operators, no fees, no trust.
 
 ### 10.1. Emission
 
@@ -571,11 +571,78 @@ By convention, the first transaction in a block is a special transaction that cr
 | 5   | 16-20 | 0.0625  | 24,440,400  | 96.88%     |
 | 6   | 20-24 | 0.03125 | 24,834,600  | 98.44%     |
 
-### 10.2. Reward Maturity
+### 10.2. Epoch Reward Distribution
 
-Outputs from reward transactions require 100 confirmations before they can be spent.
+At the first block of each new epoch, the block producer emits a single reward transaction distributing the accumulated pool to all qualified producers, proportional to their bond count:
 
-### 10.3. Fees
+```
+epoch_pool = Σ block_reward(h) for h in [epoch_start, epoch_end)
+reward(i)  = epoch_pool × bonds(i) / Σ qualifying_bonds
+```
+
+Only producers who attested in ≥90% of the epoch's 1-minute attestation windows qualify. Non-qualifiers receive nothing; their share is redistributed to qualified producers.
+
+This produces one UTXO per producer per epoch instead of one per block — eliminating reward dust while maintaining identical total emission.
+
+### 10.3. Liveness Attestation
+
+Block production proves a producer was online during their assigned slots. But with deterministic scheduling, a producer knows exactly which slots are theirs and can be offline the rest of the time.
+
+To prove **continuous** presence, each producer signs a liveness attestation every minute:
+
+```
+attestation = BLS_sign(minute || chain_tip_hash)
+```
+
+The chain tip hash proves the producer is not just alive but actively following and validating the chain. Attestations are gossiped to the network. Each block producer aggregates all received attestation signatures using **BLS12-381 aggregate signatures** and commits:
+
+1. A **bitfield** — one bit per producer (attested or not)
+2. A single **48-byte aggregate BLS signature** — cryptographic proof the bitfield is honest
+
+```
+On-chain per block: bitfield (⌈N/8⌉ bytes) + aggregate_sig (48 bytes)
+```
+
+| Producers | Bitfield | Aggregate sig | Total |
+|-----------|----------|---------------|-------|
+| 100       | 13 B     | 48 B          | 61 B  |
+| 100,000   | 12.5 KB  | 48 B          | ~13 KB|
+| 1,000,000 | 125 KB   | 48 B          | ~125 KB|
+
+BLS aggregation means the aggregate signature is always 48 bytes regardless of how many producers signed. A fake bit — claiming a producer attested when they didn't — causes aggregate signature verification to fail. The block is rejected. **Unfakeable and scalable.**
+
+At epoch boundary, every node scans the bitfields committed in the epoch's blocks and counts per-producer attestation minutes. The threshold is 90% (54 out of 60 minutes). Deterministic: every node reads the same chain, computes the same counts, agrees on the same qualification.
+
+### 10.4. Dual-Key Design
+
+Producers hold two key pairs:
+
+| Key | Curve | Purpose |
+|-----|-------|---------|
+| Ed25519 | Curve25519 | Transactions, block signing |
+| BLS | BLS12-381 | Liveness attestation aggregation |
+
+Ed25519 is faster for single-signature operations (block signing, transaction signing). BLS is used solely for attestation because it is the only scheme that supports signature aggregation — compressing N signatures into one for on-chain efficiency.
+
+Both keys are committed on-chain at producer registration. The BLS public key is stored in the registration transaction.
+
+### 10.5. Built-in Pool
+
+Traditional mining pools exist because rewards in PoW and most PoS systems are probabilistic — small participants experience high variance and must delegate to centralized operators for income smoothing.
+
+DOLI eliminates the need for external pools entirely. The protocol itself is the pool:
+
+| Property | External mining pool | DOLI epoch rewards |
+|----------|---------------------|--------------------|
+| Operator | Third party (takes fee) | Protocol (no fee) |
+| Trust | Trust the operator | Trustless (on-chain math) |
+| Distribution | Pool decides splits | Deterministic: bonds × qualification |
+| Centralization | Concentrates power | Each producer runs own node |
+| Reward variance | Smoothed by pool | Zero — deterministic by design |
+
+Every producer participates automatically. Rewards are distributed proportionally by bond weight to all qualified producers. No intermediary can offer a better deal than the protocol itself.
+
+### 10.6. Fees
 
 ```
 fee = sum(inputs) - sum(outputs)
@@ -583,7 +650,11 @@ fee = sum(inputs) - sum(outputs)
 
 The fee goes to the block producer. A minimum fee rate prevents spam.
 
-### 10.4. Compound Growth
+### 10.7. Reward Maturity
+
+Outputs from epoch reward transactions require 6 confirmations (~1 minute) before they can be spent.
+
+### 10.8. Compound Growth
 
 DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing future block assignments proportionally.
 
@@ -776,9 +847,9 @@ There is no premine, ICO, treasury, or special allocations. Every coin in circul
 
 The genesis block contains a single coinbase transaction with the message:
 
-> *"Time is the only fair currency. 01/Feb/2026"*
+> *"Time is the only fair currency."*
 
-This serves as proof that no blocks were mined before this date and as a statement of the system's philosophy.
+This serves as a statement of the system's philosophy. The genesis timestamp is embedded in the block, proving no blocks were mined before that moment.
 
 The genesis block contains exactly:
 
@@ -786,6 +857,22 @@ The genesis block contains exactly:
 - Zero additional transactions
 
 **No hidden allocations exist.**
+
+### 16.2. Network Bootstrap
+
+A Proof-of-Time chain faces a circular dependency at launch: producers need bonds to produce blocks, but bonds require DOLI, and DOLI only exists through block production.
+
+The protocol resolves this in three phases within a single epoch (360 blocks, ~1 hour):
+
+**Phase 1 — Work without reward.** Five genesis producers receive a temporary scheduling placeholder (a zero-hash bond entry) that allows the scheduler to assign slots. This placeholder carries no value — it exists only so the round-robin algorithm has an input. During this first epoch, every block reward goes directly to the reward pool. The genesis producers receive nothing.
+
+**Phase 2 — Automatic conversion.** At block 361 (first block after epoch 0), the protocol executes `consume_genesis_bond_utxos`: it collects all accumulated pool UTXOs, creates one real bond (10 DOLI) per genesis producer funded entirely from the pool, and returns the remainder to the pool for epoch 1 distribution. The temporary placeholders are replaced by real bond UTXOs backed by work already performed.
+
+**Phase 3 — Equal rules.** From block 361 onward, genesis producers operate under the same rules as any future participant. Their bonds vest on the same schedule, earn the same rewards, and face the same withdrawal penalties.
+
+The result: the founding producers paid for their own bonds with real block production. No coins were created outside the standard emission schedule. No advantage was granted that any future producer does not also receive through the same mechanism.
+
+**The founders received no privilege — they paid the bootstrap cost with work.**
 
 ---
 
@@ -879,7 +966,7 @@ We started with the usual framework of coins made from digital signatures, which
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
-**Rewards are deterministic, not probabilistic.** A participant knows exactly when their next block will be produced. Pools are unnecessary. The smallest participant receives the same percentage return as the largest.
+**Rewards are deterministic, not probabilistic.** A participant knows exactly when their next block will be produced. The protocol acts as a built-in pool, distributing epoch rewards on-chain to all producers who prove continuous presence through BLS-aggregated liveness attestations. External pools are unnecessary. The smallest participant receives the same percentage return as the largest.
 
 The network is robust in its simplicity. Nodes work with little coordination. They do not need to be identified, since messages are not routed to any particular place and only need to be delivered on a best effort basis. Nodes can leave and rejoin the network at will, accepting the heaviest chain as proof of what happened while they were gone.
 
@@ -889,7 +976,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v2.0.30**
+**DOLI v2.1.0**
 
 *"Time is the only fair currency."*
 
@@ -902,4 +989,4 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 2. Boneh, D., Bonneau, J., Bünz, B., & Fisch, B. (2018). *Verifiable Delay Functions.* In Advances in Cryptology – CRYPTO 2018.
 
-3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019.
+3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019. (Cited for contrast — DOLI uses iterated hash chains, not algebraic VDFs. See Section 5.1.)

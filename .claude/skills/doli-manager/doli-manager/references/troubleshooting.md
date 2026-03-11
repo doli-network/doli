@@ -70,7 +70,7 @@ ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'   # N5
 
 - Bond unit is network-specific (10 DOLI mainnet, 1 DOLI devnet)
 - Need `bond_unit * count + fee` spendable balance
-- Coinbase outputs need 100 confirmations before spendable
+- Coinbase outputs need 6 confirmations before spendable
 - Check immature balance: `doli balance`
 
 ## Fork Detection
