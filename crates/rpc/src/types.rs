@@ -264,6 +264,15 @@ pub struct OutputResponse {
     /// Decoded covenant condition (only for conditioned output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<serde_json::Value>,
+    /// NFT metadata (only for NFT output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nft: Option<serde_json::Value>,
+    /// Fungible asset metadata (only for FungibleAsset output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<serde_json::Value>,
+    /// Bridge HTLC metadata (only for BridgeHTLC output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<serde_json::Value>,
 }
 
 impl From<&doli_core::Output> for OutputResponse {
@@ -275,6 +284,9 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::Hashlock => "hashlock",
             doli_core::OutputType::HTLC => "htlc",
             doli_core::OutputType::Vesting => "vesting",
+            doli_core::OutputType::NFT => "nft",
+            doli_core::OutputType::FungibleAsset => "fungibleAsset",
+            doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
         };
 
         // Decode covenant condition for conditioned outputs
@@ -287,12 +299,58 @@ impl From<&doli_core::Output> for OutputResponse {
             None
         };
 
+        // Decode NFT metadata if present
+        let nft_metadata = if output.output_type == doli_core::OutputType::NFT {
+            output.nft_metadata().map(|(token_id, content_hash)| {
+                serde_json::json!({
+                    "tokenId": token_id.to_hex(),
+                    "contentHash": hex::encode(&content_hash)
+                })
+            })
+        } else {
+            None
+        };
+
+        // Decode fungible asset metadata if present
+        let asset_metadata = if output.output_type == doli_core::OutputType::FungibleAsset {
+            output
+                .fungible_asset_metadata()
+                .map(|(asset_id, total_supply, ticker)| {
+                    serde_json::json!({
+                        "assetId": asset_id.to_hex(),
+                        "totalSupply": total_supply,
+                        "ticker": ticker
+                    })
+                })
+        } else {
+            None
+        };
+
+        // Decode bridge HTLC metadata if present
+        let bridge_metadata = if output.output_type == doli_core::OutputType::BridgeHTLC {
+            output
+                .bridge_htlc_metadata()
+                .map(|(chain_id, target_addr)| {
+                    serde_json::json!({
+                        "targetChain": doli_core::Output::bridge_chain_name(chain_id),
+                        "targetChainId": chain_id,
+                        "targetAddress": String::from_utf8(target_addr.clone())
+                            .unwrap_or_else(|_| hex::encode(&target_addr))
+                    })
+                })
+        } else {
+            None
+        };
+
         Self {
             output_type: output_type.to_string(),
             amount: output.amount,
             pubkey_hash: output.pubkey_hash.to_hex(),
             lock_until: output.lock_until,
             condition,
+            nft: nft_metadata,
+            asset: asset_metadata,
+            bridge: bridge_metadata,
         }
     }
 }
@@ -361,6 +419,15 @@ pub struct UtxoResponse {
     /// Decoded covenant condition (only for conditioned output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<serde_json::Value>,
+    /// NFT metadata (only for NFT output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nft: Option<serde_json::Value>,
+    /// Fungible asset metadata (only for FungibleAsset output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<serde_json::Value>,
+    /// Bridge HTLC metadata (only for BridgeHTLC output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<serde_json::Value>,
 }
 
 /// Chain info response

@@ -721,7 +721,7 @@ pub fn evaluate(
 
         Condition::Timelock(min_height) => ctx.current_height >= *min_height,
 
-        Condition::TimelockExpiry(max_height) => ctx.current_height <= *max_height,
+        Condition::TimelockExpiry(max_height) => ctx.current_height >= *max_height,
 
         Condition::And(a, b) => {
             evaluate(a, witness, ctx, or_branch_idx) && evaluate(b, witness, ctx, or_branch_idx)
@@ -794,14 +794,14 @@ impl Condition {
         Condition::Timelock(min_height)
     }
 
-    /// Create a timelock expiry condition (spendable at or before max_height).
+    /// Create a timelock expiry condition (spendable at or after max_height).
     pub fn timelock_expiry(max_height: BlockHeight) -> Self {
         Condition::TimelockExpiry(max_height)
     }
 
     /// Create an HTLC: (Hashlock AND Timelock) OR TimelockExpiry.
-    /// The receiver can claim with the preimage before expiry.
-    /// The sender can reclaim after expiry.
+    /// The receiver can claim with the preimage after lock_height.
+    /// The sender can reclaim after expiry_height.
     pub fn htlc(expected_hash: Hash, lock_height: BlockHeight, expiry_height: BlockHeight) -> Self {
         Condition::Or(
             Box::new(Condition::And(
@@ -1102,10 +1102,12 @@ mod tests {
 
     #[test]
     fn test_eval_timelock_expiry_not_satisfied() {
+        // TimelockExpiry(100) means spendable at height >= 100
+        // At height 99, should NOT be satisfied
         let cond = Condition::timelock_expiry(100);
         let hash = dummy_hash(0);
         let ctx = EvalContext {
-            current_height: 101,
+            current_height: 99,
             signing_hash: &hash,
         };
         assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
@@ -1143,18 +1145,15 @@ mod tests {
 
     #[test]
     fn test_eval_and() {
+        // And(Timelock(50), TimelockExpiry(200)):
+        // Timelock(50): height >= 50
+        // TimelockExpiry(200): height >= 200
+        // Combined: height >= 200 (both must be satisfied)
         let cond = Condition::And(
             Box::new(Condition::timelock(50)),
             Box::new(Condition::timelock_expiry(200)),
         );
         let hash = dummy_hash(0);
-
-        // Height 100: both satisfied
-        let ctx = EvalContext {
-            current_height: 100,
-            signing_hash: &hash,
-        };
-        assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
         // Height 30: timelock not met
         let ctx = EvalContext {
@@ -1163,12 +1162,26 @@ mod tests {
         };
         assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
-        // Height 300: expiry exceeded
+        // Height 100: timelock met but expiry not yet reached
+        let ctx = EvalContext {
+            current_height: 100,
+            signing_hash: &hash,
+        };
+        assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+
+        // Height 200: both satisfied
+        let ctx = EvalContext {
+            current_height: 200,
+            signing_hash: &hash,
+        };
+        assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+
+        // Height 300: both satisfied
         let ctx = EvalContext {
             current_height: 300,
             signing_hash: &hash,
         };
-        assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+        assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
     }
 
     #[test]
@@ -1472,30 +1485,32 @@ mod tests {
         let mut idx = 0;
         assert!(!evaluate(&cond, &claim_witness, &ctx_before_lock, &mut idx));
 
-        // Refund path: right branch, TimelockExpiry(200) means height <= 200
+        // Refund path: right branch, TimelockExpiry(200) means height >= 200
         let refund_witness = Witness {
             or_branches: vec![true], // right branch
             ..Default::default()
         };
-        let ctx_within_window = EvalContext {
+
+        // Refund fails before expiry (height 150 < 200)
+        let ctx_before_expiry = EvalContext {
             current_height: 150,
             signing_hash: &tx_hash,
         };
         let mut idx = 0;
-        assert!(evaluate(
+        assert!(!evaluate(
             &cond,
             &refund_witness,
-            &ctx_within_window,
+            &ctx_before_expiry,
             &mut idx
         ));
 
-        // Refund path fails after expiry
+        // Refund succeeds after expiry (height 250 >= 200)
         let ctx_after_expiry = EvalContext {
             current_height: 250,
             signing_hash: &tx_hash,
         };
         let mut idx = 0;
-        assert!(!evaluate(
+        assert!(evaluate(
             &cond,
             &refund_witness,
             &ctx_after_expiry,
