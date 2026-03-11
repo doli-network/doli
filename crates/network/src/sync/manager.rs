@@ -2118,7 +2118,6 @@ impl SyncManager {
         batch
     }
 
-
     /// Register a pending request
     fn register_request(&mut self, peer: PeerId, request: SyncRequest) -> SyncRequestId {
         let id = SyncRequestId::new(self.next_request_id);
@@ -2749,15 +2748,16 @@ impl SyncManager {
             return;
         }
 
-        // Quorum: at least 3 peers, or simple majority of *tip-eligible* peers.
-        // Only count peers within 100 blocks of the target — syncing peers at
-        // height 0 should not inflate the quorum denominator.
-        let tip_peers = self
-            .peers
-            .values()
-            .filter(|p| p.best_height >= target_height.saturating_sub(100))
-            .count();
-        let quorum = std::cmp::max(self.snap_sync_quorum, tip_peers / 2 + 1);
+        // Quorum: at least 3 peers, or simple majority of *votes received*.
+        // Using actual vote count (not connected peer count) as the denominator
+        // prevents unreachable quorum when some peers are slow to respond.
+        // Only votes from tip-eligible peers are counted (stale votes rejected above).
+        let vote_count = if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+            votes.len()
+        } else {
+            return;
+        };
+        let quorum = std::cmp::max(self.snap_sync_quorum, vote_count / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
