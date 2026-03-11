@@ -268,6 +268,10 @@ impl From<&doli_core::Output> for OutputResponse {
         let output_type = match output.output_type {
             doli_core::OutputType::Normal => "normal",
             doli_core::OutputType::Bond => "bond",
+            doli_core::OutputType::Multisig => "multisig",
+            doli_core::OutputType::Hashlock => "hashlock",
+            doli_core::OutputType::HTLC => "htlc",
+            doli_core::OutputType::Vesting => "vesting",
         };
 
         Self {
