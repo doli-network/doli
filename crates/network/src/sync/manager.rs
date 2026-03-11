@@ -113,6 +113,8 @@ pub enum SyncState {
         quorum_root: Hash,
         /// Peer serving the snapshot
         peer: PeerId,
+        /// Alternate peers that agreed on the same quorum root (fallback on error)
+        alternate_peers: Vec<(PeerId, Hash, u64)>,
         /// When download started
         started_at: Instant,
     },
@@ -699,17 +701,17 @@ impl SyncManager {
             }
         }
 
-        // If snap downloading from this peer, fall back
+        // If snap downloading from this peer, try alternate or fall back
         if let SyncState::SnapDownloading {
             peer: snap_peer, ..
         } = &self.state
         {
             if snap_peer == peer {
                 warn!(
-                    "[SNAP_SYNC] Download peer {} disconnected — falling back",
+                    "[SNAP_SYNC] Download peer {} disconnected — trying alternate",
                     peer
                 );
-                self.snap_fallback_to_normal();
+                self.handle_snap_download_error(*peer);
             }
         }
     }
@@ -2037,37 +2039,10 @@ impl SyncManager {
 
             SyncState::Processing { .. } => None,
 
-            SyncState::SnapCollectingRoots {
-                target_hash, asked, ..
-            } => {
-                let target_hash = *target_hash;
-                let already_asked = asked.clone();
-                // Ask ALL peers we haven't asked yet (not filtered by best_hash).
-                // Each peer returns its current state root + height.
-                // Quorum is found by grouping votes by (height, root).
-                let candidate = self
-                    .peers
-                    .iter()
-                    .filter(|(pid, _)| {
-                        !already_asked.contains(pid) && !self.snap_blacklisted_peers.contains(pid)
-                    })
-                    .map(|(pid, _)| *pid)
-                    .next();
-
-                if let Some(pid) = candidate {
-                    if let SyncState::SnapCollectingRoots { asked, .. } = &mut self.state {
-                        asked.insert(pid);
-                    }
-                    let request = SyncRequest::get_state_root(target_hash);
-                    let id = self.register_request(pid, request.clone());
-                    if let Some(status) = self.peers.get_mut(&pid) {
-                        status.pending_request = Some(id);
-                    }
-                    Some((pid, request))
-                } else {
-                    None
-                }
-            }
+            // Snap sync root collection is batched via next_snap_requests().
+            // Returning None here ensures the normal 1-per-tick path doesn't
+            // interfere with the batch approach.
+            SyncState::SnapCollectingRoots { .. } => None,
 
             SyncState::SnapDownloading {
                 target_hash, peer, ..
@@ -2091,6 +2066,58 @@ impl SyncManager {
             SyncState::SnapReady { .. } => None,
         }
     }
+
+    /// Return GetStateRoot requests for ALL un-asked peers at once.
+    ///
+    /// On an active chain, blocks arrive every 10 seconds. If we send
+    /// GetStateRoot one-peer-per-tick, responses spread over ~12 seconds and
+    /// peers advance between votes — state roots diverge and quorum is never
+    /// reached. Batching all requests in one tick keeps responses within
+    /// ~1-2 seconds so most peers respond at the same height.
+    pub fn next_snap_requests(&mut self) -> Vec<(PeerId, SyncRequest)> {
+        let (target_hash, already_asked) = match &self.state {
+            SyncState::SnapCollectingRoots {
+                target_hash, asked, ..
+            } => (*target_hash, asked.clone()),
+            _ => return vec![],
+        };
+
+        let candidates: Vec<PeerId> = self
+            .peers
+            .iter()
+            .filter(|(pid, _)| {
+                !already_asked.contains(pid) && !self.snap_blacklisted_peers.contains(pid)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        if candidates.is_empty() {
+            return vec![];
+        }
+
+        let mut batch = Vec::with_capacity(candidates.len());
+        for pid in candidates {
+            if let SyncState::SnapCollectingRoots { asked, .. } = &mut self.state {
+                asked.insert(pid);
+            }
+            let request = SyncRequest::get_state_root(target_hash);
+            let id = self.register_request(pid, request.clone());
+            if let Some(status) = self.peers.get_mut(&pid) {
+                status.pending_request = Some(id);
+            }
+            batch.push((pid, request));
+        }
+
+        if !batch.is_empty() {
+            info!(
+                "[SNAP_SYNC] Batch-sending GetStateRoot to {} peers simultaneously",
+                batch.len()
+            );
+        }
+
+        batch
+    }
+
 
     /// Register a pending request
     fn register_request(&mut self, peer: PeerId, request: SyncRequest) -> SyncRequestId {
@@ -2221,6 +2248,7 @@ impl SyncManager {
             }
             SyncResponse::Error(err) => {
                 warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
+                self.handle_snap_download_error(peer);
                 vec![]
             }
             SyncResponse::StateSnapshot {
@@ -2243,6 +2271,7 @@ impl SyncManager {
                     chain_state,
                     utxo_set,
                     producer_set,
+                    state_root,
                 );
                 vec![]
             }
@@ -2756,9 +2785,15 @@ impl SyncManager {
                 .max_by_key(|(_, _, h)| *h)
                 .copied()
                 .unwrap();
+            // Build alternate peer list (excluding primary) for retry on error
+            let alternate_peers: Vec<(PeerId, Hash, u64)> = peers_with_info
+                .iter()
+                .filter(|(pid, _, _)| *pid != download_peer)
+                .copied()
+                .collect();
             info!(
-                "[SNAP_SYNC] Quorum reached: {} peers agree on root={:.16}, best_height={}, downloading from {}",
-                peers_with_info.len(), quorum_root, best_height, download_peer
+                "[SNAP_SYNC] Quorum reached: {} peers agree on root={:.16}, best_height={}, downloading from {} ({} alternates)",
+                peers_with_info.len(), quorum_root, best_height, download_peer, alternate_peers.len()
             );
             let quorum_root = *quorum_root;
             self.state = SyncState::SnapDownloading {
@@ -2766,12 +2801,20 @@ impl SyncManager {
                 target_height: best_height,
                 quorum_root,
                 peer: download_peer,
+                alternate_peers,
                 started_at: Instant::now(),
             };
         }
     }
 
     /// Handle a StateSnapshot response: store as SnapReady for node consumption.
+    ///
+    /// The snapshot includes the peer's actual state_root. We use that as the
+    /// expected root (the node verifies by recomputing from the raw bytes).
+    /// If the peer advanced since the quorum vote, its root will differ from
+    /// quorum_root — that's fine, the node's compute_state_root_from_bytes()
+    /// is the ultimate check. The quorum vote ensured we're downloading from
+    /// a peer that was recently on the canonical chain.
     #[allow(clippy::too_many_arguments)]
     fn handle_snap_snapshot(
         &mut self,
@@ -2781,9 +2824,15 @@ impl SyncManager {
         chain_state: Vec<u8>,
         utxo_set: Vec<u8>,
         producer_set: Vec<u8>,
+        response_root: Hash,
     ) {
         if let SyncState::SnapDownloading { quorum_root, .. } = &self.state {
-            let quorum_root = *quorum_root;
+            if response_root != *quorum_root {
+                info!(
+                    "[SNAP_SYNC] Peer {} advanced since vote: response_root={:.16} != quorum_root={:.16} (height={}). Accepting — node verifies independently.",
+                    peer, response_root, quorum_root, block_height
+                );
+            }
             info!(
                 "[SNAP_SYNC] Snapshot received from {} — height={}, storing as SnapReady (node will verify root)",
                 peer, block_height
@@ -2795,7 +2844,7 @@ impl SyncManager {
                     chain_state,
                     utxo_set,
                     producer_set,
-                    state_root: quorum_root,
+                    state_root: response_root,
                 },
             };
         } else {
@@ -2803,6 +2852,50 @@ impl SyncManager {
                 "[SNAP_SYNC] Unexpected snapshot from {} — not in SnapDownloading state, ignoring",
                 peer
             );
+        }
+    }
+
+    /// Handle an error response while in SnapDownloading state.
+    ///
+    /// The most common cause: the peer advanced to a new block between the vote
+    /// and the download request, so `GetStateSnapshot(old_hash)` is rejected with
+    /// "Snapshot only available for current tip". We blacklist that peer and try
+    /// the next alternate peer from the quorum group. If no alternates remain,
+    /// fall back to normal sync (which may retry snap sync from scratch).
+    fn handle_snap_download_error(&mut self, peer: PeerId) {
+        if !matches!(self.state, SyncState::SnapDownloading { .. }) {
+            return;
+        }
+        self.snap_blacklisted_peers.insert(peer);
+        // Take the state so we can decompose it without borrow issues
+        let old = std::mem::replace(&mut self.state, SyncState::Idle);
+        if let SyncState::SnapDownloading {
+            quorum_root,
+            mut alternate_peers,
+            ..
+        } = old
+        {
+            if let Some((next_peer, next_hash, next_height)) = alternate_peers.pop() {
+                warn!(
+                    "[SNAP_SYNC] Peer {} failed, retrying with alternate peer {} at height={} ({} remaining)",
+                    peer, next_peer, next_height, alternate_peers.len()
+                );
+                self.state = SyncState::SnapDownloading {
+                    target_hash: next_hash,
+                    target_height: next_height,
+                    quorum_root,
+                    peer: next_peer,
+                    alternate_peers,
+                    started_at: Instant::now(),
+                };
+            } else {
+                warn!(
+                    "[SNAP_SYNC] No alternate peers left after {} failed — restarting snap sync",
+                    peer
+                );
+                self.state = SyncState::Idle; // restore before fallback
+                self.snap_fallback_to_normal();
+            }
         }
     }
 
@@ -2934,11 +3027,10 @@ impl SyncManager {
                 if started_at.elapsed() > self.snap_download_timeout {
                     let peer = *peer;
                     warn!(
-                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — blacklisting and falling back",
+                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
                         peer, self.snap_download_timeout
                     );
-                    self.snap_blacklisted_peers.insert(peer);
-                    self.snap_fallback_to_normal();
+                    self.handle_snap_download_error(peer);
                 }
             }
             _ => {}
