@@ -7129,9 +7129,23 @@ impl Node {
         }
 
         // Check if we need to request sync
-        if let Some((peer_id, request)) = self.sync_manager.write().await.next_request() {
-            if let Some(ref network) = self.network {
-                let _ = network.request_sync(peer_id, request).await;
+        {
+            let mut sm = self.sync_manager.write().await;
+            // Snap sync: batch-send GetStateRoot to ALL peers simultaneously.
+            // Responses cluster in ~1-2s so peers report the same height/root.
+            let snap_batch = sm.next_snap_requests();
+            if !snap_batch.is_empty() {
+                if let Some(ref network) = self.network {
+                    for (peer_id, request) in snap_batch {
+                        let _ = network.request_sync(peer_id, request).await;
+                    }
+                }
+            }
+            // Normal sync: one request per tick
+            if let Some((peer_id, request)) = sm.next_request() {
+                if let Some(ref network) = self.network {
+                    let _ = network.request_sync(peer_id, request).await;
+                }
             }
         }
 
