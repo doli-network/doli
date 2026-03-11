@@ -330,6 +330,7 @@ impl RpcContext {
             "getSlotSchedule" => self.get_slot_schedule(request.params).await,
             "getProducerSchedule" => self.get_producer_schedule(request.params).await,
             "getAttestationStats" => self.get_attestation_stats().await,
+            "getStateRootDebug" => self.get_state_root_debug().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -1718,6 +1719,51 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Debug: compute state root and return per-component hashes.
+    ///
+    /// Returns `{ height, bestHash, stateRoot, csHash, utxoHash, psHash, utxoCount, producerCount }`
+    /// so operators can identify which component diverges across nodes.
+    async fn get_state_root_debug(&self) -> Result<Value, RpcError> {
+        let chain_state = self.chain_state.read().await;
+        let utxo_set = self.utxo_set.read().await;
+
+        let cs_bytes = chain_state.serialize_canonical();
+        let utxo_bytes = utxo_set.serialize_canonical();
+
+        let cs_hash = crypto::hash::hash(&cs_bytes);
+        let utxo_hash = crypto::hash::hash(&utxo_bytes);
+
+        let (ps_hash, producer_count) = if let Some(ref ps_arc) = self.producer_set {
+            let ps = ps_arc.read().await;
+            let ps_bytes = ps.serialize_canonical();
+            let hash = crypto::hash::hash(&ps_bytes);
+            let count = ps.active_count();
+            (hash, count)
+        } else {
+            (Hash::ZERO, 0)
+        };
+
+        // Combine to get the full state root
+        let mut combined = Vec::with_capacity(96);
+        combined.extend_from_slice(cs_hash.as_bytes());
+        combined.extend_from_slice(utxo_hash.as_bytes());
+        combined.extend_from_slice(ps_hash.as_bytes());
+        let state_root = crypto::hash::hash(&combined);
+
+        Ok(serde_json::json!({
+            "height": chain_state.best_height,
+            "bestHash": chain_state.best_hash.to_string(),
+            "stateRoot": state_root.to_string(),
+            "csHash": cs_hash.to_string(),
+            "utxoHash": utxo_hash.to_string(),
+            "psHash": ps_hash.to_string(),
+            "utxoCount": utxo_set.len(),
+            "producerCount": producer_count,
+            "totalMinted": chain_state.total_minted,
+            "registrationSeq": chain_state.registration_sequence,
+        }))
     }
 
     /// Get pending mempool transactions
