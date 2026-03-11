@@ -2720,9 +2720,15 @@ impl SyncManager {
             return;
         }
 
-        // Quorum: at least 3 peers, or simple majority of connected peers.
-        // Prevents partition forks while remaining reachable within the 10s timeout.
-        let quorum = std::cmp::max(self.snap_sync_quorum, self.peers.len() / 2 + 1);
+        // Quorum: at least 3 peers, or simple majority of *tip-eligible* peers.
+        // Only count peers within 100 blocks of the target — syncing peers at
+        // height 0 should not inflate the quorum denominator.
+        let tip_peers = self
+            .peers
+            .values()
+            .filter(|p| p.best_height >= target_height.saturating_sub(100))
+            .count();
+        let quorum = std::cmp::max(self.snap_sync_quorum, tip_peers / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
