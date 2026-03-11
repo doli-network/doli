@@ -215,8 +215,7 @@ impl ChainSpec {
             network: Network::Mainnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message: "Genesis v29 - Mandatory BLS + 5 producers + pool leak fix 2026-03-10"
-                    .into(),
+                message: "Time is the only fair currency. 01/Feb/2026".into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
@@ -328,6 +327,18 @@ mod tests {
         assert_eq!(spec.genesis.timestamp, 0); // Dynamic
         assert_eq!(spec.consensus.slot_duration, params.slot_duration);
         assert_eq!(spec.consensus.bond_amount, params.bond_unit);
+    }
+
+    #[test]
+    fn test_rust_vs_json_genesis_hash() {
+        let rust = ChainSpec::mainnet();
+        let json_str = include_str!("../../../chainspec.mainnet.json");
+        let json: ChainSpec = serde_json::from_str(json_str).unwrap();
+        assert_eq!(
+            rust.genesis_hash(),
+            json.genesis_hash(),
+            "ChainSpec::mainnet() and chainspec.mainnet.json MUST produce identical genesis hash"
+        );
     }
 
     #[test]
