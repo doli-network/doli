@@ -1525,14 +1525,25 @@ impl Node {
                 info!("Peer disconnected: {}", peer_id);
                 self.sync_manager.write().await.remove_peer(&peer_id);
 
-                // Reconnect to bootstrap nodes if we lost all peers
+                // Rate-limited reconnect: delegate to the periodic redial in
+                // run_periodic_tasks() (every slot_duration ≈ 10s).  Only do an
+                // immediate dial if we haven't tried recently — this prevents a
+                // spin loop where rapid connect/disconnect floods the event queue
+                // and starves the production timer via the biased select!.
                 let peer_count = self.sync_manager.read().await.peer_count();
                 if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
-                    info!("Lost all peers — scheduling reconnect to bootstrap nodes");
-                    if let Some(ref network) = self.network {
-                        for addr in &self.config.bootstrap_nodes {
-                            if let Err(e) = network.connect(addr).await {
-                                warn!("Failed to reconnect to bootstrap {}: {}", addr, e);
+                    let recently_dialed = self
+                        .last_peer_redial
+                        .map(|t| t.elapsed().as_secs() < self.params.slot_duration)
+                        .unwrap_or(false);
+                    if !recently_dialed {
+                        info!("Lost all peers — reconnecting to bootstrap nodes");
+                        self.last_peer_redial = Some(std::time::Instant::now());
+                        if let Some(ref network) = self.network {
+                            for addr in &self.config.bootstrap_nodes {
+                                if let Err(e) = network.connect(addr).await {
+                                    warn!("Failed to reconnect to bootstrap {}: {}", addr, e);
+                                }
                             }
                         }
                     }
