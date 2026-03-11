@@ -269,9 +269,9 @@ for i in {10..14}; do
     run \
     --producer \
     --producer-key ~/.doli/devnet/keys/producer_$i.json \
-    --p2p-port $((50303 + i)) \
-    --rpc-port $((28545 + i)) \
-    --bootstrap '/ip4/127.0.0.1/tcp/50303' \
+    --p2p-port $((50300 + i)) \
+    --rpc-port $((28500 + i)) \
+    --bootstrap '/ip4/127.0.0.1/tcp/50300' \
     --chainspec ~/.doli/devnet/chainspec.json \
     --no-dht \
     --yes &
@@ -279,7 +279,7 @@ done
 
 # Check sync status
 for i in {10..14}; do
-  RPC=$((28545 + i))
+  RPC=$((28500 + i))
   curl -s http://127.0.0.1:$RPC -X POST \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}'
@@ -641,7 +641,7 @@ Pubkey Hash: eaea5d3e36a3823024ec4bb89730fe7f346cd2f938956f10bc4109fd6884a274
 **Funding:**
 ```bash
 cargo run -p doli-cli -- -w ~/.doli/devnet/keys/producer_0.json \
-  -r http://127.0.0.1:28545 send \
+  -r http://127.0.0.1:28500 send \
   eaea5d3e36a3823024ec4bb89730fe7f346cd2f938956f10bc4109fd6884a274 4
 
 # Result:
@@ -658,7 +658,7 @@ Confirmed: 4.00000000 DOLI
 
 ```bash
 cargo run -p doli-cli -- -w ~/.doli/devnet/test_producer.json \
-  -r http://127.0.0.1:28545 producer register --bonds 1
+  -r http://127.0.0.1:28500 producer register --bonds 1
 
 # Result:
 Registering with 1 bond(s) = 2 DOLI
@@ -728,7 +728,7 @@ Network: devnet
 Best Height: 503  ← STUCK
 Best Slot: 608
 
-# Main network RPC (port 28545):
+# Main network RPC (port 28500):
 Best Height: 515+  ← ADVANCING
 ```
 
@@ -1103,7 +1103,7 @@ Possible reasons (need investigation):
 ### Test Environment Status
 
 **Devnet is still running** with 5 genesis producers + 1 test producer:
-- Genesis nodes: ports 50303-50307 (P2P), 28545-28549 (RPC)
+- Genesis nodes: ports 50300-50307 (P2P), 28500-28549 (RPC)
 - Test producer: port 50310 (P2P), 28550 (RPC), 29095 (metrics)
 
 **Logs location**: `/tmp/test_producer.log`

@@ -21,7 +21,7 @@ doli producer register -b 1
 doli producer register -b 5
 
 # Devnet
-doli -r http://127.0.0.1:28545 producer register -b 3
+doli -r http://127.0.0.1:28500 producer register -b 3
 ```
 
 Requirements:

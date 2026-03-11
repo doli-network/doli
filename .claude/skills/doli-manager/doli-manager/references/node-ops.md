@@ -62,7 +62,7 @@ sudo systemctl status doli-mainnet-nodeN
 | `--producer-key <PATH>` | - | Key file for producing |
 | `--p2p-port <PORT>` | network default | P2P listen port |
 | `--rpc-port <PORT>` | network default | RPC listen port |
-| `--metrics-port <PORT>` | 9090 | Prometheus metrics |
+| `--metrics-port <PORT>` | 9000 | Prometheus metrics |
 | `--bootstrap <MULTIADDR>` | DNS seeds | Custom bootstrap |
 | `--chainspec <PATH>` | embedded | Chainspec file |
 | `--relay-server` | off | Enable relay mode |

@@ -981,7 +981,7 @@ doli-node run \
   --network mainnet \
   --producer \
   --producer-key /path/to/producer.json \
-  --rpc-bind 0.0.0.0:28545
+  --rpc-bind 0.0.0.0:28500
 ```
 
 ---

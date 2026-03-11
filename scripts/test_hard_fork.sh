@@ -12,7 +12,7 @@
 #   - should_stop_producing(): returns true if height >= activation AND version < min_version
 set -e
 
-RPC_BASE=28545
+RPC_BASE=28500
 
 echo "========================================="
 echo " DOLI E2E: Hard Fork Support"

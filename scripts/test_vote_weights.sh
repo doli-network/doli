@@ -13,7 +13,7 @@
 #   - Min voting age = 6 blocks = ~60 seconds
 set -e
 
-RPC_BASE=28545
+RPC_BASE=28500
 
 echo "========================================="
 echo " DOLI E2E: Vote Weight Verification"

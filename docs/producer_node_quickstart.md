@@ -80,7 +80,7 @@ From a funded wallet, send to the new producer's Pubkey Hash:
 
 ```bash
 ./target/release/doli -w ~/.doli/mainnet/funded_wallet.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     send <PRODUCER_PUBKEY_HASH> 15
 ```
 
@@ -90,7 +90,7 @@ Verify balance:
 
 ```bash
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     balance
 ```
 
@@ -100,7 +100,7 @@ Verify balance:
 
 ```bash
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer register
 ```
 
@@ -110,7 +110,7 @@ To register with more bonds:
 
 ```bash
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer register --bonds 5
 ```
 
@@ -123,8 +123,8 @@ To register with more bonds:
     --producer \
     --producer-key ~/.doli/mainnet/producer.json \
     --no-auto-update \
-    --p2p-port 30303 \
-    --rpc-port 8545
+    --p2p-port 30300 \
+    --rpc-port 8500
 ```
 
 With a bootstrap node (to join an existing network):
@@ -134,7 +134,7 @@ With a bootstrap node (to join an existing network):
     --producer \
     --producer-key ~/.doli/mainnet/producer.json \
     --no-auto-update \
-    --bootstrap /ip4/<BOOTSTRAP_IP>/tcp/30303
+    --bootstrap /ip4/<BOOTSTRAP_IP>/tcp/30300
 ```
 
 > **Note:** `--no-auto-update` is recommended during early mainnet while the update system uses bootstrap keys. Once maintainer keys are derived on-chain, this flag can be removed.
@@ -158,8 +158,8 @@ ExecStart=%h/repos/doli/target/release/doli-node run \
     --producer \
     --producer-key %h/.doli/mainnet/producer.json \
     --no-auto-update \
-    --p2p-port 30303 \
-    --rpc-port 8545
+    --p2p-port 30300 \
+    --rpc-port 8500
 Restart=always
 RestartSec=10
 LimitNOFILE=65536
@@ -184,17 +184,17 @@ systemctl --user status doli-producer
 ```bash
 # Producer status
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer status
 
 # Balance (should increase with rewards)
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     balance
 
 # Chain info
 ./target/release/doli -w ~/.doli/mainnet/producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     chain
 ```
 
@@ -205,10 +205,10 @@ systemctl --user status doli-producer
 Open only the P2P port:
 
 ```bash
-sudo ufw allow 30303/tcp
+sudo ufw allow 30300/tcp
 ```
 
-DO NOT expose the RPC port (8545) to the internet.
+DO NOT expose the RPC port (8500) to the internet.
 
 ---
 

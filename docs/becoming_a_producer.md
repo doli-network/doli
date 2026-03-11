@@ -111,12 +111,12 @@ NEW_ADDR=$(doli --wallet ~/.doli/keys/my_producer.json info | grep "Pubkey Hash 
 
 # From an existing funded wallet, send to new producer
 doli --wallet ~/.doli/keys/funded_wallet.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     send $NEW_ADDR 110
 
 # Check balance on new wallet
 doli --wallet ~/.doli/keys/my_producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     balance
 
 # You need: bond amount + registration fee + operational buffer
@@ -128,12 +128,12 @@ doli --wallet ~/.doli/keys/my_producer.json \
 ```bash
 # Register with minimum bond (10 DOLI = 1 bond)
 doli --wallet ~/.doli/keys/my_producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer register
 
 # Register with multiple bonds for more slots
 doli --wallet ~/.doli/keys/my_producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer register --bonds 5  # 50 DOLI = 5 bonds
 ```
 
@@ -152,8 +152,8 @@ doli --wallet ~/.doli/keys/my_producer.json \
 doli-node run \
     --producer \
     --producer-key ~/.doli/keys/my_producer.json \
-    --p2p-port 30303 \
-    --rpc-port 8545
+    --p2p-port 30300 \
+    --rpc-port 8500
 ```
 
 For networks with existing nodes, add bootstrap:
@@ -164,7 +164,7 @@ doli-node run \
     --network mainnet \
     --producer \
     --producer-key ~/.doli/keys/my_producer.json \
-    --bootstrap /dns4/seed1.doli.network/tcp/30303
+    --bootstrap /dns4/seed1.doli.network/tcp/30300
 ```
 
 ### 3.6. Verify Production
@@ -174,7 +174,7 @@ After starting the node, verify it's producing:
 ```bash
 # Check producer status
 doli --wallet ~/.doli/keys/my_producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     producer status
 
 # Watch for production in logs
@@ -182,7 +182,7 @@ grep "Producing block" /var/log/doli-node.log
 
 # Check balance is increasing (rewards)
 doli --wallet ~/.doli/keys/my_producer.json \
-    --rpc http://127.0.0.1:8545 \
+    --rpc http://127.0.0.1:8500 \
     wallet balance
 ```
 
@@ -440,7 +440,7 @@ sudo systemctl status doli-node
 ./target/release/doli producer status
 
 # Via RPC
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducer","params":["YOUR_PUBKEY"],"id":1}'
 ```

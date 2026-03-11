@@ -308,9 +308,9 @@ networks:
     @echo "┌─────────┬─────┬───────┬──────────┬──────────┬────────────────┐"
     @echo "│ Network │ ID  │ Slot  │ P2P Port │ RPC Port │ Address Prefix │"
     @echo "├─────────┼─────┼───────┼──────────┼──────────┼────────────────┤"
-    @echo "│ Mainnet │ 1   │ 60s   │ 30303    │ 8545     │ doli           │"
-    @echo "│ Testnet │ 2   │ 10s   │ 40303    │ 18545    │ tdoli          │"
-    @echo "│ Devnet  │ 99  │ 5s    │ 50303    │ 28545    │ ddoli          │"
+    @echo "│ Mainnet │ 1   │ 60s   │ 30300    │ 8500     │ doli           │"
+    @echo "│ Testnet │ 2   │ 10s   │ 40300    │ 18500    │ tdoli          │"
+    @echo "│ Devnet  │ 99  │ 5s    │ 50300    │ 28500    │ ddoli          │"
     @echo "└─────────┴─────┴───────┴──────────┴──────────┴────────────────┘"
 
 # Display architecture diagram
@@ -346,14 +346,14 @@ time-info:
 # Deploy single devnet node (no producer)
 deploy-single:
     @echo "Starting single devnet node..."
-    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-single run --p2p-port 50303 --rpc-port 28545 --no-dht --no-auto-update"
+    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-single run --p2p-port 50300 --rpc-port 28500 --no-dht --no-auto-update"
 
 # Deploy single producer node on devnet
 deploy-producer:
     @echo "Starting single producer node on devnet..."
     @mkdir -p /tmp/doli-producer
     @just nix-run "cargo run -p doli-cli -- -w /tmp/doli-producer/wallet.json new" 2>/dev/null || true
-    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-producer run --producer --producer-key /tmp/doli-producer/wallet.json --p2p-port 50303 --rpc-port 28545 --no-dht --no-auto-update"
+    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-producer run --producer --producer-key /tmp/doli-producer/wallet.json --p2p-port 50300 --rpc-port 28500 --no-dht --no-auto-update"
 
 # Deploy two-node devnet for sync testing
 deploy-two:
@@ -364,9 +364,9 @@ deploy-two:
 deploy-three:
     @echo "Starting 3-node devnet cluster..."
     @mkdir -p /tmp/doli-cluster/{node1,node2,node3}
-    @echo "Node 1: P2P=50303 RPC=28545 (seed)"
-    @echo "Node 2: P2P=50304 RPC=28546"
-    @echo "Node 3: P2P=50305 RPC=28547"
+    @echo "Node 1: P2P=50300 RPC=28500 (seed)"
+    @echo "Node 2: P2P=50301 RPC=28501"
+    @echo "Node 3: P2P=50302 RPC=28502"
     @echo ""
     @echo "Run in separate terminals:"
     @echo "  just deploy-node1"
@@ -375,17 +375,17 @@ deploy-three:
 
 # Deploy node 1 (seed node for cluster)
 deploy-node1:
-    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node1 run --p2p-port 50303 --rpc-port 28545 --no-dht --no-auto-update"
+    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node1 run --p2p-port 50300 --rpc-port 28500 --no-dht --no-auto-update"
 
 # Deploy node 2 (connects to node 1)
 deploy-node2:
     @sleep 2
-    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node2 run --p2p-port 50304 --rpc-port 28546 --bootstrap /ip4/127.0.0.1/tcp/50303 --no-dht --no-auto-update"
+    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node2 run --p2p-port 50301 --rpc-port 28501 --bootstrap /ip4/127.0.0.1/tcp/50300 --no-dht --no-auto-update"
 
 # Deploy node 3 (connects to node 1)
 deploy-node3:
     @sleep 2
-    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node3 run --p2p-port 50305 --rpc-port 28547 --bootstrap /ip4/127.0.0.1/tcp/50303 --no-dht --no-auto-update"
+    @just nix-run "cargo run -p doli-node -- --network devnet --data-dir /tmp/doli-cluster/node3 run --p2p-port 50302 --rpc-port 28502 --bootstrap /ip4/127.0.0.1/tcp/50300 --no-dht --no-auto-update"
 
 # Kill all running doli nodes
 deploy-kill:
@@ -426,11 +426,11 @@ wallet-addr wallet="~/.doli/wallet.json" label="":
     @just nix-run "cargo run -p doli-cli -- -w {{wallet}} address --label '{{label}}'"
 
 # Check balance (uses devnet RPC by default)
-wallet-bal address="" rpc="http://127.0.0.1:28545":
+wallet-bal address="" rpc="http://127.0.0.1:28500":
     @just nix-run "cargo run -p doli-cli -- -r {{rpc}} balance {{address}}"
 
 # Send coins
-wallet-send to amount fee="" rpc="http://127.0.0.1:28545":
+wallet-send to amount fee="" rpc="http://127.0.0.1:28500":
     @just nix-run "cargo run -p doli-cli -- -r {{rpc}} send {{to}} {{amount}} {{fee}}"
 
 # Sign a message
@@ -438,7 +438,7 @@ wallet-sign message wallet="~/.doli/wallet.json":
     @just nix-run "cargo run -p doli-cli -- -w {{wallet}} sign '{{message}}'"
 
 # Show transaction history
-wallet-history limit="10" rpc="http://127.0.0.1:28545":
+wallet-history limit="10" rpc="http://127.0.0.1:28500":
     @just nix-run "cargo run -p doli-cli -- -r {{rpc}} history --limit {{limit}}"
 
 # ============================================================================
@@ -446,38 +446,38 @@ wallet-history limit="10" rpc="http://127.0.0.1:28545":
 # ============================================================================
 
 # Get chain info from node
-rpc-chain rpc="http://127.0.0.1:28545":
+rpc-chain rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq .
 
 # Get network info from node
-rpc-network rpc="http://127.0.0.1:28545":
+rpc-network rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}' | jq .
 
 # Get block by height
-rpc-block height rpc="http://127.0.0.1:28545":
+rpc-block height rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":{{height}}},"id":1}' | jq .
 
 # Get mempool info
-rpc-mempool rpc="http://127.0.0.1:28545":
+rpc-mempool rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":[],"id":1}' | jq .
 
 # Get producer set
-rpc-producers rpc="http://127.0.0.1:28545":
+rpc-producers rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getProducers","params":[],"id":1}' | jq .
 
 # Get balance for address
-rpc-balance address rpc="http://127.0.0.1:28545":
+rpc-balance address rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"{{address}}"},"id":1}' | jq .
 
 # Get UTXOs for address
-rpc-utxos address rpc="http://127.0.0.1:28545":
+rpc-utxos address rpc="http://127.0.0.1:28500":
     @curl -s -X POST {{rpc}} -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"{{address}}"},"id":1}' | jq .
 
 # Ping all cluster nodes
 rpc-ping-all:
-    @echo "Node 1 (28545):" && curl -s -X POST http://127.0.0.1:28545 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
-    @echo "Node 2 (28546):" && curl -s -X POST http://127.0.0.1:28546 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
-    @echo "Node 3 (28547):" && curl -s -X POST http://127.0.0.1:28547 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
+    @echo "Node 1 (28500):" && curl -s -X POST http://127.0.0.1:28500 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
+    @echo "Node 2 (28501):" && curl -s -X POST http://127.0.0.1:28501 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
+    @echo "Node 3 (28502):" && curl -s -X POST http://127.0.0.1:28502 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.best_height // "offline"'
 
 # ============================================================================
 # INTEGRATION TEST RUNNERS
@@ -566,7 +566,7 @@ run-trace:
 profile-vdf:
     @just nix-run "cargo run --release -p doli-node -- --network devnet run --no-dht --no-auto-update" &
     @sleep 5
-    @echo "VDF profiling: Check metrics at http://localhost:9090/metrics"
+    @echo "VDF profiling: Check metrics at http://localhost:9000/metrics"
 
 # ============================================================================
 # CODE QUALITY EXTENDED
@@ -617,7 +617,7 @@ import-blocks path:
 # ============================================================================
 
 # Check producer status
-producer-status pubkey="" rpc="http://127.0.0.1:28545":
+producer-status pubkey="" rpc="http://127.0.0.1:28500":
     @just nix-run "cargo run -p doli-cli -- -r {{rpc}} producer status {{pubkey}}"
 
 # Show producer registration info

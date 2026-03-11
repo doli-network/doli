@@ -1147,9 +1147,9 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 
 | Network | ID | Address Prefix | P2P Port | RPC Port |
 |---------|-----|----------------|----------|----------|
-| Mainnet | 1   | `doli`  | 30303 | 8545 |
-| Testnet | 2   | `tdoli` | 40303 | 18545 |
-| Devnet  | 99  | `ddoli` | 50303 | 28545 |
+| Mainnet | 1   | `doli`  | 30300 | 8500 |
+| Testnet | 2   | `tdoli` | 40300 | 18500 |
+| Devnet  | 99  | `ddoli` | 50300 | 28500 |
 
 ### 8.2 Network Parameters
 
@@ -1157,9 +1157,9 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 |-----------|---------|---------|--------|--------------|
 | Genesis Time | 2026-02-01T00:00:00Z | 2026-01-29T22:00:00Z | Dynamic | Devnet only |
 | Slot Duration | 10s | 10s | 10s | Devnet only |
-| P2P Port | 30303 | 40303 | 50303 | All |
-| RPC Port | 8545 | 18545 | 28545 | All |
-| Metrics Port | 9090 | 19090 | 29090 | All |
+| P2P Port | 30300 | 40300 | 50300 | All |
+| RPC Port | 8500 | 18500 | 28500 | All |
+| Metrics Port | 9000 | 19000 | 29000 | All |
 | Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI | Devnet only |
 | Initial Reward | 1 DOLI | 1 DOLI | 20 DOLI | Devnet only |
 | VDF Iterations | 800,000 | 800,000 | 1 | Devnet only |
@@ -1258,8 +1258,8 @@ Peers with mismatched `network_id` or `genesis_hash` are immediately disconnecte
 
 | Network | Bootstrap Nodes |
 |---------|-----------------|
-| Mainnet | `/dns4/seed1.doli.network/tcp/30303`<br>`/dns4/seed2.doli.network/tcp/30303` |
-| Testnet | `/dns4/testnet-seed1.doli.network/tcp/40303`<br>`/dns4/testnet-seed2.doli.network/tcp/40303` |
+| Mainnet | `/dns4/seed1.doli.network/tcp/30300`<br>`/dns4/seed2.doli.network/tcp/30300` |
+| Testnet | `/dns4/testnet-seed1.doli.network/tcp/40300`<br>`/dns4/testnet-seed2.doli.network/tcp/40300` |
 | Devnet  | None (local development) |
 
 ---

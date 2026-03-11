@@ -59,7 +59,7 @@ Complete technical documentation for launching DOLI mainnet.
 ### Infrastructure
 
 - [ ] DNS records `seed1.doli.network` and `seed2.doli.network` point to seed server IP
-- [ ] Firewall allows port 30303 (P2P) and 8545 (RPC)
+- [ ] Firewall allows port 30300 (P2P) and 8500 (RPC)
 - [ ] Producer servers ready with wallet files
 - [ ] Binary deployed to all servers
 
@@ -216,9 +216,9 @@ immediately, preventing genesis-time-hijack attacks.
 
 | Port | Purpose |
 |------|---------|
-| 30303 | P2P (libp2p) |
-| 8545 | JSON-RPC |
-| 9090 | Metrics (Prometheus) |
+| 30300 | P2P (libp2p) |
+| 8500 | JSON-RPC |
+| 9000 | Metrics (Prometheus) |
 
 ---
 
@@ -234,7 +234,7 @@ seed2.doli.network    A       72.60.228.233
 ### Seed Server Requirements
 
 - Static IP address
-- Ports 30303 and 8545 open
+- Ports 30300 and 8500 open
 - 99.9% uptime SLA recommended
 - Located in geographically central location for low latency
 
@@ -288,7 +288,7 @@ dig seed2.doli.network
 3. Verify firewall rules:
 ```bash
 sudo ufw status
-# Should show 30303/tcp ALLOW
+# Should show 30300/tcp ALLOW
 ```
 
 4. Verify chainspec is present and valid:
@@ -324,12 +324,12 @@ doli-node --network mainnet run \
 
 ```bash
 # 1. Check chain is producing blocks
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 # Expected: height > 0, network = "mainnet"
 
 # 2. Verify producers registered
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
 # Expected: producers self-registered during genesis phase
 
@@ -344,12 +344,12 @@ done
 
 ```bash
 # Check height (should be ~360 after 1 hour)
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
     | jq '.result.bestHeight'
 
 # Verify epoch reward distribution by checking block 361 for EpochReward transactions
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":361},"id":1}' \
     | jq '.result.transactions[] | select(.type == "EpochReward")'
 # Expected: EpochReward transactions for each producer who produced blocks
@@ -388,7 +388,7 @@ grep -i "Loaded chain state\|Resuming" node3/node.log | head -5
 
 **Check 1**: Are producers registered?
 ```bash
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{},"id":1}'
 ```
 If empty: Genesis producers not initialized. Check `main.rs` initialization code.
@@ -396,7 +396,7 @@ If empty: Genesis producers not initialized. Check `main.rs` initialization code
 **Check 2**: Do pubkeys match?
 ```bash
 # From RPC
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{},"id":1}' | jq '.result[].publicKey'
 
 # From wallet
@@ -427,7 +427,7 @@ let context = RpcContext::new(...)
 
 ```bash
 # Check for EpochReward transactions in recent blocks
-curl -s -H "Content-Type: application/json" http://127.0.0.1:8545 \
+curl -s -H "Content-Type: application/json" http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getBlock","params":{"height":361},"id":1}' | jq '.result.transactions'
 ```
 

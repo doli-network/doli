@@ -53,7 +53,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub slot_duration_override: Option<u64>,
 
-    /// External address to advertise to peers (e.g., /ip4/72.60.228.233/tcp/30303)
+    /// External address to advertise to peers (e.g., /ip4/72.60.228.233/tcp/30300)
     /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
     #[serde(skip)]
     pub external_address: Option<String>,

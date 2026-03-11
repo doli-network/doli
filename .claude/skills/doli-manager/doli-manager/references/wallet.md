@@ -53,8 +53,8 @@ doli balance --address doli1qpzry9x8gf2tvdw0s3jn54khce6mua7l...
 doli balance --address f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf64200311ca8957
 
 # Against different node
-doli -r http://127.0.0.1:18545 balance   # testnet
-doli -r http://127.0.0.1:28545 balance   # devnet
+doli -r http://127.0.0.1:18500 balance   # testnet
+doli -r http://127.0.0.1:28500 balance   # devnet
 ```
 
 Balance types:
@@ -75,7 +75,7 @@ doli send f66686eb8b98... 50
 doli send doli1recipient... 10 --fee 0.001
 
 # Via specific node
-doli -r http://127.0.0.1:28545 send doli1... 10
+doli -r http://127.0.0.1:28500 send doli1... 10
 ```
 
 The CLI automatically:
@@ -119,8 +119,8 @@ doli import /path/to/backup.json
 All commands accept `-r` / `--rpc`:
 
 ```bash
-doli -r http://192.168.1.100:8545 balance
-doli -r http://seed1.doli.network:8545 chain
+doli -r http://192.168.1.100:8500 balance
+doli -r http://seed1.doli.network:8500 chain
 ```
 
 ## Pubkey Hash Derivation

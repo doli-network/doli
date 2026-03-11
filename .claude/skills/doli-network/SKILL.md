@@ -31,7 +31,7 @@ Seeds:    suffix 00 → P2P 30300/40300, RPC 8500/18500, Metrics 9000/19000
 |---------|----------|-------------------|
 | Mainnet | 8500 (seed) | 8501-8506 (producers) |
 | Testnet | 18500 (seed) | 18501-18506 (producers) |
-| Devnet | 28545 | — |
+| Devnet | 28500 | — |
 
 ## Essential RPC Commands
 

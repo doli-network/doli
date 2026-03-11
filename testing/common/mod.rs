@@ -29,8 +29,8 @@ impl TestNodeConfig {
     pub fn new(temp_dir: &TempDir, port_offset: u16) -> Self {
         Self {
             data_dir: temp_dir.path().join(format!("node_{}", port_offset)),
-            listen_port: 30303 + port_offset,
-            rpc_port: 8545 + port_offset,
+            listen_port: 30300 + port_offset,
+            rpc_port: 8500 + port_offset,
             bootstrap_nodes: Vec::new(),
             producer_key: None,
         }

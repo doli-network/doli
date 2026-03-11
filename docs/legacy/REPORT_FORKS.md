@@ -109,7 +109,7 @@ The RPC context's `peer_count` function is never configured with an actual imple
 
 ### Finding 2: TCP Connections Exist But Gossip Mesh Fragmented
 
-- `lsof -i :50303` shows 38 ESTABLISHED TCP connections to bootstrap node
+- `lsof -i :50300` shows 38 ESTABLISHED TCP connections to bootstrap node
 - All nodes (including forked) have TCP connections to bootstrap
 - But forked nodes are not receiving blocks via gossip
 
@@ -713,7 +713,7 @@ Added 5 new producers (producer_5 through producer_9) to a running 5-node devnet
 
 ```
 === All node heights ===
-RPC 28545: Height 34   ❌ Node 0 STUCK (bootstrap node!)
+RPC 28500: Height 34   ❌ Node 0 STUCK (bootstrap node!)
 RPC 28546: Height 58   ✓
 RPC 28547: Height 58   ✓
 RPC 28548: Height 58   ✓
@@ -800,22 +800,22 @@ Reinitialized devnet with `doli-node devnet init --nodes 10` to start all 10 pro
 
 ```bash
 # Check chain heights across nodes
-for port in 28545 28564 28565; do
+for port in 28500 28564 28565; do
   curl -s -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq .result
 done
 
 # Check peer counts (always returns 0 due to bug)
-curl -s -X POST http://127.0.0.1:28545 \
+curl -s -X POST http://127.0.0.1:28500 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' | jq .result
 
 # Check TCP connections to bootstrap
-lsof -i :50303 | grep ESTABLISHED | wc -l
+lsof -i :50300 | grep ESTABLISHED | wc -l
 
 # Compare block hashes at specific height
-for port in 28545 28564 28565; do
+for port in 28500 28564 28565; do
   curl -s -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBlockByHeight","params":{"height":700},"id":1}' | \
@@ -1530,7 +1530,7 @@ doli-node --network devnet --data-dir ~/.doli/devnet/data/node5 run \
     --producer --producer-key ~/.doli/devnet/keys/producer_5.json \
     --chainspec ~/.doli/devnet/chainspec.json \
     --p2p-port 50308 --rpc-port 28550 --metrics-port 9095 \
-    --bootstrap '/ip4/127.0.0.1/tcp/50303' --no-dht --yes
+    --bootstrap '/ip4/127.0.0.1/tcp/50300' --no-dht --yes
 ```
 
 Producer registered successfully, node synced to correct height, passed all production gate checks (`AUTHORIZED`), but **never produced a single block**. Balance stayed flat (no rewards).

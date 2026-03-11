@@ -169,17 +169,17 @@ The round-robin selection alternated correctly between producers based on `slot 
 
 ```
 12:08:30.231  Node 1 listening on /ip4/0.0.0.0/tcp/40301
-12:08:31.472  Node 1 connects to external peer (72.60.228.233:40303)
+12:08:31.472  Node 1 connects to external peer (72.60.228.233:40300)
 12:08:54.883  Node 2 listening on /ip4/0.0.0.0/tcp/40302
 12:08:54.884  Node 2 connects to Node 1 (bootstrap)
 12:08:54.884  Producer discovery: Node 1 finds Node 2
 12:08:54.884  Producer discovery: Node 2 finds Node 1
-12:08:55.517  Node 2 connects to external peer (72.60.228.233:40303)
+12:08:55.517  Node 2 connects to external peer (72.60.228.233:40300)
 ```
 
 ### External Peer
 
-Both nodes connected to an external peer at `72.60.228.233:40303`. This peer may be contributing to the fork issues (see Section 5).
+Both nodes connected to an external peer at `72.60.228.233:40300`. This peer may be contributing to the fork issues (see Section 5).
 
 ---
 
@@ -223,7 +223,7 @@ INFO doli_node::node: Chain reset to genesis (height 0). Will re-sync from peers
 
 #### Hypothesis 1: External Peer Chain Divergence (Most Likely)
 
-The external peer at `72.60.228.233:40303` may be:
+The external peer at `72.60.228.233:40300` may be:
 - Running a different chain (different genesis or fork)
 - Broadcasting blocks that don't connect to the local chain
 - Operating with different consensus parameters

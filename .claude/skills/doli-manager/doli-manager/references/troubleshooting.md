@@ -18,18 +18,18 @@
 doli chain
 
 # Remote — omegacortex nodes (N1/N2/N6 + archiver)
-ssh ilozada@omegacortex.ai "for p in 8545 8546 8547 8548; do \
+ssh ilozada@omegacortex.ai "for p in 8501 8502 8506 8500; do \
   echo \"port \$p: \$(curl -s -X POST http://127.0.0.1:\$p \
   -H 'Content-Type: application/json' \
   -d '{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}' \
   | jq -c '.result | {h: .bestHeight, s: .bestSlot, hash: .bestHash[0:16]}')\"; done"
-# Port mapping: 8545=N1, 8546=N2, 8547=N6, 8548=Archiver
+# Port mapping: 8501=N1, 8502=N2, 8506=N6, 8500=Archiver
 ```
 
 ### Network Info
 
 ```bash
-curl -s -X POST http://127.0.0.1:8545 \
+curl -s -X POST http://127.0.0.1:8500 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' | jq .
 ```
@@ -61,8 +61,8 @@ ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'   # N5
 
 ### No Peers Connecting
 
-1. Check firewall: P2P port (30303) must be open
-2. Check bootstrap: `--bootstrap /ip4/72.60.228.233/tcp/30303`
+1. Check firewall: P2P port (30300) must be open
+2. Check bootstrap: `--bootstrap /ip4/72.60.228.233/tcp/30300`
 3. Verify DNS seeds resolve: `dig seed1.doli.network`
 4. Check if behind NAT — may need relay mode
 
@@ -79,7 +79,7 @@ ssh -p 50790 ilozada@72.60.70.166 'sudo pgrep -la doli-node'   # N5
 
 ```bash
 # Compare all nodes (run twice 15s apart)
-for p in 8545 8546 8547; do
+for p in 8501 8502 8506; do
   curl -s -X POST http://127.0.0.1:$p \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
