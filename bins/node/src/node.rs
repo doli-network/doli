@@ -5839,13 +5839,30 @@ impl Node {
             }
         }
 
-        // Add transactions from mempool
+        // Add transactions from mempool (validate covenant conditions before inclusion)
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
         };
-        for tx in &mempool_txs {
-            builder.add_transaction(tx.clone());
+        {
+            let utxo = self.utxo_set.read().await;
+            let utxo_ctx = validation::ValidationContext::new(
+                ConsensusParams::for_network(self.config.network),
+                self.config.network,
+                0,
+                height,
+            );
+            for tx in &mempool_txs {
+                if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
+                    warn!(
+                        "Skipping mempool tx {} — UTXO validation failed: {}",
+                        tx.hash(),
+                        e
+                    );
+                    continue;
+                }
+                builder.add_transaction(tx.clone());
+            }
         }
 
         // Recapture timestamp just before building the block.

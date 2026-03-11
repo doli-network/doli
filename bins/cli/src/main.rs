@@ -1283,8 +1283,11 @@ fn parse_witness(s: &str, signing_hash: &crypto::Hash) -> Result<Vec<u8>> {
                 }
             }
         }
+        "none" | "empty" => {
+            // No witness data needed (e.g., for standalone timelock conditions)
+        }
         _ => anyhow::bail!(
-            "Unknown witness type: '{}'. Supported: preimage, sign, branch",
+            "Unknown witness type: '{}'. Supported: none, preimage, sign, branch",
             name
         ),
     }
