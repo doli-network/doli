@@ -1297,4 +1297,393 @@ mod tests {
         // version(1) + Or(1) + And(1) + Hashlock(1+32) + Timelock(1+8) + TimelockExpiry(1+8) = 54
         assert!(encoded.len() < 64);
     }
+
+    // ====================================================================
+    // Integration tests with real crypto signatures
+    // ====================================================================
+
+    fn keypair_pubkey_hash(kp: &crypto::KeyPair) -> Hash {
+        hash_with_domain(ADDRESS_DOMAIN, kp.public_key().as_bytes())
+    }
+
+    #[test]
+    fn integration_signature_condition() {
+        let kp = crypto::KeyPair::generate();
+        let pkh = keypair_pubkey_hash(&kp);
+
+        let cond = Condition::signature(pkh);
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(cond, decoded);
+
+        // Build a witness with a real signature
+        let tx_hash = Hash::from_bytes([0x42; 32]);
+        let sig = crypto::signature::sign_hash(&tx_hash, kp.private_key());
+
+        let witness = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp.public_key(),
+                signature: sig,
+            }],
+            ..Default::default()
+        };
+
+        let ctx = EvalContext {
+            current_height: 100,
+            signing_hash: &tx_hash,
+        };
+
+        let mut branch_idx = 0;
+        assert!(evaluate(&cond, &witness, &ctx, &mut branch_idx));
+
+        // Wrong signing hash should fail
+        let wrong_hash = Hash::from_bytes([0x99; 32]);
+        let ctx_wrong = EvalContext {
+            current_height: 100,
+            signing_hash: &wrong_hash,
+        };
+        let mut branch_idx = 0;
+        assert!(!evaluate(&cond, &witness, &ctx_wrong, &mut branch_idx));
+    }
+
+    #[test]
+    fn integration_multisig_2_of_3() {
+        let kp1 = crypto::KeyPair::generate();
+        let kp2 = crypto::KeyPair::generate();
+        let kp3 = crypto::KeyPair::generate();
+
+        let pkh1 = keypair_pubkey_hash(&kp1);
+        let pkh2 = keypair_pubkey_hash(&kp2);
+        let pkh3 = keypair_pubkey_hash(&kp3);
+
+        let cond = Condition::multisig(2, vec![pkh1, pkh2, pkh3]);
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(cond, decoded);
+
+        let tx_hash = Hash::from_bytes([0xAB; 32]);
+        let sig1 = crypto::signature::sign_hash(&tx_hash, kp1.private_key());
+        let sig3 = crypto::signature::sign_hash(&tx_hash, kp3.private_key());
+
+        // 2-of-3 with sigs from kp1 and kp3
+        let witness = Witness {
+            signatures: vec![
+                WitnessSignature {
+                    pubkey: *kp1.public_key(),
+                    signature: sig1,
+                },
+                WitnessSignature {
+                    pubkey: *kp3.public_key(),
+                    signature: sig3,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let ctx = EvalContext {
+            current_height: 100,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &witness, &ctx, &mut idx));
+
+        // Only 1-of-3 should fail
+        let witness_1 = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp2.public_key(),
+                signature: crypto::signature::sign_hash(&tx_hash, kp2.private_key()),
+            }],
+            ..Default::default()
+        };
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &witness_1, &ctx, &mut idx));
+    }
+
+    #[test]
+    fn integration_hashlock_preimage() {
+        let secret = [0x77u8; 32];
+        let hash = hash_with_domain(HASHLOCK_DOMAIN, &secret);
+
+        let cond = Condition::hashlock(hash);
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(cond, decoded);
+
+        let tx_hash = Hash::from_bytes([0x00; 32]);
+        let ctx = EvalContext {
+            current_height: 1,
+            signing_hash: &tx_hash,
+        };
+
+        // Correct preimage
+        let witness = Witness {
+            preimage: Some(secret),
+            ..Default::default()
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &witness, &ctx, &mut idx));
+
+        // Wrong preimage
+        let bad_witness = Witness {
+            preimage: Some([0x88u8; 32]),
+            ..Default::default()
+        };
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &bad_witness, &ctx, &mut idx));
+
+        // No preimage
+        let empty_witness = Witness::default();
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &empty_witness, &ctx, &mut idx));
+    }
+
+    #[test]
+    fn integration_htlc_claim_and_refund() {
+        let secret = [0xCC; 32];
+        let hash = hash_with_domain(HASHLOCK_DOMAIN, &secret);
+
+        // Standard HTLC helper: Or(And(Hashlock, Timelock(100)), TimelockExpiry(200))
+        // Left branch: receiver claims with preimage after lock_height
+        // Right branch: refund window (anyone before expiry_height)
+        let cond = Condition::htlc(hash, 100, 200);
+        let encoded = cond.encode().unwrap();
+        assert!(encoded.len() <= MAX_WITNESS_SIZE);
+
+        let tx_hash = Hash::from_bytes([0xDD; 32]);
+
+        // Claim path: preimage + height >= 100, branch(left)
+        let claim_witness = Witness {
+            preimage: Some(secret),
+            or_branches: vec![false], // left branch (hashlock path)
+            ..Default::default()
+        };
+        let ctx_after_lock = EvalContext {
+            current_height: 150,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &claim_witness, &ctx_after_lock, &mut idx));
+
+        // Claim path fails before timelock
+        let ctx_before_lock = EvalContext {
+            current_height: 50,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &claim_witness, &ctx_before_lock, &mut idx));
+
+        // Refund path: right branch, TimelockExpiry(200) means height <= 200
+        let refund_witness = Witness {
+            or_branches: vec![true], // right branch
+            ..Default::default()
+        };
+        let ctx_within_window = EvalContext {
+            current_height: 150,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(
+            &cond,
+            &refund_witness,
+            &ctx_within_window,
+            &mut idx
+        ));
+
+        // Refund path fails after expiry
+        let ctx_after_expiry = EvalContext {
+            current_height: 250,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(!evaluate(
+            &cond,
+            &refund_witness,
+            &ctx_after_expiry,
+            &mut idx
+        ));
+
+        // Full HTLC with sender signature for refund:
+        // Or(And(Hashlock, Timelock(100)), And(Signature(sender), Timelock(200)))
+        let kp_sender = crypto::KeyPair::generate();
+        let sender_pkh = keypair_pubkey_hash(&kp_sender);
+        let cond_with_sig_refund = Condition::Or(
+            Box::new(Condition::And(
+                Box::new(Condition::Hashlock(hash)),
+                Box::new(Condition::Timelock(100)),
+            )),
+            Box::new(Condition::And(
+                Box::new(Condition::Signature(sender_pkh)),
+                Box::new(Condition::Timelock(200)),
+            )),
+        );
+
+        let sig = crypto::signature::sign_hash(&tx_hash, kp_sender.private_key());
+        let sig_refund_witness = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp_sender.public_key(),
+                signature: sig,
+            }],
+            or_branches: vec![true], // right branch (refund)
+            ..Default::default()
+        };
+        let ctx_after_refund_lock = EvalContext {
+            current_height: 250,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(
+            &cond_with_sig_refund,
+            &sig_refund_witness,
+            &ctx_after_refund_lock,
+            &mut idx
+        ));
+
+        // Sender refund fails before refund timelock
+        let ctx_too_early = EvalContext {
+            current_height: 150,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(!evaluate(
+            &cond_with_sig_refund,
+            &sig_refund_witness,
+            &ctx_too_early,
+            &mut idx
+        ));
+    }
+
+    #[test]
+    fn integration_vesting_schedule() {
+        let kp = crypto::KeyPair::generate();
+        let pkh = keypair_pubkey_hash(&kp);
+
+        // Vesting: And(Signature(owner), Timelock(1000))
+        let cond = Condition::vesting(pkh, 1000);
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(cond, decoded);
+
+        let tx_hash = Hash::from_bytes([0xEE; 32]);
+        let sig = crypto::signature::sign_hash(&tx_hash, kp.private_key());
+
+        let witness = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp.public_key(),
+                signature: sig,
+            }],
+            ..Default::default()
+        };
+
+        // Before vesting period
+        let ctx_early = EvalContext {
+            current_height: 500,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &witness, &ctx_early, &mut idx));
+
+        // After vesting period
+        let ctx_vested = EvalContext {
+            current_height: 1000,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &witness, &ctx_vested, &mut idx));
+    }
+
+    #[test]
+    fn integration_witness_encode_decode_roundtrip() {
+        let kp1 = crypto::KeyPair::generate();
+        let kp2 = crypto::KeyPair::generate();
+        let tx_hash = Hash::from_bytes([0xFF; 32]);
+
+        let sig1 = crypto::signature::sign_hash(&tx_hash, kp1.private_key());
+        let sig2 = crypto::signature::sign_hash(&tx_hash, kp2.private_key());
+
+        let witness = Witness {
+            signatures: vec![
+                WitnessSignature {
+                    pubkey: *kp1.public_key(),
+                    signature: sig1,
+                },
+                WitnessSignature {
+                    pubkey: *kp2.public_key(),
+                    signature: sig2,
+                },
+            ],
+            preimage: Some([0xAA; 32]),
+            or_branches: vec![true, false, true],
+        };
+
+        let encoded = witness.encode();
+        let decoded = Witness::decode(&encoded).unwrap();
+
+        assert_eq!(witness.signatures.len(), decoded.signatures.len());
+        assert_eq!(witness.preimage, decoded.preimage);
+        assert_eq!(witness.or_branches, decoded.or_branches);
+
+        // Verify signatures still valid after roundtrip
+        for (orig, dec) in witness.signatures.iter().zip(decoded.signatures.iter()) {
+            assert_eq!(orig.pubkey, dec.pubkey);
+            assert_eq!(orig.signature, dec.signature);
+        }
+    }
+
+    #[test]
+    fn integration_threshold_2_of_3_mixed() {
+        // Threshold(2, [Signature(A), Hashlock(H), Timelock(50)])
+        let kp = crypto::KeyPair::generate();
+        let pkh = keypair_pubkey_hash(&kp);
+        let secret = [0x55; 32];
+        let hash = hash_with_domain(HASHLOCK_DOMAIN, &secret);
+
+        let cond = Condition::Threshold {
+            n: 2,
+            conditions: vec![
+                Condition::Signature(pkh),
+                Condition::Hashlock(hash),
+                Condition::Timelock(50),
+            ],
+        };
+        assert!(cond.validate().is_ok());
+
+        let tx_hash = Hash::from_bytes([0x11; 32]);
+        let sig = crypto::signature::sign_hash(&tx_hash, kp.private_key());
+
+        // Satisfy signature + hashlock (2 of 3)
+        let witness = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp.public_key(),
+                signature: sig.clone(),
+            }],
+            preimage: Some(secret),
+            ..Default::default()
+        };
+        let ctx = EvalContext {
+            current_height: 10, // below timelock
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &witness, &ctx, &mut idx));
+
+        // Satisfy signature + timelock (2 of 3)
+        let witness_no_preimage = Witness {
+            signatures: vec![WitnessSignature {
+                pubkey: *kp.public_key(),
+                signature: sig,
+            }],
+            ..Default::default()
+        };
+        let ctx_high = EvalContext {
+            current_height: 100,
+            signing_hash: &tx_hash,
+        };
+        let mut idx = 0;
+        assert!(evaluate(&cond, &witness_no_preimage, &ctx_high, &mut idx));
+
+        // Only timelock satisfied (1 of 3) — fail
+        let witness_empty = Witness::default();
+        let mut idx = 0;
+        assert!(!evaluate(&cond, &witness_empty, &ctx_high, &mut idx));
+    }
 }
