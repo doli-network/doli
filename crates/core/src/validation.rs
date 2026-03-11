@@ -1495,6 +1495,87 @@ fn validate_outputs(
                     )));
                 }
             }
+            OutputType::NFT => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.nft_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has invalid or missing NFT metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::FungibleAsset => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.fungible_asset_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has invalid or missing asset metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::BridgeHTLC => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.bridge_htlc_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has invalid or missing bridge metadata",
+                        i
+                    )));
+                }
+            }
         }
 
         // Pubkey hash must not be zero (except for burn address)

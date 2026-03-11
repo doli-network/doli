@@ -435,6 +435,16 @@ impl RpcClient {
         self.call("getTransaction", Params { hash }).await
     }
 
+    /// Get transaction by hash as raw JSON (includes outputs with NFT metadata)
+    pub async fn get_transaction_json(&self, hash: &str) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            hash: &'a str,
+        }
+
+        self.call("getTransaction", Params { hash }).await
+    }
+
     /// Get transaction history for an address
     pub async fn get_history(&self, address: &str, limit: usize) -> Result<Vec<HistoryEntry>> {
         #[derive(Serialize)]
