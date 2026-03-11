@@ -45,7 +45,7 @@ Four fixes were implemented based on v1 test findings:
 | 6 | 6 | b3231652... | 28551 |
 | 7 | 1 | bd28dbd6... | 28546 |
 | 8 | 7 | ecc0c1f2... | 28552 |
-| 9 | 0 | fed24b13... | 28545 |
+| 9 | 0 | fed24b13... | 28500 |
 
 **Selection formula:** Primary = `slot % total_bonds`, Fallback rank R = `(slot + offset_R) % total_bonds`
 

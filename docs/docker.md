@@ -15,8 +15,8 @@ docker pull ghcr.io/e-weil/doli-node:latest
 # Run a mainnet node
 docker run -d \
   --name doli-node \
-  -p 30303:30303 \
-  -p 8545:8545 \
+  -p 30300:30300 \
+  -p 8500:8500 \
   -v doli-data:/data \
   ghcr.io/e-weil/doli-node:latest
 ```
@@ -34,8 +34,8 @@ docker build -t doli-node -f docker/Dockerfile .
 # Run a mainnet node
 docker run -d \
   --name doli-node \
-  -p 30303:30303 \
-  -p 8545:8545 \
+  -p 30300:30300 \
+  -p 8500:8500 \
   -v doli-data:/data \
   doli-node
 ```
@@ -90,7 +90,7 @@ Configure the node using environment variables:
 | `DOLI_LOG_LEVEL` | Log level: `error`, `warn`, `info`, `debug`, `trace` | `info` (`debug` for devnet) |
 | `DOLI_P2P_PORT` | Override P2P listen port | Network default |
 | `DOLI_RPC_PORT` | Override RPC listen port | Network default |
-| `DOLI_METRICS_PORT` | Metrics server port | `9090` |
+| `DOLI_METRICS_PORT` | Metrics server port | `9000` |
 | `DOLI_BOOTSTRAP` | Bootstrap node multiaddr | Network defaults |
 | `DOLI_PRODUCER_KEY` | Producer key (hex) - enables producer mode | None |
 | `DOLI_PRODUCER_KEY_FILE` | Path to producer key file - enables producer mode | None |
@@ -105,9 +105,9 @@ Setting `DOLI_PRODUCER_KEY_FILE` takes precedence if both are set.
 
 | Network | P2P Port | RPC Port | Metrics |
 |---------|----------|----------|---------|
-| Mainnet | 30303 | 8545 | 9090 |
-| Testnet | 40303 | 18545 | 9090 |
-| Devnet | 50303 | 28545 | 9090 |
+| Mainnet | 30300 | 8500 | 9000 |
+| Testnet | 40300 | 18500 | 9000 |
+| Devnet | 50300 | 28500 | 9000 |
 
 ### Example: Custom Configuration
 
@@ -117,8 +117,8 @@ docker run -d \
   -e DOLI_NETWORK=testnet \
   -e DOLI_LOG_LEVEL=debug \
   -e DOLI_EXTERNAL_IP=203.0.113.50 \
-  -p 40303:40303 \
-  -p 18545:18545 \
+  -p 40300:40300 \
+  -p 18500:18500 \
   -v doli-testnet-data:/data \
   doli-node
 ```
@@ -188,8 +188,8 @@ docker run -d \
   -e DOLI_PRODUCER_KEY_FILE=/keys/producer.key \
   -v $(pwd)/keys:/keys:ro \
   -v doli-data:/data \
-  -p 30303:30303 \
-  -p 8545:8545 \
+  -p 30300:30300 \
+  -p 8500:8500 \
   doli-node
 ```
 
@@ -201,8 +201,8 @@ docker run -d \
   --name doli-producer \
   -e DOLI_PRODUCER_KEY=your_private_key_hex \
   -v doli-data:/data \
-  -p 30303:30303 \
-  -p 8545:8545 \
+  -p 30300:30300 \
+  -p 8500:8500 \
   doli-node
 ```
 
@@ -230,23 +230,23 @@ For full network participation, expose the P2P port:
 
 ```bash
 # Required for inbound connections
--p 30303:30303
+-p 30300:30300
 
 # Optional: RPC (only if needed externally)
--p 8545:8545
+-p 8500:8500
 
 # Optional: Metrics
--p 9090:9090
+-p 9000:9000
 ```
 
 ### Firewall Configuration
 
 ```bash
 # UFW (Ubuntu)
-sudo ufw allow 30303/tcp
+sudo ufw allow 30300/tcp
 
 # firewalld (RHEL/CentOS)
-sudo firewall-cmd --permanent --add-port=30303/tcp
+sudo firewall-cmd --permanent --add-port=30300/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -257,7 +257,7 @@ If running behind NAT, set your external IP:
 ```bash
 docker run -d \
   -e DOLI_EXTERNAL_IP=your.public.ip.address \
-  -p 30303:30303 \
+  -p 30300:30300 \
   doli-node
 ```
 
@@ -290,19 +290,19 @@ docker logs --tail 100 doli-node
 
 ```bash
 # Get chain info
-curl -s http://localhost:8545 \
+curl -s http://localhost:8500 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}'
 
 # Get peer count
-curl -s http://localhost:8545 \
+curl -s http://localhost:8500 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getPeerCount","params":[],"id":1}'
 ```
 
 ### Prometheus Metrics
 
-Metrics are exposed at `http://localhost:9090/metrics`. Start with monitoring:
+Metrics are exposed at `http://localhost:9000/metrics`. Start with monitoring:
 
 ```bash
 docker compose -f docker/docker-compose.yml --profile monitoring up -d
@@ -329,13 +329,13 @@ docker logs doli-node
 
 ```bash
 # Check peer connections
-curl -s localhost:8545 -d '{"jsonrpc":"2.0","method":"getPeerCount","params":[],"id":1}'
+curl -s localhost:8500 -d '{"jsonrpc":"2.0","method":"getPeerCount","params":[],"id":1}'
 
 # Verify P2P port is accessible
-nc -zv your-ip 30303
+nc -zv your-ip 30300
 
 # Check firewall rules
-sudo iptables -L -n | grep 30303
+sudo iptables -L -n | grep 30300
 ```
 
 ### High Memory Usage
@@ -399,7 +399,7 @@ docker run -d \
 
 ## Security Best Practices
 
-1. **Don't expose RPC publicly** - Only expose port 8545 if needed, and use a reverse proxy with authentication
+1. **Don't expose RPC publicly** - Only expose port 8500 if needed, and use a reverse proxy with authentication
 2. **Use key files** - Never pass keys via environment variables in production
 3. **Run as non-root** - The container runs as user `doli` (UID 1000) by default
 4. **Keep updated** - Regularly pull the latest image for security fixes

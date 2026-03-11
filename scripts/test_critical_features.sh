@@ -161,7 +161,7 @@ sleep 10
 PRODUCER3_KEY="$TEST_DIR/keys/producer3.json"
 $NODE_BIN --data-dir "$TEST_DIR/data/node3" \
     run --network devnet \
-    --p2p-port 50303 \
+    --p2p-port 50300 \
     --rpc-port 28503 \
     --metrics-port 9303 \
     --chainspec "$TEST_DIR/chainspec.json" \
@@ -385,7 +385,7 @@ fi
 # Restart Node 3 for remaining tests
 $NODE_BIN --data-dir "$TEST_DIR/data/node3" \
     run --network devnet \
-    --p2p-port 50303 \
+    --p2p-port 50300 \
     --rpc-port 28503 \
     --metrics-port 9303 \
     --chainspec "$TEST_DIR/chainspec.json" \

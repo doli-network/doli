@@ -74,8 +74,8 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Block Reward | **1 tDOLI** |
 | Epoch Length | 360 blocks (1 hour) |
 | Genesis Producers | 6 (NT1-NT6), NT7-NT12 register on-chain |
-| P2P Port | 40303 |
-| RPC Port | 18545 |
+| P2P Port | 40300 |
+| RPC Port | 18500 |
 | Bootstrap | `bootstrap1.testnet.doli.network:40300` |
 
 ---
@@ -118,7 +118,7 @@ doli -n testnet -w <wallet> producer list               # List all producers
 
 Or use explicit RPC:
 ```bash
-doli -n testnet -r http://198.51.100.1:18545 -w <wallet> balance
+doli -n testnet -r http://198.51.100.1:18500 -w <wallet> balance
 ```
 
 ---
@@ -129,7 +129,7 @@ doli -n testnet -r http://198.51.100.1:18545 -w <wallet> balance
 
 - Ubuntu 22.04+ or similar Linux
 - 2+ CPU cores, 4 GB RAM, 50 GB SSD
-- Port 40303 open
+- Port 40300 open
 
 ### 2. Install & Build
 
@@ -147,7 +147,7 @@ nix develop --command cargo build --release
 ### 3. Open Firewall
 
 ```bash
-sudo ufw allow 40303/tcp comment 'DOLI Testnet P2P'
+sudo ufw allow 40300/tcp comment 'DOLI Testnet P2P'
 sudo ufw enable
 ```
 
@@ -233,7 +233,7 @@ See [genesis.md](./genesis.md) for complete network launch procedures.
 
 ### Node won't sync
 ```bash
-nc -zv testnet.doli.network 40303  # Test connectivity
+nc -zv testnet.doli.network 40300  # Test connectivity
 sudo ufw status                     # Check firewall
 ```
 

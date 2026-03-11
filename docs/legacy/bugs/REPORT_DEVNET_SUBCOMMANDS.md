@@ -52,9 +52,9 @@ doli-node devnet clean [--keep-keys]  # Remove devnet data
 
 | Node | P2P Port | RPC Port | Metrics Port |
 |------|----------|----------|--------------|
-| 0    | 50303    | 28545    | 9090         |
+| 0    | 50300    | 28500    | 9000         |
 | 1    | 50304    | 28546    | 9091         |
-| N    | 50303+N  | 28545+N  | 9090+N       |
+| N    | 50300+N  | 28500+N  | 9000+N       |
 
 ## Fixed: Node Startup Failure
 

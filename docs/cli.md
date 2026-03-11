@@ -58,7 +58,7 @@ All commands support these options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-w, --wallet <PATH>` | Wallet file path (**required** — see note below) | `~/.doli/wallet.json` |
-| `-r, --rpc <URL>` | Node RPC endpoint | `http://127.0.0.1:8545` |
+| `-r, --rpc <URL>` | Node RPC endpoint | `http://127.0.0.1:8500` |
 
 > **IMPORTANT:** The `-w` flag must be passed **before** the subcommand (e.g., `doli -w wallet.json balance`, NOT `doli balance -w wallet.json`). If `~/.doli/wallet.json` does not exist (common on servers), you **must** specify `-w` explicitly or the CLI will fail silently with exit code 1.
 
@@ -66,9 +66,9 @@ All commands support these options:
 
 | Network | RPC Port | Example |
 |---------|----------|---------|
-| Mainnet | 8545 | `--rpc http://127.0.0.1:8545` |
-| Testnet | 18545 | `--rpc http://127.0.0.1:18545` |
-| Devnet | 28545 | `--rpc http://127.0.0.1:28545` |
+| Mainnet | 8500 | `--rpc http://127.0.0.1:8500` |
+| Testnet | 18500 | `--rpc http://127.0.0.1:18500` |
+| Devnet | 28500 | `--rpc http://127.0.0.1:28500` |
 
 ---
 
@@ -1082,7 +1082,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DOLI_WALLET` | Default wallet path | `~/.doli/wallet.json` |
-| `DOLI_RPC` | Default RPC endpoint | `http://127.0.0.1:8545` |
+| `DOLI_RPC` | Default RPC endpoint | `http://127.0.0.1:8500` |
 
 ---
 

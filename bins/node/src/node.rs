@@ -7271,7 +7271,7 @@ impl Node {
                         .listen_addr
                         .split(':')
                         .next_back()
-                        .unwrap_or("30303");
+                        .unwrap_or("30300");
                     warn!("════════════════════════════════════════════════════════════════");
                     warn!(
                         "  WARNING: 0 peers after {}s — P2P port {} may be unreachable",

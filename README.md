@@ -57,7 +57,7 @@ doli wallet new
 ```bash
 # Run a mainnet node
 docker run -d --name doli-node \
-  -p 30303:30303 -p 8545:8545 \
+  -p 30300:30300 -p 8500:8500 \
   -v doli-data:/data \
   ghcr.io/e-weil/doli-node:latest
 
@@ -201,9 +201,9 @@ DOLI supports multiple networks with a single binary:
 
 | Network | ID | Purpose | P2P Port | RPC Port |
 |---------|-----|---------|----------|----------|
-| Mainnet | 1   | Production network | 30303 | 8545 |
-| Testnet | 2   | Public test network | 40303 | 18545 |
-| Devnet  | 99  | Local development | 50303 | 28545 |
+| Mainnet | 1   | Production network | 30300 | 8500 |
+| Testnet | 2   | Public test network | 40300 | 18500 |
+| Devnet  | 99  | Local development | 50300 | 28500 |
 
 Each network has its own genesis, address prefix (`doli`, `tdoli`, `ddoli`), and isolated data directory.
 

@@ -36,13 +36,13 @@ pub struct RpcServerConfig {
 }
 
 impl Default for RpcServerConfig {
-    /// Creates default config with mainnet RPC port (8545).
+    /// Creates default config with mainnet RPC port (8500).
     ///
     /// **Note**: For network-aware configuration, prefer constructing
     /// RpcServerConfig explicitly with `NetworkParams::load(network).default_rpc_port`.
     fn default() -> Self {
         Self {
-            listen_addr: "127.0.0.1:8545".parse().expect("valid socket addr"),
+            listen_addr: "127.0.0.1:8500".parse().expect("valid socket addr"),
             enable_cors: true,
             allowed_origins: vec!["*".to_string()],
         }

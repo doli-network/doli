@@ -54,16 +54,16 @@ doli -w ~/.doli/devnet/keys/producer_5.json info
 
 Transfer 11 DOLI from any genesis producer:
 
-doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_0.json
+doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_0.json
 send <PUBKEY_HASH> 11
 
 Wait 1 block (~10s), verify balance:
 
-doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_5.json balance
+doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_5.json balance
 
 Register with 10 bonds:
 
-doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_5.json
+doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_5.json
 producer register --bonds 10
 
 Start node (NO --no-dht):
@@ -74,7 +74,7 @@ doli-node --network devnet --data-dir ~/.doli/devnet/data/node5 run \
 
     --p2p-port 50308 --rpc-port 28550 --metrics-port 9095 \
 
-    --bootstrap '/ip4/127.0.0.1/tcp/50303' \
+    --bootstrap '/ip4/127.0.0.1/tcp/50300' \
 
     --chainspec ~/.doli/devnet/chainspec.json --yes \
 
@@ -106,7 +106,7 @@ for i in {6..20}; do
   pubkey=$(doli -w ~/.doli/devnet/keys/producer_$i.json info
 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
 
-  doli -r http://127.0.0.1:$((28545 + src)) -w
+  doli -r http://127.0.0.1:$((28500 + src)) -w
 ~/.doli/devnet/keys/producer_$src.json send "$pubkey" 3
 
   sleep 12  # wait 1 block between sends from same source
@@ -117,7 +117,7 @@ Register all with 2 bonds:
 
 for i in {6..20}; do
 
-  doli -r http://127.0.0.1:28545 -w
+  doli -r http://127.0.0.1:28500 -w
 ~/.doli/devnet/keys/producer_$i.json producer register -b 2
 
 done
@@ -126,11 +126,11 @@ Start all 15 nodes (NO --no-dht):
 
 for i in {6..20}; do
 
-  P2P=$((50303 + i))
+  P2P=$((50300 + i))
 
-  RPC=$((28545 + i))
+  RPC=$((28500 + i))
 
-  METRICS=$((9090 + i))
+  METRICS=$((9000 + i))
 
   doli-node --network devnet --data-dir ~/.doli/devnet/data/node$i run \
 
@@ -138,7 +138,7 @@ for i in {6..20}; do
 
     --p2p-port $P2P --rpc-port $RPC --metrics-port $METRICS \
 
-    --bootstrap '/ip4/127.0.0.1/tcp/50303' \
+    --bootstrap '/ip4/127.0.0.1/tcp/50300' \
 
     --chainspec ~/.doli/devnet/chainspec.json --yes \
 
@@ -159,7 +159,7 @@ Monitor every 60 seconds for 33 minutes:
 
 for i in $(seq 0 20); do
 
-  if [ $i -le 4 ]; then RPC=$((28545 + i)); else RPC=$((28545 + i)); fi
+  if [ $i -le 4 ]; then RPC=$((28500 + i)); else RPC=$((28500 + i)); fi
 
   chain=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type:
 application/json' \
@@ -207,7 +207,7 @@ Check reward distribution:
 
 for i in 0 5 6; do
 
-  balance=$(doli -r http://127.0.0.1:$((28545)) -w
+  balance=$(doli -r http://127.0.0.1:$((28500)) -w
 ~/.doli/devnet/keys/producer_$i.json balance 2>/dev/null)
 
   echo "Producer $i (bonds=$([ $i -eq 5 ] && echo 10 || ([ $i -le 4 ]
