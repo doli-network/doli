@@ -1944,7 +1944,7 @@ async fn cmd_producer(
     rpc_endpoint: &str,
     command: ProducerCommands,
 ) -> Result<()> {
-    use crypto::{signature, Hash, PublicKey};
+    use crypto::{bls_sign_pop, signature, BlsSecretKey, Hash, PublicKey};
     use doli_core::{Input, Output, Transaction};
 
     let rpc = RpcClient::new(rpc_endpoint);
@@ -2082,8 +2082,29 @@ async fn cmd_producer(
                 prev_registration_hash: crypto::Hash::ZERO,
                 sequence_number: 0,
                 bond_count: bonds,
-                bls_pubkey: Vec::new(), // BLS key added via node wallet (Layer 4)
-                bls_pop: Vec::new(),
+                bls_pubkey: {
+                    let bls_priv_hex =
+                        wallet.addresses()[0]
+                            .bls_private_key
+                            .as_ref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Wallet has no BLS key. Run: doli --wallet <wallet> add-bls"
+                                )
+                            })?;
+                    let bls_sk = BlsSecretKey::from_hex(bls_priv_hex)
+                        .map_err(|e| anyhow::anyhow!("Invalid BLS secret key: {}", e))?;
+                    let bls_pk = bls_sk.public_key();
+                    bls_pk.as_bytes().to_vec()
+                },
+                bls_pop: {
+                    let bls_priv_hex = wallet.addresses()[0].bls_private_key.as_ref().unwrap(); // already validated above
+                    let bls_sk = BlsSecretKey::from_hex(bls_priv_hex).unwrap();
+                    let bls_pk = bls_sk.public_key();
+                    let pop = bls_sign_pop(&bls_sk, &bls_pk)
+                        .map_err(|e| anyhow::anyhow!("Failed to generate BLS PoP: {}", e))?;
+                    pop.as_bytes().to_vec()
+                },
             };
             let extra_data = bincode::serialize(&reg_data)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize registration data: {}", e))?;
