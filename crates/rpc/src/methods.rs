@@ -602,6 +602,16 @@ impl RpcContext {
                     doli_core::OutputType::Vesting => "vesting",
                 };
 
+                let condition = if entry.output.output_type.is_conditioned() {
+                    entry
+                        .output
+                        .condition()
+                        .and_then(|r| r.ok())
+                        .map(|c| condition_to_json(&c))
+                } else {
+                    None
+                };
+
                 UtxoResponse {
                     tx_hash: outpoint.tx_hash.to_hex(),
                     output_index: outpoint.index,
@@ -610,6 +620,7 @@ impl RpcContext {
                     lock_until: entry.output.lock_until,
                     height: entry.height,
                     spendable: entry.is_spendable_at_with_maturity(current_height, maturity),
+                    condition,
                 }
             })
             .collect();
