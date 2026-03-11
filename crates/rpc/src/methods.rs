@@ -331,6 +331,7 @@ impl RpcContext {
             "getProducerSchedule" => self.get_producer_schedule(request.params).await,
             "getAttestationStats" => self.get_attestation_stats().await,
             "getStateRootDebug" => self.get_state_root_debug().await,
+            "getUtxoDiff" => self.get_utxo_diff(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
@@ -1763,6 +1764,84 @@ impl RpcContext {
             "producerCount": producer_count,
             "totalMinted": chain_state.total_minted,
             "registrationSeq": chain_state.registration_sequence,
+        }))
+    }
+
+    /// Debug: return per-UTXO canonical hashes for diffing across nodes.
+    ///
+    /// With no params: returns all `[(outpoint_hex, entry_hash)]` sorted by outpoint.
+    /// With `{"referenceHashes": ["hash1", ...]}`: returns only entries that differ
+    /// (missing or different hash) — enables efficient remote diff.
+    async fn get_utxo_diff(&self, params: Value) -> Result<Value, RpcError> {
+        let utxo_set = self.utxo_set.read().await;
+        let chain_state = self.chain_state.read().await;
+        let height = chain_state.best_height;
+        drop(chain_state);
+
+        // Build sorted list of (outpoint_bytes, canonical_entry_hash)
+        let mut entries: Vec<(String, String, String)> = Vec::new();
+        match &*utxo_set {
+            storage::UtxoSet::InMemory(store) => {
+                let mut sorted: Vec<_> = store.iter().collect();
+                sorted.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
+                for (outpoint, entry) in sorted {
+                    let op_hex = hex::encode(outpoint.to_bytes());
+                    let canonical = entry.serialize_canonical_bytes();
+                    let entry_hash = crypto::hash::hash(&canonical).to_string();
+                    // Include key fields for human inspection
+                    let detail = format!(
+                        "amt={} h={} type={} cb={} er={}",
+                        entry.output.amount,
+                        entry.height,
+                        entry.output.output_type as u8,
+                        entry.is_coinbase as u8,
+                        entry.is_epoch_reward as u8,
+                    );
+                    entries.push((op_hex, entry_hash, detail));
+                }
+            }
+            storage::UtxoSet::RocksDb(_) => {
+                return Err(RpcError::internal_error(
+                    "RocksDb UTXO set not supported for diff".to_string(),
+                ));
+            }
+        }
+
+        // If reference hashes provided, only return differences
+        if let Ok(ref_params) = serde_json::from_value::<serde_json::Map<String, Value>>(params) {
+            if let Some(Value::Array(ref_hashes)) = ref_params.get("referenceHashes") {
+                let ref_set: std::collections::HashSet<String> = ref_hashes
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+                let diffs: Vec<_> = entries
+                    .iter()
+                    .filter(|(_, hash, _)| !ref_set.contains(hash))
+                    .map(|(op, hash, detail)| {
+                        serde_json::json!({"outpoint": op, "hash": hash, "detail": detail})
+                    })
+                    .collect();
+                return Ok(serde_json::json!({
+                    "height": height,
+                    "totalEntries": entries.len(),
+                    "diffCount": diffs.len(),
+                    "diffs": diffs,
+                }));
+            }
+        }
+
+        // Full dump: return all entries
+        let all: Vec<_> = entries
+            .iter()
+            .map(|(op, hash, detail)| {
+                serde_json::json!({"outpoint": op, "hash": hash, "detail": detail})
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "height": height,
+            "count": all.len(),
+            "entries": all,
         }))
     }
 
