@@ -6744,27 +6744,23 @@ impl Node {
         }
 
         // Archive catch-up: after sync completes, backfill archive from block_store.
-        // Runs once — when the node has blocks but the archive is behind.
+        // Runs once — fills any missing .block files between 1 and tip.
         if !self.archive_caught_up {
             if let Some(ref archive_dir) = self.archive_dir {
                 let tip = self.chain_state.read().await.best_height;
                 if tip > 0 {
-                    let manifest_height =
-                        storage::archiver::manifest_height(archive_dir).unwrap_or(0);
-                    if manifest_height < tip {
-                        info!(
-                            "[ARCHIVER] Catch-up: archive at {}, chain at {} — backfilling",
-                            manifest_height, tip
-                        );
-                        match storage::archiver::BlockArchiver::catch_up(
-                            archive_dir,
-                            &self.block_store,
-                            tip,
-                        ) {
-                            Ok(n) if n > 0 => info!("[ARCHIVER] Catch-up complete: {} blocks", n),
-                            Ok(_) => {}
-                            Err(e) => warn!("[ARCHIVER] Catch-up error: {}", e),
-                        }
+                    info!(
+                        "[ARCHIVER] Catch-up: scanning for gaps up to height {}",
+                        tip
+                    );
+                    match storage::archiver::BlockArchiver::catch_up(
+                        archive_dir,
+                        &self.block_store,
+                        tip,
+                    ) {
+                        Ok(n) if n > 0 => info!("[ARCHIVER] Catch-up: filled {} missing blocks", n),
+                        Ok(_) => info!("[ARCHIVER] Catch-up: archive complete, no gaps"),
+                        Err(e) => warn!("[ARCHIVER] Catch-up error: {}", e),
                     }
                     self.archive_caught_up = true;
                 }
