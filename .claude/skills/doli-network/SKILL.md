@@ -1,6 +1,6 @@
 ---
 name: doli-network
-description: Monitor and manage DOLI blockchain nodes. Use when checking chain status, producer rewards, node health, block info, or any RPC queries. Triggers on "check nodes", "chain status", "producer rewards", "network health", "testnet status", "devnet status".
+description: DOLI RPC reference, epoch params, block queries, state root debugging. NOT for balances, bonds, deploys, restarts — those are doli-ops. Triggers on "RPC method", "epoch info", "block query", "state root", "attestation", "getChainInfo", "getProducers", "devnet params".
 ---
 
 # DOLI Network Operations
@@ -231,6 +231,28 @@ Check progress of an active backfill.
 curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}' | jq '.result'
 ```
+
+## State Root Debugging (Snap Sync Diagnosis)
+
+When snap sync fails → nodes disagree on state root → quorum impossible.
+
+### getStateRootDebug
+Returns component hashes: `csHash` (ChainState), `utxoHash` (UtxoSet), `psHash` (ProducerSet), plus combined `stateRoot`.
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}' | jq '.result'
+```
+
+### getUtxoDiff
+Compares UTXO sets between two nodes. Shows per-UTXO differences including `extra_data`.
+```bash
+curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"peer_url":"http://OTHER:PORT"},"id":1}' | jq '.result'
+```
+
+**Diagnosis flow**: Run `getStateRootDebug` on all nodes at same height. If `utxoHash` diverges → `getUtxoDiff` to find exact UTXOs. Root cause is usually Bond `extra_data` stamping in dual UTXO path. See `docs/architecture.md §9.1`.
+
+---
 
 ## Checking Blocks Produced
 

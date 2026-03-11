@@ -1098,6 +1098,22 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
+## Gotchas
+
+Common pitfalls that cause silent failures or unexpected behavior:
+
+| Trap | Detail |
+|------|--------|
+| `--wallet` position | Must go BEFORE subcommand: `doli --wallet f.json send ...` not `doli send --wallet f.json ...` |
+| `doli send` has no confirmation | Sends immediately. No "are you sure?" prompt. |
+| `register` vs `add-bond` | `register --bonds N` vs `add-bond --count N` — different flag names |
+| RPC balance fields | Use `confirmed`, `immature`, `total`, `unconfirmed`. NOT `balance` or `spendable` |
+| `getProducer` address | Returns `addressHash` — use THAT for `getBalance`, not `publicKey` |
+| Raw values | Divide raw RPC values by 1e8 for DOLI display |
+| BLS key | `Option<BlsKeyPair>` — node starts without it but attestation signing fails silently |
+
+---
+
 ## See Also
 
 - [WHITEPAPER.md](/WHITEPAPER.md) - Protocol specification
