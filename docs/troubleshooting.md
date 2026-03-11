@@ -589,7 +589,42 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 
 ---
 
-## 7. Getting Help
+## 7. Sync Recovery & State Root Divergence
+
+### 7.1. Recovery Order
+
+When a node falls out of sync or produces a fork:
+
+1. **rollback_one_block()** — first option on all networks. Uses undo data (O(1)) if available, rebuild-from-genesis as fallback.
+2. **Snap sync** — only as fallback if rollback fails repeatedly. Quorum: `max(3, tip_eligible_peers/2 + 1)`.
+3. **Genesis mismatch peers** — get 1-hour silent cooldown (won't attempt sync from them).
+
+Code: `bins/node/src/node.rs:~6492` (rollback), `crates/network/src/sync/manager.rs` (snap sync)
+
+### 7.2. State Root Divergence (Snap Sync Failure)
+
+**Symptom:** Snap sync never completes — quorum is never reached because nodes disagree on state root.
+
+**Cause:** State roots diverge when the dual UTXO paths (in-memory vs disk) produce different results. Most common cause: Bond `extra_data` stamping mismatch.
+
+**Diagnosis:**
+```bash
+# Compare state roots at same height across all nodes
+curl -s -X POST http://<node>:<port> \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}' | jq
+
+# Find divergent UTXOs between two nodes
+curl -s -X POST http://<node>:<port> \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"peer_url":"http://<other_node>:<port>"},"id":1}' | jq
+```
+
+**Resolution:** Fix the code path that diverges (verify both UTXO paths in `apply_block()`), then chain reset. See `docs/architecture.md §9.1` for the dual UTXO path invariant.
+
+---
+
+## 8. Getting Help
 
 ### Resources
 
@@ -608,4 +643,4 @@ Include in bug reports:
 
 ---
 
-*Last updated: January 2026*
+*Last updated: March 2026*

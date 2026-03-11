@@ -121,7 +121,7 @@ crypto ──► bins/cli (wallet binary)
 | Module | Function |
 |--------|----------|
 | `block.rs` | Block and BlockHeader types |
-| `transaction.rs` | 11 transaction types, UTXO model |
+| `transaction.rs` | 16 transaction types, UTXO model |
 | `types.rs` | Amount, Slot, Epoch, Era |
 | `consensus.rs` | PoT parameters, producer selection |
 | `validation.rs` | Block and tx validation |
@@ -129,18 +129,23 @@ crypto ──► bins/cli (wallet binary)
 | `network.rs` | Network configuration |
 | `discovery/` | Producer discovery (G-Set CRDT) |
 
-**Transaction types:**
+**Transaction types** (see `crates/core/src/transaction.rs` for canonical list):
 1. Transfer - Value transfer
 2. Registration - Producer registration
 3. Exit - Producer exit
-4. Coinbase - Block reward
-5. ClaimReward - Claim epoch rewards
-6. ClaimBond - Claim bond after unbonding
+4. Coinbase - Block reward (→ reward pool, not direct to producer)
+5. ClaimReward - DEPRECATED (replaced by automatic EpochReward)
+6. ClaimBond - DEPRECATED (replaced by automatic withdrawal)
 7. AddBond - Bond stacking (creates Bond UTXOs with creation_slot in extra_data)
-8. WithdrawalRequest - Instant bond withdrawal (consumes Bond UTXOs, FIFO penalty)
-9. Reserved (unused — withdrawal is instant via TxType 8)
-10. EpochReward - Epoch distribution
-11. SlashProducer - Slash equivocator
+8. WithdrawalRequest - Bond withdrawal request (7-day delay, FIFO vesting penalty)
+9. ClaimWithdrawal - Claim matured withdrawal
+10. EpochReward - Epoch reward distribution (ACTIVE — pool drained bond-weighted)
+11. SlashProducer - Slash equivocator (100% bond burn)
+12. DelegateBond - Delegate bonds to another producer
+13. RevokeDelegation - Revoke delegated bonds
+14. SetPresenceCommitment - Set attestation commitment
+15. AddMaintainer - Add maintainer to governance set (immediate, not deferred)
+16. RemoveMaintainer - Remove maintainer from governance set (immediate)
 
 ### 3.4. Configuration Hierarchy
 
@@ -565,4 +570,53 @@ doli
 
 ---
 
-*Architecture version: 1.0*
+## 9. Critical Invariants
+
+### 9.1. Dual UTXO Paths
+
+`apply_block()` writes UTXOs to TWO stores that MUST stay in sync:
+- **In-memory**: `utxo.add_transaction(tx, height, is_reward_tx, slot)` — used for state root, live queries
+- **Disk batch**: `batch.add_transaction_utxos(tx, height, is_reward_tx, slot)` — persisted to RocksDB, loaded on restart
+
+Both stamp Bond `extra_data` with the block slot. If they diverge → state roots diverge across nodes after restart → snap sync breaks (quorum impossible). This was the root cause of the snap sync failure discovered 2026-03-11.
+
+Code: `bins/node/src/node.rs:~3561-3574`
+
+### 9.2. State Root
+
+`H(H(chain_state) || H(utxo_set) || H(producer_set))`. Each component uses `serialize_canonical()` — fixed-byte encoding, sorted keys, no bincode. Used by snap sync (quorum agreement) and cached after each `apply_block()`.
+
+Code: `crates/storage/src/snapshot.rs`
+
+### 9.3. Rollback
+
+`rollback_one_block()` uses **undo-based rollback** as first option (O(1) — reverses created/spent UTXOs from stored `UndoData`). Rebuild-from-genesis is fallback only for blocks without undo data.
+
+Code: `bins/node/src/node.rs:~6492`
+
+### 9.4. Deferred Producer Mutations
+
+Producer mutations (Register, AddBond, Exit, Slash, WithdrawalRequest, DelegateBond, RevokeDelegation) are queued as `PendingProducerUpdate` and applied at epoch boundaries only. Exception: epoch 0 (every block) and maintainer changes (AddMaintainer, RemoveMaintainer — immediate).
+
+### 9.5. Genesis Phase
+
+Blocks 1 through `genesis_blocks` are the genesis phase. At `genesis_blocks + 1`, `derive_genesis_producers_from_chain()` runs — consuming genesis coinbase UTXOs to back real bonds. Code: `bins/node/src/node.rs:~6129`
+
+---
+
+## 10. Dead Code Inventory
+
+Code that exists but is never called — kept for serialization backward compatibility:
+
+| What | Where | Why dead |
+|------|-------|----------|
+| `ChainState::apply_coinbase()` / `total_minted` | `chain_state.rs` | Never called, always 0 |
+| `ClaimReward` (TxType 3) | `transaction.rs` | Replaced by automatic EpochReward |
+| `ClaimBond` (TxType 6) | `transaction.rs` | Replaced by automatic withdrawal |
+| `PresenceScore` scoring | `consensus.rs` | Orphaned — scheduler uses `DeterministicScheduler` |
+| `Block::total_fees()` | `block.rs` | Always returns 0 |
+| `blocks_produced`, `pending_rewards` in ProducerInfo | `producer.rs` | Vestigial from Pull/Claim model |
+
+---
+
+*Architecture version: 2.0 — March 2026*

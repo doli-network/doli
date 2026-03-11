@@ -1,38 +1,40 @@
 # rewards.md - Block Reward System
 
-This document describes DOLI's block reward system, which follows a simple Bitcoin-like coinbase model where block producers receive 100% of the block reward directly.
+This document describes DOLI's block reward system: a pooled coinbase model where all block rewards accumulate in a shared reward pool and are distributed bond-weighted to qualified producers at each epoch boundary.
 
 ---
 
 ## 1. Overview
 
-DOLI uses a **direct coinbase** model for block rewards. The block producer receives the full block reward via an automatic coinbase transaction included in each block.
+DOLI uses a **pooled coinbase with epoch distribution** model. Every block's coinbase output is sent to a deterministic reward pool address (no private key). At the end of each epoch (every 360 blocks, approximately 1 hour), the pool is drained and distributed bond-weighted among attestation-qualified producers via an EpochReward transaction.
 
 ### Key Characteristics
 
 | Characteristic | Description |
 |----------------|-------------|
-| **100% to Producer** | Block producer receives the entire block reward |
-| **Automatic** | No claiming required - rewards included via coinbase tx |
-| **Maturity Period** | 6 confirmations before spendable |
+| **Pooled Coinbase** | All coinbase goes to `BLAKE3("REWARD_POOL" \|\| "doli")` -- no private key |
+| **Epoch Distribution** | Pool drained every 360 blocks (~1 hour) via EpochReward tx (TxType=10) |
+| **Attestation Gated** | Producers must attest in 54 of 60 minutes per epoch to qualify |
+| **Bond Weighted** | Rewards proportional to qualifying bonds (own + delegated) |
+| **Delegation Split** | Delegated bond rewards split: producer keeps fee, delegators get remainder |
 | **Deflationary** | Halving every ~4 years reduces emission over time |
 
-### Why Direct Coinbase?
+### Why Pooled Coinbase?
 
 | Benefit | Description |
 |---------|-------------|
-| **Simplicity** | No complex claiming transactions or epoch tracking |
-| **Predictability** | Producers know exactly what they earn per block |
-| **Proven Model** | Same approach used by Bitcoin for 15+ years |
-| **No State Bloat** | No claim registries or presence tracking needed |
+| **Attestation Incentive** | Producers must stay online and attest to earn rewards |
+| **Fair Distribution** | Bond-weighted sharing prevents winner-take-all dynamics |
+| **Delegation Support** | Stakers can delegate bonds and earn proportional rewards |
+| **Sybil Resistance** | Non-attesting producers are excluded from rewards |
 
 ---
 
-## 2. Block Reward Structure
+## 2. Reward Flow
 
-### Coinbase Transaction
+### Step 1: Coinbase to Pool
 
-Every block contains exactly one coinbase transaction as the first transaction:
+Every block contains a coinbase transaction (TxType=6) whose output is sent to the reward pool address, not the block producer:
 
 ```
 Coinbase (TxType = 6):
@@ -42,13 +44,61 @@ Coinbase (TxType = 6):
   outputs:    [{
     output_type: 0,           # Normal
     amount:      block_reward,
-    pubkey_hash: producer_pubkey_hash,
+    pubkey_hash: reward_pool_pubkey_hash(),   # BLAKE3("REWARD_POOL" || "doli")
     lock_until:  current_height + COINBASE_MATURITY
   }]
   extra_data: []
 ```
 
-### Coinbase Maturity
+The reward pool address is deterministic and has no corresponding private key. Only the consensus engine can distribute its funds.
+
+### Step 2: Attestation Tracking
+
+During each epoch, every block's `presence_root` field encodes an attestation bitfield. The node decodes these bitfields to track how many of the 60 attestation minutes each producer was attested in.
+
+- Each epoch spans 360 slots = 60 attestation minutes (6 slots per minute)
+- A producer is counted as attested in a minute if any block in that minute's 6-slot window includes them in the bitfield
+
+### Step 3: Epoch Boundary Distribution
+
+At height `(epoch + 1) * 360`, the node runs `calculate_epoch_rewards()`:
+
+1. **Collect active producers** at epoch end height, sorted by public key
+2. **Scan all blocks** in the epoch, decode attestation bitfields, count attested minutes per producer
+3. **Qualify producers**: must have attested in >= 54 of 60 minutes (`ATTESTATION_QUALIFICATION_THRESHOLD`)
+   - **Epoch 0 exception**: all active producers qualify (no attestation data exists yet)
+4. **Sum qualifying bonds** via `selection_weight()` (own bonds + delegated bonds)
+5. **Calculate pool total**: accumulated coinbase UTXOs in pool + current block's coinbase
+6. **Distribute bond-weighted**: `pool * bonds[i] / qualifying_bonds` using u128 intermediates
+7. **Delegation split** (if producer has delegations):
+   - `own_share = reward * own_bonds / total_bonds`
+   - `delegate_fee = delegated_share * DELEGATE_REWARD_PCT / 100` (producer keeps)
+   - `staker_pool = delegated_share - delegate_fee` (split among delegators proportional to bonds)
+8. **Integer division remainder** goes to the first qualifier
+9. **Create EpochReward transaction** (TxType=10) with all reward outputs
+10. **Consume all pool UTXOs** atomically
+
+### Step 4: EpochReward Transaction
+
+The EpochReward transaction (TxType=10) is the active mechanism for distributing rewards:
+
+```
+EpochReward (TxType = 10):
+  version:    1
+  type:       10
+  inputs:     []              # Pool UTXOs consumed by consensus engine
+  outputs:    [{              # One output per qualifying producer (+ delegators)
+    output_type: 0,           # Normal
+    amount:      calculated_share,
+    pubkey_hash: producer_or_delegator_hash,
+    lock_until:  0
+  }, ...]
+  extra_data: []
+```
+
+---
+
+## 3. Coinbase Maturity
 
 Coinbase outputs are **locked** until 6 confirmations have passed:
 
@@ -58,11 +108,11 @@ Coinbase outputs are **locked** until 6 confirmations have passed:
 | **Lock Mechanism** | `lock_until` field | Set to `current_height + 6` |
 | **Spending** | After maturity | Normal UTXO spending rules |
 
-This maturity period prevents issues from chain reorganizations affecting recently minted coins.
+Note: Coinbase maturity applies to the pool UTXOs. EpochReward outputs are immediately spendable (`lock_until = 0`).
 
 ---
 
-## 3. Emission Schedule
+## 4. Emission Schedule
 
 ### Initial Parameters
 
@@ -97,54 +147,90 @@ where:
 
 ### Asymptotic Supply
 
-Due to integer division, rewards eventually reach zero. The total supply asymptotically approaches but never exceeds 25,228,800 DOLI.
+Due to integer division, rewards eventually reach zero. The total supply asymptotically approaches but never exceeds 25,228,800 DOLI (2,522,880,000,000,000 base units).
 
 ---
 
-## 4. Network-Specific Parameters
+## 5. Epoch Reward Pool Math
+
+Each epoch accumulates up to 360 DOLI in the reward pool (360 blocks at 1 DOLI per block in Era 0).
+
+### Qualification
+
+| Parameter | Value |
+|-----------|-------|
+| **SLOTS_PER_EPOCH** | 360 (1 hour) |
+| **Attestation minutes per epoch** | 60 (6 slots per minute) |
+| **ATTESTATION_QUALIFICATION_THRESHOLD** | 54 minutes (90%) |
+| **Epoch 0 exception** | All active producers qualify |
+
+### Distribution Formula
+
+```
+pool = sum(coinbase UTXOs at reward_pool_address) + current_block_coinbase
+qualifying_bonds = sum(selection_weight for each qualified producer)
+producer_reward = pool * producer_bonds / qualifying_bonds   (u128 intermediate)
+remainder = pool - sum(all_producer_rewards)  -> first qualifier
+```
+
+### Delegation Split
+
+When a producer has received delegations:
+
+```
+own_share      = reward * own_bonds / total_bonds
+delegated_share = reward - own_share
+delegate_fee   = delegated_share * DELEGATE_REWARD_PCT / 100
+staker_pool    = delegated_share - delegate_fee
+
+Each delegator: staker_pool * delegator_bonds / total_delegated
+Last delegator: staker_pool - already_distributed  (absorbs rounding dust)
+```
+
+| Parameter | Value |
+|-----------|-------|
+| **DELEGATE_REWARD_PCT** | 10% |
+| **BOND_UNIT** | 10 DOLI (1,000,000,000 base units) on mainnet/testnet |
+| **MAX_BONDS_PER_PRODUCER** | 3,000 |
+
+### Edge Cases
+
+- **No qualified producers**: all rewards remain in pool (burned effectively)
+- **Zero qualifying bonds**: no distribution
+- **Disqualified producers**: their share is redistributed to qualifiers (included in the pool, not subtracted)
+
+---
+
+## 6. Network-Specific Parameters
 
 | Parameter | Mainnet/Testnet | Devnet |
 |-----------|-----------------|--------|
-| **Initial Reward** | 1 DOLI | 1 DOLI |
-| **Halving Interval** | 12,614,400 blocks | 576 blocks (~96 min) |
-| **Coinbase Maturity** | 100 blocks | 100 blocks |
+| **Initial Reward** | 1 DOLI | 20 DOLI |
+| **Halving Interval** | 12,614,400 blocks (~4 yr) | 576 blocks (~96 min) |
+| **Bond Unit** | 10 DOLI | 1 DOLI |
+| **Coinbase Maturity** | 6 blocks | 10 blocks |
+| **Blocks per Reward Epoch** | 360 blocks (~1 hr) | 4 blocks (~40s) |
 | **Slot Duration** | 10 seconds | 10 seconds |
 
-Devnet uses accelerated parameters for testing the halving mechanism.
+Devnet uses accelerated parameters for testing the reward and halving mechanisms.
 
 ---
 
-## 5. Deprecated Transaction Types
-
-The following transaction types are **DEPRECATED** and should not be used:
+## 7. Deprecated Transaction Types
 
 ### ClaimReward (Type 3) - DEPRECATED
 
 ```
 Status: DEPRECATED
-Reason: Rewards are now automatic via coinbase
+Reason: Replaced by automatic EpochReward distribution at epoch boundaries
 Action: Nodes will reject new ClaimReward transactions
 ```
 
-Previously used in a proposed system where producers would manually claim accumulated rewards. This was never activated on mainnet.
-
-### EpochReward (Type 10) - DEPRECATED
-
-```
-Status: DEPRECATED
-Reason: Weighted presence system was replaced by direct coinbase
-Action: Nodes will reject new EpochReward transactions
-```
-
-Previously used in a proposed weighted presence system where all present producers would share rewards proportionally. This was replaced by the simpler Bitcoin-like model before mainnet launch.
-
-### Historical Transactions
-
-Any ClaimReward or EpochReward transactions in historical blocks (if any exist from testnet) remain valid in the chain history but the transaction types are no longer accepted for new transactions.
+Previously proposed for manual reward claiming. Never activated on mainnet. The EpochReward mechanism (TxType=10) replaced it entirely.
 
 ---
 
-## 6. Validation Rules
+## 8. Validation Rules
 
 ### Coinbase Validation
 
@@ -155,135 +241,65 @@ A coinbase transaction is valid if:
 3. **Inputs**: Empty (no inputs)
 4. **Outputs**: Exactly one output
 5. **Amount**: Equals calculated block reward for the height
-6. **Recipient**: Output pubkey_hash matches block producer
+6. **Recipient**: Output `pubkey_hash` matches `reward_pool_pubkey_hash()`
 7. **Lock**: `lock_until` equals `height + COINBASE_MATURITY`
+
+### EpochReward Validation
+
+An EpochReward transaction is valid if:
+
+1. **Type**: Transaction type is 10 (EpochReward)
+2. **Position**: Appears only at epoch boundary blocks (height divisible by `blocks_per_reward_epoch`)
+3. **Inputs**: Empty (pool UTXOs consumed by consensus engine, not via inputs)
+4. **Outputs**: One or more outputs to qualified producers and their delegators
+5. **Total**: Sum of outputs equals the entire pool balance (no value created or destroyed)
 
 ### Block Validation
 
-Each block must contain exactly one coinbase transaction:
-
-1. **Existence**: Block must have at least one transaction
-2. **First Position**: First transaction must be coinbase type
-3. **Uniqueness**: No other coinbase transactions in the block
-4. **Correctness**: Coinbase passes all validation rules above
+Each block must contain exactly one coinbase transaction. At epoch boundaries, the block also contains exactly one EpochReward transaction.
 
 ---
 
-## 7. Economic Incentives
+## 9. Economic Incentives
 
 ### Producer Motivation
 
 Producers are incentivized to:
-- **Stay Online**: Missing slots means missing rewards
-- **Build Valid Blocks**: Invalid blocks are rejected (no reward)
-- **Include Transactions**: Transaction fees add to coinbase reward (future)
+- **Stay Online and Attest**: Must attest in 54/60 minutes to earn epoch rewards
+- **Build Valid Blocks**: Invalid blocks are rejected
+- **Bond More**: Rewards scale linearly with bond count (own + delegated)
+- **Attract Delegators**: More delegated bonds means more total rewards (producer keeps delegate fee)
 
 ### Bond ROI
 
-With the bond stacking system (up to 100 bonds per producer):
+With the bond stacking system (up to 3,000 bonds per producer):
 
-| Bonds | Investment | Tickets per Cycle | Expected Blocks/Day* |
-|-------|------------|-------------------|---------------------|
-| 1 | 100 DOLI | 1 | Proportional |
-| 10 | 1,000 DOLI | 10 | 10x base |
-| 100 | 10,000 DOLI | 100 | 100x base |
+| Bonds | Investment | Selection Weight | Reward Share |
+|-------|------------|-----------------|--------------|
+| 1 | 10 DOLI | 1 | Proportional to 1/total_qualifying |
+| 10 | 100 DOLI | 10 | 10x base share |
+| 100 | 1,000 DOLI | 100 | 100x base share |
+| 3,000 | 30,000 DOLI | 3,000 | Maximum per-producer share |
 
-*Actual blocks depend on total network bond count and presence.
-
----
-
-## 8. Comparison with Other Systems
-
-| Aspect | DOLI | Bitcoin | PoS Chains |
-|--------|------|---------|------------|
-| **Reward Model** | Direct coinbase | Direct coinbase | Often complex staking rewards |
-| **Claiming** | Automatic | Automatic | Often requires claiming |
-| **Distribution** | 100% to producer | 100% to miner | Often split with delegators |
-| **Maturity** | 100 blocks | 100 blocks | Varies |
-| **Emission** | Halving | Halving | Often inflationary |
+Actual rewards depend on total qualifying bonds across the network and attestation qualification.
 
 ---
 
-## 9. CLI Commands
+## 10. Key Constants Reference
 
-### Check Current Reward
-
-```bash
-doli info reward
-```
-
-Shows current block reward based on chain height:
-
-```
-Block Reward Information
-------------------------------------------------------------
-Current Height:         1,234,567
-Current Era:            0
-Block Reward:           1.00000000 DOLI
-Next Halving:           12,614,400 (11,379,833 blocks remaining)
-------------------------------------------------------------
-```
-
-### View Producer Earnings
-
-```bash
-doli producer earnings [--address <ADDRESS>]
-```
-
-Shows coinbase outputs earned by a producer:
-
-```
-Producer Earnings
-------------------------------------------------------------
-Total Blocks Produced:  1,234
-Total Earned:           1,234.00000000 DOLI
-Mature Balance:         1,134.00000000 DOLI
-Pending Maturity:       100.00000000 DOLI (100 blocks)
-------------------------------------------------------------
-```
-
----
-
-## 10. RPC Endpoints
-
-### getBlockReward
-
-Returns the block reward for a given height.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| height | number | Block height (optional, defaults to current) |
-
-**Response:**
-```json
-{
-  "height": 1234567,
-  "era": 0,
-  "reward": 100000000,
-  "reward_formatted": "1.00000000 DOLI"
-}
-```
-
-### getEmissionInfo
-
-Returns emission schedule information.
-
-**Parameters:** None
-
-**Response:**
-```json
-{
-  "total_supply_cap": 2522880000000000,
-  "current_supply": 123456700000000,
-  "current_height": 1234567,
-  "current_era": 0,
-  "current_reward": 100000000,
-  "blocks_per_era": 12614400,
-  "next_halving_height": 12614400,
-  "blocks_until_halving": 11379833
-}
-```
+| Constant | Value | Location |
+|----------|-------|----------|
+| `SLOTS_PER_EPOCH` | 360 | `crates/core/src/consensus.rs` |
+| `BLOCKS_PER_REWARD_EPOCH` | 360 | `crates/core/src/consensus.rs` |
+| `ATTESTATION_QUALIFICATION_THRESHOLD` | 54 | `crates/core/src/attestation.rs` |
+| `ATTESTATION_MINUTES_PER_EPOCH` | 60 | `crates/core/src/attestation.rs` |
+| `DELEGATE_REWARD_PCT` | 10 | `crates/core/src/consensus.rs` |
+| `BOND_UNIT` | 1,000,000,000 (10 DOLI) | `crates/core/src/consensus.rs` |
+| `MAX_BONDS_PER_PRODUCER` | 3,000 | `crates/core/src/consensus.rs` |
+| `COINBASE_MATURITY` | 6 | `crates/core/src/consensus.rs` |
+| `INITIAL_REWARD` | 100,000,000 (1 DOLI) | `crates/core/src/consensus.rs` |
+| `BLOCKS_PER_ERA` | 12,614,400 | `crates/core/src/consensus.rs` |
+| `TOTAL_SUPPLY` | 2,522,880,000,000,000 | `crates/core/src/consensus.rs` |
 
 ---
 
@@ -296,4 +312,4 @@ Returns emission schedule information.
 
 ---
 
-*Last updated: February 2026*
+*Last updated: March 2026*
