@@ -384,8 +384,8 @@ fn test_epoch_reward_large_epoch_number() {
 
 #[test]
 fn test_reward_maturity_constant() {
-    // REWARD_MATURITY should be 100
-    assert_eq!(REWARD_MATURITY, 100);
+    // REWARD_MATURITY should be 6 (aligned with COINBASE_MATURITY)
+    assert_eq!(REWARD_MATURITY, 6);
 }
 
 // =============================================================================
