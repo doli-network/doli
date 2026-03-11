@@ -4765,33 +4765,37 @@ impl Node {
 
             SyncRequest::GetStateSnapshot { block_hash } => {
                 let chain_state = self.chain_state.read().await;
+                // Serve snapshot at current tip regardless of requested hash.
+                // The requesting node verifies the state root against quorum votes.
+                // Previously this rejected requests where best_hash != block_hash,
+                // causing a race condition: the peer advances between vote and
+                // download, making snap sync fail 100% of the time on active chains.
                 if chain_state.best_hash != block_hash {
-                    SyncResponse::Error(format!(
-                        "Snapshot only available for current tip {}",
-                        chain_state.best_hash
-                    ))
-                } else {
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
-                        Ok(snap) => {
-                            info!(
-                                "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
-                                snap.block_height,
-                                snap.total_bytes() / 1024,
-                                snap.state_root
-                            );
-                            SyncResponse::StateSnapshot {
-                                block_hash: snap.block_hash,
-                                block_height: snap.block_height,
-                                chain_state: snap.chain_state_bytes,
-                                utxo_set: snap.utxo_set_bytes,
-                                producer_set: snap.producer_set_bytes,
-                                state_root: snap.state_root,
-                            }
+                    info!(
+                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
+                        block_hash, chain_state.best_hash
+                    );
+                }
+                let utxo_set = self.utxo_set.read().await;
+                let ps = self.producer_set.read().await;
+                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
+                    Ok(snap) => {
+                        info!(
+                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
+                            snap.block_height,
+                            snap.total_bytes() / 1024,
+                            snap.state_root
+                        );
+                        SyncResponse::StateSnapshot {
+                            block_hash: snap.block_hash,
+                            block_height: snap.block_height,
+                            chain_state: snap.chain_state_bytes,
+                            utxo_set: snap.utxo_set_bytes,
+                            producer_set: snap.producer_set_bytes,
+                            state_root: snap.state_root,
                         }
-                        Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                     }
+                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                 }
             }
         };
