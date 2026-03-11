@@ -288,6 +288,24 @@ impl Condition {
         Ok(cond)
     }
 
+    /// Decode a condition from the start of a byte slice, allowing trailing data.
+    /// Returns (condition, total_bytes_consumed) including the version prefix.
+    /// Use this for output types that append metadata after the condition (NFT, FungibleAsset, BridgeHTLC).
+    pub fn decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ConditionError> {
+        if bytes.is_empty() {
+            return Err(ConditionError::BufferTooShort);
+        }
+
+        let version = bytes[0];
+        if version != CONDITION_VERSION {
+            return Err(ConditionError::UnsupportedVersion { version });
+        }
+
+        let (cond, consumed) = Self::decode_inner(&bytes[1..], 0)?;
+        cond.validate()?;
+        Ok((cond, 1 + consumed))
+    }
+
     /// Decode condition body (without version prefix) — recursive.
     /// Returns (condition, bytes_consumed).
     fn decode_inner(bytes: &[u8], depth: usize) -> Result<(Self, usize), ConditionError> {

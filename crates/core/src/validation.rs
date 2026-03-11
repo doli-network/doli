@@ -1509,7 +1509,7 @@ fn validate_outputs(
                         i
                     )));
                 }
-                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "NFT output {} has invalid condition: {}",
                         i, e
@@ -1536,7 +1536,7 @@ fn validate_outputs(
                         i
                     )));
                 }
-                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "FungibleAsset output {} has invalid condition: {}",
                         i, e
@@ -1563,7 +1563,7 @@ fn validate_outputs(
                         i
                     )));
                 }
-                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "BridgeHTLC output {} has invalid condition: {}",
                         i, e
