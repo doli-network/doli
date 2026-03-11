@@ -1778,6 +1778,29 @@ impl SyncManager {
         peer_ahead || network_ahead
     }
 
+    /// Get the best_hash that the MAJORITY of eligible peers agree on.
+    ///
+    /// This prevents a partitioned minority from steering snap sync to a
+    /// forked chain. Returns None if no hash has strict majority (>50%).
+    fn consensus_target_hash(&self) -> Option<Hash> {
+        let mut hash_votes: HashMap<Hash, usize> = HashMap::new();
+        for status in self.peers.values() {
+            if status.best_height > self.local_height {
+                *hash_votes.entry(status.best_hash).or_default() += 1;
+            }
+        }
+        let total_voters: usize = hash_votes.values().sum();
+        if total_voters == 0 {
+            return None;
+        }
+        // Require strict majority (>50%) of eligible peers
+        hash_votes
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .filter(|(_, count)| *count * 2 > total_voters)
+            .map(|(hash, _)| hash)
+    }
+
     /// Get the best peer to sync from
     fn best_peer(&self) -> Option<PeerId> {
         // CRITICAL: Only consider peers with MORE BLOCKS (higher height).
@@ -1855,15 +1878,39 @@ impl SyncManager {
             }
 
             if should_snap {
-                // Find the best hash that the most peers agree on
-                let target_hash = self
-                    .peers
-                    .get(&peer)
-                    .map(|s| s.best_hash)
-                    .unwrap_or_default();
+                // FIX: Use the hash that the MAJORITY of eligible peers agree on,
+                // not a single peer's hash. This prevents a partitioned minority
+                // (e.g. 3 forked nodes on one server) from steering snap sync
+                // to the wrong chain. If no majority exists, fall back to
+                // header-first sync — the network is too fragmented for snap sync.
+                let target_hash = match self.consensus_target_hash() {
+                    Some(hash) => hash,
+                    None => {
+                        warn!(
+                            "[SNAP_SYNC] No majority best_hash among {} peers — network too fragmented for snap sync, falling back to header-first",
+                            self.peers.len()
+                        );
+                        // Fall through to header-first sync below
+                        let target_slot = match self.peers.get(&peer) {
+                            Some(status) => status.best_slot,
+                            None => return,
+                        };
+                        info!(
+                            "Starting sync epoch {} with peer {} (target_slot={})",
+                            self.sync_epoch, peer, target_slot
+                        );
+                        self.header_downloader.clear();
+                        self.state = SyncState::DownloadingHeaders {
+                            target_slot,
+                            peer,
+                            headers_count: 0,
+                        };
+                        return;
+                    }
+                };
 
                 info!(
-                    "[SNAP_SYNC] Starting snap sync epoch {} — gap={}, target_height={}, target_hash={:.16}",
+                    "[SNAP_SYNC] Starting snap sync epoch {} — gap={}, target_height={}, target_hash={:.16} (majority-preferred)",
                     self.sync_epoch, gap, best_height, target_hash
                 );
 
@@ -2742,22 +2789,30 @@ impl SyncManager {
             return;
         }
 
+        // NOTE: We do NOT filter by block_hash here because peers advance
+        // every ~10s. Fix 1 (consensus_target_hash) ensures we target the
+        // majority chain, and Fix 2 (quorum from total peers) prevents a
+        // minority partition from reaching quorum. Together these two
+        // mechanisms make block_hash filtering unnecessary and avoid
+        // rejecting valid votes from peers that simply advanced.
+
         if let SyncState::SnapCollectingRoots { votes, .. } = &mut self.state {
             votes.push((peer, block_hash, block_height, state_root));
         } else {
             return;
         }
 
-        // Quorum: at least 3 peers, or simple majority of *votes received*.
-        // Using actual vote count (not connected peer count) as the denominator
-        // prevents unreachable quorum when some peers are slow to respond.
-        // Only votes from tip-eligible peers are counted (stale votes rejected above).
-        let vote_count = if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
-            votes.len()
-        } else {
-            return;
-        };
-        let quorum = std::cmp::max(self.snap_sync_quorum, vote_count / 2 + 1);
+        // Quorum: majority of ALL connected peers, not just votes received.
+        //
+        // FIX: Using vote_count as denominator allowed partition quorum —
+        // 3 forked nodes on the same server could form quorum (3/3) while
+        // 9 correct peers hadn't responded yet. Using total connected peers
+        // as denominator ensures quorum represents a true network majority.
+        //
+        // Example: 12 connected peers → quorum = max(3, 12/2+1) = 7.
+        // A partition of 3 nodes can never reach 7, even if they all agree.
+        let total_peers = self.peers.len();
+        let quorum = std::cmp::max(self.snap_sync_quorum, total_peers / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
