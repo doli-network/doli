@@ -215,7 +215,8 @@ impl ChainSpec {
             network: Network::Mainnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message: "Time is the only fair currency. 01/Feb/2026".into(),
+                message: "Genesis v29 - Mandatory BLS + 5 producers + pool leak fix 2026-03-10"
+                    .into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
