@@ -39,6 +39,7 @@ Both archiver nodes run on ai1 and ai2 behind DNS round-robin, providing full re
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 (72.60.228.233) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
 | Seed2 | ai2 (187.124.95.188) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
+| Seed3 | ai3 (187.124.148.93) | 30300 | 8500 | `doli-mainnet-seed` | `seed3.doli.network` |
 
 Archive directory: `/mainnet/seed/blocks/`
 
@@ -48,6 +49,7 @@ Archive directory: `/mainnet/seed/blocks/`
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap1.testnet.doli.network` |
 | Seed2 | ai2 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap2.testnet.doli.network` |
+| Seed3 | ai3 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap3.testnet.doli.network` |
 
 Archive directory: `/testnet/seed/blocks/`
 
@@ -57,9 +59,11 @@ Archive directory: `/testnet/seed/blocks/`
 |--------|------|-------|---------|
 | `seed1.doli.network` | A | 72.60.228.233 | Mainnet P2P seed + RPC |
 | `seed2.doli.network` | A | 187.124.95.188 | Mainnet P2P seed + RPC |
+| `seed3.doli.network` | A | 187.124.148.93 | Mainnet P2P seed + RPC |
 | `archive.doli.network` | A | 187.124.95.188 | Mainnet archive RPC (legacy alias) |
 | `bootstrap1.testnet.doli.network` | A | 72.60.228.233 | Testnet P2P seed + RPC |
 | `bootstrap2.testnet.doli.network` | A | 187.124.95.188 | Testnet P2P seed + RPC |
+| `bootstrap3.testnet.doli.network` | A | 187.124.148.93 | Testnet P2P seed + RPC |
 | `archive.testnet.doli.network` | A | 72.60.228.233 | Testnet archive RPC (legacy alias) |
 
 ---
@@ -130,8 +134,9 @@ Each applied block is streamed to flat files with atomic writes:
 
 - **Atomic writes**: Each file is written to a `.tmp` path first, then renamed — crash-safe
 - **Non-blocking**: Uses `mpsc::channel` with `try_send` — never stalls block production or sync
-- **Catch-up on startup**: Reads missing blocks from local BlockStore up to chain tip
-- **Idempotent**: Skips blocks that are already archived (file existence check)
+- **Catch-up after sync**: On first periodic tick after sync (height > 0), scans from block 1 to tip and fills any missing `.block` files from the local BlockStore. This handles the case where a node resynced thousands of blocks but the archive was empty or had gaps — the catch-up backfills everything in seconds. Runs once per startup (one-shot flag).
+- **Catch-up on startup**: Additionally, `main.rs` calls `catch_up()` before the node loop starts, covering the case where the BlockStore already has blocks at startup time.
+- **Idempotent**: Both catch-up paths skip blocks whose `.block` file already exists on disk (file existence check, not manifest-based)
 
 ### Integrity
 
@@ -295,7 +300,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node --network mainnet run --archive-to /path/to/archive
 ```
 
-The node syncs normally and streams all applied blocks to the archive directory. On startup it catches up any blocks missed while offline.
+The node syncs normally and streams all applied blocks to the archive directory. After sync completes, a one-shot catch-up scans for gaps and fills any missing blocks from the local BlockStore — ensuring the archive is complete even after a full resync.
 
 For a dedicated archiver that also serves as a seed:
 
@@ -331,6 +336,7 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /mainnet/seed/blocks/
 
 | File | Purpose |
 |------|---------|
-| `crates/storage/src/archiver.rs` | BlockArchiver, catch-up, restore/backfill from files |
+| `crates/storage/src/archiver.rs` | BlockArchiver, `catch_up()` (gap-filling), `manifest_height()`, restore/backfill from files |
+| `bins/node/src/node.rs` | One-shot archive catch-up trigger in `run_periodic_tasks()` after sync completes |
 | `crates/rpc/src/methods.rs` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers |
-| `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`), `restore_from_rpc()` |
+| `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`), startup catch-up, `restore_from_rpc()` |
