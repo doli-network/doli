@@ -2325,7 +2325,7 @@ impl Node {
                             if !is_reward_tx {
                                 let _ = utxo.spend_transaction(tx);
                             }
-                            utxo.add_transaction(tx, height, is_reward_tx);
+                            utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
                         }
                     }
                     if genesis_blocks > 0 && height == genesis_blocks + 1 {
@@ -3559,7 +3559,7 @@ impl Node {
                 }
 
                 let _ = utxo.spend_transaction(tx); // In-memory
-                utxo.add_transaction(tx, height, is_reward_tx); // In-memory
+                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot); // In-memory
 
                 // Undo log: track created UTXOs
                 let tx_hash = tx.hash();
@@ -6596,7 +6596,7 @@ impl Node {
                         if !is_reward_tx {
                             let _ = utxo.spend_transaction(tx);
                         }
-                        utxo.add_transaction(tx, height, is_reward_tx);
+                        utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
                     }
                     if genesis_blocks > 0 && height == genesis_blocks + 1 {
                         Self::consume_genesis_bond_utxos(

@@ -227,14 +227,25 @@ impl InMemoryUtxoStore {
         self.utxos.contains_key(outpoint)
     }
 
-    pub fn add_transaction(&mut self, tx: &Transaction, height: BlockHeight, is_coinbase: bool) {
+    pub fn add_transaction(
+        &mut self,
+        tx: &Transaction,
+        height: BlockHeight,
+        is_coinbase: bool,
+        slot: u32,
+    ) {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
 
         for (index, output) in tx.outputs.iter().enumerate() {
             let outpoint = Outpoint::new(tx_hash, index as u32);
+            // Stamp Bond outputs with the block's slot as creation_slot
+            let mut stamped_output = output.clone();
+            if stamped_output.output_type == OutputType::Bond {
+                stamped_output.extra_data = slot.to_le_bytes().to_vec();
+            }
             let entry = UtxoEntry {
-                output: output.clone(),
+                output: stamped_output,
                 height,
                 is_coinbase,
                 is_epoch_reward,
@@ -463,11 +474,17 @@ impl UtxoSet {
         }
     }
 
-    /// Add outputs from a transaction
-    pub fn add_transaction(&mut self, tx: &Transaction, height: BlockHeight, is_coinbase: bool) {
+    /// Add outputs from a transaction, stamping Bond UTXOs with the block slot
+    pub fn add_transaction(
+        &mut self,
+        tx: &Transaction,
+        height: BlockHeight,
+        is_coinbase: bool,
+        slot: u32,
+    ) {
         match self {
-            UtxoSet::InMemory(store) => store.add_transaction(tx, height, is_coinbase),
-            UtxoSet::RocksDb(store) => store.add_transaction(tx, height, is_coinbase),
+            UtxoSet::InMemory(store) => store.add_transaction(tx, height, is_coinbase, slot),
+            UtxoSet::RocksDb(store) => store.add_transaction(tx, height, is_coinbase, slot),
         }
     }
 
@@ -655,7 +672,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         // Add to UTXO set
-        utxo_set.add_transaction(&tx, 0, true);
+        utxo_set.add_transaction(&tx, 0, true, 0);
         assert_eq!(utxo_set.len(), 1);
 
         // Check it exists
@@ -692,7 +709,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 100, false); // height 100, not coinbase
+        utxo_set.add_transaction(&tx, 100, false, 0); // height 100, not coinbase
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -718,7 +735,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 50, true);
+        utxo_set.add_transaction(&tx, 50, true, 0);
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -751,7 +768,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 50, false);
+        utxo_set.add_transaction(&tx, 50, false, 0);
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -811,7 +828,7 @@ mod tests {
         let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1_000_000, pubkey_hash);
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 100, false);
+        utxo_set.add_transaction(&tx, 100, false, 0);
 
         let outpoint = Outpoint::new(tx.hash(), 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -834,14 +851,14 @@ mod tests {
         let mut mem_store = InMemoryUtxoStore::new();
         let tx1 = Transaction::new_coinbase(100_000, pk_hash, 0);
         let tx2 = Transaction::new_coinbase(200_000, pk_hash, 1);
-        mem_store.add_transaction(&tx1, 0, true);
-        mem_store.add_transaction(&tx2, 1, true);
+        mem_store.add_transaction(&tx1, 0, true, 0);
+        mem_store.add_transaction(&tx2, 1, true, 0);
 
         // Create RocksDB store with same entries
         let dir = tempfile::TempDir::new().unwrap();
         let rocks_store = RocksDbUtxoStore::open(dir.path()).unwrap();
-        rocks_store.add_transaction(&tx1, 0, true);
-        rocks_store.add_transaction(&tx2, 1, true);
+        rocks_store.add_transaction(&tx1, 0, true, 0);
+        rocks_store.add_transaction(&tx2, 1, true, 0);
 
         // Canonical bytes must match
         let mem_bytes = mem_store.serialize_canonical();
@@ -930,8 +947,8 @@ mod tests {
         let pk = crypto::hash::hash(b"x");
         let tx1 = Transaction::new_coinbase(100, pk, 0);
         let tx2 = Transaction::new_coinbase(200, pk, 1);
-        store.add_transaction(&tx1, 0, true);
-        store.add_transaction(&tx2, 1, true);
+        store.add_transaction(&tx1, 0, true, 0);
+        store.add_transaction(&tx2, 1, true, 0);
 
         let bytes = store.serialize_canonical();
         let count = u64::from_le_bytes(bytes[..8].try_into().unwrap());
