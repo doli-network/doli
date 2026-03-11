@@ -71,8 +71,14 @@ impl RocksDbUtxoStore {
         self.db.get_cf(cf, &key).ok().flatten().is_some()
     }
 
-    /// Add outputs from a transaction
-    pub fn add_transaction(&self, tx: &Transaction, height: BlockHeight, is_coinbase: bool) {
+    /// Add outputs from a transaction, stamping Bond UTXOs with the block slot
+    pub fn add_transaction(
+        &self,
+        tx: &Transaction,
+        height: BlockHeight,
+        is_coinbase: bool,
+        slot: u32,
+    ) {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
@@ -83,8 +89,13 @@ impl RocksDbUtxoStore {
 
         for (index, output) in tx.outputs.iter().enumerate() {
             let outpoint = Outpoint::new(tx_hash, index as u32);
+            // Stamp Bond outputs with the block's slot as creation_slot
+            let mut stamped_output = output.clone();
+            if stamped_output.output_type == doli_core::OutputType::Bond {
+                stamped_output.extra_data = slot.to_le_bytes().to_vec();
+            }
             let entry = UtxoEntry {
-                output: output.clone(),
+                output: stamped_output,
                 height,
                 is_coinbase,
                 is_epoch_reward,
@@ -507,7 +518,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         // Add
-        store.add_transaction(&tx, 0, true);
+        store.add_transaction(&tx, 0, true, 0);
         assert_eq!(store.len(), 1);
 
         // Get
@@ -535,7 +546,7 @@ mod tests {
         // Create and add coinbase
         let coinbase = test_coinbase_tx(1_000_000, pk_hash);
         let cb_hash = coinbase.hash();
-        store.add_transaction(&coinbase, 0, true);
+        store.add_transaction(&coinbase, 0, true, 0);
         assert_eq!(store.len(), 1);
 
         // Spend it
@@ -558,10 +569,10 @@ mod tests {
         // Add 3 UTXOs for alice, 1 for bob
         for i in 0..3 {
             let tx = test_coinbase_tx(100_000 * (i + 1), alice);
-            store.add_transaction(&tx, i, true);
+            store.add_transaction(&tx, i, true, 0);
         }
         let bob_tx = test_coinbase_tx(500_000, bob);
-        store.add_transaction(&bob_tx, 3, true);
+        store.add_transaction(&bob_tx, 3, true, 0);
 
         assert_eq!(store.len(), 4);
 
@@ -596,7 +607,7 @@ mod tests {
             extra_data: vec![],
         };
 
-        store.add_transaction(&tx, 0, false);
+        store.add_transaction(&tx, 0, false, 0);
         assert_eq!(store.len(), 3);
         assert_eq!(store.total_value(), 600);
     }
@@ -608,7 +619,7 @@ mod tests {
 
         for i in 0..5 {
             let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i, true);
+            store.add_transaction(&tx, i, true, 0);
         }
 
         let bytes1 = store.serialize_canonical();
@@ -627,11 +638,11 @@ mod tests {
 
         let pk_hash = crypto::hash::hash(b"test");
         let tx1 = test_coinbase_tx(100, pk_hash);
-        store.add_transaction(&tx1, 0, true);
+        store.add_transaction(&tx1, 0, true, 0);
         assert_eq!(store.len(), 1);
 
         let tx2 = test_coinbase_tx(200, pk_hash);
-        store.add_transaction(&tx2, 1, true);
+        store.add_transaction(&tx2, 1, true, 0);
         assert_eq!(store.len(), 2);
 
         // Remove one
@@ -647,7 +658,7 @@ mod tests {
 
         for i in 0..10 {
             let tx = test_coinbase_tx(100 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i, true);
+            store.add_transaction(&tx, i, true, 0);
         }
         assert_eq!(store.len(), 10);
 

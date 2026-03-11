@@ -404,7 +404,7 @@ fn test_utxo_set_add_epoch_reward() {
         Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
 
     // Add to UTXO set (not coinbase, height 100)
-    utxo_set.add_transaction(&tx, 100, false);
+    utxo_set.add_transaction(&tx, 100, false, 0);
 
     // Should have 1 UTXO
     assert_eq!(utxo_set.len(), 1);
@@ -430,7 +430,7 @@ fn test_utxo_set_epoch_reward_balance() {
     // Add epoch reward at height 100
     let tx =
         Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
-    utxo_set.add_transaction(&tx, 100, false);
+    utxo_set.add_transaction(&tx, 100, false, 0);
 
     // Before maturity (6 confirmations), balance should be 0 (not spendable)
     let balance_before = utxo_set.get_balance(&recipient_hash, 105);
