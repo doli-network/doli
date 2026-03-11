@@ -262,6 +262,48 @@ enum Commands {
         utxo: String,
     },
 
+    /// Lock DOLI in a bridge HTLC for cross-chain atomic swap
+    BridgeLock {
+        /// Amount of DOLI to lock
+        amount: String,
+
+        /// BLAKE3 hashlock hash (64 hex chars)
+        #[arg(long)]
+        hash: String,
+
+        /// Lock height (claim available after this)
+        #[arg(long)]
+        lock: u64,
+
+        /// Expiry height (refund available after this)
+        #[arg(long)]
+        expiry: u64,
+
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        #[arg(long)]
+        chain: String,
+
+        /// Recipient address on the target chain
+        #[arg(long)]
+        to: String,
+    },
+
+    /// Claim a bridge HTLC with the preimage (receiver side)
+    BridgeClaim {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
+
+        /// Preimage (64 hex chars) that hashes to the locked hash
+        #[arg(long)]
+        preimage: String,
+    },
+
+    /// Refund a bridge HTLC after expiry (sender side)
+    BridgeRefund {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
+    },
+
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
     Wipe {
         /// Network (mainnet, testnet, devnet)
@@ -618,6 +660,32 @@ async fn main() -> Result<()> {
         }
         Commands::NftInfo { utxo } => {
             cmd_nft_info(&rpc_endpoint, &utxo).await?;
+        }
+        Commands::BridgeLock {
+            amount,
+            hash,
+            lock,
+            expiry,
+            chain,
+            to,
+        } => {
+            cmd_bridge_lock(
+                &wallet,
+                &rpc_endpoint,
+                &amount,
+                &hash,
+                lock,
+                expiry,
+                &chain,
+                &to,
+            )
+            .await?;
+        }
+        Commands::BridgeClaim { utxo, preimage } => {
+            cmd_bridge_claim(&wallet, &rpc_endpoint, &utxo, &preimage).await?;
+        }
+        Commands::BridgeRefund { utxo } => {
+            cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo).await?;
         }
         Commands::Wipe {
             network,
@@ -4318,6 +4386,326 @@ async fn cmd_nft_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
 
     if let Some(cond) = output.get("condition") {
         println!("  Condition:    {}", cond);
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// BRIDGE COMMANDS
+// =============================================================================
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_bridge_lock(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    amount: &str,
+    hash_hex: &str,
+    lock: u64,
+    expiry: u64,
+    chain: &str,
+    target_address: &str,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::transaction::{
+        BRIDGE_CHAIN_BITCOIN, BRIDGE_CHAIN_CARDANO, BRIDGE_CHAIN_ETHEREUM, BRIDGE_CHAIN_LITECOIN,
+        BRIDGE_CHAIN_MONERO,
+    };
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let chain_id = match chain.to_lowercase().as_str() {
+        "bitcoin" | "btc" => BRIDGE_CHAIN_BITCOIN,
+        "ethereum" | "eth" => BRIDGE_CHAIN_ETHEREUM,
+        "monero" | "xmr" => BRIDGE_CHAIN_MONERO,
+        "litecoin" | "ltc" => BRIDGE_CHAIN_LITECOIN,
+        "cardano" | "ada" => BRIDGE_CHAIN_CARDANO,
+        _ => anyhow::bail!(
+            "Unknown chain: {}. Supported: bitcoin, ethereum, monero, litecoin, cardano",
+            chain
+        ),
+    };
+
+    let expected_hash =
+        Hash::from_hex(hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid hash: {}", hash_hex))?;
+
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    if amount_coins <= 0.0 {
+        anyhow::bail!("Amount must be greater than zero");
+    }
+    let amount_units = coins_to_units(amount_coins);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    // Build bridge HTLC output
+    let bridge_output = Output::bridge_htlc(
+        amount_units,
+        from_hash,
+        expected_hash,
+        lock,
+        expiry,
+        chain_id,
+        target_address.as_bytes(),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
+
+    // Get spendable UTXOs for funding
+    let fee_units = 1500u64;
+    let required = amount_units + fee_units;
+    let utxos = rpc.get_utxos(&from_pubkey_hash, true).await?;
+
+    let mut selected = Vec::new();
+    let mut total_input = 0u64;
+    for utxo in &utxos {
+        if total_input >= required {
+            break;
+        }
+        selected.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+    if total_input < required {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
+    }
+
+    let mut inputs: Vec<Input> = Vec::new();
+    for utxo in &selected {
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+    }
+
+    let mut outputs = vec![bridge_output];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(doli_core::Output::normal(change, from_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+    let keypair = wallet.primary_keypair()?;
+    let signing_message = tx.signing_message();
+    for input in &mut tx.inputs {
+        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let chain_name = Output::bridge_chain_name(chain_id);
+
+    println!("Bridge HTLC Lock:");
+    println!("  Amount:     {} DOLI", amount_coins);
+    println!("  Target:     {} -> {}", chain_name, target_address);
+    println!("  Hash:       {}", hash_hex);
+    println!("  Lock:       {} (claim after)", lock);
+    println!("  Expiry:     {} (refund after)", expiry);
+    println!("  Fee:        {}", format_balance(fee_units));
+    println!("  TX Hash:    {}", tx_hash.to_hex());
+    println!("  Size:       {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC locked successfully!");
+            println!("TX Hash: {}", result_hash);
+            println!();
+            println!(
+                "Counterparty should now lock {} on {} to address {}",
+                amount_coins, chain_name, target_address
+            );
+            println!("using the same hash: {}", hash_hex);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge lock failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_bridge_claim(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    preimage_hex: &str,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid index"))?;
+
+    // Get the bridge HTLC UTXO details
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let utxo_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output"))?;
+
+    let utxo_amount = utxo_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let fee_units = 1000u64;
+    let claim_amount = utxo_amount.saturating_sub(fee_units);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx =
+        Transaction::new_transfer(vec![input], vec![Output::normal(claim_amount, from_hash)]);
+
+    let signing_hash = tx.signing_message();
+    let witness_str = format!("branch(left)+preimage({})", preimage_hex);
+    let witness_bytes = parse_witness(&witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    println!("Bridge HTLC Claim:");
+    println!(
+        "  UTXO:     {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  Preimage: {}", preimage_hex);
+    println!("  Amount:   {}", format_balance(claim_amount));
+    println!("  Fee:      {}", format_balance(fee_units));
+    println!("  TX Hash:  {}", tx_hash.to_hex());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC claimed successfully!");
+            println!("TX Hash: {}", result_hash);
+            println!();
+            println!("IMPORTANT: Preimage is now public on-chain.");
+            println!("Counterparty can use it to claim their locked funds.");
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge claim failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_bridge_refund(wallet_path: &Path, rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid index"))?;
+
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let utxo_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output"))?;
+
+    let utxo_amount = utxo_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let fee_units = 1000u64;
+    let refund_amount = utxo_amount.saturating_sub(fee_units);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx =
+        Transaction::new_transfer(vec![input], vec![Output::normal(refund_amount, from_hash)]);
+
+    let signing_hash = tx.signing_message();
+    let witness_str = "branch(right)+none()";
+    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    println!("Bridge HTLC Refund:");
+    println!(
+        "  UTXO:    {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  Amount:  {}", format_balance(refund_amount));
+    println!("  Fee:     {}", format_balance(fee_units));
+    println!("  TX Hash: {}", tx_hash.to_hex());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC refunded successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge refund failed: {}", e));
+        }
     }
 
     Ok(())
