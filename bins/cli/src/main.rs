@@ -4300,11 +4300,22 @@ async fn cmd_nft_transfer(
     let mut tx = Transaction::new_transfer(vec![input], vec![new_nft_output]);
 
     // Parse witness and sign
+    let keypair = wallet.primary_keypair()?;
     let signing_hash = tx.signing_message();
-    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+
+    // Auto-provide signature witness when default none() and condition is Signature
+    let witness_bytes = if witness_str == "none()" {
+        let mut w = doli_core::Witness::default();
+        w.signatures.push(doli_core::ConditionWitnessSignature {
+            pubkey: *keypair.public_key(),
+            signature: crypto::signature::sign_hash(&signing_hash, keypair.private_key()),
+        });
+        w.encode()
+    } else {
+        parse_witness(witness_str, &signing_hash)?
+    };
     tx.set_covenant_witnesses(&[witness_bytes]);
 
-    let keypair = wallet.primary_keypair()?;
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
 
     let tx_bytes = tx.serialize();
