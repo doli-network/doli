@@ -318,7 +318,7 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_VDF_ITERATIONS` | 800000 | Devnet only |
 | `DOLI_BLOCKS_PER_YEAR` | 3153600 | Devnet only |
 | `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Devnet only |
-| `DOLI_COINBASE_MATURITY` | 100 | Devnet only |
+| `DOLI_COINBASE_MATURITY` | 6 | Devnet only |
 
 ### 5.4. Mainnet Locked Parameters
 

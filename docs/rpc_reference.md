@@ -773,7 +773,7 @@ when they produce a block via the coinbase transaction. **No claiming is needed.
 
 Per WHITEPAPER.md Section 9.1:
 - Initial reward: 1 DOLI/block
-- Reward maturity: 100 confirmations (Section 9.2)
+- Reward maturity: 6 confirmations (Section 9.2)
 - Halving interval: 12,614,400 blocks (~4 years)
 
 ### Deprecated Methods

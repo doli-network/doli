@@ -208,7 +208,7 @@ coinbase_tx = {
 }
 ```
 
-Coinbase outputs require 100 confirmations before spending (REWARD_MATURITY).
+Coinbase outputs require 6 confirmations before spending (COINBASE_MATURITY).
 
 ### 3.7 Exit Transaction
 
@@ -432,7 +432,7 @@ Validators recalculate expected rewards from BlockStore and require exact match:
 - **Restart-safe**: SyncManager initializes from stored ChainState on restart (resumes from tip, not genesis). `apply_block()` rejects duplicate blocks already in BlockStore.
 - **Sync-safe**: Nodes syncing from peers validate all historical rewards
 - **Fork-safe**: Each chain fork recalculates rewards from its own blocks
-- **Maturity**: Epoch reward outputs require 100 confirmations (REWARD_MATURITY)
+- **Maturity**: Epoch reward outputs require 6 confirmations (COINBASE_MATURITY)
 
 ### 3.12 AddBond Transaction
 
@@ -1377,7 +1377,7 @@ Result:
 | COMMITMENT_PERIOD  | 12,614,400 (= VESTING_PERIOD_SLOTS) |
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
-| REWARD_MATURITY    | 100                      |
+| REWARD_MATURITY    | 6                        |
 | BASE_BLOCK_SIZE    | 1,000,000                |
 | MAX_BLOCK_SIZE_CAP | 32,000,000               |
 | BLOCK_SIZE_GROWTH  | ×2 per era               |

@@ -608,7 +608,7 @@ when they produce a block via the coinbase transaction. **No claiming is needed.
 
 Per WHITEPAPER.md Section 9.1:
 - Initial reward: 1 DOLI/block
-- Reward maturity: 100 confirmations (Section 9.2)
+- Reward maturity: 6 confirmations (Section 9.2)
 - Halving interval: 12,614,400 blocks (~4 years)
 
 ### 5.1. How Rewards Work
@@ -616,7 +616,7 @@ Per WHITEPAPER.md Section 9.1:
 When a producer creates a block:
 1. A coinbase transaction is included as the first transaction
 2. The coinbase pays 1 DOLI (Era 1) directly to the producer
-3. The reward is spendable after 100 confirmations (maturity)
+3. The reward is spendable after 6 confirmations (maturity)
 
 This is identical to Bitcoin's reward model. There is no epoch-based claiming
 or presence tracking - rewards are deterministic and immediate.
@@ -629,7 +629,7 @@ To see your accumulated rewards:
 doli -w /path/to/wallet.json balance
 ```
 
-Rewards appear as "pending" until they reach 100 confirmations, then become
+Rewards appear as "pending" until they reach 6 confirmations, then become
 "confirmed" and spendable.
 
 ### 5.3. Deprecated Commands

@@ -4,7 +4,7 @@
 //! - Rewards accumulate in pool during epoch (no coinbase per block)
 //! - At epoch boundary, pool divided equally among all participating producers
 //! - First producer (sorted by pubkey) receives any remainder
-//! - Epoch reward outputs require 100 confirmations (REWARD_MATURITY)
+//! - Epoch reward outputs require 6 confirmations (COINBASE_MATURITY)
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -432,12 +432,12 @@ fn test_utxo_set_epoch_reward_balance() {
         Transaction::new_epoch_reward(1, *keypair.public_key(), 100_000_000_000, recipient_hash);
     utxo_set.add_transaction(&tx, 100, false);
 
-    // Before maturity, balance should be 0 (not spendable)
-    let balance_before = utxo_set.get_balance(&recipient_hash, 150);
+    // Before maturity (6 confirmations), balance should be 0 (not spendable)
+    let balance_before = utxo_set.get_balance(&recipient_hash, 105);
     assert_eq!(balance_before, 0);
 
     // After maturity, balance should include the epoch reward
-    let balance_after = utxo_set.get_balance(&recipient_hash, 200);
+    let balance_after = utxo_set.get_balance(&recipient_hash, 106);
     assert_eq!(balance_after, 100_000_000_000);
 }
 

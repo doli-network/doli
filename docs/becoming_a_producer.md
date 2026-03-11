@@ -280,7 +280,7 @@ Rewards are distributed via **coinbase transactions** directly to the block prod
 - **Simple**: Each block contains a coinbase output to its producer
 - **Deterministic**: Reward amount based on era (halves every ~4 years)
 - **No claiming required**: Rewards appear directly in your UTXO set
-- **Maturity period**: Coinbase outputs require 100 confirmations before spending
+- **Maturity period**: Coinbase outputs require 6 confirmations before spending
 
 **Example:**
 
