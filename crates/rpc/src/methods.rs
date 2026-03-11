@@ -1790,12 +1790,15 @@ impl RpcContext {
                     let entry_hash = crypto::hash::hash(&canonical).to_string();
                     // Include key fields for human inspection
                     let detail = format!(
-                        "amt={} h={} type={} cb={} er={}",
+                        "amt={} h={} type={} cb={} er={} lock={} ed={} pk={}",
                         entry.output.amount,
                         entry.height,
                         entry.output.output_type as u8,
                         entry.is_coinbase as u8,
                         entry.is_epoch_reward as u8,
+                        entry.output.lock_until,
+                        hex::encode(&entry.output.extra_data),
+                        &entry.output.pubkey_hash.to_string()[..16],
                     );
                     entries.push((op_hex, entry_hash, detail));
                 }
