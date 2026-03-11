@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crypto::Hash;
+use crypto::{Hash, Hasher};
 use doli_core::Transaction;
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
 
@@ -1641,30 +1641,44 @@ impl RpcContext {
         let block_store = self.block_store.clone();
         let tip = tip_height;
 
-        // Run scan in blocking task to avoid starving the async runtime
+        // Run scan in blocking task to avoid starving the async runtime.
+        // Computes both gap detection AND a running chain commitment:
+        //   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+        // If the chain is complete, the final commitment is a 32-byte fingerprint
+        // that uniquely identifies the exact sequence of all blocks 1..tip.
+        // Two nodes with the same commitment have identical chains.
         let result = tokio::task::spawn_blocking(move || {
             let mut missing: Vec<String> = Vec::new();
             let mut range_start: Option<u64> = None;
             let mut range_end: u64 = 0;
+            // Chain commitment: BLAKE3(prev_commitment || block_hash)
+            let mut commitment = Hash::default(); // Start with zeros
+            let mut commitment_valid = true; // Breaks on first gap
 
             for h in 1..=tip {
-                let exists = block_store
-                    .get_hash_by_height(h)
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
+                let block_hash = block_store.get_hash_by_height(h).ok().flatten();
 
-                if !exists {
+                if let Some(hash) = block_hash {
+                    if commitment_valid {
+                        let mut hasher = Hasher::new();
+                        hasher.update(commitment.as_bytes());
+                        hasher.update(hash.as_bytes());
+                        commitment = hasher.finalize();
+                    }
+
+                    if let Some(start) = range_start.take() {
+                        if start == range_end {
+                            missing.push(format!("{}", start));
+                        } else {
+                            missing.push(format!("{}-{}", start, range_end));
+                        }
+                    }
+                } else {
                     if range_start.is_none() {
                         range_start = Some(h);
                     }
                     range_end = h;
-                } else if let Some(start) = range_start.take() {
-                    // Flush completed gap range
-                    if start == range_end {
-                        missing.push(format!("{}", start));
-                    } else {
-                        missing.push(format!("{}-{}", start, range_end));
-                    }
+                    commitment_valid = false; // Gap breaks the chain
                 }
             }
             // Flush final range if chain ends with a gap
@@ -1688,19 +1702,26 @@ impl RpcContext {
                 })
                 .sum();
 
-            (missing, missing_count)
+            let commitment_hex = if commitment_valid && missing_count == 0 {
+                Some(format!("{}", commitment))
+            } else {
+                None
+            };
+
+            (missing, missing_count, commitment_hex)
         })
         .await
         .map_err(|e| RpcError::internal_error(format!("Scan failed: {}", e)))?;
 
-        let (missing, missing_count) = result;
+        let (missing, missing_count, chain_commitment) = result;
 
         Ok(serde_json::json!({
             "complete": missing_count == 0,
             "tip": tip_height,
             "scanned": tip_height,
             "missing": missing,
-            "missing_count": missing_count
+            "missingCount": missing_count,
+            "chainCommitment": chain_commitment
         }))
     }
 
