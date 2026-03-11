@@ -123,6 +123,52 @@ impl Mempool {
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 
+        // Validate covenant conditions for conditioned inputs (hashlock, timelock, multisig, HTLC)
+        for (i, input) in tx.inputs.iter().enumerate() {
+            let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
+            if let Some(entry) = utxo_set.get(&outpoint) {
+                if entry.output.output_type.is_conditioned() {
+                    use doli_core::conditions::{Condition, Witness, MAX_CONDITION_OPS};
+                    let condition = Condition::decode(&entry.output.extra_data).map_err(|e| {
+                        MempoolError::InvalidTransaction(format!(
+                            "input {} invalid condition: {}",
+                            i, e
+                        ))
+                    })?;
+                    if condition.ops_count() > MAX_CONDITION_OPS {
+                        return Err(MempoolError::InvalidTransaction(format!(
+                            "input {} condition exceeds ops limit",
+                            i
+                        )));
+                    }
+                    let witness_bytes = tx.get_covenant_witness(i).unwrap_or(&[]);
+                    let witness = Witness::decode(witness_bytes).map_err(|e| {
+                        MempoolError::InvalidTransaction(format!(
+                            "input {} invalid witness: {}",
+                            i, e
+                        ))
+                    })?;
+                    let signing_hash = tx.signing_message();
+                    let eval_ctx = doli_core::conditions::EvalContext {
+                        current_height,
+                        signing_hash: &signing_hash,
+                    };
+                    let mut or_idx = 0usize;
+                    if !doli_core::conditions::evaluate(
+                        &condition,
+                        &witness,
+                        &eval_ctx,
+                        &mut or_idx,
+                    ) {
+                        return Err(MempoolError::InvalidTransaction(format!(
+                            "input {} covenant condition not satisfied",
+                            i
+                        )));
+                    }
+                }
+            }
+        }
+
         // Calculate fee by looking up inputs
         let (total_input, ancestors) = self.calculate_inputs(&tx, utxo_set, current_height)?;
         let total_output = tx.total_output();

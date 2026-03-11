@@ -3719,6 +3719,20 @@ impl Node {
                     }
                 }
 
+                // Validate UTXO-level spending conditions (signatures, covenant evaluation,
+                // lock times, balance). Coinbase/EpochReward skip internally.
+                if !is_reward_tx {
+                    let utxo_ctx = validation::ValidationContext::new(
+                        ConsensusParams::for_network(self.config.network),
+                        self.config.network,
+                        0, // wall-clock not needed for UTXO validation
+                        height,
+                    );
+                    validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo).map_err(
+                        |e| anyhow::anyhow!("UTXO validation failed for tx {}: {}", tx.hash(), e),
+                    )?;
+                }
+
                 let _ = utxo.spend_transaction(tx); // In-memory
                 utxo.add_transaction(tx, height, is_reward_tx, block.header.slot); // In-memory
 
