@@ -300,6 +300,25 @@ impl Node {
             }
         };
         let utxo_set = Arc::new(RwLock::new(utxo_set));
+
+        // Validate genesis hash against embedded chainspec (detect state_db corruption).
+        let canonical = {
+            let spec = match config.network {
+                Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+                Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+                Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+            };
+            spec.genesis_hash()
+        };
+        if chain_state.genesis_hash != canonical {
+            warn!(
+                "Genesis hash mismatch: state_db={} chainspec={} — correcting to chainspec",
+                &chain_state.genesis_hash.to_string()[..16],
+                &canonical.to_string()[..16],
+            );
+            chain_state.genesis_hash = canonical;
+            state_db.put_chain_state(&chain_state)?;
+        }
         let genesis_hash = chain_state.genesis_hash;
 
         // Verify chain state consistency with block store
@@ -964,6 +983,17 @@ impl Node {
         self.shutdown().await?;
 
         Ok(())
+    }
+
+    /// Return the canonical genesis hash from the embedded chainspec.
+    /// Always correct regardless of state_db corruption.
+    fn canonical_genesis_hash(&self) -> Hash {
+        let spec = match self.config.network {
+            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+        };
+        spec.genesis_hash()
     }
 
     /// Start the network service
@@ -3092,7 +3122,8 @@ impl Node {
     ///
     /// After this, snap sync activates on next tick: h=0 + gap > threshold + peers >= 3.
     async fn reset_state_only(&mut self) -> Result<()> {
-        let genesis_hash = self.chain_state.read().await.genesis_hash;
+        // Use canonical chainspec genesis hash, not state_db (may be corrupt).
+        let genesis_hash = self.canonical_genesis_hash();
 
         // LAYER 1: Reset sync manager (blocks production via ProductionGate)
         {
