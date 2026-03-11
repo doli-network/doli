@@ -11,28 +11,34 @@ This document describes the DOLI node JSON-RPC API.
 | **Chain** | `getChainInfo` | Implemented |
 | **Chain** | `getBlockByHash` | Implemented |
 | **Chain** | `getBlockByHeight` | Implemented |
+| **Chain** | `getChainStats` | Implemented |
 | **Transaction** | `sendTransaction` | Implemented |
 | **Transaction** | `getTransaction` | Implemented (mempool only) |
 | **Balance** | `getBalance` | Implemented |
 | **Balance** | `getUtxos` | Implemented |
 | **Balance** | `getHistory` | Implemented |
 | **Mempool** | `getMempoolInfo` | Implemented |
+| **Mempool** | `getMempoolTransactions` | Implemented |
 | **Network** | `getNetworkInfo` | Implemented |
 | **Network** | `getNodeInfo` | Implemented |
+| **Network** | `getNetworkParams` | Implemented |
 | **Producer** | `getProducer` | Implemented |
 | **Producer** | `getProducers` | Implemented |
+| **Producer** | `getBondDetails` | Implemented |
+| **Scheduling** | `getSlotSchedule` | Implemented |
+| **Scheduling** | `getProducerSchedule` | Implemented |
+| **Scheduling** | `getAttestationStats` | Implemented |
 | **Governance** | `getUpdateStatus` | Implemented |
 | **Governance** | `submitVote` | Implemented |
 | **Governance** | `getMaintainerSet` | Implemented |
 | **Governance** | `submitMaintainerChange` | Implemented |
 | **Epoch** | `getEpochInfo` | Implemented |
-| **Producer** | `getBondDetails` | Implemented |
-| **Network** | `getNetworkParams` | Implemented |
-| **Chain** | `getChainStats` | Implemented |
 | **Archive** | `getBlockRaw` | Implemented |
 | **Archive** | `backfillFromPeer` | Implemented |
 | **Archive** | `backfillStatus` | Implemented |
 | **Archive** | `verifyChainIntegrity` | Implemented |
+| **Debugging** | `getStateRootDebug` | Implemented |
+| **Debugging** | `getUtxoDiff` | Implemented |
 
 ### Not Yet Implemented
 
@@ -43,9 +49,7 @@ The following methods are **NOT YET IMPLEMENTED** and will return "Method not fo
 | `getBlockHeader` | Return header only (use `getBlockByHash` instead) |
 | `getTransactionReceipt` | Transaction receipt with logs |
 | `getUtxosByOutpoint` | Lookup specific UTXOs by outpoint |
-| `getSchedule` | Producer schedule for upcoming slots |
 | `getPeerInfo` | Detailed peer list (use `getNetworkInfo` instead) |
-| `getRawMempool` | List all mempool transaction hashes |
 | `validateAddress` | Validate address format |
 | `estimateFee` | Estimate transaction fee |
 
@@ -382,6 +386,48 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
+### getMempoolTransactions
+
+Returns pending transactions from the mempool, sorted by fee rate (highest first).
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| limit | integer | Maximum transactions to return (default: 100, max: 500) |
+
+**Response:**
+```json
+[
+    {
+        "hash": "0x...",
+        "txType": "transfer",
+        "size": 256,
+        "fee": 10000,
+        "feeRate": 39,
+        "addedTime": 1706400000
+    }
+]
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| hash | Transaction hash (hex) |
+| txType | Transaction type (transfer, registration, etc.) |
+| size | Transaction size in bytes |
+| fee | Transaction fee in base units |
+| feeRate | Fee per byte |
+| addedTime | Unix timestamp when transaction entered the mempool |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getMempoolTransactions","params":{"limit":50},"id":1}'
+```
+
+---
+
 ## 7. Network Methods
 
 ### getNetworkInfo
@@ -464,8 +510,8 @@ Returns information about a specific producer.
 }
 ```
 
-**Note:** `bondCount` is derived from the UTXO set. Withdrawal is instant
-(no pending withdrawals list).
+**Note:** `bondCount` is derived from the UTXO set. Withdrawal requires
+a 7-day delay after `RequestWithdrawal` before `ClaimWithdrawal`.
 
 **Status values:**
 | Status | Description |
@@ -615,6 +661,86 @@ Returns information about the node.
 curl -X POST http://127.0.0.1:8545 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNodeInfo","params":{},"id":1}'
+```
+
+---
+
+### getNetworkParams
+
+Returns the consensus and network parameters for the node's active network.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "network": "mainnet",
+    "bondUnit": 1000000000000,
+    "slotDuration": 10,
+    "slotsPerEpoch": 360,
+    "blocksPerRewardEpoch": 360,
+    "coinbaseMaturity": 100,
+    "initialReward": 100000000,
+    "genesisTime": 1706400000
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| network | Network name (mainnet, testnet, devnet) |
+| bondUnit | Bond size in base units (1 bond = this amount) |
+| slotDuration | Slot duration in seconds |
+| slotsPerEpoch | Number of slots per epoch |
+| blocksPerRewardEpoch | Number of blocks per reward epoch |
+| coinbaseMaturity | Blocks before coinbase outputs are spendable |
+| initialReward | Initial block reward in base units |
+| genesisTime | Genesis timestamp (unix) |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getNetworkParams","params":{},"id":1}'
+```
+
+---
+
+### getChainStats
+
+Returns aggregate chain statistics including supply, UTXO count, and staking info.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "totalSupply": 123456789000000,
+    "addressCount": 42,
+    "utxoCount": 1500,
+    "activeProducers": 5,
+    "totalStaked": 50000000000000,
+    "height": 12345
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| totalSupply | Total UTXO supply in base units |
+| addressCount | Number of unique addresses with UTXOs |
+| utxoCount | Total number of unspent outputs |
+| activeProducers | Number of active producers |
+| totalStaked | Total bonds staked in base units |
+| height | Current chain height |
+
+**Note:** `totalSupply` is derived from summing all UTXO amounts. Divide by 1e8 for DOLI.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getChainStats","params":{},"id":1}'
 ```
 
 ---
@@ -834,7 +960,319 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-## 10. Error Codes
+## 10. Scheduling Methods
+
+### getSlotSchedule
+
+Returns the producer schedule for upcoming slots based on the current producer set and bond weights.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| fromSlot | integer | Starting slot (default: current slot) |
+| count | integer | Number of slots to return (default: 20, max: 360) |
+
+**Response:**
+```json
+{
+    "slots": [
+        {
+            "slot": 45678,
+            "producer": "0x...",
+            "rank": 0
+        },
+        {
+            "slot": 45679,
+            "producer": "0x...",
+            "rank": 0
+        }
+    ],
+    "currentSlot": 45678,
+    "epoch": 12,
+    "slotsRemainingInEpoch": 282,
+    "totalBonds": 50,
+    "slotDuration": 10,
+    "genesisTime": 1706400000
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| slots | Array of slot assignments |
+| slots[].slot | Slot number |
+| slots[].producer | Assigned producer public key (hex) |
+| slots[].rank | Rank (0 = primary producer) |
+| currentSlot | Current chain slot |
+| epoch | Current epoch number |
+| slotsRemainingInEpoch | Slots left in the current epoch |
+| totalBonds | Total bond count across all active producers |
+| slotDuration | Slot duration in seconds |
+| genesisTime | Genesis timestamp (unix) |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getSlotSchedule","params":{"fromSlot":45678,"count":10},"id":1}'
+```
+
+---
+
+### getProducerSchedule
+
+Returns schedule and performance information for a specific producer in the current epoch, including assigned slots, fill rate, and economics.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| publicKey | string | Producer public key (hex) |
+
+**Response:**
+```json
+{
+    "publicKey": "0x...",
+    "currentSlot": 45678,
+    "epoch": 12,
+    "nextSlot": 45690,
+    "secondsUntilNext": 120,
+    "slotsThisEpoch": [45600, 45620, 45640, 45690, 45710],
+    "assignedCount": 5,
+    "producedCount": 3,
+    "fillRate": 1.0,
+    "bondCount": 10,
+    "totalNetworkBonds": 50,
+    "weeklyEarnings": 12096000000,
+    "doublingWeeks": 82.67,
+    "blockReward": 100000000
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| publicKey | Producer public key (hex) |
+| currentSlot | Current chain slot |
+| epoch | Current epoch number |
+| nextSlot | Next slot where this producer is primary (null if none remaining in epoch) |
+| secondsUntilNext | Seconds until the next assigned slot (null if none remaining) |
+| slotsThisEpoch | Array of all slot numbers assigned to this producer in the current epoch |
+| assignedCount | Total assigned slots this epoch |
+| producedCount | Number of blocks actually produced this epoch |
+| fillRate | Ratio of produced/assigned for past slots (0.0-1.0) |
+| bondCount | Producer's effective bond count (minimum 1) |
+| totalNetworkBonds | Total bonds across all active producers |
+| weeklyEarnings | Estimated weekly earnings in base units |
+| doublingWeeks | Estimated weeks until bond investment doubles from rewards |
+| blockReward | Current block reward in base units |
+
+**Note:** `fillRate` only considers past assigned slots (slots <= current slot). Future slots are excluded from the calculation. `doublingWeeks` is `Infinity` if weekly earnings are zero.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getProducerSchedule","params":{"publicKey":"0x..."},"id":1}'
+```
+
+---
+
+### getAttestationStats
+
+Returns attestation statistics for the current epoch. Scans all blocks in the current epoch, decodes presence_root bitfields, and reports per-producer attestation minute counts. Used to determine which producers qualify for epoch rewards.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "epoch": 12,
+    "epochStart": 4320,
+    "currentHeight": 4500,
+    "blocksInEpoch": 181,
+    "blocksWithAttestations": 170,
+    "blocksWithBls": 165,
+    "currentMinute": 30,
+    "producers": [
+        {
+            "publicKey": "0x...",
+            "attestedMinutes": 28,
+            "totalMinutes": 31,
+            "threshold": 20,
+            "qualified": true,
+            "hasBls": true
+        }
+    ]
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| epoch | Current epoch number |
+| epochStart | First block height of the current epoch |
+| currentHeight | Current chain height |
+| blocksInEpoch | Number of blocks produced so far in this epoch |
+| blocksWithAttestations | Blocks containing presence_root attestation data |
+| blocksWithBls | Blocks containing aggregate BLS signatures |
+| currentMinute | Current attestation minute within the epoch |
+| producers | Per-producer attestation breakdown |
+| producers[].publicKey | Producer public key (hex) |
+| producers[].attestedMinutes | Number of distinct minutes this producer has attested |
+| producers[].totalMinutes | Total minutes elapsed in the epoch |
+| producers[].threshold | Minimum attested minutes required for reward qualification |
+| producers[].qualified | Whether the producer meets the attestation threshold |
+| producers[].hasBls | Whether the producer has a registered BLS key |
+
+**Note:** Producers are sorted by public key bytes (same order as the attestation bitfield). A producer without a BLS key (`hasBls: false`) cannot sign attestations and will not qualify for epoch rewards.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getAttestationStats","params":{},"id":1}'
+```
+
+---
+
+## 11. Debugging Methods
+
+These methods are intended for node operators diagnosing state divergence and snap sync failures. They expose internal state details that are not needed for normal operation.
+
+### getStateRootDebug
+
+Returns the per-component state root hashes. Compare these across nodes at the same height to identify which state component (ChainState, UTXO set, or ProducerSet) has diverged.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "height": 12345,
+    "bestHash": "0x...",
+    "stateRoot": "0x...",
+    "csHash": "0x...",
+    "utxoHash": "0x...",
+    "psHash": "0x...",
+    "utxoCount": 1500,
+    "producerCount": 5,
+    "totalMinted": 0,
+    "registrationSeq": 5
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| height | Current chain height |
+| bestHash | Best block hash |
+| stateRoot | Combined state root: `H(H(chain_state) \|\| H(utxo_set) \|\| H(producer_set))` |
+| csHash | Hash of the canonical ChainState serialization |
+| utxoHash | Hash of the canonical UTXO set serialization |
+| psHash | Hash of the canonical ProducerSet serialization |
+| utxoCount | Number of UTXOs in the set |
+| producerCount | Number of active producers |
+| totalMinted | Total minted (always 0 -- dead code, not used) |
+| registrationSeq | Registration sequence counter from ChainState |
+
+**Diagnosis workflow:**
+1. Call `getStateRootDebug` on all nodes at the same height
+2. Compare `stateRoot` -- if they match, state is consistent
+3. If they differ, compare `csHash`, `utxoHash`, `psHash` to find which component diverges
+4. If `utxoHash` differs, use `getUtxoDiff` to find the exact divergent UTXOs
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}'
+```
+
+---
+
+### getUtxoDiff
+
+Returns per-UTXO canonical hashes for diffing across nodes. Supports two modes: full dump (no params) and differential mode (with reference hashes from another node).
+
+**Important:** Only works with the in-memory UTXO set. Returns an error for RocksDb-backed UTXO sets.
+
+**Parameters (full dump mode):** None or `{}`
+
+**Parameters (diff mode):**
+| Name | Type | Description |
+|------|------|-------------|
+| referenceHashes | array of strings | Entry hashes from a reference node; only differing entries are returned |
+
+**Response (full dump mode):**
+```json
+{
+    "height": 12345,
+    "count": 1500,
+    "entries": [
+        {
+            "outpoint": "abcd1234...0000",
+            "hash": "0x...",
+            "detail": "amt=100000000 h=100 type=0 cb=1 er=0 lock=0 ed= pk=abcdef0123456789"
+        }
+    ]
+}
+```
+
+**Response (diff mode):**
+```json
+{
+    "height": 12345,
+    "totalEntries": 1500,
+    "diffCount": 2,
+    "diffs": [
+        {
+            "outpoint": "abcd1234...0000",
+            "hash": "0x...",
+            "detail": "amt=100000000 h=100 type=1 cb=0 er=0 lock=4294967295 ed=e8030000 pk=abcdef0123456789"
+        }
+    ]
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| height | Chain height at time of query |
+| count | Total UTXO entries (full dump mode) |
+| totalEntries | Total UTXO entries (diff mode) |
+| diffCount | Number of differing entries (diff mode) |
+| entries / diffs | Array of UTXO entries |
+| [].outpoint | Outpoint bytes (hex-encoded: tx_hash + output_index) |
+| [].hash | Canonical hash of the UTXO entry |
+| [].detail | Human-readable breakdown of UTXO fields |
+
+**Detail format:** `amt=<amount> h=<height> type=<output_type> cb=<is_coinbase> er=<is_epoch_reward> lock=<lock_until> ed=<extra_data_hex> pk=<pubkey_hash_prefix>`
+
+Where `type`: 0=Normal, 1=Bond. `cb`/`er`: 0=false, 1=true. `ed`: extra_data hex (Bond UTXOs store creation_slot as 4 bytes LE). `pk`: first 16 chars of pubkey_hash.
+
+**Diagnosis workflow:**
+1. On node A: `getUtxoDiff` with no params -- save all entry hashes
+2. On node B: `getUtxoDiff` with `referenceHashes` set to node A's hashes
+3. The response shows only entries that differ or are missing
+4. Compare the `detail` fields to identify the exact divergence (e.g., different `extra_data` on Bond UTXOs)
+
+**Example (full dump):**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{},"id":1}'
+```
+
+**Example (diff mode):**
+```bash
+curl -X POST http://127.0.0.1:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["0xabc...","0xdef..."]},"id":1}'
+```
+
+---
+
+## 12. Error Codes
 
 | Code | Message | Description |
 |------|---------|-------------|
@@ -868,7 +1306,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 ---
 
-## 11. Units and Formatting
+## 13. Units and Formatting
 
 ### Amount Units
 
@@ -888,7 +1326,7 @@ All binary data is hex-encoded with `0x` prefix:
 
 ---
 
-## 12. Rate Limiting
+## 14. Rate Limiting
 
 Default rate limits (configurable):
 
@@ -901,7 +1339,7 @@ Exceeded limits return HTTP 429 (Too Many Requests).
 
 ---
 
-## 13. Security Considerations
+## 15. Security Considerations
 
 ### Binding Address
 
@@ -926,7 +1364,7 @@ Cross-origin requests disabled by default. Enable in config if needed for web ap
 
 ---
 
-## 14. WebSocket Support
+## 16. WebSocket Support
 
 WebSocket subscriptions are planned but not yet implemented.
 
@@ -937,7 +1375,7 @@ Future subscription topics:
 
 ---
 
-## 15. Archive & Integrity Methods
+## 17. Archive & Integrity Methods
 
 ### `getBlockRaw`
 
@@ -1025,4 +1463,6 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
 
 ---
 
-*API version: 1.1*
+*API version: 1.2*
+
+*Last updated: March 2026*
