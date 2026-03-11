@@ -2614,8 +2614,9 @@ fn verify_input_conditions(
 ) -> Result<(), ValidationError> {
     if utxo.output.output_type.is_conditioned() {
         // ---- Conditioned output: evaluate condition tree ----
-        let condition =
-            crate::conditions::Condition::decode(&utxo.output.extra_data).map_err(|e| {
+        let condition = crate::conditions::Condition::decode_prefix(&utxo.output.extra_data)
+            .map(|(cond, _consumed)| cond)
+            .map_err(|e| {
                 ValidationError::InvalidTransaction(format!(
                     "input {} references output with invalid condition: {}",
                     input_index, e

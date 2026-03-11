@@ -560,7 +560,10 @@ impl Output {
         &self,
     ) -> Option<Result<crate::conditions::Condition, crate::conditions::ConditionError>> {
         if self.output_type.is_conditioned() && !self.extra_data.is_empty() {
-            Some(crate::conditions::Condition::decode(&self.extra_data))
+            Some(
+                crate::conditions::Condition::decode_prefix(&self.extra_data)
+                    .map(|(cond, _consumed)| cond),
+            )
         } else {
             None
         }
