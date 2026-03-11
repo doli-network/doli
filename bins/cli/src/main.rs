@@ -179,6 +179,13 @@ enum Commands {
     /// Show chain information
     Chain,
 
+    /// Verify chain integrity and compute chain commitment
+    ///
+    /// Scans all blocks 1..tip and computes a running BLAKE3 commitment:
+    ///   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+    /// Two nodes with the same commitment have identical chains.
+    ChainVerify,
+
     /// Update governance commands
     Update {
         #[command(subcommand)]
@@ -542,6 +549,9 @@ async fn main() -> Result<()> {
         }
         Commands::Chain => {
             cmd_chain(&rpc_endpoint).await?;
+        }
+        Commands::ChainVerify => {
+            cmd_chain_verify(&rpc_endpoint).await?;
         }
         Commands::Update { command } => {
             cmd_update(&wallet, &rpc_endpoint, command).await?;
@@ -3541,6 +3551,49 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
         }
         Err(e) => {
             anyhow::bail!("Cannot connect to node at {}. Details: {}. Make sure a DOLI node is running and accessible.", rpc_endpoint, e);
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_chain_verify(rpc_endpoint: &str) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    println!("Chain Integrity Verification");
+    println!("{:-<60}", "");
+    println!("Scanning all blocks from genesis to tip...\n");
+
+    match rpc.verify_chain_integrity().await {
+        Ok(result) => {
+            println!("Tip Height:       {}", result.tip);
+            println!("Blocks Scanned:   {}", result.scanned);
+            println!(
+                "Complete:         {}",
+                if result.complete { "YES" } else { "NO" }
+            );
+            println!("Missing Blocks:   {}", result.missing_count);
+            if !result.missing.is_empty() {
+                println!("Missing Ranges:   {}", result.missing.join(", "));
+            }
+            println!();
+            if let Some(commitment) = result.chain_commitment {
+                println!("Chain Commitment: {}", commitment);
+                println!();
+                println!("This 32-byte BLAKE3 fingerprint uniquely identifies the exact");
+                println!(
+                    "sequence of all blocks 1..{}. Two nodes with the same",
+                    result.tip
+                );
+                println!("commitment have identical chains.");
+            } else {
+                println!("Chain Commitment: UNAVAILABLE (chain is incomplete)");
+                println!();
+                println!("Run 'backfillFromPeer' to fill gaps, then verify again.");
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Cannot verify chain at {}. Details: {}", rpc_endpoint, e);
         }
     }
 
