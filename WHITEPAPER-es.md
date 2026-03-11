@@ -16,7 +16,7 @@ La produccion de bloques sigue una rotacion determinista: un participante con un
 
 Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad agregadas con BLS — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
 
-Las transacciones se ordenan mediante funciones de retardo verificable que no pueden paralelizarse. No se requiere hardware especial. Cualquier CPU puede participar en el consenso. El resultado es un sistema donde el peso del consenso emerge del tiempo en lugar de la confianza, el capital o la escala.
+Las transacciones se ordenan mediante pruebas de retardo secuencial — computaciones de hash iteradas que no pueden paralelizarse. No se requiere hardware especial. Cualquier CPU puede participar en el consenso. El resultado es un sistema donde el peso del consenso emerge del tiempo en lugar de la confianza, el capital o la escala.
 
 ---
 ## 1. Introduccion
@@ -216,13 +216,13 @@ Cada marca de tiempo incluye la marca de tiempo anterior en su hash, formando un
 
 Para implementar un servidor de marcas de tiempo distribuido sobre una base peer-to-peer, necesitamos un mecanismo que haga costosa la produccion de bloques y prevenga que ese costo sea evadido mediante paralelizacion o acumulacion de recursos.
 
-La solucion es usar **Verifiable Delay Functions**. Una VDF es una funcion que:
+La solucion es usar **pruebas de retardo secuencial** — funciones que imponen un tiempo minimo de reloj de pared por bloque mediante computacion inherentemente serial. La construccion esta inspirada en las Verifiable Delay Functions [2, 3] pero utiliza un primitivo mas simple (Seccion 5.1). Las propiedades esenciales son:
 
 1. Requiere un numero fijo de operaciones secuenciales para computarse.
-2. Produce una prueba que puede verificarse rapidamente.
-3. No puede acelerarse significativamente mediante paralelizacion.
+2. No puede acelerarse significativamente mediante paralelizacion.
+3. Puede ser verificada por cualquier nodo (por recomputacion).
 
-> **Nota:** La VDF demuestra que *N* operaciones secuenciales fueron ejecutadas — el tiempo es el limite inferior efectivo ya que no se conoce ninguna tecnica que acelere la computacion secuencial mediante paralelizacion. La VDF sirve como latido (prueba de presencia), no como fuente de aleatoriedad. La seleccion de productor es una funcion pura de `(slot, ActiveSet(epoch))`, fijada al inicio del epoch, independiente de la velocidad de la VDF. Hardware mas rapido no proporciona ventaja de programacion.
+> **Nota:** La prueba de retardo demuestra que *N* operaciones secuenciales fueron ejecutadas — el tiempo es el limite inferior efectivo ya que no se conoce ninguna tecnica que acelere la computacion secuencial de hashes mediante paralelizacion. La prueba sirve como latido (prueba de presencia), no como fuente de aleatoriedad. La seleccion de productor es una funcion pura de `(slot, ActiveSet(epoch))`, fijada al inicio del epoch, independiente de la velocidad de la prueba. Hardware mas rapido no proporciona ventaja de programacion.
 
 Para cada bloque, el productor debe calcular:
 
@@ -263,7 +263,7 @@ Input: prev_hash ∥ slot ∥ producer_key
       Output: h_T = H^T(input)
 ```
 
-**Verificacion:** Un verificador recomputa *h_T = H^T(input)* y comprueba que *h_T == salida_declarada*. No existen atajos — la dependencia secuencial *h_{i+1} = H(h_i)* previene la paralelizacion.
+**Verificacion:** Un verificador recomputa *h_T = H^T(input)* y comprueba que *h_T == salida_declarada*. La dependencia secuencial *h_{i+1} = H(h_i)* previene la paralelizacion. No se conoce ningun atajo para computar *H^T* mas rapido que *T* evaluaciones secuenciales para BLAKE3 o cualquier funcion hash criptografica — esta es una suposicion estandar en criptografia basada en hash, no un limite inferior demostrado. La seguridad de la prueba de retardo descansa sobre esta suposicion, que compartimos con todas las construcciones de hash iterado incluyendo la Proof of History de Solana [4].
 
 ### 5.2. Estructura temporal
 
@@ -741,7 +741,9 @@ El protocolo regula automaticamente la tasa a la que nuevas identidades pueden u
 
 ### 12.2. Probabilidad de ataque
 
-**Teorema (Deficit secuencial).** Sea *T* el tiempo secuencial fijo por bloque. Un atacante que comienza una cadena alternativa con deficit *d* >= 1 bloques no puede reducir *d* independientemente de los recursos computacionales paralelos.
+**Suposicion (Dureza secuencial).** Para una funcion hash criptografica *H*, computar *H^T(x)* requiere al menos *T* evaluaciones secuenciales de *H*. Ningun algoritmo puede producir *H^T(x)* en menos de *T* pasos, independientemente de los recursos paralelos. Esta es una suposicion estandar en criptografia basada en hash — no existe ningun contraejemplo para ninguna funcion hash considerada segura, pero tampoco existe una demostracion formal de este limite inferior.
+
+**Teorema (Deficit secuencial).** Bajo la Suposicion de Dureza Secuencial, sea *T* el tiempo secuencial fijo por bloque. Un atacante que comienza una cadena alternativa con deficit *d* >= 1 bloques no puede reducir *d* independientemente de los recursos computacionales paralelos.
 
 **Demostracion.** Sea *t_0* el tiempo en que el atacante comienza a bifurcar. Definimos:
 
@@ -786,11 +788,13 @@ Esto es correcto y es por diseno. Un atacante con *M* maquinas puede registrar *
 2. **Capital:** *BOND_UNIT* bloqueado por identidad (costo lineal en *M*)
 3. **Presencia continua:** Un latido VDF por slot por identidad (costo operativo lineal en *M*)
 
-El costo del ataque es por lo tanto *O(M)* en capital y gasto operativo, identico al modelo de seguridad de Proof of Stake. La diferencia critica es el **piso temporal**: incluso con capital ilimitado, registrar *M* identidades toma al menos *T_registration* de tiempo de reloj de pared. La dificultad de registro se ajusta por epoch (Seccion 7.1), por lo que una rafaga de registros aumenta *T_registration* para intentos subsiguientes.
+El costo de capital es *O(M)* — identico a Proof of Stake. DOLI no escapa de esto. Un atacante con recursos suficientes que puede costear *M* bonds enfrenta el mismo costo lineal de capital que en cualquier sistema PoS.
 
-Comparemos con PoW: un atacante con *M* ASICs obtiene *M x* hashpower inmediatamente, sin demora temporal por identidad. En DOLI, las mismas *M* maquinas producen *M* identidades, pero el pipeline de registro impone un cuello de botella secuencial por identidad y el requisito de capital escala linealmente.
+Lo que DOLI agrega es un **piso temporal** que PoS no tiene: incluso con capital ilimitado, registrar *M* identidades toma al menos *T_registration* de tiempo de reloj de pared por identidad. La dificultad de registro se ajusta por epoch (Seccion 7.1), por lo que una rafaga de registros aumenta *T_registration* para intentos subsiguientes. Esto significa que un ataque estilo PoS de "comprar el 51% del stake de la noche a la manana" es estructuralmente imposible — el atacante debe esperar a traves del pipeline de registro independientemente de su presupuesto.
 
-El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema puede. Reclama que el tiempo impone un piso de costo irreducible que el capital solo no puede eludir.
+Comparemos con PoW: un atacante con *M* ASICs obtiene *Mx* hashpower inmediatamente, sin demora temporal por identidad. En DOLI, las mismas *M* maquinas producen *M* identidades, pero el pipeline de registro impone un cuello de botella secuencial por identidad y el requisito de capital escala linealmente.
+
+El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema puede. Reclama dos cosas: (1) el capital solo no puede eludir el piso temporal, y (2) una vez registrado, el costo operativo por identidad del atacante es permanente, no un gasto unico.
 
 ### 12.4. Teorema de seguridad
 
@@ -816,6 +820,8 @@ Dado que *f < n/2*, tenemos *|S_a(e)| < |S_h(e)|* para todo *e*. Adicionalmente,
 Por el Teorema del Deficit Secuencial (12.2), el atacante no puede compensar computando mas rapido — la dependencia secuencial de la VDF previene la aceleracion paralela. QED
 
 **Corolario.** Un atacante que parte de cero necesita ~3 anos de presencia sostenida antes de que su peso de antiguedad iguale al de un productor honesto establecido, incluso con conteo de bonds igual. La ventana de ataque esta por lo tanto acotada no solo por capital sino por tiempo calendario.
+
+**Limitacion.** La antiguedad protege contra atacantes *tardios* — aquellos que intentan unirse y dominar una red establecida. No protege contra atacantes *tempranos y pacientes* que se registran durante la infancia de la red y acumulan antiguedad legitimamente junto a los productores honestos. Esto se mitiga por: (1) el costo de capital sigue escalando linealmente con el conteo de bonds, (2) riesgo de perdida del 100% del bond por doble produccion, y (3) el requisito de attestation — mantener *M* identidades al 90% de uptime durante anos tiene un costo operativo compuesto. Ningun sistema de consenso puede distinguir un adversario paciente de un participante legitimo; la defensa es hacer que la deshonestidad sostenida sea costosa, no imposible.
 
 ---
 
@@ -926,17 +932,21 @@ La eleccion es simple: participar en el consenso con software actual, o no parti
 
 DOLI no es una propuesta. La red descrita en este documento esta operativa.
 
-A marzo de 2026, la red principal opera con multiples productores independientes distribuidos en nodos geograficamente dispersos. El codigo fuente es abierto y el estado de la cadena es verificable publicamente.
+A marzo de 2026, la red principal esta en su **fase de arranque** — operativa y produciendo bloques, pero con un conjunto reducido de productores operado principalmente por el equipo fundador en servidores geograficamente distribuidos. El codigo fuente es abierto, el estado de la cadena es verificable publicamente, y productores externos han comenzado a unirse.
 
 | Metrica | Valor |
 |---------|-------|
 | Tiempo de bloque | 10 segundos |
 | Computacion VDF | ~55ms por bloque |
-| Propagacion de bloques | < 500ms (red de 5 nodos) |
+| Propagacion de bloques | < 500ms |
 | Forks desde genesis | 0 |
 | Tasa de slots perdidos | < 10% (mecanismo de respaldo) |
 | Hardware de nodos | VPS estandar, cualquier CPU |
 | Bond minimo | 10 DOLI |
+| Productores activos | 14 (fase de arranque) |
+| Productores externos | Incorporacion en progreso |
+
+El conteo actual de productores refleja la fase de arranque descrita en la Seccion 16.2. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% ponderado por bonds y reduce la dependencia del conjunto fundador. El objetivo es un conjunto de productores lo suficientemente grande como para que ninguna entidad unica controle una fraccion significativa de los slots ponderados por bonds.
 
 ```
 Genesis:    March 2026
@@ -962,7 +972,7 @@ La diferencia: el formato de salida de Bitcoin fue fijado en 2009. El formato de
 
 Hemos propuesto un sistema para transacciones electronicas que no requiere confianza en instituciones, ni un gasto masivo de energia, ni acumulacion de capital para participar en el consenso.
 
-Comenzamos con el marco habitual de monedas hechas de firmas digitales, que proporciona un fuerte control de propiedad. Esto es incompleto sin una forma de prevenir el doble gasto. Para resolver esto, propusimos una red peer-to-peer que usa funciones de retardo verificable para anclar el consenso al tiempo.
+Comenzamos con el marco habitual de monedas hechas de firmas digitales, que proporciona un fuerte control de propiedad. Esto es incompleto sin una forma de prevenir el doble gasto. Para resolver esto, propusimos una red peer-to-peer que usa pruebas de retardo secuencial para anclar el consenso al tiempo.
 
 **Los nodos votan con su tiempo.** La red no puede acelerarse con riqueza ni paralelizarse con hardware. Una hora de computacion secuencial es una hora, ya sea realizada por un individuo o un estado-nacion.
 
@@ -976,7 +986,7 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 
 ---
 
-**DOLI v2.1.0**
+**DOLI v2.2.0**
 
 *"El tiempo es la unica moneda justa."*
 
@@ -988,5 +998,7 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 1. Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System.*
 
 2. Boneh, D., Bonneau, J., Bunz, B., & Fisch, B. (2018). *Verifiable Delay Functions.* In Advances in Cryptology – CRYPTO 2018.
+
+4. Yakovenko, A. (2018). *Solana: A new architecture for a high performance blockchain.* Utiliza hash iterado SHA-256 para Proof of History bajo la misma suposicion de dureza secuencial.
 
 3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019. (Citado por contraste — DOLI usa cadenas de hash iteradas, no VDFs algebraicas. Ver Seccion 5.1.)

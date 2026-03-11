@@ -229,6 +229,39 @@ enum Commands {
         command: ProtocolCommands,
     },
 
+    /// Mint an NFT (create a unique non-fungible token)
+    Mint {
+        /// Content hash or URI (IPFS CID, HTTP URL, or hex hash)
+        content: String,
+
+        /// Optional condition on the NFT (default: signature of minter)
+        #[arg(short, long)]
+        condition: Option<String>,
+
+        /// Optional DOLI value to attach (default: 0, pure NFT)
+        #[arg(short, long, default_value = "0")]
+        amount: String,
+    },
+
+    /// Transfer an NFT to a new owner
+    NftTransfer {
+        /// UTXO containing the NFT: txhash:output_index
+        utxo: String,
+
+        /// Recipient address
+        to: String,
+
+        /// Witness to satisfy the NFT's spending condition
+        #[arg(short, long, default_value = "none()")]
+        witness: String,
+    },
+
+    /// Show NFT info from a UTXO
+    NftInfo {
+        /// UTXO containing the NFT: txhash:output_index
+        utxo: String,
+    },
+
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
     Wipe {
         /// Network (mainnet, testnet, devnet)
@@ -572,6 +605,19 @@ async fn main() -> Result<()> {
         }
         Commands::Protocol { command } => {
             cmd_protocol(&wallet, &rpc_endpoint, command).await?;
+        }
+        Commands::Mint {
+            content,
+            condition,
+            amount,
+        } => {
+            cmd_mint(&wallet, &rpc_endpoint, &content, condition, &amount).await?;
+        }
+        Commands::NftTransfer { utxo, to, witness } => {
+            cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
+        }
+        Commands::NftInfo { utxo } => {
+            cmd_nft_info(&rpc_endpoint, &utxo).await?;
         }
         Commands::Wipe {
             network,
@@ -1233,63 +1279,65 @@ fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core::OutputTyp
 ///   sign(wallet1.json, wallet2.json, ...)
 ///   branch(left|right)
 fn parse_witness(s: &str, signing_hash: &crypto::Hash) -> Result<Vec<u8>> {
-    let s = s.trim();
-    let open = s
-        .find('(')
-        .ok_or_else(|| anyhow::anyhow!("Expected witness format: name(args...)"))?;
-    let close = s
-        .rfind(')')
-        .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
-
-    let name = s[..open].trim().to_lowercase();
-    let args_str = &s[open + 1..close];
-    let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
-
     let mut witness = doli_core::Witness::default();
 
-    match name.as_str() {
-        "preimage" => {
-            if args.len() != 1 {
-                anyhow::bail!("preimage requires 1 arg: hex_secret");
+    // Support compound witnesses: "branch(left)+preimage(hex)" for HTLC
+    let parts: Vec<&str> = s.split('+').collect();
+    for part in parts {
+        let part = part.trim();
+        let open = part
+            .find('(')
+            .ok_or_else(|| anyhow::anyhow!("Expected witness format: name(args...)"))?;
+        let close = part
+            .rfind(')')
+            .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
+
+        let name = part[..open].trim().to_lowercase();
+        let args_str = &part[open + 1..close];
+        let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+
+        match name.as_str() {
+            "preimage" => {
+                if args.len() != 1 {
+                    anyhow::bail!("preimage requires 1 arg: hex_secret");
+                }
+                let bytes = hex::decode(args[0])
+                    .map_err(|_| anyhow::anyhow!("Invalid hex preimage: {}", args[0]))?;
+                if bytes.len() != 32 {
+                    anyhow::bail!("Preimage must be exactly 32 bytes, got {}", bytes.len());
+                }
+                let mut preimage = [0u8; 32];
+                preimage.copy_from_slice(&bytes);
+                witness.preimage = Some(preimage);
             }
-            let bytes = hex::decode(args[0])
-                .map_err(|_| anyhow::anyhow!("Invalid hex preimage: {}", args[0]))?;
-            if bytes.len() != 32 {
-                anyhow::bail!("Preimage must be exactly 32 bytes, got {}", bytes.len());
-            }
-            let mut preimage = [0u8; 32];
-            preimage.copy_from_slice(&bytes);
-            witness.preimage = Some(preimage);
-        }
-        "sign" => {
-            for wallet_path in &args {
-                let w = Wallet::load(Path::new(wallet_path))?;
-                let kp = w.primary_keypair()?;
-                let sig = crypto::signature::sign_hash(signing_hash, kp.private_key());
-                witness
-                    .signatures
-                    .push(doli_core::ConditionWitnessSignature {
-                        pubkey: *kp.public_key(),
-                        signature: sig,
-                    });
-            }
-        }
-        "branch" => {
-            for arg in &args {
-                match arg.to_lowercase().as_str() {
-                    "left" | "false" | "0" => witness.or_branches.push(false),
-                    "right" | "true" | "1" => witness.or_branches.push(true),
-                    _ => anyhow::bail!("Invalid branch: '{}' (use left/right)", arg),
+            "sign" => {
+                for wallet_path in &args {
+                    let w = Wallet::load(Path::new(wallet_path))?;
+                    let kp = w.primary_keypair()?;
+                    let sig = crypto::signature::sign_hash(signing_hash, kp.private_key());
+                    witness
+                        .signatures
+                        .push(doli_core::ConditionWitnessSignature {
+                            pubkey: *kp.public_key(),
+                            signature: sig,
+                        });
                 }
             }
+            "branch" => {
+                for arg in &args {
+                    match arg.to_lowercase().as_str() {
+                        "left" | "false" | "0" => witness.or_branches.push(false),
+                        "right" | "true" | "1" => witness.or_branches.push(true),
+                        _ => anyhow::bail!("Invalid branch: '{}' (use left/right)", arg),
+                    }
+                }
+            }
+            "none" | "empty" => {}
+            _ => anyhow::bail!(
+                "Unknown witness type: '{}'. Supported: none, preimage, sign, branch",
+                name
+            ),
         }
-        "none" | "empty" => {
-            // No witness data needed (e.g., for standalone timelock conditions)
-        }
-        _ => anyhow::bail!(
-            "Unknown witness type: '{}'. Supported: none, preimage, sign, branch",
-            name
-        ),
     }
 
     Ok(witness.encode())
@@ -3929,6 +3977,347 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
                 Err(e) => anyhow::bail!("Error fetching maintainer set: {}", e),
             }
         }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// NFT COMMANDS
+// =============================================================================
+
+async fn cmd_mint(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    content: &str,
+    condition: Option<String>,
+    amount: &str,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let minter_pubkey_hash = wallet.primary_pubkey_hash();
+    let minter_hash = Hash::from_hex(&minter_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid minter pubkey hash"))?;
+
+    // Parse amount (0 for pure NFT)
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    let amount_units = coins_to_units(amount_coins);
+
+    // Content hash: if it looks like hex (64 chars), use as-is; otherwise treat as URI bytes
+    let content_bytes = if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+        hex::decode(content).unwrap_or_else(|_| content.as_bytes().to_vec())
+    } else {
+        content.as_bytes().to_vec()
+    };
+
+    // Generate a nonce from current timestamp for token_id uniqueness
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_le_bytes()
+        .to_vec();
+    let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+
+    // Default condition: signature of the minter (only minter can transfer)
+    let cond = if let Some(cond_str) = &condition {
+        parse_condition(cond_str)?
+    } else {
+        doli_core::Condition::signature(minter_hash)
+    };
+
+    // Build NFT output
+    let nft_output = Output::nft(amount_units, minter_hash, token_id, &content_bytes, &cond)
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+
+    // Get spendable UTXOs for fee
+    let fee_units = 1500u64;
+    let utxos = rpc.get_utxos(&minter_pubkey_hash, true).await?;
+    if utxos.is_empty() {
+        anyhow::bail!("No spendable UTXOs available for fee");
+    }
+
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    let required = amount_units + fee_units;
+    for utxo in &utxos {
+        if total_input >= required {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+
+    if total_input < required {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
+    }
+
+    // Build inputs
+    let mut inputs: Vec<Input> = Vec::new();
+    for utxo in &selected_utxos {
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+    }
+
+    // Build outputs: NFT + change
+    let mut outputs = vec![nft_output];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(Output::normal(change, minter_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+
+    // Sign each input
+    let keypair = wallet.primary_keypair()?;
+    let signing_message = tx.signing_message();
+    for input in &mut tx.inputs {
+        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let minter_display = crypto::address::encode(&minter_hash, address_prefix())
+        .unwrap_or_else(|_| minter_hash.to_hex());
+
+    println!("Minting NFT:");
+    println!("  Token ID:  {}", token_id.to_hex());
+    println!("  Content:   {}", content);
+    println!("  Minter:    {}", minter_display);
+    if amount_units > 0 {
+        println!("  Value:     {}", format_balance(amount_units));
+    }
+    println!("  Fee:       {}", format_balance(fee_units));
+    println!("  TX Hash:   {}", tx_hash.to_hex());
+    println!("  Size:      {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("NFT minted successfully!");
+            println!("TX Hash:  {}", result_hash);
+            println!("Token ID: {}", token_id.to_hex());
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Mint failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_nft_transfer(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    to: &str,
+    witness_str: &str,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    // Parse UTXO reference
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash: {}", parts[0]))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
+
+    // Get the NFT UTXO details via RPC to extract token_id and content
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let nft_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], output_index))?;
+
+    let nft_meta = nft_output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
+    let token_id_hex = nft_meta
+        .get("tokenId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing tokenId in NFT metadata"))?;
+    let content_hash_hex = nft_meta
+        .get("contentHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let token_id =
+        Hash::from_hex(token_id_hex).ok_or_else(|| anyhow::anyhow!("Invalid token_id"))?;
+    let content_bytes = hex::decode(content_hash_hex).unwrap_or_default();
+
+    // Parse recipient
+    let recipient_hash = crypto::address::resolve(to, None)
+        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
+
+    // The NFT output carries forward the same token_id and content, new owner
+    // Use a simple signature condition for the new owner
+    let new_cond = doli_core::Condition::signature(recipient_hash);
+    let nft_amount = nft_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let new_nft_output = Output::nft(
+        nft_amount,
+        recipient_hash,
+        token_id,
+        &content_bytes,
+        &new_cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+
+    // Build transaction
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx = Transaction::new_transfer(vec![input], vec![new_nft_output]);
+
+    // Parse witness and sign
+    let signing_hash = tx.signing_message();
+    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
+        .unwrap_or_else(|_| recipient_hash.to_hex());
+
+    println!("Transferring NFT:");
+    println!("  Token ID: {}", token_id.to_hex());
+    println!(
+        "  From:     {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  To:       {}", recipient_display);
+    println!("  TX Hash:  {}", tx_hash.to_hex());
+    println!("  Size:     {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("NFT transferred successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("NFT transfer failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_nft_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+
+    let tx_info = rpc.get_transaction_json(parts[0]).await?;
+    let output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(parts[1].parse::<usize>().unwrap_or(0)))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], parts[1]))?;
+
+    let output_type = output
+        .get("outputType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if output_type != "nft" {
+        anyhow::bail!("Output is not an NFT (type: {})", output_type);
+    }
+
+    let nft = output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Missing NFT metadata"))?;
+
+    let owner = output
+        .get("pubkeyHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let amount = output.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    println!("NFT Info:");
+    println!("{:-<60}", "");
+    println!(
+        "  Token ID:     {}",
+        nft.get("tokenId").and_then(|v| v.as_str()).unwrap_or("?")
+    );
+    println!(
+        "  Content Hash: {}",
+        nft.get("contentHash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+    );
+
+    // Try to decode content hash as UTF-8 (might be a URI)
+    if let Some(ch) = nft.get("contentHash").and_then(|v| v.as_str()) {
+        if let Ok(bytes) = hex::decode(ch) {
+            if let Ok(uri) = std::str::from_utf8(&bytes) {
+                if uri.starts_with("http") || uri.starts_with("ipfs") {
+                    println!("  Content URI:  {}", uri);
+                }
+            }
+        }
+    }
+
+    if let Some(owner_hash) = crypto::Hash::from_hex(owner) {
+        let addr = crypto::address::encode(&owner_hash, address_prefix())
+            .unwrap_or_else(|_| owner.to_string());
+        println!("  Owner:        {}", addr);
+    } else {
+        println!("  Owner:        {}", owner);
+    }
+
+    if amount > 0 {
+        println!("  Value:        {}", format_balance(amount));
+    }
+
+    if let Some(cond) = output.get("condition") {
+        println!("  Condition:    {}", cond);
     }
 
     Ok(())

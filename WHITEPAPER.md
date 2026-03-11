@@ -16,7 +16,7 @@ Block production follows deterministic rotation: a participant with one bond kno
 
 A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through BLS-aggregated liveness attestations — producers who are online and following the chain qualify for their share. No lottery. No variance. No pools. Just time.
 
-Transactions are ordered through verifiable delay functions that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
+Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
 ---
 ## 1. Introduction
@@ -216,13 +216,13 @@ Each timestamp includes the previous timestamp in its hash, forming a chain. Eac
 
 To implement a distributed timestamp server on a peer-to-peer basis, we need a mechanism that makes producing blocks costly and prevents that cost from being evaded through parallelization or resource accumulation.
 
-The solution is to use **Verifiable Delay Functions**. A VDF is a function that:
+The solution is to use **sequential delay proofs** — functions that enforce a minimum wall-clock time per block through inherently serial computation. The construction is inspired by Verifiable Delay Functions [2, 3] but uses a simpler primitive (Section 5.1). The essential properties are:
 
 1. Requires a fixed number of sequential operations to compute.
-2. Produces a proof that can be verified quickly.
-3. Cannot be significantly accelerated through parallelization.
+2. Cannot be significantly accelerated through parallelization.
+3. Can be verified by any node (by recomputation).
 
-> **Note:** The VDF proves that *N* sequential operations were executed — time is the effective lower bound since no known technique accelerates sequential computation through parallelization. The VDF serves as a heartbeat (proof of presence), not as a randomness source. Producer selection is a pure function of `(slot, ActiveSet(epoch))`, fixed at epoch start, independent of VDF speed. Faster hardware provides no scheduling advantage.
+> **Note:** The delay proof demonstrates that *N* sequential operations were executed — time is the effective lower bound since no known technique accelerates sequential hash computation through parallelization. The proof serves as a heartbeat (proof of presence), not as a randomness source. Producer selection is a pure function of `(slot, ActiveSet(epoch))`, fixed at epoch start, independent of proof speed. Faster hardware provides no scheduling advantage.
 
 For each block, the producer must calculate:
 
@@ -263,7 +263,7 @@ Input: prev_hash ∥ slot ∥ producer_key
       Output: h_T = H^T(input)
 ```
 
-**Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. No shortcuts exist — the sequential dependency *h_{i+1} = H(h_i)* prevents parallelization.
+**Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. The sequential dependency *h_{i+1} = H(h_i)* prevents parallelization. No shortcut for computing *H^T* faster than *T* sequential evaluations is known for BLAKE3 or any cryptographic hash function — this is a standard assumption in hash-based cryptography, not a proven lower bound. The security of the delay proof rests on this assumption, which we share with all iterated hash constructions including Solana's Proof of History [4].
 
 ### 5.2. Time Structure
 
@@ -741,7 +741,9 @@ The protocol automatically regulates the rate at which new identities can join.
 
 ### 12.2. Attack Probability
 
-**Theorem (Sequential Deficit).** Let *T* be the fixed sequential time per block. An attacker who begins an alternative chain with deficit *d* ≥ 1 blocks cannot reduce *d* regardless of parallel computational resources.
+**Assumption (Sequential Hardness).** For a cryptographic hash function *H*, computing *H^T(x)* requires at least *T* sequential evaluations of *H*. No algorithm can produce *H^T(x)* in fewer than *T* steps, regardless of parallel resources. This is a standard assumption in hash-based cryptography — no counterexample exists for any hash function considered secure, but no formal proof of this lower bound exists either.
+
+**Theorem (Sequential Deficit).** Under the Sequential Hardness assumption, let *T* be the fixed sequential time per block. An attacker who begins an alternative chain with deficit *d* ≥ 1 blocks cannot reduce *d* regardless of parallel computational resources.
 
 **Proof.** Let *t₀* be the time the attacker begins forking. Define:
 
@@ -786,11 +788,13 @@ This is correct and by design. An attacker with *M* machines can register *M* id
 2. **Capital:** *BOND_UNIT* locked per identity (linear cost in *M*)
 3. **Ongoing presence:** One VDF heartbeat per slot per identity (linear operational cost in *M*)
 
-The attack cost is therefore *O(M)* in capital and operational expense, identical to Proof of Stake's security model. The critical difference is the **time floor**: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time. The registration difficulty adjusts per epoch (Section 7.1), so a burst of registrations increases *T_registration* for subsequent attempts.
+The capital cost is *O(M)* — identical to Proof of Stake. DOLI does not escape this. A well-resourced attacker who can afford *M* bonds faces the same linear capital cost as in any PoS system.
+
+What DOLI adds is a **time floor** that PoS lacks: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time per identity. The registration difficulty adjusts per epoch (Section 7.1), so a burst of registrations increases *T_registration* for subsequent attempts. This means a PoS-style "buy 51% of stake overnight" attack is structurally impossible — the attacker must wait through the registration pipeline regardless of budget.
 
 Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity time delay. In DOLI, the same *M* machines yield *M* identities, but the registration pipeline enforces a sequential bottleneck per identity and the capital requirement scales linearly.
 
-The system does not claim immunity from wealthy adversaries — no system can. It claims that time imposes an irreducible cost floor that capital alone cannot bypass.
+The system does not claim immunity from wealthy adversaries — no system can. It claims two things: (1) capital alone cannot bypass the time floor, and (2) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense.
 
 ### 12.4. Safety Theorem
 
@@ -816,6 +820,8 @@ Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e*. Additionally, senior
 By the Sequential Deficit theorem (12.2), the attacker cannot compensate by computing faster — the VDF's sequential dependency prevents parallel acceleration. ∎
 
 **Corollary.** An attacker starting from zero needs ~3 years of sustained presence before seniority weight equals an established honest producer, even with equal bond count. The attack window is therefore bounded not just by capital but by calendar time.
+
+**Limitation.** Seniority protects against *late* attackers — those who attempt to join and dominate an established network. It does not protect against *patient early* attackers who register during the network's infancy and accumulate seniority legitimately alongside honest producers. This is mitigated by: (1) the capital cost still scales linearly with bond count, (2) 100% bond loss risk for double production, and (3) the attestation requirement — maintaining *M* identities at 90% uptime for years has compounding operational cost. No consensus system can distinguish a patient adversary from a legitimate participant; the defense is making sustained dishonesty expensive, not impossible.
 
 ---
 
@@ -926,17 +932,21 @@ The choice is simple: participate in consensus with current software, or do not 
 
 DOLI is not a proposal. The network described in this paper is operational.
 
-As of March 2026, the mainnet runs with multiple independent producers across geographically distributed nodes. The source code is open and the chain state is publicly verifiable.
+As of March 2026, the mainnet is in its **bootstrap phase** — operational and producing blocks, but with a small producer set operated primarily by the founding team across geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers have begun joining.
 
 | Metric | Value |
 |--------|-------|
 | Block time | 10 seconds |
 | VDF computation | ~55ms per block |
-| Block propagation | < 500ms (5-node network) |
+| Block propagation | < 500ms |
 | Forks since genesis | 0 |
 | Missed slot rate | < 10% (fallback mechanism) |
 | Node hardware | Standard VPS, any CPU |
 | Minimum bond | 10 DOLI |
+| Active producers | 14 (bootstrap phase) |
+| External producers | Onboarding in progress |
+
+The current producer count reflects the bootstrap phase described in Section 16.2. The protocol's security properties strengthen as independent producers join — each additional operator increases the cost of a >50% bond-weighted attack and reduces reliance on the founding set. The target is a producer set large enough that no single entity controls a meaningful fraction of bond-weighted slots.
 
 ```
 Genesis:    March 2026
@@ -962,7 +972,7 @@ The difference: Bitcoin's output format was fixed in 2009. DOLI's output format 
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
-We started with the usual framework of coins made from digital signatures, which provides strong control of ownership. This is incomplete without a way to prevent double-spending. To solve this, we proposed a peer-to-peer network using verifiable delay functions to anchor consensus to time.
+We started with the usual framework of coins made from digital signatures, which provides strong control of ownership. This is incomplete without a way to prevent double-spending. To solve this, we proposed a peer-to-peer network using sequential delay proofs to anchor consensus to time.
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
@@ -976,7 +986,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v2.1.0**
+**DOLI v2.2.0**
 
 *"Time is the only fair currency."*
 
@@ -988,5 +998,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 1. Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System.*
 
 2. Boneh, D., Bonneau, J., Bünz, B., & Fisch, B. (2018). *Verifiable Delay Functions.* In Advances in Cryptology – CRYPTO 2018.
+
+4. Yakovenko, A. (2018). *Solana: A new architecture for a high performance blockchain.* Uses SHA-256 iterated hashing for Proof of History under the same sequential hardness assumption.
 
 3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019. (Cited for contrast — DOLI uses iterated hash chains, not algebraic VDFs. See Section 5.1.)

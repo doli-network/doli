@@ -600,6 +600,9 @@ impl RpcContext {
                     doli_core::OutputType::Hashlock => "hashlock",
                     doli_core::OutputType::HTLC => "htlc",
                     doli_core::OutputType::Vesting => "vesting",
+                    doli_core::OutputType::NFT => "nft",
+                    doli_core::OutputType::FungibleAsset => "fungibleAsset",
+                    doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
                 };
 
                 let condition = if entry.output.output_type.is_conditioned() {
@@ -608,6 +611,47 @@ impl RpcContext {
                         .condition()
                         .and_then(|r| r.ok())
                         .map(|c| condition_to_json(&c))
+                } else {
+                    None
+                };
+
+                let nft = if entry.output.output_type == doli_core::OutputType::NFT {
+                    entry.output.nft_metadata().map(|(token_id, content_hash)| {
+                        serde_json::json!({
+                            "tokenId": token_id.to_hex(),
+                            "contentHash": hex::encode(&content_hash)
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                let asset = if entry.output.output_type == doli_core::OutputType::FungibleAsset {
+                    entry.output.fungible_asset_metadata().map(
+                        |(asset_id, total_supply, ticker)| {
+                            serde_json::json!({
+                                "assetId": asset_id.to_hex(),
+                                "totalSupply": total_supply,
+                                "ticker": ticker
+                            })
+                        },
+                    )
+                } else {
+                    None
+                };
+
+                let bridge = if entry.output.output_type == doli_core::OutputType::BridgeHTLC {
+                    entry
+                        .output
+                        .bridge_htlc_metadata()
+                        .map(|(chain_id, target_addr)| {
+                            serde_json::json!({
+                                "targetChain": doli_core::Output::bridge_chain_name(chain_id),
+                                "targetChainId": chain_id,
+                                "targetAddress": String::from_utf8(target_addr.clone())
+                                    .unwrap_or_else(|_| hex::encode(&target_addr))
+                            })
+                        })
                 } else {
                     None
                 };
@@ -621,6 +665,9 @@ impl RpcContext {
                     height: entry.height,
                     spendable: entry.is_spendable_at_with_maturity(current_height, maturity),
                     condition,
+                    nft,
+                    asset,
+                    bridge,
                 }
             })
             .collect();
@@ -1470,6 +1517,7 @@ impl RpcContext {
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
+            let mut skipped = 0u64;
 
             for &h in &missing_heights {
                 // Fetch block from peer
@@ -1508,22 +1556,18 @@ impl RpcContext {
                 let block_result = match body.get("result") {
                     Some(r) => r,
                     None => {
-                        let msg = format!("No result for block {} (peer may not have it)", h);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
+                        warn!("Backfill: peer missing block {}, skipping", h);
+                        skipped += 1;
+                        continue;
                     }
                 };
 
                 let b64_data = match block_result.get("block").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => {
-                        let msg = format!("Missing block data at height {}", h);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
+                        warn!("Backfill: no block data at height {}, skipping", h);
+                        skipped += 1;
+                        continue;
                     }
                 };
 
@@ -1588,10 +1632,17 @@ impl RpcContext {
                 }
             }
 
-            info!(
-                "Backfill complete: {} blocks imported, chain filled",
-                imported
-            );
+            if skipped > 0 {
+                warn!(
+                    "Backfill done: {} imported, {} skipped (peer missing). Run again with a different peer to fill remaining gaps.",
+                    imported, skipped
+                );
+            } else {
+                info!(
+                    "Backfill complete: {} blocks imported, chain filled",
+                    imported
+                );
+            }
             state.running.store(false, Ordering::SeqCst);
         });
 
@@ -1656,9 +1707,12 @@ impl RpcContext {
             let mut commitment_valid = true; // Breaks on first gap
 
             for h in 1..=tip {
-                let block_hash = block_store.get_hash_by_height(h).ok().flatten();
+                // Check actual block data, not just the height→hash index.
+                // The index can exist without the block (e.g. after partial sync).
+                let block = block_store.get_block_by_height(h).ok().flatten();
 
-                if let Some(hash) = block_hash {
+                if let Some(blk) = block {
+                    let hash = blk.hash();
                     if commitment_valid {
                         let mut hasher = Hasher::new();
                         hasher.update(commitment.as_bytes());

@@ -102,6 +102,12 @@ pub enum OutputType {
     HTLC = 4,
     /// Vesting output (signature + timelock)
     Vesting = 5,
+    /// NFT output (non-fungible token with metadata + covenant conditions)
+    NFT = 6,
+    /// Fungible asset output (user-issued token with fixed supply)
+    FungibleAsset = 7,
+    /// Bridge HTLC output (cross-chain atomic swap with target chain metadata)
+    BridgeHTLC = 8,
 }
 
 impl OutputType {
@@ -113,6 +119,9 @@ impl OutputType {
             3 => Some(Self::Hashlock),
             4 => Some(Self::HTLC),
             5 => Some(Self::Vesting),
+            6 => Some(Self::NFT),
+            7 => Some(Self::FungibleAsset),
+            8 => Some(Self::BridgeHTLC),
             _ => None,
         }
     }
@@ -121,7 +130,13 @@ impl OutputType {
     pub fn is_conditioned(&self) -> bool {
         matches!(
             self,
-            Self::Multisig | Self::Hashlock | Self::HTLC | Self::Vesting
+            Self::Multisig
+                | Self::Hashlock
+                | Self::HTLC
+                | Self::Vesting
+                | Self::NFT
+                | Self::FungibleAsset
+                | Self::BridgeHTLC
         )
     }
 }
@@ -165,6 +180,29 @@ impl Input {
 /// Reserved for future contract types (scripts, conditions, metadata).
 /// Normal and Bond outputs must have empty extra_data.
 pub const MAX_EXTRA_DATA_SIZE: usize = 256;
+
+/// NFT metadata version
+pub const NFT_METADATA_VERSION: u8 = 1;
+/// NFT metadata header size: 1B version + 32B token_id
+pub const NFT_METADATA_HEADER_SIZE: usize = 33;
+
+/// Fungible asset metadata version
+pub const FUNGIBLE_ASSET_VERSION: u8 = 1;
+/// Fungible asset header size: 1B version + 32B asset_id + 8B total_supply + 1B ticker_len
+pub const FUNGIBLE_ASSET_HEADER_SIZE: usize = 42;
+/// Maximum ticker length
+pub const MAX_TICKER_LEN: usize = 12;
+
+/// Bridge HTLC metadata version
+pub const BRIDGE_HTLC_VERSION: u8 = 1;
+/// Bridge target chain identifiers
+pub const BRIDGE_CHAIN_BITCOIN: u8 = 1;
+pub const BRIDGE_CHAIN_ETHEREUM: u8 = 2;
+pub const BRIDGE_CHAIN_MONERO: u8 = 3;
+pub const BRIDGE_CHAIN_LITECOIN: u8 = 4;
+pub const BRIDGE_CHAIN_CARDANO: u8 = 5;
+/// Bridge HTLC header: 1B version + 1B target_chain + 1B addr_len
+pub const BRIDGE_HTLC_HEADER_SIZE: usize = 3;
 
 /// Transaction output
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +322,242 @@ impl Output {
     ) -> Result<Self, crate::conditions::ConditionError> {
         let cond = crate::conditions::Condition::vesting(pubkey_hash, unlock_height);
         Self::conditioned(OutputType::Vesting, amount, pubkey_hash, &cond)
+    }
+
+    /// Create an NFT output.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version][32B token_id][content_hash/URI]`
+    /// The condition controls who can transfer/burn the NFT.
+    /// `token_id` is globally unique: BLAKE3("DOLI_NFT" || creator_pubkey_hash || creation_nonce).
+    /// `amount` is 0 for pure NFTs, >0 for semi-fungible tokens carrying value.
+    pub fn nft(
+        amount: Amount,
+        pubkey_hash: Hash,
+        token_id: Hash,
+        content_hash: &[u8],
+        condition: &crate::conditions::Condition,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let condition_bytes = condition.encode()?;
+        let metadata_len = 1 + 32 + content_hash.len();
+        if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let mut extra_data = condition_bytes;
+        extra_data.push(NFT_METADATA_VERSION);
+        extra_data.extend_from_slice(token_id.as_bytes());
+        extra_data.extend_from_slice(content_hash);
+        Ok(Self {
+            output_type: OutputType::NFT,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
+    /// Compute a deterministic NFT token ID.
+    /// `token_id = BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)`
+    pub fn compute_nft_token_id(creator_pubkey_hash: &Hash, nonce: &[u8]) -> Hash {
+        use crypto::hash::hash_with_domain;
+        let mut data = Vec::with_capacity(32 + nonce.len());
+        data.extend_from_slice(creator_pubkey_hash.as_bytes());
+        data.extend_from_slice(nonce);
+        hash_with_domain(b"DOLI_NFT", &data)
+    }
+
+    /// Extract NFT metadata from an NFT output's extra_data.
+    /// Returns (condition_bytes, token_id, content_hash) or None if not an NFT.
+    pub fn nft_metadata(&self) -> Option<(Hash, Vec<u8>)> {
+        if self.output_type != OutputType::NFT || self.extra_data.is_empty() {
+            return None;
+        }
+        // Decode condition to find where it ends
+        let cond_result = crate::conditions::Condition::decode(&self.extra_data);
+        let (_, cond_len) = match cond_result {
+            Ok(c) => {
+                let encoded = c.encode().ok()?;
+                let len = encoded.len();
+                (c, len)
+            }
+            Err(_) => return None,
+        };
+        let meta = &self.extra_data[cond_len..];
+        if meta.len() < NFT_METADATA_HEADER_SIZE {
+            return None;
+        }
+        if meta[0] != NFT_METADATA_VERSION {
+            return None;
+        }
+        let token_id = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&meta[1..33]);
+            buf
+        });
+        let content_hash = meta[33..].to_vec();
+        Some((token_id, content_hash))
+    }
+
+    /// Create a fungible asset output.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version][32B asset_id][8B total_supply LE][1B ticker_len][ticker]`
+    /// `asset_id` is globally unique: BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index LE).
+    /// `amount` = units of this asset held in this UTXO.
+    /// `total_supply` = fixed at issuance (genesis output carries full supply).
+    pub fn fungible_asset(
+        amount: Amount,
+        pubkey_hash: Hash,
+        asset_id: Hash,
+        total_supply: Amount,
+        ticker: &str,
+        condition: &crate::conditions::Condition,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        if ticker.len() > MAX_TICKER_LEN || ticker.is_empty() {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let condition_bytes = condition.encode()?;
+        let metadata_len = 1 + 32 + 8 + 1 + ticker.len();
+        if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let mut extra_data = condition_bytes;
+        extra_data.push(FUNGIBLE_ASSET_VERSION);
+        extra_data.extend_from_slice(asset_id.as_bytes());
+        extra_data.extend_from_slice(&total_supply.to_le_bytes());
+        extra_data.push(ticker.len() as u8);
+        extra_data.extend_from_slice(ticker.as_bytes());
+        Ok(Self {
+            output_type: OutputType::FungibleAsset,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
+    /// Compute a deterministic fungible asset ID.
+    /// `asset_id = BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index LE)`
+    pub fn compute_asset_id(genesis_tx_hash: &Hash, output_index: u32) -> Hash {
+        use crypto::hash::hash_with_domain;
+        let mut data = Vec::with_capacity(36);
+        data.extend_from_slice(genesis_tx_hash.as_bytes());
+        data.extend_from_slice(&output_index.to_le_bytes());
+        hash_with_domain(b"DOLI_ASSET", &data)
+    }
+
+    /// Extract fungible asset metadata from extra_data.
+    /// Returns (asset_id, total_supply, ticker) or None.
+    pub fn fungible_asset_metadata(&self) -> Option<(Hash, Amount, String)> {
+        if self.output_type != OutputType::FungibleAsset || self.extra_data.is_empty() {
+            return None;
+        }
+        let cond_result = crate::conditions::Condition::decode(&self.extra_data);
+        let cond_len = match cond_result {
+            Ok(c) => c.encode().ok()?.len(),
+            Err(_) => return None,
+        };
+        let meta = &self.extra_data[cond_len..];
+        if meta.len() < FUNGIBLE_ASSET_HEADER_SIZE {
+            return None;
+        }
+        if meta[0] != FUNGIBLE_ASSET_VERSION {
+            return None;
+        }
+        let asset_id = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&meta[1..33]);
+            buf
+        });
+        let total_supply = u64::from_le_bytes({
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&meta[33..41]);
+            buf
+        });
+        let ticker_len = meta[41] as usize;
+        if meta.len() < 42 + ticker_len {
+            return None;
+        }
+        let ticker = String::from_utf8(meta[42..42 + ticker_len].to_vec()).ok()?;
+        Some((asset_id, total_supply, ticker))
+    }
+
+    /// Create a bridge HTLC output for cross-chain atomic swaps.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version][1B target_chain][1B addr_len][target_address]`
+    /// The condition is a standard HTLC: `(Hashlock AND Timelock) OR TimelockExpiry`.
+    /// The metadata identifies the target chain and recipient for the counterpart swap.
+    pub fn bridge_htlc(
+        amount: Amount,
+        pubkey_hash: Hash,
+        expected_hash: Hash,
+        lock_height: BlockHeight,
+        expiry_height: BlockHeight,
+        target_chain: u8,
+        target_address: &[u8],
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
+        let condition_bytes = cond.encode()?;
+        let metadata_len = BRIDGE_HTLC_HEADER_SIZE + target_address.len();
+        if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let mut extra_data = condition_bytes;
+        extra_data.push(BRIDGE_HTLC_VERSION);
+        extra_data.push(target_chain);
+        extra_data.push(target_address.len() as u8);
+        extra_data.extend_from_slice(target_address);
+        Ok(Self {
+            output_type: OutputType::BridgeHTLC,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
+    /// Extract bridge HTLC metadata from extra_data.
+    /// Returns (target_chain, target_address) or None.
+    pub fn bridge_htlc_metadata(&self) -> Option<(u8, Vec<u8>)> {
+        if self.output_type != OutputType::BridgeHTLC || self.extra_data.is_empty() {
+            return None;
+        }
+        let cond_len = match crate::conditions::Condition::decode(&self.extra_data) {
+            Ok(c) => c.encode().ok()?.len(),
+            Err(_) => return None,
+        };
+        let meta = &self.extra_data[cond_len..];
+        if meta.len() < BRIDGE_HTLC_HEADER_SIZE {
+            return None;
+        }
+        if meta[0] != BRIDGE_HTLC_VERSION {
+            return None;
+        }
+        let target_chain = meta[1];
+        let addr_len = meta[2] as usize;
+        if meta.len() < 3 + addr_len {
+            return None;
+        }
+        let target_address = meta[3..3 + addr_len].to_vec();
+        Some((target_chain, target_address))
+    }
+
+    /// Human-readable name for a bridge target chain ID.
+    pub fn bridge_chain_name(chain_id: u8) -> &'static str {
+        match chain_id {
+            BRIDGE_CHAIN_BITCOIN => "Bitcoin",
+            BRIDGE_CHAIN_ETHEREUM => "Ethereum",
+            BRIDGE_CHAIN_MONERO => "Monero",
+            BRIDGE_CHAIN_LITECOIN => "Litecoin",
+            BRIDGE_CHAIN_CARDANO => "Cardano",
+            _ => "Unknown",
+        }
     }
 
     /// Decode the spending condition from extra_data (for conditioned output types).
@@ -1523,7 +1797,10 @@ mod tests {
         assert_eq!(OutputType::from_u8(3), Some(OutputType::Hashlock));
         assert_eq!(OutputType::from_u8(4), Some(OutputType::HTLC));
         assert_eq!(OutputType::from_u8(5), Some(OutputType::Vesting));
-        assert_eq!(OutputType::from_u8(6), None);
+        assert_eq!(OutputType::from_u8(6), Some(OutputType::NFT));
+        assert_eq!(OutputType::from_u8(7), Some(OutputType::FungibleAsset));
+        assert_eq!(OutputType::from_u8(8), Some(OutputType::BridgeHTLC));
+        assert_eq!(OutputType::from_u8(9), None);
         assert_eq!(OutputType::from_u8(u8::MAX), None);
     }
 
