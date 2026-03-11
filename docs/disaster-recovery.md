@@ -57,7 +57,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node --network mainnet run --archive-to /path/to/archive
 ```
 
-The node syncs normally and streams finalized blocks to the archive directory. On startup it catches up any blocks it missed while offline.
+The node syncs normally and streams finalized blocks to the archive directory. After sync completes, a one-shot catch-up scans for gaps and fills any missing blocks from the local BlockStore — ensuring the archive is complete even after a full resync.
 
 ## Restoring from Archive
 
