@@ -908,8 +908,10 @@ async fn cmd_send(
         total_input += utxo.amount;
     }
 
-    // Auto-calculate fee: max(1000, inputs * 500)
-    let fee_units = explicit_fee.unwrap_or_else(|| 1000u64.max(selected_utxos.len() as u64 * 500));
+    // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
+    let num_outputs = 2u64; // recipient + change
+    let fee_units = explicit_fee
+        .unwrap_or_else(|| 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500));
 
     // Re-select if auto fee increased the requirement
     if explicit_fee.is_none() && total_input < amount_units + fee_units {
@@ -2001,10 +2003,13 @@ async fn cmd_producer(
             let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
+            // Output count: bond_count bonds + 1 change
+            let num_outputs = bonds as u64 + 1;
+
             // Initial UTXO selection with minimum fee estimate
             let mut selected_utxos = Vec::new();
             let mut total_input = 0u64;
-            let mut fee = 1000u64.max(utxos.len() as u64 * 500);
+            let mut fee = 1000u64.max((utxos.len() as u64 + num_outputs) * 500);
             for utxo in &utxos {
                 if total_input >= required_amount + fee {
                     break;
@@ -2013,8 +2018,8 @@ async fn cmd_producer(
                 total_input += utxo.amount;
             }
 
-            // Auto-calculate fee: max(1000, inputs * 500) — same as send
-            fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+            // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
+            fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
 
             // Re-select if fee increased the requirement
             if total_input < required_amount + fee {
@@ -2023,7 +2028,7 @@ async fn cmd_producer(
                 for utxo in &utxos {
                     selected_utxos.push(utxo.clone());
                     total_input += utxo.amount;
-                    fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+                    fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
                     if total_input >= required_amount + fee {
                         break;
                     }
@@ -2517,10 +2522,13 @@ async fn cmd_producer(
             let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
+            // Output count: bond_count bonds + 1 change
+            let num_outputs = count as u64 + 1;
+
             // Initial UTXO selection with minimum fee estimate
             let mut selected_utxos = Vec::new();
             let mut total_input = 0u64;
-            let mut fee = 1000u64.max(utxos.len() as u64 * 500);
+            let mut fee = 1000u64.max((utxos.len() as u64 + num_outputs) * 500);
             for utxo in &utxos {
                 if total_input >= required_amount + fee {
                     break;
@@ -2529,8 +2537,8 @@ async fn cmd_producer(
                 total_input += utxo.amount;
             }
 
-            // Auto-calculate fee: max(1000, inputs * 500) — same as send
-            fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+            // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
+            fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
 
             // Re-select if fee increased the requirement
             if total_input < required_amount + fee {
@@ -2539,7 +2547,7 @@ async fn cmd_producer(
                 for utxo in &utxos {
                     selected_utxos.push(utxo.clone());
                     total_input += utxo.amount;
-                    fee = 1000u64.max(selected_utxos.len() as u64 * 500);
+                    fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
                     if total_input >= required_amount + fee {
                         break;
                     }
@@ -2768,8 +2776,9 @@ async fn cmd_producer(
             let mut all_inputs = bond_inputs;
             all_inputs.extend(fee_inputs);
 
-            // Auto-calculate fee: max(1000, inputs * 500)
-            let fee = 1000u64.max(all_inputs.len() as u64 * 500);
+            // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
+            let num_outputs = 2u64; // payout + change
+            let fee = 1000u64.max((all_inputs.len() as u64 + num_outputs) * 500);
             if fee_input_total < fee {
                 anyhow::bail!(
                     "Insufficient spendable balance for tx fee. Need {}, have {}",
@@ -3027,8 +3036,9 @@ async fn cmd_producer(
             let mut all_inputs = bond_inputs;
             all_inputs.extend(fee_inputs);
 
-            // Auto-calculate fee: max(1000, inputs * 500)
-            let fee = 1000u64.max(all_inputs.len() as u64 * 500);
+            // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
+            let num_outputs = 2u64; // payout + change
+            let fee = 1000u64.max((all_inputs.len() as u64 + num_outputs) * 500);
             if fee_input_total < fee {
                 anyhow::bail!(
                     "Insufficient spendable balance for tx fee. Need {}, have {}",
