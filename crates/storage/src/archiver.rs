@@ -165,6 +165,11 @@ fn write_checksum_file(dir: &Path, height: u64, data: &[u8]) -> Result<(), std::
     Ok(())
 }
 
+/// Read the latest archived height from the manifest file.
+pub fn manifest_height(dir: &Path) -> Option<u64> {
+    read_manifest_height_from(dir)
+}
+
 fn read_manifest_height_from(dir: &Path) -> Option<u64> {
     let manifest_path = dir.join("manifest.json");
     let data = std::fs::read_to_string(&manifest_path).ok()?;

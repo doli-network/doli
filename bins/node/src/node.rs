@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -152,6 +153,10 @@ pub struct Node {
     archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
     /// Blocks waiting for finality before being archived
     pending_archive: std::collections::VecDeque<ArchiveBlock>,
+    /// Archive directory path (for catch-up after sync)
+    archive_dir: Option<PathBuf>,
+    /// Whether archive catch-up has been performed after sync
+    archive_caught_up: bool,
     /// WebSocket broadcast sender for real-time events (new blocks, new txs)
     ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
     /// In-memory tracker for minute attestations received via gossip.
@@ -724,6 +729,8 @@ impl Node {
             maintainer_state: None,
             archive_tx: None,
             pending_archive: std::collections::VecDeque::new(),
+            archive_dir: None,
+            archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
         })
@@ -742,10 +749,10 @@ impl Node {
         self.pending_update = Some(pending);
     }
 
-    /// Set the shared maintainer state (connects on-chain governance to UpdateService)
-    /// Set the archive channel (connects apply_block to BlockArchiver)
-    pub fn set_archive_tx(&mut self, tx: tokio::sync::mpsc::Sender<ArchiveBlock>) {
+    /// Set the archive channel and directory (connects apply_block to BlockArchiver)
+    pub fn set_archive_tx(&mut self, tx: tokio::sync::mpsc::Sender<ArchiveBlock>, dir: PathBuf) {
         self.archive_tx = Some(tx);
+        self.archive_dir = Some(dir);
     }
 
     /// Get a reference to the block store (for archiver catch-up)
@@ -6734,6 +6741,36 @@ impl Node {
             let mut sync = self.sync_manager.write().await;
             sync.cleanup();
             sync.prune_finality(current_slot);
+        }
+
+        // Archive catch-up: after sync completes, backfill archive from block_store.
+        // Runs once — when the node has blocks but the archive is behind.
+        if !self.archive_caught_up {
+            if let Some(ref archive_dir) = self.archive_dir {
+                let tip = self.chain_state.read().await.best_height;
+                if tip > 0 {
+                    let manifest_height =
+                        storage::archiver::manifest_height(archive_dir).unwrap_or(0);
+                    if manifest_height < tip {
+                        info!(
+                            "[ARCHIVER] Catch-up: archive at {}, chain at {} — backfilling",
+                            manifest_height, tip
+                        );
+                        match storage::archiver::BlockArchiver::catch_up(
+                            archive_dir,
+                            &self.block_store,
+                            tip,
+                        ) {
+                            Ok(n) if n > 0 => info!("[ARCHIVER] Catch-up complete: {} blocks", n),
+                            Ok(_) => {}
+                            Err(e) => warn!("[ARCHIVER] Catch-up error: {}", e),
+                        }
+                    }
+                    self.archive_caught_up = true;
+                }
+            } else {
+                self.archive_caught_up = true;
+            }
         }
 
         // Expire old mempool transactions

@@ -1078,7 +1078,7 @@ async fn run_node(
         }
 
         let (archive_tx, archive_rx) = tokio::sync::mpsc::channel(256);
-        node.set_archive_tx(archive_tx);
+        node.set_archive_tx(archive_tx, archive_dir.clone());
         let archiver = storage::archiver::BlockArchiver::new(archive_rx, archive_dir);
         tokio::spawn(async move { archiver.run().await });
         info!("Block archiver enabled");
