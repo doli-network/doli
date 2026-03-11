@@ -1449,12 +1449,14 @@ impl RpcContext {
         }
 
         // Full scan: find ALL missing heights (leading, mid-chain, and trailing gaps)
+        // Uses get_block_by_height to check actual block data, not just the index.
+        // The height→hash index can exist without block data (partial sync).
         let block_store_scan = self.block_store.clone();
         let missing_heights: Vec<u64> = tokio::task::spawn_blocking(move || {
             let mut missing = Vec::new();
             for h in 1..=tip_height {
                 let exists = block_store_scan
-                    .get_hash_by_height(h)
+                    .get_block_by_height(h)
                     .map(|opt| opt.is_some())
                     .unwrap_or(false);
                 if !exists {

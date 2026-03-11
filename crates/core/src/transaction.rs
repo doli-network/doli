@@ -373,14 +373,9 @@ impl Output {
         if self.output_type != OutputType::NFT || self.extra_data.is_empty() {
             return None;
         }
-        // Decode condition to find where it ends
-        let cond_result = crate::conditions::Condition::decode(&self.extra_data);
-        let (_, cond_len) = match cond_result {
-            Ok(c) => {
-                let encoded = c.encode().ok()?;
-                let len = encoded.len();
-                (c, len)
-            }
+        // Decode condition prefix to find where metadata starts
+        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
+            Ok((_, len)) => len,
             Err(_) => return None,
         };
         let meta = &self.extra_data[cond_len..];
@@ -456,9 +451,8 @@ impl Output {
         if self.output_type != OutputType::FungibleAsset || self.extra_data.is_empty() {
             return None;
         }
-        let cond_result = crate::conditions::Condition::decode(&self.extra_data);
-        let cond_len = match cond_result {
-            Ok(c) => c.encode().ok()?.len(),
+        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
+            Ok((_, len)) => len,
             Err(_) => return None,
         };
         let meta = &self.extra_data[cond_len..];
@@ -528,8 +522,8 @@ impl Output {
         if self.output_type != OutputType::BridgeHTLC || self.extra_data.is_empty() {
             return None;
         }
-        let cond_len = match crate::conditions::Condition::decode(&self.extra_data) {
-            Ok(c) => c.encode().ok()?.len(),
+        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
+            Ok((_cond, consumed)) => consumed,
             Err(_) => return None,
         };
         let meta = &self.extra_data[cond_len..];
