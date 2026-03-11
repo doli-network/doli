@@ -3470,6 +3470,159 @@ impl Node {
         validation::validate_block_with_mode(block, &ctx, mode)
     }
 
+    /// Validate block economics — prevents inflation and reward theft.
+    ///
+    /// Checks that cannot be done in the core validation crate because they
+    /// require access to the UTXO set, producer registry, and block store.
+    ///
+    /// ## Coinbase validation (every block)
+    /// - First TX must be coinbase (Transfer, no inputs, 1 output)
+    /// - Amount must equal `block_reward(height)`
+    /// - Recipient must be `reward_pool_pubkey_hash()`
+    ///
+    /// ## EpochReward validation (epoch boundary blocks)
+    /// - EpochReward TX only allowed at epoch boundaries, post-genesis, epoch > 0
+    /// - At most one EpochReward TX per block
+    /// - Total distributed must not exceed pool balance (conservation)
+    /// - (Full mode) Exact match of amounts and recipients
+    async fn validate_block_economics(
+        &self,
+        block: &Block,
+        height: u64,
+        mode: ValidationMode,
+    ) -> Result<()> {
+        // === Coinbase validation ===
+        if block.transactions.is_empty() {
+            anyhow::bail!("block has no transactions (missing coinbase)");
+        }
+
+        let coinbase = &block.transactions[0];
+        if !coinbase.is_coinbase() {
+            anyhow::bail!("first transaction is not a valid coinbase");
+        }
+
+        let expected_reward = self.params.block_reward(height);
+        if coinbase.outputs[0].amount != expected_reward {
+            anyhow::bail!(
+                "coinbase amount {} != expected block reward {}",
+                coinbase.outputs[0].amount,
+                expected_reward
+            );
+        }
+
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+        if coinbase.outputs[0].pubkey_hash != pool_hash {
+            anyhow::bail!("coinbase recipient is not the reward pool — possible theft attempt");
+        }
+
+        // === EpochReward validation ===
+        let epoch_reward_txs: Vec<&Transaction> = block
+            .transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TxType::EpochReward)
+            .collect();
+
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        let is_epoch_boundary = height > 0
+            && !self.config.network.is_in_genesis(height)
+            && reward_epoch::is_epoch_start_with(height, blocks_per_epoch);
+
+        if !epoch_reward_txs.is_empty() {
+            // EpochReward only allowed at epoch boundaries, post-genesis
+            if !is_epoch_boundary {
+                anyhow::bail!(
+                    "EpochReward transaction at non-epoch-boundary height {}",
+                    height
+                );
+            }
+
+            let completed_epoch = (height / blocks_per_epoch) - 1;
+
+            // No EpochReward at epoch 0 (genesis bonds drained the pool)
+            if completed_epoch == 0 {
+                anyhow::bail!("EpochReward not allowed at epoch 0 (genesis pool used for bonds)");
+            }
+
+            // Exactly one EpochReward TX per block
+            if epoch_reward_txs.len() != 1 {
+                anyhow::bail!(
+                    "expected at most 1 EpochReward TX, got {}",
+                    epoch_reward_txs.len()
+                );
+            }
+            let epoch_tx = epoch_reward_txs[0];
+
+            // Validate extra_data contains correct height + epoch
+            if epoch_tx.extra_data.len() >= 16 {
+                let embedded_height =
+                    u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
+                let embedded_epoch =
+                    u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
+                if embedded_height != height {
+                    anyhow::bail!(
+                        "EpochReward embedded height {} != block height {}",
+                        embedded_height,
+                        height
+                    );
+                }
+                if embedded_epoch != completed_epoch {
+                    anyhow::bail!(
+                        "EpochReward embedded epoch {} != completed epoch {}",
+                        embedded_epoch,
+                        completed_epoch
+                    );
+                }
+            }
+
+            // Conservation: total distributed must not exceed pool balance
+            let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
+            let pool_balance = {
+                let utxo = self.utxo_set.read().await;
+                let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                // Include current block's coinbase (not yet in UTXO set)
+                utxo_total + self.params.block_reward(height)
+            };
+
+            if total_distributed > pool_balance {
+                anyhow::bail!(
+                    "EpochReward total {} exceeds pool balance {} — inflation attack",
+                    total_distributed,
+                    pool_balance
+                );
+            }
+
+            // Full mode: exact match of amounts and recipients
+            if mode == ValidationMode::Full {
+                let expected = self.calculate_epoch_rewards(completed_epoch).await;
+
+                let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
+                expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
+                    .outputs
+                    .iter()
+                    .map(|o| (o.amount, o.pubkey_hash))
+                    .collect();
+                actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                if expected_sorted != actual_sorted {
+                    let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                    anyhow::bail!(
+                        "EpochReward distribution mismatch: expected {} outputs totaling {}, \
+                         got {} outputs totaling {} — possible reward theft",
+                        expected_sorted.len(),
+                        expected_total,
+                        actual_sorted.len(),
+                        total_distributed
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Apply a block to the chain
     ///
     /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
@@ -3490,6 +3643,7 @@ impl Node {
         let height = self.chain_state.read().await.best_height + 1;
 
         self.validate_block_for_apply(&block, height, mode).await?;
+        self.validate_block_economics(&block, height, mode).await?;
 
         info!("Applying block {} at height {}", block_hash, height);
 
