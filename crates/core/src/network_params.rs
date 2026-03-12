@@ -370,9 +370,7 @@ impl NetworkParams {
                 default_p2p_port: 30300,
                 default_rpc_port: 8500,
                 default_metrics_port: 9000,
-                bootstrap_nodes: vec![
-                    "/dns4/seeds.doli.network/tcp/30300".to_string(),
-                ],
+                bootstrap_nodes: vec!["/dns4/seeds.doli.network/tcp/30300".to_string()],
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
@@ -432,9 +430,7 @@ impl NetworkParams {
                 default_p2p_port: 40300,
                 default_rpc_port: 18500,
                 default_metrics_port: 19000,
-                bootstrap_nodes: vec![
-                    "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
-                ],
+                bootstrap_nodes: vec!["/dns4/seeds.testnet.doli.network/tcp/40300".to_string()],
 
                 // Timing (same as mainnet)
                 slot_duration: consensus::SLOT_DURATION,

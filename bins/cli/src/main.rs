@@ -712,8 +712,8 @@ async fn main() -> Result<()> {
             let resolved_hash = match (hash, preimage) {
                 (Some(h), _) => h,
                 (_, Some(p)) => {
-                    let preimage_bytes = hex::decode(&p)
-                        .map_err(|_| anyhow::anyhow!("Invalid preimage hex"))?;
+                    let preimage_bytes =
+                        hex::decode(&p).map_err(|_| anyhow::anyhow!("Invalid preimage hex"))?;
                     if preimage_bytes.len() != 32 {
                         anyhow::bail!("Preimage must be exactly 32 bytes (64 hex chars)");
                     }
@@ -5061,53 +5061,35 @@ fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> Result<()> {
         );
     }
 
-    // 4. List what gets deleted vs preserved
-    let delete_targets = [
-        "blocks",
-        "state_db",
-        "signed_slots.db",
-        "utxo_rocks",
-        "chain_state.bin",
-        "producers.bin",
-        "utxo.bin",
-        "producer_gset.bin",
-        "peers.cache",
-        "node_key",
-        "maintainer_state.bin",
-        "producer.lock",
-    ];
-    let preserve_targets = ["keys", ".env"];
+    // 4. Collect everything EXCEPT preserved items
+    //    Inverted logic: delete all, preserve only what's listed.
+    //    This ensures old/legacy files from any version are cleaned up.
+    let preserve_names: &[&str] = &["keys", ".env"];
 
-    // Scan for items to delete (including node subdirectories like node1/, node2/)
-    let mut found_items: Vec<PathBuf> = Vec::new();
-    let mut scan_dir = |dir: &Path| {
-        for name in &delete_targets {
-            let path = dir.join(name);
-            if path.exists() {
-                found_items.push(path);
+    fn collect_deletable(dir: &Path, preserve: &[&str], out: &mut Vec<PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !preserve.contains(&name.as_str()) {
+                    out.push(entry.path());
+                }
             }
         }
-    };
+    }
+
+    let mut found_items: Vec<PathBuf> = Vec::new();
 
     // Scan data_dir itself
-    scan_dir(&data_dir);
+    collect_deletable(&data_dir, preserve_names, &mut found_items);
 
-    // Scan subdirectories (node1/, node2/, data/, etc.)
-    if let Ok(entries) = std::fs::read_dir(&data_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                // Skip preserved directories
-                if preserve_targets.contains(&name.as_ref()) {
-                    continue;
-                }
-                scan_dir(&path);
-                // Also scan data/ subdirectory if it exists
-                let data_subdir = path.join("data");
-                if data_subdir.is_dir() {
-                    scan_dir(&data_subdir);
-                }
+    // Scan subdirectories (node1/, node2/, etc.) — also clean inside them
+    let top_level: Vec<PathBuf> = found_items.clone();
+    for path in &top_level {
+        if path.is_dir() {
+            // Scan data/ subdirectory inside node dirs
+            let data_subdir = path.join("data");
+            if data_subdir.is_dir() {
+                collect_deletable(&data_subdir, preserve_names, &mut found_items);
             }
         }
     }
@@ -5128,7 +5110,7 @@ fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> Result<()> {
     }
     println!();
     println!("Will PRESERVE:");
-    for name in &preserve_targets {
+    for name in preserve_names {
         let path = data_dir.join(name);
         if path.exists() {
             println!("  - {}/", name);
