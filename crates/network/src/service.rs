@@ -823,45 +823,44 @@ async fn handle_swarm_event(
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             // Handle peer ID mismatch: the node at this address has a new identity
             // (e.g., after a chain reset that wiped its libp2p key).
-            // Update our cache with the new peer ID and redial — with rate limiting.
+            //
+            // Strategy: ONLY clean up stale entries. Do NOT redial or add the new
+            // peer ID to Kademlia here. The correct peer will be discovered naturally
+            // through the periodic DHT bootstrap (every 60s) or incoming connections.
+            //
+            // Previous approach (update cache + immediate redial) caused amplification
+            // storms: stale DHT entries from other peers would trigger mismatches
+            // faster than we could clean them up, because adding the new address to
+            // Kademlia and redialing just fed more entries into the distributed DHT
+            // that other peers would re-propagate.
             if let libp2p::swarm::DialError::WrongPeerId { obtained, endpoint } = &error {
                 if let libp2p::core::ConnectedPoint::Dialer { address, .. } = endpoint {
                     let clean_addr = strip_p2p_suffix(address);
                     let addr_key = clean_addr.to_string();
 
-                    // Rate limit: don't redial the same address more than once per 30s.
-                    // Stale DHT entries can map dozens of old peer IDs to the same address,
-                    // each triggering a WrongPeerId error. Without this, the mismatch handler
-                    // fires hundreds of times per second after a chain reset.
+                    // Rate limit the WARN log to avoid log flooding
                     let now = Instant::now();
-                    let should_redial = !matches!(
+                    let should_log = !matches!(
                         mismatch_redial_cooldown.get(&addr_key),
                         Some(last) if now.duration_since(*last) < Duration::from_secs(30)
                     );
 
-                    if should_redial {
+                    if should_log {
                         warn!(
-                            "Peer ID mismatch at {} — expected {:?}, got {}. Updating cache and redialing.",
+                            "Peer ID mismatch at {} — expected {:?}, got {}. Removing stale entry.",
                             address, peer_id, obtained
                         );
                         mismatch_redial_cooldown.insert(addr_key, now);
-                    } else {
-                        // Silently update cache/DHT but skip the redial
-                        debug!(
-                            "Peer ID mismatch at {} (cooldown active, skipping redial)",
-                            address
-                        );
                     }
 
-                    // Always clean up stale entries, even during cooldown.
-                    // Remove ALL stale peer IDs that map to this address from Kademlia,
-                    // not just the single old_id we tried. This prevents the DHT from
-                    // re-propagating other stale entries for the same address.
+                    // Remove the stale peer ID from Kademlia so it stops being
+                    // returned in DHT queries and propagated to other peers.
                     if let Some(old_id) = &peer_id {
                         swarm.behaviour_mut().kademlia.remove_peer(old_id);
                     }
 
-                    // Update peer cache: remove stale, add correct
+                    // Update peer cache: remove stale, record correct mapping.
+                    // The cache is only used on restart — it won't trigger redials.
                     if let Some(ref path) = peer_cache_path {
                         let mut cache = PeerCache::load(path).unwrap_or_default();
                         if let Some(old_id) = &peer_id {
@@ -872,19 +871,9 @@ async fn handle_swarm_event(
                         cache.save(path);
                     }
 
-                    // Add correct peer to Kademlia and redial (if not rate-limited)
-                    swarm
-                        .behaviour_mut()
-                        .kademlia
-                        .add_address(obtained, clean_addr.clone());
-
-                    if should_redial {
-                        let _ = swarm.dial(
-                            libp2p::swarm::dial_opts::DialOpts::peer_id(*obtained)
-                                .addresses(vec![clean_addr])
-                                .build(),
-                        );
-                    }
+                    // Do NOT add to Kademlia or redial here. The correct peer will
+                    // connect to us (incoming) or be discovered via DHT bootstrap.
+                    // Adding here re-injects into the DHT propagation cycle.
                 }
             } else {
                 warn!("Failed to connect to peer {:?}: {}", peer_id, error);
@@ -1139,18 +1128,14 @@ async fn handle_behaviour_event(
 
             // Add the peer's routable addresses to kademlia (unless DHT is disabled)
             if !config.no_dht {
-                let addr_count = routable_addrs.len();
                 for addr in routable_addrs {
-                    info!("[DHT] Adding address for peer {}: {}", peer_id, addr);
+                    debug!("[DHT] Adding address for peer {}: {}", peer_id, addr);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                 }
-                match swarm.behaviour_mut().kademlia.bootstrap() {
-                    Ok(_) => info!(
-                        "[DHT] Bootstrap triggered after identify ({} addrs from {})",
-                        addr_count, peer_id
-                    ),
-                    Err(e) => warn!("[DHT] Bootstrap failed after identify: {:?}", e),
-                }
+                // Do NOT trigger kademlia.bootstrap() here. The periodic 60s timer
+                // handles DHT refresh. Triggering on every identify event causes a
+                // feedback loop: connect → identify → bootstrap → fetch stale entries
+                // from peers → mismatch → reconnect → identify → bootstrap → ...
             }
         }
 
