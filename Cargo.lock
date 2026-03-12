@@ -799,7 +799,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "bech32",
  "blake3",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "chrono",
  "clap",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1953,7 +1953,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "bincode",
  "crypto",
@@ -2723,7 +2723,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "mempool"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "crypto",
  "doli-core",
@@ -2895,7 +2895,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "async-trait",
  "bincode",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4221,7 +4221,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "bincode",
  "crypto",
@@ -4787,7 +4787,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "anyhow",
  "crypto",
@@ -4849,7 +4849,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "crypto",
  "doli-core",
