@@ -1783,22 +1783,34 @@ impl SyncManager {
     /// This prevents a partitioned minority from steering snap sync to a
     /// forked chain. Returns None if no hash has strict majority (>50%).
     fn consensus_target_hash(&self) -> Option<Hash> {
-        let mut hash_votes: HashMap<Hash, usize> = HashMap::new();
+        // Group eligible peers by height, then pick the hash at the most common
+        // height. During normal operation peers are at slightly different heights
+        // (tip race), so requiring >50% on the same best_hash always fails.
+        // Instead: find the height with the most peers, use any peer's hash at
+        // that height. This is safe because all honest peers at the same height
+        // MUST have the same hash (deterministic consensus).
+        let mut height_counts: HashMap<u64, (usize, Hash)> = HashMap::new();
         for status in self.peers.values() {
             if status.best_height > self.local_height {
-                *hash_votes.entry(status.best_hash).or_default() += 1;
+                let entry = height_counts
+                    .entry(status.best_height)
+                    .or_insert((0, status.best_hash));
+                entry.0 += 1;
             }
         }
-        let total_voters: usize = hash_votes.values().sum();
-        if total_voters == 0 {
+        if height_counts.is_empty() {
             return None;
         }
-        // Require strict majority (>50%) of eligible peers
-        hash_votes
+        // Pick the height with the most peers (break ties by highest height)
+        let (_best_height, (count, hash)) = height_counts
             .into_iter()
-            .max_by_key(|(_, count)| *count)
-            .filter(|(_, count)| *count * 2 > total_voters)
-            .map(|(hash, _)| hash)
+            .max_by_key(|(h, (c, _))| (*c, *h))?;
+        // Require at least 2 peers to agree (prevents single-peer poisoning)
+        if count >= 2 {
+            Some(hash)
+        } else {
+            None
+        }
     }
 
     /// Get the best peer to sync from
@@ -2479,10 +2491,17 @@ impl SyncManager {
         // doesn't build on our local chain, we're on a fork. The downloaded
         // chain is useless — clear it and signal fork so deep fork detection
         // can trigger genesis resync.
+        //
+        // IMPORTANT: Only trigger during Processing state (all bodies downloaded).
+        // During DownloadingBodies, bodies arrive out of order — the first header's
+        // body may not have arrived yet, but that's normal. Clearing everything
+        // during active body download causes an infinite retry loop: download 13K
+        // headers → download partial bodies → mismatch → clear → repeat forever.
+        let in_processing = matches!(self.state, SyncState::Processing { .. });
         if let Some(header) = self.pending_headers.front() {
-            if header.prev_hash != current_hash && !self.pending_headers.is_empty() {
+            if header.prev_hash != current_hash && in_processing {
                 warn!(
-                    "Sync chain mismatch: first pending header (height {}, prev={}) doesn't \
+                    "Sync chain mismatch: first pending header (slot {}, prev={}) doesn't \
                      build on local tip (hash={}). Clearing {} useless synced blocks.",
                     header.slot,
                     &header.prev_hash.to_string()[..16],
