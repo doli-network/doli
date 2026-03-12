@@ -1,3 +1,103 @@
+# CLI Reference
+
+## Programmable Outputs
+
+DOLI supports NFTs, fungible tokens, and cross-chain bridge HTLCs as native UTXO output types. No VM, no gas — just declarative spending conditions verified at consensus.
+
+### NFT Commands
+
+**`mint`** — Mint a new NFT (UniqueAsset output).
+
+```
+doli --wallet <wallet.json> mint <content> [--condition <cond>] [--amount <doli>]
+```
+
+- `content`: Content hash or URI (IPFS CID, HTTP URL, or hex hash).
+- `--condition`: Spending condition (default: `signature(<minter_pubkey_hash>)`). Supports `signature(hash)`, `hashlock(hash)`, `timelock(slot)`, `multisig(k,hash1,hash2,...)`, boolean combinators.
+- `--amount`: DOLI value to attach (default: 0, pure NFT).
+- Token ID: `BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)` — globally unique.
+
+**`nft-transfer`** — Transfer an NFT to a new owner.
+
+```
+doli --wallet <wallet.json> nft-transfer <txhash:index> <recipient_address> [--witness <witness>]
+```
+
+- `utxo`: The UTXO containing the NFT, format `txhash:output_index`.
+- `to`: Recipient address (e.g. `doli1...`).
+- `--witness`: Witness to satisfy the spending condition (default: `none()`, auto-signs with wallet key if condition is `signature(owner)`).
+
+**`nft-info`** — Display NFT metadata from a UTXO.
+
+```
+doli --wallet <wallet.json> nft-info <txhash:index>
+```
+
+Shows token_id, content hash/URI, creator, condition, and attached DOLI value.
+
+### Fungible Token Commands
+
+**`issue-token`** — Issue a new fungible token (meme coin, stablecoin, etc.).
+
+```
+doli --wallet <wallet.json> issue-token <ticker> --supply <amount> [--condition <cond>]
+```
+
+- `ticker`: Token symbol, max 16 characters (e.g. `DOGEOLI`).
+- `--supply`: Total supply, fixed at issuance. Denominated in token units.
+- `--condition`: Spending condition (default: `signature(<issuer_pubkey_hash>)`).
+- Asset ID: `BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index)` — unique by construction.
+- Anchored with 1 satoshi dust (protocol requires non-zero DOLI on all outputs).
+
+**`token-info`** — Display fungible token metadata from a UTXO.
+
+```
+doli --wallet <wallet.json> token-info <txhash:index>
+```
+
+Shows asset_id, ticker, supply, issuer, and condition.
+
+### Cross-Chain Bridge Commands
+
+**`bridge-lock`** — Lock DOLI in a bridge HTLC for cross-chain atomic swap.
+
+```
+doli --wallet <wallet.json> bridge-lock <amount> --hash <hash> --lock <height> --expiry <height> --chain <chain> --to <address>
+```
+
+- `amount`: DOLI to lock.
+- `--hash`: BLAKE3 hashlock hash (64 hex chars). Computed as `BLAKE3(LE32(13) || "DOLI_HASHLOCK" || preimage)`.
+- `--lock`: Block height after which claim is available.
+- `--expiry`: Block height after which refund is available.
+- `--chain`: Target chain — `bitcoin`, `ethereum`, `monero`, `litecoin`, `cardano`.
+- `--to`: Recipient address on the target chain.
+
+**`bridge-claim`** — Claim a bridge HTLC by revealing the preimage (receiver side).
+
+```
+doli --wallet <wallet.json> bridge-claim <txhash:index> --preimage <preimage>
+```
+
+- `utxo`: The UTXO containing the bridge HTLC.
+- `--preimage`: 64 hex chars that hash to the locked hash.
+
+**`bridge-refund`** — Refund a bridge HTLC after expiry (sender side).
+
+```
+doli --wallet <wallet.json> bridge-refund <txhash:index>
+```
+
+Only valid after the expiry height has passed.
+
+### Gotchas
+
+- `--wallet` goes BEFORE the subcommand: `doli --wallet f.json mint ...`
+- UTXO selection automatically filters to `output_type == "normal" && spendable` — bond and conditioned outputs are never consumed as fee inputs.
+- NFT transfers with default `none()` witness auto-sign with the wallet key when the condition is `signature(owner)`.
+- Token issuance uses 1 satoshi dust anchor — the token UTXO will show `amount: 1` in raw RPC.
+
+---
+
 # CLI Issues
 
 ## 2026-02-04 - `devnet clean` doesn't kill manually started nodes
