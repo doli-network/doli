@@ -769,21 +769,8 @@ impl RpcContext {
         // Calculate current era
         let era = chain_state.best_height / self.params.blocks_per_era;
 
-        // Build pending withdrawals from ProducerStatus::Unbonding
-        let pending_withdrawals =
-            if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
-                let current_height = chain_state.best_height;
-                let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
-                let claimable = current_height >= started_at + unbonding_period;
-                vec![PendingWithdrawalResponse {
-                    bond_count: effective_bond_count,
-                    request_slot: *started_at as u32,
-                    net_amount: effective_bond_amount,
-                    claimable,
-                }]
-            } else {
-                Vec::new()
-            };
+        // Withdrawal is instant -- pending_withdrawals always empty (kept for API compat)
+        let pending_withdrawals: Vec<PendingWithdrawalResponse> = Vec::new();
 
         // Collect pending epoch-deferred updates for this producer
         let pending_updates: Vec<PendingUpdateInfo> = producers
@@ -832,9 +819,6 @@ impl RpcContext {
             producers.all_producers()
         };
 
-        let current_height = chain_state.best_height;
-        let unbonding_period = doli_core::consensus::UNBONDING_PERIOD;
-
         // Build pending updates index once — O(M) instead of O(N×M)
         let pending_by_pubkey = producers.pending_updates_by_pubkey();
 
@@ -869,18 +853,8 @@ impl RpcContext {
                     info.bond_amount
                 };
 
-                let pending_withdrawals =
-                    if let storage::ProducerStatus::Unbonding { started_at } = &info.status {
-                        let claimable = current_height >= started_at + unbonding_period;
-                        vec![PendingWithdrawalResponse {
-                            bond_count: effective_bond_count,
-                            request_slot: *started_at as u32,
-                            net_amount: effective_bond_amount,
-                            claimable,
-                        }]
-                    } else {
-                        Vec::new()
-                    };
+                // Withdrawal is instant -- pending_withdrawals always empty (kept for API compat)
+                let pending_withdrawals: Vec<PendingWithdrawalResponse> = Vec::new();
 
                 let pending_updates: Vec<PendingUpdateInfo> = pending_by_pubkey
                     .get(&info.public_key)
