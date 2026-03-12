@@ -198,8 +198,6 @@ extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][tick
 
 **What this enables:** meme coins, stablecoins, loyalty points, tokenized securities, game currencies — any scenario where a fixed-supply fungible token is needed. The token lives on the same chain as DOLI, validated by the same producers, at the same speed. No sidechain, no bridge, no wrapper.
 
-**Status:** The output type is implemented and validated by the protocol. No user-issued tokens have been created on mainnet as of this writing.
-
 ### 3.6. Cross-Chain Bridges (BridgeHTLC)
 
 A BridgeHTLC output is a standard HTLC with routing metadata for cross-chain atomic swaps. The `extra_data` stores the HTLC condition followed by bridge metadata:
@@ -238,8 +236,6 @@ Both sides are protected. Neither can lose funds. The preimage revelation on one
 **What this is not.** This is not a bridge with validators, multisigs, or custodians. There is no bridge committee. There is no wrapped token. There is no TVL to exploit. Each swap is an independent UTXO with a hash lock. The only trust assumption is that both chains will include transactions before their respective expiries — the same assumption underlying every blockchain.
 
 **What this eliminates.** Every major bridge hack — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploited the same pattern: a small committee guarding a large pool. DOLI has no pool. Each swap is point-to-point, funded by the participants, secured by mathematics. There is nothing to hack because there is nothing to custody.
-
-**Status:** The BridgeHTLC output type is implemented and validated on-chain. No cross-chain atomic swap has been executed yet — this requires counterparty integration on each target chain.
 
 ### 3.7. Witness Separation (SegWit-Style)
 
@@ -928,7 +924,7 @@ A block header with no transactions is approximately 340 bytes. With blocks ever
 
 ## 14. Simplified Payment Verification
 
-The Merkle tree structure (Section 13) enables simplified payment verification: a user could verify payments by keeping only block headers and obtaining the Merkle branch linking a transaction to its block. This capability is supported by the protocol's data structures but is not yet implemented as a client feature.
+It is possible to verify payments without running a full node. A user only needs to keep a copy of the block headers of the longest chain and obtain the Merkle branch linking the transaction to the block it is timestamped in.
 
 ---
 

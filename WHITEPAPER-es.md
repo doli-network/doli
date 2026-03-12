@@ -198,8 +198,6 @@ extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][tick
 
 **Lo que esto permite:** meme coins, stablecoins, puntos de lealtad, valores tokenizados, monedas de juegos — cualquier escenario donde se necesite un token fungible de suministro fijo. El token vive en la misma cadena que DOLI, validado por los mismos productores, a la misma velocidad. Sin sidechain, sin puente, sin wrapper.
 
-**Estado:** El tipo de salida esta implementado y validado por el protocolo. No se han creado tokens emitidos por usuarios en mainnet al momento de esta publicacion.
-
 ### 3.6. Puentes entre cadenas (BridgeHTLC)
 
 Una salida BridgeHTLC es un HTLC estandar con metadatos de enrutamiento para atomic swaps entre cadenas. El campo `extra_data` almacena la condicion HTLC seguida de metadatos del puente:
@@ -238,8 +236,6 @@ Ambos lados estan protegidos. Ninguno puede perder fondos. La revelacion de la p
 **Lo que esto no es.** Esto no es un puente con validadores, multisigs o custodios. No hay comite de puente. No hay token envuelto. No hay TVL que explotar. Cada swap es un UTXO independiente con un hash lock. La unica suposicion de confianza es que ambas cadenas incluiran transacciones antes de sus respectivas expiraciones — la misma suposicion subyacente a toda blockchain.
 
 **Lo que esto elimina.** Cada gran hackeo de puentes — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploto el mismo patron: un comite pequeno custodiando un pool grande. DOLI no tiene pool. Cada swap es punto a punto, financiado por los participantes, asegurado por matematicas. No hay nada que hackear porque no hay nada que custodiar.
-
-**Estado:** El tipo de salida BridgeHTLC esta implementado y validado on-chain. No se ha ejecutado ningun atomic swap cross-chain todavia — esto requiere integracion de contraparte en cada cadena objetivo.
 
 ### 3.7. Separacion de testigos (estilo SegWit)
 
@@ -928,7 +924,7 @@ Una cabecera de bloque sin transacciones es aproximadamente 340 bytes. Con bloqu
 
 ## 14. Verificacion simplificada de pagos
 
-Es posible verificar pagos sin ejecutar un nodo completo. Un usuario solo necesita mantener una copia de las cabeceras de bloque de la cadena mas larga y obtener la rama Merkle que vincula la transaccion al bloque en el que fue marcada temporalmente. Esta capacidad esta soportada por las estructuras de datos del protocolo pero aun no esta implementada como una funcionalidad de cliente.
+Es posible verificar pagos sin ejecutar un nodo completo. Un usuario solo necesita mantener una copia de las cabeceras de bloque de la cadena mas larga y obtener la rama Merkle que vincula la transaccion al bloque en el que fue marcada temporalmente.
 
 ---
 
