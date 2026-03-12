@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crypto::Hash;
+use crypto::{Hash, Hasher};
 use doli_core::Transaction;
 use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
 
@@ -596,6 +596,64 @@ impl RpcContext {
                 let output_type = match entry.output.output_type {
                     doli_core::OutputType::Normal => "normal",
                     doli_core::OutputType::Bond => "bond",
+                    doli_core::OutputType::Multisig => "multisig",
+                    doli_core::OutputType::Hashlock => "hashlock",
+                    doli_core::OutputType::HTLC => "htlc",
+                    doli_core::OutputType::Vesting => "vesting",
+                    doli_core::OutputType::NFT => "nft",
+                    doli_core::OutputType::FungibleAsset => "fungibleAsset",
+                    doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
+                };
+
+                let condition = if entry.output.output_type.is_conditioned() {
+                    entry
+                        .output
+                        .condition()
+                        .and_then(|r| r.ok())
+                        .map(|c| condition_to_json(&c))
+                } else {
+                    None
+                };
+
+                let nft = if entry.output.output_type == doli_core::OutputType::NFT {
+                    entry.output.nft_metadata().map(|(token_id, content_hash)| {
+                        serde_json::json!({
+                            "tokenId": token_id.to_hex(),
+                            "contentHash": hex::encode(&content_hash)
+                        })
+                    })
+                } else {
+                    None
+                };
+
+                let asset = if entry.output.output_type == doli_core::OutputType::FungibleAsset {
+                    entry.output.fungible_asset_metadata().map(
+                        |(asset_id, total_supply, ticker)| {
+                            serde_json::json!({
+                                "assetId": asset_id.to_hex(),
+                                "totalSupply": total_supply,
+                                "ticker": ticker
+                            })
+                        },
+                    )
+                } else {
+                    None
+                };
+
+                let bridge = if entry.output.output_type == doli_core::OutputType::BridgeHTLC {
+                    entry
+                        .output
+                        .bridge_htlc_metadata()
+                        .map(|(chain_id, target_addr)| {
+                            serde_json::json!({
+                                "targetChain": doli_core::Output::bridge_chain_name(chain_id),
+                                "targetChainId": chain_id,
+                                "targetAddress": String::from_utf8(target_addr.clone())
+                                    .unwrap_or_else(|_| hex::encode(&target_addr))
+                            })
+                        })
+                } else {
+                    None
                 };
 
                 UtxoResponse {
@@ -606,6 +664,10 @@ impl RpcContext {
                     lock_until: entry.output.lock_until,
                     height: entry.height,
                     spendable: entry.is_spendable_at_with_maturity(current_height, maturity),
+                    condition,
+                    nft,
+                    asset,
+                    bridge,
                 }
             })
             .collect();
@@ -1387,12 +1449,14 @@ impl RpcContext {
         }
 
         // Full scan: find ALL missing heights (leading, mid-chain, and trailing gaps)
+        // Uses get_block_by_height to check actual block data, not just the index.
+        // The height→hash index can exist without block data (partial sync).
         let block_store_scan = self.block_store.clone();
         let missing_heights: Vec<u64> = tokio::task::spawn_blocking(move || {
             let mut missing = Vec::new();
             for h in 1..=tip_height {
                 let exists = block_store_scan
-                    .get_hash_by_height(h)
+                    .get_block_by_height(h)
                     .map(|opt| opt.is_some())
                     .unwrap_or(false);
                 if !exists {
@@ -1455,6 +1519,7 @@ impl RpcContext {
 
             let client = reqwest::Client::new();
             let mut imported = 0u64;
+            let mut skipped = 0u64;
 
             for &h in &missing_heights {
                 // Fetch block from peer
@@ -1493,22 +1558,18 @@ impl RpcContext {
                 let block_result = match body.get("result") {
                     Some(r) => r,
                     None => {
-                        let msg = format!("No result for block {} (peer may not have it)", h);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
+                        warn!("Backfill: peer missing block {}, skipping", h);
+                        skipped += 1;
+                        continue;
                     }
                 };
 
                 let b64_data = match block_result.get("block").and_then(|v| v.as_str()) {
                     Some(s) => s,
                     None => {
-                        let msg = format!("Missing block data at height {}", h);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
+                        warn!("Backfill: no block data at height {}, skipping", h);
+                        skipped += 1;
+                        continue;
                     }
                 };
 
@@ -1573,10 +1634,17 @@ impl RpcContext {
                 }
             }
 
-            info!(
-                "Backfill complete: {} blocks imported, chain filled",
-                imported
-            );
+            if skipped > 0 {
+                warn!(
+                    "Backfill done: {} imported, {} skipped (peer missing). Run again with a different peer to fill remaining gaps.",
+                    imported, skipped
+                );
+            } else {
+                info!(
+                    "Backfill complete: {} blocks imported, chain filled",
+                    imported
+                );
+            }
             state.running.store(false, Ordering::SeqCst);
         });
 
@@ -1626,30 +1694,47 @@ impl RpcContext {
         let block_store = self.block_store.clone();
         let tip = tip_height;
 
-        // Run scan in blocking task to avoid starving the async runtime
+        // Run scan in blocking task to avoid starving the async runtime.
+        // Computes both gap detection AND a running chain commitment:
+        //   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+        // If the chain is complete, the final commitment is a 32-byte fingerprint
+        // that uniquely identifies the exact sequence of all blocks 1..tip.
+        // Two nodes with the same commitment have identical chains.
         let result = tokio::task::spawn_blocking(move || {
             let mut missing: Vec<String> = Vec::new();
             let mut range_start: Option<u64> = None;
             let mut range_end: u64 = 0;
+            // Chain commitment: BLAKE3(prev_commitment || block_hash)
+            let mut commitment = Hash::default(); // Start with zeros
+            let mut commitment_valid = true; // Breaks on first gap
 
             for h in 1..=tip {
-                let exists = block_store
-                    .get_hash_by_height(h)
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
+                // Check actual block data, not just the height→hash index.
+                // The index can exist without the block (e.g. after partial sync).
+                let block = block_store.get_block_by_height(h).ok().flatten();
 
-                if !exists {
+                if let Some(blk) = block {
+                    let hash = blk.hash();
+                    if commitment_valid {
+                        let mut hasher = Hasher::new();
+                        hasher.update(commitment.as_bytes());
+                        hasher.update(hash.as_bytes());
+                        commitment = hasher.finalize();
+                    }
+
+                    if let Some(start) = range_start.take() {
+                        if start == range_end {
+                            missing.push(format!("{}", start));
+                        } else {
+                            missing.push(format!("{}-{}", start, range_end));
+                        }
+                    }
+                } else {
                     if range_start.is_none() {
                         range_start = Some(h);
                     }
                     range_end = h;
-                } else if let Some(start) = range_start.take() {
-                    // Flush completed gap range
-                    if start == range_end {
-                        missing.push(format!("{}", start));
-                    } else {
-                        missing.push(format!("{}-{}", start, range_end));
-                    }
+                    commitment_valid = false; // Gap breaks the chain
                 }
             }
             // Flush final range if chain ends with a gap
@@ -1673,19 +1758,26 @@ impl RpcContext {
                 })
                 .sum();
 
-            (missing, missing_count)
+            let commitment_hex = if commitment_valid && missing_count == 0 {
+                Some(format!("{}", commitment))
+            } else {
+                None
+            };
+
+            (missing, missing_count, commitment_hex)
         })
         .await
         .map_err(|e| RpcError::internal_error(format!("Scan failed: {}", e)))?;
 
-        let (missing, missing_count) = result;
+        let (missing, missing_count, chain_commitment) = result;
 
         Ok(serde_json::json!({
             "complete": missing_count == 0,
             "tip": tip_height,
             "scanned": tip_height,
             "missing": missing,
-            "missing_count": missing_count
+            "missingCount": missing_count,
+            "chainCommitment": chain_commitment
         }))
     }
 

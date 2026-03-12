@@ -934,28 +934,27 @@ impl std::fmt::Display for BondError {
 
 impl std::error::Error for BondError {}
 
-/// Base block size (Era 1) in bytes
-pub const BASE_BLOCK_SIZE: usize = 1_000_000;
+/// Base block size (Era 0) in bytes
+pub const BASE_BLOCK_SIZE: usize = 2_000_000;
 
-/// Maximum block size cap (Era 6+) in bytes
+/// Maximum block size cap (Era 4+) in bytes
 pub const MAX_BLOCK_SIZE_CAP: usize = 32_000_000;
 
 /// Calculate max block size for a given height.
 ///
 /// Block size doubles every era (~4 years):
-/// - Era 0: 1 MB
-/// - Era 1: 2 MB
-/// - Era 2: 4 MB
-/// - Era 3: 8 MB
-/// - Era 4: 16 MB
-/// - Era 5+: 32 MB (capped)
+/// - Era 0: 2 MB
+/// - Era 1: 4 MB
+/// - Era 2: 8 MB
+/// - Era 3: 16 MB
+/// - Era 4+: 32 MB (capped)
 ///
 /// This growth is encoded in the protocol from genesis.
 /// No hard forks or voting required.
 #[must_use]
 pub fn max_block_size(height: BlockHeight) -> usize {
     let era = height / BLOCKS_PER_ERA;
-    if era >= 5 {
+    if era >= 4 {
         MAX_BLOCK_SIZE_CAP
     } else {
         BASE_BLOCK_SIZE << era // shift left = multiply by 2^era
@@ -1592,6 +1591,18 @@ impl ConsensusParams {
             self.genesis_time = spec.genesis.timestamp;
         }
         self.genesis_hash = spec.genesis_hash();
+    }
+
+    /// Returns the activation height for covenant (conditioned) outputs.
+    ///
+    /// Before this height, nodes reject any OutputType >= 2 (Multisig, Hashlock, etc.).
+    /// This ensures coordinated activation: all nodes must upgrade before covenants activate.
+    pub fn covenants_activation_height(&self, network: &Network) -> BlockHeight {
+        match network {
+            Network::Devnet => 0,         // Immediate on devnet
+            Network::Testnet => 6900,     // Covenants activate at height 6900
+            Network::Mainnet => u64::MAX, // TBD — set after testnet stabilizes
+        }
     }
 
     /// Calculate max block size for a given height.
@@ -2527,24 +2538,22 @@ mod tests {
 
     #[test]
     fn test_max_block_size_by_era() {
-        // Era 0 (0-4 years): 1 MB
-        assert_eq!(max_block_size(0), 1_000_000);
-        assert_eq!(max_block_size(BLOCKS_PER_ERA - 1), 1_000_000);
+        // Era 0 (0-4 years): 2 MB
+        assert_eq!(max_block_size(0), 2_000_000);
+        assert_eq!(max_block_size(BLOCKS_PER_ERA - 1), 2_000_000);
 
-        // Era 1 (4-8 years): 2 MB
-        assert_eq!(max_block_size(BLOCKS_PER_ERA), 2_000_000);
-        assert_eq!(max_block_size(BLOCKS_PER_ERA * 2 - 1), 2_000_000);
+        // Era 1 (4-8 years): 4 MB
+        assert_eq!(max_block_size(BLOCKS_PER_ERA), 4_000_000);
+        assert_eq!(max_block_size(BLOCKS_PER_ERA * 2 - 1), 4_000_000);
 
-        // Era 2 (8-12 years): 4 MB
-        assert_eq!(max_block_size(BLOCKS_PER_ERA * 2), 4_000_000);
+        // Era 2 (8-12 years): 8 MB
+        assert_eq!(max_block_size(BLOCKS_PER_ERA * 2), 8_000_000);
 
-        // Era 3 (12-16 years): 8 MB
-        assert_eq!(max_block_size(BLOCKS_PER_ERA * 3), 8_000_000);
+        // Era 3 (12-16 years): 16 MB
+        assert_eq!(max_block_size(BLOCKS_PER_ERA * 3), 16_000_000);
 
-        // Era 4 (16-20 years): 16 MB
-        assert_eq!(max_block_size(BLOCKS_PER_ERA * 4), 16_000_000);
-
-        // Era 5+ (20+ years): 32 MB (capped)
+        // Era 4+ (16+ years): 32 MB (capped)
+        assert_eq!(max_block_size(BLOCKS_PER_ERA * 4), 32_000_000);
         assert_eq!(max_block_size(BLOCKS_PER_ERA * 5), 32_000_000);
         assert_eq!(max_block_size(BLOCKS_PER_ERA * 6), 32_000_000);
         assert_eq!(max_block_size(BLOCKS_PER_ERA * 10), 32_000_000);

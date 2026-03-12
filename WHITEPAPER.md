@@ -16,7 +16,9 @@ Block production follows deterministic rotation: a participant with one bond kno
 
 A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through BLS-aggregated liveness attestations — producers who are online and following the chain qualify for their share. No lottery. No variance. No pools. Just time.
 
-Transactions are ordered through verifiable delay functions that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
+Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
+
+We demonstrate that NFTs, fungible tokens, and trustless cross-chain bridges can be implemented as native UTXO output types with declarative spending conditions, without a virtual machine, without gas metering, and without trusted committees — achieving equivalent expressiveness to VM-based approaches for these use cases while maintaining bounded, predictable verification cost.
 
 ---
 ## 1. Introduction
@@ -156,10 +158,100 @@ Each output type is a named pattern over the condition language:
 | HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Payment channels |
 | Escrow | `Threshold(2, [buyer, seller, arbiter])` | Trustless commerce |
 | Vesting | `Signature(owner) AND Timelock(unlock_height)` | Time-locked grants |
+| UniqueAsset | `Condition + [token_id, content_hash]` | Non-fungible tokens |
+| FungibleAsset | `Condition + [asset_id, supply, ticker]` | User-issued tokens |
+| BridgeHTLC | `HTLC + [target_chain, target_address]` | Cross-chain bridges |
 
 These are not separate implementations — they are compositions of the same primitive conditions. A developer does not write a smart contract. A developer selects conditions.
 
-### 3.4. What This Enables
+### 3.4. Non-Fungible Tokens (UniqueAsset)
+
+A UniqueAsset output carries a globally unique token representing ownership of a singular digital object. The output's `extra_data` stores the spending condition followed by metadata:
+
+```
+extra_data = [condition_bytes][version][token_id][content_hash_len][content_hash]
+```
+
+**Token identity.** The `token_id` is deterministic: `BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)`. Two mints with different nonces always produce different tokens. The content hash may be an IPFS CID, an HTTP URI, or a raw BLAKE3 digest — the protocol stores bytes without interpreting them.
+
+**Spending conditions.** The condition field is the same composable language as any other output. The simplest case is `Signature(owner)` — only the current holder can transfer the NFT. But nothing prevents a Multisig custody, a Hashlock-gated reveal, or a Timelock-based auction where the NFT becomes spendable by anyone after a deadline.
+
+**Transfer.** Transferring an NFT spends the old UTXO and creates a new UniqueAsset output with the same `token_id` and `content_hash` but a new owner and potentially new conditions. The token_id is the permanent identity; the UTXO is the current ownership record.
+
+**No registry, no contract, no global state.** The NFT exists entirely within the UTXO that carries it. Indexing is a reader concern — the protocol validates structure and conditions, nothing more.
+
+### 3.5. User-Issued Tokens (FungibleAsset)
+
+A FungibleAsset output represents a fixed-supply user-issued token. The `extra_data` stores the spending condition followed by asset metadata:
+
+```
+extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][ticker]
+```
+
+**Asset identity.** The `asset_id` is derived from the genesis transaction: `BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index)`. This makes it unique by construction — no two issuances can produce the same asset_id because no two transactions share a hash.
+
+**Fixed supply.** Total supply is set at issuance and encoded in every UTXO carrying the token. The protocol does not enforce supply invariants across UTXOs — that is an indexer responsibility. What the protocol enforces: the `extra_data` structure is valid, the condition is satisfiable, and the output follows standard UTXO rules.
+
+**Ticker.** Up to 16 ASCII characters. `DOGEOLI`, `STBL`, `GOLD` — the ticker is metadata for human readability, stored on-chain and queryable through the RPC.
+
+**What this enables:** meme coins, stablecoins, loyalty points, tokenized securities, game currencies — any scenario where a fixed-supply fungible token is needed. The token lives on the same chain as DOLI, validated by the same producers, at the same speed. No sidechain, no bridge, no wrapper.
+
+### 3.6. Cross-Chain Bridges (BridgeHTLC)
+
+A BridgeHTLC output is a standard HTLC with routing metadata for cross-chain atomic swaps. The `extra_data` stores the HTLC condition followed by bridge metadata:
+
+```
+extra_data = [condition_bytes][version][target_chain][addr_len][target_address]
+```
+
+The condition is always an HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)`. The metadata tells counterparties which chain to lock on and where.
+
+**Supported chains:**
+
+| Chain | ID | Address Format | Hashlock Support |
+|-------|-----|---------------|-----------------|
+| Bitcoin | 1 | Base58/Bech32 | Native (OP_SHA256, OP_HASH160) |
+| Ethereum | 2 | 0x-prefixed hex | 30-line Solidity contract |
+| Monero | 3 | Standard/Integrated | Native (Ed25519 adaptor sigs) |
+| Litecoin | 4 | Base58/Bech32 | Native (same as Bitcoin) |
+| Cardano | 5 | Bech32 | Plutus script |
+
+**Atomic swap protocol:**
+
+```
+1. Alice (DOLI) generates secret S, computes H = BLAKE3(S)
+2. Alice locks X DOLI in BridgeHTLC(H, lock=L, expiry=E, chain=Bitcoin, to=Bob_BTC)
+3. Bob sees the lock on DOLI chain, verifies H
+4. Bob locks Y BTC in Bitcoin HTLC with same hash H, shorter expiry
+5. Alice claims Bob's BTC by revealing S on Bitcoin
+6. Bob reads S from Bitcoin, claims Alice's DOLI by revealing S on DOLI
+7. If Bob never locks → Alice refunds after E
+8. If Alice never claims → Bob refunds after his Bitcoin expiry
+```
+
+Both sides are protected. Neither can lose funds. The preimage revelation on one chain enables the claim on the other. This is the same mechanism that secures the Lightning Network — applied across chains.
+
+**What this is not.** This is not a bridge with validators, multisigs, or custodians. There is no bridge committee. There is no wrapped token. There is no TVL to exploit. Each swap is an independent UTXO with a hash lock. The only trust assumption is that both chains will include transactions before their respective expiries — the same assumption underlying every blockchain.
+
+**What this eliminates.** Every major bridge hack — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploited the same pattern: a small committee guarding a large pool. DOLI has no pool. Each swap is point-to-point, funded by the participants, secured by mathematics. There is nothing to hack because there is nothing to custody.
+
+### 3.7. Witness Separation (SegWit-Style)
+
+Spending a conditioned output requires a witness — the data that satisfies the conditions. A Hashlock requires the preimage. A Signature condition requires a signature from the matching key. A Multisig requires N signatures.
+
+Witnesses are stored in the transaction's `extra_data` field, separate from the signing hash. The signing message covers inputs and outputs but excludes witness data — the same separation Bitcoin SegWit introduced to solve transaction malleability.
+
+```
+signing_hash = BLAKE3(version || tx_type || inputs || outputs)
+    ↑ excludes extra_data (witnesses)
+
+tx_hash = BLAKE3(version || tx_type || inputs || outputs || extra_data)
+    ↑ includes extra_data (immutable commitment)
+```
+
+This prevents a chicken-and-egg: a Signature witness must sign a hash that does not include the witness itself. The witness is committed in the full `tx_hash` for immutability but excluded from `signing_hash` for constructability.
+
+### 3.8. What This Enables
 
 **Without a virtual machine:**
 
@@ -168,18 +260,21 @@ These are not separate implementations — they are compositions of the same pri
 - **Multi-party custody:** Corporate treasuries, DAOs, inheritance — any scenario requiring N-of-M authorization.
 - **Trustless escrow:** Buyer, seller, and arbiter each hold a key. Any two can release funds.
 - **Vesting schedules:** Time-locked outputs for team allocations, grants, or contractual obligations.
+- **Native NFTs:** Digital art, identity tokens, certificates — unique assets with composable spending conditions, no contract deployment.
+- **User-issued tokens:** Meme coins, stablecoins, loyalty points — fixed-supply tokens on the base layer, no sidechain required.
+- **Cross-chain bridges:** Trustless atomic swaps with Bitcoin, Ethereum, Monero, Litecoin, and Cardano. No bridge committee, no wrapped tokens, no custodial risk.
 
 **Without shared mutable state:**
 
 Every output is independent. Spending one output cannot affect another. There is no reentrancy, no front-running, no MEV. Transactions are fully parallelizable — validation scales linearly with cores.
 
-### 3.5. What This Does Not Enable
+### 3.9. What This Does Not Enable
 
 DOLI outputs cannot maintain persistent state across transactions. There is no on-chain storage, no loops, no arbitrary computation. This is deliberate.
 
 Applications requiring shared state — automated market makers, lending protocols, on-chain governance with complex voting — belong on Layer 2 or application-specific chains that settle to DOLI.
 
-The base layer provides: **value transfer, time-anchored ordering, and programmable spending conditions.** Everything else builds on top.
+The base layer provides: **value transfer, time-anchored ordering, programmable spending conditions, native assets, and trustless cross-chain settlement.** Everything else builds on top.
 
 ---
 
@@ -216,13 +311,13 @@ Each timestamp includes the previous timestamp in its hash, forming a chain. Eac
 
 To implement a distributed timestamp server on a peer-to-peer basis, we need a mechanism that makes producing blocks costly and prevents that cost from being evaded through parallelization or resource accumulation.
 
-The solution is to use **Verifiable Delay Functions**. A VDF is a function that:
+The solution is to use **sequential delay proofs** — functions that enforce a minimum wall-clock time per block through inherently serial computation. The construction is inspired by Verifiable Delay Functions [2, 3] but uses a simpler primitive (Section 5.1). The essential properties are:
 
 1. Requires a fixed number of sequential operations to compute.
-2. Produces a proof that can be verified quickly.
-3. Cannot be significantly accelerated through parallelization.
+2. Cannot be significantly accelerated through parallelization.
+3. Can be verified by any node (by recomputation).
 
-> **Note:** The VDF proves that *N* sequential operations were executed — time is the effective lower bound since no known technique accelerates sequential computation through parallelization. The VDF serves as a heartbeat (proof of presence), not as a randomness source. Producer selection is a pure function of `(slot, ActiveSet(epoch))`, fixed at epoch start, independent of VDF speed. Faster hardware provides no scheduling advantage.
+> **Note:** The delay proof demonstrates that *N* sequential operations were executed — time is the effective lower bound since no known technique accelerates sequential hash computation through parallelization. The proof serves as a heartbeat (proof of presence), not as a randomness source. Producer selection is a pure function of `(slot, ActiveSet(epoch))`, fixed at epoch start, independent of proof speed. Faster hardware provides no scheduling advantage.
 
 For each block, the producer must calculate:
 
@@ -263,7 +358,7 @@ Input: prev_hash ∥ slot ∥ producer_key
       Output: h_T = H^T(input)
 ```
 
-**Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. No shortcuts exist — the sequential dependency *h_{i+1} = H(h_i)* prevents parallelization.
+**Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. The sequential dependency *h_{i+1} = H(h_i)* prevents parallelization. No shortcut for computing *H^T* faster than *T* sequential evaluations is known for BLAKE3 or any cryptographic hash function — this is a standard assumption in hash-based cryptography, not a proven lower bound. The security of the delay proof rests on this assumption, which we share with all iterated hash constructions including Solana's Proof of History [4].
 
 ### 5.2. Time Structure
 
@@ -741,7 +836,9 @@ The protocol automatically regulates the rate at which new identities can join.
 
 ### 12.2. Attack Probability
 
-**Theorem (Sequential Deficit).** Let *T* be the fixed sequential time per block. An attacker who begins an alternative chain with deficit *d* ≥ 1 blocks cannot reduce *d* regardless of parallel computational resources.
+**Assumption (Sequential Hardness).** For a cryptographic hash function *H*, computing *H^T(x)* requires at least *T* sequential evaluations of *H*. No algorithm can produce *H^T(x)* in fewer than *T* steps, regardless of parallel resources. This is a standard assumption in hash-based cryptography — no counterexample exists for any hash function considered secure, but no formal proof of this lower bound exists either.
+
+**Theorem (Sequential Deficit).** Under the Sequential Hardness assumption, let *T* be the fixed sequential time per block. An attacker who begins an alternative chain with deficit *d* ≥ 1 blocks cannot reduce *d* regardless of parallel computational resources.
 
 **Proof.** Let *t₀* be the time the attacker begins forking. Define:
 
@@ -786,11 +883,13 @@ This is correct and by design. An attacker with *M* machines can register *M* id
 2. **Capital:** *BOND_UNIT* locked per identity (linear cost in *M*)
 3. **Ongoing presence:** One VDF heartbeat per slot per identity (linear operational cost in *M*)
 
-The attack cost is therefore *O(M)* in capital and operational expense, identical to Proof of Stake's security model. The critical difference is the **time floor**: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time. The registration difficulty adjusts per epoch (Section 7.1), so a burst of registrations increases *T_registration* for subsequent attempts.
+The capital cost is *O(M)* — identical to Proof of Stake. DOLI does not escape this. A well-resourced attacker who can afford *M* bonds faces the same linear capital cost as in any PoS system.
+
+What DOLI adds is a **time floor** that PoS lacks: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time per identity. The registration difficulty adjusts per epoch (Section 7.1), so a burst of registrations increases *T_registration* for subsequent attempts. This means a PoS-style "buy 51% of stake overnight" attack is structurally impossible — the attacker must wait through the registration pipeline regardless of budget.
 
 Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity time delay. In DOLI, the same *M* machines yield *M* identities, but the registration pipeline enforces a sequential bottleneck per identity and the capital requirement scales linearly.
 
-The system does not claim immunity from wealthy adversaries — no system can. It claims that time imposes an irreducible cost floor that capital alone cannot bypass.
+The system does not claim immunity from wealthy adversaries — no system can. It claims two things: (1) capital alone cannot bypass the time floor, and (2) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense.
 
 ### 12.4. Safety Theorem
 
@@ -816,6 +915,8 @@ Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e*. Additionally, senior
 By the Sequential Deficit theorem (12.2), the attacker cannot compensate by computing faster — the VDF's sequential dependency prevents parallel acceleration. ∎
 
 **Corollary.** An attacker starting from zero needs ~3 years of sustained presence before seniority weight equals an established honest producer, even with equal bond count. The attack window is therefore bounded not just by capital but by calendar time.
+
+**Limitation.** Seniority protects against *late* attackers — those who attempt to join and dominate an established network. It does not protect against *patient early* attackers who register during the network's infancy and accumulate seniority legitimately alongside honest producers. This is mitigated by: (1) the capital cost still scales linearly with bond count, (2) 100% bond loss risk for double production, and (3) the attestation requirement — maintaining *M* identities at 90% uptime for years has compounding operational cost. No consensus system can distinguish a patient adversary from a legitimate participant; the defense is making sustained dishonesty expensive, not impossible.
 
 ---
 
@@ -926,17 +1027,21 @@ The choice is simple: participate in consensus with current software, or do not 
 
 DOLI is not a proposal. The network described in this paper is operational.
 
-As of March 2026, the mainnet runs with multiple independent producers across geographically distributed nodes. The source code is open and the chain state is publicly verifiable.
+As of March 2026, the mainnet is in its **bootstrap phase** — operational and producing blocks, but with a small producer set operated primarily by the founding team across geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers have begun joining.
 
 | Metric | Value |
 |--------|-------|
 | Block time | 10 seconds |
 | VDF computation | ~55ms per block |
-| Block propagation | < 500ms (5-node network) |
+| Block propagation | < 500ms |
 | Forks since genesis | 0 |
 | Missed slot rate | < 10% (fallback mechanism) |
 | Node hardware | Standard VPS, any CPU |
 | Minimum bond | 10 DOLI |
+| Active producers | 14 (bootstrap phase) |
+| External producers | Onboarding in progress |
+
+The current producer count reflects the bootstrap phase described in Section 16.2. The protocol's security properties strengthen as independent producers join — each additional operator increases the cost of a >50% bond-weighted attack and reduces reliance on the founding set. The target is a producer set large enough that no single entity controls a meaningful fraction of bond-weighted slots.
 
 ```
 Genesis:    March 2026
@@ -962,7 +1067,7 @@ The difference: Bitcoin's output format was fixed in 2009. DOLI's output format 
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
-We started with the usual framework of coins made from digital signatures, which provides strong control of ownership. This is incomplete without a way to prevent double-spending. To solve this, we proposed a peer-to-peer network using verifiable delay functions to anchor consensus to time.
+We started with the usual framework of coins made from digital signatures, which provides strong control of ownership. This is incomplete without a way to prevent double-spending. To solve this, we proposed a peer-to-peer network using sequential delay proofs to anchor consensus to time.
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
@@ -976,7 +1081,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v2.1.0**
+**DOLI v2.2.0**
 
 *"Time is the only fair currency."*
 
@@ -988,5 +1093,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 1. Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System.*
 
 2. Boneh, D., Bonneau, J., Bünz, B., & Fisch, B. (2018). *Verifiable Delay Functions.* In Advances in Cryptology – CRYPTO 2018.
+
+4. Yakovenko, A. (2018). *Solana: A new architecture for a high performance blockchain.* Uses SHA-256 iterated hashing for Proof of History under the same sequential hardness assumption.
 
 3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019. (Cited for contrast — DOLI uses iterated hash chains, not algebraic VDFs. See Section 5.1.)

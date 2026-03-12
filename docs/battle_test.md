@@ -365,7 +365,7 @@ Note: Fuzz targets exist at `testing/fuzz/targets/{vdf_verify,merkle}.rs`
 #!/bin/bash
 for method in getBlockByHeight getChainInfo getNetworkInfo getMempoolInfo; do
   echo "Testing $method..."
-  curl -s -X POST http://localhost:8545 \
+  curl -s -X POST http://localhost:8500 \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"$method\",\"params\":{\"height\":0},\"id\":1}" \
     | jq '.result // .error'
@@ -1306,7 +1306,7 @@ cargo +nightly fuzz run fuzz_vdf_verify -- -runs=100000
 | VDF too slow | >55s | `doli_vdf_compute_seconds` | [x] Data available |
 | Equivocation | Any | (needs counter) | [x] Via network detection |
 
-**Metrics Server**: Port 9090 (default), configurable via `--metrics-port`
+**Metrics Server**: Port 9000 (default), configurable via `--metrics-port`
 **Endpoint**: `/metrics` (Prometheus-compatible)
 **Integration**: Spawned on node startup (`bins/node/src/main.rs:299`)
 
@@ -1546,9 +1546,9 @@ cargo test 2>&1 | tail -5
 | Node initialization | `doli-node init` | [x] Creates data directory |
 | Node startup | `doli-node run --no-dht` | [x] P2P, RPC, metrics start |
 | CLI wallet | `doli new` | [x] Creates wallet with keys |
-| Metrics server | Port 9090 | [x] Prometheus endpoint active |
-| RPC server | Port 28545 (devnet) | [x] JSON-RPC available |
-| Network service | Port 50303 (devnet) | [x] libp2p listening |
+| Metrics server | Port 9000 | [x] Prometheus endpoint active |
+| RPC server | Port 28500 (devnet) | [x] JSON-RPC available |
+| Network service | Port 50300 (devnet) | [x] libp2p listening |
 
 **Day 1 - Setup**:
 
@@ -1576,9 +1576,9 @@ cargo test 2>&1 | tail -5
 **Node Startup Verified**:
 ```
 Network: devnet (id=99)
-Metrics server: 0.0.0.0:9090
-P2P: 0.0.0.0:50303
-RPC: 127.0.0.1:28545
+Metrics server: 0.0.0.0:9000
+P2P: 0.0.0.0:50300
+RPC: 127.0.0.1:28500
 Peer ID: 12D3KooWEkpB5DiqavPGw8M3RVDEj8Jwk9ypAyPAA3rxzgXNjVsN
 ```
 
@@ -1759,7 +1759,7 @@ Key Files:
 - [x] Fuzz tests targets available - 6 targets at `testing/fuzz/targets/`
 - [x] Performance benchmarks meet targets - Verified in M14, M15
 - [x] Documentation complete - 11 docs, 6 specs files
-- [x] Monitoring dashboards ready - Prometheus metrics at port 9090
+- [x] Monitoring dashboards ready - Prometheus metrics at port 9000
 
 **Code Verification Summary**:
 

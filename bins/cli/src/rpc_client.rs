@@ -92,6 +92,25 @@ pub struct ChainInfo {
     pub genesis_hash: String,
 }
 
+/// Chain integrity verification result (from verifyChainIntegrity RPC)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainIntegrity {
+    /// Whether all blocks 1..tip are present
+    pub complete: bool,
+    /// Chain tip height
+    pub tip: u64,
+    /// Number of heights scanned
+    pub scanned: u64,
+    /// Missing block ranges (e.g. ["1-100", "500"])
+    pub missing: Vec<String>,
+    /// Total missing block count
+    pub missing_count: u64,
+    /// Running BLAKE3 chain commitment (None if chain incomplete)
+    /// commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+    pub chain_commitment: Option<String>,
+}
+
 /// Network parameters (from getNetworkParams RPC)
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -389,6 +408,14 @@ impl RpcClient {
         self.call("getChainInfo", Params {}).await
     }
 
+    /// Verify chain integrity and get chain commitment
+    pub async fn verify_chain_integrity(&self) -> Result<ChainIntegrity> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("verifyChainIntegrity", Params {}).await
+    }
+
     /// Get network parameters (bond_unit, slot_duration, etc.)
     pub async fn get_network_params(&self) -> Result<NetworkParams> {
         #[derive(Serialize)]
@@ -400,6 +427,16 @@ impl RpcClient {
     /// Get transaction by hash
     #[allow(dead_code)]
     pub async fn get_transaction(&self, hash: &str) -> Result<TransactionInfo> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            hash: &'a str,
+        }
+
+        self.call("getTransaction", Params { hash }).await
+    }
+
+    /// Get transaction by hash as raw JSON (includes outputs with NFT metadata)
+    pub async fn get_transaction_json(&self, hash: &str) -> Result<serde_json::Value> {
         #[derive(Serialize)]
         struct Params<'a> {
             hash: &'a str,

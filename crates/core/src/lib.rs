@@ -115,6 +115,7 @@
 pub mod attestation;
 pub mod block;
 pub mod chainspec;
+pub mod conditions;
 pub mod config_validation;
 pub mod consensus;
 pub mod discovery;
@@ -138,6 +139,12 @@ pub use attestation::{
     RegionAggregate, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
 pub use block::{Block, BlockBuilder, BlockHeader};
+pub use conditions::{
+    evaluate as evaluate_condition, Condition, ConditionError, EvalContext, Witness,
+    WitnessSignature as ConditionWitnessSignature, CONDITION_VERSION, HASHLOCK_DOMAIN,
+    MAX_CONDITION_DEPTH, MAX_CONDITION_OPS, MAX_MULTISIG_KEYS, MAX_THRESHOLD_CONDITIONS,
+    MAX_WITNESS_SIZE,
+};
 #[allow(deprecated)]
 pub use consensus::{
     allowed_producer_rank,

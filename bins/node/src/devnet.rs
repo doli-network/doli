@@ -58,9 +58,9 @@ impl Default for DevnetConfig {
     fn default() -> Self {
         Self {
             node_count: 3,
-            base_p2p_port: 50303,
-            base_rpc_port: 28545,
-            base_metrics_port: 9090,
+            base_p2p_port: 50300,
+            base_rpc_port: 28500,
+            base_metrics_port: 29000,
         }
     }
 }
@@ -1316,12 +1316,12 @@ mod tests {
     #[test]
     fn test_devnet_config_ports() {
         let config = DevnetConfig::default();
-        assert_eq!(config.p2p_port(0), 50303);
-        assert_eq!(config.p2p_port(1), 50304);
-        assert_eq!(config.rpc_port(0), 28545);
-        assert_eq!(config.rpc_port(1), 28546);
-        assert_eq!(config.metrics_port(0), 9090);
-        assert_eq!(config.metrics_port(1), 9091);
+        assert_eq!(config.p2p_port(0), 50300);
+        assert_eq!(config.p2p_port(1), 50301);
+        assert_eq!(config.rpc_port(0), 28500);
+        assert_eq!(config.rpc_port(1), 28501);
+        assert_eq!(config.metrics_port(0), 29000);
+        assert_eq!(config.metrics_port(1), 29001);
     }
 
     #[test]

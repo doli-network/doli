@@ -119,7 +119,7 @@ echo
 # Calculate ports (starting from devnet defaults)
 BASE_P2P=50300
 BASE_RPC=28540
-BASE_METRICS=9090
+BASE_METRICS=9000
 
 # Store PIDs for cleanup
 declare -a NODE_PIDS

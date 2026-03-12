@@ -40,8 +40,8 @@ impl NatConfig {
     /// Default mainnet relay servers (seed nodes act as relays)
     fn mainnet_relay_servers() -> Vec<Multiaddr> {
         [
-            "/dns4/seed1.doli.network/tcp/30303",
-            "/dns4/seed2.doli.network/tcp/30303",
+            "/dns4/seed1.doli.network/tcp/30300",
+            "/dns4/seed2.doli.network/tcp/30300",
         ]
         .iter()
         .filter_map(|s| s.parse().ok())

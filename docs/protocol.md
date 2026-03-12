@@ -39,9 +39,9 @@ Yamux (stream multiplexing)
 
 | Network | P2P Port | RPC Port |
 |---------|----------|----------|
-| Mainnet | 30303 | 8545 |
-| Testnet | 40303 | 18545 |
-| Devnet | 50303 | 28545 |
+| Mainnet | 30300 | 8500 |
+| Testnet | 40300 | 18500 |
+| Devnet | 50300 | 28500 |
 
 ---
 
