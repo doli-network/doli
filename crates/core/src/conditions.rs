@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn test_max_multisig_fits() {
         // 7 keys = 1 (version) + 1 (tag) + 2 (params) + 7*32 (keys) = 228 bytes < 256
-        let keys: Vec<Hash> = (0..7).map(|i| dummy_hash(i)).collect();
+        let keys: Vec<Hash> = (0..7).map(dummy_hash).collect();
         let cond = Condition::multisig(5, keys);
         let encoded = cond.encode().unwrap();
         assert!(encoded.len() <= 256);
@@ -1687,7 +1687,7 @@ mod tests {
         let witness = Witness {
             signatures: vec![WitnessSignature {
                 pubkey: *kp.public_key(),
-                signature: sig.clone(),
+                signature: sig,
             }],
             preimage: Some(secret),
             ..Default::default()
