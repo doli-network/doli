@@ -3338,21 +3338,16 @@ async fn cmd_producer(
             }
 
             // Create request-withdrawal transaction with Bond + fee inputs
+            // Validation requires exactly 1 output, so fee change is rolled into payout
+            let fee_change = fee_input_total - fee;
+            let payout_amount = total_net + fee_change;
             let mut tx = Transaction::new_request_withdrawal(
                 all_inputs,
                 producer_pubkey,
                 count,
                 dest_hash,
-                total_net,
+                payout_amount,
             );
-
-            // Add change output for fee UTXO remainder
-            let fee_change = fee_input_total - fee;
-            if fee_change > 0 {
-                let change_hash = Hash::from_hex(&pubkey_hash)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
-                tx.outputs.push(Output::normal(fee_change, change_hash));
-            }
 
             // Sign all inputs
             let keypair = wallet.primary_keypair()?;
@@ -3598,22 +3593,17 @@ async fn cmd_producer(
             }
 
             // Create RequestWithdrawal for ALL bonds with Bond + fee inputs
+            // Validation requires exactly 1 output, so fee change is rolled into payout
             let total_net = breakdown.total_net;
+            let fee_change = fee_input_total - fee;
+            let payout_amount = total_net + fee_change;
             let mut tx = Transaction::new_request_withdrawal(
                 all_inputs,
                 producer_pubkey,
                 withdraw_count,
                 dest_hash,
-                total_net,
+                payout_amount,
             );
-
-            // Add change output for fee UTXO remainder
-            let fee_change = fee_input_total - fee;
-            if fee_change > 0 {
-                let change_hash = Hash::from_hex(&pubkey_hash)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
-                tx.outputs.push(Output::normal(fee_change, change_hash));
-            }
 
             // Sign all inputs
             let keypair = wallet.primary_keypair()?;
