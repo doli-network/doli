@@ -2248,154 +2248,160 @@ impl Node {
         let current_height = self.chain_state.read().await.best_height;
         let target_height = current_height - rollback_count as u64;
 
-        // Invalidate genesis producer cache if reorg crosses genesis boundary
-        let genesis_blocks = self.config.network.genesis_blocks();
-        if genesis_blocks > 0 && target_height <= genesis_blocks {
-            info!("[REORG] Crossing genesis boundary — invalidating genesis producer cache");
-            self.cached_genesis_producers = std::sync::OnceLock::new();
-        }
+        // No-op reorg: rollback_count=0 means we're already at the common ancestor.
+        // Skip the rollback path entirely — there's nothing to undo, and calling
+        // get_undo(target_height + 1) would panic because that undo doesn't exist.
+        if rollback_count > 0 {
+            // Invalidate genesis producer cache if reorg crosses genesis boundary
+            let genesis_blocks = self.config.network.genesis_blocks();
+            if genesis_blocks > 0 && target_height <= genesis_blocks {
+                info!("[REORG] Crossing genesis boundary — invalidating genesis producer cache");
+                self.cached_genesis_producers = std::sync::OnceLock::new();
+            }
 
-        info!(
-            "Rolling back from height {} to {} (common ancestor)",
-            current_height, target_height
-        );
-
-        // Find the common ancestor block
-        let common_ancestor_block = if target_height == 0 {
-            None
-        } else {
-            self.block_store.get_block_by_height(target_height)?
-        };
-
-        let genesis_hash = self.chain_state.read().await.genesis_hash;
-        let common_ancestor_hash = common_ancestor_block
-            .as_ref()
-            .map(|b| b.hash())
-            .unwrap_or(genesis_hash);
-        let common_ancestor_slot = common_ancestor_block
-            .as_ref()
-            .map(|b| b.header.slot)
-            .unwrap_or(0);
-
-        // Undo-based rollback: apply undo data in reverse from current_height to target_height+1.
-        // This is O(rollback_depth) instead of O(chain_height).
-        // Fallback: if undo data is missing (pre-undo blocks), use legacy rebuild.
-        let has_undo =
-            (target_height + 1..=current_height).all(|h| self.state_db.get_undo(h).is_some());
-
-        if has_undo {
             info!(
-                "Undo-based rollback: reverting {} blocks ({} → {})",
-                rollback_count, current_height, target_height
+                "Rolling back from height {} to {} (common ancestor)",
+                current_height, target_height
             );
 
-            {
-                let mut utxo = self.utxo_set.write().await;
+            // Find the common ancestor block
+            let common_ancestor_block = if target_height == 0 {
+                None
+            } else {
+                self.block_store.get_block_by_height(target_height)?
+            };
 
-                // Apply undo data in reverse order (highest block first)
-                for h in (target_height + 1..=current_height).rev() {
-                    let undo = self.state_db.get_undo(h).unwrap();
+            let genesis_hash = self.chain_state.read().await.genesis_hash;
+            let common_ancestor_hash = common_ancestor_block
+                .as_ref()
+                .map(|b| b.hash())
+                .unwrap_or(genesis_hash);
+            let common_ancestor_slot = common_ancestor_block
+                .as_ref()
+                .map(|b| b.header.slot)
+                .unwrap_or(0);
 
-                    // Remove UTXOs created by this block
-                    for outpoint in &undo.created_utxos {
-                        utxo.remove(outpoint);
-                    }
+            // Undo-based rollback: apply undo data in reverse from current_height to target_height+1.
+            // This is O(rollback_depth) instead of O(chain_height).
+            // Fallback: if undo data is missing (pre-undo blocks), use legacy rebuild.
+            let has_undo =
+                (target_height + 1..=current_height).all(|h| self.state_db.get_undo(h).is_some());
 
-                    // Restore UTXOs spent by this block
-                    for (outpoint, entry) in &undo.spent_utxos {
-                        utxo.insert(*outpoint, entry.clone());
-                    }
-                }
+            if has_undo {
+                info!(
+                    "Undo-based rollback: reverting {} blocks ({} → {})",
+                    rollback_count, current_height, target_height
+                );
 
-                // Restore ProducerSet from the undo snapshot at target_height + 1
-                // (which captured the state BEFORE that block was applied = state AT target_height)
-                let first_undo = self.state_db.get_undo(target_height + 1).unwrap();
-                if let Ok(restored_producers) =
-                    bincode::deserialize::<storage::ProducerSet>(&first_undo.producer_snapshot)
                 {
-                    let mut producers = self.producer_set.write().await;
-                    *producers = restored_producers;
-                } else {
-                    warn!("Failed to deserialize producer snapshot from undo data, rebuilding from blocks");
-                    let mut producers = self.producer_set.write().await;
-                    self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
-                }
-            }
+                    let mut utxo = self.utxo_set.write().await;
 
-            // Update chain state
-            {
-                let mut state = self.chain_state.write().await;
-                state.best_height = target_height;
-                state.best_hash = common_ancestor_hash;
-                state.best_slot = common_ancestor_slot;
-            }
-        } else {
-            // Legacy fallback: rebuild from genesis (no undo data available)
-            warn!(
+                    // Apply undo data in reverse order (highest block first)
+                    for h in (target_height + 1..=current_height).rev() {
+                        let undo = self.state_db.get_undo(h).unwrap();
+
+                        // Remove UTXOs created by this block
+                        for outpoint in &undo.created_utxos {
+                            utxo.remove(outpoint);
+                        }
+
+                        // Restore UTXOs spent by this block
+                        for (outpoint, entry) in &undo.spent_utxos {
+                            utxo.insert(*outpoint, entry.clone());
+                        }
+                    }
+
+                    // Restore ProducerSet from the undo snapshot at target_height + 1
+                    // (which captured the state BEFORE that block was applied = state AT target_height)
+                    let first_undo = self.state_db.get_undo(target_height + 1).unwrap();
+                    if let Ok(restored_producers) =
+                        bincode::deserialize::<storage::ProducerSet>(&first_undo.producer_snapshot)
+                    {
+                        let mut producers = self.producer_set.write().await;
+                        *producers = restored_producers;
+                    } else {
+                        warn!("Failed to deserialize producer snapshot from undo data, rebuilding from blocks");
+                        let mut producers = self.producer_set.write().await;
+                        self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                    }
+                }
+
+                // Update chain state
+                {
+                    let mut state = self.chain_state.write().await;
+                    state.best_height = target_height;
+                    state.best_hash = common_ancestor_hash;
+                    state.best_slot = common_ancestor_slot;
+                }
+            } else {
+                // Legacy fallback: rebuild from genesis (no undo data available)
+                warn!(
                 "Undo data missing for rollback range {}..={} — falling back to rebuild from genesis",
                 target_height + 1,
                 current_height
             );
 
-            let genesis_blocks = self.config.network.genesis_blocks();
-            let genesis_producers = if genesis_blocks > 0 && target_height > genesis_blocks {
-                self.derive_genesis_producers_from_chain()
-            } else {
-                Vec::new()
-            };
-            let bond_unit = self.config.network.bond_unit();
+                let genesis_blocks = self.config.network.genesis_blocks();
+                let genesis_producers = if genesis_blocks > 0 && target_height > genesis_blocks {
+                    self.derive_genesis_producers_from_chain()
+                } else {
+                    Vec::new()
+                };
+                let bond_unit = self.config.network.bond_unit();
 
-            {
-                let mut state = self.chain_state.write().await;
-                let mut utxo = self.utxo_set.write().await;
-                state.best_height = target_height;
-                state.best_hash = common_ancestor_hash;
-                state.best_slot = common_ancestor_slot;
-                utxo.clear();
-                for height in 1..=target_height {
-                    if let Some(block) = self.block_store.get_block_by_height(height).ok().flatten()
-                    {
-                        for (tx_index, tx) in block.transactions.iter().enumerate() {
-                            let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                            if !is_reward_tx {
-                                let _ = utxo.spend_transaction(tx);
+                {
+                    let mut state = self.chain_state.write().await;
+                    let mut utxo = self.utxo_set.write().await;
+                    state.best_height = target_height;
+                    state.best_hash = common_ancestor_hash;
+                    state.best_slot = common_ancestor_slot;
+                    utxo.clear();
+                    for height in 1..=target_height {
+                        if let Some(block) =
+                            self.block_store.get_block_by_height(height).ok().flatten()
+                        {
+                            for (tx_index, tx) in block.transactions.iter().enumerate() {
+                                let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                                if !is_reward_tx {
+                                    let _ = utxo.spend_transaction(tx);
+                                }
+                                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
                             }
-                            utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
+                        }
+                        if genesis_blocks > 0 && height == genesis_blocks + 1 {
+                            Self::consume_genesis_bond_utxos(
+                                &mut utxo,
+                                &genesis_producers,
+                                bond_unit,
+                                height,
+                            );
                         }
                     }
-                    if genesis_blocks > 0 && height == genesis_blocks + 1 {
-                        Self::consume_genesis_bond_utxos(
-                            &mut utxo,
-                            &genesis_producers,
-                            bond_unit,
-                            height,
-                        );
-                    }
+                }
+
+                {
+                    let mut producers = self.producer_set.write().await;
+                    self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
                 }
             }
 
+            // Force scheduler rebuild after producer set reconstruction
+            self.cached_scheduler = None;
+
+            // Atomically persist common ancestor state to StateDb
             {
-                let mut producers = self.producer_set.write().await;
-                self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                let state = self.chain_state.read().await;
+                let utxo = self.utxo_set.read().await;
+                let producers = self.producer_set.read().await;
+                let utxo_pairs: Vec<_> = match &*utxo {
+                    UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
+                    UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
+                };
+                self.state_db
+                    .atomic_replace(&state, &producers, utxo_pairs.into_iter())
+                    .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
             }
-        }
-
-        // Force scheduler rebuild after producer set reconstruction
-        self.cached_scheduler = None;
-
-        // Atomically persist common ancestor state to StateDb
-        {
-            let state = self.chain_state.read().await;
-            let utxo = self.utxo_set.read().await;
-            let producers = self.producer_set.read().await;
-            let utxo_pairs: Vec<_> = match &*utxo {
-                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
-            };
-            self.state_db
-                .atomic_replace(&state, &producers, utxo_pairs.into_iter())
-                .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
-        }
+        } // end if rollback_count > 0
 
         // Now apply the new blocks through normal path
         // Note: we skip check_producer_eligibility here because the fork blocks were
