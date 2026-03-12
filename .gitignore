@@ -65,6 +65,9 @@ proptest-regressions/
 # Claude (sensitive: contains skills with IPs, SSH ports, server layout)
 .claude/
 docs/infrastructure.md
+docs/archiver.md
+docs/genesis.md
+docs/legacy/bugs/REPORT_CONSENSUS.md
 scripts/install-services.sh
 scripts/health-check.sh
 scripts/bonds.sh
