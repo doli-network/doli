@@ -62,9 +62,11 @@ proptest-regressions/
 # Skill packages (generated zips)
 *.skill
 
-# Claude worktrees
-.claude/worktrees/
-
-
-# Ops runbook (sensitive infrastructure info)
-.claude/skills/doli-ops/SKILL.md
+# Claude (sensitive: contains skills with IPs, SSH ports, server layout)
+.claude/
+docs/infrastructure.md
+scripts/install-services.sh
+scripts/health-check.sh
+scripts/bonds.sh
+scripts/balances.sh
+scripts/chain-reset.sh
