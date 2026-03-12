@@ -597,6 +597,11 @@ impl NetworkService {
         &self.local_peer_id
     }
 
+    /// Get shared peers map for sync peer-count queries
+    pub fn peers_arc(&self) -> Arc<RwLock<HashMap<PeerId, PeerInfo>>> {
+        self.peers.clone()
+    }
+
     /// Get command sender for external use
     pub fn command_sender(&self) -> mpsc::Sender<NetworkCommand> {
         self.command_tx.clone()

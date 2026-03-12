@@ -1138,6 +1138,14 @@ impl Node {
         .with_producer_set(self.producer_set.clone())
         .with_sync_status(sync_status_fn);
 
+        // Wire up peer info so getNetworkInfo reports real values
+        if let Some(ref network) = self.network {
+            let peers = network.peers_arc();
+            context = context
+                .with_peer_id(network.local_peer_id().to_string())
+                .with_peer_count(move || peers.try_read().map(|p| p.len()).unwrap_or(0));
+        }
+
         // Wire up transaction broadcast so RPC-submitted txs are gossiped to peers
         if let Some(ref network) = self.network {
             let cmd_tx = network.command_sender();
