@@ -1486,9 +1486,32 @@ impl Transaction {
         hasher.finalize()
     }
 
-    /// Get the message to sign for a given input
+    /// Get the message to sign for a given input.
+    ///
+    /// Excludes extra_data (covenant witnesses) from the hash, analogous to
+    /// Bitcoin SegWit: witnesses are committed in `hash()` for immutability,
+    /// but excluded from the signing message to avoid a chicken-and-egg where
+    /// the witness signature depends on a hash that includes the witness itself.
     pub fn signing_message(&self) -> Hash {
-        self.hash()
+        use crypto::Hasher;
+
+        let mut hasher = Hasher::new();
+        hasher.update(&self.version.to_le_bytes());
+        hasher.update(&(self.tx_type as u32).to_le_bytes());
+
+        hasher.update(&(self.inputs.len() as u32).to_le_bytes());
+        for input in &self.inputs {
+            hasher.update(input.prev_tx_hash.as_bytes());
+            hasher.update(&input.output_index.to_le_bytes());
+        }
+
+        hasher.update(&(self.outputs.len() as u32).to_le_bytes());
+        for output in &self.outputs {
+            hasher.update(&output.serialize());
+        }
+
+        // extra_data (covenant witnesses) intentionally excluded — SegWit-style
+        hasher.finalize()
     }
 
     /// Encode covenant witness data into extra_data for a Transfer transaction.
