@@ -661,6 +661,11 @@ async fn run_swarm(
     // rejected for 1 hour. Prevents reconnection spam from stale-chain nodes.
     let mut genesis_mismatch_cooldown: HashMap<PeerId, Instant> = HashMap::new();
 
+    // Peer ID mismatch redial cooldown: tracks (address → last_redial_time).
+    // Prevents exponential redial storms when stale DHT entries circulate
+    // multiple old peer IDs for the same address after a chain reset.
+    let mut mismatch_redial_cooldown: HashMap<String, Instant> = HashMap::new();
+
     // TX batching: buffer outbound transactions and flush every 100ms
     let mut tx_batch: Vec<Transaction> = Vec::new();
     let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
@@ -670,7 +675,7 @@ async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -719,6 +724,8 @@ async fn run_swarm(
             // Periodic rate limiter cleanup
             _ = rate_limit_cleanup.tick() => {
                 rate_limiter.cleanup(Duration::from_secs(600));
+                // Purge expired mismatch redial cooldowns (older than 60s)
+                mismatch_redial_cooldown.retain(|_, last| last.elapsed() < Duration::from_secs(60));
             }
         }
     }
@@ -735,6 +742,7 @@ async fn handle_swarm_event(
     peer_cache_path: &Option<PathBuf>,
     rate_limiter: &mut RateLimiter,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
+    mismatch_redial_cooldown: &mut HashMap<String, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -815,43 +823,68 @@ async fn handle_swarm_event(
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             // Handle peer ID mismatch: the node at this address has a new identity
             // (e.g., after a chain reset that wiped its libp2p key).
-            // Update our cache with the new peer ID and redial.
+            // Update our cache with the new peer ID and redial — with rate limiting.
             if let libp2p::swarm::DialError::WrongPeerId { obtained, endpoint } = &error {
                 if let libp2p::core::ConnectedPoint::Dialer { address, .. } = endpoint {
-                    warn!(
-                        "Peer ID mismatch at {} — expected {:?}, got {}. Updating cache and redialing.",
-                        address, peer_id, obtained
+                    let clean_addr = strip_p2p_suffix(address);
+                    let addr_key = clean_addr.to_string();
+
+                    // Rate limit: don't redial the same address more than once per 30s.
+                    // Stale DHT entries can map dozens of old peer IDs to the same address,
+                    // each triggering a WrongPeerId error. Without this, the mismatch handler
+                    // fires hundreds of times per second after a chain reset.
+                    let now = Instant::now();
+                    let should_redial = !matches!(
+                        mismatch_redial_cooldown.get(&addr_key),
+                        Some(last) if now.duration_since(*last) < Duration::from_secs(30)
                     );
 
-                    // Remove stale peer from cache
+                    if should_redial {
+                        warn!(
+                            "Peer ID mismatch at {} — expected {:?}, got {}. Updating cache and redialing.",
+                            address, peer_id, obtained
+                        );
+                        mismatch_redial_cooldown.insert(addr_key, now);
+                    } else {
+                        // Silently update cache/DHT but skip the redial
+                        debug!(
+                            "Peer ID mismatch at {} (cooldown active, skipping redial)",
+                            address
+                        );
+                    }
+
+                    // Always clean up stale entries, even during cooldown.
+                    // Remove ALL stale peer IDs that map to this address from Kademlia,
+                    // not just the single old_id we tried. This prevents the DHT from
+                    // re-propagating other stale entries for the same address.
+                    if let Some(old_id) = &peer_id {
+                        swarm.behaviour_mut().kademlia.remove_peer(old_id);
+                    }
+
+                    // Update peer cache: remove stale, add correct
                     if let Some(ref path) = peer_cache_path {
                         let mut cache = PeerCache::load(path).unwrap_or_default();
                         if let Some(old_id) = &peer_id {
                             cache.remove(&old_id.to_string());
                         }
-                        // Strip any /p2p/... suffix to store clean address
-                        let clean_addr = strip_p2p_suffix(address);
                         let full_addr = format!("{}/p2p/{}", clean_addr, obtained);
                         cache.add(&obtained.to_string(), &full_addr);
                         cache.save(path);
                     }
 
-                    // Remove stale entry from Kademlia
-                    if let Some(old_id) = &peer_id {
-                        swarm.behaviour_mut().kademlia.remove_peer(old_id);
-                    }
-
-                    // Add the correct peer ID to Kademlia and redial
-                    let clean_addr = strip_p2p_suffix(address);
+                    // Add correct peer to Kademlia and redial (if not rate-limited)
                     swarm
                         .behaviour_mut()
                         .kademlia
                         .add_address(obtained, clean_addr.clone());
-                    let _ = swarm.dial(
-                        libp2p::swarm::dial_opts::DialOpts::peer_id(*obtained)
-                            .addresses(vec![clean_addr])
-                            .build(),
-                    );
+
+                    if should_redial {
+                        let _ = swarm.dial(
+                            libp2p::swarm::dial_opts::DialOpts::peer_id(*obtained)
+                                .addresses(vec![clean_addr])
+                                .build(),
+                        );
+                    }
                 }
             } else {
                 warn!("Failed to connect to peer {:?}: {}", peer_id, error);
