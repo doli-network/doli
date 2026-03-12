@@ -4493,10 +4493,17 @@ async fn cmd_issue_token(
         doli_core::Condition::signature(issuer_hash)
     };
 
-    // amount = total_supply (all tokens go to issuer in genesis output)
-    let token_output =
-        Output::fungible_asset(0, issuer_hash, placeholder_asset_id, supply, ticker, &cond)
-            .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
+    // Attach dust DOLI (1 sat) to anchor the token UTXO on-chain
+    let dust = 1u64;
+    let token_output = Output::fungible_asset(
+        dust,
+        issuer_hash,
+        placeholder_asset_id,
+        supply,
+        ticker,
+        &cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
 
     // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
     let fee_units = 1500u64;
@@ -4512,19 +4519,20 @@ async fn cmd_issue_token(
 
     let mut selected_utxos = Vec::new();
     let mut total_input = 0u64;
+    let required = dust + fee_units;
     for utxo in &utxos {
-        if total_input >= fee_units {
+        if total_input >= required {
             break;
         }
         selected_utxos.push(utxo.clone());
         total_input += utxo.amount;
     }
 
-    if total_input < fee_units {
+    if total_input < required {
         anyhow::bail!(
-            "Insufficient balance for fee. Available: {}, Required: {}",
+            "Insufficient balance. Available: {}, Required: {}",
             format_balance(total_input),
-            format_balance(fee_units)
+            format_balance(required)
         );
     }
 
@@ -4536,7 +4544,7 @@ async fn cmd_issue_token(
     }
 
     let mut outputs = vec![token_output];
-    let change = total_input - fee_units;
+    let change = total_input - required;
     if change > 0 {
         outputs.push(Output::normal(change, issuer_hash));
     }
