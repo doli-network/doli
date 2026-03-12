@@ -18,6 +18,17 @@ use crate::protocols::SyncRequest;
 /// Maximum reorg depth for fork sync (matches MAX_REORG_DEPTH in reorg.rs)
 const MAX_FORK_SYNC_DEPTH: u64 = 1000;
 
+/// Result of comparing a probe height against the local block store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeResult {
+    /// Local block matches peer's block at this height
+    Match,
+    /// Local block differs from peer's block at this height
+    Mismatch,
+    /// Local block store doesn't have this height (snap sync gap)
+    NotInStore,
+}
+
 /// Timeout for entire fork sync session
 const FORK_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -77,18 +88,32 @@ pub struct ForkSync {
     /// If false when search completes, the floor is unverified — fork is
     /// deeper than MAX_FORK_SYNC_DEPTH.
     low_verified: bool,
+    /// Lowest block height available in the local block store.
+    /// For snap-synced nodes this is the snap sync anchor height.
+    /// For full-sync nodes this is 1 (genesis block).
+    /// Used to prevent binary search from descending below available data.
+    store_floor: u64,
+    /// True when search stopped because it hit the store floor (block store
+    /// doesn't cover the search range), NOT because of a genuine deep fork.
+    store_limited: bool,
 }
 
 impl ForkSync {
     /// Create a new fork sync targeting the given peer.
-    pub fn new(peer: PeerId, local_height: u64) -> Self {
+    ///
+    /// `store_floor` is the lowest block height available in the local block store.
+    /// For full-sync nodes this is typically 1. For snap-synced nodes it's the
+    /// snap sync anchor height. The binary search will never descend below this.
+    pub fn new(peer: PeerId, local_height: u64, store_floor: u64) -> Self {
         let high = local_height;
-        // Cap search depth: don't binary search deeper than MAX_FORK_SYNC_DEPTH
-        let low = local_height.saturating_sub(MAX_FORK_SYNC_DEPTH);
+        // Cap search depth: don't binary search deeper than MAX_FORK_SYNC_DEPTH,
+        // and never below the lowest block we actually have in the store.
+        let depth_floor = local_height.saturating_sub(MAX_FORK_SYNC_DEPTH);
+        let low = depth_floor.max(store_floor);
 
         info!(
-            "Fork sync: starting binary search (low={}, high={}) with peer {}",
-            low, high, peer
+            "Fork sync: starting binary search (low={}, high={}, store_floor={}) with peer {}",
+            low, high, store_floor, peer
         );
 
         Self {
@@ -103,6 +128,8 @@ impl ForkSync {
             canonical_blocks: Vec::new(),
             started_at: Instant::now(),
             low_verified: false,
+            store_floor,
+            store_limited: false,
         }
     }
 
@@ -202,34 +229,55 @@ impl ForkSync {
     }
 
     /// Feed the result of the local block_store comparison.
-    /// `matches` = true means our block at that height has the same hash as the peer's.
-    pub fn handle_probe_result(&mut self, matches: bool) {
+    pub fn handle_probe_result(&mut self, result: ProbeResult) {
         let height = match self.pending_height.take() {
             Some(h) => h,
             None => return,
         };
         self.probe_block_hash = None;
 
-        if matches {
-            // Same block at this height — ancestor is at or above this height
-            self.low = height;
-            self.low_verified = true;
-            debug!("Fork sync: match at height {} — low={}", height, self.low);
-        } else {
-            // Different block — ancestor is below this height
-            self.high = height;
-            debug!(
-                "Fork sync: mismatch at height {} — high={}",
-                height, self.high
-            );
+        match result {
+            ProbeResult::Match => {
+                // Same block at this height — ancestor is at or above this height
+                self.low = height;
+                self.low_verified = true;
+                debug!("Fork sync: match at height {} — low={}", height, self.low);
+            }
+            ProbeResult::Mismatch => {
+                // Different block — ancestor is below this height
+                self.high = height;
+                debug!(
+                    "Fork sync: mismatch at height {} — high={}",
+                    height, self.high
+                );
+            }
+            ProbeResult::NotInStore => {
+                // Block store doesn't have this height — can't compare.
+                // Stop descending: set low to this height and mark store-limited.
+                // The fork may predate our block store range.
+                info!(
+                    "Fork sync: height {} not in block store (store_floor={}). \
+                     Search limited by block store range.",
+                    height, self.store_floor
+                );
+                self.low = height;
+                self.store_limited = true;
+            }
         }
 
         // Check if search is complete — Node will call set_ancestor() with the hash
         if self.high <= self.low + 1 {
-            info!(
-                "Fork sync: common ancestor found at height {} — waiting for Node to confirm hash",
-                self.low,
-            );
+            if self.store_limited {
+                info!(
+                    "Fork sync: search stopped at height {} — block store doesn't cover deeper history",
+                    self.low,
+                );
+            } else {
+                info!(
+                    "Fork sync: common ancestor found at height {} — waiting for Node to confirm hash",
+                    self.low,
+                );
+            }
         }
     }
 
@@ -361,13 +409,26 @@ impl ForkSync {
     }
 
     /// Returns true when the binary search completed but hit the floor without
-    /// finding a common ancestor. Signals the node to do a full resync.
+    /// finding a common ancestor AND the search was NOT limited by block store range.
+    /// This indicates a genuine deep fork requiring full resync.
     pub fn search_bottomed_out(&self) -> bool {
         matches!(self.phase, ForkSyncPhase::Searching)
             && self.high <= self.low + 1
             && self.pending_height.is_none()
             && !self.low_verified
+            && !self.store_limited
             && self.low > 0
+    }
+
+    /// Returns true when the binary search stopped because the block store
+    /// doesn't cover the search range (snap sync gap). The fork may predate
+    /// our available block history. This is NOT a deep fork signal — the node
+    /// needs block backfill, not a state wipe.
+    pub fn search_store_limited(&self) -> bool {
+        matches!(self.phase, ForkSyncPhase::Searching)
+            && self.high <= self.low + 1
+            && self.pending_height.is_none()
+            && self.store_limited
     }
 
     /// Current phase (for logging)
@@ -388,7 +449,7 @@ mod tests {
     #[test]
     fn test_binary_search_converges() {
         let peer = PeerId::random();
-        let mut fs = ForkSync::new(peer, 100);
+        let mut fs = ForkSync::new(peer, 100, 0);
 
         // Simulate: fork at height 90, so blocks 0-89 match, 90-100 differ
         let fork_point = 89;
@@ -423,8 +484,12 @@ mod tests {
 
                     // Check probe
                     if let Some((h, _peer_hash)) = fs.pending_probe() {
-                        let matches = h <= fork_point;
-                        fs.handle_probe_result(matches);
+                        let result = if h <= fork_point {
+                            ProbeResult::Match
+                        } else {
+                            ProbeResult::Mismatch
+                        };
+                        fs.handle_probe_result(result);
                     }
                 }
                 None => break,
@@ -456,6 +521,8 @@ mod tests {
             canonical_blocks: vec![],
             started_at: Instant::now() - Duration::from_secs(120),
             low_verified: false,
+            store_floor: 0,
+            store_limited: false,
         };
         assert!(fs.is_timed_out());
     }
@@ -463,7 +530,7 @@ mod tests {
     #[test]
     fn test_phase_transitions() {
         let peer = PeerId::random();
-        let mut fs = ForkSync::new(peer, 10);
+        let mut fs = ForkSync::new(peer, 10, 0);
         assert_eq!(fs.phase_name(), "Searching");
 
         // Force search to complete

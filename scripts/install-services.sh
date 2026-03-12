@@ -48,12 +48,13 @@ Type=simple
 User=ilozada
 Group=doliadmin
 ExecStart=${binary} \\
+  --network ${net} \\
   --data-dir ${data_dir} \\
   run \\
   --producer \\
   --producer-key ${key_file} \\
   --p2p-port ${p2p} \\
-  --rpc-port ${rpc} \\
+  --rpc-port ${rpc} --rpc-bind 0.0.0.0 \\
   --metrics-port ${metrics} \\
   --bootstrap ${boot1} \\
   --bootstrap ${boot2} \\
@@ -93,6 +94,7 @@ Type=simple
 User=ilozada
 Group=doliadmin
 ExecStart=${binary} \\
+  --network ${net} \\
   --data-dir ${data_dir} \\
   run \\
   --rpc-bind 0.0.0.0 \\

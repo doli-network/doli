@@ -122,6 +122,33 @@ except: print(0)
       pass "Height: ${height}"
     fi
 
+    # ── Check 5b: Chain integrity (snap sync gaps) ────────────────
+    local integrity
+    integrity=$(rpc_call "$server" "$port" "verifyChainIntegrity" | python3 -c "
+import sys,json
+try:
+    r=json.load(sys.stdin).get('result',{})
+    mc=r.get('missing_count',0)
+    tip=r.get('tip',0)
+    complete=r.get('complete',True)
+    cc=r.get('chainCommitment','')
+    if not complete and mc > 0:
+        print(f'GAP|{mc}|{tip}|{cc}')
+    else:
+        print(f'OK|0|{tip}|{cc[:16]}')
+except: print('ERROR|0|0|')
+" 2>/dev/null) || integrity="ERROR|0|0|"
+
+    IFS='|' read -r integ_status integ_missing integ_tip integ_commitment <<< "$integrity"
+
+    if [[ "$integ_status" == "OK" ]]; then
+      pass "Chain integrity: complete (commitment=${integ_commitment}...)"
+    elif [[ "$integ_status" == "GAP" ]]; then
+      warn "Chain integrity: ${integ_missing} blocks missing (snap sync gap) — vulnerable to fork cascade"
+    else
+      warn "Chain integrity: could not verify"
+    fi
+
     # ── Check 6: Peer ID errors ──────────────────────────────────
     local pid_errors
     pid_errors=$(ssh -o ConnectTimeout=5 "$server" "tail -200 ${log_path} 2>/dev/null | grep -c 'Unexpected peer ID' || echo 0" 2>/dev/null) || pid_errors=0
