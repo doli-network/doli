@@ -118,7 +118,7 @@ doli -n testnet -w <wallet> producer list               # List all producers
 
 Or use explicit RPC:
 ```bash
-doli -n testnet -r http://198.51.100.1:18500 -w <wallet> balance
+doli -n testnet -r http://bootstrap1.testnet.doli.network:18500 -w <wallet> balance
 ```
 
 ---
@@ -249,51 +249,25 @@ journalctl -u doli-testnet | grep -i "height\|produced"
 
 ---
 
-## Binary Segregation
-
-Testnet and mainnet use **separate binaries** at standardized paths on both servers.
-
-| Network | Binary Path | Servers |
-|---------|-------------|---------|
-| Mainnet | `/mainnet/bin/doli-node` | ai1, ai2 |
-| Testnet | `/testnet/bin/doli-node` | ai1, ai2 |
-
-**Upgrade testnet (both servers):**
-```bash
-# ai1:
-ssh ilozada@198.51.100.1 "sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node && \
-  sudo systemctl restart doli-testnet-seed && sleep 5 && \
-  sudo systemctl restart doli-testnet-nt1 doli-testnet-nt3 doli-testnet-nt5"
-
-# ai2:
-ssh ilozada@198.51.100.2 "sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node && \
-  sudo systemctl restart doli-testnet-seed && sleep 5 && \
-  sudo systemctl restart doli-testnet-nt2 doli-testnet-nt4 doli-testnet-nt6"
-```
-
----
-
 ## Seed / Bootstrap Servers
 
-Dedicated archive+relay seed nodes, separated from producers for security and HA.
+Dedicated archive+relay seed nodes for network entry and block archival.
 
-| DNS | IP | Port | Server | Role |
-|-----|-----|------|--------|------|
-| `bootstrap1.testnet.doli.network` | 198.51.100.1 | 40300 | ai1 | Seed + Archive + Relay |
-| `bootstrap2.testnet.doli.network` | 198.51.100.2 | 40300 | ai2 | Seed + Archive + Relay |
-
-Both run as `doli-testnet-seed` systemd service with `--relay-server --archive-to /testnet/seed/blocks`.
+| DNS | Port | Role |
+|-----|------|------|
+| `bootstrap1.testnet.doli.network` | 40300 | Seed + Archive + Relay |
+| `bootstrap2.testnet.doli.network` | 40300 | Seed + Archive + Relay |
 
 ### DNS Records
 
-| DNS | IP | Purpose |
-|-----|-----|---------|
-| `seed1.doli.network` | 198.51.100.1 (ai1) | Mainnet P2P seed |
-| `seed2.doli.network` | 198.51.100.2 (ai2) | Mainnet P2P seed |
-| `bootstrap1.testnet.doli.network` | 198.51.100.1 (ai1) | Testnet P2P seed |
-| `bootstrap2.testnet.doli.network` | 198.51.100.2 (ai2) | Testnet P2P seed |
-| `testnet.doli.network` | 198.51.100.2 | Testnet web |
-| `archive.doli.network` | 198.51.100.2 | Archive RPC |
+| DNS | Purpose |
+|-----|---------|
+| `seed1.doli.network` | Mainnet P2P seed |
+| `seed2.doli.network` | Mainnet P2P seed |
+| `bootstrap1.testnet.doli.network` | Testnet P2P seed |
+| `bootstrap2.testnet.doli.network` | Testnet P2P seed |
+| `testnet.doli.network` | Testnet web |
+| `archive.doli.network` | Archive RPC |
 
 ### Maintainer Keys (Auto-Update System)
 
