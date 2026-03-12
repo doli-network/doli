@@ -62,6 +62,7 @@ pub mod ws;
 pub use error::RpcError;
 pub use methods::{RpcContext, SyncStatus};
 pub use server::{RpcServer, RpcServerConfig};
+pub use types::PeerInfoEntry;
 pub use ws::WsEvent;
 
 // Mempool is now a separate crate

@@ -1161,9 +1161,27 @@ impl Node {
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {
             let peers = network.peers_arc();
+            let peers_for_list = peers.clone();
             context = context
                 .with_peer_id(network.local_peer_id().to_string())
-                .with_peer_count(move || peers.try_read().map(|p| p.len()).unwrap_or(0));
+                .with_peer_count(move || peers.try_read().map(|p| p.len()).unwrap_or(0))
+                .with_peer_list(move || {
+                    peers_for_list
+                        .try_read()
+                        .map(|p| {
+                            p.values()
+                                .map(|info| rpc::PeerInfoEntry {
+                                    peer_id: info.id.clone(),
+                                    address: info.address.clone(),
+                                    best_height: info.best_height,
+                                    connected_secs: info.connected_at.elapsed().as_secs(),
+                                    last_seen_secs: info.last_seen.elapsed().as_secs(),
+                                    latency_ms: info.latency.map(|d| d.as_millis() as u64),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
         }
 
         // Wire up transaction broadcast so RPC-submitted txs are gossiped to peers

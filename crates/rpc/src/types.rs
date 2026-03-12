@@ -463,6 +463,25 @@ pub struct NetworkInfoResponse {
     pub sync_progress: Option<f64>,
 }
 
+/// Individual peer info for getPeerInfo response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInfoEntry {
+    /// Peer ID (libp2p PeerId)
+    pub peer_id: String,
+    /// Remote address
+    pub address: String,
+    /// Best known height
+    pub best_height: u64,
+    /// Connection duration in seconds
+    pub connected_secs: u64,
+    /// Seconds since last message
+    pub last_seen_secs: u64,
+    /// Latency in milliseconds (if known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
 /// Mempool info response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
