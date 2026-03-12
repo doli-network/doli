@@ -18,6 +18,8 @@ Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloque
 
 Las transacciones se ordenan mediante pruebas de retardo secuencial — computaciones de hash iteradas que no pueden paralelizarse. No se requiere hardware especial. Cualquier CPU puede participar en el consenso. El resultado es un sistema donde el peso del consenso emerge del tiempo en lugar de la confianza, el capital o la escala.
 
+Demostramos que los NFTs, tokens fungibles y puentes entre cadenas sin confianza pueden implementarse como tipos de salida UTXO nativos con condiciones de gasto declarativas, sin una maquina virtual, sin medicion de gas y sin comites de confianza — logrando una expresividad equivalente a los enfoques basados en VM para estos casos de uso mientras se mantiene un costo de verificacion acotado y predecible.
+
 ---
 ## 1. Introduccion
 
@@ -156,10 +158,100 @@ Cada tipo de salida es un patron nombrado sobre el lenguaje de condiciones:
 | HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Canales de pago |
 | Escrow | `Threshold(2, [buyer, seller, arbiter])` | Comercio sin confianza |
 | Vesting | `Signature(owner) AND Timelock(unlock_height)` | Asignaciones con bloqueo temporal |
+| UniqueAsset | `Condition + [token_id, content_hash]` | Tokens no fungibles |
+| FungibleAsset | `Condition + [asset_id, supply, ticker]` | Tokens emitidos por usuarios |
+| BridgeHTLC | `HTLC + [target_chain, target_address]` | Puentes entre cadenas |
 
 Estas no son implementaciones separadas — son composiciones de las mismas condiciones primitivas. Un desarrollador no escribe un contrato inteligente. Un desarrollador selecciona condiciones.
 
-### 3.4. Lo que esto permite
+### 3.4. Tokens no fungibles (UniqueAsset)
+
+Una salida UniqueAsset porta un token globalmente unico que representa la propiedad de un objeto digital singular. El campo `extra_data` almacena la condicion de gasto seguida de metadatos:
+
+```
+extra_data = [condition_bytes][version][token_id][content_hash_len][content_hash]
+```
+
+**Identidad del token.** El `token_id` es determinista: `BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)`. Dos acunaciones con diferentes nonces siempre producen tokens diferentes. El hash de contenido puede ser un CID de IPFS, una URI HTTP o un digest BLAKE3 crudo — el protocolo almacena bytes sin interpretarlos.
+
+**Condiciones de gasto.** El campo de condicion usa el mismo lenguaje componible que cualquier otra salida. El caso mas simple es `Signature(owner)` — solo el titular actual puede transferir el NFT. Pero nada impide una custodia Multisig, una revelacion protegida por Hashlock, o una subasta con Timelock donde el NFT se vuelve gastable por cualquiera despues de una fecha limite.
+
+**Transferencia.** Transferir un NFT gasta el UTXO antiguo y crea una nueva salida UniqueAsset con el mismo `token_id` y `content_hash` pero un nuevo propietario y potencialmente nuevas condiciones. El token_id es la identidad permanente; el UTXO es el registro de propiedad actual.
+
+**Sin registro, sin contrato, sin estado global.** El NFT existe enteramente dentro del UTXO que lo porta. La indexacion es responsabilidad del lector — el protocolo valida estructura y condiciones, nada mas.
+
+### 3.5. Tokens emitidos por usuarios (FungibleAsset)
+
+Una salida FungibleAsset representa un token emitido por un usuario con suministro fijo. El campo `extra_data` almacena la condicion de gasto seguida de metadatos del activo:
+
+```
+extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][ticker]
+```
+
+**Identidad del activo.** El `asset_id` se deriva de la transaccion genesis: `BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index)`. Esto lo hace unico por construccion — dos emisiones no pueden producir el mismo asset_id porque dos transacciones no comparten un hash.
+
+**Suministro fijo.** El suministro total se establece en la emision y se codifica en cada UTXO que porta el token. El protocolo no impone invariantes de suministro entre UTXOs — esa es responsabilidad del indexador. Lo que el protocolo impone: la estructura de `extra_data` es valida, la condicion es satisfacible, y la salida sigue las reglas estandar de UTXO.
+
+**Ticker.** Hasta 16 caracteres ASCII. `DOGEOLI`, `STBL`, `GOLD` — el ticker es metadatos para legibilidad humana, almacenado en cadena y consultable a traves del RPC.
+
+**Lo que esto permite:** meme coins, stablecoins, puntos de lealtad, valores tokenizados, monedas de juegos — cualquier escenario donde se necesite un token fungible de suministro fijo. El token vive en la misma cadena que DOLI, validado por los mismos productores, a la misma velocidad. Sin sidechain, sin puente, sin wrapper.
+
+### 3.6. Puentes entre cadenas (BridgeHTLC)
+
+Una salida BridgeHTLC es un HTLC estandar con metadatos de enrutamiento para atomic swaps entre cadenas. El campo `extra_data` almacena la condicion HTLC seguida de metadatos del puente:
+
+```
+extra_data = [condition_bytes][version][target_chain][addr_len][target_address]
+```
+
+La condicion es siempre un HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)`. Los metadatos indican a las contrapartes en que cadena bloquear y donde.
+
+**Cadenas soportadas:**
+
+| Cadena | ID | Formato de direccion | Soporte de Hashlock |
+|--------|-----|---------------------|---------------------|
+| Bitcoin | 1 | Base58/Bech32 | Nativo (OP_SHA256, OP_HASH160) |
+| Ethereum | 2 | Hex con prefijo 0x | Contrato Solidity de 30 lineas |
+| Monero | 3 | Estandar/Integrada | Nativo (firmas adaptoras Ed25519) |
+| Litecoin | 4 | Base58/Bech32 | Nativo (igual que Bitcoin) |
+| Cardano | 5 | Bech32 | Script Plutus |
+
+**Protocolo de atomic swap:**
+
+```
+1. Alice (DOLI) genera secreto S, computa H = BLAKE3(S)
+2. Alice bloquea X DOLI en BridgeHTLC(H, lock=L, expiry=E, chain=Bitcoin, to=Bob_BTC)
+3. Bob ve el bloqueo en la cadena DOLI, verifica H
+4. Bob bloquea Y BTC en Bitcoin HTLC con el mismo hash H, expiracion mas corta
+5. Alice reclama los BTC de Bob revelando S en Bitcoin
+6. Bob lee S de Bitcoin, reclama los DOLI de Alice revelando S en DOLI
+7. Si Bob nunca bloquea → Alice reembolsa despues de E
+8. Si Alice nunca reclama → Bob reembolsa despues de su expiracion en Bitcoin
+```
+
+Ambos lados estan protegidos. Ninguno puede perder fondos. La revelacion de la preimagen en una cadena habilita el reclamo en la otra. Este es el mismo mecanismo que asegura la Lightning Network — aplicado entre cadenas.
+
+**Lo que esto no es.** Esto no es un puente con validadores, multisigs o custodios. No hay comite de puente. No hay token envuelto. No hay TVL que explotar. Cada swap es un UTXO independiente con un hash lock. La unica suposicion de confianza es que ambas cadenas incluiran transacciones antes de sus respectivas expiraciones — la misma suposicion subyacente a toda blockchain.
+
+**Lo que esto elimina.** Cada gran hackeo de puentes — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploto el mismo patron: un comite pequeno custodiando un pool grande. DOLI no tiene pool. Cada swap es punto a punto, financiado por los participantes, asegurado por matematicas. No hay nada que hackear porque no hay nada que custodiar.
+
+### 3.7. Separacion de testigos (estilo SegWit)
+
+Gastar una salida condicionada requiere un testigo — los datos que satisfacen las condiciones. Un Hashlock requiere la preimagen. Una condicion Signature requiere una firma de la clave correspondiente. Un Multisig requiere N firmas.
+
+Los testigos se almacenan en el campo `extra_data` de la transaccion, separados del hash de firma. El mensaje de firma cubre entradas y salidas pero excluye los datos de testigo — la misma separacion que Bitcoin SegWit introdujo para resolver la maleabilidad de transacciones.
+
+```
+signing_hash = BLAKE3(version || tx_type || inputs || outputs)
+    ↑ excluye extra_data (testigos)
+
+tx_hash = BLAKE3(version || tx_type || inputs || outputs || extra_data)
+    ↑ incluye extra_data (compromiso inmutable)
+```
+
+Esto previene un problema circular: un testigo de Signature debe firmar un hash que no incluya el testigo mismo. El testigo se compromete en el `tx_hash` completo para inmutabilidad pero se excluye del `signing_hash` para constructabilidad.
+
+### 3.8. Lo que esto permite
 
 **Sin una maquina virtual:**
 
@@ -168,18 +260,21 @@ Estas no son implementaciones separadas — son composiciones de las mismas cond
 - **Custodia multipartita:** Tesorias corporativas, DAOs, herencias — cualquier escenario que requiera autorizacion N-de-M.
 - **Deposito en garantia sin confianza:** Comprador, vendedor y arbitro cada uno posee una clave. Cualquier par puede liberar los fondos.
 - **Calendarios de vesting:** Salidas con bloqueo temporal para asignaciones de equipo, subvenciones u obligaciones contractuales.
+- **NFTs nativos:** Arte digital, tokens de identidad, certificados — activos unicos con condiciones de gasto componibles, sin despliegue de contratos.
+- **Tokens emitidos por usuarios:** Meme coins, stablecoins, puntos de lealtad — tokens de suministro fijo en la capa base, sin necesidad de sidechain.
+- **Puentes entre cadenas:** Atomic swaps sin confianza con Bitcoin, Ethereum, Monero, Litecoin y Cardano. Sin comite de puente, sin tokens envueltos, sin riesgo custodial.
 
 **Sin estado mutable compartido:**
 
 Cada salida es independiente. Gastar una salida no puede afectar a otra. No hay reentrancia, no hay front-running, no hay MEV. Las transacciones son completamente paralelizables — la validacion escala linealmente con los nucleos.
 
-### 3.5. Lo que esto no permite
+### 3.9. Lo que esto no permite
 
 Las salidas de DOLI no pueden mantener estado persistente entre transacciones. No hay almacenamiento en cadena, no hay bucles, no hay computacion arbitraria. Esto es deliberado.
 
 Las aplicaciones que requieren estado compartido — creadores de mercado automatizados, protocolos de prestamo, gobernanza en cadena con votacion compleja — pertenecen a la Capa 2 o a cadenas especificas de aplicacion que liquidan en DOLI.
 
-La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo y condiciones de gasto programables.** Todo lo demas se construye encima.
+La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo, condiciones de gasto programables, activos nativos y liquidacion entre cadenas sin confianza.** Todo lo demas se construye encima.
 
 ---
 
