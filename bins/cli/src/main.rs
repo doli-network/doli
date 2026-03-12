@@ -72,13 +72,45 @@ enum Commands {
         address: Option<String>,
     },
 
-    /// Send coins
+    /// Send coins (optionally with a covenant condition)
     Send {
         /// Recipient address
         to: String,
 
         /// Amount to send
         amount: String,
+
+        /// Fee (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+
+        /// Covenant condition on the output. Examples:
+        ///   multisig(2, addr1, addr2, addr3)
+        ///   hashlock(hex_hash)
+        ///   htlc(hex_hash, lock_height, expiry_height)
+        ///   timelock(min_height)
+        ///   vesting(addr, unlock_height)
+        #[arg(short, long)]
+        condition: Option<String>,
+    },
+
+    /// Spend a covenant-conditioned UTXO
+    Spend {
+        /// UTXO to spend: txhash:output_index
+        utxo: String,
+
+        /// Recipient address
+        to: String,
+
+        /// Amount to send (remaining goes to change)
+        amount: String,
+
+        /// Witness data to satisfy the condition. Examples:
+        ///   preimage(hex_secret)
+        ///   sign(wallet1.json, wallet2.json)
+        ///   branch(right, preimage(hex_secret))
+        #[arg(short, long)]
+        witness: String,
 
         /// Fee (default: auto)
         #[arg(short, long)]
@@ -147,6 +179,13 @@ enum Commands {
     /// Show chain information
     Chain,
 
+    /// Verify chain integrity and compute chain commitment
+    ///
+    /// Scans all blocks 1..tip and computes a running BLAKE3 commitment:
+    ///   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+    /// Two nodes with the same commitment have identical chains.
+    ChainVerify,
+
     /// Update governance commands
     Update {
         #[command(subcommand)]
@@ -188,6 +227,101 @@ enum Commands {
     Protocol {
         #[command(subcommand)]
         command: ProtocolCommands,
+    },
+
+    /// Mint an NFT (create a unique non-fungible token)
+    Mint {
+        /// Content hash or URI (IPFS CID, HTTP URL, or hex hash)
+        content: String,
+
+        /// Optional condition on the NFT (default: signature of minter)
+        #[arg(short, long)]
+        condition: Option<String>,
+
+        /// Optional DOLI value to attach (default: 0, pure NFT)
+        #[arg(short, long, default_value = "0")]
+        amount: String,
+    },
+
+    /// Transfer an NFT to a new owner
+    NftTransfer {
+        /// UTXO containing the NFT: txhash:output_index
+        utxo: String,
+
+        /// Recipient address
+        to: String,
+
+        /// Witness to satisfy the NFT's spending condition
+        #[arg(short, long, default_value = "none()")]
+        witness: String,
+    },
+
+    /// Show NFT info from a UTXO
+    NftInfo {
+        /// UTXO containing the NFT: txhash:output_index
+        utxo: String,
+    },
+
+    /// Issue a fungible token (meme coin, stablecoin, etc.)
+    IssueToken {
+        /// Token ticker (e.g. DOGEOLI, max 16 chars)
+        ticker: String,
+
+        /// Total supply (fixed at issuance, in token units)
+        #[arg(long)]
+        supply: u64,
+
+        /// Optional condition on spending (default: signature of issuer)
+        #[arg(short, long)]
+        condition: Option<String>,
+    },
+
+    /// Show token info from a UTXO
+    TokenInfo {
+        /// UTXO containing the fungible asset: txhash:output_index
+        utxo: String,
+    },
+
+    /// Lock DOLI in a bridge HTLC for cross-chain atomic swap
+    BridgeLock {
+        /// Amount of DOLI to lock
+        amount: String,
+
+        /// BLAKE3 hashlock hash (64 hex chars)
+        #[arg(long)]
+        hash: String,
+
+        /// Lock height (claim available after this)
+        #[arg(long)]
+        lock: u64,
+
+        /// Expiry height (refund available after this)
+        #[arg(long)]
+        expiry: u64,
+
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        #[arg(long)]
+        chain: String,
+
+        /// Recipient address on the target chain
+        #[arg(long)]
+        to: String,
+    },
+
+    /// Claim a bridge HTLC with the preimage (receiver side)
+    BridgeClaim {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
+
+        /// Preimage (64 hex chars) that hashes to the locked hash
+        #[arg(long)]
+        preimage: String,
+    },
+
+    /// Refund a bridge HTLC after expiry (sender side)
+    BridgeRefund {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
     },
 
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
@@ -460,8 +594,22 @@ async fn main() -> Result<()> {
         Commands::Balance { address } => {
             cmd_balance(&wallet, &rpc_endpoint, address).await?;
         }
-        Commands::Send { to, amount, fee } => {
-            cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee).await?;
+        Commands::Send {
+            to,
+            amount,
+            fee,
+            condition,
+        } => {
+            cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee, condition).await?;
+        }
+        Commands::Spend {
+            utxo,
+            to,
+            amount,
+            witness,
+            fee,
+        } => {
+            cmd_spend(&wallet, &rpc_endpoint, &utxo, &to, &amount, &witness, fee).await?;
         }
         Commands::History { limit } => {
             cmd_history(&wallet, &rpc_endpoint, limit).await?;
@@ -497,6 +645,9 @@ async fn main() -> Result<()> {
         Commands::Chain => {
             cmd_chain(&rpc_endpoint).await?;
         }
+        Commands::ChainVerify => {
+            cmd_chain_verify(&rpc_endpoint).await?;
+        }
         Commands::Update { command } => {
             cmd_update(&wallet, &rpc_endpoint, command).await?;
         }
@@ -516,6 +667,55 @@ async fn main() -> Result<()> {
         }
         Commands::Protocol { command } => {
             cmd_protocol(&wallet, &rpc_endpoint, command).await?;
+        }
+        Commands::Mint {
+            content,
+            condition,
+            amount,
+        } => {
+            cmd_mint(&wallet, &rpc_endpoint, &content, condition, &amount).await?;
+        }
+        Commands::NftTransfer { utxo, to, witness } => {
+            cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
+        }
+        Commands::NftInfo { utxo } => {
+            cmd_nft_info(&rpc_endpoint, &utxo).await?;
+        }
+        Commands::IssueToken {
+            ticker,
+            supply,
+            condition,
+        } => {
+            cmd_issue_token(&wallet, &rpc_endpoint, &ticker, supply, condition).await?;
+        }
+        Commands::TokenInfo { utxo } => {
+            cmd_token_info(&rpc_endpoint, &utxo).await?;
+        }
+        Commands::BridgeLock {
+            amount,
+            hash,
+            lock,
+            expiry,
+            chain,
+            to,
+        } => {
+            cmd_bridge_lock(
+                &wallet,
+                &rpc_endpoint,
+                &amount,
+                &hash,
+                lock,
+                expiry,
+                &chain,
+                &to,
+            )
+            .await?;
+        }
+        Commands::BridgeClaim { utxo, preimage } => {
+            cmd_bridge_claim(&wallet, &rpc_endpoint, &utxo, &preimage).await?;
+        }
+        Commands::BridgeRefund { utxo } => {
+            cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo).await?;
         }
         Commands::Wipe {
             network,
@@ -546,9 +746,9 @@ fn prefix_for_network(network: &str) -> &'static str {
 
 fn default_rpc_for_network(network: &str) -> &'static str {
     match network {
-        "testnet" => "http://127.0.0.1:18545",
-        "devnet" => "http://127.0.0.1:28545",
-        _ => "http://127.0.0.1:8545",
+        "testnet" => "http://127.0.0.1:18500",
+        "devnet" => "http://127.0.0.1:28500",
+        _ => "http://127.0.0.1:8500",
     }
 }
 
@@ -841,6 +1041,7 @@ async fn cmd_send(
     to: &str,
     amount: &str,
     fee: Option<String>,
+    condition: Option<String>,
 ) -> Result<()> {
     use crypto::{signature, Hash};
     use doli_core::{Input, Output, Transaction};
@@ -971,8 +1172,17 @@ async fn cmd_send(
     // Build transaction outputs
     let mut outputs: Vec<Output> = Vec::new();
 
-    // Recipient output
-    outputs.push(Output::normal(amount_units, recipient_hash));
+    // Recipient output (with optional covenant condition)
+    if let Some(cond_str) = &condition {
+        let cond = parse_condition(cond_str)?;
+        let output_type = condition_to_output_type(&cond);
+        let output = Output::conditioned(output_type, amount_units, recipient_hash, &cond)
+            .map_err(|e| anyhow::anyhow!("Invalid condition: {}", e))?;
+        outputs.push(output);
+        println!("  Condition: {}", cond_str);
+    } else {
+        outputs.push(Output::normal(amount_units, recipient_hash));
+    }
 
     // Change output (if needed)
     let change = total_input - required;
@@ -1004,6 +1214,326 @@ async fn cmd_send(
     println!("Transaction size: {} bytes", tx_bytes.len());
 
     // Submit to network
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Transaction submitted successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error submitting transaction: {}", e);
+            return Err(anyhow::anyhow!("Transaction submission failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// COVENANT CONDITION PARSER
+// =============================================================================
+
+/// Parse a human-readable condition string into a Condition AST.
+///
+/// Supported formats:
+///   multisig(threshold, addr1, addr2, ...)
+///   hashlock(hex_hash)
+///   htlc(hex_hash, lock_height, expiry_height)
+///   timelock(min_height)
+///   timelock_expiry(max_height)
+///   vesting(addr, unlock_height)
+fn parse_condition(s: &str) -> Result<doli_core::Condition> {
+    let s = s.trim();
+
+    // Find the function name and arguments
+    let open = s
+        .find('(')
+        .ok_or_else(|| anyhow::anyhow!("Expected condition format: name(args...)"))?;
+    let close = s
+        .rfind(')')
+        .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
+    if close <= open {
+        anyhow::bail!("Invalid condition syntax");
+    }
+
+    let name = s[..open].trim().to_lowercase();
+    let args_str = &s[open + 1..close];
+    let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+
+    match name.as_str() {
+        "multisig" => {
+            if args.len() < 3 {
+                anyhow::bail!("multisig requires at least 3 args: threshold, key1, key2");
+            }
+            let threshold: u8 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid threshold: {}", args[0]))?;
+            let keys: Result<Vec<crypto::Hash>> = args[1..]
+                .iter()
+                .map(|a| resolve_to_hash(a))
+                .collect();
+            Ok(doli_core::Condition::multisig(threshold, keys?))
+        }
+        "hashlock" => {
+            if args.len() != 1 {
+                anyhow::bail!("hashlock requires 1 arg: hex_hash");
+            }
+            let hash = crypto::Hash::from_hex(args[0])
+                .ok_or_else(|| anyhow::anyhow!("Invalid hex hash: {}", args[0]))?;
+            Ok(doli_core::Condition::hashlock(hash))
+        }
+        "htlc" => {
+            if args.len() != 3 {
+                anyhow::bail!("htlc requires 3 args: hex_hash, lock_height, expiry_height");
+            }
+            let hash = crypto::Hash::from_hex(args[0])
+                .ok_or_else(|| anyhow::anyhow!("Invalid hex hash: {}", args[0]))?;
+            let lock: u64 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid lock_height: {}", args[1]))?;
+            let expiry: u64 = args[2]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid expiry_height: {}", args[2]))?;
+            Ok(doli_core::Condition::htlc(hash, lock, expiry))
+        }
+        "timelock" => {
+            if args.len() != 1 {
+                anyhow::bail!("timelock requires 1 arg: min_height");
+            }
+            let height: u64 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid height: {}", args[0]))?;
+            Ok(doli_core::Condition::timelock(height))
+        }
+        "timelock_expiry" => {
+            if args.len() != 1 {
+                anyhow::bail!("timelock_expiry requires 1 arg: max_height");
+            }
+            let height: u64 = args[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid height: {}", args[0]))?;
+            Ok(doli_core::Condition::timelock_expiry(height))
+        }
+        "vesting" => {
+            if args.len() != 2 {
+                anyhow::bail!("vesting requires 2 args: addr, unlock_height");
+            }
+            let pkh = resolve_to_hash(args[0])?;
+            let height: u64 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid unlock_height: {}", args[1]))?;
+            Ok(doli_core::Condition::vesting(pkh, height))
+        }
+        _ => anyhow::bail!(
+            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, timelock_expiry, vesting",
+            name
+        ),
+    }
+}
+
+/// Resolve an address string (doli1... or hex) to a pubkey_hash.
+fn resolve_to_hash(addr: &str) -> Result<crypto::Hash> {
+    let addr = addr.trim();
+    // Try as hex first
+    if let Some(h) = crypto::Hash::from_hex(addr) {
+        return Ok(h);
+    }
+    // Try as bech32 address
+    crypto::address::resolve(addr, None)
+        .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", addr, e))
+}
+
+/// Map a Condition to the appropriate OutputType.
+fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core::OutputType {
+    match cond {
+        doli_core::Condition::Multisig { .. } => doli_core::OutputType::Multisig,
+        doli_core::Condition::Hashlock(_) => doli_core::OutputType::Hashlock,
+        doli_core::Condition::Or(_, _) => {
+            // HTLC is Or(And(Hashlock, Timelock), TimelockExpiry)
+            doli_core::OutputType::HTLC
+        }
+        doli_core::Condition::And(_, _) => {
+            // Vesting is And(Signature, Timelock)
+            doli_core::OutputType::Vesting
+        }
+        doli_core::Condition::Timelock(_) | doli_core::Condition::TimelockExpiry(_) => {
+            // Standalone timelock uses Vesting type
+            doli_core::OutputType::Vesting
+        }
+        doli_core::Condition::Signature(_) => doli_core::OutputType::Normal,
+        doli_core::Condition::Threshold { .. } => doli_core::OutputType::Multisig,
+    }
+}
+
+// =============================================================================
+// WITNESS PARSER
+// =============================================================================
+
+/// Parse a human-readable witness string into encoded Witness bytes.
+///
+/// Supported formats:
+///   preimage(hex_secret)
+///   sign(wallet1.json, wallet2.json, ...)
+///   branch(left|right)
+fn parse_witness(s: &str, signing_hash: &crypto::Hash) -> Result<Vec<u8>> {
+    let mut witness = doli_core::Witness::default();
+
+    // Support compound witnesses: "branch(left)+preimage(hex)" for HTLC
+    let parts: Vec<&str> = s.split('+').collect();
+    for part in parts {
+        let part = part.trim();
+        let open = part
+            .find('(')
+            .ok_or_else(|| anyhow::anyhow!("Expected witness format: name(args...)"))?;
+        let close = part
+            .rfind(')')
+            .ok_or_else(|| anyhow::anyhow!("Missing closing parenthesis"))?;
+
+        let name = part[..open].trim().to_lowercase();
+        let args_str = &part[open + 1..close];
+        let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+
+        match name.as_str() {
+            "preimage" => {
+                if args.len() != 1 {
+                    anyhow::bail!("preimage requires 1 arg: hex_secret");
+                }
+                let bytes = hex::decode(args[0])
+                    .map_err(|_| anyhow::anyhow!("Invalid hex preimage: {}", args[0]))?;
+                if bytes.len() != 32 {
+                    anyhow::bail!("Preimage must be exactly 32 bytes, got {}", bytes.len());
+                }
+                let mut preimage = [0u8; 32];
+                preimage.copy_from_slice(&bytes);
+                witness.preimage = Some(preimage);
+            }
+            "sign" => {
+                for wallet_path in &args {
+                    let w = Wallet::load(Path::new(wallet_path))?;
+                    let kp = w.primary_keypair()?;
+                    let sig = crypto::signature::sign_hash(signing_hash, kp.private_key());
+                    witness
+                        .signatures
+                        .push(doli_core::ConditionWitnessSignature {
+                            pubkey: *kp.public_key(),
+                            signature: sig,
+                        });
+                }
+            }
+            "branch" => {
+                for arg in &args {
+                    match arg.to_lowercase().as_str() {
+                        "left" | "false" | "0" => witness.or_branches.push(false),
+                        "right" | "true" | "1" => witness.or_branches.push(true),
+                        _ => anyhow::bail!("Invalid branch: '{}' (use left/right)", arg),
+                    }
+                }
+            }
+            "none" | "empty" => {}
+            _ => anyhow::bail!(
+                "Unknown witness type: '{}'. Supported: none, preimage, sign, branch",
+                name
+            ),
+        }
+    }
+
+    Ok(witness.encode())
+}
+
+// =============================================================================
+// SPEND COMMAND (for covenant UTXOs)
+// =============================================================================
+
+async fn cmd_spend(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    to: &str,
+    amount: &str,
+    witness_str: &str,
+    fee: Option<String>,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    // Parse UTXO reference: txhash:index
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index (e.g. abc123:0)");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash: {}", parts[0]))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
+
+    // Parse recipient
+    let recipient_hash = crypto::address::resolve(to, None)
+        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
+
+    // Parse amount
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    if amount_coins <= 0.0 {
+        anyhow::bail!("Amount must be greater than zero");
+    }
+    let amount_units = coins_to_units(amount_coins);
+
+    // Fee
+    let fee_units = if let Some(f) = &fee {
+        let fee_coins: f64 = f
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
+        coins_to_units(fee_coins)
+    } else {
+        1000 // Default fee for single-input spend
+    };
+
+    // Build transaction with single input
+    let input = Input::new(prev_tx_hash, output_index);
+    let outputs = vec![Output::normal(amount_units, recipient_hash)];
+    let mut tx = Transaction::new_transfer(vec![input], outputs);
+
+    // Parse witness and compute signing hash
+    let signing_hash = tx.signing_message();
+    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+
+    // Set covenant witness in tx.extra_data (SegWit-style)
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    // Also sign with the wallet key (for inputs that need a signature in the witness)
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
+        .unwrap_or_else(|_| recipient_hash.to_hex());
+
+    println!("Spending covenant UTXO:");
+    println!(
+        "  UTXO:    {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  To:      {}", recipient_display);
+    println!("  Amount:  {} DOLI", amount_coins);
+    println!("  Fee:     {}", format_balance(fee_units));
+    println!("  Witness: {}", witness_str);
+    println!("  TX Hash: {}", tx_hash.to_hex());
+    println!("  Size:    {} bytes", tx_bytes.len());
+
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
@@ -3176,6 +3706,49 @@ async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_chain_verify(rpc_endpoint: &str) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    println!("Chain Integrity Verification");
+    println!("{:-<60}", "");
+    println!("Scanning all blocks from genesis to tip...\n");
+
+    match rpc.verify_chain_integrity().await {
+        Ok(result) => {
+            println!("Tip Height:       {}", result.tip);
+            println!("Blocks Scanned:   {}", result.scanned);
+            println!(
+                "Complete:         {}",
+                if result.complete { "YES" } else { "NO" }
+            );
+            println!("Missing Blocks:   {}", result.missing_count);
+            if !result.missing.is_empty() {
+                println!("Missing Ranges:   {}", result.missing.join(", "));
+            }
+            println!();
+            if let Some(commitment) = result.chain_commitment {
+                println!("Chain Commitment: {}", commitment);
+                println!();
+                println!("This 32-byte BLAKE3 fingerprint uniquely identifies the exact");
+                println!(
+                    "sequence of all blocks 1..{}. Two nodes with the same",
+                    result.tip
+                );
+                println!("commitment have identical chains.");
+            } else {
+                println!("Chain Commitment: UNAVAILABLE (chain is incomplete)");
+                println!();
+                println!("Run 'backfillFromPeer' to fill gaps, then verify again.");
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Cannot verify chain at {}. Details: {}", rpc_endpoint, e);
+        }
+    }
+
+    Ok(())
+}
+
 async fn cmd_rewards(
     _wallet_path: &Path,
     rpc_endpoint: &str,
@@ -3501,6 +4074,914 @@ async fn cmd_maintainer(rpc_endpoint: &str, command: MaintainerCommands) -> Resu
                 }
                 Err(e) => anyhow::bail!("Error fetching maintainer set: {}", e),
             }
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// NFT COMMANDS
+// =============================================================================
+
+async fn cmd_mint(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    content: &str,
+    condition: Option<String>,
+    amount: &str,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let minter_pubkey_hash = wallet.primary_pubkey_hash();
+    let minter_hash = Hash::from_hex(&minter_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid minter pubkey hash"))?;
+
+    // Parse amount (minimum 1 sat dust for pure NFT — protocol requires non-zero)
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    let amount_units = std::cmp::max(1u64, coins_to_units(amount_coins));
+
+    // Content hash: if it looks like hex (64 chars), use as-is; otherwise treat as URI bytes
+    let content_bytes = if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+        hex::decode(content).unwrap_or_else(|_| content.as_bytes().to_vec())
+    } else {
+        content.as_bytes().to_vec()
+    };
+
+    // Generate a nonce from current timestamp for token_id uniqueness
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_le_bytes()
+        .to_vec();
+    let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+
+    // Default condition: signature of the minter (only minter can transfer)
+    let cond = if let Some(cond_str) = &condition {
+        parse_condition(cond_str)?
+    } else {
+        doli_core::Condition::signature(minter_hash)
+    };
+
+    // Build NFT output
+    let nft_output = Output::nft(amount_units, minter_hash, token_id, &content_bytes, &cond)
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+
+    // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
+    let fee_units = 1500u64;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&minter_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
+    if utxos.is_empty() {
+        anyhow::bail!("No spendable UTXOs available for fee");
+    }
+
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    let required = amount_units + fee_units;
+    for utxo in &utxos {
+        if total_input >= required {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+
+    if total_input < required {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
+    }
+
+    // Build inputs
+    let mut inputs: Vec<Input> = Vec::new();
+    for utxo in &selected_utxos {
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+    }
+
+    // Build outputs: NFT + change
+    let mut outputs = vec![nft_output];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(Output::normal(change, minter_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+
+    // Sign each input
+    let keypair = wallet.primary_keypair()?;
+    let signing_message = tx.signing_message();
+    for input in &mut tx.inputs {
+        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let minter_display = crypto::address::encode(&minter_hash, address_prefix())
+        .unwrap_or_else(|_| minter_hash.to_hex());
+
+    println!("Minting NFT:");
+    println!("  Token ID:  {}", token_id.to_hex());
+    println!("  Content:   {}", content);
+    println!("  Minter:    {}", minter_display);
+    if amount_units > 0 {
+        println!("  Value:     {}", format_balance(amount_units));
+    }
+    println!("  Fee:       {}", format_balance(fee_units));
+    println!("  TX Hash:   {}", tx_hash.to_hex());
+    println!("  Size:      {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("NFT minted successfully!");
+            println!("TX Hash:  {}", result_hash);
+            println!("Token ID: {}", token_id.to_hex());
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Mint failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_nft_transfer(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    to: &str,
+    witness_str: &str,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    // Parse UTXO reference
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash: {}", parts[0]))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
+
+    // Get the NFT UTXO details via RPC to extract token_id and content
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let nft_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], output_index))?;
+
+    let nft_meta = nft_output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
+    let token_id_hex = nft_meta
+        .get("tokenId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing tokenId in NFT metadata"))?;
+    let content_hash_hex = nft_meta
+        .get("contentHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let token_id =
+        Hash::from_hex(token_id_hex).ok_or_else(|| anyhow::anyhow!("Invalid token_id"))?;
+    let content_bytes = hex::decode(content_hash_hex).unwrap_or_default();
+
+    // Parse recipient
+    let recipient_hash = crypto::address::resolve(to, None)
+        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
+
+    // The NFT output carries forward the same token_id and content, new owner
+    // Use a simple signature condition for the new owner
+    let new_cond = doli_core::Condition::signature(recipient_hash);
+    let nft_amount = nft_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let new_nft_output = Output::nft(
+        nft_amount,
+        recipient_hash,
+        token_id,
+        &content_bytes,
+        &new_cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+
+    // Build transaction
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx = Transaction::new_transfer(vec![input], vec![new_nft_output]);
+
+    // Parse witness and sign
+    let keypair = wallet.primary_keypair()?;
+    let signing_hash = tx.signing_message();
+
+    // Auto-provide signature witness when default none() and condition is Signature
+    let witness_bytes = if witness_str == "none()" {
+        let mut w = doli_core::Witness::default();
+        w.signatures.push(doli_core::ConditionWitnessSignature {
+            pubkey: *keypair.public_key(),
+            signature: crypto::signature::sign_hash(&signing_hash, keypair.private_key()),
+        });
+        w.encode()
+    } else {
+        parse_witness(witness_str, &signing_hash)?
+    };
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
+        .unwrap_or_else(|_| recipient_hash.to_hex());
+
+    println!("Transferring NFT:");
+    println!("  Token ID: {}", token_id.to_hex());
+    println!(
+        "  From:     {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  To:       {}", recipient_display);
+    println!("  TX Hash:  {}", tx_hash.to_hex());
+    println!("  Size:     {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("NFT transferred successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("NFT transfer failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_nft_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+
+    let tx_info = rpc.get_transaction_json(parts[0]).await?;
+    let output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(parts[1].parse::<usize>().unwrap_or(0)))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], parts[1]))?;
+
+    let output_type = output
+        .get("outputType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if output_type != "nft" {
+        anyhow::bail!("Output is not an NFT (type: {})", output_type);
+    }
+
+    let nft = output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Missing NFT metadata"))?;
+
+    let owner = output
+        .get("pubkeyHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let amount = output.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    println!("NFT Info:");
+    println!("{:-<60}", "");
+    println!(
+        "  Token ID:     {}",
+        nft.get("tokenId").and_then(|v| v.as_str()).unwrap_or("?")
+    );
+    println!(
+        "  Content Hash: {}",
+        nft.get("contentHash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+    );
+
+    // Try to decode content hash as UTF-8 (might be a URI)
+    if let Some(ch) = nft.get("contentHash").and_then(|v| v.as_str()) {
+        if let Ok(bytes) = hex::decode(ch) {
+            if let Ok(uri) = std::str::from_utf8(&bytes) {
+                if uri.starts_with("http") || uri.starts_with("ipfs") {
+                    println!("  Content URI:  {}", uri);
+                }
+            }
+        }
+    }
+
+    if let Some(owner_hash) = crypto::Hash::from_hex(owner) {
+        let addr = crypto::address::encode(&owner_hash, address_prefix())
+            .unwrap_or_else(|_| owner.to_string());
+        println!("  Owner:        {}", addr);
+    } else {
+        println!("  Owner:        {}", owner);
+    }
+
+    if amount > 0 {
+        println!("  Value:        {}", format_balance(amount));
+    }
+
+    if let Some(cond) = output.get("condition") {
+        println!("  Condition:    {}", cond);
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// FUNGIBLE TOKEN COMMANDS
+// =============================================================================
+
+async fn cmd_issue_token(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    ticker: &str,
+    supply: u64,
+    condition: Option<String>,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    if ticker.is_empty() || ticker.len() > 16 {
+        anyhow::bail!("Ticker must be 1-16 characters");
+    }
+
+    if supply == 0 {
+        anyhow::bail!("Supply must be > 0");
+    }
+
+    let issuer_pubkey_hash = wallet.primary_pubkey_hash();
+    let issuer_hash = Hash::from_hex(&issuer_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid issuer pubkey hash"))?;
+
+    // asset_id is derived from genesis tx hash + output index after mining.
+    // Use a placeholder for construction; the canonical asset_id is computed on-chain.
+    let placeholder_asset_id = {
+        use crypto::hash::hash_with_domain;
+        let mut data = Vec::new();
+        data.extend_from_slice(issuer_hash.as_bytes());
+        data.extend_from_slice(ticker.as_bytes());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_le_bytes();
+        data.extend_from_slice(&nonce);
+        hash_with_domain(b"DOLI_ASSET_PRE", &data)
+    };
+
+    // Default condition: signature of the issuer
+    let cond = if let Some(cond_str) = &condition {
+        parse_condition(cond_str)?
+    } else {
+        doli_core::Condition::signature(issuer_hash)
+    };
+
+    // Attach dust DOLI (1 sat) to anchor the token UTXO on-chain
+    let dust = 1u64;
+    let token_output = Output::fungible_asset(
+        dust,
+        issuer_hash,
+        placeholder_asset_id,
+        supply,
+        ticker,
+        &cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
+
+    // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
+    let fee_units = 1500u64;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&issuer_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
+    if utxos.is_empty() {
+        anyhow::bail!("No spendable UTXOs available for fee");
+    }
+
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    let required = dust + fee_units;
+    for utxo in &utxos {
+        if total_input >= required {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+
+    if total_input < required {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
+    }
+
+    let mut inputs: Vec<Input> = Vec::new();
+    for utxo in &selected_utxos {
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO hash"))?;
+        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+    }
+
+    let mut outputs = vec![token_output];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(Output::normal(change, issuer_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+
+    let keypair = wallet.primary_keypair()?;
+    let signing_message = tx.signing_message();
+    for input in &mut tx.inputs {
+        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let issuer_display = crypto::address::encode(&issuer_hash, address_prefix())
+        .unwrap_or_else(|_| issuer_hash.to_hex());
+
+    println!("Issuing Fungible Token:");
+    println!("  Ticker:      {}", ticker);
+    println!("  Supply:      {}", supply);
+    println!("  Issuer:      {}", issuer_display);
+    println!("  Fee:         {}", format_balance(fee_units));
+    println!("  TX Hash:     {}", tx_hash.to_hex());
+    println!("  Size:        {} bytes", tx_bytes.len());
+    println!();
+    println!("Broadcasting transaction...");
+
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(_) => {
+            println!("Token issued successfully!");
+            println!("TX Hash: {}", tx_hash.to_hex());
+            println!();
+            println!(
+                "Asset ID (canonical): BLAKE3(\"DOLI_ASSET\" || {} || 0)",
+                tx_hash.to_hex()
+            );
+            println!("Query with: doli token-info {}:0", tx_hash.to_hex());
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            anyhow::bail!("Token issuance failed: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_token_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+
+    let tx_info = rpc.get_transaction_json(parts[0]).await?;
+    let output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(parts[1].parse::<usize>().unwrap_or(0)))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], parts[1]))?;
+
+    let output_type = output
+        .get("outputType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if output_type != "fungibleAsset" {
+        anyhow::bail!("Output is not a fungible asset (type: {})", output_type);
+    }
+
+    let asset = output
+        .get("asset")
+        .ok_or_else(|| anyhow::anyhow!("Missing asset metadata"))?;
+
+    let owner = output
+        .get("pubkeyHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    println!("Fungible Token Info:");
+    println!("{:-<60}", "");
+    println!(
+        "  Ticker:       {}",
+        asset.get("ticker").and_then(|v| v.as_str()).unwrap_or("?")
+    );
+    println!(
+        "  Asset ID:     {}",
+        asset.get("assetId").and_then(|v| v.as_str()).unwrap_or("?")
+    );
+    println!(
+        "  Total Supply: {}",
+        asset
+            .get("totalSupply")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    );
+
+    if let Some(owner_hash) = crypto::Hash::from_hex(owner) {
+        let addr = crypto::address::encode(&owner_hash, address_prefix())
+            .unwrap_or_else(|_| owner.to_string());
+        println!("  Owner:        {}", addr);
+    } else {
+        println!("  Owner:        {}", owner);
+    }
+
+    if let Some(cond) = output.get("condition") {
+        println!("  Condition:    {}", cond);
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// BRIDGE COMMANDS
+// =============================================================================
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_bridge_lock(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    amount: &str,
+    hash_hex: &str,
+    lock: u64,
+    expiry: u64,
+    chain: &str,
+    target_address: &str,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::transaction::{
+        BRIDGE_CHAIN_BITCOIN, BRIDGE_CHAIN_CARDANO, BRIDGE_CHAIN_ETHEREUM, BRIDGE_CHAIN_LITECOIN,
+        BRIDGE_CHAIN_MONERO,
+    };
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let chain_id = match chain.to_lowercase().as_str() {
+        "bitcoin" | "btc" => BRIDGE_CHAIN_BITCOIN,
+        "ethereum" | "eth" => BRIDGE_CHAIN_ETHEREUM,
+        "monero" | "xmr" => BRIDGE_CHAIN_MONERO,
+        "litecoin" | "ltc" => BRIDGE_CHAIN_LITECOIN,
+        "cardano" | "ada" => BRIDGE_CHAIN_CARDANO,
+        _ => anyhow::bail!(
+            "Unknown chain: {}. Supported: bitcoin, ethereum, monero, litecoin, cardano",
+            chain
+        ),
+    };
+
+    let expected_hash =
+        Hash::from_hex(hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid hash: {}", hash_hex))?;
+
+    let amount_coins: f64 = amount
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    if amount_coins <= 0.0 {
+        anyhow::bail!("Amount must be greater than zero");
+    }
+    let amount_units = coins_to_units(amount_coins);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    // Build bridge HTLC output
+    let bridge_output = Output::bridge_htlc(
+        amount_units,
+        from_hash,
+        expected_hash,
+        lock,
+        expiry,
+        chain_id,
+        target_address.as_bytes(),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
+
+    // Get spendable normal UTXOs for funding (exclude bonds, conditioned, etc.)
+    let fee_units = 1500u64;
+    let required = amount_units + fee_units;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&from_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
+
+    let mut selected = Vec::new();
+    let mut total_input = 0u64;
+    for utxo in &utxos {
+        if total_input >= required {
+            break;
+        }
+        selected.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+    if total_input < required {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(required)
+        );
+    }
+
+    let mut inputs: Vec<Input> = Vec::new();
+    for utxo in &selected {
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+    }
+
+    let mut outputs = vec![bridge_output];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(doli_core::Output::normal(change, from_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+    let keypair = wallet.primary_keypair()?;
+    let signing_message = tx.signing_message();
+    for input in &mut tx.inputs {
+        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let chain_name = Output::bridge_chain_name(chain_id);
+
+    println!("Bridge HTLC Lock:");
+    println!("  Amount:     {} DOLI", amount_coins);
+    println!("  Target:     {} -> {}", chain_name, target_address);
+    println!("  Hash:       {}", hash_hex);
+    println!("  Lock:       {} (claim after)", lock);
+    println!("  Expiry:     {} (refund after)", expiry);
+    println!("  Fee:        {}", format_balance(fee_units));
+    println!("  TX Hash:    {}", tx_hash.to_hex());
+    println!("  Size:       {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC locked successfully!");
+            println!("TX Hash: {}", result_hash);
+            println!();
+            println!(
+                "Counterparty should now lock {} on {} to address {}",
+                amount_coins, chain_name, target_address
+            );
+            println!("using the same hash: {}", hash_hex);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge lock failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_bridge_claim(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    preimage_hex: &str,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid index"))?;
+
+    // Get the bridge HTLC UTXO details
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let utxo_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output"))?;
+
+    let utxo_amount = utxo_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let fee_units = 1000u64;
+    let claim_amount = utxo_amount.saturating_sub(fee_units);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx =
+        Transaction::new_transfer(vec![input], vec![Output::normal(claim_amount, from_hash)]);
+
+    let signing_hash = tx.signing_message();
+    let witness_str = format!("branch(left)+preimage({})", preimage_hex);
+    let witness_bytes = parse_witness(&witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    println!("Bridge HTLC Claim:");
+    println!(
+        "  UTXO:     {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  Preimage: {}", preimage_hex);
+    println!("  Amount:   {}", format_balance(claim_amount));
+    println!("  Fee:      {}", format_balance(fee_units));
+    println!("  TX Hash:  {}", tx_hash.to_hex());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC claimed successfully!");
+            println!("TX Hash: {}", result_hash);
+            println!();
+            println!("IMPORTANT: Preimage is now public on-chain.");
+            println!("Counterparty can use it to claim their locked funds.");
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge claim failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_bridge_refund(wallet_path: &Path, rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let prev_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid index"))?;
+
+    let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
+    let utxo_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output"))?;
+
+    let utxo_amount = utxo_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let fee_units = 1000u64;
+    let refund_amount = utxo_amount.saturating_sub(fee_units);
+
+    let from_pubkey_hash = wallet.primary_pubkey_hash();
+    let from_hash =
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
+
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx =
+        Transaction::new_transfer(vec![input], vec![Output::normal(refund_amount, from_hash)]);
+
+    let signing_hash = tx.signing_message();
+    let witness_str = "branch(right)+none()";
+    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    println!("Bridge HTLC Refund:");
+    println!(
+        "  UTXO:    {}:{}",
+        &prev_tx_hash.to_hex()[..16],
+        output_index
+    );
+    println!("  Amount:  {}", format_balance(refund_amount));
+    println!("  Fee:     {}", format_balance(fee_units));
+    println!("  TX Hash: {}", tx_hash.to_hex());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC refunded successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge refund failed: {}", e));
         }
     }
 

@@ -361,7 +361,7 @@ REQUIRED_CONFIRMATIONS=2
 POOL_ETH=0x4cc9Ea41Dec9bF5d7e38D6a216e861243d93bb6D
 POOL_DOLI=doli1grww5ppnvz2phncskf0zq5tq3hxc87c5
 ETH_RPC=https://ethereum.publicnode.com
-DOLI_RPC=http://127.0.0.1:18545
+DOLI_RPC=http://127.0.0.1:18500
 DOLI_CLI=/home/ilozada/repos/doli/target/release/doli
 DOLI_WALLET=/home/ilozada/.doli/testnet/producer_keys/producer_1.json
 ```

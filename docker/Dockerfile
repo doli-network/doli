@@ -1,6 +1,6 @@
 # DOLI Node - Multi-stage Dockerfile
 # Build: docker build -t doli-node -f docker/Dockerfile .
-# Run: docker run -d -p 30303:30303 -p 8545:8545 -v doli-data:/data doli-node
+# Run: docker run -d -p 30300:30300 -p 8500:8500 -v doli-data:/data doli-node
 
 # =============================================================================
 # Stage 1: Builder
@@ -66,15 +66,15 @@ RUN chmod +x /usr/local/bin/doli-node
 ENV DOLI_NETWORK=mainnet \
     DOLI_DATA_DIR=/data \
     DOLI_LOG_LEVEL=info \
-    DOLI_METRICS_PORT=9090 \
+    DOLI_METRICS_PORT=9000 \
     DOLI_PRODUCER=false \
     RUST_BACKTRACE=1
 
 # Expose ports
-# P2P: 30303 (mainnet), 40303 (testnet), 50303 (devnet)
-# RPC: 8545 (mainnet), 18545 (testnet), 28545 (devnet)
-# Metrics: 9090
-EXPOSE 30303 40303 50303 8545 18545 28545 9090
+# P2P: 30300 (mainnet), 40300 (testnet), 50300 (devnet)
+# RPC: 8500 (mainnet), 18500 (testnet), 28500 (devnet)
+# Metrics: 9000 (mainnet), 19000 (testnet), 29000 (devnet)
+EXPOSE 30300 40300 50300 8500 18500 28500 9000 19000 29000
 
 # Volume for blockchain data
 VOLUME ["/data"]
@@ -84,7 +84,7 @@ USER doli
 
 # Health check - verify RPC is responding via JSON-RPC getChainInfo
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -sf -X POST http://localhost:${DOLI_RPC_PORT:-8545} \
+    CMD curl -sf -X POST http://localhost:${DOLI_RPC_PORT:-8500} \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' \
         | grep -q '"result"' || exit 1

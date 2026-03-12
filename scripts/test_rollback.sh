@@ -11,7 +11,7 @@
 #   - Crash threshold: 3 crashes
 set -e
 
-RPC_BASE=28545
+RPC_BASE=28500
 NODE_DATA_DIR="${HOME}/.doli/devnet/data/node0"
 
 echo "========================================="

@@ -362,8 +362,8 @@ Bonus por bloque = 75 / 500 = 0.15 DOLI extra
 #!/bin/bash
 # launch_600_nodes.sh
 
-BASE_P2P_PORT=50303
-BASE_RPC_PORT=28545
+BASE_P2P_PORT=50300
+BASE_RPC_PORT=28500
 BASE_DATA_DIR=~/.doli/devnet-stress
 
 # Nodo semilla (bootstrap)

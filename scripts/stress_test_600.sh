@@ -16,8 +16,8 @@ set -e
 # ==================== Configuración ====================
 
 PRODUCER_COUNT=${PRODUCER_COUNT:-600}
-BASE_P2P_PORT=${BASE_P2P_PORT:-50303}
-BASE_RPC_PORT=${BASE_RPC_PORT:-28545}
+BASE_P2P_PORT=${BASE_P2P_PORT:-50300}
+BASE_RPC_PORT=${BASE_RPC_PORT:-28500}
 BASE_DATA_DIR=${BASE_DATA_DIR:-~/.doli/stress-test}
 DOLI_NODE=${DOLI_NODE:-./target/release/doli-node}
 LOG_LEVEL=${LOG_LEVEL:-warn}

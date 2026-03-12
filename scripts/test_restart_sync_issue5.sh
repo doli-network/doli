@@ -58,7 +58,7 @@ warn() { WARN=$((WARN + 1)); echo -e "  ${YELLOW}WARN${NC}: $1"; }
 info() { echo -e "  ${CYAN}INFO${NC}: $1"; }
 
 rpc_chain_info() {
-    local port=$((28545 + $1))
+    local port=$((28500 + $1))
     curl -s --max-time 5 http://127.0.0.1:$port -X POST \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' 2>/dev/null
@@ -189,7 +189,7 @@ echo
 info "Killing nodes: ${KILL_NODES[*]}"
 for i in "${KILL_NODES[@]}"; do
     eval "pkh=\$PRE_KILL_HEIGHT_$i"
-    P2P_PORT=$((50303 + i))
+    P2P_PORT=$((50300 + i))
     # Use port-based kill (most reliable) with PID file as fallback
     PID=$(lsof -ti :$P2P_PORT 2>/dev/null | head -1)
     if [ -z "$PID" ] && [ -f "$DEVNET_DIR/pids/node${i}.pid" ]; then
@@ -271,9 +271,9 @@ for i in "${KILL_NODES[@]}"; do
 done
 
 for i in "${KILL_NODES[@]}"; do
-    P2P_PORT=$((50303 + i))
-    RPC_PORT=$((28545 + i))
-    METRICS_PORT=$((9090 + i))
+    P2P_PORT=$((50300 + i))
+    RPC_PORT=$((28500 + i))
+    METRICS_PORT=$((9000 + i))
     DATA_DIR="$DEVNET_DIR/data/node${i}"
     KEY_FILE="$DEVNET_DIR/keys/producer_${i}.json"
     CHAINSPEC="$DEVNET_DIR/chainspec.json"
@@ -295,7 +295,7 @@ for i in "${KILL_NODES[@]}"; do
 
     BOOTSTRAP_FLAG=""
     if [ "$i" -ne 0 ]; then
-        BOOTSTRAP_FLAG="--bootstrap /ip4/127.0.0.1/tcp/50303"
+        BOOTSTRAP_FLAG="--bootstrap /ip4/127.0.0.1/tcp/50300"
     fi
 
     "$NODE_BIN" --network devnet \

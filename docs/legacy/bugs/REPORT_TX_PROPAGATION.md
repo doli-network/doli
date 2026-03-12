@@ -19,7 +19,7 @@ When deploying 10 new producers via `doli-node devnet add-producer --count 10 --
 |------|--------|--------|
 | T+0 | `add-producer --count 10 --fund-amount 45 -b 20` | Producers 10, 11, 12, 15 succeeded. Producers 13, 14, 16-19 timed out on funding |
 | T+5m | Check timed-out producers' balances | Producers 13, 14 received funds (45 DOLI). Producers 16-19 have 0 balance |
-| T+6m | Manual registration of 13, 14 via node 0 RPC (28545) | Submitted successfully |
+| T+6m | Manual registration of 13, 14 via node 0 RPC (28500) | Submitted successfully |
 | T+7m | Manual funding of 16-19 from genesis wallets via node 0 | Producer 16 submitted OK, 17-19 got **double-spend mempool errors** |
 | T+8m | Wait 15s, retry 17-19 from wallets 4,5,6 via node 0 | Wallet 4: double-spend. Wallets 5,6: submitted OK |
 | T+9m | Wait 20s, check balances of 16-19 | All still 0 DOLI despite successful submissions |
@@ -83,7 +83,7 @@ The stuck mempool txs on node 0 did **not** propagate to other nodes. This was a
 
 | Node | Mempool State | Explanation |
 |------|--------------|-------------|
-| Node 0 (28545) | 10 stuck txs | Original submissions accumulated here |
+| Node 0 (28500) | 10 stuck txs | Original submissions accumulated here |
 | Node 1 (28546) | 0-3 txs | Some manual retry txs submitted here |
 | Nodes 2-14 | 0 txs | Clean — stuck txs never propagated |
 
@@ -100,7 +100,7 @@ When node 0 (the bootstrap/seed node) was restarted to clear its mempool:
 
 - Node 0 started with **0 peers** because it has no `--bootstrap` flag (it IS the bootstrap)
 - `--no-dht` prevents peer discovery via DHT
-- Other nodes have `--bootstrap /ip4/127.0.0.1/tcp/50303` but don't aggressively reconnect
+- Other nodes have `--bootstrap /ip4/127.0.0.1/tcp/50300` but don't aggressively reconnect
 - Node 0 became isolated: producing blocks on its own fork, unable to gossip mempool txs
 - Result: 6 registration txs sat in node 0's mempool with no way to reach block producers
 
@@ -214,7 +214,7 @@ doli-node devnet add-producer --count 5 --fund-amount 5 -b 1
 doli-node devnet add-producer --count 10 --fund-amount 45 -b 20
 
 # 4. Observe: some producers timeout, stuck txs accumulate in node 0's mempool
-curl -s http://127.0.0.1:28545 -X POST -H "Content-Type: application/json" \
+curl -s http://127.0.0.1:28500 -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":[],"id":1}'
 # Shows txCount > 0 and stays there indefinitely
 

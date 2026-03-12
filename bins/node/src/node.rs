@@ -3719,6 +3719,20 @@ impl Node {
                     }
                 }
 
+                // Validate UTXO-level spending conditions (signatures, covenant evaluation,
+                // lock times, balance). Coinbase/EpochReward skip internally.
+                if !is_reward_tx {
+                    let utxo_ctx = validation::ValidationContext::new(
+                        ConsensusParams::for_network(self.config.network),
+                        self.config.network,
+                        0, // wall-clock not needed for UTXO validation
+                        height,
+                    );
+                    validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo).map_err(
+                        |e| anyhow::anyhow!("UTXO validation failed for tx {}: {}", tx.hash(), e),
+                    )?;
+                }
+
                 let _ = utxo.spend_transaction(tx); // In-memory
                 utxo.add_transaction(tx, height, is_reward_tx, block.header.slot); // In-memory
 
@@ -4765,33 +4779,37 @@ impl Node {
 
             SyncRequest::GetStateSnapshot { block_hash } => {
                 let chain_state = self.chain_state.read().await;
+                // Serve snapshot at current tip regardless of requested hash.
+                // The requesting node verifies the state root against quorum votes.
+                // Previously this rejected requests where best_hash != block_hash,
+                // causing a race condition: the peer advances between vote and
+                // download, making snap sync fail 100% of the time on active chains.
                 if chain_state.best_hash != block_hash {
-                    SyncResponse::Error(format!(
-                        "Snapshot only available for current tip {}",
-                        chain_state.best_hash
-                    ))
-                } else {
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
-                        Ok(snap) => {
-                            info!(
-                                "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
-                                snap.block_height,
-                                snap.total_bytes() / 1024,
-                                snap.state_root
-                            );
-                            SyncResponse::StateSnapshot {
-                                block_hash: snap.block_hash,
-                                block_height: snap.block_height,
-                                chain_state: snap.chain_state_bytes,
-                                utxo_set: snap.utxo_set_bytes,
-                                producer_set: snap.producer_set_bytes,
-                                state_root: snap.state_root,
-                            }
+                    info!(
+                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
+                        block_hash, chain_state.best_hash
+                    );
+                }
+                let utxo_set = self.utxo_set.read().await;
+                let ps = self.producer_set.read().await;
+                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
+                    Ok(snap) => {
+                        info!(
+                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
+                            snap.block_height,
+                            snap.total_bytes() / 1024,
+                            snap.state_root
+                        );
+                        SyncResponse::StateSnapshot {
+                            block_hash: snap.block_hash,
+                            block_height: snap.block_height,
+                            chain_state: snap.chain_state_bytes,
+                            utxo_set: snap.utxo_set_bytes,
+                            producer_set: snap.producer_set_bytes,
+                            state_root: snap.state_root,
                         }
-                        Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                     }
+                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                 }
             }
         };
@@ -5821,13 +5839,30 @@ impl Node {
             }
         }
 
-        // Add transactions from mempool
+        // Add transactions from mempool (validate covenant conditions before inclusion)
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
         };
-        for tx in &mempool_txs {
-            builder.add_transaction(tx.clone());
+        {
+            let utxo = self.utxo_set.read().await;
+            let utxo_ctx = validation::ValidationContext::new(
+                ConsensusParams::for_network(self.config.network),
+                self.config.network,
+                0,
+                height,
+            );
+            for tx in &mempool_txs {
+                if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
+                    warn!(
+                        "Skipping mempool tx {} — UTXO validation failed: {}",
+                        tx.hash(),
+                        e
+                    );
+                    continue;
+                }
+                builder.add_transaction(tx.clone());
+            }
         }
 
         // Recapture timestamp just before building the block.
@@ -7125,9 +7160,23 @@ impl Node {
         }
 
         // Check if we need to request sync
-        if let Some((peer_id, request)) = self.sync_manager.write().await.next_request() {
-            if let Some(ref network) = self.network {
-                let _ = network.request_sync(peer_id, request).await;
+        {
+            let mut sm = self.sync_manager.write().await;
+            // Snap sync: batch-send GetStateRoot to ALL peers simultaneously.
+            // Responses cluster in ~1-2s so peers report the same height/root.
+            let snap_batch = sm.next_snap_requests();
+            if !snap_batch.is_empty() {
+                if let Some(ref network) = self.network {
+                    for (peer_id, request) in snap_batch {
+                        let _ = network.request_sync(peer_id, request).await;
+                    }
+                }
+            }
+            // Normal sync: one request per tick
+            if let Some((peer_id, request)) = sm.next_request() {
+                if let Some(ref network) = self.network {
+                    let _ = network.request_sync(peer_id, request).await;
+                }
             }
         }
 
@@ -7222,7 +7271,7 @@ impl Node {
                         .listen_addr
                         .split(':')
                         .next_back()
-                        .unwrap_or("30303");
+                        .unwrap_or("30300");
                     warn!("════════════════════════════════════════════════════════════════");
                     warn!(
                         "  WARNING: 0 peers after {}s — P2P port {} may be unreachable",

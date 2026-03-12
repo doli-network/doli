@@ -367,13 +367,13 @@ impl NetworkParams {
         match network {
             Network::Mainnet => NetworkParams {
                 // Networking
-                default_p2p_port: 30303,
-                default_rpc_port: 8545,
-                default_metrics_port: 9090,
+                default_p2p_port: 30300,
+                default_rpc_port: 8500,
+                default_metrics_port: 9000,
                 bootstrap_nodes: vec![
-                    "/dns4/seed1.doli.network/tcp/30303".to_string(),
-                    "/dns4/seed2.doli.network/tcp/30303".to_string(),
-                    "/dns4/archive.doli.network/tcp/30306".to_string(),
+                    "/dns4/seed1.doli.network/tcp/30300".to_string(),
+                    "/dns4/seed2.doli.network/tcp/30300".to_string(),
+                    "/dns4/archive.doli.network/tcp/30300".to_string(),
                 ],
 
                 // Timing
@@ -431,12 +431,12 @@ impl NetworkParams {
 
             Network::Testnet => NetworkParams {
                 // Networking
-                default_p2p_port: 40303,
-                default_rpc_port: 18545,
-                default_metrics_port: 19090,
+                default_p2p_port: 40300,
+                default_rpc_port: 18500,
+                default_metrics_port: 19000,
                 bootstrap_nodes: vec![
-                    "/dns4/bootstrap1.testnet.doli.network/tcp/40303".to_string(),
-                    "/dns4/bootstrap2.testnet.doli.network/tcp/40303".to_string(),
+                    "/dns4/bootstrap1.testnet.doli.network/tcp/40300".to_string(),
+                    "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                 ],
 
                 // Timing (same as mainnet)
@@ -494,9 +494,9 @@ impl NetworkParams {
 
             Network::Devnet => NetworkParams {
                 // Networking
-                default_p2p_port: 50303,
-                default_rpc_port: 28545,
-                default_metrics_port: 29090,
+                default_p2p_port: 50300,
+                default_rpc_port: 28500,
+                default_metrics_port: 29000,
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
 
                 // Timing (accelerated for testing)
@@ -801,15 +801,15 @@ mod tests {
     fn test_defaults_match_network_rs() {
         // Verify that defaults match the original hardcoded values
         let mainnet = NetworkParams::defaults(Network::Mainnet);
-        assert_eq!(mainnet.default_p2p_port, 30303);
-        assert_eq!(mainnet.default_rpc_port, 8545);
+        assert_eq!(mainnet.default_p2p_port, 30300);
+        assert_eq!(mainnet.default_rpc_port, 8500);
         assert_eq!(mainnet.slot_duration, 10);
         assert_eq!(mainnet.bond_unit, 1_000_000_000); // 10 DOLI
         assert_eq!(mainnet.blocks_per_year, 3_153_600);
 
         let devnet = NetworkParams::defaults(Network::Devnet);
-        assert_eq!(devnet.default_p2p_port, 50303);
-        assert_eq!(devnet.default_rpc_port, 28545);
+        assert_eq!(devnet.default_p2p_port, 50300);
+        assert_eq!(devnet.default_rpc_port, 28500);
         assert_eq!(devnet.bond_unit, 100_000_000);
         assert_eq!(devnet.blocks_per_year, 144);
     }

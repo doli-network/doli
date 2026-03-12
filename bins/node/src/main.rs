@@ -96,7 +96,7 @@ enum Commands {
         #[arg(long)]
         p2p_port: Option<u16>,
 
-        /// External address to advertise to peers (e.g., /ip4/198.51.100.1/tcp/30303).
+        /// External address to advertise to peers (e.g., /ip4/198.51.100.1/tcp/30300).
         /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
         #[arg(long)]
         external_address: Option<String>,
@@ -109,12 +109,12 @@ enum Commands {
         #[arg(long)]
         rpc_bind: Option<String>,
 
-        /// Metrics server port (mainnet default: 9090, testnet: 19090, devnet: 29090)
+        /// Metrics server port (mainnet default: 9000, testnet: 19000, devnet: 29000)
         /// Note: Override with network-specific port if needed
-        #[arg(long, default_value = "9090")]
+        #[arg(long, default_value = "9000")]
         metrics_port: u16,
 
-        /// Bootstrap node(s) to connect to (e.g., /ip4/127.0.0.1/tcp/50303).
+        /// Bootstrap node(s) to connect to (e.g., /ip4/127.0.0.1/tcp/50300).
         /// Can be specified multiple times for mesh redundancy.
         #[arg(long)]
         bootstrap: Vec<String>,
@@ -623,7 +623,7 @@ async fn main() -> Result<()> {
                 None, // external_address
                 None,
                 None, // rpc_bind
-                9090,
+                9000,
                 vec![],
                 false,
                 false, // relay_server
@@ -1273,7 +1273,7 @@ async fn handle_update_command(
             println!("{}", vote_json);
             println!();
             println!("To submit this vote, send it to a running node via RPC:");
-            println!("curl -X POST http://localhost:28545 \\");
+            println!("curl -X POST http://localhost:28500 \\");
             println!("  -H 'Content-Type: application/json' \\");
             println!("  -d '{{\"jsonrpc\":\"2.0\",\"method\":\"submitVote\",\"params\":{{\"vote\":{}}},\"id\":1}}'",
                      serde_json::to_string(&vote_msg)?);
