@@ -315,7 +315,9 @@ impl NetworkService {
 
         info!("Network service listening on {}", listen_addr);
 
-        // Load cached peers and dial them (in addition to bootstrap nodes)
+        // Load cached peers and dial them (in addition to bootstrap nodes).
+        // Strip embedded /p2p/<id> suffixes — peer IDs change after chain resets,
+        // so we dial by address only and accept whatever peer ID answers.
         if let Some(ref cache_path) = config.peer_cache_path {
             if let Some(cache) = PeerCache::load(cache_path) {
                 let addrs = cache.addresses();
@@ -326,7 +328,8 @@ impl NetworkService {
                         cache_path.display()
                     );
                     for addr in addrs {
-                        let _ = swarm.dial(addr);
+                        let clean = strip_p2p_suffix(&addr);
+                        let _ = swarm.dial(clean);
                     }
                 }
             }
@@ -602,6 +605,14 @@ impl NetworkService {
 
 /// Check if a multiaddr contains only routable (non-local) IP addresses.
 ///
+/// Strip the `/p2p/<peer_id>` suffix from a multiaddr, returning the transport-only address.
+/// Used to store addresses without embedding peer IDs (which change after chain resets).
+fn strip_p2p_suffix(addr: &Multiaddr) -> Multiaddr {
+    addr.iter()
+        .filter(|p| !matches!(p, Protocol::P2p(_)))
+        .collect()
+}
+
 /// Filters out loopback (127.x), unspecified (0.0.0.0), and link-local (169.254.x)
 /// addresses that should not be advertised to remote peers via Identify/Kademlia.
 fn is_routable_address(addr: &Multiaddr) -> bool {
@@ -802,7 +813,49 @@ async fn handle_swarm_event(
         }
 
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            warn!("Failed to connect to peer {:?}: {}", peer_id, error);
+            // Handle peer ID mismatch: the node at this address has a new identity
+            // (e.g., after a chain reset that wiped its libp2p key).
+            // Update our cache with the new peer ID and redial.
+            if let libp2p::swarm::DialError::WrongPeerId { obtained, endpoint } = &error {
+                if let libp2p::core::ConnectedPoint::Dialer { address, .. } = endpoint {
+                    warn!(
+                        "Peer ID mismatch at {} — expected {:?}, got {}. Updating cache and redialing.",
+                        address, peer_id, obtained
+                    );
+
+                    // Remove stale peer from cache
+                    if let Some(ref path) = peer_cache_path {
+                        let mut cache = PeerCache::load(path).unwrap_or_default();
+                        if let Some(old_id) = &peer_id {
+                            cache.remove(&old_id.to_string());
+                        }
+                        // Strip any /p2p/... suffix to store clean address
+                        let clean_addr = strip_p2p_suffix(address);
+                        let full_addr = format!("{}/p2p/{}", clean_addr, obtained);
+                        cache.add(&obtained.to_string(), &full_addr);
+                        cache.save(path);
+                    }
+
+                    // Remove stale entry from Kademlia
+                    if let Some(old_id) = &peer_id {
+                        swarm.behaviour_mut().kademlia.remove_peer(old_id);
+                    }
+
+                    // Add the correct peer ID to Kademlia and redial
+                    let clean_addr = strip_p2p_suffix(address);
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(obtained, clean_addr.clone());
+                    let _ = swarm.dial(
+                        libp2p::swarm::dial_opts::DialOpts::peer_id(*obtained)
+                            .addresses(vec![clean_addr])
+                            .build(),
+                    );
+                }
+            } else {
+                warn!("Failed to connect to peer {:?}: {}", peer_id, error);
+            }
         }
 
         _ => {}
@@ -1039,12 +1092,14 @@ async fn handle_behaviour_event(
                 })
                 .collect();
 
-            // Cache the peer's routable addresses for fast reconnection after restart
+            // Cache the peer's routable addresses for fast reconnection after restart.
+            // Store address WITHOUT embedded peer ID — the peer_id field in CachedPeer
+            // tracks identity separately, and peer IDs change after chain resets.
             if let Some(ref path) = peer_cache_path {
                 if let Some(addr) = routable_addrs.first() {
-                    let full_addr = format!("{}/p2p/{}", addr, peer_id);
+                    let clean_addr = format!("{}", addr);
                     let mut cache = PeerCache::load(path).unwrap_or_default();
-                    cache.add(&peer_id.to_string(), &full_addr);
+                    cache.add(&peer_id.to_string(), &clean_addr);
                     cache.save(path);
                 }
             }
@@ -1629,5 +1684,27 @@ mod tests {
     fn test_is_routable_rejects_link_local() {
         let addr: Multiaddr = "/ip4/169.254.1.1/tcp/30300".parse().unwrap();
         assert!(!is_routable_address(&addr));
+    }
+
+    #[test]
+    fn test_strip_p2p_suffix() {
+        // With /p2p suffix → stripped
+        let addr: Multiaddr = "/ip4/72.60.228.233/tcp/30300/p2p/12D3KooWTest"
+            .parse()
+            .unwrap();
+        let stripped = strip_p2p_suffix(&addr);
+        assert_eq!(stripped.to_string(), "/ip4/72.60.228.233/tcp/30300");
+
+        // Without /p2p suffix → unchanged
+        let addr2: Multiaddr = "/ip4/72.60.228.233/tcp/30300".parse().unwrap();
+        let stripped2 = strip_p2p_suffix(&addr2);
+        assert_eq!(stripped2.to_string(), "/ip4/72.60.228.233/tcp/30300");
+
+        // DNS with /p2p suffix → stripped
+        let addr3: Multiaddr = "/dns4/seed1.doli.network/tcp/30300/p2p/12D3KooWTest"
+            .parse()
+            .unwrap();
+        let stripped3 = strip_p2p_suffix(&addr3);
+        assert_eq!(stripped3.to_string(), "/dns4/seed1.doli.network/tcp/30300");
     }
 }
