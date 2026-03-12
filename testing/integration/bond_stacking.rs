@@ -2,13 +2,13 @@
 //!
 //! Tests the bond stacking system:
 //! - Add bonds (10 DOLI = 1 bond)
-//! - Maximum 10,000 bonds per producer
+//! - Maximum 3,000 bonds per producer
 //! - Withdrawal with vesting penalties (75%/50%/25%/0%)
 //! - FIFO withdrawal (oldest bonds first)
-//! - 7-day withdrawal delay
+//! - Instant withdrawal (no delay)
 //! - 100% burn of penalties
 //!
-//! Vesting schedule: 1-day, quarter-based (6h quarters)
+//! Vesting schedule: 4-year, quarter-based (1-year quarters on mainnet)
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -21,8 +21,6 @@ use doli_core::{
     // Bond types
     BondEntry,
     BondError,
-    ClaimWithdrawalData,
-    PendingWithdrawal,
     ProducerBonds,
     Transaction,
     TxType,
@@ -32,7 +30,6 @@ use doli_core::{
     MAX_BONDS_PER_PRODUCER,
     VESTING_PERIOD_SLOTS,
     VESTING_QUARTER_SLOTS,
-    WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
 };
 use storage::{ProducerInfo, StoredBondEntry};
@@ -49,13 +46,6 @@ fn test_bond_unit_constant() {
 fn test_max_bonds_constant() {
     // Maximum 3,000 bonds per producer
     assert_eq!(MAX_BONDS_PER_PRODUCER, 3_000);
-}
-
-/// Test withdrawal delay constant
-#[test]
-fn test_withdrawal_delay_constant() {
-    // 7 days at 10s slots = 7 * 24 * 360 = 60,480 slots
-    assert_eq!(WITHDRAWAL_DELAY_SLOTS, 60_480);
 }
 
 /// Test year in slots constant (used for seniority, not vesting)
@@ -232,56 +222,6 @@ fn test_producer_bonds_fifo_withdrawal() {
     assert_eq!(bonds.bond_count(), 5);
 }
 
-/// Test PendingWithdrawal claimability
-#[test]
-fn test_pending_withdrawal_claimability() {
-    let withdrawal = PendingWithdrawal {
-        bond_count: 5,
-        request_slot: 1000,
-        net_amount: 5 * BOND_UNIT / 2, // 50% after penalty
-        penalty_amount: 5 * BOND_UNIT / 2,
-        destination: Hash::ZERO,
-    };
-
-    // Not claimable immediately
-    assert!(!withdrawal.is_claimable(1000));
-    assert!(!withdrawal.is_claimable(1000 + WITHDRAWAL_DELAY_SLOTS - 1));
-
-    // Claimable after 7 days
-    assert!(withdrawal.is_claimable(1000 + WITHDRAWAL_DELAY_SLOTS));
-    assert!(withdrawal.is_claimable(1000 + WITHDRAWAL_DELAY_SLOTS + 1000));
-}
-
-/// Test ProducerBonds claim withdrawal
-#[test]
-fn test_producer_bonds_claim_withdrawal() {
-    let mut bonds = ProducerBonds::new();
-    let destination = Hash::ZERO;
-
-    bonds.add_bonds(10, 0).unwrap();
-
-    // Request withdrawal at Q2 (6h) = 50% penalty
-    let current_slot = VESTING_QUARTER_SLOTS;
-    let withdrawal = bonds
-        .request_withdrawal(5, current_slot, destination)
-        .unwrap();
-
-    assert!(bonds.has_pending_withdrawals());
-
-    // Try to claim before delay - should fail
-    let err = bonds.claim_withdrawal(current_slot + 1000).unwrap_err();
-    assert!(matches!(err, BondError::NoClaimableWithdrawal));
-
-    // Claim after delay
-    let claimed = bonds
-        .claim_withdrawal(current_slot + WITHDRAWAL_DELAY_SLOTS)
-        .unwrap();
-    assert_eq!(claimed.net_amount, withdrawal.net_amount);
-
-    // No more pending withdrawals
-    assert!(!bonds.has_pending_withdrawals());
-}
-
 /// Test ProducerBonds maturity summary (quarter-based)
 #[test]
 fn test_bonds_maturity_summary() {
@@ -355,19 +295,6 @@ fn test_withdrawal_request_data_serialization() {
     assert_eq!(decoded.destination, destination);
 }
 
-/// Test ClaimWithdrawalData serialization
-#[test]
-fn test_claim_withdrawal_data_serialization() {
-    let keypair = KeyPair::generate();
-    let data = ClaimWithdrawalData::new(*keypair.public_key(), 0);
-
-    let bytes = data.to_bytes();
-    let decoded = ClaimWithdrawalData::from_bytes(&bytes).unwrap();
-
-    assert_eq!(decoded.producer_pubkey, *keypair.public_key());
-    assert_eq!(decoded.withdrawal_index, 0);
-}
-
 /// Test AddBond transaction creation
 #[test]
 fn test_add_bond_transaction() {
@@ -419,26 +346,6 @@ fn test_request_withdrawal_transaction() {
     let data = tx.withdrawal_request_data().unwrap();
     assert_eq!(data.bond_count, 3);
     assert_eq!(data.destination, destination);
-}
-
-/// Test ClaimWithdrawal transaction creation
-#[test]
-fn test_claim_withdrawal_transaction() {
-    let keypair = KeyPair::generate();
-    let destination = hash(b"destination");
-    let net_amount = 5 * BOND_UNIT / 2; // After 50% penalty
-
-    let tx = Transaction::new_claim_withdrawal(*keypair.public_key(), 0, net_amount, destination);
-
-    assert_eq!(tx.tx_type, TxType::ClaimWithdrawal);
-    assert!(tx.is_claim_withdrawal());
-    assert_eq!(tx.inputs.len(), 0);
-    assert_eq!(tx.outputs.len(), 1);
-    assert_eq!(tx.outputs[0].amount, net_amount);
-    assert_eq!(tx.outputs[0].pubkey_hash, destination);
-
-    let data = tx.claim_withdrawal_data().unwrap();
-    assert_eq!(data.withdrawal_index, 0);
 }
 
 /// Test BondError display
@@ -500,13 +407,8 @@ fn test_realistic_bond_scenario() {
     assert_eq!(withdrawal.net_amount, 5 * BOND_UNIT * 75 / 100);
     assert_eq!(withdrawal.penalty_amount, 5 * BOND_UNIT * 25 / 100);
 
-    // 10 bonds remain
+    // 10 bonds remain (withdrawal is instant, no delay)
     assert_eq!(bonds.bond_count(), 10);
-
-    // Wait 7 days and claim
-    let claim_time = two_quarters + WITHDRAWAL_DELAY_SLOTS;
-    let claimed = bonds.claim_withdrawal(claim_time).unwrap();
-    assert_eq!(claimed.net_amount, 5 * BOND_UNIT * 75 / 100);
 
     // After full vesting period, withdraw remaining with no penalty
     let fully_vested = VESTING_PERIOD_SLOTS + one_and_half_q; // Ensure even newest bonds are vested

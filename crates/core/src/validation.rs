@@ -32,9 +32,8 @@ use crate::consensus::{
 use crate::network::Network;
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
 use crate::transaction::{
-    AddBondData, ClaimBondData, ClaimData, ClaimWithdrawalData, ExitData, Input, Output,
-    OutputType, RegistrationData, SlashData, Transaction, TxType, WithdrawalRequestData,
-    MAX_EXTRA_DATA_SIZE,
+    AddBondData, ClaimBondData, ClaimData, ExitData, Input, Output, OutputType, RegistrationData,
+    SlashData, Transaction, TxType, WithdrawalRequestData, MAX_EXTRA_DATA_SIZE,
 };
 use crate::types::{Amount, BlockHeight};
 use crypto::{Hash, PublicKey};
@@ -1275,7 +1274,7 @@ pub fn validate_transaction(
     }
 
     // 2. Must have at least one input (unless coinbase, exit, claim, claim_bond, slash,
-    //    add_bond, request_withdrawal, claim_withdrawal, or epoch_reward)
+    //    add_bond, request_withdrawal, or epoch_reward)
     //    Note: add_bond requires inputs but handles its own error for specificity
     if tx.inputs.is_empty()
         && !tx.is_coinbase()
@@ -1285,7 +1284,7 @@ pub fn validate_transaction(
         && !tx.is_slash_producer()
         && !tx.is_add_bond()
         && !tx.is_request_withdrawal()
-        && !tx.is_claim_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
         && !tx.is_epoch_reward()
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
@@ -1300,13 +1299,13 @@ pub fn validate_transaction(
     }
 
     // 3. Must have at least one output (unless exit, slash_producer, add_bond, or request_withdrawal)
-    //    Note: claim_withdrawal and epoch_reward require exactly one output but handle their own errors
+    //    Note: epoch_reward requires exactly one output but handles its own errors
     if tx.outputs.is_empty()
         && !tx.is_exit()
         && !tx.is_slash_producer()
         && !tx.is_add_bond()
         && !tx.is_request_withdrawal()
-        && !tx.is_claim_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
         && !tx.is_epoch_reward()
         && !tx.is_delegate_bond()
         && !tx.is_revoke_delegation()
@@ -1363,7 +1362,10 @@ pub fn validate_transaction(
             validate_withdrawal_request_data(tx)?;
         }
         TxType::ClaimWithdrawal => {
-            validate_claim_withdrawal_data(tx)?;
+            // Reserved -- ClaimWithdrawal is unused. Withdrawal is instant via RequestWithdrawal.
+            return Err(ValidationError::InvalidClaimWithdrawal(
+                "ClaimWithdrawal is not supported".to_string(),
+            ));
         }
         TxType::EpochReward => {
             validate_epoch_reward_data(tx)?;
@@ -2237,50 +2239,6 @@ fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), ValidationEr
     // - Producer is registered
     // - Producer has enough bonds to withdraw
     // - Output amount <= FIFO net calculation
-
-    Ok(())
-}
-
-/// Validate claim withdrawal transaction data.
-///
-/// Structural validation for ClaimWithdrawal transactions:
-/// - Must have no inputs (funds come from pending withdrawal)
-/// - Must have exactly one output (the net amount to destination)
-/// - Must have valid claim withdrawal data
-///
-/// Note: 7-day delay check and matching pending withdrawal done at node level.
-fn validate_claim_withdrawal_data(tx: &Transaction) -> Result<(), ValidationError> {
-    // Must have no inputs
-    if !tx.inputs.is_empty() {
-        return Err(ValidationError::InvalidClaimWithdrawal(
-            "claim withdrawal must have no inputs".to_string(),
-        ));
-    }
-
-    // Must have exactly one output (the net amount)
-    if tx.outputs.len() != 1 {
-        return Err(ValidationError::InvalidClaimWithdrawal(
-            "claim withdrawal must have exactly one output".to_string(),
-        ));
-    }
-
-    // Output must be a normal output
-    if tx.outputs[0].output_type != OutputType::Normal {
-        return Err(ValidationError::InvalidClaimWithdrawal(
-            "claim withdrawal output must be normal type".to_string(),
-        ));
-    }
-
-    // Parse claim withdrawal data from extra_data
-    let _claim_data = ClaimWithdrawalData::from_bytes(&tx.extra_data).ok_or_else(|| {
-        ValidationError::InvalidClaimWithdrawal("invalid claim withdrawal data".to_string())
-    })?;
-
-    // Note: These validations are done at node level:
-    // - Pending withdrawal exists at withdrawal_index
-    // - 7-day delay has passed
-    // - Output amount matches pending withdrawal net_amount
-    // - Output destination matches pending withdrawal destination
 
     Ok(())
 }
@@ -4058,151 +4016,6 @@ mod tests {
         assert_eq!(recovered_data.producer_pubkey, pubkey);
         assert_eq!(recovered_data.bond_count, 7);
         assert_eq!(recovered_data.destination, destination);
-    }
-
-    // ==========================================================================
-    // TX Type 9: ClaimWithdrawal Validation Tests
-    // ==========================================================================
-
-    #[test]
-    fn test_claim_withdrawal_transaction() {
-        let ctx = test_context();
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-        let destination = crypto::hash::hash(b"destination");
-        let net_amount = 500_000_000;
-
-        let tx = Transaction::new_claim_withdrawal(pubkey, 0, net_amount, destination);
-
-        assert!(tx.is_claim_withdrawal());
-        assert_eq!(tx.tx_type, TxType::ClaimWithdrawal);
-        assert!(tx.inputs.is_empty());
-        assert_eq!(tx.outputs.len(), 1);
-        assert_eq!(tx.outputs[0].amount, net_amount);
-        assert_eq!(tx.outputs[0].output_type, OutputType::Normal);
-
-        // Verify claim data can be parsed
-        let claim_data = tx.claim_withdrawal_data().unwrap();
-        assert_eq!(claim_data.producer_pubkey, pubkey);
-        assert_eq!(claim_data.withdrawal_index, 0);
-
-        // Structural validation should pass
-        let result = validate_transaction(&tx, &ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_claim_withdrawal_with_inputs() {
-        let ctx = test_context();
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-        let destination = crypto::hash::hash(b"destination");
-
-        // Create ClaimWithdrawal with inputs (invalid)
-        let claim_data = crate::transaction::ClaimWithdrawalData::new(pubkey, 0);
-        let tx = Transaction {
-            version: 1,
-            tx_type: TxType::ClaimWithdrawal,
-            inputs: vec![Input::new(crypto::hash::hash(b"prev"), 0)], // Should be empty
-            outputs: vec![Output::normal(500_000_000, destination)],
-            extra_data: claim_data.to_bytes(),
-        };
-
-        let result = validate_transaction(&tx, &ctx);
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidClaimWithdrawal(msg)) if msg.contains("must have no inputs")
-        ));
-    }
-
-    #[test]
-    fn test_claim_withdrawal_no_outputs() {
-        let ctx = test_context();
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-
-        // Create ClaimWithdrawal with no outputs (invalid)
-        let claim_data = crate::transaction::ClaimWithdrawalData::new(pubkey, 0);
-        let tx = Transaction {
-            version: 1,
-            tx_type: TxType::ClaimWithdrawal,
-            inputs: vec![],
-            outputs: vec![], // Should have exactly 1 output
-            extra_data: claim_data.to_bytes(),
-        };
-
-        let result = validate_transaction(&tx, &ctx);
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidClaimWithdrawal(msg)) if msg.contains("exactly one output")
-        ));
-    }
-
-    #[test]
-    fn test_claim_withdrawal_multiple_outputs() {
-        let ctx = test_context();
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-        let destination = crypto::hash::hash(b"destination");
-
-        // Create ClaimWithdrawal with multiple outputs (invalid)
-        let claim_data = crate::transaction::ClaimWithdrawalData::new(pubkey, 0);
-        let tx = Transaction {
-            version: 1,
-            tx_type: TxType::ClaimWithdrawal,
-            inputs: vec![],
-            outputs: vec![
-                Output::normal(250_000_000, destination),
-                Output::normal(250_000_000, destination),
-            ], // Should have exactly 1 output
-            extra_data: claim_data.to_bytes(),
-        };
-
-        let result = validate_transaction(&tx, &ctx);
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidClaimWithdrawal(msg)) if msg.contains("exactly one output")
-        ));
-    }
-
-    #[test]
-    fn test_claim_withdrawal_wrong_output_type() {
-        let ctx = test_context();
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-        let destination = crypto::hash::hash(b"destination");
-
-        // Create ClaimWithdrawal with bond output type (invalid)
-        let claim_data = crate::transaction::ClaimWithdrawalData::new(pubkey, 0);
-        let tx = Transaction {
-            version: 1,
-            tx_type: TxType::ClaimWithdrawal,
-            inputs: vec![],
-            outputs: vec![Output::bond(500_000_000, destination, 1000, 0)], // Should be Normal
-            extra_data: claim_data.to_bytes(),
-        };
-
-        let result = validate_transaction(&tx, &ctx);
-        assert!(matches!(
-            result,
-            Err(ValidationError::InvalidClaimWithdrawal(msg)) if msg.contains("must be normal type")
-        ));
-    }
-
-    #[test]
-    fn test_claim_withdrawal_data_serialization() {
-        let keypair = crypto::KeyPair::generate();
-        let pubkey = *keypair.public_key();
-        let destination = crypto::hash::hash(b"destination");
-
-        let tx = Transaction::new_claim_withdrawal(pubkey, 5, 1_000_000_000, destination);
-        let bytes = tx.serialize();
-        let recovered = Transaction::deserialize(&bytes).unwrap();
-
-        assert_eq!(tx.tx_type, recovered.tx_type);
-        let recovered_data = recovered.claim_withdrawal_data().unwrap();
-        assert_eq!(recovered_data.producer_pubkey, pubkey);
-        assert_eq!(recovered_data.withdrawal_index, 5);
     }
 
     // ==========================================================================
