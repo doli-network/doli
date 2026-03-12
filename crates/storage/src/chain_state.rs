@@ -291,6 +291,11 @@ impl ChainState {
     pub fn is_snap_synced(&self) -> bool {
         self.snap_sync_height.is_some()
     }
+
+    /// The height at which snap sync completed, if any.
+    pub fn snap_sync_height(&self) -> Option<u64> {
+        self.snap_sync_height
+    }
 }
 
 #[cfg(test)]

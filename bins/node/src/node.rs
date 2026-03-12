@@ -574,8 +574,9 @@ impl Node {
                     }
                     if chain_genesis_count > 0 && chain_genesis_count != set.active_count() {
                         warn!(
-                            "[STARTUP] Genesis producer mismatch: StateDb has {} producers but block store has {}. \
-                             This can happen after genesis-crossing reorgs. ProducerSet will be rebuilt from blocks.",
+                            "[STARTUP] [INTEGRITY_RISK] Genesis producer mismatch: StateDb has {} producers \
+                             but block store has {}. Block store may be incomplete (snap sync gap). \
+                             If this persists across restarts, wipe data and full-sync from genesis.",
                             set.active_count(),
                             chain_genesis_count
                         );
@@ -650,6 +651,25 @@ impl Node {
                         &state.best_hash.to_string()[..16]
                     );
                 }
+            }
+
+            // Set block store floor so fork sync knows where our block coverage begins.
+            // For snap-synced nodes missing block 1, find the lowest available height.
+            // For full-sync nodes this stays at 1 (the default).
+            if block_store.get_block_by_height(1).ok().flatten().is_none() {
+                // Snap-synced: find lowest available block by scanning from chain state height downward.
+                // The snap sync anchor is typically the only indexed block.
+                let state = chain_state.read().await;
+                let floor = if state.is_snap_synced() {
+                    state.snap_sync_height().unwrap_or(state.best_height)
+                } else {
+                    state.best_height
+                };
+                sm.set_store_floor(floor);
+                info!(
+                    "[STARTUP] Block store floor set to {} (snap sync gap — block 1 missing)",
+                    floor
+                );
             }
         }
 
@@ -2453,19 +2473,24 @@ impl Node {
         let current_height = self.chain_state.read().await.best_height;
         let rollback_depth = current_height.saturating_sub(result.ancestor_height);
 
-        // If ancestor is at the binary search floor, divergence is deeper than
-        // MAX_FORK_SYNC_DEPTH — blocks below ancestor are from a different chain.
-        // Full resync is the only fix.
-        if rollback_depth >= 1000 {
+        // Safety limit: reject forks deeper than MAX_SAFE_REORG_DEPTH blocks.
+        // Deep forks are almost always caused by snap sync gaps or isolation, not
+        // legitimate chain reorganization. Automatic reorg of deep forks is dangerous
+        // and destroys state — the operator should investigate and decide manually.
+        const MAX_SAFE_REORG_DEPTH: u64 = 10;
+        if rollback_depth > MAX_SAFE_REORG_DEPTH {
             warn!(
-                "Fork sync: ancestor at floor (h={}, depth={}) — divergence deeper than search range, triggering full resync",
-                result.ancestor_height, rollback_depth
+                "Fork sync: reorg depth {} exceeds safety limit ({} blocks). \
+                 Refusing automatic reorg (ancestor h={}, current h={}). \
+                 Investigate manually — this is likely a snap sync gap or isolation issue, \
+                 not a legitimate fork.",
+                rollback_depth, MAX_SAFE_REORG_DEPTH, result.ancestor_height, current_height
             );
             {
                 let mut sync = self.sync_manager.write().await;
                 sync.reset_sync_for_rollback();
             }
-            self.force_recover_from_peers().await?;
+            // Do NOT auto-recover. The operator must investigate.
             return Ok(());
         }
 
@@ -2498,11 +2523,11 @@ impl Node {
         }
 
         // Pre-check: verify block store has blocks from height 1 (required for UTXO rebuild).
-        // Snap-synced nodes don't have early blocks — reorg would fail in an infinite loop.
+        // Snap-synced nodes don't have early blocks — reorg would fail. Re-snap to recover.
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
                 "Fork sync reorg: snap sync gap detected (block 1 missing). \
-                 Forcing re-snap sync to get fresh state from peers."
+                 Re-snapping to get back to tip."
             );
             {
                 let mut sync = self.sync_manager.write().await;
@@ -2617,7 +2642,7 @@ impl Node {
                     if self.block_store.get_block_by_height(1)?.is_none() {
                         warn!(
                             "Fork sync reorg failed due to snap sync gap: {}. \
-                             Forcing re-snap sync.",
+                             Re-snapping to recover.",
                             e
                         );
                         self.reset_state_only().await?;
@@ -3074,6 +3099,13 @@ impl Node {
         // Step 7: Track snap sync height in-memory for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
 
+        // Step 7b: Inform sync manager of block store floor so fork sync
+        // won't binary-search below available block data.
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.set_store_floor(snapshot.block_height);
+        }
+
         // Step 8: Seed reorg handler so fork detection works immediately after snap sync
         {
             let mut sync = self.sync_manager.write().await;
@@ -3108,7 +3140,25 @@ impl Node {
     ///
     /// Force recovery bypassing the 90% guard — used when fork sync or deep
     /// fork detection has already proven the node is on a different chain.
+    ///
+    /// Rate-limited: no more than 1 forced recovery per epoch (360 blocks ≈ 1 hour).
+    /// Prevents cascade loops where snap sync → fork → re-snap repeats unbounded.
     async fn force_recover_from_peers(&mut self) -> Result<()> {
+        // Rate limit: enforce minimum cooldown between forced recoveries.
+        // Uses the network's epoch length in seconds as the cooldown period.
+        let cooldown_secs = (self.params.slots_per_epoch as u64) * self.params.slot_duration;
+        if let Some(last) = self.last_resync_time {
+            let elapsed = last.elapsed().as_secs();
+            if elapsed < cooldown_secs {
+                warn!(
+                    "Recovery: cooldown active — last forced recovery {}s ago \
+                     (min {}s between recoveries). Skipping to prevent cascade.",
+                    elapsed, cooldown_secs
+                );
+                return Ok(());
+            }
+        }
+        self.last_resync_time = Some(std::time::Instant::now());
         self.recover_from_peers_inner(true).await
     }
 
@@ -3116,11 +3166,11 @@ impl Node {
         let local_height = self.chain_state.read().await.best_height;
         let best_peer = self.sync_manager.read().await.best_peer_height();
 
-        // Snap-synced nodes missing genesis blocks can never reorg — force re-snap
+        // Snap-synced nodes missing genesis blocks can never reorg — re-snap to recover
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
                 "Recovery: snap sync gap detected (block 1 missing). \
-                 Forcing re-snap sync (local h={}, peer h={})",
+                 Re-snapping to get back to tip (local h={}, peer h={})",
                 local_height, best_peer
             );
             self.reset_state_only().await?;
@@ -6795,9 +6845,9 @@ impl Node {
                 local_height
             );
 
-            // Pre-check: snap-synced nodes can't rebuild from genesis
+            // Pre-check: snap-synced nodes can't rebuild from genesis — re-snap to recover
             if self.block_store.get_block_by_height(1)?.is_none() {
-                warn!("Rollback: snap-synced node with no undo data. Forcing re-snap sync.");
+                warn!("Rollback: snap-synced node with no undo data. Re-snapping to recover.");
                 self.reset_state_only().await?;
                 return Ok(true);
             }
@@ -7131,16 +7181,36 @@ impl Node {
             let probe = self.sync_manager.read().await.fork_sync_pending_probe();
             if let Some((height, peer_hash)) = probe {
                 let our_hash = self.block_store.get_hash_by_height(height).ok().flatten();
-                let matches = our_hash.map(|h| h == peer_hash).unwrap_or(false);
+                let result = match our_hash {
+                    Some(h) if h == peer_hash => network::sync::ProbeResult::Match,
+                    Some(_) => network::sync::ProbeResult::Mismatch,
+                    None => network::sync::ProbeResult::NotInStore,
+                };
                 self.sync_manager
                     .write()
                     .await
-                    .fork_sync_handle_probe(matches);
+                    .fork_sync_handle_probe(result);
             }
 
-            // Transition: search complete — provide ancestor hash from our block_store
-            // If search bottomed out (no common ancestor found within MAX_FORK_SYNC_DEPTH),
-            // the divergence is too deep — trigger full resync immediately.
+            // Transition: search complete — provide ancestor hash from our block_store.
+            //
+            // Store-limited: search stopped because block store doesn't cover the range
+            // (snap sync gap). This is NOT a deep fork — the node just doesn't have
+            // the historical blocks. Re-snap to get back to tip and resume producing.
+            if self.sync_manager.read().await.fork_sync_store_limited() {
+                let floor = self.sync_manager.read().await.store_floor();
+                warn!(
+                    "Fork sync: search limited by block store floor (height {}). \
+                     Re-snapping to restore state — NOT a deep fork.",
+                    floor
+                );
+                self.sync_manager.write().await.fork_sync_clear();
+                self.reset_state_only().await?;
+                return Ok(());
+            }
+
+            // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
+            // and the block store covers the full range. Full resync required.
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
                 warn!("Fork sync: binary search hit floor without finding common ancestor — full resync required");
                 self.sync_manager.write().await.fork_sync_clear();
