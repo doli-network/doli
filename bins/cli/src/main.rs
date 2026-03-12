@@ -24,15 +24,20 @@ use wallet::Wallet;
 #[command(version = env!("DOLI_VERSION_STRING"))]
 struct Cli {
     /// Wallet file path
-    #[arg(short, long, default_value = "~/.doli/wallet.json")]
+    #[arg(
+        short,
+        long,
+        default_value = "~/.doli/wallet.json",
+        env = "DOLI_WALLET_FILE"
+    )]
     wallet: String,
 
     /// Node RPC endpoint (auto-detected from --network if not set)
-    #[arg(short, long)]
+    #[arg(short, long, env = "DOLI_RPC_URL")]
     rpc: Option<String>,
 
     /// Network (mainnet, testnet, devnet)
-    #[arg(short, long, default_value = "mainnet")]
+    #[arg(short, long, default_value = "mainnet", env = "DOLI_NETWORK")]
     network: String,
 
     #[command(subcommand)]
