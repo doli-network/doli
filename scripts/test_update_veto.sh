@@ -13,7 +13,7 @@
 #   - Min voting age: 60 seconds (6 blocks)
 set -e
 
-RPC_BASE=28545
+RPC_BASE=28500
 NODES=5
 
 echo "========================================="

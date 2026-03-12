@@ -303,7 +303,7 @@ sleep 35
 
 ```bash
 echo "=== NT1-NT5 + Archiver (omegacortex) ==="
-for port in 18545 18546 18547 18548 18549 18550; do
+for port in 18501 18502 18503 18504 18505 18500; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -315,7 +315,7 @@ done
 echo ""
 echo "=== NT6-NT8 (N3) ==="
 ssh -p 50790 -o ConnectTimeout=5 ilozada@147.93.84.44 '
-for port in 18545 18546 18547; do
+for port in 18506 18507 18508; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -327,7 +327,7 @@ done'
 echo ""
 echo "=== NT9-NT12 (N5) ==="
 ssh -p 50790 -o ConnectTimeout=5 ilozada@72.60.70.166 '
-for port in 18545 18546 18547 18548; do
+for port in 18509 18510 18511 18512; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -352,7 +352,7 @@ Wait 20 seconds, re-query, confirm height advanced:
 
 ```bash
 sleep 20
-echo -n "NT1: "; curl -s --connect-timeout 3 -X POST http://127.0.0.1:18545 \
+echo -n "NT1: "; curl -s --connect-timeout 3 -X POST http://127.0.0.1:18501 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | grep -oP '"bestHeight":\d+'
 ```
@@ -528,8 +528,8 @@ All 12 testnet systemd services confirmed pointing to `/opt/doli/testnet/doli-no
 | Host | Nodes | Extra Flags |
 |------|-------|-------------|
 | omegacortex | NT1-NT5 | All have `--relay-server --rpc-bind 0.0.0.0 --yes --force-start` |
-| N3 | NT6-NT8 | `--yes --force-start`, NT7-NT8 bootstrap N3:40303 + omegacortex:40303 |
-| N5 | NT9-NT12 | `--yes --force-start`, bootstrap omegacortex:40303 |
+| N3 | NT6-NT8 | `--yes --force-start`, NT7-NT8 bootstrap N3:40300 + omegacortex:40300 |
+| N5 | NT9-NT12 | `--yes --force-start`, bootstrap omegacortex:40300 |
 
 ---
 
@@ -764,7 +764,7 @@ T+5:00   auto_apply_from_github() → download tarball, verify SHA-256, install,
 ```bash
 echo "=== Update detection status ==="
 ssh ilozada@72.60.228.233 '
-for port in 8545 8546 8547; do
+for port in 8501 8502 8506; do
   echo -n "PORT $port: "
   curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -782,7 +782,7 @@ After auto-apply: node restarts with new version, `pending_update` returns to `n
 ```bash
 echo "=== N1-N2, N6 (omegacortex) ==="
 ssh ilozada@72.60.228.233 '
-for port in 8545 8546 8547; do
+for port in 8501 8502 8506; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -793,8 +793,8 @@ done'
 echo ""
 echo "=== N3 ==="
 ssh -p 50790 ilozada@147.93.84.44 '
-  echo -n "PORT 8545: "
-  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:8545 \
+  echo -n "PORT 8500: "
+  R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" 2>/dev/null)
   echo "$R" | grep -oP "\"bestHeight\":\d+|\"version\":\"[^\"]*\"" | tr "\n" " "; echo'
@@ -802,7 +802,7 @@ ssh -p 50790 ilozada@147.93.84.44 '
 echo ""
 echo "=== N4 + N8-N12 ==="
 ssh -p 50790 ilozada@72.60.115.209 '
-for port in 8545 8546 8547 8548 8549 8550; do
+for port in 8504 8508 8509 8510 8511 8512; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -813,7 +813,7 @@ done'
 echo ""
 echo "=== N5 + N7 ==="
 ssh -p 50790 ilozada@72.60.70.166 '
-for port in 8545 8546; do
+for port in 8505 8507; do
   echo -n "PORT $port: "
   R=$(curl -s --connect-timeout 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
@@ -835,7 +835,7 @@ sleep 30
 # Quick check: N1 height is advancing
 ssh ilozada@72.60.228.233 'for i in 1 2; do
   echo -n "Check $i: "
-  curl -s -X POST http://127.0.0.1:8545 \
+  curl -s -X POST http://127.0.0.1:8501 \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
     | grep -oP "\"bestHeight\":\d+"

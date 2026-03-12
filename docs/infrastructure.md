@@ -125,8 +125,8 @@ Both run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/bloc
 |------|--------|-----|-----|---------|---------|-----|
 | N1 | ai1 | 30301 | 8501 | 9001 | `doli-mainnet-n1` | `/mainnet/n1/keys/producer.json` |
 | N2 | ai2 | 30302 | 8502 | 9002 | `doli-mainnet-n2` | `/mainnet/n2/keys/producer.json` |
-| N3 | ai1 | 30303 | 8503 | 9003 | `doli-mainnet-n3` | `/mainnet/n3/keys/producer.json` |
-| N6 | ai2 | 30306 | 8506 | 9006 | `doli-mainnet-n6` | `/mainnet/n6/keys/producer.json` |
+| N3 | ai1 | 30300 | 8503 | 9003 | `doli-mainnet-n3` | `/mainnet/n3/keys/producer.json` |
+| N6 | ai2 | 30300 | 8506 | 9006 | `doli-mainnet-n6` | `/mainnet/n6/keys/producer.json` |
 
 All bootstrap from `--bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300`.
 
@@ -207,7 +207,7 @@ All producers use DNS-based bootstrap:
 |------|--------|-----|-----|---------|---------|-----|
 | NT1 | ai1 | 40301 | 18501 | 19001 | `doli-testnet-nt1` | `/testnet/nt1/keys/producer.json` |
 | NT2 | ai2 | 40302 | 18502 | 19002 | `doli-testnet-nt2` | `/testnet/nt2/keys/producer.json` |
-| NT3 | ai1 | 40303 | 18503 | 19003 | `doli-testnet-nt3` | `/testnet/nt3/keys/producer.json` |
+| NT3 | ai1 | 40300 | 18503 | 19003 | `doli-testnet-nt3` | `/testnet/nt3/keys/producer.json` |
 | NT4 | ai2 | 40304 | 18504 | 19004 | `doli-testnet-nt4` | `/testnet/nt4/keys/producer.json` |
 | NT5 | ai1 | 40305 | 18505 | 19005 | `doli-testnet-nt5` | `/testnet/nt5/keys/producer.json` |
 | NT6 | ai2 | 40306 | 18506 | 19006 | `doli-testnet-nt6` | `/testnet/nt6/keys/producer.json` |
@@ -525,7 +525,7 @@ Before deploying, answer these:
 
 - N1 was producer AND seed+relay simultaneously (single point of failure for network entry)
 - Seeds and producers shared the same process — if seed got DDoSed, production stopped
-- Inconsistent ports (N6 was on :30305 instead of :30306)
+- Inconsistent ports (N6 was on :30305 instead of :30300)
 - DNS round-robin pointed both seed1 and seed2 to the same server (zero real redundancy)
 - 5 servers to manage, inconsistent paths (`~/doli-node`, `/opt/doli/target/release/`, etc.)
 - Keys scattered across multiple paths and servers
@@ -535,13 +535,13 @@ Before deploying, answer these:
 
 | Node | Server | P2P | RPC | Service |
 |------|--------|-----|-----|---------|
-| N1 | ai1 | 30303 | 8545 | `doli-mainnet-node1` |
+| N1 | ai1 | 30300 | 8500 | `doli-mainnet-node1` |
 | N2 | ai1 | 30304 | 8546 | `doli-mainnet-node2` |
 | N6 | ai1 | 30305 | 8547 | `doli-mainnet-node6` |
-| N3 | N3 VPS | 30303 | 8545 | `doli-mainnet-node3` |
-| N4 | N4 VPS | 30303 | 8545 | `doli-mainnet-node4` |
-| N5 | N5 VPS | 30303 | 8545 | `doli-mainnet-node5` |
-| Archiver | ai1 | 30306 | 8548 | `doli-mainnet-archiver` |
+| N3 | N3 VPS | 30300 | 8500 | `doli-mainnet-node3` |
+| N4 | N4 VPS | 30300 | 8500 | `doli-mainnet-node4` |
+| N5 | N5 VPS | 30300 | 8500 | `doli-mainnet-node5` |
+| Archiver | ai1 | 30300 | 8548 | `doli-mainnet-archiver` |
 
 ### Old Binary Paths
 

@@ -66,8 +66,8 @@ doli history                       # tx history
 
 ```bash
 doli chain
-# or RPC (mainnet=8545, testnet=18545, devnet=28545)
-curl -s -X POST http://127.0.0.1:8545 \
+# or RPC (mainnet=8500, testnet=18500, devnet=28500)
+curl -s -X POST http://127.0.0.1:8500 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq .
 ```
@@ -108,9 +108,9 @@ doli-node run --network testnet
 
 | Network | P2P | RPC | Metrics |
 |---------|-----|-----|---------|
-| Mainnet | 30303 | 8545 | 9090 |
-| Testnet | 40303 | 18545 | 19090 |
-| Devnet | 50303 | 28545 | 29090 |
+| Mainnet | 30300 | 8500 | 9000 |
+| Testnet | 40300 | 18500 | 19000 |
+| Devnet | 50300 | 28500 | 29000 |
 
 ## Safety Rules
 

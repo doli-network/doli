@@ -8,7 +8,7 @@
 #
 # PREREQUISITES:
 #   - Devnet running with 10 producers (9 nodes, node3 already down)
-#   - Node 0 is bootstrap (P2P:50303, RPC:28545)
+#   - Node 0 is bootstrap (P2P:50300, RPC:28500)
 #   - Nodes 1,2,4-9 are running
 #
 # USAGE:
@@ -28,9 +28,9 @@ set -eo pipefail
 
 DOLI_CLI="./target/release/doli"
 DOLI_NODE="./target/release/doli-node"
-RPC_BASE=28545
-P2P_BASE=50303
-METRICS_BASE=9090
+RPC_BASE=28500
+P2P_BASE=50300
+METRICS_BASE=9000
 CHAINSPEC="$HOME/.doli/devnet/chainspec.json"
 KEYS_DIR="$HOME/.doli/devnet/keys"
 DATA_DIR="$HOME/.doli/devnet/data"

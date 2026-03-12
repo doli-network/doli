@@ -112,7 +112,7 @@ DOLI_VETO_PERIOD_SECS=60    # 1 minute upgrades
 
 **"My devnet node isn't producing blocks!"**
 
-1.  **Check Peers**: Run `curl -X POST http://localhost:28545 -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'`
+1.  **Check Peers**: Run `curl -X POST http://localhost:28500 -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'`
     *   If `peerCount` is 0 and height is 0, you might be in the "Choice" phase of Bootstrap Mode.
 2.  **Check Logs**:
     *   `"Waiting for peers..."` -> It's looking for sync targets.
@@ -215,7 +215,7 @@ NEW_ADDR=$(doli --wallet ~/.doli/devnet/keys/producer_NEW.json info | grep "Pubk
 
 # Send from funded wallet (need 1+ DOLI for devnet bond)
 doli --wallet ~/.doli/devnet/keys/producer_0.json \
-    --rpc http://127.0.0.1:28545 \
+    --rpc http://127.0.0.1:28500 \
     send $NEW_ADDR 10
 ```
 
@@ -225,7 +225,7 @@ doli --wallet ~/.doli/devnet/keys/producer_0.json \
 
 ```bash
 doli --wallet ~/.doli/devnet/keys/producer_NEW.json \
-    --rpc http://127.0.0.1:28545 \
+    --rpc http://127.0.0.1:28500 \
     producer register
 ```
 
@@ -238,7 +238,7 @@ doli-node run --network devnet \
     --p2p-port 50309 \
     --rpc-port 28551 \
     --metrics-port 9096 \
-    --bootstrap /ip4/127.0.0.1/tcp/50303 \
+    --bootstrap /ip4/127.0.0.1/tcp/50300 \
     --chainspec ~/.doli/devnet/chainspec.json \
     --yes
 ```
@@ -258,13 +258,13 @@ Registration puts the public key on the blockchain. The node with `--producer-ke
 
 ```bash
 # Check producer is in active set
-doli --rpc http://127.0.0.1:28545 producer list
+doli --rpc http://127.0.0.1:28500 producer list
 
 # Watch new node's logs for production
 grep "Producing block" ~/.doli/devnet/logs/node_NEW.log
 
 # Verify balance increasing (block rewards)
 doli --wallet ~/.doli/devnet/keys/producer_NEW.json \
-    --rpc http://127.0.0.1:28545 \
+    --rpc http://127.0.0.1:28500 \
     wallet balance
 ```

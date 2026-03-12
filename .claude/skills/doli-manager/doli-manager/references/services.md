@@ -70,8 +70,8 @@ For N2 on the same host as N1, add port flags:
 ExecStart=/opt/doli/target/release/doli-node \
   --data-dir /home/doli/.doli/mainnet/node2/data run \
   --producer --producer-key /home/doli/.doli/mainnet/keys/producer_2.json \
-  --p2p-port 30304 --rpc-port 8546 --metrics-port 9091 \
-  --bootstrap /ip4/127.0.0.1/tcp/30303 \
+  --p2p-port 30301 --rpc-port 8501 --metrics-port 9001 \
+  --bootstrap /ip4/127.0.0.1/tcp/30300 \
   --no-auto-update --yes --force-start
 ```
 

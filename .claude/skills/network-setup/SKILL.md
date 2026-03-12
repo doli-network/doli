@@ -14,8 +14,8 @@ version: 3.2.0
 | **Address Prefix** | `ddoli` | `tdoli` | `doli` |
 | **Slot Duration** | 10 seconds | 10 seconds | 10 seconds |
 | **Epoch Length** | 6 slots (1 min) | 360 slots (1 hr) | 360 slots (1 hr) |
-| **P2P Port** | 50303 | 40303 | 30303 |
-| **RPC Port** | 28545 | 18545 | 8545 |
+| **P2P Port** | 50300 | 40300 | 30300 |
+| **RPC Port** | 28500 | 18500 | 8500 |
 | **Bootstrap** | None (local DHT) | `bootstrap1.testnet.doli.network:40300` | `seed1.doli.network:30300` |
 | **Block Reward** | 20 dDOLI | 1 tDOLI | 1 DOLI |
 | **Bond Unit** | 1 DOLI | 10 DOLI | 10 DOLI |
@@ -90,7 +90,7 @@ cat ~/.doli/devnet/devnet.toml 2>/dev/null
 pgrep -f "doli-node" 2>/dev/null
 
 # 3. If EITHER returns results → devnet EXISTS. Check RPC health:
-curl -s --max-time 3 http://127.0.0.1:28545 -X POST \
+curl -s --max-time 3 http://127.0.0.1:28500 -X POST \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
@@ -129,7 +129,7 @@ curl -s --max-time 3 http://127.0.0.1:28545 -X POST \
 
 ```bash
 # 1. Determine port range for your deployment
-#    Formula: P2P=50303+N, RPC=28545+N, Metrics=9090+N (devnet)
+#    Formula: P2P=50300+N, RPC=28500+N, Metrics=9000+N (devnet)
 #    For N nodes (0 to N-1), check all three port types
 
 # 2. Scan for zombie processes on target ports
@@ -141,8 +141,8 @@ if [ -n "$ZOMBIES" ]; then
 fi
 
 # 3. Check specific port ranges (adjust for your node count)
-#    Example: 10-node devnet uses ports 9090-9099, 28545-28554, 50303-50312
-for port_range in "9090-9099" "28545-28554" "50303-50312"; do
+#    Example: 10-node devnet uses ports 9000-9009, 28500-28509, 50300-50309
+for port_range in "9000-9009" "28500-28509" "50300-50309"; do
   occupied=$(lsof -i :$port_range 2>/dev/null | grep LISTEN)
   if [ -n "$occupied" ]; then
     echo "⚠️  OCCUPIED in range $port_range:"
@@ -170,9 +170,9 @@ fi
 **Port ranges by network:**
 | Network | P2P Range | RPC Range | Metrics Range |
 |---------|-----------|-----------|---------------|
-| Devnet (N nodes) | 50303–50303+N | 28545–28545+N | 9090–9090+N |
-| Testnet (N nodes) | 40303–40303+N | 18545–18545+N | 9090–9090+N |
-| Mainnet | 30303 | 8545 | 9090 |
+| Devnet (N nodes) | 50300–50300+N | 28500–28500+N | 9000–9000+N |
+| Testnet (N nodes) | 40300–40300+N | 18500–18500+N | 19000–19000+N |
+| Mainnet | 30300 | 8500 | 9000 |
 ## Decision Tree
 
 ```
@@ -233,8 +233,8 @@ mkdir -p ~/.doli/<NETWORK>
 | Network | Command |
 |---------|---------|
 | Devnet | Not needed (local) |
-| Testnet | `sudo ufw allow 40303/tcp comment 'DOLI Testnet P2P'` |
-| Mainnet | `sudo ufw allow 30303/tcp comment 'DOLI Mainnet P2P'` |
+| Testnet | `sudo ufw allow 40300/tcp comment 'DOLI Testnet P2P'` |
+| Mainnet | `sudo ufw allow 30300/tcp comment 'DOLI Mainnet P2P'` |
 
 ### Step 4: Run Producer Node
 
@@ -251,7 +251,7 @@ mkdir -p ~/.doli/<NETWORK>
 ### Step 5: Register as Producer
 
 ```bash
-# RPC ports: 28545 (devnet), 18545 (testnet), 8545 (mainnet)
+# RPC ports: 28500 (devnet), 18500 (testnet), 8500 (mainnet)
 ./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json balance
 ./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json producer register --bonds 1
 ./target/release/doli -r http://127.0.0.1:<RPC_PORT> -w ~/.doli/<NETWORK>/producer.json producer status
@@ -294,8 +294,8 @@ doli-node devnet clean --keep-keys
 **Port allocation:**
 | Node | P2P Port | RPC Port | Metrics Port |
 |------|----------|----------|--------------|
-| 0 | 50303 | 28545 | 9090 |
-| N | 50303+N | 28545+N | 9090+N |
+| 0 | 50300 | 28500 | 9000 |
+| N | 50300+N | 28500+N | 9000+N |
 
 ### Option B: Manual Multi-Node Setup (Private Local Testnet)
 
@@ -322,9 +322,9 @@ done
     --chainspec $TESTNET_DIR/chainspec.json \
     --producer \
     --producer-key $TESTNET_DIR/keys/producer_1.json \
-    --p2p-port 40303 \
-    --rpc-port 18545 \
-    --metrics-port 9090 \
+    --p2p-port 40300 \
+    --rpc-port 18500 \
+    --metrics-port 19000 \
     --no-auto-update
 ```
 
@@ -340,7 +340,7 @@ done
     --p2p-port 40304 \
     --rpc-port 18546 \
     --metrics-port 9091 \
-    --bootstrap "/ip4/127.0.0.1/tcp/40303" \
+    --bootstrap "/ip4/127.0.0.1/tcp/40300" \
     --no-auto-update
 ```
 
@@ -354,7 +354,7 @@ done
 ### Check Multi-Node Status
 
 ```bash
-for port in 18545 18546 18547 18548 18549; do
+for port in 18500 18501 18502 18503 18504; do
   echo "=== RPC $port ==="
   curl -s http://127.0.0.1:$port -X POST \
     -H "Content-Type: application/json" \
@@ -391,7 +391,7 @@ doli-node devnet add-producer --count 3
 - producer_0 must have enough balance to fund new producers (2x bond amount per producer)
 - The `doli` CLI binary must be built (`cargo build --release`)
 
-**Port allocation:** Same formula as init — P2P: 50303+N, RPC: 28545+N, Metrics: 9090+N
+**Port allocation:** Same formula as init — P2P: 50300+N, RPC: 28500+N, Metrics: 9000+N
 
 ### Option B: Manual (Testnet/Mainnet or Custom Setup)
 
@@ -407,7 +407,7 @@ For adding producers to testnet/mainnet, or when you need full control over the 
 | 5 | 50308 | 28550 | 9095 |
 | 6 | 50309 | 28551 | 9096 |
 | 7 | 50310 | 28552 | 9097 |
-| N | 50303+N | 28545+N | 9090+N |
+| N | 50300+N | 28500+N | 9000+N |
 
 > **Note:** If you want devnet to manage all 10 nodes from the start, use `devnet init --nodes 10` instead of adding producers dynamically.
 
@@ -456,7 +456,7 @@ pubkey_hash=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info
 for i in {15..29}; do
   src=$((i - 15))
   pubkey=$(./target/release/doli -w ~/.doli/devnet/keys/producer_$i.json info 2>/dev/null | grep "Pubkey Hash (32-byte)" | sed 's/.*: //')
-  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$src.json send "$pubkey" 2
+  ./target/release/doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_$src.json send "$pubkey" 2
 done
 ```
 
@@ -464,7 +464,7 @@ done
 
 ```bash
 for i in {15..29}; do
-  ./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_$i.json producer register -b 1
+  ./target/release/doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_$i.json producer register -b 1
 done
 ```
 
@@ -472,9 +472,9 @@ done
 
 ```bash
 for i in {15..29}; do
-  P2P_PORT=$((50303 + i))
-  RPC_PORT=$((28545 + i))
-  METRICS_PORT=$((9090 + i))
+  P2P_PORT=$((50300 + i))
+  RPC_PORT=$((28500 + i))
+  METRICS_PORT=$((9000 + i))
 
   ./target/release/doli-node \
     --network devnet \
@@ -485,7 +485,7 @@ for i in {15..29}; do
     --p2p-port $P2P_PORT \
     --rpc-port $RPC_PORT \
     --metrics-port $METRICS_PORT \
-    --bootstrap '/ip4/127.0.0.1/tcp/50303' \
+    --bootstrap '/ip4/127.0.0.1/tcp/50300' \
     --chainspec ~/.doli/devnet/chainspec.json \
     --yes \
     > ~/.doli/devnet/logs/node$i.log 2>&1 &
@@ -505,14 +505,14 @@ done
 
 ```bash
 # List all active producers
-./target/release/doli -r http://127.0.0.1:28545 producer list
+./target/release/doli -r http://127.0.0.1:28500 producer list
 
 # Check specific producer status
-./target/release/doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_15.json producer status
+./target/release/doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_15.json producer status
 
 # Check if new producers are producing blocks
 for i in {15..29}; do
-  RPC=$((28545 + i))
+  RPC=$((28500 + i))
   height=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq -r '.result.bestHeight')
   echo "Node $i: Height $height"
@@ -531,12 +531,12 @@ done
 
 ```bash
 # 1. Submit exit transaction FIRST (while node is still running)
-./target/release/doli -r http://127.0.0.1:28545 \
+./target/release/doli -r http://127.0.0.1:28500 \
   -w ~/.doli/devnet/keys/producer_N.json producer exit
 
 # 2. Wait for exit confirmation (producer removed from scheduler)
 sleep 10
-./target/release/doli -r http://127.0.0.1:28545 \
+./target/release/doli -r http://127.0.0.1:28500 \
   -w ~/.doli/devnet/keys/producer_N.json producer status
 # Should show "exiting" or "exited"
 
@@ -608,7 +608,7 @@ done
 ```bash
 # Check height, slot, peers, sync status for all devnet nodes
 for i in $(seq 0 $(($(cat ~/.doli/devnet/devnet.toml 2>/dev/null | grep node_count | sed 's/[^0-9]//g') - 1))); do
-  RPC=$((28545 + i))
+  RPC=$((28500 + i))
   result=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' 2>/dev/null)
   chain=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
@@ -633,7 +633,7 @@ done
 heights=()
 hashes=()
 for i in $(seq 0 4); do
-  RPC=$((28545 + i))
+  RPC=$((28500 + i))
   chain=$(curl -s http://127.0.0.1:$RPC -X POST -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' 2>/dev/null)
   h=$(echo $chain | jq -r '.result.bestHeight')
@@ -757,7 +757,7 @@ pubkey_hash=$(doli -w wallet.json info | grep "Pubkey Hash (32-byte):" | sed 's/
 ### Node won't sync (testnet/mainnet)
 
 ```bash
-nc -zv testnet.doli.network 40303
+nc -zv testnet.doli.network 40300
 sudo ufw status
 ```
 

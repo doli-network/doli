@@ -401,7 +401,7 @@ sleep 250  # 4 min + buffer
 
 # Verify all nodes are healthy
 for i in $(seq 0 4); do
-  HEIGHT=$(curl -s http://127.0.0.1:$((28545+i)) -X POST \
+  HEIGHT=$(curl -s http://127.0.0.1:$((28500+i)) -X POST \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -r '.result.bestHeight')
   echo "Node $i height: $HEIGHT"
@@ -418,7 +418,7 @@ sleep 15  # Let release propagate
 
 echo "Casting 3/5 veto votes (should exceed 40% threshold)..."
 for i in 0 1 2; do
-  doli -r http://127.0.0.1:$((28545+i)) \
+  doli -r http://127.0.0.1:$((28500+i)) \
     -w ~/.doli/devnet/keys/producer_$i.json \
     update vote --veto --version 99.0.0
   sleep 2
@@ -429,7 +429,7 @@ echo "Waiting for veto period (60s)..."
 sleep 65
 
 # Phase 5: Verify REJECTED
-STATUS=$(curl -s http://127.0.0.1:28545 -X POST \
+STATUS=$(curl -s http://127.0.0.1:28500 -X POST \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}')
 echo "Update status: $STATUS"
@@ -450,7 +450,7 @@ echo "Publishing test release v99.1.0..."
 sleep 15  # Propagation
 
 echo "Casting 1/5 veto votes (should NOT exceed 40%)..."
-doli -r http://127.0.0.1:28545 \
+doli -r http://127.0.0.1:28500 \
   -w ~/.doli/devnet/keys/producer_0.json \
   update vote --veto --version 99.1.0
 
@@ -458,7 +458,7 @@ echo "Waiting for veto period (60s)..."
 sleep 65
 
 # Verify APPROVED
-STATUS=$(curl -s http://127.0.0.1:28545 -X POST \
+STATUS=$(curl -s http://127.0.0.1:28500 -X POST \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}')
 echo "Update status: $STATUS"
@@ -493,7 +493,7 @@ for i in 1 2 3; do
   # Restart node 0 (watchdog should detect crash on startup)
   doli-node --network devnet --data-dir ~/.doli/devnet/data/node0 run \
     --producer --producer-key ~/.doli/devnet/keys/producer_0.json \
-    --p2p-port 50303 --rpc-port 28545 \
+    --p2p-port 50300 --rpc-port 28500 \
     --chainspec ~/.doli/devnet/chainspec.json --yes \
     > ~/.doli/devnet/logs/node0.log 2>&1 &
   sleep 10
@@ -520,7 +520,7 @@ doli-node devnet init --nodes 5
 doli-node devnet start
 sleep 250  # Genesis
 
-CURRENT_HEIGHT=$(curl -s http://127.0.0.1:28545 -X POST \
+CURRENT_HEIGHT=$(curl -s http://127.0.0.1:28500 -X POST \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -r '.result.bestHeight')
 FORK_HEIGHT=$((CURRENT_HEIGHT + 30))  # ~5 minutes from now
@@ -534,7 +534,7 @@ echo "Updating nodes 0-3..."
 
 echo "Waiting for activation height $FORK_HEIGHT..."
 while true; do
-  H=$(curl -s http://127.0.0.1:28545 -X POST \
+  H=$(curl -s http://127.0.0.1:28500 -X POST \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq -r '.result.bestHeight')
   echo "Height: $H / $FORK_HEIGHT"
@@ -576,9 +576,9 @@ sleep 250  # Genesis
 # Create whale producer (10 bonds)
 doli -w ~/.doli/devnet/keys/whale.json new
 WHALE_PH=$(doli -w ~/.doli/devnet/keys/whale.json info | grep "Pubkey Hash" | sed 's/.*: //')
-doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/producer_0.json send "$WHALE_PH" 11
+doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/producer_0.json send "$WHALE_PH" 11
 sleep 12
-doli -r http://127.0.0.1:28545 -w ~/.doli/devnet/keys/whale.json producer register -b 10
+doli -r http://127.0.0.1:28500 -w ~/.doli/devnet/keys/whale.json producer register -b 10
 
 # Wait for activation
 sleep 110

@@ -261,6 +261,18 @@ pub struct OutputResponse {
     pub pubkey_hash: String,
     /// Lock height (for bonds)
     pub lock_until: u64,
+    /// Decoded covenant condition (only for conditioned output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<serde_json::Value>,
+    /// NFT metadata (only for NFT output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nft: Option<serde_json::Value>,
+    /// Fungible asset metadata (only for FungibleAsset output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<serde_json::Value>,
+    /// Bridge HTLC metadata (only for BridgeHTLC output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<serde_json::Value>,
 }
 
 impl From<&doli_core::Output> for OutputResponse {
@@ -268,6 +280,66 @@ impl From<&doli_core::Output> for OutputResponse {
         let output_type = match output.output_type {
             doli_core::OutputType::Normal => "normal",
             doli_core::OutputType::Bond => "bond",
+            doli_core::OutputType::Multisig => "multisig",
+            doli_core::OutputType::Hashlock => "hashlock",
+            doli_core::OutputType::HTLC => "htlc",
+            doli_core::OutputType::Vesting => "vesting",
+            doli_core::OutputType::NFT => "nft",
+            doli_core::OutputType::FungibleAsset => "fungibleAsset",
+            doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
+        };
+
+        // Decode covenant condition for conditioned outputs
+        let condition = if output.output_type.is_conditioned() {
+            output
+                .condition()
+                .and_then(|r| r.ok())
+                .map(|c| condition_to_json(&c))
+        } else {
+            None
+        };
+
+        // Decode NFT metadata if present
+        let nft_metadata = if output.output_type == doli_core::OutputType::NFT {
+            output.nft_metadata().map(|(token_id, content_hash)| {
+                serde_json::json!({
+                    "tokenId": token_id.to_hex(),
+                    "contentHash": hex::encode(&content_hash)
+                })
+            })
+        } else {
+            None
+        };
+
+        // Decode fungible asset metadata if present
+        let asset_metadata = if output.output_type == doli_core::OutputType::FungibleAsset {
+            output
+                .fungible_asset_metadata()
+                .map(|(asset_id, total_supply, ticker)| {
+                    serde_json::json!({
+                        "assetId": asset_id.to_hex(),
+                        "totalSupply": total_supply,
+                        "ticker": ticker
+                    })
+                })
+        } else {
+            None
+        };
+
+        // Decode bridge HTLC metadata if present
+        let bridge_metadata = if output.output_type == doli_core::OutputType::BridgeHTLC {
+            output
+                .bridge_htlc_metadata()
+                .map(|(chain_id, target_addr)| {
+                    serde_json::json!({
+                        "targetChain": doli_core::Output::bridge_chain_name(chain_id),
+                        "targetChainId": chain_id,
+                        "targetAddress": String::from_utf8(target_addr.clone())
+                            .unwrap_or_else(|_| hex::encode(&target_addr))
+                    })
+                })
+        } else {
+            None
         };
 
         Self {
@@ -275,7 +347,54 @@ impl From<&doli_core::Output> for OutputResponse {
             amount: output.amount,
             pubkey_hash: output.pubkey_hash.to_hex(),
             lock_until: output.lock_until,
+            condition,
+            nft: nft_metadata,
+            asset: asset_metadata,
+            bridge: bridge_metadata,
         }
+    }
+}
+
+/// Convert a Condition to a human-readable JSON value.
+pub fn condition_to_json(cond: &doli_core::Condition) -> serde_json::Value {
+    use serde_json::json;
+    match cond {
+        doli_core::Condition::Signature(pkh) => json!({
+            "type": "signature",
+            "pubkeyHash": pkh.to_hex()
+        }),
+        doli_core::Condition::Multisig { threshold, keys } => json!({
+            "type": "multisig",
+            "threshold": threshold,
+            "keys": keys.iter().map(|k| k.to_hex()).collect::<Vec<_>>()
+        }),
+        doli_core::Condition::Hashlock(h) => json!({
+            "type": "hashlock",
+            "hash": h.to_hex()
+        }),
+        doli_core::Condition::Timelock(h) => json!({
+            "type": "timelock",
+            "minHeight": h
+        }),
+        doli_core::Condition::TimelockExpiry(h) => json!({
+            "type": "timelockExpiry",
+            "maxHeight": h
+        }),
+        doli_core::Condition::And(a, b) => json!({
+            "type": "and",
+            "left": condition_to_json(a),
+            "right": condition_to_json(b)
+        }),
+        doli_core::Condition::Or(a, b) => json!({
+            "type": "or",
+            "left": condition_to_json(a),
+            "right": condition_to_json(b)
+        }),
+        doli_core::Condition::Threshold { n, conditions } => json!({
+            "type": "threshold",
+            "n": n,
+            "conditions": conditions.iter().map(condition_to_json).collect::<Vec<_>>()
+        }),
     }
 }
 
@@ -297,6 +416,18 @@ pub struct UtxoResponse {
     pub height: u64,
     /// Whether spendable at current height
     pub spendable: bool,
+    /// Decoded covenant condition (only for conditioned output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<serde_json::Value>,
+    /// NFT metadata (only for NFT output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nft: Option<serde_json::Value>,
+    /// Fungible asset metadata (only for FungibleAsset output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<serde_json::Value>,
+    /// Bridge HTLC metadata (only for BridgeHTLC output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<serde_json::Value>,
 }
 
 /// Chain info response

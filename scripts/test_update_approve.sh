@@ -12,7 +12,7 @@
 #   - Grace period: 30 seconds
 set -e
 
-RPC_BASE=28545
+RPC_BASE=28500
 NODES=5
 
 echo "========================================="

@@ -12,7 +12,7 @@ This guide helps diagnose and resolve common issues with DOLI nodes and wallets.
 
 | Possible Cause | Solution |
 |----------------|----------|
-| Port already in use | Check for existing process: `lsof -i :30303` |
+| Port already in use | Check for existing process: `lsof -i :30300` |
 | Corrupt database | Remove and resync: `rm -rf ~/.doli/mainnet/db/` |
 | Missing dependencies | Reinstall via `nix develop` or install manually |
 | Insufficient permissions | Check data directory permissions |
@@ -94,12 +94,12 @@ sudo systemctl restart doli-node
 **Diagnostics:**
 ```bash
 # Check peer count
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}'
 
 # Check sync status
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
@@ -107,8 +107,8 @@ curl -X POST http://127.0.0.1:8545 \
 **Add bootstrap nodes:**
 ```bash
 ./target/release/doli-node run \
-    --bootstrap /dns4/seed1.doli.network/tcp/30303 \
-    --bootstrap /dns4/seed2.doli.network/tcp/30303
+    --bootstrap /dns4/seed1.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed2.doli.network/tcp/30300
 ```
 
 ---
@@ -119,7 +119,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 | Possible Cause | Solution |
 |----------------|----------|
-| Firewall blocking P2P port | Open port 30303 (or network-specific) |
+| Firewall blocking P2P port | Open port 30300 (or network-specific) |
 | NAT not traversable | Enable port forwarding on router |
 | DHT disabled | Remove `--no-dht` flag if present |
 | Bootstrap nodes unreachable | Try alternative bootstrap nodes |
@@ -130,13 +130,13 @@ curl -X POST http://127.0.0.1:8545 \
 sudo ufw status
 
 # iptables
-sudo iptables -L -n | grep 30303
+sudo iptables -L -n | grep 30300
 ```
 
 **Test port accessibility:**
 ```bash
 # From another machine
-nc -zv your-node-ip 30303
+nc -zv your-node-ip 30300
 ```
 
 ---
@@ -267,7 +267,7 @@ See [disaster-recovery.md](./disaster-recovery.md) for all recovery methods.
 
 **Verify in active set:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
 ```
@@ -354,7 +354,7 @@ ps aux | grep doli-node
 
 **Check mempool:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":{},"id":1}'
 ```
@@ -379,7 +379,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 **Check via RPC:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"YOUR_ADDRESS"},"id":1}'
 ```
@@ -399,7 +399,7 @@ curl -X POST http://127.0.0.1:8545 \
 
 **Test RPC:**
 ```bash
-curl http://127.0.0.1:8545
+curl http://127.0.0.1:8500
 # Should return JSON-RPC error (method not found), not connection refused
 ```
 
@@ -445,7 +445,7 @@ cp ~/backup/wallet.json ~/.doli/wallet.json
 ping boot1.doli.network
 
 # Test P2P port connectivity
-nc -zv boot1.doli.network 30303
+nc -zv boot1.doli.network 30300
 ```
 
 ---
@@ -464,7 +464,7 @@ nc -zv boot1.doli.network 30303
 **Check against known block:**
 ```bash
 # Compare your block at height X with explorer
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBlockByHeight","params":{"height":12345},"id":1}'
 ```
@@ -550,17 +550,17 @@ echo "=== Node Status ==="
 systemctl status doli-node --no-pager | head -5
 
 echo -e "\n=== Chain Info ==="
-curl -s -X POST http://127.0.0.1:8545 \
+curl -s -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}' | jq
 
 echo -e "\n=== Network Info ==="
-curl -s -X POST http://127.0.0.1:8545 \
+curl -s -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' | jq
 
 echo -e "\n=== Mempool ==="
-curl -s -X POST http://127.0.0.1:8545 \
+curl -s -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":{},"id":1}' | jq
 

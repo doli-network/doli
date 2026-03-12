@@ -61,16 +61,16 @@ The following methods are **NOT YET IMPLEMENTED** and will return "Method not fo
 |----------|-------|
 | Protocol | JSON-RPC 2.0 |
 | Transport | HTTP POST |
-| Endpoint | `http://127.0.0.1:8545` (mainnet default) |
+| Endpoint | `http://127.0.0.1:8500` (mainnet default) |
 | Content-Type | `application/json` |
 
 ### Network Ports
 
 | Network | RPC Port |
 |---------|----------|
-| Mainnet | 8545 |
-| Testnet | 18545 |
-| Devnet | 28545 |
+| Mainnet | 8500 |
+| Testnet | 18500 |
+| Devnet | 28500 |
 
 ---
 
@@ -88,7 +88,7 @@ The following methods are **NOT YET IMPLEMENTED** and will return "Method not fo
 ### Example with curl
 
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
@@ -116,7 +116,7 @@ Returns current chain state information.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
 ```
@@ -150,7 +150,7 @@ Returns block by its hash.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBlockByHash","params":{"hash":"0xabc..."},"id":1}'
 ```
@@ -170,7 +170,7 @@ Returns block by its height.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBlockByHeight","params":{"height":12345},"id":1}'
 ```
@@ -239,7 +239,7 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getTransaction","params":{"hash":"0xabc..."},"id":1}'
 ```
@@ -262,7 +262,7 @@ Submits a signed transaction to the network.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"sendTransaction","params":{"tx":"0x..."},"id":1}'
 ```
@@ -302,7 +302,7 @@ Returns balance for an address.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"0x..."},"id":1}'
 ```
@@ -351,7 +351,7 @@ Returns unspent transaction outputs for an address.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"0x...","spendable_only":true},"id":1}'
 ```
@@ -379,7 +379,7 @@ Returns mempool statistics.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":{},"id":1}'
 ```
@@ -421,7 +421,7 @@ Returns pending transactions from the mempool, sorted by fee rate (highest first
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getMempoolTransactions","params":{"limit":50},"id":1}'
 ```
@@ -448,7 +448,7 @@ Returns network status information.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}'
 ```
@@ -483,7 +483,7 @@ Returns all producers in the network.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducers","params":{"active_only":true},"id":1}'
 ```
@@ -522,7 +522,7 @@ a 7-day delay after `RequestWithdrawal` before `ClaimWithdrawal`.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducer","params":{"public_key":"0x..."},"id":1}'
 ```
@@ -580,7 +580,7 @@ field. No separate bond registry is consulted.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getBondDetails","params":{"public_key":"0x..."},"id":1}'
 ```
@@ -631,7 +631,7 @@ Returns transaction history for an address.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getHistory","params":{"address":"0x...","limit":20},"id":1}'
 ```
@@ -658,7 +658,7 @@ Returns information about the node.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNodeInfo","params":{},"id":1}'
 ```
@@ -699,7 +699,7 @@ Returns the consensus and network parameters for the node's active network.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkParams","params":{},"id":1}'
 ```
@@ -738,7 +738,7 @@ Returns aggregate chain statistics including supply, UTXO count, and staking inf
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainStats","params":{},"id":1}'
 ```
@@ -766,7 +766,7 @@ Returns the current auto-update status.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getUpdateStatus","params":{},"id":1}'
 ```
@@ -803,7 +803,7 @@ Submit a veto vote for a pending update.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"submitVote","params":{"vote":{"version":"0.2.0","vote":"veto","producerId":"0x...","timestamp":1706400000,"signature":"0x..."}},"id":1}'
 ```
@@ -845,7 +845,7 @@ Returns the current maintainer set. Since v1.1.15, reads from the persisted `Mai
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getMaintainerSet","params":{},"id":1}'
 ```
@@ -885,7 +885,7 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"submitMaintainerChange","params":{"action":"add","target_pubkey":"0x...","signatures":[{"pubkey":"0x...","signature":"0x..."}]},"id":1}'
 ```
@@ -953,7 +953,7 @@ Returns current reward epoch information.
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getEpochInfo","params":{},"id":1}'
 ```
@@ -1012,7 +1012,7 @@ Returns the producer schedule for upcoming slots based on the current producer s
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getSlotSchedule","params":{"fromSlot":45678,"count":10},"id":1}'
 ```
@@ -1070,7 +1070,7 @@ Returns schedule and performance information for a specific producer in the curr
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getProducerSchedule","params":{"publicKey":"0x..."},"id":1}'
 ```
@@ -1128,7 +1128,7 @@ Returns attestation statistics for the current epoch. Scans all blocks in the cu
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getAttestationStats","params":{},"id":1}'
 ```
@@ -1183,7 +1183,7 @@ Returns the per-component state root hashes. Compare these across nodes at the s
 
 **Example:**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}'
 ```
@@ -1258,14 +1258,14 @@ Where `type`: 0=Normal, 1=Bond. `cb`/`er`: 0=false, 1=true. `ed`: extra_data hex
 
 **Example (full dump):**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{},"id":1}'
 ```
 
 **Example (diff mode):**
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["0xabc...","0xdef..."]},"id":1}'
 ```
@@ -1348,7 +1348,7 @@ By default, RPC binds to `127.0.0.1` (localhost only).
 **To enable external access (NOT recommended for production):**
 ```toml
 [rpc]
-listen_addr = "0.0.0.0:8545"
+listen_addr = "0.0.0.0:8500"
 ```
 
 ### Authentication

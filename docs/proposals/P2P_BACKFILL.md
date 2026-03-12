@@ -72,7 +72,7 @@ Add `archive.doli.network` to the bootstrap node list (or as a well-known peer).
 
 ```
 # Bootstrap multiaddr
-/dns4/archive.doli.network/tcp/30306/p2p/<peer_id>
+/dns4/archive.doli.network/tcp/30300/p2p/<peer_id>
 ```
 
 Any node that connects to the network will automatically have access to the archiver as a peer, and the backfill task will use it (along with any other peers that have the blocks) to fill gaps.

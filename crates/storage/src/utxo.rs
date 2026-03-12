@@ -15,6 +15,7 @@ use doli_core::network::Network;
 use doli_core::network_params::NetworkParams;
 use doli_core::transaction::{Output, OutputType, Transaction};
 use doli_core::types::{Amount, BlockHeight};
+use doli_core::validation::{UtxoInfo, UtxoProvider};
 use serde::{Deserialize, Serialize};
 
 use crate::utxo_rocks::RocksDbUtxoStore;
@@ -649,6 +650,17 @@ impl UtxoSet {
     /// Check if this is the RocksDB backend
     pub fn is_rocksdb(&self) -> bool {
         matches!(self, UtxoSet::RocksDb(_))
+    }
+}
+
+impl UtxoProvider for UtxoSet {
+    fn get_utxo(&self, tx_hash: &Hash, output_index: u32) -> Option<UtxoInfo> {
+        let outpoint = Outpoint::new(*tx_hash, output_index);
+        self.get(&outpoint).map(|entry| UtxoInfo {
+            output: entry.output,
+            pubkey: None, // pay-to-pubkey-hash — signature verification uses the input's pubkey
+            spent: false, // present in UTXO set = unspent (spent entries are removed)
+        })
     }
 }
 

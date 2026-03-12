@@ -47,9 +47,9 @@ HOME_DIR=$(eval echo "~${USER_NAME}")
 
 # Set defaults based on network
 case "$NETWORK" in
-    mainnet) P2P=30303; RPC=8545; METRICS=9090 ;;
-    testnet) P2P=40303; RPC=18545; METRICS=19090 ;;
-    devnet)  P2P=50303; RPC=28545; METRICS=29090 ;;
+    mainnet) P2P=30300; RPC=8500; METRICS=9000 ;;
+    testnet) P2P=40300; RPC=18500; METRICS=19000 ;;
+    devnet)  P2P=50300; RPC=28500; METRICS=29000 ;;
     *) echo "Unknown network: $NETWORK"; exit 1 ;;
 esac
 

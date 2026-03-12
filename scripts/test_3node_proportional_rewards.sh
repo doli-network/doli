@@ -113,7 +113,7 @@ start_node() {
     local is_seed=$2
     local p2p_port=$((BASE_P2P + node_num))
     local rpc_port=$((BASE_RPC + node_num))
-    local metrics_port=$((9090 + node_num))
+    local metrics_port=$((9000 + node_num))
 
     local bootstrap_arg=""
     if [ "$is_seed" != "true" ]; then

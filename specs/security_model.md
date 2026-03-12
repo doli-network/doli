@@ -916,26 +916,26 @@ This checklist helps node operators and producers secure their DOLI infrastructu
 - [ ] **Firewall enabled** - Only allow necessary ports
   ```bash
   # Allow P2P
-  sudo ufw allow 30303/tcp
+  sudo ufw allow 30300/tcp
 
   # Allow RPC only from trusted IPs (if needed externally)
-  sudo ufw allow from 192.168.1.0/24 to any port 8545
+  sudo ufw allow from 192.168.1.0/24 to any port 8500
 
   # Allow metrics only from monitoring server
-  sudo ufw allow from 10.0.0.5 to any port 9090
+  sudo ufw allow from 10.0.0.5 to any port 9000
 
   # Enable firewall
   sudo ufw enable
   ```
 
-- [ ] **RPC bound to localhost** - Default is `127.0.0.1:8545`
+- [ ] **RPC bound to localhost** - Default is `127.0.0.1:8500`
   ```toml
   # config.toml - GOOD
   [rpc]
-  listen_addr = "127.0.0.1:8545"
+  listen_addr = "127.0.0.1:8500"
 
   # AVOID exposing to all interfaces
-  # listen_addr = "0.0.0.0:8545"  # DANGEROUS
+  # listen_addr = "0.0.0.0:8500"  # DANGEROUS
   ```
 
 - [ ] **RPC authentication** - Enable if exposing RPC externally
@@ -1081,7 +1081,7 @@ This checklist helps node operators and producers secure their DOLI infrastructu
 - [ ] **Monitor VDF completion times**
   ```bash
   # Check metrics
-  curl http://localhost:9090/metrics | grep vdf_compute
+  curl http://localhost:9000/metrics | grep vdf_compute
 
   # Should complete in ~700ms (heartbeat VDF)
   ```
@@ -1138,15 +1138,15 @@ This checklist helps node operators and producers secure their DOLI infrastructu
 - [ ] **Use trusted bootstrap nodes**
   ```toml
   [[bootstrap_nodes]]
-  address = "/dns4/seed1.doli.network/tcp/30303/p2p/..."
+  address = "/dns4/seed1.doli.network/tcp/30300/p2p/..."
 
   [[bootstrap_nodes]]
-  address = "/dns4/seed2.doli.network/tcp/30303/p2p/..."
+  address = "/dns4/seed2.doli.network/tcp/30300/p2p/..."
   ```
 
 - [ ] **Monitor peer diversity**
   ```bash
-  curl http://localhost:8545 \
+  curl http://localhost:8500 \
     -d '{"jsonrpc":"2.0","method":"getPeers","params":{},"id":1}'
 
   # Check for variety in IP ranges
@@ -1233,12 +1233,12 @@ echo -n "Running as root: "
 [ $(id -u) -eq 0 ] && echo "YES (BAD!)" || echo "No (good)"
 
 echo -n "Peer count: "
-curl -s http://localhost:8545 \
+curl -s http://localhost:8500 \
   -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' \
   | grep -o '"peer_count":[0-9]*' | cut -d: -f2
 
 echo -n "Sync status: "
-curl -s http://localhost:8545 \
+curl -s http://localhost:8500 \
   -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}' \
   | grep -o '"syncing":[a-z]*' | cut -d: -f2
 

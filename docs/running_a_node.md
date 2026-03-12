@@ -71,8 +71,8 @@ Run a containerized node with persistent data:
 # Quick start (mainnet)
 docker run -d \
   --name doli-node \
-  -p 30303:30303 \
-  -p 8545:8545 \
+  -p 30300:30300 \
+  -p 8500:8500 \
   -v doli-data:/data \
   ghcr.io/e-weil/doli-node:latest
 
@@ -80,8 +80,8 @@ docker run -d \
 docker run -d \
   --name doli-testnet \
   -e DOLI_NETWORK=testnet \
-  -p 40303:40303 \
-  -p 18545:18545 \
+  -p 40300:40300 \
+  -p 18500:18500 \
   -v doli-testnet-data:/data \
   ghcr.io/e-weil/doli-node:latest
 
@@ -184,7 +184,7 @@ doli-node devnet clean
 This creates a self-contained devnet at `~/.doli/devnet/` with:
 - Auto-generated producer wallets
 - Pre-configured chainspec with all producers
-- Automatic port allocation (P2P: 50303+, RPC: 28545+, Metrics: 9090+)
+- Automatic port allocation (P2P: 50300+, RPC: 28500+, Metrics: 9000+)
 - PID tracking for process management
 
 **Adding producers dynamically:** `devnet add-producer` creates a wallet, funds it from producer_0, registers as a producer, and starts a node — all in one command. The new nodes inherit `.env` configuration and are managed by `devnet stop/status`.
@@ -224,10 +224,10 @@ This creates a self-contained devnet at `~/.doli/devnet/` with:
 ```bash
 ./target/release/doli-node run \
     --data-dir /path/to/data \    # Custom data directory
-    --p2p-port 30303 \            # P2P listen port
-    --rpc-port 8545 \             # RPC API port
-    --metrics-port 9090 \         # Prometheus metrics port
-    --bootstrap /ip4/x.x.x.x/tcp/30303  # Bootstrap node
+    --p2p-port 30300 \            # P2P listen port
+    --rpc-port 8500 \             # RPC API port
+    --metrics-port 9000 \         # Prometheus metrics port
+    --bootstrap /ip4/x.x.x.x/tcp/30300  # Bootstrap node
     --log-level info              # trace|debug|info|warn|error
 ```
 
@@ -250,14 +250,14 @@ DOLI nodes can be configured via:
 --data-dir /path/to/data
 
 # P2P settings
---listen-addr 0.0.0.0:30303
+--listen-addr 0.0.0.0:30300
 --max-peers 50
 
 # RPC settings
---rpc-addr 127.0.0.1:8545
+--rpc-addr 127.0.0.1:8500
 
 # Metrics (Prometheus)
---metrics-addr 127.0.0.1:9090
+--metrics-addr 127.0.0.1:9000
 
 # Logging
 --log-level <trace|debug|info|warn|error>
@@ -265,7 +265,7 @@ DOLI nodes can be configured via:
 
 **Example with custom settings:**
 ```bash
-./doli-node --network mainnet --data-dir /var/lib/doli --listen-addr 0.0.0.0:30303 --rpc-addr 127.0.0.1:8545 run
+./doli-node --network mainnet --data-dir /var/lib/doli --listen-addr 0.0.0.0:30300 --rpc-addr 127.0.0.1:8500 run
 ```
 
 ### 5.2. Environment Variables (.env Files)
@@ -305,9 +305,9 @@ DOLI_UNBONDING_PERIOD=30
 
 | Variable | Default (Mainnet) | Configurable |
 |----------|-------------------|--------------|
-| `DOLI_P2P_PORT` | 30303 | All networks |
-| `DOLI_RPC_PORT` | 8545 | All networks |
-| `DOLI_METRICS_PORT` | 9090 | All networks |
+| `DOLI_P2P_PORT` | 30300 | All networks |
+| `DOLI_RPC_PORT` | 8500 | All networks |
+| `DOLI_METRICS_PORT` | 9000 | All networks |
 | `DOLI_BOOTSTRAP_NODES` | (seeds) | All networks |
 | `DOLI_SLOT_DURATION` | 10 | Devnet only |
 | `DOLI_GENESIS_TIME` | (fixed) | Devnet only |
@@ -415,19 +415,19 @@ sudo journalctl -u doli-node -f
 
 ```bash
 # Check chain info
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}'
 
 # Check network info
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'
 ```
 
 ### 7.2. Prometheus Metrics
 
-Key metrics available at `http://127.0.0.1:9090/metrics`:
+Key metrics available at `http://127.0.0.1:9000/metrics`:
 
 | Metric | Description |
 |--------|-------------|
@@ -467,7 +467,7 @@ Sync progress:
 ### 8.2. Check Sync Status
 
 ```bash
-curl -X POST http://127.0.0.1:8545 \
+curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":[],"id":1}'
 
@@ -484,25 +484,25 @@ curl -X POST http://127.0.0.1:8545 \
 
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
-| 30303 | TCP | Inbound | P2P (mainnet) |
-| 40303 | TCP | Inbound | P2P (testnet) |
-| 50303 | TCP | Inbound | P2P (devnet) |
+| 30300 | TCP | Inbound | P2P (mainnet) |
+| 40300 | TCP | Inbound | P2P (testnet) |
+| 50300 | TCP | Inbound | P2P (devnet) |
 
 ### 9.2. UFW Example
 
 ```bash
 # Allow P2P port
-sudo ufw allow 30303/tcp
+sudo ufw allow 30300/tcp
 
 # RPC (only if external access needed - NOT recommended)
-# sudo ufw allow 8545/tcp
+# sudo ufw allow 8500/tcp
 ```
 
 ### 9.3. iptables Example
 
 ```bash
 # Allow P2P port
-sudo iptables -A INPUT -p tcp --dport 30303 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 30300 -j ACCEPT
 ```
 
 ---
@@ -655,9 +655,9 @@ doli-node export <file>           # Export blocks to file
 | Parameter | Mainnet | Testnet | Devnet |
 |-----------|---------|---------|--------|
 | Network ID | 1 | 2 | 99 |
-| P2P Port | 30303 | 40303 | 50303 |
-| RPC Port | 8545 | 18545 | 28545 |
-| Metrics Port | 9090 | 19090 | 29090 |
+| P2P Port | 30300 | 40300 | 50300 |
+| RPC Port | 8500 | 18500 | 28500 |
+| Metrics Port | 9000 | 19000 | 29000 |
 | Slot Duration | 10s | 10s | 10s |
 | Block Reward | 1 DOLI | 1 DOLI | 20 DOLI |
 | Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI |
