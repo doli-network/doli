@@ -1373,7 +1373,6 @@ impl Transaction {
                 | TxType::ClaimReward
                 | TxType::ClaimBond
                 | TxType::SlashProducer
-                | TxType::RequestWithdrawal
                 | TxType::DelegateBond
                 | TxType::RevokeDelegation
                 | TxType::AddMaintainer
