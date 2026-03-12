@@ -292,9 +292,13 @@ enum Commands {
         /// Amount of DOLI to lock
         amount: String,
 
-        /// BLAKE3 hashlock hash (64 hex chars)
-        #[arg(long)]
-        hash: String,
+        /// BLAKE3 hashlock hash (64 hex chars) — use this OR --preimage, not both
+        #[arg(long, conflicts_with = "preimage")]
+        hash: Option<String>,
+
+        /// Preimage (64 hex chars) — computes the hashlock automatically
+        #[arg(long, conflicts_with = "hash")]
+        preimage: Option<String>,
 
         /// Lock height (claim available after this)
         #[arg(long)]
@@ -699,16 +703,36 @@ async fn main() -> Result<()> {
         Commands::BridgeLock {
             amount,
             hash,
+            preimage,
             lock,
             expiry,
             chain,
             to,
         } => {
+            let resolved_hash = match (hash, preimage) {
+                (Some(h), _) => h,
+                (_, Some(p)) => {
+                    let preimage_bytes = hex::decode(&p)
+                        .map_err(|_| anyhow::anyhow!("Invalid preimage hex"))?;
+                    if preimage_bytes.len() != 32 {
+                        anyhow::bail!("Preimage must be exactly 32 bytes (64 hex chars)");
+                    }
+                    let hash = crypto::hash::hash_with_domain(
+                        doli_core::conditions::HASHLOCK_DOMAIN,
+                        &preimage_bytes,
+                    );
+                    println!("Computed hashlock: {}", hash.to_hex());
+                    hash.to_hex()
+                }
+                (None, None) => {
+                    anyhow::bail!("Provide either --hash or --preimage");
+                }
+            };
             cmd_bridge_lock(
                 &wallet,
                 &rpc_endpoint,
                 &amount,
-                &hash,
+                &resolved_hash,
                 lock,
                 expiry,
                 &chain,
