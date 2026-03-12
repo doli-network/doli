@@ -317,12 +317,23 @@ impl Node {
         };
         if chain_state.genesis_hash != canonical {
             warn!(
-                "Genesis hash mismatch: state_db={} chainspec={} — correcting to chainspec",
+                "Genesis hash mismatch: state_db={} chainspec={} — NEW CHAIN DETECTED. Wiping all state and block store.",
                 &chain_state.genesis_hash.to_string()[..16],
                 &canonical.to_string()[..16],
             );
-            chain_state.genesis_hash = canonical;
-            state_db.put_chain_state(&chain_state)?;
+            // Wipe block store — old-chain blocks poison sync via "already in store" guard
+            if let Err(e) = block_store.clear() {
+                warn!("Failed to clear block store during genesis reset: {}", e);
+            }
+            // Reset chain state and UTXOs to genesis
+            chain_state = ChainState::new(canonical);
+            state_db.clear_and_write_genesis(&chain_state);
+            // Clear the in-memory UTXO set we already loaded (it's from the old chain)
+            *utxo_set.write().await = UtxoSet::new();
+            info!(
+                "Chain reset complete. Node will sync from genesis on the new chain (genesis={})",
+                &canonical.to_string()[..16]
+            );
         }
         let genesis_hash = chain_state.genesis_hash;
 
@@ -1013,7 +1024,16 @@ impl Node {
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
         network_config.max_peers = self.config.max_peers;
         network_config.no_dht = self.config.no_dht;
-        network_config.node_key_path = Some(self.config.data_dir.join("node_key"));
+        // Store node_key in parent of data_dir so chain resets (which wipe data_dir)
+        // don't regenerate the peer ID. Stable peer IDs prevent Kademlia mismatch storms.
+        // Falls back to data_dir if parent doesn't exist (e.g., data_dir is root-level).
+        let node_key_dir = self
+            .config
+            .data_dir
+            .parent()
+            .filter(|p| p.exists())
+            .unwrap_or(&self.config.data_dir);
+        network_config.node_key_path = Some(node_key_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
         // Gossip mesh params from NetworkParams (env vars / .env / chainspec / defaults)
