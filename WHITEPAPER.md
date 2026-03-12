@@ -18,6 +18,8 @@ A new producer receiving 10 DOLI can reinvest block rewards to double their stak
 
 Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
+We demonstrate that NFTs, fungible tokens, and trustless cross-chain bridges can be implemented as native UTXO output types with declarative spending conditions, without a virtual machine, without gas metering, and without trusted committees — achieving equivalent expressiveness to VM-based approaches for these use cases while maintaining bounded, predictable verification cost.
+
 ---
 ## 1. Introduction
 
@@ -156,10 +158,100 @@ Each output type is a named pattern over the condition language:
 | HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Payment channels |
 | Escrow | `Threshold(2, [buyer, seller, arbiter])` | Trustless commerce |
 | Vesting | `Signature(owner) AND Timelock(unlock_height)` | Time-locked grants |
+| UniqueAsset | `Condition + [token_id, content_hash]` | Non-fungible tokens |
+| FungibleAsset | `Condition + [asset_id, supply, ticker]` | User-issued tokens |
+| BridgeHTLC | `HTLC + [target_chain, target_address]` | Cross-chain bridges |
 
 These are not separate implementations — they are compositions of the same primitive conditions. A developer does not write a smart contract. A developer selects conditions.
 
-### 3.4. What This Enables
+### 3.4. Non-Fungible Tokens (UniqueAsset)
+
+A UniqueAsset output carries a globally unique token representing ownership of a singular digital object. The output's `extra_data` stores the spending condition followed by metadata:
+
+```
+extra_data = [condition_bytes][version][token_id][content_hash_len][content_hash]
+```
+
+**Token identity.** The `token_id` is deterministic: `BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)`. Two mints with different nonces always produce different tokens. The content hash may be an IPFS CID, an HTTP URI, or a raw BLAKE3 digest — the protocol stores bytes without interpreting them.
+
+**Spending conditions.** The condition field is the same composable language as any other output. The simplest case is `Signature(owner)` — only the current holder can transfer the NFT. But nothing prevents a Multisig custody, a Hashlock-gated reveal, or a Timelock-based auction where the NFT becomes spendable by anyone after a deadline.
+
+**Transfer.** Transferring an NFT spends the old UTXO and creates a new UniqueAsset output with the same `token_id` and `content_hash` but a new owner and potentially new conditions. The token_id is the permanent identity; the UTXO is the current ownership record.
+
+**No registry, no contract, no global state.** The NFT exists entirely within the UTXO that carries it. Indexing is a reader concern — the protocol validates structure and conditions, nothing more.
+
+### 3.5. User-Issued Tokens (FungibleAsset)
+
+A FungibleAsset output represents a fixed-supply user-issued token. The `extra_data` stores the spending condition followed by asset metadata:
+
+```
+extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][ticker]
+```
+
+**Asset identity.** The `asset_id` is derived from the genesis transaction: `BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index)`. This makes it unique by construction — no two issuances can produce the same asset_id because no two transactions share a hash.
+
+**Fixed supply.** Total supply is set at issuance and encoded in every UTXO carrying the token. The protocol does not enforce supply invariants across UTXOs — that is an indexer responsibility. What the protocol enforces: the `extra_data` structure is valid, the condition is satisfiable, and the output follows standard UTXO rules.
+
+**Ticker.** Up to 16 ASCII characters. `DOGEOLI`, `STBL`, `GOLD` — the ticker is metadata for human readability, stored on-chain and queryable through the RPC.
+
+**What this enables:** meme coins, stablecoins, loyalty points, tokenized securities, game currencies — any scenario where a fixed-supply fungible token is needed. The token lives on the same chain as DOLI, validated by the same producers, at the same speed. No sidechain, no bridge, no wrapper.
+
+### 3.6. Cross-Chain Bridges (BridgeHTLC)
+
+A BridgeHTLC output is a standard HTLC with routing metadata for cross-chain atomic swaps. The `extra_data` stores the HTLC condition followed by bridge metadata:
+
+```
+extra_data = [condition_bytes][version][target_chain][addr_len][target_address]
+```
+
+The condition is always an HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)`. The metadata tells counterparties which chain to lock on and where.
+
+**Supported chains:**
+
+| Chain | ID | Address Format | Hashlock Support |
+|-------|-----|---------------|-----------------|
+| Bitcoin | 1 | Base58/Bech32 | Native (OP_SHA256, OP_HASH160) |
+| Ethereum | 2 | 0x-prefixed hex | 30-line Solidity contract |
+| Monero | 3 | Standard/Integrated | Native (Ed25519 adaptor sigs) |
+| Litecoin | 4 | Base58/Bech32 | Native (same as Bitcoin) |
+| Cardano | 5 | Bech32 | Plutus script |
+
+**Atomic swap protocol:**
+
+```
+1. Alice (DOLI) generates secret S, computes H = BLAKE3(S)
+2. Alice locks X DOLI in BridgeHTLC(H, lock=L, expiry=E, chain=Bitcoin, to=Bob_BTC)
+3. Bob sees the lock on DOLI chain, verifies H
+4. Bob locks Y BTC in Bitcoin HTLC with same hash H, shorter expiry
+5. Alice claims Bob's BTC by revealing S on Bitcoin
+6. Bob reads S from Bitcoin, claims Alice's DOLI by revealing S on DOLI
+7. If Bob never locks → Alice refunds after E
+8. If Alice never claims → Bob refunds after his Bitcoin expiry
+```
+
+Both sides are protected. Neither can lose funds. The preimage revelation on one chain enables the claim on the other. This is the same mechanism that secures the Lightning Network — applied across chains.
+
+**What this is not.** This is not a bridge with validators, multisigs, or custodians. There is no bridge committee. There is no wrapped token. There is no TVL to exploit. Each swap is an independent UTXO with a hash lock. The only trust assumption is that both chains will include transactions before their respective expiries — the same assumption underlying every blockchain.
+
+**What this eliminates.** Every major bridge hack — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploited the same pattern: a small committee guarding a large pool. DOLI has no pool. Each swap is point-to-point, funded by the participants, secured by mathematics. There is nothing to hack because there is nothing to custody.
+
+### 3.7. Witness Separation (SegWit-Style)
+
+Spending a conditioned output requires a witness — the data that satisfies the conditions. A Hashlock requires the preimage. A Signature condition requires a signature from the matching key. A Multisig requires N signatures.
+
+Witnesses are stored in the transaction's `extra_data` field, separate from the signing hash. The signing message covers inputs and outputs but excludes witness data — the same separation Bitcoin SegWit introduced to solve transaction malleability.
+
+```
+signing_hash = BLAKE3(version || tx_type || inputs || outputs)
+    ↑ excludes extra_data (witnesses)
+
+tx_hash = BLAKE3(version || tx_type || inputs || outputs || extra_data)
+    ↑ includes extra_data (immutable commitment)
+```
+
+This prevents a chicken-and-egg: a Signature witness must sign a hash that does not include the witness itself. The witness is committed in the full `tx_hash` for immutability but excluded from `signing_hash` for constructability.
+
+### 3.8. What This Enables
 
 **Without a virtual machine:**
 
@@ -168,18 +260,21 @@ These are not separate implementations — they are compositions of the same pri
 - **Multi-party custody:** Corporate treasuries, DAOs, inheritance — any scenario requiring N-of-M authorization.
 - **Trustless escrow:** Buyer, seller, and arbiter each hold a key. Any two can release funds.
 - **Vesting schedules:** Time-locked outputs for team allocations, grants, or contractual obligations.
+- **Native NFTs:** Digital art, identity tokens, certificates — unique assets with composable spending conditions, no contract deployment.
+- **User-issued tokens:** Meme coins, stablecoins, loyalty points — fixed-supply tokens on the base layer, no sidechain required.
+- **Cross-chain bridges:** Trustless atomic swaps with Bitcoin, Ethereum, Monero, Litecoin, and Cardano. No bridge committee, no wrapped tokens, no custodial risk.
 
 **Without shared mutable state:**
 
 Every output is independent. Spending one output cannot affect another. There is no reentrancy, no front-running, no MEV. Transactions are fully parallelizable — validation scales linearly with cores.
 
-### 3.5. What This Does Not Enable
+### 3.9. What This Does Not Enable
 
 DOLI outputs cannot maintain persistent state across transactions. There is no on-chain storage, no loops, no arbitrary computation. This is deliberate.
 
 Applications requiring shared state — automated market makers, lending protocols, on-chain governance with complex voting — belong on Layer 2 or application-specific chains that settle to DOLI.
 
-The base layer provides: **value transfer, time-anchored ordering, and programmable spending conditions.** Everything else builds on top.
+The base layer provides: **value transfer, time-anchored ordering, programmable spending conditions, native assets, and trustless cross-chain settlement.** Everything else builds on top.
 
 ---
 
