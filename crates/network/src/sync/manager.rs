@@ -334,6 +334,11 @@ pub struct SyncManager {
     last_block_received_via_gossip: Option<Instant>,
     /// Gossip inactivity timeout in seconds (default 180s = 3 minutes)
     gossip_activity_timeout_secs: u64,
+    /// Maximum slots to produce solo without receiving any peer block via gossip.
+    /// After this many slots (slot_duration * N seconds of silence while we're the tip),
+    /// production pauses to avoid building a long orphan chain in isolation.
+    /// Default: 5 slots (50s at 10s/slot).
+    max_solo_production_secs: u64,
 
     // === SYNC FAILURE TRACKING (P0 #4) ===
     /// Consecutive sync failures (empty header responses)
@@ -437,6 +442,10 @@ pub struct SyncManager {
     /// is received and applied. This proves the node is on the canonical chain and
     /// its block store has a real parent to build on.
     awaiting_canonical_block: bool,
+    /// Lowest block height available in the local block store.
+    /// Set by the node after startup / snap sync. Used by fork sync to
+    /// avoid binary-searching below available block data.
+    store_floor: u64,
 }
 
 impl SyncManager {
@@ -478,6 +487,7 @@ impl SyncManager {
             max_heights_ahead: 5,         // Fork detection: if >5 blocks ahead, suspicious
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
+            max_solo_production_secs: 50, // 5 slots × 10s — halt before building long orphan chain
             consecutive_sync_failures: 0,
             max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
             min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers
@@ -513,6 +523,7 @@ impl SyncManager {
             snap_sync_attempts: 0,
             fresh_node_wait_start: None,
             awaiting_canonical_block: false,
+            store_floor: 1, // Default: full-sync node has block 1
         }
     }
 
@@ -1135,6 +1146,34 @@ impl SyncManager {
             }
         }
 
+        // Layer 10.5: Solo production circuit breaker
+        //
+        // Complement to Layer 10: If WE are the tip (local_height >= best_peer_height),
+        // gossip silence is expected — Layer 10 allows it. But if gossip has been silent
+        // for max_solo_production_secs (default 50s = 5 slots), we're likely building
+        // an orphan chain in isolation. Pause to prevent long parallel forks.
+        //
+        // Exception: at genesis (height <= 1) — first blocks legitimately have no gossip.
+        if self.local_height > 1 && self.local_height >= best_peer_height {
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let silence_secs = last_gossip.elapsed().as_secs();
+
+            if silence_secs > self.max_solo_production_secs {
+                warn!(
+                    "CIRCUIT BREAKER: Produced solo for {}s (limit {}s) with no gossip blocks received. \
+                     Pausing production to avoid building orphan chain. local_h={} peer_h={}",
+                    silence_secs, self.max_solo_production_secs,
+                    self.local_height, best_peer_height
+                );
+                return ProductionAuthorization::BlockedNoGossipActivity {
+                    seconds_since_gossip: silence_secs,
+                    peer_count: self.peers.len(),
+                };
+            }
+        }
+
         // Layer 11: Finality conflict check
         // If we have a finalized block, ensure our chain doesn't conflict with it.
         // This prevents producing blocks on a fork that has been superseded by finality.
@@ -1665,6 +1704,18 @@ impl SyncManager {
     // FORK SYNC (binary search for common ancestor)
     // =========================================================================
 
+    /// Set the lowest block height available in the local block store.
+    /// Called by the node after startup or snap sync to inform fork sync
+    /// where the block store coverage begins.
+    pub fn set_store_floor(&mut self, floor: u64) {
+        self.store_floor = floor;
+    }
+
+    /// Get the lowest block height available in the local block store.
+    pub fn store_floor(&self) -> u64 {
+        self.store_floor
+    }
+
     /// Start fork sync: binary search for common ancestor with best peer.
     /// Returns true if fork sync was started, false if conditions aren't met.
     pub fn start_fork_sync(&mut self) -> bool {
@@ -1681,7 +1732,11 @@ impl SyncManager {
         if self.local_height == 0 {
             return false; // Nothing to search at genesis
         }
-        self.fork_sync = Some(super::fork_sync::ForkSync::new(peer, self.local_height));
+        self.fork_sync = Some(super::fork_sync::ForkSync::new(
+            peer,
+            self.local_height,
+            self.store_floor,
+        ));
         // Pause normal sync so requests don't conflict
         self.state = SyncState::Idle;
         true
@@ -1694,9 +1749,9 @@ impl SyncManager {
     }
 
     /// Feed the binary search comparison result from Node.
-    pub fn fork_sync_handle_probe(&mut self, matches: bool) {
+    pub fn fork_sync_handle_probe(&mut self, result: super::fork_sync::ProbeResult) {
         if let Some(ref mut fs) = self.fork_sync {
-            fs.handle_probe_result(matches);
+            fs.handle_probe_result(result);
         }
     }
 
@@ -1712,6 +1767,15 @@ impl SyncManager {
         self.fork_sync
             .as_ref()
             .map(|fs| fs.search_bottomed_out())
+            .unwrap_or(false)
+    }
+
+    /// Check if fork sync search stopped because the block store doesn't
+    /// cover the search range (snap sync gap). NOT a deep fork signal.
+    pub fn fork_sync_store_limited(&self) -> bool {
+        self.fork_sync
+            .as_ref()
+            .map(|fs| fs.search_store_limited())
             .unwrap_or(false)
     }
 

@@ -17,7 +17,7 @@ mod reorg;
 pub use bodies::BodyDownloader;
 pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;
-pub use fork_sync::{ForkSync, ForkSyncResult};
+pub use fork_sync::{ForkSync, ForkSyncResult, ProbeResult};
 pub use headers::HeaderDownloader;
 pub use manager::{
     ProductionAuthorization, SyncConfig, SyncManager, SyncState, VerifiedSnapshot,
