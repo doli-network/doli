@@ -4105,11 +4105,11 @@ async fn cmd_mint(
     let minter_hash = Hash::from_hex(&minter_pubkey_hash)
         .ok_or_else(|| anyhow::anyhow!("Invalid minter pubkey hash"))?;
 
-    // Parse amount (0 for pure NFT)
+    // Parse amount (minimum 1 sat dust for pure NFT — protocol requires non-zero)
     let amount_coins: f64 = amount
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
-    let amount_units = coins_to_units(amount_coins);
+    let amount_units = std::cmp::max(1u64, coins_to_units(amount_coins));
 
     // Content hash: if it looks like hex (64 chars), use as-is; otherwise treat as URI bytes
     let content_bytes = if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
