@@ -14,7 +14,7 @@ Proponemos un sistema de efectivo electrónico peer-to-peer donde el único recu
 
 La produccion de bloques sigue una rotacion determinista: un participante con un bond sabe exactamente cuando se producira su proximo bloque. El protocolo distribuye recompensas cada epoch a traves de un pool integrado — sin pools de mineria externos, sin operadores, sin comisiones. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
 
-Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad agregadas con BLS — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
+Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad on-chain — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
 
 Las transacciones se ordenan mediante pruebas de retardo secuencial — computaciones de hash iteradas que no pueden paralelizarse. No se requiere hardware especial. Cualquier CPU puede participar en el consenso. El resultado es un sistema donde el peso del consenso emerge del tiempo en lugar de la confianza, el capital o la escala.
 
@@ -35,7 +35,7 @@ Proponemos un sistema de efectivo electronico donde el consenso se deriva de com
 
 El trilema blockchain asume tres propiedades en competencia: descentralizacion, seguridad y escalabilidad. Las soluciones propuestas intercambian una por otra — energia por seguridad (PoW), descentralizacion por escalabilidad (PoS), simplicidad por rendimiento (sharding). Estas concesiones surgen porque todo sistema previo ancla el consenso a un recurso que puede acumularse: poder de hash, stake o almacenamiento.
 
-Las Verifiable Delay Functions, formalizadas por primera vez por Boneh, Bonneau, Bunz y Fisch [2] en 2018, hicieron posible demostrar que ha transcurrido tiempo secuencial sin confiar en el demostrador. Antes de que existiera esta primitiva criptografica, la Prueba de Tiempo no era implementable.
+La formalizacion de las Verifiable Delay Functions por Boneh, Bonneau, Bunz y Fisch [2] en 2018 demostro que la computacion secuencial podria servir como primitiva de consenso — probando que ha transcurrido tiempo real sin confiar en el demostrador. Esta idea motivo nuestro enfoque, aunque DOLI usa una construccion mas simple (Seccion 5.1).
 
 Al anclar el consenso a la computacion secuencial:
 
@@ -70,7 +70,7 @@ Una moneda es una cadena de firmas digitales. Para transferir la propiedad, el t
 
 El desafio fundamental es el doble gasto: sin una autoridad central, como sabe el destinatario que el remitente no ha gastado ya la misma moneda en otro lugar? Las soluciones centralizadas funcionan pero crean puntos unicos de falla y requieren confianza universal.
 
-DOLI resuelve esto mediante el anuncio publico de todas las transacciones y el ordenamiento deterministico por tiempo. Cada transaccion se difunde a la red y se incluye en un bloque en un slot especifico. La naturaleza secuencial de los slots — cada uno anclado por una prueba VDF — establece un ordenamiento inequivoco. La transaccion mas temprana en la secuencia temporal es la valida. Los intentos posteriores de gastar la misma salida son rechazados por cada nodo honesto.
+DOLI resuelve esto mediante el anuncio publico de todas las transacciones y el ordenamiento deterministico por tiempo. Cada transaccion se difunde a la red y se incluye en un bloque en un slot especifico. La naturaleza secuencial de los slots — cada uno anclado por una prueba de retardo secuencial — establece un ordenamiento inequivoco. La transaccion mas temprana en la secuencia temporal es la valida. Los intentos posteriores de gastar la misma salida son rechazados por cada nodo honesto.
 
 ### 2.1. Validez de transacciones
 
@@ -156,11 +156,13 @@ Cada tipo de salida es un patron nombrado sobre el lenguaje de condiciones:
 | Multisig | `Multisig(n, keys)` | Custodia compartida |
 | Hashlock | `Signature(owner) AND Hashlock(h)` | Atomic swaps |
 | HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Canales de pago |
-| Escrow | `Threshold(2, [buyer, seller, arbiter])` | Comercio sin confianza |
+| Escrow* | `Threshold(2, [buyer, seller, arbiter])` | Comercio sin confianza |
 | Vesting | `Signature(owner) AND Timelock(unlock_height)` | Asignaciones con bloqueo temporal |
 | UniqueAsset | `Condition + [token_id, content_hash]` | Tokens no fungibles |
 | FungibleAsset | `Condition + [asset_id, supply, ticker]` | Tokens emitidos por usuarios |
 | BridgeHTLC | `HTLC + [target_chain, target_address]` | Puentes entre cadenas |
+
+*Escrow es un patron de composicion usando condiciones Multisig o Threshold, no un tipo de salida separado.
 
 Estas no son implementaciones separadas — son composiciones de las mismas condiciones primitivas. Un desarrollador no escribe un contrato inteligente. Un desarrollador selecciona condiciones.
 
@@ -195,6 +197,8 @@ extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][tick
 **Ticker.** Hasta 16 caracteres ASCII. `DOGEOLI`, `STBL`, `GOLD` — el ticker es metadatos para legibilidad humana, almacenado en cadena y consultable a traves del RPC.
 
 **Lo que esto permite:** meme coins, stablecoins, puntos de lealtad, valores tokenizados, monedas de juegos — cualquier escenario donde se necesite un token fungible de suministro fijo. El token vive en la misma cadena que DOLI, validado por los mismos productores, a la misma velocidad. Sin sidechain, sin puente, sin wrapper.
+
+**Estado:** El tipo de salida esta implementado y validado por el protocolo. No se han creado tokens emitidos por usuarios en mainnet al momento de esta publicacion.
 
 ### 3.6. Puentes entre cadenas (BridgeHTLC)
 
@@ -234,6 +238,8 @@ Ambos lados estan protegidos. Ninguno puede perder fondos. La revelacion de la p
 **Lo que esto no es.** Esto no es un puente con validadores, multisigs o custodios. No hay comite de puente. No hay token envuelto. No hay TVL que explotar. Cada swap es un UTXO independiente con un hash lock. La unica suposicion de confianza es que ambas cadenas incluiran transacciones antes de sus respectivas expiraciones — la misma suposicion subyacente a toda blockchain.
 
 **Lo que esto elimina.** Cada gran hackeo de puentes — Ronin ($624M), Wormhole ($326M), Nomad ($190M), Harmony ($100M) — exploto el mismo patron: un comite pequeno custodiando un pool grande. DOLI no tiene pool. Cada swap es punto a punto, financiado por los participantes, asegurado por matematicas. No hay nada que hackear porque no hay nada que custodiar.
+
+**Estado:** El tipo de salida BridgeHTLC esta implementado y validado on-chain. No se ha ejecutado ningun atomic swap cross-chain todavia — esto requiere integracion de contraparte en cada cadena objetivo.
 
 ### 3.7. Separacion de testigos (estilo SegWit)
 
@@ -289,7 +295,7 @@ La solucion comienza con un servidor de marcas de tiempo distribuido. La red act
                      │  Previous hash   │
                      │  Timestamp       │
  Transactions ───▶   │  Transactions    │
-                     │  VDF Proof       │
+                     │  Prueba de Retardo │
                      └──────────────────┘
                               │
                               ▼
@@ -299,7 +305,7 @@ La solucion comienza con un servidor de marcas de tiempo distribuido. La red act
                      │  Previous hash   │
                      │  Timestamp       │
                      │  Transactions    │
-                     │  VDF Proof       │
+                     │  Prueba de Retardo │
                      └──────────────────┘
 ```
 
@@ -324,23 +330,22 @@ Para cada bloque, el productor debe calcular:
 ```
 input  = HASH(prefix || previous_hash || tx_root || slot || producer_key)
 output = HASH^n(input)
-proof  = π
 ```
 
 Donde *n* es el parametro de dificultad que determina cuanto tiempo toma la computacion.
 
-### 5.1. Construccion de la VDF
+### 5.1. Construccion de la Prueba de Retardo
 
 DOLI utiliza una **cadena de hash iterada** (BLAKE3), no una VDF algebraica sobre grupos de orden desconocido (Wesolowski [3], Pietrzak). La distincion importa:
 
 | Propiedad | VDF algebraica (Wesolowski) | Cadena de hash iterada (DOLI) |
 |----------|---------------------------|---------------------------|
-| Verificacion | *O(1)* — tiempo constante | *O(T)* — debe recomputarse |
+| Verificacion | *O(log T)* — casi constante | *O(T)* — debe recomputarse |
 | Configuracion confiable | Requerida (grupo RSA) | Ninguna |
 | Resistencia cuantica | Incierta | Basada en hash (conservadora) |
 | Implementacion | Compleja (GMP/enteros grandes) | Simple (~10 lineas) |
 
-Las VDFs algebraicas ofrecen verificacion *O(1)*, lo cual es critico cuando el parametro de retardo *T* es grande (minutos a horas). La VDF de bloque de DOLI requiere solo *T* = 800,000 iteraciones (~55ms), haciendo aceptable la verificacion *O(T)* — cada nodo recomputa la cadena en los mismos ~55ms.
+Las VDFs algebraicas ofrecen verificacion *O(log T)*, lo cual es critico cuando el parametro de retardo *T* es grande (minutos a horas). La prueba de retardo de bloque de DOLI requiere solo *T* = 800,000 iteraciones (~55ms), haciendo aceptable la verificacion *O(T)* — cada nodo recomputa la cadena en los mismos ~55ms.
 
 La concesion es deliberada: DOLI gana simplicidad, auditabilidad y ausencia de configuracion confiable al costo de verificacion lineal. Para una prueba de latido donde *T* es pequeno, esta es la eleccion de ingenieria correcta.
 
@@ -391,7 +396,7 @@ Cada red define un conteo fijo de iteraciones calibrado para ~55ms en CPUs moder
 T_BLOCK = 800,000 iterations (~55ms)
 ```
 
-Con slots de 10 segundos, la VDF toma ~55ms, dejando el resto para la construccion y propagacion del bloque. El conteo fijo de iteraciones asegura que todos los nodos computen pruebas identicas — no se necesita calibracion por nodo ni ajuste dinamico.
+Con slots de 10 segundos, la prueba de retardo toma ~55ms, dejando el resto para la construccion y propagacion del bloque. El conteo fijo de iteraciones asegura que todos los nodos computen pruebas identicas — no se necesita calibracion por nodo ni ajuste dinamico.
 
 Todo sistema de consenso impone un recurso escaso. En DOLI, ese recurso es el tiempo secuencial.
 
@@ -403,9 +408,9 @@ Los pasos para operar la red son los siguientes:
 
 1. Las nuevas transacciones se difunden a todos los nodos.
 2. Cada productor elegible recolecta nuevas transacciones en un bloque.
-3. El productor asignado al slot computa la prueba VDF.
+3. El productor asignado al slot computa la prueba de retardo.
 4. El productor difunde el bloque a la red.
-5. Los nodos aceptan el bloque solo si todas las transacciones en el son validas y la prueba VDF es correcta.
+5. Los nodos aceptan el bloque solo si todas las transacciones en el son validas y la prueba de retardo es correcta.
 6. Los nodos expresan su aceptacion del bloque trabajando en crear el siguiente bloque, usando el hash del bloque aceptado como el hash previo.
 
 Los nodos siempre consideran la cadena que cubre mas tiempo como la correcta y continuaran trabajando en extenderla. Si dos nodos difunden versiones diferentes del siguiente bloque simultaneamente, algunos nodos pueden recibir una u otra primero. En ese caso, trabajan en la primera que recibieron pero guardan la otra rama en caso de que se vuelva mas larga. El empate se rompe cuando el siguiente bloque es producido y una rama cubre mas slots; los nodos que estaban trabajando en la otra rama entonces cambian a la mas larga.
@@ -419,7 +424,7 @@ Un bloque *B* es valido si:
 3. `B.slot` se deriva correctamente de `B.timestamp`
 4. `B.slot > prev_block.slot`
 5. `B.producer` tiene un rango valido para `B.slot` (despues del periodo de arranque)
-6. `VDF_verify(preimage, B.vdf_output, B.vdf_proof, T) == true`
+6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. Todas las transacciones en el bloque son validas
 
 ### 6.2. Sincronizacion de reloj
@@ -437,15 +442,15 @@ Los bloques con marcas de tiempo fuera de la ventana aceptable son rechazados.
 
 ### 6.3. Rendimiento
 
-Con tiempos de bloque de 10 segundos y un tamano maximo de bloque de 1 MB:
+Con tiempos de bloque de 10 segundos y un tamano base de bloque de 2 MB (duplicandose cada era, con tope en 32 MB):
 
-| Metrica              | Valor          |
-|----------------------|----------------|
-| Tiempo de bloque     | 10 segundos    |
-| Tamano maximo de bloque | 1 MB        |
-| Transaccion promedio | ~250 bytes     |
-| TPS maximo teorico   | ~400           |
-| TPS practico         | 100-200        |
+| Metrica              | Era 1          | Era 2          | Era 4 (tope)   |
+|----------------------|----------------|----------------|----------------|
+| Tiempo de bloque     | 10 segundos    | 10 segundos    | 10 segundos    |
+| Tamano maximo de bloque | 2 MB        | 4 MB           | 32 MB          |
+| Transaccion promedio | ~250 bytes     | ~250 bytes     | ~250 bytes     |
+| TPS maximo teorico   | ~800           | ~1,600         | ~12,800        |
+| TPS practico         | 200-400        | 400-800        | 3,000-6,000    |
 
 DOLI no compite en rendimiento bruto. Compite en accesibilidad:
 
@@ -454,9 +459,9 @@ DOLI no compite en rendimiento bruto. Compite en accesibilidad:
 | Bitcoin      | ~7        | ASIC ($5,000+)                 |
 | Ethereum PoS | ~30       | 32 ETH + servidor ($100K+)     |
 | Solana       | ~4,000    | Servidor 256GB RAM ($10K+)     |
-| DOLI         | ~200      | Cualquier CPU ($5/mes VPS)     |
+| DOLI         | ~400      | Cualquier CPU ($5/mes VPS)     |
 
-200 TPS en un VPS de $5/mes es una proposicion diferente a 4,000 TPS en hardware que la mayoria de la gente no puede costear. El rendimiento es suficiente para un sistema de efectivo; la accesibilidad es suficiente para la participacion global.
+400 TPS en un VPS de $5/mes es una proposicion diferente a 4,000 TPS en hardware que la mayoria de la gente no puede costear. El rendimiento es suficiente para un sistema de efectivo; la accesibilidad es suficiente para la participacion global. El calendario de duplicacion por era asegura que la capacidad crezca con la madurez de la red.
 
 ---
 
@@ -464,29 +469,29 @@ DOLI no compite en rendimiento bruto. Compite en accesibilidad:
 
 En una red abierta, cualquiera puede crear identidades sin costo. Permitir la creacion ilimitada y gratuita de identidades expondria a la red a ataques Sybil donde un atacante inunda el sistema con nodos falsos.
 
-Para prevenir esto, el registro requiere completar una VDF cuya dificultad se ajusta automaticamente con la congestion de la red.
+Para prevenir esto, el registro requiere completar una prueba de retardo secuencial cuya dificultad impone un tiempo minimo de reloj de pared por identidad.
 
 ```
 input  = HASH(prefix || public_key || epoch)
-output = VDF(input, T_registration)
+output = HASH^T(input)    where T = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
 ```
 
 Un registro es valido si:
 
-1. La prueba VDF se verifica correctamente con `T_registration`.
+1. La prueba de retardo se verifica correctamente con `T_REGISTER_BASE` iteraciones.
 2. El epoch es el actual o el anterior.
 3. La clave publica no esta ya registrada.
 4. El bond de activacion esta incluido.
 
-### 7.1. Dificultad de registro dinamica
+### 7.1. Dificultad de registro
 
-El tiempo requerido para registrarse se ajusta por epoch:
+La dificultad de registro es fija:
 
 ```
-T_registration(E+1) = T_base × max(1, D_E / R_target)
+T_registration = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
 ```
 
-Donde `D_E` es la demanda suavizada basada en registros recientes. Cuando la demanda es alta, el registro toma mas tiempo. Cuando la demanda es baja, el registro es mas rapido.
+Esto es deliberadamente constante. El costo de capital del bond de activacion (10 DOLI) es el principal disuasivo Sybil; la prueba de retardo agrega un piso temporal que previene el registro masivo instantaneo independientemente del capital. Un atacante con *M* maquinas puede registrar *M* identidades en paralelo, pero cada una aun requiere ~30 segundos de computacion secuencial mas el capital del bond.
 
 ### 7.2. Bond de activacion
 
@@ -615,7 +620,7 @@ Los pools existen en PoW y PoS porque las recompensas son probabilisticas — la
 | Solana PoH   | Calendario (stake)         | Baja     | Si    | ~4 GWh/ano     | Servidor $10,000+   |
 | DOLI PoT     | Round-robin deterministico | **Cero** | **Integrado** | **Despreciable** | **Cualquier CPU ($5/mes)** |
 
-Solana usa Proof of History como reloj, pero la seleccion de lider sigue siendo ponderada por stake con elementos probabilisticos y requiere hardware de alto rendimiento. DOLI usa la VDF puramente como latido — la seleccion de lider es una funcion pura de `(slot, ActiveSet(epoch))`. No existe ventaja de hardware.
+Solana usa Proof of History como reloj, pero la seleccion de lider sigue siendo ponderada por stake con elementos probabilisticos y requiere hardware de alto rendimiento. DOLI usa la prueba de retardo puramente como latido — la seleccion de lider es una funcion pura de `(slot, ActiveSet(epoch))`. No existe ventaja de hardware.
 
 ---
 
@@ -633,12 +638,15 @@ accumulated_weight(block) = accumulated_weight(parent) + producer_weight
 
 El peso del productor se deriva de la antiguedad:
 
-| Anos activo  | Peso   |
-|--------------|--------|
-| 0-1          | 1      |
-| 1-2          | 2      |
-| 2-3          | 3      |
-| 3+           | 4      |
+| Anos activo | Peso |
+|-------------|------|
+| 0           | 1.00 |
+| 1           | 1.75 |
+| 2           | 2.50 |
+| 3           | 3.25 |
+| 4+          | 4.00 |
+
+El peso sigue una formula continua: `peso = 1.0 + min(anos, 4) × 0.75`.
 
 Esto previene ataques donde un atacante crea muchos bloques de nuevos productores para superar una cadena construida por productores establecidos.
 
@@ -683,30 +691,20 @@ Esto produce un UTXO por productor por epoch en lugar de uno por bloque — elim
 
 La produccion de bloques demuestra que un productor estuvo en linea durante sus slots asignados. Pero con programacion determinista, un productor sabe exactamente cuales slots son suyos y puede estar fuera de linea el resto del tiempo.
 
-Para demostrar presencia **continua**, cada productor firma una attestation de actividad cada minuto:
+Para demostrar presencia **continua**, cada productor firma una attestation de actividad cada minuto usando ambas claves Ed25519 y BLS12-381:
 
 ```
-attestation = BLS_sign(minute || chain_tip_hash)
+attestation = Sign(block_hash || slot)
 ```
 
-El hash de la punta de la cadena demuestra que el productor no solo esta vivo sino que activamente sigue y valida la cadena. Las attestations se difunden por gossip a la red. Cada productor de bloques agrega todas las firmas de attestation recibidas usando **firmas agregadas BLS12-381** y registra:
+El hash del bloque demuestra que el productor no solo esta vivo sino que activamente sigue y valida la cadena. Las attestations se difunden por gossip a la red. Cada productor de bloques registra:
 
-1. Un **bitfield** — un bit por productor (atestiguado o no)
-2. Una unica **firma BLS agregada de 48 bytes** — prueba criptografica de que el bitfield es honesto
+1. Un **bitfield** en la cabecera del bloque (`presence_root`) — un bit por productor (atestiguado o no), soportando hasta 256 productores (32 bytes)
+2. Una **firma BLS agregada** en el cuerpo del bloque — prueba criptografica de que el bitfield es honesto
 
-```
-On-chain per block: bitfield (⌈N/8⌉ bytes) + aggregate_sig (48 bytes)
-```
+La firma BLS agregada comprime todas las firmas individuales de attestation en una sola verificacion. Un bit falso — afirmando que un productor atestiguó cuando no lo hizo — causa que la verificacion de la firma agregada falle. El bloque es rechazado.
 
-| Productores | Bitfield | Firma agregada | Total |
-|-------------|----------|----------------|-------|
-| 100         | 13 B     | 48 B           | 61 B  |
-| 100,000     | 12.5 KB  | 48 B           | ~13 KB|
-| 1,000,000   | 125 KB   | 48 B           | ~125 KB|
-
-La agregacion BLS significa que la firma agregada siempre es de 48 bytes independientemente de cuantos productores firmaron. Un bit falso — afirmando que un productor atestiguó cuando no lo hizo — causa que la verificacion de la firma agregada falle. El bloque es rechazado. **Infalsificable y escalable.**
-
-En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. El umbral es 90% (54 de 60 minutos). Deterministico: cada nodo lee la misma cadena, computa los mismos conteos, coincide en la misma calificacion.
+En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. Cada epoch abarca 60 minutos de attestation (uno por cada 6 slots). El umbral es 90%: un productor debe atestiguar en al menos 54 de 60 minutos para calificar para recompensas. Deterministico: cada nodo lee la misma cadena, computa los mismos conteos, coincide en la misma calificacion.
 
 ### 10.4. Diseno de doble clave
 
@@ -786,7 +784,7 @@ Comenzando con 10 DOLI, un productor que reinvierte todas las recompensas alcanz
 
 La red rechaza bloques que:
 
-- Tienen pruebas VDF invalidas
+- Tienen pruebas de retardo invalidas
 - Son producidos por el productor incorrecto para ese slot
 - Tienen marcas de tiempo fuera de la ventana valida
 - Contienen transacciones invalidas
@@ -799,7 +797,7 @@ Si un productor falla en producir cuando es seleccionado durante 50 slots consec
 
 - Es removido del conjunto activo
 - El bond permanece bloqueado (sin penalizacion por inactividad)
-- Puede reactivarse con una nueva VDF de registro
+- Puede reactivarse con una nueva prueba de retardo de registro
 
 La inactividad no se castiga — se tolera. Un productor que se desconecta pierde ingresos (recompensas de bloque perdidas) pero no capital (el bond permanece intacto). Esta es una eleccion de diseno deliberada: penalizar el tiempo de inactividad desalentaria a los operadores pequenos con infraestructura menos confiable.
 
@@ -875,17 +873,17 @@ El unico vector de ataque es controlar >50% de los slots ponderados por bonds, l
 
 ### 12.3. La objecion de acumulacion de CPUs
 
-Una objecion natural: "El tiempo no puede acumularse, pero la capacidad de ejecutar VDFs si — mas CPUs permiten mas identidades paralelas."
+Una objecion natural: "El tiempo no puede acumularse, pero la capacidad de probar retardos si — mas CPUs permiten mas identidades paralelas."
 
 Esto es correcto y es por diseno. Un atacante con *M* maquinas puede registrar *M* identidades en paralelo, cada una completando *T_registration* independientemente. Sin embargo, cada identidad aun requiere:
 
 1. **Tiempo secuencial:** *T_registration* segundos de reloj de pared (no puede reducirse anadiendo nucleos)
 2. **Capital:** *BOND_UNIT* bloqueado por identidad (costo lineal en *M*)
-3. **Presencia continua:** Un latido VDF por slot por identidad (costo operativo lineal en *M*)
+3. **Presencia continua:** Un latido de prueba de retardo por slot por identidad (costo operativo lineal en *M*)
 
 El costo de capital es *O(M)* — identico a Proof of Stake. DOLI no escapa de esto. Un atacante con recursos suficientes que puede costear *M* bonds enfrenta el mismo costo lineal de capital que en cualquier sistema PoS.
 
-Lo que DOLI agrega es un **piso temporal** que PoS no tiene: incluso con capital ilimitado, registrar *M* identidades toma al menos *T_registration* de tiempo de reloj de pared por identidad. La dificultad de registro se ajusta por epoch (Seccion 7.1), por lo que una rafaga de registros aumenta *T_registration* para intentos subsiguientes. Esto significa que un ataque estilo PoS de "comprar el 51% del stake de la noche a la manana" es estructuralmente imposible — el atacante debe esperar a traves del pipeline de registro independientemente de su presupuesto.
+Lo que DOLI agrega es un **piso temporal** que PoS no tiene: incluso con capital ilimitado, registrar *M* identidades toma al menos *T_registration* de tiempo de reloj de pared por identidad. El registro requiere un *T_REGISTER_BASE* fijo (~30 segundos) de computacion secuencial por identidad mas *BOND_UNIT* de capital. Un ataque estilo PoS de "comprar el 51% del stake de la noche a la manana" requiere tanto tiempo como capital — ninguno de los dos es suficiente por si solo.
 
 Comparemos con PoW: un atacante con *M* ASICs obtiene *Mx* hashpower inmediatamente, sin demora temporal por identidad. En DOLI, las mismas *M* maquinas producen *M* identidades, pero el pipeline de registro impone un cuello de botella secuencial por identidad y el requisito de capital escala linealmente.
 
@@ -899,7 +897,7 @@ El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema p
 
 - *S_h(e)* = conjunto de slots asignados a productores honestos
 - *S_a(e)* = conjunto de slots asignados a productores atacantes
-- *w(p)* = peso de antiguedad del productor *p* perteneciente a {1, 2, 3, 4}
+- *w(p)* = peso de antiguedad del productor *p* perteneciente a [1.0, 4.0]
 
 El calendario es una funcion pura de `(slot, ActiveSet(epoch))` — ningun contenido de bloque lo influencia.
 
@@ -912,7 +910,7 @@ W_a(k) = Σ_{e=1}^{k} Σ_{s ∈ S_a(e)} w(producer(s))
 
 Dado que *f < n/2*, tenemos *|S_a(e)| < |S_h(e)|* para todo *e*. Adicionalmente, la ponderacion por antiguedad (Seccion 9.1) penaliza las nuevas identidades: *w(nuevo) = 1* mientras *w(establecido) <= 4*. Por lo tanto *W_h(k) > W_a(k)* para todo *k* >= 1.
 
-Por el Teorema del Deficit Secuencial (12.2), el atacante no puede compensar computando mas rapido — la dependencia secuencial de la VDF previene la aceleracion paralela. QED
+Por el Teorema del Deficit Secuencial (12.2), el atacante no puede compensar computando mas rapido — la dependencia secuencial de la cadena de hash previene la aceleracion paralela. QED
 
 **Corolario.** Un atacante que parte de cero necesita ~3 anos de presencia sostenida antes de que su peso de antiguedad iguale al de un productor honesto establecido, incluso con conteo de bonds igual. La ventana de ataque esta por lo tanto acotada no solo por capital sino por tiempo calendario.
 
@@ -930,13 +928,13 @@ Una cabecera de bloque sin transacciones es aproximadamente 340 bytes. Con bloqu
 
 ## 14. Verificacion simplificada de pagos
 
-Es posible verificar pagos sin ejecutar un nodo completo. Un usuario solo necesita mantener una copia de las cabeceras de bloque de la cadena mas larga y obtener la rama Merkle que vincula la transaccion al bloque en el que fue marcada temporalmente.
+Es posible verificar pagos sin ejecutar un nodo completo. Un usuario solo necesita mantener una copia de las cabeceras de bloque de la cadena mas larga y obtener la rama Merkle que vincula la transaccion al bloque en el que fue marcada temporalmente. Esta capacidad esta soportada por las estructuras de datos del protocolo pero aun no esta implementada como una funcionalidad de cliente.
 
 ---
 
 ## 15. Privacidad
 
-DOLI adopta el modelo de privacidad pseudonimo descrito por Nakamoto [1]: las transacciones son publicas, pero las identidades detras de las claves no lo son. Los usuarios generan nuevos pares de claves por transaccion para prevenir la vinculacion. Esto proporciona privacidad equivalente a las divulgaciones de bolsas de valores publicas — los montos y flujos son visibles, los participantes no lo son.
+DOLI adopta el modelo de privacidad pseudonimo descrito por Nakamoto [1]: las transacciones son publicas, pero las identidades detras de las claves no lo son. Los usuarios pueden generar multiples direcciones para reducir la vinculacion. Esto proporciona privacidad equivalente a las divulgaciones de bolsas de valores publicas — los montos y flujos son visibles, los participantes no lo son.
 
 ---
 
@@ -1017,7 +1015,7 @@ El umbral esta ponderado por stake y antiguedad (bonds x multiplicador de antigu
 
 ### 18.3. Adopcion
 
-Despues de la aprobacion, los productores tienen 48 horas para actualizar. Los nodos que ejecutan versiones obsoletas no pueden producir bloques. Esto no es un castigo — es proteccion. Una vulnerabilidad en codigo antiguo afecta a toda la red.
+Despues de la aprobacion, los productores tienen 1 hora para actualizar. Los nodos que ejecutan versiones obsoletas no pueden producir bloques. Esto no es un castigo — es proteccion. Una vulnerabilidad en codigo antiguo afecta a toda la red.
 
 La eleccion es simple: participar en el consenso con software actual, o no participar.
 
@@ -1032,7 +1030,7 @@ A marzo de 2026, la red principal esta en su **fase de arranque** — operativa 
 | Metrica | Valor |
 |---------|-------|
 | Tiempo de bloque | 10 segundos |
-| Computacion VDF | ~55ms por bloque |
+| Computacion de prueba de retardo | ~55ms por bloque |
 | Propagacion de bloques | < 500ms |
 | Forks desde genesis | 0 |
 | Tasa de slots perdidos | < 10% (mecanismo de respaldo) |
@@ -1045,7 +1043,7 @@ El conteo actual de productores refleja la fase de arranque descrita en la Secci
 
 ```
 Genesis:    March 2026
-Consensus:  Proof of Time (VDF heartbeat + deterministic round-robin)
+Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin)
 Status:     Live
 Source:     https://github.com/e-weil/doli
 Explorer:   https://doli.network
@@ -1071,7 +1069,7 @@ Comenzamos con el marco habitual de monedas hechas de firmas digitales, que prop
 
 **Los nodos votan con su tiempo.** La red no puede acelerarse con riqueza ni paralelizarse con hardware. Una hora de computacion secuencial es una hora, ya sea realizada por un individuo o un estado-nacion.
 
-**Las recompensas son deterministas, no probabilisticas.** Un participante sabe exactamente cuando se producira su proximo bloque. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad agregadas con BLS. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
+**Las recompensas son deterministas, no probabilisticas.** Un participante sabe exactamente cuando se producira su proximo bloque. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad on-chain. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
 
 La red es robusta en su simplicidad. Los nodos trabajan con poca coordinacion. No necesitan ser identificados, ya que los mensajes no se enrutan a ningun lugar particular y solo necesitan ser entregados con el mejor esfuerzo posible. Los nodos pueden irse y reincorporarse a la red a voluntad, aceptando la cadena mas pesada como prueba de lo que ocurrio mientras estuvieron ausentes.
 
@@ -1081,7 +1079,7 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 
 ---
 
-**DOLI v2.2.0**
+**DOLI v3.4.1**
 
 *"El tiempo es la unica moneda justa."*
 
@@ -1094,6 +1092,6 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 
 2. Boneh, D., Bonneau, J., Bunz, B., & Fisch, B. (2018). *Verifiable Delay Functions.* In Advances in Cryptology – CRYPTO 2018.
 
-4. Yakovenko, A. (2018). *Solana: A new architecture for a high performance blockchain.* Utiliza hash iterado SHA-256 para Proof of History bajo la misma suposicion de dureza secuencial.
-
 3. Wesolowski, B. (2019). *Efficient Verifiable Delay Functions.* In Advances in Cryptology – EUROCRYPT 2019. (Citado por contraste — DOLI usa cadenas de hash iteradas, no VDFs algebraicas. Ver Seccion 5.1.)
+
+4. Yakovenko, A. (2018). *Solana: A new architecture for a high performance blockchain.* Utiliza hash iterado SHA-256 para Proof of History bajo la misma suposicion de dureza secuencial.
