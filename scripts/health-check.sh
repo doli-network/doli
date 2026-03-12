@@ -69,25 +69,18 @@ except: print('OFFLINE')
 
     IFS='|' read -r height genesis best_hash <<< "$info"
 
-    # Check 2: Peers
+    # Check 2: Peers (use getNetworkInfo which has always worked; getPeerInfo now also available)
     local peer_count
-    peer_count=$(rpc_call "$server" "$port" "getPeerInfo" | python3 -c "
+    peer_count=$(rpc_call "$server" "$port" "getNetworkInfo" | python3 -c "
 import sys,json
 try:
-    r=json.load(sys.stdin).get('result',[])
-    print(len(r) if isinstance(r,list) else 0)
+    r=json.load(sys.stdin).get('result',{})
+    print(r.get('peerCount',0))
 except: print(0)
 " 2>/dev/null) || peer_count=0
 
-    # getPeerInfo may return 0 during sync but node has peers (sync manager handles them)
-    # Check logs for actual peer connections
-    local log_peers
-    log_peers=$(ssh -o ConnectTimeout=5 "$server" "tail -50 ${log_path} 2>/dev/null | grep -c 'peers=[0-9]' || echo 0" 2>/dev/null) || log_peers=0
-
     if [[ "$peer_count" -ge 1 ]]; then
       pass "Peers: ${peer_count}"
-    elif [[ "$log_peers" -gt 0 ]]; then
-      pass "Peers: sync logs show active peers"
     else
       fail "0 peers — node is isolated"
     fi

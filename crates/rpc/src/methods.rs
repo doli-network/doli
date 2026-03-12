@@ -109,6 +109,8 @@ pub struct RpcContext {
     pub peer_id: String,
     /// Peer count function
     pub peer_count: Arc<dyn Fn() -> usize + Send + Sync>,
+    /// Peer list function (returns detailed peer info)
+    pub peer_list: Arc<dyn Fn() -> Vec<PeerInfoEntry> + Send + Sync>,
     /// Broadcast transaction function
     pub broadcast_tx: Arc<dyn Fn(Transaction) + Send + Sync>,
     /// Sync status function
@@ -153,6 +155,7 @@ impl RpcContext {
             bond_unit: net_params.bond_unit,
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
+            peer_list: Arc::new(std::vec::Vec::new),
             broadcast_tx: Arc::new(|_| {}),
             sync_status: Arc::new(SyncStatus::default),
             broadcast_vote: Arc::new(|_| {}),
@@ -205,6 +208,7 @@ impl RpcContext {
                 bond_unit: 10_000_000_000, // 100 DOLI default (mainnet/testnet)
                 peer_id: "unknown".to_string(),
                 peer_count: Arc::new(|| 0),
+                peer_list: Arc::new(std::vec::Vec::new),
                 broadcast_tx: Arc::new(|_| {}),
                 sync_status: Arc::new(SyncStatus::default),
                 broadcast_vote: Arc::new(|_| {}),
@@ -231,6 +235,15 @@ impl RpcContext {
     /// Set peer count callback
     pub fn with_peer_count(mut self, f: impl Fn() -> usize + Send + Sync + 'static) -> Self {
         self.peer_count = Arc::new(f);
+        self
+    }
+
+    /// Set peer list callback
+    pub fn with_peer_list(
+        mut self,
+        f: impl Fn() -> Vec<PeerInfoEntry> + Send + Sync + 'static,
+    ) -> Self {
+        self.peer_list = Arc::new(f);
         self
     }
 
@@ -310,6 +323,7 @@ impl RpcContext {
             "getUtxos" => self.get_utxos(request.params).await,
             "getMempoolInfo" => self.get_mempool_info().await,
             "getNetworkInfo" => self.get_network_info().await,
+            "getPeerInfo" => self.get_peer_info().await,
             "getChainInfo" => self.get_chain_info().await,
             "getProducer" => self.get_producer(request.params).await,
             "getProducers" => self.get_producers(request.params).await,
@@ -701,6 +715,12 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Get detailed peer info
+    async fn get_peer_info(&self) -> Result<Value, RpcError> {
+        let peers = (self.peer_list)();
+        serde_json::to_value(&peers).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 
     /// Get chain info
