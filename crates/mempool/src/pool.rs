@@ -6,7 +6,7 @@ use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
 use doli_core::validation::{validate_transaction, ValidationContext};
-use doli_core::{BlockHeight, Transaction};
+use doli_core::{BlockHeight, Transaction, TxType};
 use storage::{Outpoint, UtxoSet};
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -537,13 +537,18 @@ impl Mempool {
 
             // Then check UTXO set
             if let Some(utxo) = utxo_set.get(&outpoint) {
-                // Use network-specific maturity for coinbase/epoch reward outputs
-                let maturity = self.network.coinbase_maturity();
-                if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
-                    return Err(MempoolError::InvalidTransaction(format!(
-                        "Output not spendable until height {}",
-                        utxo.height + maturity
-                    )));
+                // Skip lock check for RequestWithdrawal and Exit — they unlock Bond UTXOs
+                // (matches validation.rs:2527 exemption)
+                let skip_lock =
+                    tx.tx_type == TxType::RequestWithdrawal || tx.tx_type == TxType::Exit;
+                if !skip_lock {
+                    let maturity = self.network.coinbase_maturity();
+                    if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
+                        return Err(MempoolError::InvalidTransaction(format!(
+                            "Output not spendable until height {}",
+                            utxo.height + maturity
+                        )));
+                    }
                 }
                 total += utxo.output.amount;
             } else {
