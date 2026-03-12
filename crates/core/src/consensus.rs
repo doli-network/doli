@@ -1601,7 +1601,7 @@ impl ConsensusParams {
         match network {
             Network::Devnet => 0,         // Immediate on devnet
             Network::Testnet => 6900,     // Covenants activate at height 6900
-            Network::Mainnet => u64::MAX, // TBD — set after testnet stabilizes
+            Network::Mainnet => 9150, // Activated after v3.4.0 testnet validation
         }
     }
 

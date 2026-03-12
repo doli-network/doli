@@ -1088,8 +1088,13 @@ async fn cmd_send(
     // Get the sender's pubkey_hash for UTXO lookup
     let from_pubkey_hash = wallet.primary_pubkey_hash();
 
-    // Get spendable UTXOs
-    let utxos = rpc.get_utxos(&from_pubkey_hash, true).await?;
+    // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
+    let utxos: Vec<_> = rpc
+        .get_utxos(&from_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
 
     if utxos.is_empty() {
         anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require {} confirmations before they can be spent.", doli_core::consensus::COINBASE_MATURITY);
@@ -2529,8 +2534,13 @@ async fn cmd_producer(
             );
             println!();
 
-            // Get spendable UTXOs
-            let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
+            // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
+            let utxos: Vec<_> = rpc
+                .get_utxos(&pubkey_hash, true)
+                .await?
+                .into_iter()
+                .filter(|u| u.output_type == "normal" && u.spendable)
+                .collect();
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
             // Output count: bond_count bonds + 1 change
@@ -3048,8 +3058,13 @@ async fn cmd_producer(
             );
             println!();
 
-            // Get spendable UTXOs
-            let utxos = rpc.get_utxos(&pubkey_hash, true).await?;
+            // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
+            let utxos: Vec<_> = rpc
+                .get_utxos(&pubkey_hash, true)
+                .await?
+                .into_iter()
+                .filter(|u| u.output_type == "normal" && u.spendable)
+                .collect();
             let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
             // Output count: bond_count bonds + 1 change
