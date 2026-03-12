@@ -25,9 +25,9 @@ pub enum TxType {
     Coinbase = 6,
     /// Add bonds to increase stake (bond stacking)
     AddBond = 7,
-    /// Request withdrawal of bonds (starts 7-day delay)
+    /// Request withdrawal of bonds (instant, with vesting penalty)
     RequestWithdrawal = 8,
-    /// Claim withdrawal after 7-day delay
+    /// Reserved -- unused. Withdrawal is instant via RequestWithdrawal.
     ClaimWithdrawal = 9,
     /// Epoch reward transaction (automatic weighted presence rewards at epoch boundary)
     ///
@@ -890,46 +890,6 @@ impl WithdrawalRequestData {
     }
 }
 
-/// Claim withdrawal data for completing bond withdrawal after delay
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaimWithdrawalData {
-    /// Producer's public key
-    pub producer_pubkey: PublicKey,
-    /// Index of the pending withdrawal to claim (if multiple exist)
-    pub withdrawal_index: u32,
-}
-
-impl ClaimWithdrawalData {
-    /// Create new claim withdrawal data
-    pub fn new(producer_pubkey: PublicKey, withdrawal_index: u32) -> Self {
-        Self {
-            producer_pubkey,
-            withdrawal_index,
-        }
-    }
-
-    /// Serialize to bytes for storage in extra_data
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(self.producer_pubkey.as_bytes());
-        bytes.extend_from_slice(&self.withdrawal_index.to_le_bytes());
-        bytes
-    }
-
-    /// Deserialize from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 36 {
-            return None;
-        }
-        let pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
-        let withdrawal_index = u32::from_le_bytes(bytes[32..36].try_into().ok()?);
-        Some(Self {
-            producer_pubkey: PublicKey::from_bytes(pubkey_bytes),
-            withdrawal_index,
-        })
-    }
-}
-
 // ==================== Epoch Reward Distribution ====================
 //
 // For fair reward distribution, rewards accumulate in a pool during an epoch
@@ -1391,41 +1351,6 @@ impl Transaction {
         WithdrawalRequestData::from_bytes(&self.extra_data)
     }
 
-    /// Create a claim withdrawal transaction.
-    ///
-    /// This completes a pending withdrawal after the 7-day delay.
-    /// The output is the net amount (after penalty was burned at request time).
-    pub fn new_claim_withdrawal(
-        producer_pubkey: PublicKey,
-        withdrawal_index: u32,
-        net_amount: Amount,
-        destination: Hash,
-    ) -> Self {
-        let claim_data = ClaimWithdrawalData::new(producer_pubkey, withdrawal_index);
-        let extra_data = claim_data.to_bytes();
-
-        Self {
-            version: 1,
-            tx_type: TxType::ClaimWithdrawal,
-            inputs: Vec::new(), // No inputs - funds come from pending withdrawal
-            outputs: vec![Output::normal(net_amount, destination)],
-            extra_data,
-        }
-    }
-
-    /// Check if this is a claim withdrawal transaction
-    pub fn is_claim_withdrawal(&self) -> bool {
-        self.tx_type == TxType::ClaimWithdrawal
-    }
-
-    /// Parse claim withdrawal data from extra_data
-    pub fn claim_withdrawal_data(&self) -> Option<ClaimWithdrawalData> {
-        if self.tx_type != TxType::ClaimWithdrawal {
-            return None;
-        }
-        ClaimWithdrawalData::from_bytes(&self.extra_data)
-    }
-
     /// Parse registration data from extra_data
     pub fn registration_data(&self) -> Option<RegistrationData> {
         if self.tx_type != TxType::Registration {
@@ -1449,7 +1374,6 @@ impl Transaction {
                 | TxType::ClaimBond
                 | TxType::SlashProducer
                 | TxType::RequestWithdrawal
-                | TxType::ClaimWithdrawal
                 | TxType::DelegateBond
                 | TxType::RevokeDelegation
                 | TxType::AddMaintainer

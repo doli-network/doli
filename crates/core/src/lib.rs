@@ -167,11 +167,11 @@ pub use consensus::{
     BondError,
     BondsMaturitySummary,
     ConsensusParams,
-    PendingWithdrawal,
     // Producer state and scoring
     PresenceScore,
     ProducerBonds,
     ProducerState,
+    WithdrawalResult,
     // Block-height based reward epochs
     BLOCKS_PER_REWARD_EPOCH,
     BLOCK_REWARD_POOL,
@@ -217,7 +217,6 @@ pub use consensus::{
     VDF_DISCRIMINANT_BITS,
     VESTING_PERIOD_SLOTS,
     VESTING_QUARTER_SLOTS,
-    WITHDRAWAL_DELAY_SLOTS,
     YEAR_IN_SLOTS,
 };
 pub use finality::{
@@ -266,7 +265,6 @@ pub use network_params::NetworkParams;
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
-    ClaimWithdrawalData,
     // Delegation transactions
     DelegateBondData,
     ExitData,

@@ -257,10 +257,6 @@ pub const INITIAL_BOND: Amount = BOND_UNIT;
 /// 3,000 bonds × 10 DOLI = 30,000 DOLI maximum stake per node
 pub const MAX_BONDS_PER_PRODUCER: u32 = 3_000;
 
-/// Withdrawal delay in slots (7 days at 10s slots)
-/// After requesting withdrawal, must wait this period before claiming
-pub const WITHDRAWAL_DELAY_SLOTS: Slot = 60_480; // 7 days * 24 * 360 slots/hour
-
 /// One year in slots (used for seniority weight calculation — NOT vesting)
 /// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
 pub const YEAR_IN_SLOTS: Slot = 3_153_600;
@@ -278,8 +274,7 @@ pub const VESTING_PERIOD_SLOTS: Slot = 4 * VESTING_QUARTER_SLOTS;
 pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 
 /// Unbonding period for exit (~7 days at 10-second slots)
-/// After requesting exit, producers must wait this long before claiming bond
-/// 60,480 slots = 7 days (matches WITHDRAWAL_DELAY_SLOTS)
+/// After requesting exit, producers must wait this long before bond is released
 pub const UNBONDING_PERIOD: BlockHeight = 60_480;
 
 /// Lock duration for bonds (4 years for full vesting on mainnet)
@@ -652,56 +647,33 @@ impl BondEntry {
     }
 }
 
-/// Pending withdrawal request.
-///
-/// When a producer requests to withdraw bonds, they must wait 7 days.
-/// This prevents flash attacks and gives the network time to adjust.
+/// Result of a bond withdrawal (FIFO, instant).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingWithdrawal {
-    /// Number of bonds to withdraw
+pub struct WithdrawalResult {
+    /// Number of bonds withdrawn
     pub bond_count: u32,
-    /// Slot when withdrawal was requested
-    pub request_slot: Slot,
-    /// Net amount after penalty (calculated at request time)
+    /// Net amount after penalty
     pub net_amount: Amount,
     /// Penalty amount (burned)
     pub penalty_amount: Amount,
-    /// Destination pubkey hash for the withdrawal
+    /// Destination pubkey hash
     pub destination: crypto::Hash,
-}
-
-impl PendingWithdrawal {
-    /// Check if withdrawal can be claimed (7-day delay passed)
-    pub fn is_claimable(&self, current_slot: Slot) -> bool {
-        current_slot.saturating_sub(self.request_slot) >= WITHDRAWAL_DELAY_SLOTS
-    }
-
-    /// Slots remaining until claimable
-    pub fn slots_until_claimable(&self, current_slot: Slot) -> Slot {
-        let elapsed = current_slot.saturating_sub(self.request_slot);
-        WITHDRAWAL_DELAY_SLOTS.saturating_sub(elapsed)
-    }
 }
 
 /// Producer's bond holdings.
 ///
-/// Tracks all bonds staked by a producer and any pending withdrawals.
+/// Tracks all bonds staked by a producer.
 /// Selection weight is proportional to total bonds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProducerBonds {
     /// List of bonds (sorted by creation_slot, oldest first for FIFO)
     pub bonds: Vec<BondEntry>,
-    /// Pending withdrawal requests
-    pub pending_withdrawals: Vec<PendingWithdrawal>,
 }
 
 impl ProducerBonds {
     /// Create empty bond holdings
     pub fn new() -> Self {
-        Self {
-            bonds: Vec::new(),
-            pending_withdrawals: Vec::new(),
-        }
+        Self { bonds: Vec::new() }
     }
 
     /// Total number of active bonds
@@ -739,15 +711,16 @@ impl ProducerBonds {
 
     /// Request withdrawal of bonds (FIFO - oldest first)
     ///
-    /// Returns the pending withdrawal with calculated amounts.
+    /// Returns the withdrawal result with calculated amounts.
     /// Penalty is 100% burned (not sent anywhere).
+    /// Withdrawal is instant — no delay.
     /// Uses mainnet quarter duration. For network-aware code, use `request_withdrawal_with_quarter`.
     pub fn request_withdrawal(
         &mut self,
         count: u32,
         current_slot: Slot,
         destination: crypto::Hash,
-    ) -> Result<PendingWithdrawal, BondError> {
+    ) -> Result<WithdrawalResult, BondError> {
         self.request_withdrawal_with_quarter(
             count,
             current_slot,
@@ -763,7 +736,7 @@ impl ProducerBonds {
         current_slot: Slot,
         destination: crypto::Hash,
         quarter_slots: Slot,
-    ) -> Result<PendingWithdrawal, BondError> {
+    ) -> Result<WithdrawalResult, BondError> {
         if count == 0 {
             return Err(BondError::ZeroWithdrawal);
         }
@@ -790,29 +763,12 @@ impl ProducerBonds {
             }
         }
 
-        let withdrawal = PendingWithdrawal {
+        Ok(WithdrawalResult {
             bond_count: count,
-            request_slot: current_slot,
             net_amount: total_net,
             penalty_amount: total_penalty,
             destination,
-        };
-
-        self.pending_withdrawals.push(withdrawal.clone());
-
-        Ok(withdrawal)
-    }
-
-    /// Claim a pending withdrawal (after 7-day delay)
-    pub fn claim_withdrawal(&mut self, current_slot: Slot) -> Result<PendingWithdrawal, BondError> {
-        // Find first claimable withdrawal
-        let idx = self
-            .pending_withdrawals
-            .iter()
-            .position(|w| w.is_claimable(current_slot))
-            .ok_or(BondError::NoClaimableWithdrawal)?;
-
-        Ok(self.pending_withdrawals.remove(idx))
+        })
     }
 
     /// Get summary of bonds by vesting quarter.
@@ -861,11 +817,6 @@ impl ProducerBonds {
                     .1
             })
             .sum()
-    }
-
-    /// Check if there are any pending withdrawals
-    pub fn has_pending_withdrawals(&self) -> bool {
-        !self.pending_withdrawals.is_empty()
     }
 }
 
@@ -1443,7 +1394,6 @@ pub const DELEGATE_REWARD_PCT: u32 = 10;
 pub const STAKER_REWARD_PCT: u32 = 90;
 
 /// Unbonding period for delegation revocation (in slots).
-/// Same as WITHDRAWAL_DELAY_SLOTS for consistency.
 pub const DELEGATION_UNBONDING_SLOTS: u64 = 60_480; // ~7 days
 
 /// Size of the eligible producer pool for weighted selection.
