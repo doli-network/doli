@@ -20,6 +20,8 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 
 **Data flow**: Block → `apply_block()` → writes to in-memory state AND disk batch atomically → state root cached. On restart, disk → in-memory. Both paths MUST produce identical state.
 
+**Seed nodes are also archivers.** Each seed runs with `--archive-to <dir>/blocks` which writes every block as `{height}.block` + `{height}.blake3` (checksum) plus a `manifest.json`. Archive files are the flat-file source of truth for block history — separate from the block store DB. After snap sync or chain recreation, verify archive completeness: `ls <dir>/blocks/*.block | wc -l` should equal tip height. Use `backfillFromPeer` RPC to fill block store gaps (different from archive).
+
 **Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO, vesting penalty, 7-day delay) → ClaimWithdrawal. Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
 
 ## If You Touch
@@ -69,6 +71,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | RPC methods (31) | `crates/rpc/src/methods.rs` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update system | `crates/updater/src/` |
+| Block archiver | `crates/storage/src/archiver.rs` |
 | CLI | `bins/cli/src/` |
 
 ## Map — Ops Scripts (run these, don't improvise)

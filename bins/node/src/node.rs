@@ -2492,10 +2492,10 @@ impl Node {
         let rollback_depth = current_height.saturating_sub(result.ancestor_height);
 
         // Safety limit: reject forks deeper than MAX_SAFE_REORG_DEPTH blocks.
-        // Deep forks are almost always caused by snap sync gaps or isolation, not
-        // legitimate chain reorganization. Automatic reorg of deep forks is dangerous
-        // and destroys state — the operator should investigate and decide manually.
-        const MAX_SAFE_REORG_DEPTH: u64 = 10;
+        // Undo data is kept for UNDO_KEEP_DEPTH (2000) blocks, so reorgs up to 500
+        // are safe with a 4x margin. Previous limit of 10 caused infinite loops when
+        // fork_sync found valid ancestors after snap sync gaps.
+        const MAX_SAFE_REORG_DEPTH: u64 = 500;
         if rollback_depth > MAX_SAFE_REORG_DEPTH {
             warn!(
                 "Fork sync: reorg depth {} exceeds safety limit ({} blocks). \

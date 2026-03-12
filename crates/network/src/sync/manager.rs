@@ -3353,7 +3353,12 @@ impl SyncManager {
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
         // from gossip race), reset to Idle, and never retried.
-        if matches!(self.state, SyncState::Idle) && self.should_sync() {
+        // IMPORTANT: Skip retry when fork_sync is active — its binary search runs
+        // across multiple ticks and resetting to Idle interrupts it, causing infinite loops.
+        if matches!(self.state, SyncState::Idle)
+            && self.should_sync()
+            && !self.is_fork_sync_active()
+        {
             info!(
                 "Sync retry: Idle but behind peers (local_h={}, network_tip={}). Restarting sync.",
                 self.local_height, self.network_tip_height
