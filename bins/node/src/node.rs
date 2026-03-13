@@ -3737,26 +3737,53 @@ impl Node {
     async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
         let block_hash = block.hash();
 
-        // Defense-in-depth: skip blocks we already have.
-        // Prevents height double-counting if sync delivers stored blocks (ISSUE-5).
-        if self.block_store.has_block(&block_hash)? {
-            warn!(
-                "Block {} already in store, skipping apply to prevent height corruption",
-                block_hash
-            );
-            return Ok(());
-        }
-
         let height = self.chain_state.read().await.best_height + 1;
+
+        // Defense-in-depth: skip blocks we already have AND have applied.
+        // Prevents height double-counting if sync delivers stored blocks (ISSUE-5).
+        //
+        // Critical: We must check that the block was actually APPLIED (chain state
+        // advanced past it), not just stored. A block can be in the store but not
+        // applied if a previous apply_block() wrote the block then failed during
+        // UTXO validation (block store poisoning — see N4 incident 2026-03-13).
+        // In that case, we allow re-apply — put_block() will overwrite harmlessly.
+        if self.block_store.has_block(&block_hash)? {
+            if let Some(stored_height) = self.block_store.get_height_by_hash(&block_hash)? {
+                if stored_height < height {
+                    // Block is in store but chain state didn't advance past it.
+                    // This is a poisoned block from a failed apply — proceed with
+                    // re-validation and re-apply (put_block overwrites safely).
+                    warn!(
+                        "Block {} in store at height {} but chain at height {} — \
+                         poisoned block, re-applying",
+                        block_hash, stored_height, height - 1
+                    );
+                } else {
+                    // Block is in store AND chain state is at or past it — truly applied.
+                    debug!(
+                        "Block {} already applied at height {}, skipping",
+                        block_hash, stored_height
+                    );
+                    return Ok(());
+                }
+            } else {
+                // Block in store but no height index — proceed with apply.
+                warn!(
+                    "Block {} in store but no height index — re-applying",
+                    block_hash
+                );
+            }
+        }
 
         self.validate_block_for_apply(&block, height, mode).await?;
         self.validate_block_economics(&block, height, mode).await?;
 
         info!("Applying block {} at height {}", block_hash, height);
 
-        // Store the block and update canonical chain index
-        self.block_store.put_block(&block, height)?;
-        self.block_store.set_canonical_chain(block_hash, height)?;
+        // NOTE: Block store write is deferred to AFTER all transaction validation.
+        // Writing here would poison the store if UTXO validation fails later —
+        // the "already in store" check would then skip the block forever.
+        // See: N4 stuck-at-22888 incident (2026-03-13).
 
         // Update producer liveness tracker (for scheduling filter)
         self.producer_liveness.insert(block.header.producer, height);
@@ -4597,6 +4624,13 @@ impl Node {
             producer_weight,
             block.header.prev_hash,
         );
+
+        // Store the block AFTER all transaction validation has passed.
+        // This prevents block store poisoning: if UTXO validation fails, the block
+        // is NOT in the store, so sync can retry it cleanly on the next attempt.
+        // Previously this was before the tx loop, causing the N4 stuck-at-22888 bug.
+        self.block_store.put_block(&block, height)?;
+        self.block_store.set_canonical_chain(block_hash, height)?;
 
         // Atomic state persistence via StateDb WriteBatch.
         // All state changes (UTXOs, chain_state, producers) committed in one batch.
