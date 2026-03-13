@@ -131,7 +131,7 @@ impl BlockArchiver {
         write_checksum_file(&self.dir, block.height, &block.data)?;
 
         // Derive genesis_hash from block data for manifest
-        if let Ok(b) = bincode::deserialize::<doli_core::Block>(&block.data) {
+        if let Some(b) = doli_core::transaction::legacy::deserialize_block_compat(&block.data) {
             write_manifest(&self.dir, block.height, &block.hash, &b.header.genesis_hash)?;
         } else {
             write_manifest_without_genesis(&self.dir, block.height, &block.hash)?;
@@ -318,8 +318,13 @@ fn import_archive_blocks(
             }
         }
 
-        let block: doli_core::Block = bincode::deserialize(&data)
-            .map_err(|e| format!("Failed to deserialize block at height {}: {}", h, e))?;
+        let block: doli_core::Block =
+            doli_core::transaction::legacy::deserialize_block_compat(&data).ok_or_else(|| {
+                format!(
+                    "Failed to deserialize block at height {} (tried current and legacy formats)",
+                    h
+                )
+            })?;
 
         // Validate genesis_hash consistency within the archive
         if let Some(expected) = expected_genesis_hash {
