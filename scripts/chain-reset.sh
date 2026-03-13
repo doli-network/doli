@@ -3,6 +3,9 @@
 #
 # Usage: scripts/chain-reset.sh [mainnet|testnet] [--skip-backup]
 #
+# Architecture v4 (2026-03-13):
+#   ai1 = ALL testnet, ai2 = ALL mainnet + build, ai3 = seeds only (port 50790)
+#
 # Sequence:
 #   1. Validate ALL service files have --bootstrap (blocks reset if not)
 #   2. Back up current data directories
@@ -15,9 +18,9 @@
 # See: docs/postmortems/2026-03-11-network-partition.md
 set -euo pipefail
 
-AI1="ilozada@72.60.228.233"
-AI2="ilozada@187.124.95.188"
-AI3="ilozada@187.124.148.93"
+AI1="ilozada@72.60.228.233"   # ALL testnet
+AI2="ilozada@187.124.95.188"  # ALL mainnet + build
+AI3="ilozada@187.124.148.93"  # Seeds only (SSH port 50790)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,8 +35,31 @@ if [[ -z "$NETWORK" || ! "$NETWORK" =~ ^(mainnet|testnet)$ ]]; then
   exit 1
 fi
 
+# SSH wrapper: uses port 50790 for AI3
+do_ssh() {
+  local server="$1"; shift
+  if [[ "$server" == "$AI3" ]]; then
+    ssh -p 50790 -o ConnectTimeout=10 "$server" "$@"
+  else
+    ssh -o ConnectTimeout=10 "$server" "$@"
+  fi
+}
+
 echo -e "${YELLOW}=== DOLI Chain Reset: ${NETWORK} ===${NC}"
 echo ""
+
+# Determine which servers to target
+if [[ "$NETWORK" == "mainnet" ]]; then
+  PRIMARY="$AI2"       # All mainnet producers + seed
+  PRODUCERS="N"
+  MAX_NODE=12
+  NODE_LIST="1 2 3 4 5 6 7 8 9 10 11 12"
+else
+  PRIMARY="$AI1"       # All testnet producers + seed
+  PRODUCERS="NT"
+  MAX_NODE=12
+  NODE_LIST="1 2 3 4 5 6 7 8 9 10 11 12"
+fi
 
 # ── Phase 0: Pre-flight validation ─────────────────────────────────────
 echo "Phase 0: Validating service files..."
@@ -44,7 +70,7 @@ validate_service() {
   local server="$1" svc_name="$2" needs_bootstrap="$3"
 
   local has_bootstrap
-  has_bootstrap=$(ssh -o ConnectTimeout=5 "$server" \
+  has_bootstrap=$(do_ssh "$server" \
     "grep -c 'bootstrap' /etc/systemd/system/${svc_name}.service 2>/dev/null || echo 0" 2>/dev/null) || has_bootstrap=0
 
   if [[ "$needs_bootstrap" == "true" && "$has_bootstrap" -lt 1 ]]; then
@@ -55,23 +81,22 @@ validate_service() {
   fi
 }
 
+# Primary seed (no bootstrap needed — it IS the bootstrap)
+validate_service "$PRIMARY" "doli-${NETWORK}-seed" "false"
+
+# Seed on ai3 (needs bootstrap)
+validate_service "$AI3" "doli-${NETWORK}-seed" "true" 2>/dev/null || true
+
+# Seed on the OTHER primary server (mainnet has seed on ai1, testnet has no extra)
 if [[ "$NETWORK" == "mainnet" ]]; then
-  validate_service "$AI1" "doli-mainnet-seed" "false"
-  validate_service "$AI2" "doli-mainnet-seed" "true"
-  validate_service "$AI3" "doli-mainnet-seed" "true" 2>/dev/null || true
-  for N in $(seq 1 12); do
-    if (( N % 2 == 1 )); then server="$AI1"; else server="$AI2"; fi
-    validate_service "$server" "doli-mainnet-n${N}" "true"
-  done
-else
-  validate_service "$AI1" "doli-testnet-seed" "false"
-  validate_service "$AI2" "doli-testnet-seed" "true"
-  validate_service "$AI3" "doli-testnet-seed" "true" 2>/dev/null || true
-  for N in $(seq 1 12); do
-    if (( N % 2 == 1 )); then server="$AI1"; else server="$AI2"; fi
-    validate_service "$server" "doli-testnet-nt${N}" "true"
-  done
+  validate_service "$AI1" "doli-mainnet-seed" "true" 2>/dev/null || true
 fi
+
+# All producers on primary server
+for N in $NODE_LIST; do
+  local_prefix=$(echo "$PRODUCERS" | tr '[:upper:]' '[:lower:]')
+  validate_service "$PRIMARY" "doli-${NETWORK}-${local_prefix}${N}" "true"
+done
 
 if (( VALIDATION_ERRORS > 0 )); then
   echo ""
@@ -85,7 +110,7 @@ echo -e "${GREEN}All service files validated.${NC}"
 echo ""
 
 # ── Confirmation ────────────────────────────────────────────────────────
-echo -e "${RED}WARNING: This will DESTROY all ${NETWORK} chain data on ai1, ai2, and ai3.${NC}"
+echo -e "${RED}WARNING: This will DESTROY all ${NETWORK} chain data on $(hostname) and ai3.${NC}"
 echo -n "Type 'RESET' to confirm: "
 read -r confirm
 if [[ "$confirm" != "RESET" ]]; then
@@ -98,36 +123,29 @@ echo ""
 if [[ "$SKIP_BACKUP" != "--skip-backup" ]]; then
   echo "Phase 1: Backing up data directories..."
   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+  BACKUP_DIR="/${NETWORK}/backups/${TIMESTAMP}"
 
-  if [[ "$NETWORK" == "mainnet" ]]; then
-    BACKUP_DIR="/mainnet/backups/${TIMESTAMP}"
-    for server in "$AI1" "$AI2"; do
-      ssh -o ConnectTimeout=10 "$server" "
-        sudo mkdir -p ${BACKUP_DIR}
-        for d in /mainnet/seed/data /mainnet/n*/data; do
-          if [ -d \"\$d\" ] && [ \"\$(ls -A \$d 2>/dev/null)\" ]; then
-            name=\$(echo \$d | sed 's|/mainnet/||;s|/data||;s|/|-|g')
-            sudo cp -r \"\$d\" \"${BACKUP_DIR}/\${name}\"
-          fi
-        done
-        echo \"  Backed up to ${BACKUP_DIR} on \$(hostname)\"
-      " 2>/dev/null || echo "  Warning: backup failed on $server"
+  # Primary server (all producers + seed)
+  do_ssh "$PRIMARY" "
+    sudo mkdir -p ${BACKUP_DIR}
+    for d in /${NETWORK}/seed/data /${NETWORK}/*/data; do
+      if [ -d \"\$d\" ] && [ \"\$(ls -A \$d 2>/dev/null)\" ]; then
+        name=\$(echo \$d | sed 's|/${NETWORK}/||;s|/data||;s|/|-|g')
+        sudo cp -r \"\$d\" \"${BACKUP_DIR}/\${name}\"
+      fi
     done
-  else
-    BACKUP_DIR="/testnet/backups/${TIMESTAMP}"
-    for server in "$AI1" "$AI2"; do
-      ssh -o ConnectTimeout=10 "$server" "
-        sudo mkdir -p ${BACKUP_DIR}
-        for d in /testnet/seed/data /testnet/nt*/data; do
-          if [ -d \"\$d\" ] && [ \"\$(ls -A \$d 2>/dev/null)\" ]; then
-            name=\$(echo \$d | sed 's|/testnet/||;s|/data||;s|/|-|g')
-            sudo cp -r \"\$d\" \"${BACKUP_DIR}/\${name}\"
-          fi
-        done
-        echo \"  Backed up to ${BACKUP_DIR} on \$(hostname)\"
-      " 2>/dev/null || echo "  Warning: backup failed on $server"
-    done
-  fi
+    echo \"  Backed up to ${BACKUP_DIR} on \$(hostname)\"
+  " 2>/dev/null || echo "  Warning: backup failed on primary"
+
+  # ai3 (seed only)
+  do_ssh "$AI3" "
+    sudo mkdir -p ${BACKUP_DIR}
+    if [ -d /${NETWORK}/seed/data ] && [ \"\$(ls -A /${NETWORK}/seed/data 2>/dev/null)\" ]; then
+      sudo cp -r /${NETWORK}/seed/data ${BACKUP_DIR}/seed
+    fi
+    echo \"  Backed up to ${BACKUP_DIR} on \$(hostname)\"
+  " 2>/dev/null || echo "  Warning: backup failed on ai3"
+
   echo ""
 else
   echo "Phase 1: Skipping backup (--skip-backup)."
@@ -137,67 +155,75 @@ fi
 # ── Phase 2: Stop all services ─────────────────────────────────────────
 echo "Phase 2: Stopping all ${NETWORK} services..."
 
+# Stop producers on primary
+local_prefix=$(echo "$PRODUCERS" | tr '[:upper:]' '[:lower:]')
+do_ssh "$PRIMARY" "
+  for N in ${NODE_LIST}; do
+    sudo systemctl stop doli-${NETWORK}-${local_prefix}\${N} 2>/dev/null || true
+  done
+  sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true
+" 2>/dev/null && echo "  Stopped on primary" || echo "  Warning: stop failed on primary"
+
+# Stop seed on ai3
+do_ssh "$AI3" "sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true" \
+  && echo "  Stopped seed on ai3" || echo "  Warning: stop failed on ai3"
+
+# Stop cross-server seed (mainnet has seed on ai1)
 if [[ "$NETWORK" == "mainnet" ]]; then
-  for server in "$AI1" "$AI2" "$AI3"; do
-    ssh -o ConnectTimeout=10 "$server" "
-      sudo systemctl stop doli-mainnet-seed 2>/dev/null || true
-      for N in \$(seq 1 12); do
-        sudo systemctl stop doli-mainnet-n\${N} 2>/dev/null || true
-      done
-    " 2>/dev/null && echo "  Stopped on $server" || echo "  Warning: stop failed on $server"
-  done
-else
-  for server in "$AI1" "$AI2" "$AI3"; do
-    ssh -o ConnectTimeout=10 "$server" "
-      sudo systemctl stop doli-testnet-seed 2>/dev/null || true
-      for N in \$(seq 1 12); do
-        sudo systemctl stop doli-testnet-nt\${N} 2>/dev/null || true
-      done
-    " 2>/dev/null && echo "  Stopped on $server" || echo "  Warning: stop failed on $server"
-  done
+  do_ssh "$AI1" "sudo systemctl stop doli-mainnet-seed 2>/dev/null || true" \
+    && echo "  Stopped mainnet seed on ai1" || echo "  Warning: stop failed on ai1"
 fi
+
 echo ""
 
 # ── Phase 3: Wipe data ─────────────────────────────────────────────────
 echo "Phase 3: Wiping data directories..."
 
+do_ssh "$PRIMARY" "
+  sudo find /${NETWORK}/seed/data -mindepth 1 -delete 2>/dev/null || true
+  sudo find /${NETWORK}/seed/blocks -mindepth 1 -delete 2>/dev/null || true
+  for N in ${NODE_LIST}; do
+    sudo find /${NETWORK}/${local_prefix}\${N}/data -mindepth 1 -delete 2>/dev/null || true
+  done
+" 2>/dev/null && echo "  Wiped on primary" || echo "  Warning: wipe failed on primary"
+
+do_ssh "$AI3" "
+  sudo find /${NETWORK}/seed/data -mindepth 1 -delete 2>/dev/null || true
+  sudo find /${NETWORK}/seed/blocks -mindepth 1 -delete 2>/dev/null || true
+" 2>/dev/null && echo "  Wiped seed on ai3" || echo "  Warning: wipe failed on ai3"
+
+# Wipe cross-server seed (mainnet has seed on ai1)
 if [[ "$NETWORK" == "mainnet" ]]; then
-  for server in "$AI1" "$AI2" "$AI3"; do
-    ssh -o ConnectTimeout=10 "$server" "
-      sudo find /mainnet/seed/data -mindepth 1 -delete 2>/dev/null || true
-      sudo find /mainnet/seed/blocks -mindepth 1 -delete 2>/dev/null || true
-      for N in \$(seq 1 12); do
-        sudo find /mainnet/n\${N}/data -mindepth 1 -delete 2>/dev/null || true
-      done
-    " 2>/dev/null && echo "  Wiped on $server" || echo "  Warning: wipe failed on $server"
-  done
-else
-  for server in "$AI1" "$AI2" "$AI3"; do
-    ssh -o ConnectTimeout=10 "$server" "
-      sudo find /testnet/seed/data -mindepth 1 -delete 2>/dev/null || true
-      sudo find /testnet/seed/blocks -mindepth 1 -delete 2>/dev/null || true
-      for N in \$(seq 1 12); do
-        sudo find /testnet/nt\${N}/data -mindepth 1 -delete 2>/dev/null || true
-      done
-    " 2>/dev/null && echo "  Wiped on $server" || echo "  Warning: wipe failed on $server"
-  done
+  do_ssh "$AI1" "
+    sudo find /mainnet/seed/data -mindepth 1 -delete 2>/dev/null || true
+    sudo find /mainnet/seed/blocks -mindepth 1 -delete 2>/dev/null || true
+  " 2>/dev/null && echo "  Wiped mainnet seed on ai1" || echo "  Warning: wipe failed on ai1"
 fi
+
 echo ""
 
 # ── Phase 4: Reload systemd ────────────────────────────────────────────
 echo "Phase 4: Reloading systemd..."
-for server in "$AI1" "$AI2" "$AI3"; do
-  ssh -o ConnectTimeout=10 "$server" "sudo systemctl daemon-reload" 2>/dev/null \
-    && echo "  Reloaded on $server" || echo "  Warning: reload failed on $server"
-done
+do_ssh "$PRIMARY" "sudo systemctl daemon-reload" 2>/dev/null \
+  && echo "  Reloaded on primary" || echo "  Warning: reload failed on primary"
+do_ssh "$AI3" "sudo systemctl daemon-reload" 2>/dev/null \
+  && echo "  Reloaded on ai3" || echo "  Warning: reload failed on ai3"
+if [[ "$NETWORK" == "mainnet" && "$PRIMARY" != "$AI1" ]]; then
+  do_ssh "$AI1" "sudo systemctl daemon-reload" 2>/dev/null \
+    && echo "  Reloaded on ai1" || echo "  Warning: reload failed on ai1"
+fi
 echo ""
 
 # ── Phase 5: Start seeds first ─────────────────────────────────────────
 echo "Phase 5: Starting seeds..."
-for server in "$AI1" "$AI2" "$AI3"; do
-  ssh -o ConnectTimeout=10 "$server" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
-    && echo "  Seed started on $server" || echo "  Warning: seed start failed on $server"
-done
+do_ssh "$PRIMARY" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
+  && echo "  Seed started on primary" || echo "  Warning: seed start failed on primary"
+do_ssh "$AI3" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
+  && echo "  Seed started on ai3" || echo "  Warning: seed start failed on ai3"
+if [[ "$NETWORK" == "mainnet" ]]; then
+  do_ssh "$AI1" "sudo systemctl start doli-mainnet-seed" 2>/dev/null \
+    && echo "  Mainnet seed started on ai1" || echo "  Warning: seed start failed on ai1"
+fi
 
 echo "  Waiting 15 seconds for seeds to initialize..."
 sleep 15
@@ -206,21 +232,11 @@ echo ""
 # ── Phase 6: Start producers ───────────────────────────────────────────
 echo "Phase 6: Starting producers..."
 
-if [[ "$NETWORK" == "mainnet" ]]; then
-  for N in $(seq 1 12); do
-    if (( N % 2 == 1 )); then server="$AI1"; else server="$AI2"; fi
-    ssh -o ConnectTimeout=10 "$server" "sudo systemctl start doli-mainnet-n${N}" 2>/dev/null \
-      && echo "  N${N} started on $server" || echo "  Warning: N${N} start failed on $server"
-    sleep 2
-  done
-else
-  for N in $(seq 1 12); do
-    if (( N % 2 == 1 )); then server="$AI1"; else server="$AI2"; fi
-    ssh -o ConnectTimeout=10 "$server" "sudo systemctl start doli-testnet-nt${N}" 2>/dev/null \
-      && echo "  NT${N} started on $server" || echo "  Warning: NT${N} start failed on $server"
-    sleep 2
-  done
-fi
+for N in $NODE_LIST; do
+  do_ssh "$PRIMARY" "sudo systemctl start doli-${NETWORK}-${local_prefix}${N}" 2>/dev/null \
+    && echo "  ${PRODUCERS}${N} started" || echo "  Warning: ${PRODUCERS}${N} start failed"
+  sleep 2
+done
 echo ""
 
 # ── Phase 7: Health check ──────────────────────────────────────────────

@@ -42,11 +42,11 @@ Only finalized blocks (67%+ attestation weight) are archived — blocks that the
 ### Option A: Copy from the archive server
 
 ```bash
-# From omegacortex (same machine)
-cp -r ~/.doli/mainnet/archive/ /path/to/local/archive/
+# From ai2 (mainnet seed — same machine as mainnet producers)
+cp -r /mainnet/seed/data/blocks/ /path/to/local/archive/
 
 # From another machine via rsync
-rsync -av ilozada@archive.doli.network:~/.doli/mainnet/archive/ /path/to/local/archive/
+rsync -av ilozada@seed1.doli.network:/mainnet/seed/data/blocks/ /path/to/local/archive/
 ```
 
 ### Option B: Run your own archiver
