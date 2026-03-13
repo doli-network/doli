@@ -1494,6 +1494,8 @@ dependencies = [
  "anyhow",
  "bincode",
  "bip39",
+ "channels",
+ "chrono",
  "clap",
  "crypto",
  "dirs 5.0.1",

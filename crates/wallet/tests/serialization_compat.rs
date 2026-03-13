@@ -48,6 +48,7 @@ fn test_m1_transfer_serialization_matches_core() {
             output_index: 0,
             signature: sig,
             sighash_type: SighashType::All,
+            committed_output_count: 0,
         }],
         outputs: vec![
             Output {
@@ -132,6 +133,7 @@ fn test_m1_add_bond_serialization_matches_core() {
             output_index: 0,
             signature: sig,
             sighash_type: SighashType::All,
+            committed_output_count: 0,
         }],
         outputs: {
             let mut outs = Vec::new();
