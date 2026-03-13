@@ -127,7 +127,7 @@ cargo doc --workspace --no-deps --open
 DOLI uses **Proof of Time** with two complementary mechanisms:
 
 1. **Epoch Lookahead** (anti-grinding): Leaders are determined deterministically at epoch start
-2. **Heartbeat VDF** (~700ms): Proves continuous sequential presence
+2. **Heartbeat VDF** (~55ms): Proves continuous sequential presence
 
 | Network | Slot  | VDF Time | Purpose                        |
 |---------|-------|----------|--------------------------------|
@@ -145,7 +145,7 @@ vdf_output = hash_chain(vdf_input, iterations)  // ~800K iterations
 - Grinding current block is USELESS for next slot
 
 **Two Types of Proof of Time:**
-1. **Immediate Time (VDF)**: ~700ms heartbeat proves you're present NOW
+1. **Immediate Time (VDF)**: ~55ms heartbeat proves you're present NOW
 2. **Historical Time (Longevity)**: Rights earned over weeks/months/years of presence
 
 **Weight-Based Fork Choice**: The chain with the highest accumulated producer weight wins. Producer weight ranges from 1 (new) to 4 (veteran, based on seniority).
@@ -173,13 +173,13 @@ vdf_output = hash_chain(vdf_input, iterations)  // ~800K iterations
 
 To become a block producer:
 
-1. Complete a VDF proof (base: 10 minutes, adjusts with demand)
-2. Lock an activation bond (10 DOLI per bond)
-3. Bond is locked for ~4 years and slashed for misbehavior
+1. Complete a VDF proof (base: ~30 seconds, scales with demand)
+2. Lock an activation bond (10 DOLI per bond unit)
+3. Bond is locked and slashed for misbehavior
 
 ### Bond Stacking
 
-Producers can stake 1-10,000 bonds to increase their block production share:
+Producers can stake 1-3,000 bonds to increase their block production share:
 
 | Bonds | Investment | Blocks/Cycle | ROI |
 |-------|------------|--------------|-----|
@@ -193,7 +193,7 @@ Producers can stake 1-10,000 bonds to increase their block production share:
 
 - **Hash function**: BLAKE3-256
 - **Signatures**: Ed25519
-- **VDF**: Hash-chain (iterated SHA-256, ~800K iterations)
+- **VDF**: Hash-chain (iterated BLAKE3, ~800K iterations for blocks, ~5M for registration)
 
 ## Networks
 
@@ -211,12 +211,13 @@ Each network has its own genesis, address prefix (`doli`, `tdoli`, `ddoli`), and
 
 | Parameter           | Value                  |
 |---------------------|------------------------|
-| Genesis time        | 2026-02-01T00:00:00Z   |
+| Genesis time        | 2026-03-08             |
 | Slot duration       | 10 seconds             |
 | Epoch duration      | 360 slots (1 hour)     |
 | Block size limit    | 1,000,000 bytes        |
-| Reward maturity     | 100 blocks             |
-| Initial bond        | 10 DOLI                |
+| Reward maturity     | 6 blocks (~60 seconds) |
+| Bond unit           | 10 DOLI                |
+| Max bonds/producer  | 3,000 (30,000 DOLI)   |
 | Slashing (double)   | 100% of bond           |
 | Exclusion period    | 60,480 slots (7 days)  |
 
