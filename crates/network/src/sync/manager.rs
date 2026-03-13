@@ -462,6 +462,12 @@ pub struct SyncManager {
     /// and the node resumes producing on its orphan chain. This flag prevents
     /// that oscillation by remembering "we saw a fork, don't produce until resolved."
     fork_mismatch_detected: bool,
+
+    /// NT10 fix: Set by `reset_sync_for_rollback()` to signal that the next
+    /// `start_sync()` call should NOT use header-first sync. After a fork rollback,
+    /// our tip is still on the fork (just 1 block shorter), so header-first will
+    /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
+    post_rollback: bool,
 }
 
 impl SyncManager {
@@ -542,6 +548,7 @@ impl SyncManager {
             store_floor: 1, // Default: full-sync node has block 1
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
+            post_rollback: false,
         }
     }
 
@@ -1589,6 +1596,10 @@ impl SyncManager {
         self.consecutive_sync_failures = 0;
         self.fork_sync = None;
         self.state = SyncState::Idle;
+        // NT10 fix: Signal that the next start_sync() should skip header-first sync.
+        // After a fork rollback, our tip is still on the fork — header-first will
+        // always get 0 headers because peers don't recognize our (rolled-back) tip.
+        self.post_rollback = true;
         // Clear stale weight history to prevent minority fork weights from
         // contaminating future fork choice decisions after a resync.
         self.reorg_handler.clear();
@@ -2069,6 +2080,41 @@ impl SyncManager {
                     asked: HashSet::new(),
                     started_at: Instant::now(),
                 };
+            } else if self.post_rollback {
+                // NT10 fix: After a fork rollback, our tip is still on the fork
+                // (just 1 block shorter). Header-first sync will always get 0
+                // headers because peers don't recognize our rolled-back fork tip.
+                // Instead, try fork_sync (binary search for common ancestor).
+                // If fork_sync can't start (e.g., no recovery peer), escalate to
+                // snap sync via needs_genesis_resync.
+                self.post_rollback = false;
+                if self.start_fork_sync() {
+                    info!(
+                        "Post-rollback: started fork_sync (binary search) instead of header-first",
+                    );
+                } else if enough_peers && self.snap_sync_attempts < 3 {
+                    warn!(
+                        "Post-rollback: fork_sync failed to start, escalating to snap sync \
+                         (gap={}, peers={})",
+                        gap,
+                        self.peers.len()
+                    );
+                    self.needs_genesis_resync = true;
+                } else {
+                    // Not enough peers for snap sync — fall through to header-first
+                    // as a last resort (it may fail, but cleanup() will retry).
+                    warn!(
+                        "Post-rollback: fork_sync failed, not enough peers for snap sync — \
+                         falling back to header-first (gap={}, peers={})",
+                        gap,
+                        self.peers.len()
+                    );
+                    self.state = SyncState::DownloadingHeaders {
+                        target_slot,
+                        peer,
+                        headers_count: 0,
+                    };
+                }
             } else {
                 info!(
                     "Starting sync epoch {} with peer {} (target_slot={})",
@@ -3421,9 +3467,53 @@ impl SyncManager {
             }
         }
 
-        // Expire stale header blacklist entries (60s cooldown)
+        // Expire stale header blacklist entries (30s cooldown — reduced from 60s
+        // so peers become available between stuck-sync timeout cycles)
         self.header_blacklisted_peers
-            .retain(|_, added| added.elapsed() < Duration::from_secs(60));
+            .retain(|_, added| added.elapsed() < Duration::from_secs(30));
+
+        // NT8 fix: When ALL peers are blacklisted and we've been stuck for >120s
+        // total, clear the blacklist entirely to retry with a fresh slate.
+        // Without this, the node cycles Idle↔DownloadingHeaders forever because
+        // blacklisted peers never expire before the next stuck-sync timeout.
+        if !self.header_blacklisted_peers.is_empty()
+            && self.best_peer().is_none()
+            && self.should_sync()
+            && matches!(self.state, SyncState::Idle)
+        {
+            let stuck_duration = self.last_block_applied.elapsed();
+            if stuck_duration > Duration::from_secs(120) {
+                if self.consecutive_empty_headers >= 20 {
+                    // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
+                    // Escalate to snap sync if enough peers, otherwise clear and retry.
+                    let enough_peers = self.peers.len() >= 3;
+                    if enough_peers {
+                        warn!(
+                            "All peers blacklisted for >120s with {} consecutive empty headers — \
+                             escalating to snap sync",
+                            self.consecutive_empty_headers
+                        );
+                        self.header_blacklisted_peers.clear();
+                        self.needs_genesis_resync = true;
+                    } else {
+                        warn!(
+                            "All peers blacklisted for >120s with {} consecutive empty headers \
+                             but only {} peers (need 3 for snap sync) — clearing blacklist to retry",
+                            self.consecutive_empty_headers, self.peers.len()
+                        );
+                        self.header_blacklisted_peers.clear();
+                    }
+                } else {
+                    // Temporary gossip hiccup — clear blacklist and retry normally.
+                    warn!(
+                        "All peers blacklisted for >120s (consecutive_empty_headers={}) — \
+                         clearing blacklist for fresh retry",
+                        self.consecutive_empty_headers
+                    );
+                    self.header_blacklisted_peers.clear();
+                }
+            }
+        }
 
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
