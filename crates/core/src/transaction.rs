@@ -141,6 +141,33 @@ impl OutputType {
     }
 }
 
+/// Sighash type controlling what parts of the transaction an input's signature covers.
+///
+/// Modeled after Bitcoin's SIGHASH flags. Used for partial signing (PSBT-style)
+/// where different parties sign different inputs of the same transaction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum SighashType {
+    /// Sign ALL inputs and ALL outputs (default, backwards-compatible).
+    /// Both parties must have the complete transaction before signing.
+    #[default]
+    All = 0,
+    /// Sign only THIS input + ALL outputs.
+    /// Allows other parties to add their own inputs after the signer has signed.
+    /// Used for NFT marketplace: seller signs their NFT input, buyer adds payment inputs later.
+    AnyoneCanPay = 1,
+}
+
+impl SighashType {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::All),
+            1 => Some(Self::AnyoneCanPay),
+            _ => None,
+        }
+    }
+}
+
 /// Transaction input (reference to a previous output)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
@@ -150,15 +177,31 @@ pub struct Input {
     pub output_index: u32,
     /// Signature proving ownership
     pub signature: Signature,
+    /// Sighash type: what this input's signature covers.
+    /// Default: All (backwards-compatible with v1 transactions).
+    #[serde(default)]
+    pub sighash_type: SighashType,
 }
 
 impl Input {
-    /// Create a new input
+    /// Create a new input (default sighash: All)
     pub fn new(prev_tx_hash: Hash, output_index: u32) -> Self {
         Self {
             prev_tx_hash,
             output_index,
             signature: Signature::default(),
+            sighash_type: SighashType::All,
+        }
+    }
+
+    /// Create a new input with AnyoneCanPay sighash type.
+    /// The signature covers only this input + all outputs (not other inputs).
+    pub fn new_anyone_can_pay(prev_tx_hash: Hash, output_index: u32) -> Self {
+        Self {
+            prev_tx_hash,
+            output_index,
+            signature: Signature::default(),
+            sighash_type: SighashType::AnyoneCanPay,
         }
     }
 
@@ -181,10 +224,16 @@ impl Input {
 /// Normal and Bond outputs must have empty extra_data.
 pub const MAX_EXTRA_DATA_SIZE: usize = 256;
 
-/// NFT metadata version
+/// NFT metadata version (without royalties)
 pub const NFT_METADATA_VERSION: u8 = 1;
+/// NFT metadata version with royalties
+pub const NFT_METADATA_VERSION_ROYALTY: u8 = 2;
 /// NFT metadata header size: 1B version + 32B token_id
 pub const NFT_METADATA_HEADER_SIZE: usize = 33;
+/// NFT royalty metadata: 32B creator_pubkey_hash + 2B royalty_bps (basis points, 0-10000)
+pub const NFT_ROYALTY_SIZE: usize = 34;
+/// Maximum royalty in basis points (50% = 5000 bps)
+pub const MAX_ROYALTY_BPS: u16 = 5000;
 
 /// Fungible asset metadata version
 pub const FUNGIBLE_ASSET_VERSION: u8 = 1;
@@ -382,7 +431,7 @@ impl Output {
         if meta.len() < NFT_METADATA_HEADER_SIZE {
             return None;
         }
-        if meta[0] != NFT_METADATA_VERSION {
+        if meta[0] != NFT_METADATA_VERSION && meta[0] != NFT_METADATA_VERSION_ROYALTY {
             return None;
         }
         let token_id = Hash::from_bytes({
@@ -390,8 +439,84 @@ impl Output {
             buf.copy_from_slice(&meta[1..33]);
             buf
         });
-        let content_hash = meta[33..].to_vec();
-        Some((token_id, content_hash))
+        let rest = &meta[33..];
+        // For v2 (royalty), strip royalty bytes from content_hash
+        if meta[0] == NFT_METADATA_VERSION_ROYALTY && rest.len() >= NFT_ROYALTY_SIZE {
+            let content_hash = rest[NFT_ROYALTY_SIZE..].to_vec();
+            Some((token_id, content_hash))
+        } else {
+            let content_hash = rest.to_vec();
+            Some((token_id, content_hash))
+        }
+    }
+
+    /// Create an NFT output with royalty.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version=2][32B token_id][32B creator_hash][2B royalty_bps][content_hash]`
+    /// `royalty_bps` is in basis points (100 = 1%, 500 = 5%, max 5000 = 50%).
+    /// The creator_hash and royalty_bps are immutable — they travel with the NFT forever.
+    pub fn nft_with_royalty(
+        amount: Amount,
+        pubkey_hash: Hash,
+        token_id: Hash,
+        content_hash: &[u8],
+        condition: &crate::conditions::Condition,
+        creator_pubkey_hash: Hash,
+        royalty_bps: u16,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        if royalty_bps > MAX_ROYALTY_BPS {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let condition_bytes = condition.encode()?;
+        let metadata_len = 1 + 32 + NFT_ROYALTY_SIZE + content_hash.len();
+        if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let mut extra_data = condition_bytes;
+        extra_data.push(NFT_METADATA_VERSION_ROYALTY);
+        extra_data.extend_from_slice(token_id.as_bytes());
+        extra_data.extend_from_slice(creator_pubkey_hash.as_bytes());
+        extra_data.extend_from_slice(&royalty_bps.to_le_bytes());
+        extra_data.extend_from_slice(content_hash);
+        Ok(Self {
+            output_type: OutputType::NFT,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
+    /// Extract royalty info from an NFT output.
+    /// Returns `Some((creator_pubkey_hash, royalty_bps))` if this NFT has royalties.
+    pub fn nft_royalty(&self) -> Option<(Hash, u16)> {
+        if self.output_type != OutputType::NFT || self.extra_data.is_empty() {
+            return None;
+        }
+        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
+            Ok((_, len)) => len,
+            Err(_) => return None,
+        };
+        let meta = &self.extra_data[cond_len..];
+        if meta.len() < NFT_METADATA_HEADER_SIZE + NFT_ROYALTY_SIZE {
+            return None;
+        }
+        if meta[0] != NFT_METADATA_VERSION_ROYALTY {
+            return None;
+        }
+        // After version(1) + token_id(32): creator_hash(32) + royalty_bps(2)
+        let royalty_start = 33;
+        let creator_hash = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&meta[royalty_start..royalty_start + 32]);
+            buf
+        });
+        let bps = u16::from_le_bytes([meta[royalty_start + 32], meta[royalty_start + 33]]);
+        Some((creator_hash, bps))
     }
 
     /// Create a fungible asset output.
@@ -494,6 +619,12 @@ impl Output {
         target_chain: u8,
         target_address: &[u8],
     ) -> Result<Self, crate::conditions::ConditionError> {
+        if lock_height >= expiry_height {
+            return Err(crate::conditions::ConditionError::InvalidTimelockRange {
+                lock: lock_height,
+                expiry: expiry_height,
+            });
+        }
         let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
         let condition_bytes = cond.encode()?;
         let metadata_len = BRIDGE_HTLC_HEADER_SIZE + target_address.len();
@@ -1435,6 +1566,39 @@ impl Transaction {
 
         // extra_data (covenant witnesses) intentionally excluded — SegWit-style
         hasher.finalize()
+    }
+
+    /// Get the signing message for a specific input, respecting its sighash type.
+    ///
+    /// - `SighashType::All`: identical to `signing_message()` (all inputs + all outputs).
+    /// - `SighashType::AnyoneCanPay`: only THIS input + all outputs.
+    ///   Allows other parties to add inputs after the signer has committed.
+    ///
+    /// This is the DOLI equivalent of Bitcoin BIP-143 per-input signing.
+    pub fn signing_message_for_input(&self, input_index: usize) -> Hash {
+        let input = &self.inputs[input_index];
+        match input.sighash_type {
+            SighashType::All => self.signing_message(),
+            SighashType::AnyoneCanPay => {
+                use crypto::Hasher;
+                let mut hasher = Hasher::new();
+                hasher.update(&self.version.to_le_bytes());
+                hasher.update(&(self.tx_type as u32).to_le_bytes());
+
+                // ANYONECANPAY: hash only this single input
+                hasher.update(&1u32.to_le_bytes()); // input count = 1
+                hasher.update(input.prev_tx_hash.as_bytes());
+                hasher.update(&input.output_index.to_le_bytes());
+
+                // But commit to ALL outputs (seller locks in the price and recipient)
+                hasher.update(&(self.outputs.len() as u32).to_le_bytes());
+                for output in &self.outputs {
+                    hasher.update(&output.serialize());
+                }
+
+                hasher.finalize()
+            }
+        }
     }
 
     /// Encode covenant witness data into extra_data for a Transfer transaction.
@@ -2417,5 +2581,142 @@ mod tests {
             );
             prop_assert!(!tx.is_coinbase());
         }
+    }
+
+    #[test]
+    fn test_sighash_all_matches_signing_message() {
+        // SighashType::All should produce identical hash to signing_message()
+        let tx = Transaction::new_transfer(
+            vec![Input::new(Hash::ZERO, 0), Input::new(Hash::ZERO, 1)],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        assert_eq!(tx.signing_message_for_input(0), tx.signing_message());
+        assert_eq!(tx.signing_message_for_input(1), tx.signing_message());
+    }
+
+    #[test]
+    fn test_anyone_can_pay_differs_from_all() {
+        // AnyoneCanPay should produce a DIFFERENT hash than All
+        let tx = Transaction::new_transfer(
+            vec![
+                Input::new_anyone_can_pay(Hash::ZERO, 0),
+                Input::new(Hash::ZERO, 1),
+            ],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        let acp_hash = tx.signing_message_for_input(0);
+        let all_hash = tx.signing_message_for_input(1);
+        assert_ne!(acp_hash, all_hash);
+    }
+
+    #[test]
+    fn test_anyone_can_pay_stable_after_adding_inputs() {
+        // The key PSBT property: seller signs with AnyoneCanPay,
+        // then buyer adds inputs — seller's hash should NOT change.
+        let outputs = vec![
+            Output::normal(50, Hash::ZERO),  // NFT to buyer
+            Output::normal(100, Hash::ZERO), // Payment to seller
+        ];
+
+        // Step 1: partial TX with only seller's input
+        let tx_partial = Transaction::new_transfer(
+            vec![Input::new_anyone_can_pay(Hash::ZERO, 0)],
+            outputs.clone(),
+        );
+        let seller_hash_before = tx_partial.signing_message_for_input(0);
+
+        // Step 2: full TX with buyer's inputs added
+        let tx_full = Transaction::new_transfer(
+            vec![
+                Input::new_anyone_can_pay(Hash::ZERO, 0), // seller's input (same)
+                Input::new(Hash::from_bytes([1u8; 32]), 0), // buyer's input 1
+                Input::new(Hash::from_bytes([2u8; 32]), 1), // buyer's input 2
+            ],
+            outputs,
+        );
+        let seller_hash_after = tx_full.signing_message_for_input(0);
+
+        // Seller's AnyoneCanPay hash must be identical before and after buyer adds inputs
+        assert_eq!(seller_hash_before, seller_hash_after);
+    }
+
+    #[test]
+    fn test_anyone_can_pay_changes_if_outputs_change() {
+        // Security: if outputs change, AnyoneCanPay hash MUST change
+        let tx1 = Transaction::new_transfer(
+            vec![Input::new_anyone_can_pay(Hash::ZERO, 0)],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        let tx2 = Transaction::new_transfer(
+            vec![Input::new_anyone_can_pay(Hash::ZERO, 0)],
+            vec![Output::normal(200, Hash::ZERO)], // different amount
+        );
+        assert_ne!(
+            tx1.signing_message_for_input(0),
+            tx2.signing_message_for_input(0)
+        );
+    }
+
+    #[test]
+    fn test_nft_royalty_roundtrip() {
+        let creator = Hash::from_bytes([42u8; 32]);
+        let owner = Hash::from_bytes([1u8; 32]);
+        let token_id = Hash::from_bytes([2u8; 32]);
+        let content = b"test";
+        let cond = crate::conditions::Condition::signature(owner);
+
+        let output = Output::nft_with_royalty(
+            0, owner, token_id, content, &cond, creator, 500, // 5%
+        )
+        .unwrap();
+
+        // Should be able to extract royalty
+        let (extracted_creator, extracted_bps) = output.nft_royalty().unwrap();
+        assert_eq!(extracted_creator, creator);
+        assert_eq!(extracted_bps, 500);
+
+        // Should also extract metadata normally
+        let (extracted_token_id, extracted_content) = output.nft_metadata().unwrap();
+        assert_eq!(extracted_token_id, token_id);
+        assert_eq!(extracted_content, content);
+    }
+
+    #[test]
+    fn test_nft_no_royalty() {
+        let owner = Hash::from_bytes([1u8; 32]);
+        let token_id = Hash::from_bytes([2u8; 32]);
+        let content = b"test";
+        let cond = crate::conditions::Condition::signature(owner);
+
+        let output = Output::nft(0, owner, token_id, content, &cond).unwrap();
+
+        // No royalty on v1 NFT
+        assert!(output.nft_royalty().is_none());
+
+        // But metadata should still work
+        assert!(output.nft_metadata().is_some());
+    }
+
+    #[test]
+    fn test_sighash_type_serialization_backwards_compat() {
+        // A v1 transaction (SighashType::All) should serialize and deserialize correctly
+        let tx = Transaction::new_transfer(
+            vec![Input::new(Hash::ZERO, 0)],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        let bytes = tx.serialize();
+        let tx2 = Transaction::deserialize(&bytes).unwrap();
+        assert_eq!(tx2.inputs[0].sighash_type, SighashType::All);
+    }
+
+    #[test]
+    fn test_sighash_anyone_can_pay_serialization() {
+        let tx = Transaction::new_transfer(
+            vec![Input::new_anyone_can_pay(Hash::ZERO, 0)],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        let bytes = tx.serialize();
+        let tx2 = Transaction::deserialize(&bytes).unwrap();
+        assert_eq!(tx2.inputs[0].sighash_type, SighashType::AnyoneCanPay);
     }
 }

@@ -273,10 +273,13 @@ pub use transaction::{
     OutputType,
     RegistrationData,
     RevokeDelegationData,
+    SighashType,
     Transaction,
     TxType,
     WithdrawalRequestData,
     MAX_EXTRA_DATA_SIZE,
+    MAX_ROYALTY_BPS,
+    NFT_METADATA_VERSION_ROYALTY,
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{
