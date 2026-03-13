@@ -300,6 +300,9 @@ impl TxBuilder {
             }
             buf.extend_from_slice(&64u64.to_le_bytes());
             buf.extend_from_slice(sig_bytes);
+            // Input.sighash_type: SighashType — bincode writes enum variant as u32 LE
+            // Always SighashType::All (0) for wallet-built transactions.
+            buf.extend_from_slice(&0u32.to_le_bytes());
         }
 
         // Transaction.outputs: Vec<Output> — u64 LE element count prefix
