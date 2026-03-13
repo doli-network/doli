@@ -150,7 +150,7 @@ impl Mempool {
                             i, e
                         ))
                     })?;
-                    let signing_hash = tx.signing_message();
+                    let signing_hash = tx.signing_message_for_input(i);
                     let eval_ctx = doli_core::conditions::EvalContext {
                         current_height,
                         signing_hash: &signing_hash,
