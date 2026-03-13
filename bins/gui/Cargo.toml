@@ -1,0 +1,48 @@
+[package]
+name = "doli-gui"
+description = "DOLI desktop wallet GUI (Tauri 2.x)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "doli-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Wallet library (shared with CLI)
+wallet = { workspace = true }
+
+# Cryptography (address encoding/decoding)
+crypto = { workspace = true }
+
+# Tauri framework
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Hex encoding
+hex.workspace = true
+
+# Directories
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

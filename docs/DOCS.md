@@ -10,7 +10,7 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [WHITEPAPER.md](/WHITEPAPER.md) | Complete protocol whitepaper - VDF-based blockchain with Proof of Time (PoT) consensus |
 | [protocol.md](./protocol.md) | Wire protocol and message format specifications |
-| [architecture.md](./architecture.md) | System architecture and component design |
+| [architecture.md](./architecture.md) | System architecture and component design (includes GUI desktop app - Section 11) |
 | [security_model.md](./security_model.md) | Security model, threat analysis, and cryptographic guarantees |
 
 ## Networks

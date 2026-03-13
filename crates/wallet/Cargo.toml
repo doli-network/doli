@@ -1,0 +1,40 @@
+[package]
+name = "wallet"
+description = "Shared wallet library for DOLI GUI and CLI: key management, RPC client, transaction builder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Cryptography (from workspace)
+crypto = { workspace = true }
+bip39 = { workspace = true }
+hex.workspace = true
+zeroize.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP client for JSON-RPC
+reqwest = { version = "0.11", features = ["json"] }
+
+# Async runtime
+tokio.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Test utilities
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+wiremock = "0.6"
+serde_json.workspace = true
+# doli-core + bincode as dev-only deps for cross-crate serialization tests.
+# The runtime wallet crate does NOT depend on doli-core (architectural constraint).
+doli-core = { workspace = true }
+bincode.workspace = true

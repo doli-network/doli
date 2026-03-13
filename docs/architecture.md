@@ -619,4 +619,83 @@ Code that exists but is never called — kept for serialization backward compati
 
 ---
 
-*Architecture version: 2.0 — March 2026*
+## 11. GUI Desktop Application
+
+The DOLI GUI is a cross-platform desktop wallet built with **Tauri 2.x** (Rust backend + Svelte 5 frontend). It provides a graphical interface to all wallet, transaction, producer, rewards, NFT, bridge, and governance operations.
+
+### 11.1. Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Tauri Desktop App                     │
+│  ┌────────────────────────────────────────────────┐ │
+│  │         Svelte 5 Frontend (WebView)            │ │
+│  │  Wallet | Producer | Rewards | NFT | Settings  │ │
+│  └───────────────────┬────────────────────────────┘ │
+│                      │ Tauri IPC (invoke)            │
+│  ┌───────────────────┴────────────────────────────┐ │
+│  │         Rust Backend (Tauri Commands)           │ │
+│  │  ┌──────────────────────────────────────────┐  │ │
+│  │  │      crates/wallet (shared library)       │  │ │
+│  │  │  Wallet + RPC Client + TxBuilder          │  │ │
+│  │  │  Depends on: crypto (NOT doli-core/vdf)   │  │ │
+│  │  └───────────────────┬──────────────────────┘  │ │
+│  └──────────────────────│─────────────────────────┘ │
+└─────────────────────────│───────────────────────────┘
+                          │ HTTP POST (JSON-RPC)
+                          ▼
+                   DOLI Node (RPC)
+```
+
+### 11.2. New Crates
+
+| Crate | Purpose | Dependencies |
+|-------|---------|-------------|
+| `crates/wallet/` | Shared wallet + RPC client library (used by CLI and GUI) | `crypto`, `bip39`, `reqwest`, `serde` |
+| `bins/gui/` | Tauri desktop application | `wallet`, `tauri`, Svelte 5 frontend |
+
+**Key design decision**: `crates/wallet/` does NOT depend on `doli-core` or `vdf`. This eliminates the GMP (rug) dependency for the GUI, enabling clean Windows builds without MSYS2. Transaction bytes are constructed directly in the wallet crate using the canonical serialization format.
+
+### 11.3. Dependency Graph (Extended)
+
+```
+crypto (foundation)
+   │
+   ├──► vdf (GMP-dependent)
+   │       │
+   │       └──► doli-core [features = ["vdf"]]
+   │               │
+   │               ├──► storage, network, mempool, rpc
+   │               │       │
+   │               │       └──► bins/node
+   │               │
+   │               └──► bins/cli (uses wallet crate + doli-core for registration VDF)
+   │
+   └──► crates/wallet (NO vdf, NO doli-core)
+           │
+           ├──► bins/cli (wallet + RPC operations)
+           │
+           └──► bins/gui (Tauri desktop app, NO GMP needed)
+```
+
+### 11.4. Security Model
+
+- **Private keys** remain exclusively in the Rust backend process. The Svelte frontend (WebView) never receives key material.
+- **Tauri IPC** is the trust boundary. All inputs from the frontend are validated in Rust before processing.
+- **Wallet file** uses the same JSON format as the CLI (`wallet.json`). Keys are in plaintext (matching CLI behavior). File permissions: 0600.
+- **Content Security Policy** restricts the WebView: no eval, no inline scripts, connect-src limited to DOLI RPC endpoints.
+
+### 11.5. CI/CD
+
+GUI builds are added as separate GitHub Actions jobs in the release workflow. They produce:
+- `.msi` (Windows x86_64)
+- `.dmg` (macOS aarch64 + x86_64)
+- `.AppImage` (Linux x86_64)
+
+GUI build failures do not block CLI/node releases. The Windows GUI build does NOT require GMP/MSYS2.
+
+Full architecture specification: `specs/gui-architecture.md`
+
+---
+
+*Architecture version: 2.1 — March 2026*
