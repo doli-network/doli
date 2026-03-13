@@ -1059,7 +1059,80 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-## 12. WHITEPAPER Operations Mapping
+## 12. NFT Operations
+
+All NFT commands live under `doli nft` with action flags.
+
+### 12.1. List NFTs
+
+```bash
+doli nft --list
+doli nft -l
+```
+
+Shows all NFTs owned by the wallet (token ID, content, UTXO reference).
+
+### 12.2. NFT Info
+
+```bash
+doli nft --info <UTXO>
+doli nft -i 7e445810be1e5ecc...:0
+```
+
+Displays token ID, content hash/URI, owner address, value, and spending condition.
+
+### 12.3. Mint NFT
+
+```bash
+doli nft --mint <CONTENT> [--condition <COND>] [--amount <DOLI>]
+doli nft -m "ipfs://QmMyArtwork"
+doli nft -m "hello-world" --amount 0.01
+```
+
+Creates a new unique NFT. Content can be an IPFS CID, HTTP URL, hex hash, or plain text.
+Default condition: signature of the minter (only minter can transfer).
+
+### 12.4. Transfer NFT
+
+```bash
+doli nft --transfer <UTXO> --to <ADDRESS>
+doli nft -t 7e445810be1e5ecc...:0 --to tdoli1abc...
+```
+
+Transfers an NFT to a new owner. Fee is auto-included from wallet's spendable UTXOs.
+
+### 12.5. Sell NFT (Create Offer)
+
+```bash
+doli nft --sell <UTXO> --price <DOLI> -o <FILE>
+doli nft -s 7e445810be1e5ecc...:0 --price 10.0 -o my_nft.offer
+```
+
+Creates a JSON offer file with the NFT details and asking price. Share this file with potential buyers.
+
+### 12.6. Buy NFT (Direct)
+
+```bash
+doli nft --buy <UTXO> --price <DOLI> --seller-wallet <PATH>
+doli nft -b 7e445810be1e5ecc...:0 --price 10.0 --seller-wallet /path/to/seller.json
+```
+
+Atomic purchase: single transaction with NFT transfer + payment. Both buyer and seller sign.
+Requires both wallets to be accessible on the same machine (for testing/internal use).
+
+### 12.7. Buy NFT (From Offer)
+
+```bash
+doli nft --from <FILE> --seller-wallet <PATH>
+doli nft --from my_nft.offer --seller-wallet /path/to/seller.json
+```
+
+Completes a purchase from a sell offer file. The offer provides UTXO, price, and token details.
+Still requires seller wallet access for signing.
+
+---
+
+## 13. WHITEPAPER Operations Mapping
 
 | WHITEPAPER Section | CLI Command |
 |--------------------|-------------|
@@ -1072,12 +1145,13 @@ doli-node maintainer verify --pubkey <PUBKEY>
 | 7. Producer Selection | `doli producer status`, `doli producer list` |
 | 9.1 Emission/Rewards | `doli balance` (rewards are automatic via coinbase) |
 | 10.3 Double Production | `doli producer slash` |
+| 12. NFTs/Covenants | `doli nft --mint`, `doli nft --transfer`, `doli nft --buy`, `doli nft --sell` |
 | 14. Privacy (new keys) | `doli address` |
 | 15. Governance | `doli-node update vote`, `doli-node maintainer` |
 
 ---
 
-## 13. Environment Variables
+## 14. Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -1086,7 +1160,7 @@ doli-node maintainer verify --pubkey <PUBKEY>
 
 ---
 
-## 14. Exit Codes
+## 15. Exit Codes
 
 | Code | Meaning |
 |------|---------|

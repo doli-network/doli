@@ -234,50 +234,63 @@ enum Commands {
         command: ProtocolCommands,
     },
 
-    /// Mint an NFT (create a unique non-fungible token)
-    Mint {
-        /// Content hash or URI (IPFS CID, HTTP URL, or hex hash)
-        content: String,
+    /// NFT operations (mint, transfer, buy, sell, list, info)
+    Nft {
+        /// List NFTs owned by this wallet
+        #[arg(short, long)]
+        list: bool,
 
-        /// Optional condition on the NFT (default: signature of minter)
+        /// Show info for a specific NFT UTXO (txhash:index)
+        #[arg(short, long, value_name = "UTXO")]
+        info: Option<String>,
+
+        /// Mint a new NFT with given content (hash, URI, or text)
+        #[arg(short, long, value_name = "CONTENT")]
+        mint: Option<String>,
+
+        /// Transfer an NFT to a new owner (requires --to)
+        #[arg(short, long, value_name = "UTXO")]
+        transfer: Option<String>,
+
+        /// Create a sell offer file (requires --price, -o)
+        #[arg(short, long, value_name = "UTXO")]
+        sell: Option<String>,
+
+        /// Buy an NFT directly (requires --price, --seller-wallet)
+        #[arg(short, long, value_name = "UTXO")]
+        buy: Option<String>,
+
+        /// Buy from a sell offer file (requires --seller-wallet)
+        #[arg(long, value_name = "FILE")]
+        from: Option<String>,
+
+        /// Recipient address (for --transfer)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Price in DOLI (for --sell or --buy)
+        #[arg(long)]
+        price: Option<String>,
+
+        /// Output file for sell offer (for --sell)
+        #[arg(short = 'o', long = "out", value_name = "FILE")]
+        output: Option<String>,
+
+        /// Seller's wallet path (for --buy or --from)
+        #[arg(long)]
+        seller_wallet: Option<String>,
+
+        /// Condition on the NFT (for --mint, default: signature)
         #[arg(short, long)]
         condition: Option<String>,
 
-        /// Optional DOLI value to attach (default: 0, pure NFT)
+        /// DOLI value to attach to NFT (for --mint, default: 0)
         #[arg(short, long, default_value = "0")]
         amount: String,
-    },
 
-    /// Transfer an NFT to a new owner
-    NftTransfer {
-        /// UTXO containing the NFT: txhash:output_index
-        utxo: String,
-
-        /// Recipient address
-        to: String,
-
-        /// Witness to satisfy the NFT's spending condition
+        /// Witness to satisfy spending condition (for --transfer)
         #[arg(short, long, default_value = "none()")]
         witness: String,
-    },
-
-    /// Atomic NFT purchase (single tx: payment + NFT transfer)
-    NftBuy {
-        /// UTXO containing the NFT: txhash:output_index
-        utxo: String,
-
-        /// Price in DOLI to pay the seller
-        price: String,
-
-        /// Seller's wallet (must have key that owns the NFT)
-        #[arg(long)]
-        seller_wallet: String,
-    },
-
-    /// Show NFT info from a UTXO
-    NftInfo {
-        /// UTXO containing the NFT: txhash:output_index
-        utxo: String,
     },
 
     /// Issue a fungible token (meme coin, stablecoin, etc.)
@@ -690,26 +703,54 @@ async fn main() -> Result<()> {
         Commands::Protocol { command } => {
             cmd_protocol(&wallet, &rpc_endpoint, command).await?;
         }
-        Commands::Mint {
-            content,
+        Commands::Nft {
+            list,
+            info,
+            mint,
+            transfer,
+            sell,
+            buy,
+            from,
+            to,
+            price,
+            output,
+            seller_wallet,
             condition,
             amount,
+            witness,
         } => {
-            cmd_mint(&wallet, &rpc_endpoint, &content, condition, &amount).await?;
-        }
-        Commands::NftTransfer { utxo, to, witness } => {
-            cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
-        }
-        Commands::NftBuy {
-            utxo,
-            price,
-            seller_wallet,
-        } => {
-            let seller_path = expand_tilde(&seller_wallet);
-            cmd_nft_buy(&wallet, &seller_path, &rpc_endpoint, &utxo, &price).await?;
-        }
-        Commands::NftInfo { utxo } => {
-            cmd_nft_info(&rpc_endpoint, &utxo).await?;
+            if list {
+                cmd_nft_list(&wallet, &rpc_endpoint).await?;
+            } else if let Some(utxo) = info {
+                cmd_nft_info(&rpc_endpoint, &utxo).await?;
+            } else if let Some(content) = mint {
+                cmd_mint(&wallet, &rpc_endpoint, &content, condition, &amount).await?;
+            } else if let Some(utxo) = transfer {
+                let to = to.ok_or_else(|| anyhow::anyhow!("--to is required for --transfer"))?;
+                cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
+            } else if let Some(utxo) = sell {
+                let price =
+                    price.ok_or_else(|| anyhow::anyhow!("--price is required for --sell"))?;
+                let out =
+                    output.ok_or_else(|| anyhow::anyhow!("-o/--out is required for --sell"))?;
+                cmd_nft_sell(&wallet, &rpc_endpoint, &utxo, &price, &out).await?;
+            } else if let Some(utxo) = buy {
+                let price =
+                    price.ok_or_else(|| anyhow::anyhow!("--price is required for --buy"))?;
+                let sw = seller_wallet
+                    .ok_or_else(|| anyhow::anyhow!("--seller-wallet is required for --buy"))?;
+                let seller_path = expand_tilde(&sw);
+                cmd_nft_buy(&wallet, &seller_path, &rpc_endpoint, &utxo, &price).await?;
+            } else if let Some(file) = from {
+                let sw = seller_wallet
+                    .ok_or_else(|| anyhow::anyhow!("--seller-wallet is required for --from"))?;
+                let seller_path = expand_tilde(&sw);
+                cmd_nft_buy_from_file(&wallet, &seller_path, &rpc_endpoint, &file).await?;
+            } else {
+                anyhow::bail!(
+                    "Specify an action: --list, --info, --mint, --transfer, --sell, --buy, or --from\nRun 'doli nft --help' for details."
+                );
+            }
         }
         Commands::IssueToken {
             ticker,
@@ -4753,6 +4794,236 @@ async fn cmd_nft_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn cmd_nft_list(wallet_path: &Path, rpc_endpoint: &str) -> Result<()> {
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let pubkey_hash = wallet.primary_pubkey_hash();
+    let response = rpc.get_utxos_json(&pubkey_hash, false).await?;
+    let utxos = response
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid UTXO response"))?;
+
+    let nfts: Vec<_> = utxos
+        .iter()
+        .filter(|u| u.get("outputType").and_then(|v| v.as_str()) == Some("nft"))
+        .collect();
+
+    if nfts.is_empty() {
+        println!("No NFTs found in wallet.");
+        return Ok(());
+    }
+
+    println!("NFTs ({}):", nfts.len());
+    println!("{:-<80}", "");
+    for nft in &nfts {
+        let tx_hash = nft.get("txHash").and_then(|v| v.as_str()).unwrap_or("?");
+        let idx = nft.get("outputIndex").and_then(|v| v.as_u64()).unwrap_or(0);
+        let amount = nft.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        if let Some(meta) = nft.get("nft") {
+            let token = meta.get("tokenId").and_then(|v| v.as_str()).unwrap_or("?");
+            let content = meta
+                .get("contentHash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let content_display = if let Ok(bytes) = hex::decode(content) {
+                if let Ok(s) = std::str::from_utf8(&bytes) {
+                    if s.starts_with("http") || s.starts_with("ipfs") || s.is_ascii() {
+                        s.to_string()
+                    } else {
+                        format!("{}...", &content[..std::cmp::min(32, content.len())])
+                    }
+                } else {
+                    format!("{}...", &content[..std::cmp::min(32, content.len())])
+                }
+            } else {
+                content.to_string()
+            };
+
+            let tx_prefix = if tx_hash.len() >= 16 {
+                &tx_hash[..16]
+            } else {
+                tx_hash
+            };
+            println!("  UTXO:    {}:{}", tx_prefix, idx);
+            if token.len() >= 16 {
+                println!("  Token:   {}...{}", &token[..8], &token[token.len() - 8..]);
+            } else {
+                println!("  Token:   {}", token);
+            }
+            if !content_display.is_empty() {
+                println!("  Content: {}", content_display);
+            }
+            if amount > 1 {
+                println!("  Value:   {}", format_balance(amount));
+            }
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_nft_sell(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    price_str: &str,
+    output_file: &str,
+) -> Result<()> {
+    use crypto::Hash;
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    let price_coins: f64 = price_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid price: {}", price_str))?;
+    let price_units = coins_to_units(price_coins);
+    if price_units == 0 {
+        anyhow::bail!("Price must be greater than 0");
+    }
+
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let nft_tx_hash = Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+    let nft_output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index"))?;
+
+    let tx_info = rpc.get_transaction_json(&nft_tx_hash.to_hex()).await?;
+    let nft_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(nft_output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output"))?;
+
+    let nft_meta = nft_output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
+    let token_id_hex = nft_meta
+        .get("tokenId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing tokenId"))?;
+    let content_hash_hex = nft_meta
+        .get("contentHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let nft_amount = nft_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let seller_pubkey_hash = wallet.primary_pubkey_hash();
+
+    let offer = serde_json::json!({
+        "version": 1,
+        "type": "nft_sell_offer",
+        "nft_utxo": {
+            "tx_hash": nft_tx_hash.to_hex(),
+            "output_index": nft_output_index,
+        },
+        "token_id": token_id_hex,
+        "content_hash": content_hash_hex,
+        "nft_amount": nft_amount,
+        "price": price_units,
+        "seller_pubkey_hash": seller_pubkey_hash,
+    });
+
+    let offer_json = serde_json::to_string_pretty(&offer)?;
+    std::fs::write(output_file, &offer_json)?;
+
+    let seller_hash = Hash::from_hex(&seller_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid seller hash"))?;
+    let seller_display = crypto::address::encode(&seller_hash, address_prefix())
+        .unwrap_or_else(|_| seller_hash.to_hex());
+
+    println!("NFT Sell Offer Created:");
+    println!("  Token ID: {}", token_id_hex);
+    println!(
+        "  UTXO:     {}:{}",
+        &nft_tx_hash.to_hex()[..16],
+        nft_output_index
+    );
+    println!("  Price:    {}", format_balance(price_units));
+    println!("  Seller:   {}", seller_display);
+    println!("  Saved to: {}", output_file);
+    println!();
+    println!("Share this file with the buyer. They complete with:");
+    println!(
+        "  doli nft --from {} --seller-wallet /path/to/seller-wallet.json",
+        output_file
+    );
+
+    Ok(())
+}
+
+/// Buy an NFT from a sell offer file. Requires seller wallet access
+/// because DOLI does not have SIGHASH flags for partial signing.
+async fn cmd_nft_buy_from_file(
+    buyer_wallet_path: &Path,
+    seller_wallet_path: &Path,
+    rpc_endpoint: &str,
+    offer_file: &str,
+) -> Result<()> {
+    use crypto::Hash;
+
+    let offer_json = std::fs::read_to_string(offer_file)
+        .map_err(|e| anyhow::anyhow!("Cannot read offer file: {}", e))?;
+    let offer: serde_json::Value = serde_json::from_str(&offer_json)
+        .map_err(|e| anyhow::anyhow!("Invalid offer file: {}", e))?;
+
+    let offer_type = offer.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if offer_type != "nft_sell_offer" {
+        anyhow::bail!("Not a valid sell offer file (type: {})", offer_type);
+    }
+
+    let nft_utxo = offer
+        .get("nft_utxo")
+        .ok_or_else(|| anyhow::anyhow!("Missing nft_utxo in offer"))?;
+    let nft_tx_hash_hex = nft_utxo
+        .get("tx_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing tx_hash in offer"))?;
+    let nft_output_index = nft_utxo
+        .get("output_index")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("Missing output_index in offer"))?
+        as u32;
+    let price_units = offer
+        .get("price")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("Missing price in offer"))?;
+
+    let _nft_tx_hash = Hash::from_hex(nft_tx_hash_hex)
+        .ok_or_else(|| anyhow::anyhow!("Invalid tx hash in offer"))?;
+
+    let utxo_ref = format!("{}:{}", nft_tx_hash_hex, nft_output_index);
+    let price_coins = rpc_client::units_to_coins(price_units);
+    let price_str = format!("{}", price_coins);
+
+    cmd_nft_buy(
+        buyer_wallet_path,
+        seller_wallet_path,
+        rpc_endpoint,
+        &utxo_ref,
+        &price_str,
+    )
+    .await
 }
 
 // =============================================================================
