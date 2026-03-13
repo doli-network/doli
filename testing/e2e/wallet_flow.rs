@@ -588,10 +588,10 @@ async fn test_wallet_signature_verification() {
         .create_send_transaction(&recipient.address(), coins_to_units(50), 100_000)
         .unwrap();
 
-    // Verify signatures
-    let msg = tx.signing_message();
-    for input in &tx.inputs {
+    // Verify signatures (BIP-143: per-input signing hash)
+    for (i, input) in tx.inputs.iter().enumerate() {
+        let msg = tx.signing_message_for_input(i);
         let result = signature::verify(msg.as_bytes(), &input.signature, wallet.keypair.public_key());
-        assert!(result.is_ok(), "Signature verification failed");
+        assert!(result.is_ok(), "Signature verification failed for input {}", i);
     }
 }

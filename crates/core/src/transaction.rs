@@ -1570,15 +1570,40 @@ impl Transaction {
 
     /// Get the signing message for a specific input, respecting its sighash type.
     ///
-    /// - `SighashType::All`: identical to `signing_message()` (all inputs + all outputs).
+    /// BIP-143 style: each input's signing hash includes its own outpoint
+    /// (prevTxHash || outputIndex), producing unique signatures per input.
+    ///
+    /// - `SighashType::All`: all inputs + all outputs + THIS input's outpoint.
     /// - `SighashType::AnyoneCanPay`: only THIS input + all outputs.
     ///   Allows other parties to add inputs after the signer has committed.
-    ///
-    /// This is the DOLI equivalent of Bitcoin BIP-143 per-input signing.
     pub fn signing_message_for_input(&self, input_index: usize) -> Hash {
         let input = &self.inputs[input_index];
         match input.sighash_type {
-            SighashType::All => self.signing_message(),
+            SighashType::All => {
+                use crypto::Hasher;
+                let mut hasher = Hasher::new();
+                hasher.update(&self.version.to_le_bytes());
+                hasher.update(&(self.tx_type as u32).to_le_bytes());
+
+                // All inputs (same as signing_message)
+                hasher.update(&(self.inputs.len() as u32).to_le_bytes());
+                for inp in &self.inputs {
+                    hasher.update(inp.prev_tx_hash.as_bytes());
+                    hasher.update(&inp.output_index.to_le_bytes());
+                }
+
+                // All outputs
+                hasher.update(&(self.outputs.len() as u32).to_le_bytes());
+                for output in &self.outputs {
+                    hasher.update(&output.serialize());
+                }
+
+                // BIP-143: per-input outpoint for unique signing hash
+                hasher.update(input.prev_tx_hash.as_bytes());
+                hasher.update(&input.output_index.to_le_bytes());
+
+                hasher.finalize()
+            }
             SighashType::AnyoneCanPay => {
                 use crypto::Hasher;
                 let mut hasher = Hasher::new();
@@ -2584,14 +2609,23 @@ mod tests {
     }
 
     #[test]
-    fn test_sighash_all_matches_signing_message() {
-        // SighashType::All should produce identical hash to signing_message()
+    fn test_sighash_all_per_input_unique() {
+        // BIP-143: each input gets a unique signing hash due to outpoint inclusion
         let tx = Transaction::new_transfer(
-            vec![Input::new(Hash::ZERO, 0), Input::new(Hash::ZERO, 1)],
+            vec![
+                Input::new(Hash::ZERO, 0),
+                Input::new(Hash::ZERO, 1),
+                Input::new(Hash::from_bytes([1u8; 32]), 0),
+            ],
             vec![Output::normal(100, Hash::ZERO)],
         );
-        assert_eq!(tx.signing_message_for_input(0), tx.signing_message());
-        assert_eq!(tx.signing_message_for_input(1), tx.signing_message());
+        let h0 = tx.signing_message_for_input(0);
+        let h1 = tx.signing_message_for_input(1);
+        let h2 = tx.signing_message_for_input(2);
+        // All three must be different
+        assert_ne!(h0, h1);
+        assert_ne!(h0, h2);
+        assert_ne!(h1, h2);
     }
 
     #[test]

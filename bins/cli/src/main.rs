@@ -1323,12 +1323,11 @@ async fn cmd_send(
     // Create unsigned transaction
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign each input
+    // Sign each input (BIP-143: per-input signing hash)
     let keypair = wallet.primary_keypair()?;
-    let signing_message = tx.signing_message();
-
-    for input in &mut tx.inputs {
-        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    for i in 0..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
     }
 
     // Serialize transaction
@@ -1630,8 +1629,8 @@ async fn cmd_spend(
     let outputs = vec![Output::normal(amount_units, recipient_hash)];
     let mut tx = Transaction::new_transfer(vec![input], outputs);
 
-    // Parse witness and compute signing hash
-    let signing_hash = tx.signing_message();
+    // Parse witness and compute signing hash (BIP-143: per-input)
+    let signing_hash = tx.signing_message_for_input(0);
     let witness_bytes = parse_witness(witness_str, &signing_hash)?;
 
     // Set covenant witness in tx.extra_data (SegWit-style)
@@ -2806,10 +2805,10 @@ async fn cmd_producer(
                 tx.outputs.push(Output::normal(change, change_hash));
             }
 
-            // Sign each input
-            let signing_message = tx.signing_message();
-            for input in &mut tx.inputs {
-                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            // Sign each input (BIP-143: per-input signing hash)
+            for i in 0..tx.inputs.len() {
+                let signing_hash = tx.signing_message_for_input(i);
+                tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
             }
 
             // Submit transaction
@@ -3268,10 +3267,10 @@ async fn cmd_producer(
                 tx.outputs.push(Output::normal(change, change_hash));
             }
 
-            // Sign
-            let signing_message = tx.signing_message();
-            for input in &mut tx.inputs {
-                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            // Sign (BIP-143: per-input signing hash)
+            for i in 0..tx.inputs.len() {
+                let signing_hash = tx.signing_message_for_input(i);
+                tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
             }
 
             // Submit
@@ -3466,11 +3465,11 @@ async fn cmd_producer(
                 payout_amount,
             );
 
-            // Sign all inputs
+            // Sign all inputs (BIP-143: per-input signing hash)
             let keypair = wallet.primary_keypair()?;
-            let signing_message = tx.signing_message();
-            for input in &mut tx.inputs {
-                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            for i in 0..tx.inputs.len() {
+                let signing_hash = tx.signing_message_for_input(i);
+                tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
             }
 
             let tx_hex = hex::encode(tx.serialize());
@@ -3722,11 +3721,11 @@ async fn cmd_producer(
                 payout_amount,
             );
 
-            // Sign all inputs
+            // Sign all inputs (BIP-143: per-input signing hash)
             let keypair = wallet.primary_keypair()?;
-            let signing_message = tx.signing_message();
-            for input in &mut tx.inputs {
-                input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+            for i in 0..tx.inputs.len() {
+                let signing_hash = tx.signing_message_for_input(i);
+                tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
             }
 
             let tx_hex = hex::encode(tx.serialize());
@@ -4337,11 +4336,11 @@ async fn cmd_mint(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign each input
+    // Sign each input (BIP-143: per-input signing hash)
     let keypair = wallet.primary_keypair()?;
-    let signing_message = tx.signing_message();
-    for input in &mut tx.inputs {
-        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    for i in 0..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -4536,20 +4535,20 @@ async fn cmd_nft_transfer(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign: first compute signing hash, then sign all inputs
+    // Sign: BIP-143 per-input signing hash
     let keypair = wallet.primary_keypair()?;
-    let signing_hash = tx.signing_message();
+    let signing_hash_0 = tx.signing_message_for_input(0);
 
     // Auto-provide signature witness for NFT covenant (input 0)
     let witness_bytes = if witness_str == "none()" {
         let mut w = doli_core::Witness::default();
         w.signatures.push(doli_core::ConditionWitnessSignature {
             pubkey: *keypair.public_key(),
-            signature: crypto::signature::sign_hash(&signing_hash, keypair.private_key()),
+            signature: crypto::signature::sign_hash(&signing_hash_0, keypair.private_key()),
         });
         w.encode()
     } else {
-        parse_witness(witness_str, &signing_hash)?
+        parse_witness(witness_str, &signing_hash_0)?
     };
     // Covenant witnesses: one per input (NFT has witness, fee inputs have empty)
     let mut witnesses: Vec<Vec<u8>> = vec![witness_bytes];
@@ -4558,9 +4557,10 @@ async fn cmd_nft_transfer(
     }
     tx.set_covenant_witnesses(&witnesses);
 
-    // Sign all inputs with wallet key
-    for input in &mut tx.inputs {
-        input.signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    // Sign all inputs with per-input signing hash
+    for i in 0..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -4785,16 +4785,16 @@ async fn cmd_nft_buy(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // === Sign ===
-    let signing_hash = tx.signing_message();
+    // === Sign (BIP-143: per-input signing hash) ===
     let seller_keypair = seller_wallet.primary_keypair()?;
     let buyer_keypair = buyer_wallet.primary_keypair()?;
 
     // Covenant witness for NFT input (seller's signature satisfies the condition)
+    let signing_hash_0 = tx.signing_message_for_input(0);
     let mut w = doli_core::Witness::default();
     w.signatures.push(doli_core::ConditionWitnessSignature {
         pubkey: *seller_keypair.public_key(),
-        signature: signature::sign_hash(&signing_hash, seller_keypair.private_key()),
+        signature: signature::sign_hash(&signing_hash_0, seller_keypair.private_key()),
     });
     let nft_witness = w.encode();
 
@@ -4806,8 +4806,9 @@ async fn cmd_nft_buy(
     tx.set_covenant_witnesses(&witnesses);
 
     // Sign inputs: input 0 with seller key, inputs 1..N with buyer key
-    tx.inputs[0].signature = signature::sign_hash(&signing_hash, seller_keypair.private_key());
+    tx.inputs[0].signature = signature::sign_hash(&signing_hash_0, seller_keypair.private_key());
     for i in 1..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, buyer_keypair.private_key());
     }
 
@@ -5778,9 +5779,9 @@ async fn cmd_issue_token(
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
     let keypair = wallet.primary_keypair()?;
-    let signing_message = tx.signing_message();
-    for input in &mut tx.inputs {
-        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    for i in 0..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -6008,9 +6009,9 @@ async fn cmd_bridge_lock(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
     let keypair = wallet.primary_keypair()?;
-    let signing_message = tx.signing_message();
-    for input in &mut tx.inputs {
-        input.signature = signature::sign_hash(&signing_message, keypair.private_key());
+    for i in 0..tx.inputs.len() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -6126,7 +6127,7 @@ async fn cmd_bridge_claim(
     let mut tx =
         Transaction::new_transfer(vec![input], vec![Output::normal(claim_amount, dest_hash)]);
 
-    let signing_hash = tx.signing_message();
+    let signing_hash = tx.signing_message_for_input(0);
     let witness_str = format!("branch(left)+preimage({})", preimage_hex);
     let witness_bytes = parse_witness(&witness_str, &signing_hash)?;
     tx.set_covenant_witnesses(&[witness_bytes]);
@@ -6253,7 +6254,7 @@ async fn cmd_bridge_refund(wallet_path: &Path, rpc_endpoint: &str, utxo_ref: &st
         vec![Output::normal(refund_amount, refund_dest)],
     );
 
-    let signing_hash = tx.signing_message();
+    let signing_hash = tx.signing_message_for_input(0);
     let witness_str = "branch(right)+none()";
     let witness_bytes = parse_witness(witness_str, &signing_hash)?;
     tx.set_covenant_witnesses(&[witness_bytes]);
