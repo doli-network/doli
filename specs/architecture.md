@@ -49,7 +49,7 @@ Key properties:
 - Atomic writes (tmp + rename) — crash-safe
 - Non-blocking streaming via `mpsc::channel` — never stalls sync
 - Catches up missed blocks on restart from local BlockStore
-- 2 per network (ai1 + ai2) for full redundancy
+- 3 mainnet seeds (ai1 + ai2 + ai3), 2 testnet seeds (ai1 + ai3) for full redundancy
 
 Recovery methods (all verify BLAKE3 + genesis_hash):
 - **File-based** (offline): `doli-node restore --from /path/to/archive --backfill --yes`
