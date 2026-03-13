@@ -4445,23 +4445,12 @@ async fn cmd_nft_transfer(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     // Extract royalty info to preserve it on transfer
-    let extra_data_hex = nft_output
-        .get("extraData")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let raw_extra = hex::decode(extra_data_hex).unwrap_or_default();
-    let royalty = if !raw_extra.is_empty() {
-        let temp_out = Output {
-            output_type: doli_core::OutputType::NFT,
-            amount: nft_amount,
-            pubkey_hash: recipient_hash,
-            lock_until: 0,
-            extra_data: raw_extra,
-        };
-        temp_out.nft_royalty()
-    } else {
-        None
-    };
+    let royalty = nft_meta.get("royalty").and_then(|r| {
+        let creator = r.get("creator")?.as_str()?;
+        let bps = r.get("bps")?.as_u64()?;
+        let creator_hash = Hash::from_hex(creator)?;
+        Some((creator_hash, bps as u16))
+    });
 
     let new_nft_output = if let Some((creator_hash, royalty_bps)) = royalty {
         Output::nft_with_royalty(
@@ -4714,23 +4703,12 @@ async fn cmd_nft_buy(
 
     // Output 0: NFT to buyer (preserve royalty metadata)
     let buyer_cond = doli_core::Condition::signature(buyer_hash);
-    let extra_data_hex = nft_output
-        .get("extraData")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let raw_extra = hex::decode(extra_data_hex).unwrap_or_default();
-    let royalty = if !raw_extra.is_empty() {
-        let temp_out = Output {
-            output_type: doli_core::OutputType::NFT,
-            amount: nft_amount,
-            pubkey_hash: buyer_hash,
-            lock_until: 0,
-            extra_data: raw_extra,
-        };
-        temp_out.nft_royalty()
-    } else {
-        None
-    };
+    let royalty = nft_meta.get("royalty").and_then(|r| {
+        let creator = r.get("creator")?.as_str()?;
+        let bps = r.get("bps")?.as_u64()?;
+        let creator_hash = Hash::from_hex(creator)?;
+        Some((creator_hash, bps as u16))
+    });
 
     let nft_to_buyer = if let Some((creator_hash, royalty_bps)) = royalty {
         Output::nft_with_royalty(
@@ -5460,7 +5438,7 @@ async fn cmd_nft_buy_from_signed_offer(
     offer: &serde_json::Value,
 ) -> Result<()> {
     use crypto::{signature, Hash};
-    use doli_core::{Input, Output, Transaction};
+    use doli_core::{Input, Transaction};
 
     let buyer_wallet = Wallet::load(buyer_wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -5520,29 +5498,70 @@ async fn cmd_nft_buy_from_signed_offer(
     let required = price_units + fee_units;
 
     // Get buyer's spendable UTXOs
-    let buyer_utxos: Vec<_> = rpc
+    let mut buyer_utxos: Vec<_> = rpc
         .get_utxos(&buyer_pubkey_hash, true)
         .await?
         .into_iter()
         .filter(|u| u.output_type == "normal" && u.spendable)
         .collect();
 
-    let mut selected_utxos = Vec::new();
-    let mut total_input = 0u64;
-    for utxo in &buyer_utxos {
-        if total_input >= required {
-            break;
-        }
-        selected_utxos.push(utxo.clone());
-        total_input += utxo.amount;
-    }
-    if total_input < required {
+    // Sort UTXOs by amount ascending for best-fit selection.
+    // AnyoneCanPay sighash commits to the output count, so we CANNOT add a change
+    // output — it would invalidate the seller's signature. Any excess goes to fee.
+    // Minimize waste by finding the combination closest to `required`.
+    buyer_utxos.sort_by_key(|u| u.amount);
+
+    let total_available: u64 = buyer_utxos.iter().map(|u| u.amount).sum();
+    if total_available < required {
         anyhow::bail!(
             "Insufficient balance. Available: {}, Required: {} (price {} + fee {})",
-            format_balance(total_input),
+            format_balance(total_available),
             format_balance(required),
             format_balance(price_units),
             format_balance(fee_units)
+        );
+    }
+
+    // Try to find a single UTXO that exactly covers (or is closest above) required
+    let mut best_selection: Option<(Vec<usize>, u64)> = None;
+    for (i, utxo) in buyer_utxos.iter().enumerate() {
+        if utxo.amount >= required {
+            let excess = utxo.amount - required;
+            if best_selection.is_none() || excess < best_selection.as_ref().unwrap().1 {
+                best_selection = Some((vec![i], excess));
+            }
+            if excess == 0 {
+                break;
+            }
+        }
+    }
+
+    // If no single UTXO covers it, accumulate smallest-first
+    if best_selection.is_none() {
+        let mut indices = Vec::new();
+        let mut total = 0u64;
+        for (i, utxo) in buyer_utxos.iter().enumerate() {
+            indices.push(i);
+            total += utxo.amount;
+            if total >= required {
+                break;
+            }
+        }
+        if total >= required {
+            best_selection = Some((indices, total - required));
+        }
+    }
+
+    let (selected_indices, excess) =
+        best_selection.ok_or_else(|| anyhow::anyhow!("Cannot find UTXOs to cover purchase"))?;
+    let selected_utxos: Vec<_> = selected_indices
+        .iter()
+        .map(|&i| buyer_utxos[i].clone())
+        .collect();
+    if excess > 0 {
+        println!(
+            "  Note: {} excess goes to fee (AnyoneCanPay prevents adding change output)",
+            format_balance(excess)
         );
     }
 
@@ -5557,58 +5576,14 @@ async fn cmd_nft_buy_from_signed_offer(
         inputs.push(Input::new(tx_hash, utxo.output_index));
     }
 
-    // Outputs: keep all outputs from partial TX + add change
-    let mut outputs = partial_tx.outputs.clone();
-    let change = total_input - required;
-    if change > 0 {
-        outputs.push(Output::normal(change, buyer_hash));
-    }
+    // Outputs: keep exactly the outputs from partial TX (seller signed these).
+    // AnyoneCanPay commits to output count + all outputs — cannot append.
+    let outputs = partial_tx.outputs.clone();
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Preserve seller's sighash type on input 0
+    // Preserve seller's sighash type and signature on input 0
     tx.inputs[0].sighash_type = partial_tx.inputs[0].sighash_type;
-    // Seller's signature on input 0 is still valid because:
-    // - It was signed with AnyoneCanPay (only input[0] + all outputs)
-    // - We preserved the same outputs (only appended change, which doesn't affect
-    //   the AnyoneCanPay hash since it only hashes outputs that existed at sign time)
-
-    // Wait — adding a change output DOES change the outputs array.
-    // The seller signed ALL outputs with AnyoneCanPay. If we add a change output,
-    // the seller's signature becomes invalid because the outputs set changed.
-    //
-    // Solution: The seller must anticipate the change output won't exist OR
-    // we must NOT add new outputs. Instead, include the change in the offer.
-    //
-    // Correct approach: buyer's change is handled by selecting exact UTXOs or
-    // overpaying the fee. But that's wasteful.
-    //
-    // Better: The partial TX already has a "buyer change" output slot.
-    // Let's handle this by replacing a placeholder output.
-
-    // Actually, the cleanest solution: when building the partial TX in sell-sign,
-    // include a buyer change output set to 0. Here we just update its amount.
-    // But we don't know the change amount at sell-sign time.
-    //
-    // Real solution: AnyoneCanPay signs input[0] + ALL outputs at sign time.
-    // If we add more outputs later, the signature breaks.
-    // So we CANNOT add a change output.
-    //
-    // Instead: overpay the fee (price + whatever buyer's UTXOs add up to).
-    // Or: select UTXOs to exactly cover price + fee (no change needed).
-
-    // Let's re-select UTXOs to find an exact match or accept the excess as fee
-    if change > 0 {
-        // We already added the change output above — remove it and recalculate.
-        // The seller's AnyoneCanPay signature covers exactly the outputs from partial TX.
-        // Adding ANY new output invalidates it.
-        tx.outputs.pop(); // Remove the change output we just added
-                          // The excess goes to the fee (miner tip)
-        println!(
-            "  Note: {} excess goes to fee (PSBT preserves output set)",
-            format_balance(change)
-        );
-    }
 
     // === Sign buyer's inputs ===
     // Buyer signs with SighashType::All — commits to everything
@@ -5644,7 +5619,7 @@ async fn cmd_nft_buy_from_signed_offer(
     println!("  Buyer:    {}", buyer_display);
     println!("  Seller:   {}", seller_display);
     println!("  Price:    {}", format_balance(price_units));
-    println!("  Fee:      {}", format_balance(fee_units + change));
+    println!("  Fee:      {}", format_balance(fee_units + excess));
     println!("  TX Hash:  {}", tx_hash.to_hex());
     println!("  Size:     {} bytes", tx_bytes.len());
 
