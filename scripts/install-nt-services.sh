@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # install-nt-services.sh — Generate and install systemd services for NT test nodes
 #
+# DEPRECATED: Use scripts/install-services.sh instead (handles all networks + ai3 seeds).
+# This script is kept for ad-hoc NT node creation on a single server.
+#
 # Usage (run ON the target server):
 #   sudo ./install-nt-services.sh <binary_path> <offset> <count> <user>
 #
 # Example:
-#   sudo ./install-nt-services.sh /opt/doli/target/release/doli-node 13 5 ilozada
+#   sudo ./install-nt-services.sh /testnet/bin/doli-node 0 6 ilozada
 #
 # This creates services: doli-testnet-nt14 through doli-testnet-nt18
 # Managed via: sudo systemctl restart doli-testnet-nt18

@@ -721,13 +721,14 @@ Producer key files (`.json`) have the same format as wallet files and can be use
 
 ### 7.1 Key File Locations
 
-| Node | Host | Key Path |
-|------|------|----------|
-| N1 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_1.json` |
-| N2 | omegacortex | `/home/ilozada/.doli/mainnet/keys/producer_2.json` |
-| N3 | N3-VPS (147.93.84.44) | `/home/ilozada/.doli/mainnet/keys/producer_3.json` |
-| N4 | pro-KVM1 (72.60.70.166) | `/home/isudoajl/.doli/mainnet/keys/producer_4.json` |
-| N5 | fpx (72.60.115.209) | `/home/isudoajl/.doli/mainnet/keys/producer_5.json` |
+Producer key files follow a consistent path pattern per network:
+
+| Network | Pattern | Example |
+|---------|---------|---------|
+| Mainnet | `/mainnet/n{N}/keys/producer.json` | `/mainnet/n1/keys/producer.json` |
+| Testnet | `/testnet/nt{N}/keys/producer.json` | `/testnet/nt1/keys/producer.json` |
+
+Mainnet producers N1-N12 are on ai2. Testnet producers NT1-NT12 are on ai1. See the ops skill for server details.
 
 ### 7.2 Key File Format
 
