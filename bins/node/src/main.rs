@@ -225,6 +225,12 @@ enum Commands {
         /// Only import missing blocks (skip existing). Does not rebuild state.
         #[arg(long)]
         backfill: bool,
+
+        /// Skip genesis hash validation (only safe when backfilling from a trusted
+        /// seed on the same chain). Required for post-reset chains where the embedded
+        /// genesis hash differs from the current chain's genesis.
+        #[arg(long, requires = "backfill")]
+        skip_genesis_check: bool,
     },
 
     /// Rebuild canonical chain index from block headers
@@ -581,9 +587,18 @@ async fn main() -> Result<()> {
             from_rpc,
             yes,
             backfill,
+            skip_genesis_check,
         }) => {
             if let Some(rpc_url) = from_rpc {
-                restore_from_rpc(network, &data_dir, &rpc_url, backfill, yes).await?;
+                restore_from_rpc(
+                    network,
+                    &data_dir,
+                    &rpc_url,
+                    backfill,
+                    yes,
+                    skip_genesis_check,
+                )
+                .await?;
             } else if let Some(path) = from {
                 if backfill {
                     backfill_from_archive(network, &data_dir, &expand_tilde_path(&path), yes)?;
@@ -2230,6 +2245,7 @@ async fn restore_from_rpc(
     rpc_url: &str,
     backfill: bool,
     skip_confirm: bool,
+    skip_genesis_check: bool,
 ) -> Result<()> {
     use base64::Engine;
     use storage::BlockStore;
@@ -2312,16 +2328,34 @@ async fn restore_from_rpc(
     };
 
     if remote_genesis != local_genesis {
-        return Err(anyhow!(
-            "Genesis hash mismatch: remote={}, local={}. Wrong chain!",
-            &remote_genesis.to_string()[..16],
-            &local_genesis.to_string()[..16]
-        ));
+        if skip_genesis_check {
+            println!(
+                "WARNING: Genesis hash mismatch: remote={}, local={}",
+                &remote_genesis.to_string()[..16],
+                &local_genesis.to_string()[..16]
+            );
+            println!("         --skip-genesis-check: proceeding anyway (trusted source)");
+        } else {
+            return Err(anyhow!(
+                "Genesis hash mismatch: remote={}, local={}. Wrong chain!\n\
+                 If backfilling from a trusted seed on the same post-reset chain, \
+                 use --skip-genesis-check",
+                &remote_genesis.to_string()[..16],
+                &local_genesis.to_string()[..16]
+            ));
+        }
     }
 
     let genesis_str = remote_genesis.to_string();
     println!("Archiver height: {}", remote_height);
-    println!("Genesis hash:    {} (match)", &genesis_str[..16]);
+    if remote_genesis == local_genesis {
+        println!("Genesis hash:    {} (match)", &genesis_str[..16]);
+    } else {
+        println!(
+            "Genesis hash:    {} (mismatch — skipped)",
+            &genesis_str[..16]
+        );
+    }
     println!();
 
     if !skip_confirm {
