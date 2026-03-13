@@ -4988,7 +4988,7 @@ impl Node {
         // nodes at height 0 would produce orphan blocks for far-ahead slots.
         // =========================================================================
         let auth_result = {
-            let sync_state = self.sync_manager.read().await;
+            let mut sync_state = self.sync_manager.write().await;
             let result = sync_state.can_produce(current_slot);
             info!(
                 "[NODE_PRODUCE] slot={} can_produce result: {:?}",

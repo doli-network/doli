@@ -451,6 +451,17 @@ pub struct SyncManager {
     /// After 5 ticks (~25s at 5s polling), forces a full sync restart instead of
     /// waiting for gossip that may never arrive due to I/O contention.
     idle_behind_retries: u32,
+
+    /// Persistent fork detection flag.
+    ///
+    /// Set when Layer 9 (hash mismatch) detects we're in the minority.
+    /// Blocks production until cleared by a successful resync from peers.
+    ///
+    /// Without this, Layer 9 oscillates: it detects the fork, blocks production,
+    /// peers advance beyond the ±2 comparison window, Layer 9 "forgets" the fork,
+    /// and the node resumes producing on its orphan chain. This flag prevents
+    /// that oscillation by remembering "we saw a fork, don't produce until resolved."
+    fork_mismatch_detected: bool,
 }
 
 impl SyncManager {
@@ -530,6 +541,7 @@ impl SyncManager {
             awaiting_canonical_block: false,
             store_floor: 1, // Default: full-sync node has block 1
             idle_behind_retries: 0,
+            fork_mismatch_detected: false,
         }
     }
 
@@ -819,7 +831,7 @@ impl SyncManager {
     /// 5. Peer synchronization check (within N slots/heights)
     ///
     /// ALL checks must pass for production to be authorized.
-    pub fn can_produce(&self, current_slot: u32) -> ProductionAuthorization {
+    pub fn can_produce(&mut self, current_slot: u32) -> ProductionAuthorization {
         // === CHECKPOINT: Entry point with all key values ===
         let best_peer_h = self.best_peer_height();
         let best_peer_s = self.best_peer_slot();
@@ -1099,6 +1111,30 @@ impl SyncManager {
             };
         }
 
+        // Layer 8.5: Persistent fork mismatch flag.
+        //
+        // If a prior Layer 9 check detected we're in the minority, keep blocking
+        // until a successful resync clears the flag. Without this, Layer 9 oscillates:
+        // detects fork → blocks → peers advance beyond ±2 window → Layer 9 forgets
+        // → node resumes producing on orphan chain → repeat.
+        if self.fork_mismatch_detected {
+            warn!(
+                "[CAN_PRODUCE] Layer8.5: BLOCKED — fork_mismatch_detected flag set, awaiting resync (local_h={})",
+                self.local_height
+            );
+            return ProductionAuthorization::BlockedChainMismatch {
+                peer_id: self
+                    .peers
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or_else(PeerId::random),
+                local_hash: self.local_hash,
+                peer_hash: Hash::default(),
+                local_height: self.local_height,
+            };
+        }
+
         // Layer 9: Chain Hash Verification (P0 #1)
         //
         // Count peers at same height that agree (same hash) vs disagree (different hash).
@@ -1136,9 +1172,10 @@ impl SyncManager {
         if disagree > 0 && agree < disagree {
             if let Some(peer_id) = first_mismatch_peer {
                 warn!(
-                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree)",
+                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
                     self.local_height, agree, disagree
                 );
+                self.fork_mismatch_detected = true;
                 return ProductionAuthorization::BlockedChainMismatch {
                     peer_id,
                     local_hash: self.local_hash,
@@ -1226,7 +1263,7 @@ impl SyncManager {
     }
 
     /// Quick boolean check for production authorization
-    pub fn is_production_safe(&self, current_slot: u32) -> bool {
+    pub fn is_production_safe(&mut self, current_slot: u32) -> bool {
         matches!(
             self.can_produce(current_slot),
             ProductionAuthorization::Authorized
@@ -1284,6 +1321,10 @@ impl SyncManager {
         if self.awaiting_canonical_block {
             info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
             self.awaiting_canonical_block = false;
+        }
+        if self.fork_mismatch_detected {
+            info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
+            self.fork_mismatch_detected = false;
         }
     }
 
@@ -2813,6 +2854,9 @@ impl SyncManager {
 
         // Clear snap sync production gate (genesis resync starts fresh)
         self.awaiting_canonical_block = false;
+
+        // Clear fork mismatch flag (resync will re-establish correct chain)
+        self.fork_mismatch_detected = false;
 
         // Reset snap sync attempt counter so recovery gets fresh tries.
         self.snap_sync_attempts = 0;
