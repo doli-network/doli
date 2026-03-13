@@ -9,7 +9,7 @@
 //! does NOT depend on doli-core (architectural constraint: no VDF/GMP).
 
 use crypto::{hash::hash, signature, KeyPair};
-use doli_core::{Input, Output, OutputType, Transaction, TxType};
+use doli_core::{Input, Output, OutputType, SighashType, Transaction, TxType};
 use wallet::Utxo;
 
 /// Build a Transfer tx via TxBuilder, then build the identical tx via doli-core,
@@ -47,6 +47,7 @@ fn test_m1_transfer_serialization_matches_core() {
             prev_tx_hash: crypto::Hash::from_bytes(tx_hash_bytes),
             output_index: 0,
             signature: sig,
+            sighash_type: SighashType::All,
         }],
         outputs: vec![
             Output {
@@ -130,6 +131,7 @@ fn test_m1_add_bond_serialization_matches_core() {
             prev_tx_hash: crypto::Hash::from_bytes(utxo_hash_bytes),
             output_index: 0,
             signature: sig,
+            sighash_type: SighashType::All,
         }],
         outputs: {
             let mut outs = Vec::new();

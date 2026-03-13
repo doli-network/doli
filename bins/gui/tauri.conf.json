@@ -4,7 +4,7 @@
   "version": "3.4.4",
   "identifier": "network.doli.wallet",
   "build": {
-    "frontendDist": "../src-ui/dist",
+    "frontendDist": "./src-ui/dist",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "",
     "beforeDevCommand": ""
