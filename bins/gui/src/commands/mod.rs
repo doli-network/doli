@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod governance;
 pub mod network;
 pub mod nft;
+pub mod node;
 pub mod producer;
 pub mod rewards;
 pub mod transaction;

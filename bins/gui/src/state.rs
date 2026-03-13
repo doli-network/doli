@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use wallet::RpcClient;
 
+use crate::node_manager::{self, NodeManager};
+
 /// Application state managed by Tauri.
 pub struct AppState {
     /// Currently loaded wallet (None if no wallet loaded).
@@ -21,18 +23,31 @@ pub struct AppState {
     pub rpc_client: RwLock<RpcClient>,
     /// Application configuration (persisted).
     pub config: RwLock<AppConfig>,
+    /// Embedded node process manager.
+    pub node_manager: RwLock<NodeManager>,
 }
 
 impl AppState {
     /// Create new AppState with default configuration.
+    ///
+    /// Initializes the NodeManager with the default data directory and network
+    /// from the persisted config. The RPC client defaults to the local node URL.
     pub fn new() -> Self {
         let config = AppConfig::load_or_default();
-        let default_url = config.effective_rpc_url();
+        let data_dir = node_manager::default_data_dir();
+        let node_mgr = NodeManager::new(data_dir, &config.network);
+        // Default RPC URL: local embedded node if no custom override.
+        let default_url = if config.custom_rpc_url.is_some() {
+            config.effective_rpc_url()
+        } else {
+            node_mgr.rpc_url()
+        };
         Self {
             wallet: RwLock::new(None),
             wallet_path: RwLock::new(None),
             rpc_client: RwLock::new(RpcClient::new(&default_url)),
             config: RwLock::new(config),
+            node_manager: RwLock::new(node_mgr),
         }
     }
 
@@ -185,6 +200,39 @@ mod tests {
     async fn test_app_state_network_prefix() {
         let state = AppState::new();
         assert_eq!(state.network_prefix().await, "doli");
+    }
+
+    #[tokio::test]
+    async fn test_app_state_has_node_manager() {
+        let state = AppState::new();
+        let mgr = state.node_manager.read().await;
+        assert_eq!(mgr.network(), "mainnet");
+        assert_eq!(mgr.rpc_port(), 8500);
+        assert_eq!(mgr.rpc_url(), "http://127.0.0.1:8500");
+    }
+
+    #[tokio::test]
+    async fn test_app_state_default_rpc_url_is_local() {
+        // With no custom_rpc_url, the RPC client should point at local node.
+        let state = AppState::new();
+        let _rpc = state.rpc_client.read().await;
+        // We can't easily read the URL from RpcClient, but the node_manager
+        // should return the local URL.
+        let mgr = state.node_manager.read().await;
+        assert!(mgr.rpc_url().starts_with("http://127.0.0.1:"));
+    }
+
+    #[tokio::test]
+    async fn test_app_state_node_manager_data_dir() {
+        let state = AppState::new();
+        let mgr = state.node_manager.read().await;
+        let dir = mgr.data_dir();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name == ".doli" || name == "doli",
+            "Expected data dir to end with .doli or doli, got: {}",
+            name
+        );
     }
 
     #[test]

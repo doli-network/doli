@@ -5,17 +5,33 @@
 //!
 //! Key security property: Private keys NEVER cross the IPC boundary (GUI-NF-004).
 //! All signing operations happen in Rust. The frontend only receives public data.
+//!
+//! On startup, the app auto-starts the embedded `doli-node` process (best-effort).
+//! On exit, the node is gracefully shut down via the NodeManager's Drop impl.
 
 // Prevents an additional console window on Windows in release.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod node_manager;
 mod state;
 
 use state::AppState;
 
 fn main() {
     let app_state = AppState::new();
+
+    // Auto-start the embedded node (best effort -- don't crash if binary not found).
+    {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            let mut mgr = app_state.node_manager.write().await;
+            if let Err(e) = mgr.start() {
+                eprintln!("Note: Could not auto-start embedded node: {}", e);
+                eprintln!("The wallet will still work -- connect to a remote node via Settings.");
+            }
+        });
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -53,6 +69,12 @@ fn main() {
             commands::network::set_network,
             commands::network::test_connection,
             commands::network::get_connection_status,
+            // Node commands
+            commands::node::start_node,
+            commands::node::stop_node,
+            commands::node::node_status,
+            commands::node::restart_node,
+            commands::node::get_node_logs,
             // NFT/Token commands
             commands::nft::mint_nft,
             commands::nft::transfer_nft,

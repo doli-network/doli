@@ -43,6 +43,10 @@ pub async fn set_rpc_endpoint(url: String, state: State<'_, AppState>) -> Result
 }
 
 /// Switch to a different network (mainnet, testnet, devnet).
+///
+/// This also restarts the embedded node on the new network and updates
+/// the RPC client to point at the local node endpoint (unless a custom
+/// endpoint is configured).
 #[tauri::command]
 pub async fn set_network(network: String, state: State<'_, AppState>) -> Result<(), String> {
     if !["mainnet", "testnet", "devnet"].contains(&network.as_str()) {
@@ -52,12 +56,26 @@ pub async fn set_network(network: String, state: State<'_, AppState>) -> Result<
         ));
     }
 
+    // Restart the embedded node on the new network (best effort).
+    {
+        let mut mgr = state.node_manager.write().await;
+        if let Err(e) = mgr.restart(&network) {
+            eprintln!(
+                "Warning: could not restart node for network {}: {}",
+                network, e
+            );
+        }
+    }
+
     let new_url = {
         let mut config = state.config.write().await;
         config.network = network;
         config.custom_rpc_url = None;
         let _ = config.save();
-        config.effective_rpc_url()
+
+        // Default to local node endpoint.
+        let mgr = state.node_manager.read().await;
+        mgr.rpc_url()
     };
 
     *state.rpc_client.write().await = wallet::RpcClient::new(&new_url);

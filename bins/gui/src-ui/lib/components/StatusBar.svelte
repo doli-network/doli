@@ -1,6 +1,7 @@
 <script>
   /**
-   * Bottom status bar showing connection status, chain height, network.
+   * Bottom status bar showing connection status, chain height, network,
+   * and embedded node status.
    */
   import { networkState } from '../stores/network.js';
   import { formatNumber } from '../utils/format.js';
@@ -22,6 +23,26 @@
   let networkLabel = $derived(
     networkState.network.charAt(0).toUpperCase() + networkState.network.slice(1)
   );
+
+  let nodeStatusText = $derived(
+    networkState.nodeRunning ? 'Node: Running' : 'Node: Stopped'
+  );
+
+  let nodeColor = $derived(
+    networkState.nodeRunning ? 'var(--color-success, #4caf50)' : 'var(--color-text-muted, #8888aa)'
+  );
+
+  let peerCountText = $derived(
+    networkState.chainInfo?.peerCount !== undefined
+      ? `Peers: ${networkState.chainInfo.peerCount}`
+      : ''
+  );
+
+  let syncStatusText = $derived(
+    networkState.connected
+      ? (networkState.chainInfo?.syncing ? 'Syncing...' : 'Synced')
+      : (networkState.nodeRunning ? 'Syncing...' : '')
+  );
 </script>
 
 <footer class="status-bar" role="status" aria-live="polite">
@@ -34,8 +55,18 @@
       <span class="status-separator" aria-hidden="true">|</span>
       <span class="status-epoch">Epoch: {formatNumber(networkState.chainInfo.epoch)}</span>
     {/if}
+    {#if syncStatusText}
+      <span class="status-separator" aria-hidden="true">|</span>
+      <span class="status-sync">{syncStatusText}</span>
+    {/if}
+    {#if peerCountText}
+      <span class="status-separator" aria-hidden="true">|</span>
+      <span class="status-peers">{peerCountText}</span>
+    {/if}
   </div>
   <div class="status-right">
+    <span class="node-status" style="color: {nodeColor};">{nodeStatusText}</span>
+    <span class="status-separator" aria-hidden="true">|</span>
     <span class="network-badge">{networkLabel}</span>
   </div>
 </footer>
@@ -73,6 +104,11 @@
   .status-right {
     display: flex;
     align-items: center;
+    gap: 8px;
+  }
+
+  .node-status {
+    font-size: 11px;
   }
 
   .network-badge {
