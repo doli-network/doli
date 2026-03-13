@@ -57,6 +57,54 @@
 - `cargo build` (full workspace) -- PASS
 - `cargo test` (full workspace) -- All tests PASS, 0 failures
 
+### Node Manager Feature (2026-03-13)
+
+#### New: `bins/gui/src/node_manager.rs` -- Embedded Node Process Manager
+- `NodeManager` struct managing doli-node child process lifecycle
+- `new(data_dir, network)` -- construct with RPC port per network (mainnet=8500, testnet=18500, devnet=28500)
+- `start()` -- spawn doli-node as child process; binary lookup: sibling dir then PATH; CREATE_NO_WINDOW on Windows
+- `stop()` -- SIGTERM on Unix (via /bin/kill), TerminateProcess on Windows; 10s timeout then SIGKILL
+- `is_running()` -- check child process via try_wait()
+- `rpc_url()` -- returns http://127.0.0.1:{port}
+- `restart(network)` -- stop, update network/port, start
+- `tail_log(n)` / `tail_log_bytes(max_bytes)` -- read log file tail
+- `Drop` impl for cleanup on app exit
+- `default_data_dir()` -- ~/.doli/ (Unix) or %APPDATA%/doli/ (Windows)
+- 18 unit tests covering construction, ports, URLs, log reading, restart, error cases
+
+#### New: `bins/gui/src/commands/node.rs` -- Tauri Node Commands
+- `start_node`, `stop_node`, `node_status`, `restart_node`, `get_node_logs`
+- `NodeStatus` response struct with camelCase serialization
+- 3 unit tests for serialization
+
+#### Modified: `bins/gui/src/state.rs` -- Added NodeManager to AppState
+- Added `node_manager: RwLock<NodeManager>` field
+- Default RPC URL now points to local node (unless custom override)
+- 3 new integration tests
+
+#### Modified: `bins/gui/src/main.rs` -- Auto-start Node
+- Added `mod node_manager` declaration
+- Registered 5 new node commands
+- Auto-start node on app launch (best-effort, no crash on missing binary)
+
+#### Modified: `bins/gui/src/commands/network.rs` -- Network Switch Restarts Node
+- `set_network` now restarts embedded node on the new network
+- Default RPC URL always points to local node
+
+#### Modified: `bins/gui/src/commands/mod.rs` -- Added node module
+
+#### Updated Frontend Files
+- `bins/gui/src-ui/lib/api/network.js` -- Added 5 node control API functions
+- `bins/gui/src-ui/lib/stores/network.js` -- Added nodeRunning/nodeRpcUrl/nodeLogPath state, refreshNodeStatus(), startNode(), stopNode()
+- `bins/gui/src-ui/lib/components/StatusBar.svelte` -- Shows node status, sync status, peer count
+
+#### Validation Results
+- `cargo check -p doli-gui` -- PASS
+- `cargo test -p doli-gui` -- 45 tests PASS (19 existing + 26 new)
+- `cargo clippy -p doli-gui -- -D warnings` -- CLEAN
+- `cargo fmt -p doli-gui --check` -- CLEAN
+- `cargo build` (full workspace) -- PASS
+
 ### Previously Completed Milestones
 
 #### M1: Core Infrastructure

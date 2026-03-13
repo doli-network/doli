@@ -1,5 +1,6 @@
 /**
- * Network store -- reactive state for connection, chain info, RPC endpoint.
+ * Network store -- reactive state for connection, chain info, RPC endpoint,
+ * and embedded node status.
  * Uses Svelte 5 runes ($state).
  */
 
@@ -13,6 +14,10 @@ export const networkState = $state({
   rpcUrl: '',
   status: 'disconnected',
   pollInterval: null,
+  // Embedded node status
+  nodeRunning: false,
+  nodeRpcUrl: '',
+  nodeLogPath: '',
 });
 
 export async function refreshChainInfo() {
@@ -40,11 +45,24 @@ export async function refreshConnectionStatus() {
   }
 }
 
+export async function refreshNodeStatus() {
+  try {
+    const status = await networkApi.nodeStatus();
+    networkState.nodeRunning = status.running;
+    networkState.nodeRpcUrl = status.rpcUrl;
+    networkState.nodeLogPath = status.logPath;
+    networkState.network = status.network || networkState.network;
+  } catch (err) {
+    networkState.nodeRunning = false;
+  }
+}
+
 export async function setNetwork(network) {
   try {
     await networkApi.setNetwork(network);
     networkState.network = network;
     addNotification('success', `Switched to ${network}`);
+    await refreshNodeStatus();
     await refreshChainInfo();
   } catch (err) {
     addNotification('error', `Failed to switch network: ${err}`);
@@ -62,11 +80,34 @@ export async function setRpcEndpoint(url) {
   }
 }
 
+export async function startNode() {
+  try {
+    await networkApi.startNode();
+    networkState.nodeRunning = true;
+    addNotification('success', 'Node started');
+    await refreshNodeStatus();
+  } catch (err) {
+    addNotification('error', `Failed to start node: ${err}`);
+  }
+}
+
+export async function stopNode() {
+  try {
+    await networkApi.stopNode();
+    networkState.nodeRunning = false;
+    addNotification('success', 'Node stopped');
+  } catch (err) {
+    addNotification('error', `Failed to stop node: ${err}`);
+  }
+}
+
 export function startPolling(intervalMs = 10000) {
   stopPolling();
   refreshChainInfo();
+  refreshNodeStatus();
   networkState.pollInterval = setInterval(() => {
     refreshChainInfo();
+    refreshNodeStatus();
   }, intervalMs);
 }
 
