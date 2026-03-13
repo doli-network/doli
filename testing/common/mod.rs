@@ -270,10 +270,10 @@ pub fn create_transfer(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign the transaction
-    let msg = tx.signing_message();
-    for input in &mut tx.inputs {
-        input.signature = crypto::signature::sign(msg.as_bytes(), keypair.private_key());
+    // Sign the transaction (BIP-143: per-input signing hash)
+    for i in 0..tx.inputs.len() {
+        let msg = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = crypto::signature::sign(msg.as_bytes(), keypair.private_key());
     }
 
     tx

@@ -3327,8 +3327,8 @@ mod tests {
             extra_data: vec![],
         };
 
-        // Sign the transaction
-        let signing_hash = tx.signing_message();
+        // Sign the transaction (BIP-143: per-input)
+        let signing_hash = tx.signing_message_for_input(0);
         let signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
         tx.inputs[0].signature = signature;
 
@@ -3382,8 +3382,8 @@ mod tests {
             extra_data: vec![],
         };
 
-        // Sign the transaction
-        let signing_hash = tx.signing_message();
+        // Sign the transaction (BIP-143: per-input)
+        let signing_hash = tx.signing_message_for_input(0);
         let signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
         tx.inputs[0].signature = signature;
 
@@ -3424,8 +3424,8 @@ mod tests {
             extra_data: vec![],
         };
 
-        // Sign with wrong key
-        let signing_hash = tx.signing_message();
+        // Sign with wrong key (BIP-143: per-input)
+        let signing_hash = tx.signing_message_for_input(0);
         let bad_signature =
             crypto::signature::sign_hash(&signing_hash, attacker_keypair.private_key());
         tx.inputs[0].signature = bad_signature;
@@ -3461,7 +3461,7 @@ mod tests {
             extra_data: vec![],
         };
 
-        let signing_hash = tx.signing_message();
+        let signing_hash = tx.signing_message_for_input(0);
         let signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
         tx.inputs[0].signature = signature;
 
@@ -3667,7 +3667,7 @@ mod tests {
                 extra_data: vec![],
             };
 
-            let signing_hash = tx.signing_message();
+            let signing_hash = tx.signing_message_for_input(0);
             let signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
             tx.inputs[0].signature = signature;
 
@@ -3707,8 +3707,8 @@ mod tests {
                 extra_data: vec![],
             };
 
-            // Sign with wrong key
-            let signing_hash = tx.signing_message();
+            // Sign with wrong key (BIP-143: per-input)
+            let signing_hash = tx.signing_message_for_input(0);
             let bad_signature = crypto::signature::sign_hash(&signing_hash, attacker_keypair.private_key());
             tx.inputs[0].signature = bad_signature;
 
