@@ -5224,10 +5224,9 @@ async fn cmd_nft_sell_sign(
     let seller_keypair = wallet.primary_keypair()?;
 
     // === Build partial transaction ===
-    // Input 0: NFT with AnyoneCanPay (seller signs only this input + all outputs)
-    // Outputs are final: NFT→buyer, payment→seller
-    // Buyer will add their payment inputs later.
-    let nft_input = Input::new_anyone_can_pay(nft_tx_hash, nft_output_index);
+    // Input 0: NFT with AnyoneCanPay (seller signs only this input + committed outputs)
+    // Outputs: NFT→buyer, payment→seller, optional royalty→creator
+    // Buyer will add their payment inputs + change output later.
 
     // Output 0: NFT to buyer
     let buyer_cond = doli_core::Condition::signature(buyer_hash);
@@ -5324,14 +5323,17 @@ async fn cmd_nft_sell_sign(
         outputs.push(Output::normal(royalty_amount, creator_hash));
     }
 
-    // Note: buyer's change output will be added by the buyer when they complete the TX.
-    // For now, we only have seller's input + all outputs. The buyer adds inputs + change.
+    // Set committed_output_count so the buyer can append a change output
+    // without invalidating the seller's signature.
+    let committed_count = outputs.len() as u32;
+    let nft_input =
+        Input::new_anyone_can_pay_partial(nft_tx_hash, nft_output_index, committed_count);
 
     let mut tx = Transaction::new_transfer(vec![nft_input], outputs);
 
     // === Sign with AnyoneCanPay ===
-    // signing_message_for_input(0) with AnyoneCanPay hashes only input[0] + all outputs.
-    // When buyer adds inputs later, this signature remains valid.
+    // signing_message_for_input(0) with AnyoneCanPay hashes only the first
+    // committed_count outputs. The buyer can safely append change outputs.
     let signing_hash = tx.signing_message_for_input(0);
 
     // Covenant witness for NFT input
@@ -5347,7 +5349,7 @@ async fn cmd_nft_sell_sign(
 
     // Build signed offer JSON
     let offer = serde_json::json!({
-        "version": 2,
+        "version": 3,
         "type": "nft_sell_offer_signed",
         "nft_utxo": {
             "tx_hash": nft_tx_hash.to_hex(),
@@ -5438,7 +5440,7 @@ async fn cmd_nft_buy_from_signed_offer(
     offer: &serde_json::Value,
 ) -> Result<()> {
     use crypto::{signature, Hash};
-    use doli_core::{Input, Transaction};
+    use doli_core::{Input, Output, Transaction};
 
     let buyer_wallet = Wallet::load(buyer_wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -5498,70 +5500,29 @@ async fn cmd_nft_buy_from_signed_offer(
     let required = price_units + fee_units;
 
     // Get buyer's spendable UTXOs
-    let mut buyer_utxos: Vec<_> = rpc
+    let buyer_utxos: Vec<_> = rpc
         .get_utxos(&buyer_pubkey_hash, true)
         .await?
         .into_iter()
         .filter(|u| u.output_type == "normal" && u.spendable)
         .collect();
 
-    // Sort UTXOs by amount ascending for best-fit selection.
-    // AnyoneCanPay sighash commits to the output count, so we CANNOT add a change
-    // output — it would invalidate the seller's signature. Any excess goes to fee.
-    // Minimize waste by finding the combination closest to `required`.
-    buyer_utxos.sort_by_key(|u| u.amount);
-
-    let total_available: u64 = buyer_utxos.iter().map(|u| u.amount).sum();
-    if total_available < required {
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    for utxo in &buyer_utxos {
+        if total_input >= required {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+    if total_input < required {
         anyhow::bail!(
             "Insufficient balance. Available: {}, Required: {} (price {} + fee {})",
-            format_balance(total_available),
+            format_balance(total_input),
             format_balance(required),
             format_balance(price_units),
             format_balance(fee_units)
-        );
-    }
-
-    // Try to find a single UTXO that exactly covers (or is closest above) required
-    let mut best_selection: Option<(Vec<usize>, u64)> = None;
-    for (i, utxo) in buyer_utxos.iter().enumerate() {
-        if utxo.amount >= required {
-            let excess = utxo.amount - required;
-            if best_selection.is_none() || excess < best_selection.as_ref().unwrap().1 {
-                best_selection = Some((vec![i], excess));
-            }
-            if excess == 0 {
-                break;
-            }
-        }
-    }
-
-    // If no single UTXO covers it, accumulate smallest-first
-    if best_selection.is_none() {
-        let mut indices = Vec::new();
-        let mut total = 0u64;
-        for (i, utxo) in buyer_utxos.iter().enumerate() {
-            indices.push(i);
-            total += utxo.amount;
-            if total >= required {
-                break;
-            }
-        }
-        if total >= required {
-            best_selection = Some((indices, total - required));
-        }
-    }
-
-    let (selected_indices, excess) =
-        best_selection.ok_or_else(|| anyhow::anyhow!("Cannot find UTXOs to cover purchase"))?;
-    let selected_utxos: Vec<_> = selected_indices
-        .iter()
-        .map(|&i| buyer_utxos[i].clone())
-        .collect();
-    if excess > 0 {
-        println!(
-            "  Note: {} excess goes to fee (AnyoneCanPay prevents adding change output)",
-            format_balance(excess)
         );
     }
 
@@ -5576,9 +5537,14 @@ async fn cmd_nft_buy_from_signed_offer(
         inputs.push(Input::new(tx_hash, utxo.output_index));
     }
 
-    // Outputs: keep exactly the outputs from partial TX (seller signed these).
-    // AnyoneCanPay commits to output count + all outputs — cannot append.
-    let outputs = partial_tx.outputs.clone();
+    // Outputs: seller's committed outputs + buyer's change.
+    // The seller's AnyoneCanPay signature covers only the first N outputs
+    // (committed_output_count). The buyer can safely append a change output.
+    let mut outputs = partial_tx.outputs.clone();
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(Output::normal(change, buyer_hash));
+    }
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
@@ -5619,7 +5585,10 @@ async fn cmd_nft_buy_from_signed_offer(
     println!("  Buyer:    {}", buyer_display);
     println!("  Seller:   {}", seller_display);
     println!("  Price:    {}", format_balance(price_units));
-    println!("  Fee:      {}", format_balance(fee_units + excess));
+    println!("  Fee:      {}", format_balance(fee_units));
+    if change > 0 {
+        println!("  Change:   {}", format_balance(change));
+    }
     println!("  TX Hash:  {}", tx_hash.to_hex());
     println!("  Size:     {} bytes", tx_bytes.len());
 

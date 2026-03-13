@@ -33,7 +33,7 @@ use crate::network::Network;
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
 use crate::transaction::{
     AddBondData, ClaimBondData, ClaimData, ExitData, Input, Output, OutputType, RegistrationData,
-    SlashData, Transaction, TxType, WithdrawalRequestData, MAX_EXTRA_DATA_SIZE,
+    SighashType, SlashData, Transaction, TxType, WithdrawalRequestData, MAX_EXTRA_DATA_SIZE,
 };
 use crate::types::{Amount, BlockHeight};
 use crypto::{Hash, PublicKey};
@@ -2504,6 +2504,22 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     let mut total_input: Amount = 0;
 
     for (i, input) in tx.inputs.iter().enumerate() {
+        // Validate committed_output_count
+        if input.committed_output_count > 0 {
+            if input.sighash_type != SighashType::AnyoneCanPay {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "input {} has committed_output_count={} but sighash is not AnyoneCanPay",
+                    i, input.committed_output_count
+                )));
+            }
+            if input.committed_output_count as usize > tx.outputs.len() {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "input {} committed_output_count={} exceeds output count={}",
+                    i, input.committed_output_count, tx.outputs.len()
+                )));
+            }
+        }
+
         // Per-input signing hash: respects SighashType (All vs AnyoneCanPay)
         let signing_hash = tx.signing_message_for_input(i);
         // Look up the UTXO

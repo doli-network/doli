@@ -181,6 +181,13 @@ pub struct Input {
     /// Default: All (backwards-compatible with v1 transactions).
     #[serde(default)]
     pub sighash_type: SighashType,
+    /// Number of outputs this input's signature commits to (AnyoneCanPay only).
+    /// 0 = all outputs (backward compat with pre-v3.7.1 transactions).
+    /// N > 0 = sighash covers only the first N outputs, allowing the buyer
+    /// to append additional outputs (e.g. change) without invalidating
+    /// the seller's signature.
+    #[serde(default)]
+    pub committed_output_count: u32,
 }
 
 impl Input {
@@ -191,6 +198,7 @@ impl Input {
             output_index,
             signature: Signature::default(),
             sighash_type: SighashType::All,
+            committed_output_count: 0,
         }
     }
 
@@ -202,6 +210,24 @@ impl Input {
             output_index,
             signature: Signature::default(),
             sighash_type: SighashType::AnyoneCanPay,
+            committed_output_count: 0,
+        }
+    }
+
+    /// Create an AnyoneCanPay input that commits to only the first N outputs.
+    /// The buyer can append additional outputs (e.g. change) without
+    /// invalidating the seller's signature.
+    pub fn new_anyone_can_pay_partial(
+        prev_tx_hash: Hash,
+        output_index: u32,
+        committed_output_count: u32,
+    ) -> Self {
+        Self {
+            prev_tx_hash,
+            output_index,
+            signature: Signature::default(),
+            sighash_type: SighashType::AnyoneCanPay,
+            committed_output_count,
         }
     }
 
@@ -1615,9 +1641,18 @@ impl Transaction {
                 hasher.update(input.prev_tx_hash.as_bytes());
                 hasher.update(&input.output_index.to_le_bytes());
 
-                // But commit to ALL outputs (seller locks in the price and recipient)
-                hasher.update(&(self.outputs.len() as u32).to_le_bytes());
-                for output in &self.outputs {
+                // Determine how many outputs to commit to.
+                // committed_output_count == 0 → all outputs (backward compat).
+                // committed_output_count > 0 → first N outputs only, allowing
+                // the buyer to append outputs (e.g. change) after signing.
+                let output_count = if input.committed_output_count > 0 {
+                    (input.committed_output_count as usize).min(self.outputs.len())
+                } else {
+                    self.outputs.len()
+                };
+
+                hasher.update(&(output_count as u32).to_le_bytes());
+                for output in &self.outputs[..output_count] {
                     hasher.update(&output.serialize());
                 }
 
@@ -2753,6 +2788,79 @@ mod tests {
         let tx2 = Transaction::deserialize(&bytes).unwrap();
         assert_eq!(tx2.inputs[0].sighash_type, SighashType::AnyoneCanPay);
     }
+
+    #[test]
+    fn test_committed_output_count_allows_appended_outputs() {
+        // Seller creates partial TX with 2 outputs, commits to 2
+        let seller_input = Input::new_anyone_can_pay_partial(Hash::ZERO, 0, 2);
+        let tx_at_sign = Transaction::new_transfer(
+            vec![seller_input],
+            vec![
+                Output::normal(100, Hash::ZERO), // NFT → buyer
+                Output::normal(50, Hash::ZERO),  // payment → seller
+            ],
+        );
+        let sighash_at_sign = tx_at_sign.signing_message_for_input(0);
+
+        // Buyer appends a change output — sighash must remain the same
+        let buyer_input = Input::new_anyone_can_pay_partial(Hash::ZERO, 0, 2);
+        let tx_with_change = Transaction::new_transfer(
+            vec![buyer_input],
+            vec![
+                Output::normal(100, Hash::ZERO), // NFT → buyer (same)
+                Output::normal(50, Hash::ZERO),  // payment → seller (same)
+                Output::normal(30, Hash::ZERO),  // change → buyer (appended)
+            ],
+        );
+        let sighash_with_change = tx_with_change.signing_message_for_input(0);
+
+        assert_eq!(
+            sighash_at_sign, sighash_with_change,
+            "Appending outputs must not change sighash when committed_output_count is set"
+        );
+    }
+
+    #[test]
+    fn test_committed_output_count_zero_means_all() {
+        // committed_output_count=0 (backward compat) hashes ALL outputs
+        let input_old = Input::new_anyone_can_pay(Hash::ZERO, 0); // count=0
+        let tx2 = Transaction::new_transfer(
+            vec![input_old],
+            vec![
+                Output::normal(100, Hash::ZERO),
+                Output::normal(50, Hash::ZERO),
+            ],
+        );
+        let hash_all = tx2.signing_message_for_input(0);
+
+        // Same outputs with committed_output_count=2 should produce same hash
+        let input_explicit = Input::new_anyone_can_pay_partial(Hash::ZERO, 0, 2);
+        let tx3 = Transaction::new_transfer(
+            vec![input_explicit],
+            vec![
+                Output::normal(100, Hash::ZERO),
+                Output::normal(50, Hash::ZERO),
+            ],
+        );
+        let hash_explicit = tx3.signing_message_for_input(0);
+
+        assert_eq!(
+            hash_all, hash_explicit,
+            "committed_output_count=N should match count=0 when N equals total outputs"
+        );
+    }
+
+    #[test]
+    fn test_committed_output_count_serialization_roundtrip() {
+        let tx = Transaction::new_transfer(
+            vec![Input::new_anyone_can_pay_partial(Hash::ZERO, 0, 3)],
+            vec![Output::normal(100, Hash::ZERO)],
+        );
+        let bytes = tx.serialize();
+        let tx2 = Transaction::deserialize(&bytes).unwrap();
+        assert_eq!(tx2.inputs[0].sighash_type, SighashType::AnyoneCanPay);
+        assert_eq!(tx2.inputs[0].committed_output_count, 3);
+    }
 }
 
 /// Legacy (v3.5.0) structs for backward-compatible bincode deserialization.
@@ -2781,6 +2889,7 @@ pub mod legacy {
                 output_index: self.output_index,
                 signature: self.signature,
                 sighash_type: SighashType::All,
+                committed_output_count: 0,
             }
         }
     }
@@ -2830,13 +2939,83 @@ pub mod legacy {
         }
     }
 
+    /// v3.6.0 Input — has sighash_type but no committed_output_count.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct LegacyInputV2 {
+        pub prev_tx_hash: Hash,
+        pub output_index: u32,
+        pub signature: Signature,
+        pub sighash_type: SighashType,
+    }
+
+    impl LegacyInputV2 {
+        pub fn into_current(self) -> Input {
+            Input {
+                prev_tx_hash: self.prev_tx_hash,
+                output_index: self.output_index,
+                signature: self.signature,
+                sighash_type: self.sighash_type,
+                committed_output_count: 0,
+            }
+        }
+    }
+
+    /// v3.6.0 Transaction — uses LegacyInputV2.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct LegacyTransactionV2 {
+        pub version: u32,
+        pub tx_type: TxType,
+        pub inputs: Vec<LegacyInputV2>,
+        pub outputs: Vec<Output>,
+        pub extra_data: Vec<u8>,
+    }
+
+    impl LegacyTransactionV2 {
+        pub fn into_current(self) -> Transaction {
+            Transaction {
+                version: self.version,
+                tx_type: self.tx_type,
+                inputs: self.inputs.into_iter().map(|i| i.into_current()).collect(),
+                outputs: self.outputs,
+                extra_data: self.extra_data,
+            }
+        }
+    }
+
+    /// v3.6.0 Block — uses LegacyTransactionV2.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct LegacyBlockV2 {
+        pub header: crate::block::BlockHeader,
+        pub transactions: Vec<LegacyTransactionV2>,
+        #[serde(default)]
+        pub aggregate_bls_signature: Vec<u8>,
+    }
+
+    impl LegacyBlockV2 {
+        pub fn into_current(self) -> crate::block::Block {
+            crate::block::Block {
+                header: self.header,
+                transactions: self
+                    .transactions
+                    .into_iter()
+                    .map(|t| t.into_current())
+                    .collect(),
+                aggregate_bls_signature: self.aggregate_bls_signature,
+            }
+        }
+    }
+
     /// Deserialize a block from bincode, trying current format first, then legacy.
     pub fn deserialize_block_compat(data: &[u8]) -> Option<crate::block::Block> {
-        // Try current format first
+        // Try current format first (v3.7.1+: Input has committed_output_count)
         if let Ok(block) = bincode::deserialize::<crate::block::Block>(data) {
             return Some(block);
         }
-        // Fallback: legacy format (no sighash_type in Input)
+        // Fallback: v3.6.0 format (Input has sighash_type but no committed_output_count)
+        if let Ok(legacy) = bincode::deserialize::<LegacyBlockV2>(data) {
+            return Some(legacy.into_current());
+        }
+        // Fallback: v3.5.0 format (Input has no sighash_type)
         if let Ok(legacy) = bincode::deserialize::<LegacyBlock>(data) {
             return Some(legacy.into_current());
         }
