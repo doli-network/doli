@@ -2515,7 +2515,9 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             if input.committed_output_count as usize > tx.outputs.len() {
                 return Err(ValidationError::InvalidTransaction(format!(
                     "input {} committed_output_count={} exceeds output count={}",
-                    i, input.committed_output_count, tx.outputs.len()
+                    i,
+                    input.committed_output_count,
+                    tx.outputs.len()
                 )));
             }
         }
