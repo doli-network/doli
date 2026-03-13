@@ -1604,16 +1604,20 @@ impl RpcContext {
                     }
                 }
 
-                let block: doli_core::Block = match bincode::deserialize(&data) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        let msg = format!("Deserialize error at height {}: {}", h, e);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                };
+                let block: doli_core::Block =
+                    match doli_core::transaction::legacy::deserialize_block_compat(&data) {
+                        Some(b) => b,
+                        None => {
+                            let msg = format!(
+                                "Deserialize error at height {} (tried current and legacy formats)",
+                                h
+                            );
+                            warn!("Backfill failed: {}", msg);
+                            *state.error.write().await = Some(msg);
+                            state.running.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                    };
 
                 if let Err(e) = block_store.put_block_canonical(&block, h) {
                     let msg = format!("Store error at height {}: {}", h, e);
