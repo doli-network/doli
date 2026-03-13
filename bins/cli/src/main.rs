@@ -4445,14 +4445,46 @@ async fn cmd_nft_transfer(
         .get("amount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let new_nft_output = Output::nft(
-        nft_amount,
-        recipient_hash,
-        token_id,
-        &content_bytes,
-        &new_cond,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+    // Extract royalty info to preserve it on transfer
+    let extra_data_hex = nft_output
+        .get("extraData")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let raw_extra = hex::decode(extra_data_hex).unwrap_or_default();
+    let royalty = if !raw_extra.is_empty() {
+        let temp_out = Output {
+            output_type: doli_core::OutputType::NFT,
+            amount: nft_amount,
+            pubkey_hash: recipient_hash,
+            lock_until: 0,
+            extra_data: raw_extra,
+        };
+        temp_out.nft_royalty()
+    } else {
+        None
+    };
+
+    let new_nft_output = if let Some((creator_hash, royalty_bps)) = royalty {
+        Output::nft_with_royalty(
+            nft_amount,
+            recipient_hash,
+            token_id,
+            &content_bytes,
+            &new_cond,
+            creator_hash,
+            royalty_bps,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    } else {
+        Output::nft(
+            nft_amount,
+            recipient_hash,
+            token_id,
+            &content_bytes,
+            &new_cond,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    };
 
     // Get spendable normal UTXOs for fee
     let sender_pubkey_hash = wallet.primary_pubkey_hash();
@@ -4680,22 +4712,72 @@ async fn cmd_nft_buy(
         inputs.push(Input::new(tx_hash, utxo.output_index));
     }
 
-    // Output 0: NFT to buyer
+    // Output 0: NFT to buyer (preserve royalty metadata)
     let buyer_cond = doli_core::Condition::signature(buyer_hash);
-    let nft_to_buyer = Output::nft(
-        nft_amount,
-        buyer_hash,
-        token_id,
-        &content_bytes,
-        &buyer_cond,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+    let extra_data_hex = nft_output
+        .get("extraData")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let raw_extra = hex::decode(extra_data_hex).unwrap_or_default();
+    let royalty = if !raw_extra.is_empty() {
+        let temp_out = Output {
+            output_type: doli_core::OutputType::NFT,
+            amount: nft_amount,
+            pubkey_hash: buyer_hash,
+            lock_until: 0,
+            extra_data: raw_extra,
+        };
+        temp_out.nft_royalty()
+    } else {
+        None
+    };
 
-    // Output 1: Payment to seller
-    let payment_to_seller = Output::normal(price_units, seller_hash);
+    let nft_to_buyer = if let Some((creator_hash, royalty_bps)) = royalty {
+        Output::nft_with_royalty(
+            nft_amount,
+            buyer_hash,
+            token_id,
+            &content_bytes,
+            &buyer_cond,
+            creator_hash,
+            royalty_bps,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    } else {
+        Output::nft(
+            nft_amount,
+            buyer_hash,
+            token_id,
+            &content_bytes,
+            &buyer_cond,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    };
 
-    // Output 2: Change to buyer (if any)
+    // Output 1: Payment to seller (minus royalty if applicable)
+    let mut seller_payment = price_units;
+    if let Some((creator_hash, royalty_bps)) = royalty {
+        if royalty_bps > 0 && creator_hash != seller_hash {
+            let royalty_amount = (price_units as u128 * royalty_bps as u128 / 10000) as u64;
+            if royalty_amount > 0 {
+                seller_payment = price_units.saturating_sub(royalty_amount);
+            }
+        }
+    }
+    let payment_to_seller = Output::normal(seller_payment, seller_hash);
+
+    // Output 2: Royalty to creator (if applicable)
     let mut outputs = vec![nft_to_buyer, payment_to_seller];
+    if let Some((creator_hash, royalty_bps)) = royalty {
+        if royalty_bps > 0 && creator_hash != seller_hash {
+            let royalty_amount = (price_units as u128 * royalty_bps as u128 / 10000) as u64;
+            if royalty_amount > 0 {
+                outputs.push(Output::normal(royalty_amount, creator_hash));
+            }
+        }
+    }
+
+    // Output 3: Change to buyer (if any)
     let change = total_input - required;
     if change > 0 {
         outputs.push(Output::normal(change, buyer_hash));
@@ -5199,15 +5281,37 @@ async fn cmd_nft_sell_sign(
 
     let mut outputs = Vec::new();
 
-    // NFT → buyer
-    let nft_to_buyer = Output::nft(
-        nft_amount,
-        buyer_hash,
-        token_id,
-        &content_bytes,
-        &buyer_cond,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+    // NFT → buyer (preserve royalty metadata if present)
+    let effective_royalty = royalty_from_raw
+        .as_ref()
+        .map(|(h, bps)| (*h, *bps))
+        .or_else(|| {
+            royalty_info
+                .as_ref()
+                .and_then(|(hex, bps)| Hash::from_hex(hex).map(|h| (h, *bps)))
+        });
+
+    let nft_to_buyer = if let Some((creator_hash, royalty_bps)) = effective_royalty {
+        Output::nft_with_royalty(
+            nft_amount,
+            buyer_hash,
+            token_id,
+            &content_bytes,
+            &buyer_cond,
+            creator_hash,
+            royalty_bps,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    } else {
+        Output::nft(
+            nft_amount,
+            buyer_hash,
+            token_id,
+            &content_bytes,
+            &buyer_cond,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+    };
     outputs.push(nft_to_buyer);
 
     // Payment → seller
