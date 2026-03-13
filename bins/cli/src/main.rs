@@ -261,6 +261,19 @@ enum Commands {
         witness: String,
     },
 
+    /// Atomic NFT purchase (single tx: payment + NFT transfer)
+    NftBuy {
+        /// UTXO containing the NFT: txhash:output_index
+        utxo: String,
+
+        /// Price in DOLI to pay the seller
+        price: String,
+
+        /// Seller's wallet (must have key that owns the NFT)
+        #[arg(long)]
+        seller_wallet: String,
+    },
+
     /// Show NFT info from a UTXO
     NftInfo {
         /// UTXO containing the NFT: txhash:output_index
@@ -686,6 +699,14 @@ async fn main() -> Result<()> {
         }
         Commands::NftTransfer { utxo, to, witness } => {
             cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
+        }
+        Commands::NftBuy {
+            utxo,
+            price,
+            seller_wallet,
+        } => {
+            let seller_path = expand_tilde(&seller_wallet);
+            cmd_nft_buy(&wallet, &seller_path, &rpc_endpoint, &utxo, &price).await?;
         }
         Commands::NftInfo { utxo } => {
             cmd_nft_info(&rpc_endpoint, &utxo).await?;
@@ -4334,15 +4355,61 @@ async fn cmd_nft_transfer(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
 
-    // Build transaction
-    let input = Input::new(prev_tx_hash, output_index);
-    let mut tx = Transaction::new_transfer(vec![input], vec![new_nft_output]);
+    // Get spendable normal UTXOs for fee
+    let sender_pubkey_hash = wallet.primary_pubkey_hash();
+    let fee_units = 1500u64;
+    let utxos: Vec<_> = rpc
+        .get_utxos(&sender_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
+    if utxos.is_empty() {
+        anyhow::bail!("No spendable UTXOs available for fee");
+    }
 
-    // Parse witness and sign
+    let mut selected_utxos = Vec::new();
+    let mut total_fee_input = 0u64;
+    for utxo in &utxos {
+        if total_fee_input >= fee_units {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_fee_input += utxo.amount;
+    }
+    if total_fee_input < fee_units {
+        anyhow::bail!(
+            "Insufficient balance for fee. Available: {}, Required: {}",
+            format_balance(total_fee_input),
+            format_balance(fee_units)
+        );
+    }
+
+    // Build inputs: NFT input first, then fee-paying UTXOs
+    let nft_input = Input::new(prev_tx_hash, output_index);
+    let mut inputs = vec![nft_input];
+    for utxo in &selected_utxos {
+        let tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(tx_hash, utxo.output_index));
+    }
+
+    // Build outputs: NFT + change
+    let mut outputs = vec![new_nft_output];
+    let change = total_fee_input - fee_units;
+    if change > 0 {
+        let sender_hash = Hash::from_hex(&sender_pubkey_hash)
+            .ok_or_else(|| anyhow::anyhow!("Invalid sender pubkey hash"))?;
+        outputs.push(Output::normal(change, sender_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+
+    // Sign: first compute signing hash, then sign all inputs
     let keypair = wallet.primary_keypair()?;
     let signing_hash = tx.signing_message();
 
-    // Auto-provide signature witness when default none() and condition is Signature
+    // Auto-provide signature witness for NFT covenant (input 0)
     let witness_bytes = if witness_str == "none()" {
         let mut w = doli_core::Witness::default();
         w.signatures.push(doli_core::ConditionWitnessSignature {
@@ -4353,9 +4420,17 @@ async fn cmd_nft_transfer(
     } else {
         parse_witness(witness_str, &signing_hash)?
     };
-    tx.set_covenant_witnesses(&[witness_bytes]);
+    // Covenant witnesses: one per input (NFT has witness, fee inputs have empty)
+    let mut witnesses: Vec<Vec<u8>> = vec![witness_bytes];
+    for _ in &selected_utxos {
+        witnesses.push(Vec::new());
+    }
+    tx.set_covenant_witnesses(&witnesses);
 
-    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    // Sign all inputs with wallet key
+    for input in &mut tx.inputs {
+        input.signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    }
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
@@ -4372,6 +4447,7 @@ async fn cmd_nft_transfer(
         output_index
     );
     println!("  To:       {}", recipient_display);
+    println!("  Fee:      {}", format_balance(fee_units));
     println!("  TX Hash:  {}", tx_hash.to_hex());
     println!("  Size:     {} bytes", tx_bytes.len());
 
@@ -4385,6 +4461,214 @@ async fn cmd_nft_transfer(
         Err(e) => {
             println!("Error: {}", e);
             return Err(anyhow::anyhow!("NFT transfer failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+/// Atomic NFT purchase: single transaction with seller's NFT + buyer's payment.
+/// Both wallets sign their respective inputs in one atomic tx.
+async fn cmd_nft_buy(
+    buyer_wallet_path: &Path,
+    seller_wallet_path: &Path,
+    rpc_endpoint: &str,
+    utxo_ref: &str,
+    price_str: &str,
+) -> Result<()> {
+    use crypto::{signature, Hash};
+    use doli_core::{Input, Output, Transaction};
+
+    let buyer_wallet = Wallet::load(buyer_wallet_path)?;
+    let seller_wallet = Wallet::load(seller_wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+    }
+
+    // Parse price
+    let price_coins: f64 = price_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid price: {}", price_str))?;
+    let price_units = coins_to_units(price_coins);
+    if price_units == 0 {
+        anyhow::bail!("Price must be greater than 0");
+    }
+
+    // Parse UTXO reference
+    let parts: Vec<&str> = utxo_ref.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("UTXO format: txhash:output_index");
+    }
+    let nft_tx_hash =
+        Hash::from_hex(parts[0]).ok_or_else(|| anyhow::anyhow!("Invalid tx hash: {}", parts[0]))?;
+    let nft_output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
+
+    // Get NFT UTXO details
+    let tx_info = rpc.get_transaction_json(&nft_tx_hash.to_hex()).await?;
+    let nft_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(nft_output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], nft_output_index))?;
+
+    let nft_meta = nft_output
+        .get("nft")
+        .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
+    let token_id_hex = nft_meta
+        .get("tokenId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing tokenId"))?;
+    let content_hash_hex = nft_meta
+        .get("contentHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let token_id =
+        Hash::from_hex(token_id_hex).ok_or_else(|| anyhow::anyhow!("Invalid token_id"))?;
+    let content_bytes = hex::decode(content_hash_hex).unwrap_or_default();
+    let nft_amount = nft_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Resolve buyer and seller hashes
+    let buyer_pubkey_hash = buyer_wallet.primary_pubkey_hash();
+    let buyer_hash = Hash::from_hex(&buyer_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid buyer pubkey hash"))?;
+    let seller_pubkey_hash = seller_wallet.primary_pubkey_hash();
+    let seller_hash = Hash::from_hex(&seller_pubkey_hash)
+        .ok_or_else(|| anyhow::anyhow!("Invalid seller pubkey hash"))?;
+
+    // Get buyer's spendable UTXOs for payment + fee
+    let fee_units = 1500u64;
+    let required = price_units + fee_units;
+    let buyer_utxos: Vec<_> = rpc
+        .get_utxos(&buyer_pubkey_hash, true)
+        .await?
+        .into_iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+        .collect();
+
+    let mut selected_utxos = Vec::new();
+    let mut total_input = 0u64;
+    for utxo in &buyer_utxos {
+        if total_input >= required {
+            break;
+        }
+        selected_utxos.push(utxo.clone());
+        total_input += utxo.amount;
+    }
+    if total_input < required {
+        anyhow::bail!(
+            "Buyer insufficient balance. Available: {}, Required: {} (price {} + fee {})",
+            format_balance(total_input),
+            format_balance(required),
+            format_balance(price_units),
+            format_balance(fee_units)
+        );
+    }
+
+    // === Build atomic transaction ===
+    // Input 0: NFT (seller signs)
+    // Inputs 1..N: buyer's payment UTXOs (buyer signs)
+    let mut inputs = vec![Input::new(nft_tx_hash, nft_output_index)];
+    for utxo in &selected_utxos {
+        let tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        inputs.push(Input::new(tx_hash, utxo.output_index));
+    }
+
+    // Output 0: NFT to buyer
+    let buyer_cond = doli_core::Condition::signature(buyer_hash);
+    let nft_to_buyer = Output::nft(
+        nft_amount,
+        buyer_hash,
+        token_id,
+        &content_bytes,
+        &buyer_cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?;
+
+    // Output 1: Payment to seller
+    let payment_to_seller = Output::normal(price_units, seller_hash);
+
+    // Output 2: Change to buyer (if any)
+    let mut outputs = vec![nft_to_buyer, payment_to_seller];
+    let change = total_input - required;
+    if change > 0 {
+        outputs.push(Output::normal(change, buyer_hash));
+    }
+
+    let mut tx = Transaction::new_transfer(inputs, outputs);
+
+    // === Sign ===
+    let signing_hash = tx.signing_message();
+    let seller_keypair = seller_wallet.primary_keypair()?;
+    let buyer_keypair = buyer_wallet.primary_keypair()?;
+
+    // Covenant witness for NFT input (seller's signature satisfies the condition)
+    let mut w = doli_core::Witness::default();
+    w.signatures.push(doli_core::ConditionWitnessSignature {
+        pubkey: *seller_keypair.public_key(),
+        signature: signature::sign_hash(&signing_hash, seller_keypair.private_key()),
+    });
+    let nft_witness = w.encode();
+
+    // Set covenant witnesses: NFT has witness, payment inputs have empty
+    let mut witnesses: Vec<Vec<u8>> = vec![nft_witness];
+    for _ in &selected_utxos {
+        witnesses.push(Vec::new());
+    }
+    tx.set_covenant_witnesses(&witnesses);
+
+    // Sign inputs: input 0 with seller key, inputs 1..N with buyer key
+    tx.inputs[0].signature = signature::sign_hash(&signing_hash, seller_keypair.private_key());
+    for i in 1..tx.inputs.len() {
+        tx.inputs[i].signature = signature::sign_hash(&signing_hash, buyer_keypair.private_key());
+    }
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+    let tx_hash = tx.hash();
+
+    let buyer_display = crypto::address::encode(&buyer_hash, address_prefix())
+        .unwrap_or_else(|_| buyer_hash.to_hex());
+    let seller_display = crypto::address::encode(&seller_hash, address_prefix())
+        .unwrap_or_else(|_| seller_hash.to_hex());
+
+    println!("Atomic NFT Purchase:");
+    println!("  Token ID: {}", token_id.to_hex());
+    println!(
+        "  NFT:      {}:{} -> {}",
+        &nft_tx_hash.to_hex()[..16],
+        nft_output_index,
+        buyer_display
+    );
+    println!(
+        "  Payment:  {} -> {}",
+        format_balance(price_units),
+        seller_display
+    );
+    println!("  Fee:      {}", format_balance(fee_units));
+    if change > 0 {
+        println!("  Change:   {} -> buyer", format_balance(change));
+    }
+    println!("  TX Hash:  {}", tx_hash.to_hex());
+    println!("  Size:     {} bytes", tx_bytes.len());
+
+    println!();
+    println!("Broadcasting transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("NFT purchased successfully!");
+            println!("TX Hash: {}", result_hash);
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("NFT purchase failed: {}", e));
         }
     }
 
