@@ -302,10 +302,18 @@ impl From<&doli_core::Output> for OutputResponse {
         // Decode NFT metadata if present
         let nft_metadata = if output.output_type == doli_core::OutputType::NFT {
             output.nft_metadata().map(|(token_id, content_hash)| {
-                serde_json::json!({
+                let mut nft_json = serde_json::json!({
                     "tokenId": token_id.to_hex(),
                     "contentHash": hex::encode(&content_hash)
-                })
+                });
+                if let Some((creator_hash, royalty_bps)) = output.nft_royalty() {
+                    nft_json["royalty"] = serde_json::json!({
+                        "creator": creator_hash.to_hex(),
+                        "bps": royalty_bps,
+                        "percent": format!("{:.2}", royalty_bps as f64 / 100.0)
+                    });
+                }
+                nft_json
             })
         } else {
             None
