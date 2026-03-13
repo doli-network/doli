@@ -27,6 +27,7 @@ network = { path = "crates/network" }
 rpc = { path = "crates/rpc" }
 updater = { path = "crates/updater" }
 bridge = { path = "crates/bridge" }
+wallet = { path = "crates/wallet" }
 
 # Cryptography
 bech32 = "0.11"

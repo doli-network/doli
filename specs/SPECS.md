@@ -13,16 +13,30 @@ Master index for all DOLI protocol specifications.
 | [architecture.md](./architecture.md) | Comprehensive system architecture - all crate responsibilities and component interactions |
 | [security_model.md](./security_model.md) | Complete security model - threat analysis, attack vectors, cryptographic guarantees |
 
+## Architecture Specifications
+
+| File | Description |
+|------|-------------|
+| [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
+
+## Requirements Specifications
+
+| File | Description |
+|------|-------------|
+| [gui-desktop-requirements.md](./gui-desktop-requirements.md) | GUI Desktop Application requirements - Tauri 2.x cross-platform wallet with full CLI feature parity |
+
 ---
 
 ## Quick Navigation
 
 ```
 specs/
-├── SPECS.md             # ← You are here (specifications index)
-├── protocol.md          # Full protocol specification
-├── architecture.md      # Comprehensive architecture
-└── security_model.md    # Complete security model
+├── SPECS.md                      # ← You are here (specifications index)
+├── protocol.md                   # Full protocol specification
+├── architecture.md               # Comprehensive architecture
+├── security_model.md             # Complete security model
+├── gui-architecture.md           # GUI Desktop Application architecture
+└── gui-desktop-requirements.md   # GUI Desktop Application requirements
 ```
 
 ---
