@@ -162,6 +162,8 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     minute_tracker: MinuteAttestationTracker,
+    /// Consecutive forced recoveries (for exponential backoff: 60→120→300→600→960s)
+    consecutive_forced_recoveries: u32,
 }
 
 impl Node {
@@ -764,6 +766,7 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            consecutive_forced_recoveries: 0,
         })
     }
 
@@ -3162,20 +3165,22 @@ impl Node {
     /// Rate-limited: no more than 1 forced recovery per epoch (360 blocks ≈ 1 hour).
     /// Prevents cascade loops where snap sync → fork → re-snap repeats unbounded.
     async fn force_recover_from_peers(&mut self) -> Result<()> {
-        // Rate limit: enforce minimum cooldown between forced recoveries.
-        // Uses the network's epoch length in seconds as the cooldown period.
-        let cooldown_secs = (self.params.slots_per_epoch as u64) * self.params.slot_duration;
+        // Rate limit: exponential backoff between forced recoveries.
+        // 60s → 120s → 300s → 600s → 960s (cap at 4 doublings).
+        // Old behavior was a flat 3600s cooldown which left nodes stuck for an hour.
+        let cooldown_secs = 60u64 * (1u64 << self.consecutive_forced_recoveries.min(4));
         if let Some(last) = self.last_resync_time {
             let elapsed = last.elapsed().as_secs();
             if elapsed < cooldown_secs {
                 warn!(
                     "Recovery: cooldown active — last forced recovery {}s ago \
-                     (min {}s between recoveries). Skipping to prevent cascade.",
-                    elapsed, cooldown_secs
+                     (min {}s, attempt #{} between recoveries). Skipping to prevent cascade.",
+                    elapsed, cooldown_secs, self.consecutive_forced_recoveries
                 );
                 return Ok(());
             }
         }
+        self.consecutive_forced_recoveries = self.consecutive_forced_recoveries.saturating_add(1);
         self.last_resync_time = Some(std::time::Instant::now());
         self.recover_from_peers_inner(true).await
     }
@@ -4996,6 +5001,7 @@ impl Node {
             ProductionAuthorization::Authorized => {
                 self.consecutive_fork_blocks = 0;
                 self.shallow_rollback_count = 0;
+                self.consecutive_forced_recoveries = 0;
                 info!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot
