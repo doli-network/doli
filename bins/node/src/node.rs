@@ -3756,7 +3756,9 @@ impl Node {
                     warn!(
                         "Block {} in store at height {} but chain at height {} — \
                          poisoned block, re-applying",
-                        block_hash, stored_height, height - 1
+                        block_hash,
+                        stored_height,
+                        height - 1
                     );
                 } else {
                     // Block is in store AND chain state is at or past it — truly applied.
