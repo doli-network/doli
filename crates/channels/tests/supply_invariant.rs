@@ -5,11 +5,10 @@
 
 use channels::close::*;
 use channels::commitment::CommitmentPair;
-use channels::funding::{build_funding_tx, build_funding_tx_with_change};
+use channels::funding::build_funding_tx_with_change;
 use channels::types::{ChannelBalance, HtlcState, InFlightHtlc, PaymentDirection};
 use crypto::hash::hash;
 use crypto::KeyPair;
-use doli_core::transaction::Output;
 
 /// Helper: compute fee = input_amount - sum(outputs)
 fn tx_fee(tx: &doli_core::transaction::Transaction, input_amount: u64) -> i64 {
