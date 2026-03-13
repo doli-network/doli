@@ -145,6 +145,11 @@ pub enum ConditionError {
     TrailingBytes { remaining: usize },
     /// Zero threshold in multisig or threshold condition.
     ZeroThreshold,
+    /// HTLC lock height must be less than expiry height.
+    InvalidTimelockRange {
+        lock: crate::types::BlockHeight,
+        expiry: crate::types::BlockHeight,
+    },
 }
 
 impl std::fmt::Display for ConditionError {
@@ -190,6 +195,13 @@ impl std::fmt::Display for ConditionError {
                 write!(f, "unexpected {} trailing bytes after condition", remaining)
             }
             Self::ZeroThreshold => write!(f, "threshold must be at least 1"),
+            Self::InvalidTimelockRange { lock, expiry } => {
+                write!(
+                    f,
+                    "lock height {} must be less than expiry height {}",
+                    lock, expiry
+                )
+            }
         }
     }
 }

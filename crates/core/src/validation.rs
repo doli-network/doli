@@ -2500,13 +2500,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         return Ok(());
     }
 
-    // Get the signing message (tx hash)
-    let signing_hash = tx.signing_message();
-
     // Validate each input
     let mut total_input: Amount = 0;
 
     for (i, input) in tx.inputs.iter().enumerate() {
+        // Per-input signing hash: respects SighashType (All vs AnyoneCanPay)
+        let signing_hash = tx.signing_message_for_input(i);
         // Look up the UTXO
         let utxo = utxo_provider
             .get_utxo(&input.prev_tx_hash, input.output_index)
@@ -2552,6 +2551,53 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             inputs: total_input,
             outputs: total_output,
         });
+    }
+
+    // ── Royalty enforcement ──────────────────────────────────────────────
+    // When an NFT with royalties is spent, the transaction MUST include
+    // a payment output to the creator for at least (sale_price * royalty_bps / 10000).
+    // Sale price is inferred from the largest non-NFT, non-change output to a
+    // pubkey_hash that differs from both the NFT input owner and the NFT output recipient.
+    if tx.tx_type == TxType::Transfer {
+        for (i, input) in tx.inputs.iter().enumerate() {
+            let utxo = utxo_provider.get_utxo(&input.prev_tx_hash, input.output_index);
+            if let Some(utxo) = utxo {
+                if let Some((creator_hash, royalty_bps)) = utxo.output.nft_royalty() {
+                    if royalty_bps > 0 {
+                        // Find the sale price: the payment output to the seller
+                        // (the owner of the NFT being spent = utxo.output.pubkey_hash)
+                        let seller_hash = utxo.output.pubkey_hash;
+                        let sale_price: Amount = tx
+                            .outputs
+                            .iter()
+                            .filter(|o| {
+                                o.output_type == OutputType::Normal && o.pubkey_hash == seller_hash
+                            })
+                            .map(|o| o.amount)
+                            .sum();
+
+                        if sale_price > 0 {
+                            let required_royalty =
+                                (sale_price as u128 * royalty_bps as u128 / 10000) as Amount;
+                            if required_royalty > 0 {
+                                let actual_royalty: Amount = tx
+                                    .outputs
+                                    .iter()
+                                    .filter(|o| o.pubkey_hash == creator_hash)
+                                    .map(|o| o.amount)
+                                    .sum();
+                                if actual_royalty < required_royalty {
+                                    return Err(ValidationError::InvalidTransaction(format!(
+                                        "NFT input {} requires royalty of {} to creator, got {}",
+                                        i, required_royalty, actual_royalty
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(())

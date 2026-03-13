@@ -522,6 +522,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge"
+version = "3.6.0"
+dependencies = [
+ "chrono",
+ "crypto",
+ "doli-core",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -624,6 +642,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]

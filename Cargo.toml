@@ -26,6 +26,7 @@ storage = { path = "crates/storage" }
 network = { path = "crates/network" }
 rpc = { path = "crates/rpc" }
 updater = { path = "crates/updater" }
+bridge = { path = "crates/bridge" }
 
 # Cryptography
 bech32 = "0.11"
@@ -57,6 +58,9 @@ futures = "0.3"
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["cors", "limit"] }
 
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
 # Async utilities
 async-trait = "0.1"
 
@@ -84,7 +88,7 @@ num-integer = "0.1"
 num-bigint = { version = "0.4", features = ["serde"] }
 
 # Time
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Hex encoding
 hex = "0.4"
