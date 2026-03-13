@@ -37,8 +37,8 @@ pub enum TxType {
     AddBond = 7,
     /// Request withdrawal
     RequestWithdrawal = 8,
-    /// Claim withdrawal (reserved)
-    ClaimWithdrawal = 9,
+    /// Mint fungible asset
+    MintAsset = 9,
     /// Slashing evidence
     SlashingEvidence = 10,
     /// Token issuance
@@ -56,7 +56,7 @@ impl TxType {
     ///
     /// Core TxType (repr(u32)): Transfer=0, Registration=1, Exit=2, ClaimReward=3,
     /// ClaimBond=4, SlashProducer=5, Coinbase=6, AddBond=7, RequestWithdrawal=8,
-    /// ClaimWithdrawal=9, EpochReward=10, RemoveMaintainer=11, AddMaintainer=12,
+    /// MintAsset=9, EpochReward=10, RemoveMaintainer=11, AddMaintainer=12,
     /// DelegateBond=13, RevokeDelegation=14, ProtocolActivation=15
     fn to_core_type_id(self) -> u32 {
         match self {
@@ -69,7 +69,7 @@ impl TxType {
             TxType::RewardClaim => 3, // ClaimReward in core
             TxType::AddBond => 7,
             TxType::RequestWithdrawal => 8,
-            TxType::ClaimWithdrawal => 9,
+            TxType::MintAsset => 9,
             TxType::SlashingEvidence => 5, // SlashProducer in core
             TxType::TokenIssuance => 0,    // Uses Transfer type in core
             TxType::BridgeLock => 0,       // Uses Transfer type in core
@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(TxType::RewardClaim as u8, 6);
         assert_eq!(TxType::AddBond as u8, 7);
         assert_eq!(TxType::RequestWithdrawal as u8, 8);
-        assert_eq!(TxType::ClaimWithdrawal as u8, 9);
+        assert_eq!(TxType::MintAsset as u8, 9);
         assert_eq!(TxType::SlashingEvidence as u8, 10);
         assert_eq!(TxType::TokenIssuance as u8, 11);
         assert_eq!(TxType::BridgeLock as u8, 12);

@@ -43,8 +43,8 @@ impl Default for RpcServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: "127.0.0.1:8500".parse().expect("valid socket addr"),
-            enable_cors: true,
-            allowed_origins: vec!["*".to_string()],
+            enable_cors: false,
+            allowed_origins: vec![],
         }
     }
 }

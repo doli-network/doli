@@ -150,7 +150,7 @@ pub fn assert_production_keys(network: Network) {
 /// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns
 /// the network-specific bootstrap keys.
 pub fn get_maintainer_keys(network: Network) -> Vec<&'static str> {
-    if should_use_test_keys() {
+    if should_use_test_keys() && network == Network::Devnet {
         test_maintainer_pubkeys()
     } else {
         bootstrap_maintainer_keys(network).to_vec()

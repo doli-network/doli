@@ -1102,8 +1102,8 @@ impl Node {
 
         let rpc_config = RpcServerConfig {
             listen_addr,
-            enable_cors: true,
-            allowed_origins: vec!["*".to_string()],
+            enable_cors: false,
+            allowed_origins: vec![],
         };
 
         // Create sync status callback

@@ -1055,13 +1055,14 @@ impl RpcContext {
                     doli_core::TxType::Coinbase => "coinbase",
                     doli_core::TxType::AddBond => "add_bond",
                     doli_core::TxType::RequestWithdrawal => "request_withdrawal",
-                    doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
+                    doli_core::TxType::MintAsset => "mint_asset",
                     doli_core::TxType::EpochReward => "epoch_reward",
                     doli_core::TxType::RemoveMaintainer => "remove_maintainer",
                     doli_core::TxType::AddMaintainer => "add_maintainer",
                     doli_core::TxType::DelegateBond => "delegate_bond",
                     doli_core::TxType::RevokeDelegation => "revoke_delegation",
                     doli_core::TxType::ProtocolActivation => "protocol_activation",
+                    doli_core::TxType::BurnAsset => "burn_asset",
                 };
 
                 history.push(HistoryEntryResponse {
@@ -1090,11 +1091,41 @@ impl RpcContext {
         let params: SubmitVoteParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        // Serialize the vote message for broadcasting
+        // 1. Decode and validate the producer's public key
+        let pubkey = crypto::PublicKey::from_hex(&params.vote.producer_id)
+            .map_err(|_| RpcError::invalid_params("Invalid producer_id public key"))?;
+
+        // 2. Verify the producer is registered
+        let producer_set = self
+            .producer_set
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("Producer set not available"))?;
+        {
+            let producers = producer_set.read().await;
+            let pubkey_hash =
+                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+            if producers.get(&pubkey_hash).is_none() {
+                return Err(RpcError::invalid_params("Producer not registered"));
+            }
+        }
+
+        // 3. Verify the Ed25519 signature over "version:vote:timestamp"
+        let signing_message = format!(
+            "{}:{}:{}",
+            params.vote.version, params.vote.vote, params.vote.timestamp
+        );
+        let sig_bytes = hex::decode(&params.vote.signature)
+            .map_err(|_| RpcError::invalid_params("Invalid signature hex"))?;
+        let signature = crypto::Signature::try_from_slice(&sig_bytes)
+            .map_err(|_| RpcError::invalid_params("Invalid signature format"))?;
+
+        crypto::signature::verify(signing_message.as_bytes(), &signature, &pubkey)
+            .map_err(|_| RpcError::invalid_params("Signature verification failed"))?;
+
+        // 4. Serialize and broadcast the verified vote
         let vote_data = serde_json::to_vec(&params.vote)
             .map_err(|e| RpcError::internal_error(format!("Failed to serialize vote: {}", e)))?;
 
-        // Broadcast via gossip
         (self.broadcast_vote)(vote_data);
 
         Ok(serde_json::json!({
