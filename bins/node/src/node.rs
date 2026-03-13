@@ -2723,6 +2723,27 @@ impl Node {
             }
         }
 
+        // Detect if our local fork is solo-produced (all blocks by same producer).
+        // If the same dominant producer is on both chains, weights will tie.
+        // A solo fork should never win a tie against the network-majority chain.
+        let our_fork_is_solo = {
+            let mut producers_seen = std::collections::HashSet::new();
+            let store = &self.block_store;
+            let mut hash = current_tip;
+            for _ in 0..fork_len.max(1) {
+                if hash == recovery.connection_point {
+                    break;
+                }
+                if let Ok(Some(header)) = store.get_header(&hash) {
+                    producers_seen.insert(header.producer);
+                    hash = header.prev_hash;
+                } else {
+                    break;
+                }
+            }
+            producers_seen.len() <= 1
+        };
+
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
         let simple_reorg = {
@@ -2732,10 +2753,15 @@ impl Node {
         };
 
         if let Some(result) = simple_reorg {
-            if result.weight_delta > 0 {
+            // In fork recovery: switch if heavier, OR if equal weight and we're solo-producing.
+            // A solo fork should yield to the network-majority chain on ties.
+            let should_switch =
+                result.weight_delta > 0 || (result.weight_delta == 0 && our_fork_is_solo);
+            if should_switch {
                 info!(
-                    "Fork is heavier (+{}) via simple reorg — executing: rollback={}, new={}",
+                    "Fork recovery: switching to network chain (delta={}, solo={}) — rollback={}, new={}",
                     result.weight_delta,
+                    our_fork_is_solo,
                     result.rollback.len(),
                     result.new_blocks.len()
                 );
@@ -2743,7 +2769,7 @@ impl Node {
                 self.execute_reorg(result, trigger).await?;
             } else {
                 info!(
-                    "Fork is lighter ({}) — keeping current chain",
+                    "Fork is lighter ({}) and not solo — keeping current chain",
                     result.weight_delta
                 );
             }
@@ -2761,12 +2787,15 @@ impl Node {
                 })
         };
 
-        // 5. Execute reorg if fork is heavier
+        // 5. Execute reorg if fork is heavier, or if tied and we're solo
         match reorg_result {
-            Some(result) if result.weight_delta > 0 => {
+            Some(result)
+                if result.weight_delta > 0 || (result.weight_delta == 0 && our_fork_is_solo) =>
+            {
                 info!(
-                    "Fork is heavier (+{}) — executing reorg: rollback={}, new={}",
+                    "Fork recovery: switching to network chain (delta={}, solo={}) — rollback={}, new={}",
                     result.weight_delta,
+                    our_fork_is_solo,
                     result.rollback.len(),
                     result.new_blocks.len()
                 );
@@ -2775,7 +2804,7 @@ impl Node {
             }
             Some(result) => {
                 info!(
-                    "Fork is lighter ({}) — keeping current chain",
+                    "Fork is lighter ({}) and not solo — keeping current chain",
                     result.weight_delta
                 );
             }

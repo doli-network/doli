@@ -1754,7 +1754,7 @@ impl SyncManager {
     /// Used during fork recovery to populate weights before plan_reorg.
     pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {
         self.reorg_handler
-            .record_block_with_weight(hash, prev_hash, weight);
+            .record_fork_block(hash, prev_hash, weight);
     }
 
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.

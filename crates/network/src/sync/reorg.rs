@@ -90,6 +90,26 @@ impl ReorgHandler {
     /// weight is computed from the parent's accumulated weight plus
     /// this block's producer weight.
     pub fn record_block_with_weight(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
+        self.record_block_internal(hash, prev_hash, producer_weight, true);
+    }
+
+    /// Record a fork block's weight WITHOUT updating current_chain_weight.
+    ///
+    /// During fork recovery we populate weights for the competing chain's blocks
+    /// so that plan_reorg / check_reorg_weighted can compute accumulated weight.
+    /// If we updated current_chain_weight here, the subsequent comparison would
+    /// compare the fork against itself (delta=0) and always reject the reorg.
+    pub fn record_fork_block(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
+        self.record_block_internal(hash, prev_hash, producer_weight, false);
+    }
+
+    fn record_block_internal(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        producer_weight: u64,
+        update_current_weight: bool,
+    ) {
         // Calculate accumulated weight and height
         let (parent_accumulated, parent_height) = self
             .block_weights
@@ -111,8 +131,10 @@ impl ReorgHandler {
             },
         );
 
-        // Update current chain weight if this extends our tip
-        self.current_chain_weight = accumulated_weight;
+        // Only update current chain weight for blocks on OUR chain, not fork blocks
+        if update_current_weight {
+            self.current_chain_weight = accumulated_weight;
+        }
 
         // Add to tracking
         self.recent_blocks.insert(hash);
@@ -809,5 +831,70 @@ mod tests {
 
         let result = handler.check_reorg_weighted(&fork, block2, 100);
         assert!(result.is_some(), "Reorg above finality should be allowed");
+    }
+
+    #[test]
+    fn test_fork_block_recording_does_not_corrupt_current_weight() {
+        // Regression test for the N4 solo-fork bug:
+        // record_fork_block() was using record_block_with_weight() which
+        // unconditionally overwrote current_chain_weight, making the fork
+        // recovery comparison always see delta=0.
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::ZERO;
+        let shared = crypto::hash::hash(b"shared_block");
+
+        // Our chain: genesis -> shared (w=100) -> our_tip (w=100) = 200
+        handler.record_block_with_weight(shared, genesis, 100);
+        let our_tip = crypto::hash::hash(b"our_solo_block");
+        handler.record_block_with_weight(our_tip, shared, 100);
+        assert_eq!(handler.current_weight(), 200);
+
+        // Fork recovery finds canonical chain: shared -> fork_tip (w=100) = 200
+        let fork_tip_hash = crypto::hash::hash(b"canonical_block");
+        handler.record_fork_block(fork_tip_hash, shared, 100);
+
+        // CRITICAL: current_chain_weight must still be 200 (our chain), not
+        // overwritten to 200 (fork chain). Before the fix, this was corrupted.
+        assert_eq!(
+            handler.current_weight(),
+            200,
+            "record_fork_block must NOT overwrite current_chain_weight"
+        );
+
+        // Now test with a heavier fork: shared -> fork_heavy (w=500) = 600
+        let fork_heavy = crypto::hash::hash(b"canonical_heavy");
+        handler.record_fork_block(fork_heavy, shared, 500);
+
+        // current_weight still unchanged
+        assert_eq!(handler.current_weight(), 200);
+
+        // But the fork's accumulated weight should be queryable
+        assert_eq!(handler.chain_weight(&fork_heavy), 600);
+
+        // check_reorg_weighted should detect the heavier fork
+        let fork_block = Block {
+            header: doli_core::BlockHeader {
+                version: 1,
+                prev_hash: shared,
+                merkle_root: Hash::ZERO,
+                presence_root: Hash::ZERO,
+                genesis_hash: Hash::ZERO,
+                timestamp: 0,
+                slot: 2,
+                producer: crypto::PublicKey::from_bytes([0u8; 32]),
+                vdf_output: vdf::VdfOutput {
+                    value: vec![0u8; 32],
+                },
+                vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
+            },
+            transactions: vec![],
+            aggregate_bls_signature: Vec::new(),
+        };
+        let result = handler.check_reorg_weighted(&fork_block, our_tip, 500);
+        assert!(
+            result.is_some(),
+            "Heavier fork should trigger reorg after correct weight tracking"
+        );
     }
 }

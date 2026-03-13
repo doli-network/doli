@@ -415,13 +415,40 @@ impl UpdateService {
 
         // Try to load existing pending update from disk
         let pending = PendingUpdate::load(&data_dir);
-        if let Some(ref p) = pending {
-            info!(
-                "Loaded pending update v{} from disk ({} days remaining)",
-                p.release.version,
-                p.days_remaining()
-            );
-        }
+        let pending = if let Some(p) = pending {
+            // If we're already running the required version, clean up the stale
+            // pending_update.json. Without this, every restart re-displays
+            // "PRODUCTION PAUSED" and attempts a failed auto-apply download.
+            if let Some(ref enforcement) = p.enforcement {
+                if enforcement.version_meets_requirement(current_version()) {
+                    info!(
+                        "Pending update v{} already satisfied (running v{}) — cleaning up",
+                        p.release.version,
+                        current_version()
+                    );
+                    if let Err(e) = PendingUpdate::remove(&data_dir) {
+                        warn!("Failed to remove stale pending_update.json: {}", e);
+                    }
+                    None
+                } else {
+                    info!(
+                        "Loaded pending update v{} from disk ({} days remaining)",
+                        p.release.version,
+                        p.days_remaining()
+                    );
+                    Some(p)
+                }
+            } else {
+                info!(
+                    "Loaded pending update v{} from disk ({} days remaining)",
+                    p.release.version,
+                    p.days_remaining()
+                );
+                Some(p)
+            }
+        } else {
+            None
+        };
 
         Self {
             config,
