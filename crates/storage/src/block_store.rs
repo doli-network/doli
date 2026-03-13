@@ -43,12 +43,20 @@ fn deserialize_body(bytes: &[u8]) -> Result<(Vec<Transaction>, Vec<u8>), Storage
     }
     // Fallback: v3.6.0 (Input has sighash_type but no committed_output_count)
     if let Ok(body) = bincode::deserialize::<LegacyBlockBodyV2>(bytes) {
-        let txs = body.transactions.into_iter().map(|t| t.into_current()).collect();
+        let txs = body
+            .transactions
+            .into_iter()
+            .map(|t| t.into_current())
+            .collect();
         return Ok((txs, body.aggregate_bls_signature));
     }
     // Fallback: v3.5.0 (Input has no sighash_type)
     if let Ok(body) = bincode::deserialize::<LegacyBlockBodyV1>(bytes) {
-        let txs = body.transactions.into_iter().map(|t| t.into_current()).collect();
+        let txs = body
+            .transactions
+            .into_iter()
+            .map(|t| t.into_current())
+            .collect();
         return Ok((txs, body.aggregate_bls_signature));
     }
     // Fallback: pre-BLS plain Vec<Transaction> (try all 3 tx formats)
@@ -61,7 +69,10 @@ fn deserialize_body(bytes: &[u8]) -> Result<(Vec<Transaction>, Vec<u8>), Storage
     }
     let txs: Vec<doli_core::transaction::legacy::LegacyTransaction> =
         bincode::deserialize(bytes).map_err(|e| StorageError::Serialization(e.to_string()))?;
-    Ok((txs.into_iter().map(|t| t.into_current()).collect(), Vec::new()))
+    Ok((
+        txs.into_iter().map(|t| t.into_current()).collect(),
+        Vec::new(),
+    ))
 }
 
 /// Column family names
