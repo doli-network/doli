@@ -88,6 +88,7 @@ impl NodeManager {
             .arg(&self.network)
             .arg("--data-dir")
             .arg(&self.data_dir)
+            .arg("run")
             .arg("--rpc-port")
             .arg(self.rpc_port.to_string())
             .stdout(log_file)
