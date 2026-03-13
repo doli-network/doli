@@ -68,10 +68,10 @@ impl ChainMonitor {
                 // Check funding confirmation
                 let tx_hash = hex::encode(channel.funding_outpoint.tx_hash);
                 match self.rpc.get_transaction_status(&tx_hash).await {
-                    Ok(status) if status.confirmed => {
+                    Ok(status) if status.confirmed() => {
                         events.push(MonitorEvent::FundingConfirmed {
                             channel_id: channel.channel_id.clone(),
-                            confirmations: status.confirmations,
+                            confirmations: status.confirmations.unwrap_or(0) as u32,
                         });
                     }
                     Ok(_) => {

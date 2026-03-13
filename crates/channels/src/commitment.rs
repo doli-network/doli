@@ -88,6 +88,11 @@ impl CommitmentPair {
     ///
     /// Our output uses `to_local` (delayed + revocable).
     /// Their output uses `to_remote` (immediately spendable by them).
+    ///
+    /// `capacity` is the funding UTXO amount. `fee` is deducted from local balance
+    /// (broadcaster pays). Returns `CapacityMismatch` if the invariant
+    /// `balance.total() + htlc_total + fee != capacity` is violated.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_local_commitment(
         &self,
         funding_tx_hash: Hash,
@@ -95,14 +100,35 @@ impl CommitmentPair {
         local_pubkey_hash: Hash,
         remote_pubkey_hash: Hash,
         dispute_height: BlockHeight,
+        capacity: doli_core::Amount,
+        fee: doli_core::Amount,
     ) -> Result<Transaction> {
+        // Enforce supply invariant: balance + HTLCs must equal full capacity.
+        // Fee is deducted from local's output only (broadcaster pays).
+        let htlc_total: doli_core::Amount = self.htlcs.iter().map(|h| h.amount).sum();
+        let actual = self.balance.total() + htlc_total;
+        if actual != capacity {
+            return Err(ChannelError::CapacityMismatch {
+                expected: capacity,
+                actual,
+            });
+        }
+
+        if fee > 0 && self.balance.local < fee {
+            return Err(ChannelError::InsufficientBalance {
+                need: fee,
+                have: self.balance.local,
+            });
+        }
+
         let input = Input::new(funding_tx_hash, funding_output_index);
         let mut outputs = Vec::new();
 
-        // to_local: our balance with revocation + timelock
-        if self.balance.local > 0 {
+        // to_local: our balance minus fee, with revocation + timelock
+        let local_after_fee = self.balance.local - fee;
+        if local_after_fee > 0 {
             let local_out = to_local_output(
-                self.balance.local,
+                local_after_fee,
                 local_pubkey_hash,
                 remote_pubkey_hash,
                 self.revocation_hash,
@@ -448,7 +474,7 @@ mod tests {
         let remote_pk = crypto::hash::hash(b"remote");
 
         let tx = pair
-            .build_local_commitment(funding_hash, 0, local_pk, remote_pk, 1144)
+            .build_local_commitment(funding_hash, 0, local_pk, remote_pk, 1144, 1000, 0)
             .unwrap();
 
         assert_eq!(tx.inputs.len(), 1);
@@ -470,6 +496,8 @@ mod tests {
                 crypto::hash::hash(b"l"),
                 crypto::hash::hash(b"r"),
                 1144,
+                1000,
+                0,
             )
             .unwrap();
         assert_eq!(tx.outputs.len(), 1); // only to_remote
@@ -486,6 +514,8 @@ mod tests {
                 crypto::hash::hash(b"l"),
                 crypto::hash::hash(b"r"),
                 1144,
+                1000,
+                0,
             )
             .unwrap();
         assert_eq!(tx.outputs.len(), 1); // only to_local
@@ -501,6 +531,8 @@ mod tests {
             crypto::hash::hash(b"l"),
             crypto::hash::hash(b"r"),
             1144,
+            0,
+            0,
         );
         assert!(result.is_err());
     }
@@ -508,7 +540,8 @@ mod tests {
     #[test]
     fn commitment_with_htlcs() {
         let seed = [42u8; 32];
-        let mut pair = CommitmentPair::new(0, ChannelBalance::new(500, 500), &seed);
+        // Balance reduced by HTLC amounts to maintain invariant
+        let mut pair = CommitmentPair::new(0, ChannelBalance::new(350, 500), &seed);
         pair.htlcs.push(InFlightHtlc {
             htlc_id: 0,
             payment_hash: [11u8; 32],
@@ -528,6 +561,7 @@ mod tests {
             preimage: None,
         });
 
+        // capacity = 350 + 500 + 100 + 50 = 1000
         let tx = pair
             .build_local_commitment(
                 crypto::hash::hash(b"f"),
@@ -535,11 +569,29 @@ mod tests {
                 crypto::hash::hash(b"l"),
                 crypto::hash::hash(b"r"),
                 1144,
+                1000,
+                0,
             )
             .unwrap();
 
         // to_local + to_remote + 2 HTLCs = 4 outputs
         assert_eq!(tx.outputs.len(), 4);
+    }
+
+    #[test]
+    fn commitment_rejects_capacity_mismatch() {
+        let seed = [42u8; 32];
+        let pair = CommitmentPair::new(0, ChannelBalance::new(700, 300), &seed);
+        let result = pair.build_local_commitment(
+            crypto::hash::hash(b"f"),
+            0,
+            crypto::hash::hash(b"l"),
+            crypto::hash::hash(b"r"),
+            1144,
+            500, // wrong capacity
+            0,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

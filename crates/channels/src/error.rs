@@ -34,6 +34,9 @@ pub enum ChannelError {
     #[error("HTLC expired")]
     HtlcExpired,
 
+    #[error("capacity mismatch: expected {expected}, got {actual}")]
+    CapacityMismatch { expected: u64, actual: u64 },
+
     #[error("reserve violation: balance {balance} below reserve {reserve}")]
     ReserveViolation { balance: u64, reserve: u64 },
 

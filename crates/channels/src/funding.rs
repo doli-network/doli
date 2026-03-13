@@ -49,6 +49,50 @@ pub fn build_funding_tx(
     Ok(Transaction::new_transfer(tx_inputs, outputs))
 }
 
+/// Build a funding transaction with automatic change calculation.
+///
+/// Takes UTXOs with known amounts and computes the change output.
+/// Prevents the supply leak where excess input is burned as fee.
+pub fn build_funding_tx_with_change(
+    inputs_with_amounts: Vec<(Hash, u32, Amount)>,
+    alice_pubkey_hash: Hash,
+    bob_pubkey_hash: Hash,
+    capacity: Amount,
+    fee: Amount,
+    change_pubkey_hash: Hash,
+) -> Result<Transaction> {
+    let total_input: Amount = inputs_with_amounts.iter().map(|(_, _, a)| a).sum();
+    let required = capacity + fee;
+
+    if total_input < required {
+        return Err(ChannelError::InsufficientBalance {
+            need: required,
+            have: total_input,
+        });
+    }
+
+    let inputs: Vec<(Hash, u32)> = inputs_with_amounts
+        .into_iter()
+        .map(|(h, idx, _)| (h, idx))
+        .collect();
+
+    let change = total_input - required;
+    let change_output = if change > 0 {
+        Some(Output::normal(change, change_pubkey_hash))
+    } else {
+        None
+    };
+
+    build_funding_tx(
+        inputs,
+        alice_pubkey_hash,
+        bob_pubkey_hash,
+        capacity,
+        change_output,
+        false,
+    )
+}
+
 /// Sign a specific input of the funding transaction.
 pub fn sign_funding_input(
     tx: &mut Transaction,

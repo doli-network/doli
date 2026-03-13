@@ -17,31 +17,56 @@ pub struct RpcClient {
     client: reqwest::Client,
 }
 
-/// RPC response wrapper.
+/// JSON-RPC 2.0 response wrapper.
 #[derive(Debug, Deserialize)]
-struct RpcResponse<T> {
+struct JsonRpcResponse<T> {
     result: Option<T>,
-    error: Option<String>,
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonRpcError {
+    message: String,
+}
+
+/// Chain info from getChainInfo.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChainInfoResult {
+    best_height: u64,
 }
 
 /// UTXO as returned by the RPC.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RpcUtxo {
     pub tx_hash: String,
     pub output_index: u32,
     pub amount: u64,
-    pub output_type: u8,
+    pub output_type: String,
     pub pubkey_hash: String,
+    #[serde(default)]
     pub lock_until: u64,
+    #[serde(default)]
     pub extra_data: String,
+    #[serde(default)]
+    pub spendable: bool,
 }
 
-/// Transaction status.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Transaction response from getTransaction.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TxStatus {
-    pub confirmed: bool,
-    pub confirmations: u32,
+    #[serde(default)]
     pub block_height: Option<u64>,
+    #[serde(default)]
+    pub confirmations: Option<u64>,
+}
+
+impl TxStatus {
+    pub fn confirmed(&self) -> bool {
+        self.confirmations.is_some_and(|c| c > 0)
+    }
 }
 
 /// Block info for monitoring.
@@ -49,6 +74,7 @@ pub struct TxStatus {
 pub struct BlockInfo {
     pub height: u64,
     pub hash: String,
+    #[serde(default)]
     pub tx_count: u32,
 }
 
@@ -60,6 +86,35 @@ impl RpcClient {
         }
     }
 
+    /// Make a JSON-RPC 2.0 call.
+    async fn call<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T> {
+        let resp: JsonRpcResponse<T> = self
+            .client
+            .post(&self.url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        resp.result.ok_or_else(|| {
+            ChannelError::Rpc(
+                resp.error
+                    .map(|e| e.message)
+                    .unwrap_or_else(|| "unknown error".to_string()),
+            )
+        })
+    }
+
     /// Check connectivity.
     pub async fn ping(&self) -> bool {
         self.get_height().await.is_ok()
@@ -67,92 +122,32 @@ impl RpcClient {
 
     /// Get the current chain height.
     pub async fn get_height(&self) -> Result<BlockHeight> {
-        let resp: RpcResponse<u64> = self
-            .client
-            .post(format!("{}/rpc", self.url))
-            .json(&serde_json::json!({
-                "method": "getHeight",
-                "params": {}
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        resp.result
-            .ok_or_else(|| ChannelError::Rpc(resp.error.unwrap_or_default()))
+        let info: ChainInfoResult = self.call("getChainInfo", serde_json::json!({})).await?;
+        Ok(info.best_height)
     }
 
-    /// Get UTXOs for a pubkey hash.
-    pub async fn get_utxos(&self, pubkey_hash: &str) -> Result<Vec<RpcUtxo>> {
-        let resp: RpcResponse<Vec<RpcUtxo>> = self
-            .client
-            .post(format!("{}/rpc", self.url))
-            .json(&serde_json::json!({
-                "method": "getUtxos",
-                "params": { "pubkey_hash": pubkey_hash }
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        resp.result
-            .ok_or_else(|| ChannelError::Rpc(resp.error.unwrap_or_default()))
+    /// Get UTXOs for an address (bech32 or hex pubkey hash).
+    pub async fn get_utxos(&self, address: &str) -> Result<Vec<RpcUtxo>> {
+        self.call("getUtxos", serde_json::json!({ "address": address }))
+            .await
     }
 
     /// Submit a raw transaction (hex-encoded bincode).
     pub async fn submit_transaction(&self, tx_hex: &str) -> Result<String> {
-        let resp: RpcResponse<String> = self
-            .client
-            .post(format!("{}/rpc", self.url))
-            .json(&serde_json::json!({
-                "method": "submitTransaction",
-                "params": { "tx": tx_hex }
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        resp.result
-            .ok_or_else(|| ChannelError::Rpc(resp.error.unwrap_or_default()))
+        self.call("sendTransaction", serde_json::json!({ "tx": tx_hex }))
+            .await
     }
 
     /// Get transaction status (confirmation count).
     pub async fn get_transaction_status(&self, tx_hash: &str) -> Result<TxStatus> {
-        let resp: RpcResponse<TxStatus> = self
-            .client
-            .post(format!("{}/rpc", self.url))
-            .json(&serde_json::json!({
-                "method": "getTransactionStatus",
-                "params": { "tx_hash": tx_hash }
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        resp.result
-            .ok_or_else(|| ChannelError::Rpc(resp.error.unwrap_or_default()))
+        self.call("getTransaction", serde_json::json!({ "hash": tx_hash }))
+            .await
     }
 
     /// Get block at a given height.
     pub async fn get_block(&self, height: BlockHeight) -> Result<BlockInfo> {
-        let resp: RpcResponse<BlockInfo> = self
-            .client
-            .post(format!("{}/rpc", self.url))
-            .json(&serde_json::json!({
-                "method": "getBlock",
-                "params": { "height": height }
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        resp.result
-            .ok_or_else(|| ChannelError::Rpc(resp.error.unwrap_or_default()))
+        self.call("getBlockByHeight", serde_json::json!({ "height": height }))
+            .await
     }
 
     /// Submit a serialized transaction.
