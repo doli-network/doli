@@ -96,6 +96,9 @@ pub struct ForkSync {
     /// True when search stopped because it hit the store floor (block store
     /// doesn't cover the search range), NOT because of a genuine deep fork.
     store_limited: bool,
+    /// True after we sent a verification probe for the floor height.
+    /// Prevents infinite re-probing when the floor itself mismatches.
+    floor_probed: bool,
 }
 
 impl ForkSync {
@@ -130,6 +133,7 @@ impl ForkSync {
             low_verified: false,
             store_floor,
             store_limited: false,
+            floor_probed: false,
         }
     }
 
@@ -152,6 +156,22 @@ impl ForkSync {
                 }
                 // Binary search: probe the midpoint
                 if self.high <= self.low + 1 {
+                    if !self.low_verified
+                        && !self.floor_probed
+                        && self.low > 0
+                        && !self.store_limited
+                    {
+                        // Search converged at the floor but `low` was never probed.
+                        // Send one final probe at `low` to verify the floor block
+                        // before declaring "bottomed out".
+                        debug!(
+                            "Fork sync: verifying floor at height {} before concluding",
+                            self.low
+                        );
+                        self.floor_probed = true;
+                        self.pending_height = Some(self.low);
+                        return Some(SyncRequest::GetBlockByHeight { height: self.low });
+                    }
                     // Search complete — ancestor is at `low`
                     return None;
                 }
@@ -523,6 +543,7 @@ mod tests {
             low_verified: false,
             store_floor: 0,
             store_limited: false,
+            floor_probed: false,
         };
         assert!(fs.is_timed_out());
     }
@@ -555,5 +576,136 @@ mod tests {
         assert!(result.is_some());
         let r = result.unwrap();
         assert_eq!(r.ancestor_height, 5);
+    }
+
+    #[test]
+    fn test_fork_at_depth_floor_does_not_bottom_out() {
+        // Reproduces the bug: fork point is exactly at the depth floor.
+        // Binary search never probes `low` directly, so `low_verified` stays false.
+        // Without the fix, `search_bottomed_out()` returns true → unnecessary full resync.
+        let peer = PeerId::random();
+        // local_height=1100, MAX_FORK_SYNC_DEPTH=1000 → depth_floor=100, store_floor=1
+        let mut fs = ForkSync::new(peer, 1100, 1);
+        // depth_floor = 1100 - 1000 = 100, low = max(100, 1) = 100
+
+        // Fork at height 100 (the exact depth floor).
+        // Blocks 1-100 match, blocks 101+ differ.
+        let fork_point = 100;
+
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            if rounds > 25 {
+                panic!("Binary search did not converge in 25 rounds");
+            }
+
+            let req = fs.next_request();
+            match req {
+                Some(SyncRequest::GetBlockByHeight { height }) => {
+                    // Peer has a block at every height
+                    fs.handle_block_response(Some(doli_core::Block::new(
+                        doli_core::BlockHeader {
+                            version: 1,
+                            prev_hash: Hash::ZERO,
+                            merkle_root: Hash::ZERO,
+                            presence_root: Hash::ZERO,
+                            genesis_hash: Hash::ZERO,
+                            timestamp: height * 10,
+                            slot: height as u32,
+                            producer: crypto::PublicKey::from_bytes([0u8; 32]),
+                            vdf_output: vdf::VdfOutput { value: vec![] },
+                            vdf_proof: vdf::VdfProof::empty(),
+                        },
+                        vec![],
+                    )));
+
+                    if let Some((h, _peer_hash)) = fs.pending_probe() {
+                        let result = if h <= fork_point {
+                            ProbeResult::Match
+                        } else {
+                            ProbeResult::Mismatch
+                        };
+                        fs.handle_probe_result(result);
+                    }
+                }
+                None => break,
+                _ => panic!("Unexpected request type"),
+            }
+        }
+
+        // The fix: floor probe verifies height 100 matches → low_verified = true
+        assert!(
+            fs.low_verified,
+            "Floor probe should have verified the ancestor"
+        );
+        assert!(
+            !fs.search_bottomed_out(),
+            "Must NOT bottom out when ancestor exists at floor"
+        );
+        assert_eq!(
+            fs.search_complete_ancestor_height(),
+            Some(fork_point),
+            "Should find ancestor at the depth floor"
+        );
+    }
+
+    #[test]
+    fn test_genuine_deep_fork_still_bottoms_out() {
+        // When the fork is truly deeper than MAX_FORK_SYNC_DEPTH, the floor probe
+        // returns Mismatch and search_bottomed_out() should still return true.
+        let peer = PeerId::random();
+        // local_height=1100, depth_floor=100, store_floor=1
+        let mut fs = ForkSync::new(peer, 1100, 1);
+
+        // Fork at height 50 — deeper than depth_floor (100).
+        // Every probe including the floor (100) will mismatch.
+        let fork_point = 50;
+
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            if rounds > 25 {
+                panic!("Did not converge in 25 rounds");
+            }
+
+            let req = fs.next_request();
+            match req {
+                Some(SyncRequest::GetBlockByHeight { height }) => {
+                    fs.handle_block_response(Some(doli_core::Block::new(
+                        doli_core::BlockHeader {
+                            version: 1,
+                            prev_hash: Hash::ZERO,
+                            merkle_root: Hash::ZERO,
+                            presence_root: Hash::ZERO,
+                            genesis_hash: Hash::ZERO,
+                            timestamp: height * 10,
+                            slot: height as u32,
+                            producer: crypto::PublicKey::from_bytes([0u8; 32]),
+                            vdf_output: vdf::VdfOutput { value: vec![] },
+                            vdf_proof: vdf::VdfProof::empty(),
+                        },
+                        vec![],
+                    )));
+
+                    if let Some((h, _peer_hash)) = fs.pending_probe() {
+                        let result = if h <= fork_point {
+                            ProbeResult::Match
+                        } else {
+                            ProbeResult::Mismatch
+                        };
+                        fs.handle_probe_result(result);
+                    }
+                }
+                None => break,
+                _ => panic!("Unexpected request type"),
+            }
+        }
+
+        // Floor (100) mismatches because fork is at 50 — genuine deep fork
+        assert!(
+            fs.search_bottomed_out(),
+            "Should bottom out when fork is genuinely deeper than search range"
+        );
+        assert_eq!(fs.search_complete_ancestor_height(), None);
     }
 }

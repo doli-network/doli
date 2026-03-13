@@ -446,6 +446,11 @@ pub struct SyncManager {
     /// Set by the node after startup / snap sync. Used by fork sync to
     /// avoid binary-searching below available block data.
     store_floor: u64,
+
+    /// Counter for ticks where we're Idle but behind peers by a small gap (≤5 blocks).
+    /// After 5 ticks (~25s at 5s polling), forces a full sync restart instead of
+    /// waiting for gossip that may never arrive due to I/O contention.
+    idle_behind_retries: u32,
 }
 
 impl SyncManager {
@@ -524,6 +529,7 @@ impl SyncManager {
             fresh_node_wait_start: None,
             awaiting_canonical_block: false,
             store_floor: 1, // Default: full-sync node has block 1
+            idle_behind_retries: 0,
         }
     }
 
@@ -1030,6 +1036,32 @@ impl SyncManager {
             }
         }
 
+        // Layer 6.5: Height lag check — block production when behind by >= 2 blocks.
+        //
+        // If we know peers have a higher height, producing from our stale state
+        // creates a competing block that forks the chain. This is the #1 cause of
+        // fork-then-snap-sync on nodes under I/O contention (ai2 testnet pattern).
+        //
+        // Unlike slot-based Layer 6, height lag is reliable for BEHIND detection:
+        // a forked node can inflate its own height, but a behind node's height is
+        // definitionally lower than the canonical chain. Threshold of 2 allows
+        // normal 1-block propagation delay without blocking.
+        let best_peer_height = self.best_peer_height();
+        if !self.peers.is_empty() && best_peer_height > 0 {
+            let height_lag = best_peer_height.saturating_sub(self.local_height);
+            if height_lag >= 2 {
+                info!(
+                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} (must catch up before producing)",
+                    self.local_height, best_peer_height, height_lag
+                );
+                return ProductionAuthorization::BlockedBehindPeers {
+                    local_height: self.local_height,
+                    peer_height: best_peer_height,
+                    height_diff: height_lag,
+                };
+            }
+        }
+
         // Layer 7: REMOVED — Satoshi principle: always extend your best chain.
         //  Fork detection via AheadOfPeers caused chain deadlock (2026-02-25).
         //  When the tip node's peers are syncing behind, AheadOfPeers blocks
@@ -1037,7 +1069,6 @@ impl SyncManager {
         //  permanent deadlock where nobody produces.
         //  Forks are resolved by: (1) longest chain reorg, (2) sync failures (Layer 8),
         //  (3) chain mismatch detection (Layer 9).
-        let best_peer_height = self.best_peer_height();
         info!(
             "[CAN_PRODUCE] Layer7: SKIPPED (removed) — peers={} best_peer={} local={} ahead={}",
             self.peers.len(),
@@ -3359,11 +3390,37 @@ impl SyncManager {
             && self.should_sync()
             && !self.is_fork_sync_active()
         {
-            info!(
-                "Sync retry: Idle but behind peers (local_h={}, network_tip={}). Restarting sync.",
-                self.local_height, self.network_tip_height
-            );
-            self.start_sync();
+            let gap = self.network_tip_height.saturating_sub(self.local_height);
+            if gap <= 5 && gap > 0 {
+                // Small gap: increment a retry counter. If we've been stuck in
+                // Idle-but-behind for multiple ticks (5+), escalate to a full
+                // start_sync which transitions to header download and forces
+                // the pipeline to request blocks actively.
+                self.idle_behind_retries = self.idle_behind_retries.saturating_add(1);
+                if self.idle_behind_retries >= 5 {
+                    info!(
+                        "Sync retry: small gap ({} blocks) but stuck for {} ticks — forcing full sync restart.",
+                        gap, self.idle_behind_retries
+                    );
+                    self.idle_behind_retries = 0;
+                    self.start_sync();
+                } else {
+                    info!(
+                        "Sync retry: Idle but behind peers (local_h={}, network_tip={}, gap={}, retry={}/5). Waiting for gossip.",
+                        self.local_height, self.network_tip_height, gap, self.idle_behind_retries
+                    );
+                }
+            } else {
+                self.idle_behind_retries = 0;
+                info!(
+                    "Sync retry: Idle but behind peers (local_h={}, network_tip={}). Restarting sync.",
+                    self.local_height, self.network_tip_height
+                );
+                self.start_sync();
+            }
+        } else if !matches!(self.state, SyncState::Idle) || !self.should_sync() {
+            // Reset retry counter when no longer stuck
+            self.idle_behind_retries = 0;
         }
     }
 
