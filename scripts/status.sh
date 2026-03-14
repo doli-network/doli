@@ -16,45 +16,77 @@ rpc_via_explorer() {
 
 check_nodes() {
   local net_label="$1" base="$2"; shift 2; local nodes=("$@")
-  local ref_hash="" ref_height=0
 
-  printf "%-5s %8s %8s %10s %s\n" "Node" "Height" "Slot" "Version" "Status"
-  printf "%-5s %8s %8s %10s %s\n" "-----" "--------" "--------" "----------" "------"
-
+  # Pass 1: collect all node data
+  local -a names=() heights=() slots=() versions=() hashes=() online=()
   for n in "${nodes[@]}"; do
     local info
     info=$(rpc_via_explorer "$base" "$n" "getChainInfo")
+    names+=("$(echo "$n" | tr '[:lower:]' '[:upper:]')")
     if [[ -z "$info" || "$info" == "{}" || "$info" == "null" ]]; then
-      printf "%-5s %8s %8s %10s %s\n" "$(echo "$n" | tr '[:lower:]' '[:upper:]')" "-" "-" "-" "❌ OFFLINE"
+      heights+=("-"); slots+=("-"); versions+=("-"); hashes+=("-"); online+=(0)
+      continue
+    fi
+    heights+=("$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestHeight','?'))")")
+    slots+=("$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestSlot','?'))")")
+    versions+=("$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")")
+    hashes+=("$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestHash','?'))")")
+    online+=(1)
+  done
+
+  # Pass 2: find majority hash (most common hash = canonical tip)
+  local max_height=0
+  for i in "${!names[@]}"; do
+    if (( online[i] )); then
+      local h="${heights[$i]}"
+      (( h > max_height )) && max_height="$h"
+    fi
+  done
+
+  # Count occurrences of each hash, pick the most common
+  local majority_hash="" majority_count=0
+  local unique_hashes
+  unique_hashes=$(printf '%s\n' "${hashes[@]}" | grep -v '^-$' | sort -u)
+  while IFS= read -r candidate; do
+    local count=0
+    for i in "${!names[@]}"; do
+      (( online[i] )) && [[ "${hashes[$i]}" == "$candidate" ]] && (( count++ ))
+    done
+    if (( count > majority_count )); then
+      majority_hash="$candidate"
+      majority_count="$count"
+    fi
+  done <<< "$unique_hashes"
+
+  # Pass 3: display with correct status
+  printf "%-5s %8s %8s %10s %s\n" "Node" "Height" "Slot" "Version" "Status"
+  printf "%-5s %8s %8s %10s %s\n" "-----" "--------" "--------" "----------" "------"
+
+  for i in "${!names[@]}"; do
+    if (( ! online[i] )); then
+      printf "%-5s %8s %8s %10s %s\n" "${names[$i]}" "-" "-" "-" "❌ OFFLINE"
       continue
     fi
 
-    local h s v bh
-    h=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestHeight','?'))")
-    s=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestSlot','?'))")
-    v=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))")
-    bh=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bestHash','?'))")
-
-    # Track reference for fork detection
-    if [[ -z "$ref_hash" ]]; then
-      ref_hash="$bh"
-      ref_height="$h"
-    fi
-
     local status="✅"
-    if [[ "$bh" != "$ref_hash" ]]; then
-      # Different hash — check if just behind or actual fork
-      local diff=$((ref_height - h))
-      if (( diff > 5 && diff <= 50 )); then
+    local bh="${hashes[$i]}" h="${heights[$i]}"
+    if [[ "$bh" != "$majority_hash" ]]; then
+      local diff=$(( max_height - h ))
+      if (( diff <= 3 )); then
+        # Within 3 blocks of tip with different hash = propagation delay
+        status="✅ (syncing)"
+      elif (( diff <= 50 )); then
         status="⚠️ BEHIND"
       elif (( diff > 50 )); then
         status="❌ STUCK"
-      else
-        status="⚠️ FORK"
       fi
     fi
+    # Same height, different hash from majority = actual fork
+    if [[ "$bh" != "$majority_hash" && "$h" == "$max_height" ]]; then
+      status="⚠️ FORK"
+    fi
 
-    printf "%-5s %8s %8s %10s %s\n" "$(echo "$n" | tr '[:lower:]' '[:upper:]')" "$h" "$s" "$v" "$status"
+    printf "%-5s %8s %8s %10s %s\n" "${names[$i]}" "$h" "${slots[$i]}" "${versions[$i]}" "$status"
   done
   echo ""
 }
