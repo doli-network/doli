@@ -1075,12 +1075,19 @@ impl Node {
         network_config.node_key_path = Some(node_key_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
-        // Gossip mesh params from NetworkParams (env vars / .env / chainspec / defaults)
-        let net_params = self.config.network.params();
-        network_config.mesh_n = net_params.mesh_n;
-        network_config.mesh_n_low = net_params.mesh_n_low;
-        network_config.mesh_n_high = net_params.mesh_n_high;
-        network_config.gossip_lazy = net_params.gossip_lazy;
+        // Dynamic gossip mesh: scale with active producer count so all producers
+        // are in each other's eager-push mesh (eliminates lazy-gossip delay that
+        // causes missed slots and sync oscillation in small-to-medium networks).
+        let active_producers = self.producer_set.read().await.active_count();
+        let mesh = network::gossip::compute_dynamic_mesh(active_producers);
+        info!(
+            "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (active_producers={}, cap=20)",
+            mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers
+        );
+        network_config.mesh_n = mesh.mesh_n;
+        network_config.mesh_n_low = mesh.mesh_n_low;
+        network_config.mesh_n_high = mesh.mesh_n_high;
+        network_config.gossip_lazy = mesh.gossip_lazy;
 
         // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
         if self.config.relay_server {

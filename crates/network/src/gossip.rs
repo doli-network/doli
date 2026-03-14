@@ -266,6 +266,41 @@ pub struct MeshConfig {
     pub gossip_lazy: usize,
 }
 
+/// Maximum mesh_n when scaling dynamically with producer count.
+/// Matches Tier 1 (dense validator mesh) value.
+const MESH_N_CAP: usize = 20;
+
+/// Compute gossipsub mesh parameters dynamically based on active producer count.
+///
+/// Formula: mesh_n = min(active_producers - 1, MESH_N_CAP)
+///
+/// This ensures all producers are in each other's eager-push mesh for small networks,
+/// eliminating lazy-gossip propagation delay that causes missed slots and sync loops.
+/// For large networks (>21 producers), caps at MESH_N_CAP=20 to bound bandwidth.
+pub fn compute_dynamic_mesh(active_producers: usize) -> MeshConfig {
+    // Need at least 2 producers for meaningful mesh; fall back to defaults
+    if active_producers <= 1 {
+        return MeshConfig {
+            mesh_n: 6,
+            mesh_n_low: 4,
+            mesh_n_high: 12,
+            gossip_lazy: 6,
+        };
+    }
+
+    let mesh_n = (active_producers - 1).min(MESH_N_CAP);
+    let mesh_n_low = (mesh_n * 3 / 4).max(1);
+    let mesh_n_high = mesh_n * 2;
+    let gossip_lazy = mesh_n.max(6);
+
+    MeshConfig {
+        mesh_n,
+        mesh_n_low,
+        mesh_n_high,
+        gossip_lazy,
+    }
+}
+
 /// Create a new GossipSub behaviour with configurable mesh parameters.
 ///
 /// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.
@@ -290,7 +325,7 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .mesh_n(mesh.mesh_n)
         .mesh_n_low(mesh.mesh_n_low)
         .mesh_n_high(mesh.mesh_n_high)
-        .mesh_outbound_min(2) // Minimum outbound peers in mesh
+        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2)) // Scale with mesh_n, capped at mesh_n/2 (gossipsub constraint)
         // Gossip parameters
         .gossip_lazy(mesh.gossip_lazy)
         .gossip_factor(0.25) // Gossip to 25% of non-mesh peers
@@ -700,5 +735,89 @@ mod tests {
             subscribed.contains(&TRANSACTIONS_TOPIC.to_string()),
             "TRANSACTIONS_TOPIC must never be unsubscribed"
         );
+    }
+
+    #[test]
+    fn test_dynamic_mesh_fallback_for_zero_producers() {
+        let m = compute_dynamic_mesh(0);
+        assert_eq!(m.mesh_n, 6);
+        assert_eq!(m.mesh_n_low, 4);
+        assert_eq!(m.mesh_n_high, 12);
+        assert_eq!(m.gossip_lazy, 6);
+    }
+
+    #[test]
+    fn test_dynamic_mesh_fallback_for_one_producer() {
+        let m = compute_dynamic_mesh(1);
+        assert_eq!(m.mesh_n, 6);
+    }
+
+    #[test]
+    fn test_dynamic_mesh_small_network() {
+        // 3 producers: mesh_n = 2, everyone in mesh
+        let m = compute_dynamic_mesh(3);
+        assert_eq!(m.mesh_n, 2);
+        assert_eq!(m.mesh_n_low, 1);
+        assert_eq!(m.mesh_n_high, 4);
+        assert_eq!(m.gossip_lazy, 6); // min 6
+
+        // 5 producers: mesh_n = 4
+        let m = compute_dynamic_mesh(5);
+        assert_eq!(m.mesh_n, 4);
+        assert_eq!(m.mesh_n_low, 3);
+        assert_eq!(m.mesh_n_high, 8);
+    }
+
+    #[test]
+    fn test_dynamic_mesh_medium_network() {
+        // 10 producers: mesh_n = 9, full mesh
+        let m = compute_dynamic_mesh(10);
+        assert_eq!(m.mesh_n, 9);
+        assert_eq!(m.mesh_n_low, 6);
+        assert_eq!(m.mesh_n_high, 18);
+        assert_eq!(m.gossip_lazy, 9);
+
+        // 15 producers: mesh_n = 14, full mesh
+        let m = compute_dynamic_mesh(15);
+        assert_eq!(m.mesh_n, 14);
+    }
+
+    #[test]
+    fn test_dynamic_mesh_caps_at_20() {
+        // 21 producers: mesh_n = 20 (capped)
+        let m = compute_dynamic_mesh(21);
+        assert_eq!(m.mesh_n, 20);
+
+        // 100 producers: still capped at 20
+        let m = compute_dynamic_mesh(100);
+        assert_eq!(m.mesh_n, 20);
+        assert_eq!(m.mesh_n_low, 15);
+        assert_eq!(m.mesh_n_high, 40);
+        assert_eq!(m.gossip_lazy, 20);
+    }
+
+    #[test]
+    fn test_dynamic_mesh_invariants() {
+        for n in 0..=200 {
+            let m = compute_dynamic_mesh(n);
+            assert!(m.mesh_n_low >= 1, "mesh_n_low must be >= 1 for n={}", n);
+            assert!(m.mesh_n_low <= m.mesh_n, "mesh_n_low <= mesh_n for n={}", n);
+            assert!(
+                m.mesh_n <= m.mesh_n_high,
+                "mesh_n <= mesh_n_high for n={}",
+                n
+            );
+            assert!(m.gossip_lazy >= 6, "gossip_lazy >= 6 for n={}", n);
+        }
+    }
+
+    #[test]
+    fn test_dynamic_mesh_gossipsub_creation() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        for n in [0, 1, 3, 5, 10, 15, 21, 50, 100] {
+            let mesh = compute_dynamic_mesh(n);
+            let gs = new_gossipsub(&keypair, &mesh);
+            assert!(gs.is_ok(), "gossipsub creation must succeed for n={}", n);
+        }
     }
 }
