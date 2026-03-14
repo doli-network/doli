@@ -3634,6 +3634,35 @@ impl SyncManager {
             // Reset retry counter when no longer stuck
             self.idle_behind_retries = 0;
         }
+
+        // Stuck-on-fork detection: if height hasn't advanced for >120s and we're
+        // behind peers, the node is likely on a fork with a small gap where peers
+        // don't recognize our tip hash (so GetHeaders returns 0 every time, and
+        // gossip can't help because our tip is on a different chain).
+        //
+        // Escalate consecutive_empty_headers to trigger fork_sync in resolve_shallow_fork().
+        // 120s gives gossip plenty of time — if it hasn't worked by then, it won't.
+        //
+        // Guards:
+        // - Not during post-recovery grace (node is still syncing after snap sync)
+        // - Not if fork_sync is already active
+        // - Only if we're actually behind peers (gap > 0)
+        if !self.post_recovery_grace
+            && !self.is_fork_sync_active()
+            && self.should_sync()
+            && self.local_height > 0
+        {
+            let gap = self.network_tip_height.saturating_sub(self.local_height);
+            let stuck_secs = self.last_block_applied.elapsed().as_secs();
+            if gap > 0 && stuck_secs > 120 && self.consecutive_empty_headers < 3 {
+                warn!(
+                    "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
+                     (local_h={}, network_tip={}). Escalating to fork_sync.",
+                    stuck_secs, gap, self.local_height, self.network_tip_height
+                );
+                self.consecutive_empty_headers = 3;
+            }
+        }
     }
 
     /// Get sync progress as a percentage
