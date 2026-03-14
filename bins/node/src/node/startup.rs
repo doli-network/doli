@@ -172,14 +172,17 @@ impl Node {
         network_config.node_key_path = Some(node_key_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
-        // Dynamic gossip mesh: scale with active producer count so all producers
-        // are in each other's eager-push mesh (eliminates lazy-gossip delay that
-        // causes missed slots and sync oscillation in small-to-medium networks).
+        // Dynamic gossip mesh: scale with total peer count (producers + seeds)
+        // so ALL nodes are in each other's eager-push mesh. Seeds are not producers
+        // but participate in gossip — excluding them leaves mesh gaps that cause
+        // propagation delays and sync oscillation.
         let active_producers = self.producer_set.read().await.active_count();
-        let mesh = network::gossip::compute_dynamic_mesh(active_producers);
+        let seed_count = network_config.bootstrap_nodes.len();
+        let total_peers = active_producers + seed_count;
+        let mesh = network::gossip::compute_dynamic_mesh(total_peers);
         info!(
-            "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (active_producers={}, cap=20)",
-            mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers
+            "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (producers={}, seeds={}, total={}, cap=20)",
+            mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers, seed_count, total_peers
         );
         network_config.mesh_n = mesh.mesh_n;
         network_config.mesh_n_low = mesh.mesh_n_low;
