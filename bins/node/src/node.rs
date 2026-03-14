@@ -2235,8 +2235,16 @@ impl Node {
             return Ok(());
         }
 
-        // Apply the block
-        self.apply_block(block, ValidationMode::Full).await?;
+        // Apply the block — absorb errors so an invalid gossip block
+        // (e.g. from a forked peer) doesn't crash the process.
+        let height = self.chain_state.read().await.best_height + 1;
+        if let Err(e) = self.apply_block(block, ValidationMode::Full).await {
+            warn!(
+                "Gossip block failed apply at height {}: {} — skipping, sync will catch up",
+                height, e
+            );
+            return Ok(());
+        }
 
         // A canonical gossip block was applied on our tip — clear the post-snap gate.
         // This proves we're on the canonical chain and our block store has a real parent.
@@ -5114,12 +5122,27 @@ impl Node {
                 peer_height,
                 height_diff,
             } => {
-                self.consecutive_fork_blocks += 1;
-                warn!(
-                    "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (consecutive={})",
-                    current_slot, local_height, peer_height, height_diff, self.consecutive_fork_blocks
-                );
-                self.maybe_auto_resync(current_slot).await;
+                // Being behind peers is normal during active sync — NOT fork evidence.
+                // Only count as fork-like if sync is Idle (stuck, not making progress).
+                let sync_idle = {
+                    let sync = self.sync_manager.read().await;
+                    !sync.state().is_syncing()
+                };
+                if sync_idle {
+                    self.consecutive_fork_blocks += 1;
+                    warn!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (consecutive={}) sync=Idle",
+                        current_slot, local_height, peer_height, height_diff, self.consecutive_fork_blocks
+                    );
+                    self.maybe_auto_resync(current_slot).await;
+                } else {
+                    // Sync is active — reset fork counter, let sync finish.
+                    self.consecutive_fork_blocks = 0;
+                    info!(
+                        "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (sync active, not fork)",
+                        current_slot, local_height, peer_height, height_diff
+                    );
+                }
                 return Ok(());
             }
             ProductionAuthorization::BlockedAheadOfPeers {
