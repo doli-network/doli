@@ -480,6 +480,11 @@ pub struct SyncManager {
     /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
     /// Reset when gap closes to < 2.
     behind_since: Option<Instant>,
+    /// Height offset detection: tracks (gap, timestamp) when we first observed
+    /// a stable gap while blocks are still being applied. If the gap stays
+    /// constant for >120s despite blocks being applied, the node has a corrupted
+    /// height counter (from a bad reorg) and needs snap sync to correct it.
+    stable_gap_since: Option<(u64, Instant)>,
 }
 
 impl SyncManager {
@@ -565,6 +570,7 @@ impl SyncManager {
             post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,
             behind_since: None,
+            stable_gap_since: None,
         }
     }
 
@@ -3723,6 +3729,47 @@ impl SyncManager {
                     self.consecutive_empty_headers = 3;
                 }
             }
+        }
+
+        // Height offset detection: if blocks ARE being applied (last_block_applied
+        // is recent) but the gap to peers stays constant, the node has a corrupted
+        // height counter from a bad reorg. Normal "behind" means blocks aren't being
+        // applied; height offset means blocks ARE applied but gap never closes because
+        // each block increments both our height and the canonical height equally.
+        //
+        // Fix: force snap sync to reset chain_state to correct height.
+        if self.should_sync() && self.local_height > 0 {
+            let gap = self.network_tip_height.saturating_sub(self.local_height);
+            let blocks_recent = self.last_block_applied.elapsed().as_secs() < 30;
+
+            if gap >= 2 && blocks_recent {
+                match self.stable_gap_since {
+                    Some((prev_gap, since)) => {
+                        // Gap is stable (within ±1 of what we first saw)
+                        if gap.abs_diff(prev_gap) <= 1 && since.elapsed().as_secs() > 120 {
+                            warn!(
+                                "Height offset detected: gap={} has been stable for {}s while \
+                                 blocks are being applied. This indicates a corrupted height \
+                                 counter from a bad reorg. Forcing snap sync to correct.",
+                                gap, since.elapsed().as_secs()
+                            );
+                            self.needs_genesis_resync = true;
+                            self.stable_gap_since = None;
+                        } else if gap.abs_diff(prev_gap) > 1 {
+                            // Gap changed significantly — reset tracker
+                            self.stable_gap_since = Some((gap, Instant::now()));
+                        }
+                    }
+                    None => {
+                        self.stable_gap_since = Some((gap, Instant::now()));
+                    }
+                }
+            } else {
+                // Gap closed or blocks not being applied — reset
+                self.stable_gap_since = None;
+            }
+        } else {
+            self.stable_gap_since = None;
         }
     }
 
