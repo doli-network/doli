@@ -1077,31 +1077,51 @@ impl SyncManager {
             }
         }
 
-        // Layer 6.5: Height lag check — block production when behind by >= 2 blocks.
+        // Layer 6.5: Height lag check — graduated production gate.
         //
         // If we know peers have a higher height, producing from our stale state
-        // creates a competing block that forks the chain.
+        // creates a competing block that forks the chain. The gate is graduated:
         //
-        // TIMEOUT: If the node has been behind for >60s without closing the gap,
-        // allow production anyway. A node on the canonical chain (same hash lineage)
-        // that's 5 blocks behind will produce a valid block that extends the correct
-        // chain — the slight orphan risk is better than a permanently dead producer.
-        // Without this timeout, nodes that fall behind during I/O spikes or reorgs
-        // stay behind forever because gossip delivers blocks at chain speed (1 per slot).
+        // - lag > 3 blocks: BLOCK unconditionally (no timeout escape).
+        //   At this lag the node may be on a fork — producing deepens it.
+        //   Sync mechanisms (header-first, small-gap retry at 25s, stuck-sync
+        //   detector at 120s → snap sync) will close the gap.
+        //
+        // - lag 2-3 blocks: BLOCK for 30s, then allow.
+        //   Almost certainly gossip propagation delay, not a fork.
+        //   30s gives small-gap retry (25s) time to fire first.
+        //   Producing at this lag extends the correct chain lineage.
+        //
+        // - lag 0-1 blocks: allow (normal operation).
         let best_peer_height = self.best_peer_height();
         if !self.peers.is_empty() && best_peer_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
-            if height_lag >= 2 {
-                // Track how long we've been behind
+            if height_lag > 3 {
+                // Large lag — unconditionally block. Sync will recover.
                 let behind_secs = self
                     .behind_since
                     .get_or_insert_with(Instant::now)
                     .elapsed()
                     .as_secs();
-
-                if behind_secs <= 60 {
+                info!(
+                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (lag>3, must sync, no timeout escape)",
+                    self.local_height, best_peer_height, height_lag, behind_secs
+                );
+                return ProductionAuthorization::BlockedBehindPeers {
+                    local_height: self.local_height,
+                    peer_height: best_peer_height,
+                    height_diff: height_lag,
+                };
+            } else if height_lag >= 2 {
+                // Small lag (2-3 blocks) — block for 30s, then allow.
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+                if behind_secs <= 30 {
                     info!(
-                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (must catch up before producing)",
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (small lag, waiting for sync)",
                         self.local_height, best_peer_height, height_lag, behind_secs
                     );
                     return ProductionAuthorization::BlockedBehindPeers {
@@ -1110,10 +1130,9 @@ impl SyncManager {
                         height_diff: height_lag,
                     };
                 }
-                // Timeout expired — allow production to prevent permanent stall
                 warn!(
-                    "[CAN_PRODUCE] Layer6.5: ALLOWING — behind for {}s (timeout 60s), lag={} \
-                     (local_h={}, peer_h={}). Producing to avoid permanent stall.",
+                    "[CAN_PRODUCE] Layer6.5: ALLOWING — behind for {}s (timeout 30s), lag={} \
+                     (local_h={}, peer_h={}). Small lag, same chain lineage likely.",
                     behind_secs, height_lag, self.local_height, best_peer_height
                 );
             } else {
