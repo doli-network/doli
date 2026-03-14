@@ -473,6 +473,8 @@ pub struct SyncManager {
     /// The node needs time to sync via header-first / gossip before fork detection
     /// makes sense. Cleared after 10+ blocks are applied post-recovery.
     post_recovery_grace: bool,
+    /// When post_recovery_grace was activated (for timeout-based clearing)
+    post_recovery_grace_started: Instant,
     /// Blocks applied since last recovery — used to clear post_recovery_grace.
     blocks_applied_since_recovery: u32,
 }
@@ -557,6 +559,7 @@ impl SyncManager {
             fork_mismatch_detected: false,
             post_rollback: false,
             post_recovery_grace: false,
+            post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,
         }
     }
@@ -1605,10 +1608,11 @@ impl SyncManager {
     /// Activate post-recovery grace period. Called after snap sync / forced recovery.
     pub fn set_post_recovery_grace(&mut self) {
         self.post_recovery_grace = true;
+        self.post_recovery_grace_started = Instant::now();
         self.blocks_applied_since_recovery = 0;
         self.consecutive_empty_headers = 0;
         self.consecutive_apply_failures = 0;
-        info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied.");
+        info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");
     }
 
     /// Check if sync manager has signaled that a full genesis resync is needed
@@ -2813,6 +2817,8 @@ impl SyncManager {
                 self.blocks_applied_since_recovery = 0;
             }
         }
+        // Also clear grace by timeout (handled in cleanup(), not here — this
+        // path only runs when blocks are applied, which doesn't happen on a fork).
 
         // Also update network tip - if we applied a block, the network has at least this height/slot
         // This helps the "behind peers" check work correctly even when peer status is stale
@@ -3633,6 +3639,22 @@ impl SyncManager {
         } else if !matches!(self.state, SyncState::Idle) || !self.should_sync() {
             // Reset retry counter when no longer stuck
             self.idle_behind_retries = 0;
+        }
+
+        // Post-recovery grace timeout: if 120s have passed since snap sync
+        // and grace hasn't cleared (10 blocks not applied), force-clear it.
+        // This prevents grace from permanently blocking fork_sync when the node
+        // landed on a fork after snap sync (can't apply blocks → grace never clears).
+        if self.post_recovery_grace
+            && self.post_recovery_grace_started.elapsed().as_secs() > 120
+        {
+            warn!(
+                "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
+                 Force-clearing to allow fork recovery.",
+                self.blocks_applied_since_recovery
+            );
+            self.post_recovery_grace = false;
+            self.blocks_applied_since_recovery = 0;
         }
 
         // Stuck-sync detection: if height hasn't advanced for >120s and we're
