@@ -2349,12 +2349,12 @@ impl Node {
 
                         // Remove UTXOs created by this block
                         for outpoint in &undo.created_utxos {
-                            utxo.remove(outpoint);
+                            utxo.remove(outpoint)?;
                         }
 
                         // Restore UTXOs spent by this block
                         for (outpoint, entry) in &undo.spent_utxos {
-                            utxo.insert(*outpoint, entry.clone());
+                            utxo.insert(*outpoint, entry.clone())?;
                         }
                     }
 
@@ -2412,7 +2412,7 @@ impl Node {
                                 if !is_reward_tx {
                                     let _ = utxo.spend_transaction(tx);
                                 }
-                                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
+                                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
                             }
                         }
                         if genesis_blocks > 0 && height == genesis_blocks + 1 {
@@ -2421,7 +2421,7 @@ impl Node {
                                 &genesis_producers,
                                 bond_unit,
                                 height,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -2434,6 +2434,13 @@ impl Node {
 
             // Force scheduler rebuild after producer set reconstruction
             self.cached_scheduler = None;
+
+            // Rebuild producer liveness map from canonical block_store.
+            // Critical: rollback does NOT undo liveness entries from fork blocks,
+            // causing nodes to have divergent live_producers lists and conflicting
+            // round-robin assignments. Rebuilding from block_store ensures all nodes
+            // converge on the same liveness view.
+            self.rebuild_producer_liveness(target_height);
 
             // Atomically persist common ancestor state to StateDb
             {
@@ -3877,7 +3884,7 @@ impl Node {
                     let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
                     for (outpoint, entry) in &pool_utxos {
                         undo_spent_utxos.push((*outpoint, entry.clone()));
-                        utxo.remove(outpoint);
+                        utxo.remove(outpoint)?;
                         let _ = batch.spend_utxo(outpoint);
                     }
                     if !pool_utxos.is_empty() {
@@ -3905,7 +3912,7 @@ impl Node {
                 }
 
                 let _ = utxo.spend_transaction(tx); // In-memory
-                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot); // In-memory
+                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?; // In-memory
 
                 // Undo log: track created UTXOs
                 let tx_hash = tx.hash();
@@ -4529,7 +4536,7 @@ impl Node {
                 let mut pool_consumed: u64 = 0;
                 for (outpoint, entry) in &pool_utxos {
                     undo_spent_utxos.push((*outpoint, entry.clone()));
-                    utxo.remove(outpoint);
+                    utxo.remove(outpoint)?;
                     let _ = batch.spend_utxo(outpoint);
                     pool_consumed += entry.output.amount;
                 }
@@ -4564,7 +4571,7 @@ impl Node {
                         is_epoch_reward: false,
                     };
                     undo_created_utxos.push(bond_outpoint);
-                    utxo.insert(bond_outpoint, bond_entry.clone());
+                    utxo.insert(bond_outpoint, bond_entry.clone())?;
                     batch.add_utxo(bond_outpoint, bond_entry);
                     bonds_created += bond_unit;
 
@@ -4613,7 +4620,7 @@ impl Node {
                         is_epoch_reward: false,
                     };
                     undo_created_utxos.push(remainder_outpoint);
-                    utxo.insert(remainder_outpoint, remainder_entry.clone());
+                    utxo.insert(remainder_outpoint, remainder_entry.clone())?;
                     batch.add_utxo(remainder_outpoint, remainder_entry);
                     info!(
                         "Genesis pool remainder: {} DOLI returned to pool",
@@ -6634,6 +6641,28 @@ impl Node {
     ///
     /// Processes: Registration, Exit, SlashProducer, AddBond, DelegateBond,
     /// RevokeDelegation, and unbonding transitions — mirroring `apply_block()`.
+    /// Rebuild producer liveness map from canonical block_store.
+    ///
+    /// Scans the last LIVENESS_WINDOW_MIN blocks to determine which producers
+    /// have been active recently. Must be called after any rollback to prevent
+    /// divergent liveness views between nodes (fork block entries pollute the map).
+    fn rebuild_producer_liveness(&mut self, tip_height: u64) {
+        let window = consensus::LIVENESS_WINDOW_MIN;
+        let start = tip_height.saturating_sub(window).max(1);
+        self.producer_liveness.clear();
+        for h in start..=tip_height {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                self.producer_liveness.insert(block.header.producer, h);
+            }
+        }
+        info!(
+            "Rebuilt producer liveness after rollback from blocks {}-{}: {} producers tracked",
+            start,
+            tip_height,
+            self.producer_liveness.len()
+        );
+    }
+
     fn rebuild_producer_set_from_blocks(
         &self,
         producers: &mut ProducerSet,
@@ -6913,12 +6942,12 @@ impl Node {
 
                 // Remove UTXOs created by this block
                 for outpoint in &undo.created_utxos {
-                    utxo.remove(outpoint);
+                    utxo.remove(outpoint)?;
                 }
 
                 // Restore UTXOs spent by this block
                 for (outpoint, entry) in &undo.spent_utxos {
-                    utxo.insert(*outpoint, entry.clone());
+                    utxo.insert(*outpoint, entry.clone())?;
                 }
             }
 
@@ -6971,7 +7000,7 @@ impl Node {
                         if !is_reward_tx {
                             let _ = utxo.spend_transaction(tx);
                         }
-                        utxo.add_transaction(tx, height, is_reward_tx, block.header.slot);
+                        utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
                     }
                     if genesis_blocks > 0 && height == genesis_blocks + 1 {
                         Self::consume_genesis_bond_utxos(
@@ -6979,7 +7008,7 @@ impl Node {
                             &genesis_producers,
                             bond_unit,
                             height,
-                        );
+                        )?;
                     }
                 }
             }
@@ -6992,6 +7021,13 @@ impl Node {
 
         // Force scheduler rebuild after producer set reconstruction
         self.cached_scheduler = None;
+
+        // Rebuild producer liveness map from canonical block_store.
+        // Critical: rollback does NOT undo liveness entries from fork blocks,
+        // causing nodes to have divergent live_producers lists and conflicting
+        // round-robin assignments. Rebuilding from block_store ensures all nodes
+        // converge on the same liveness view.
+        self.rebuild_producer_liveness(target_height);
 
         // Update chain state to parent
         {
@@ -7669,7 +7705,7 @@ impl Node {
         genesis_producers: &[PublicKey],
         bond_unit: u64,
         height: u64,
-    ) {
+    ) -> Result<()> {
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
 
         // Collect and sort all pool UTXOs (deterministic order)
@@ -7685,7 +7721,7 @@ impl Node {
         // Consume all pool UTXOs
         let mut pool_consumed: u64 = 0;
         for (outpoint, entry) in &pool_utxos {
-            utxo.remove(outpoint);
+            utxo.remove(outpoint)?;
             pool_consumed += entry.output.amount;
         }
 
@@ -7711,7 +7747,7 @@ impl Node {
                 is_coinbase: false,
                 is_epoch_reward: false,
             };
-            utxo.insert(bond_outpoint, bond_entry);
+            utxo.insert(bond_outpoint, bond_entry)?;
             bonds_created += bond_unit;
         }
 
@@ -7726,8 +7762,10 @@ impl Node {
                 is_coinbase: false,
                 is_epoch_reward: false,
             };
-            utxo.insert(remainder_outpoint, remainder_entry);
+            utxo.insert(remainder_outpoint, remainder_entry)?;
         }
+
+        Ok(())
     }
 
     /// Save all node state — now a no-op.
