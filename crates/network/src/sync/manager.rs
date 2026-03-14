@@ -2553,13 +2553,13 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                if gap <= 2 {
-                    // Peer is at our tip or 1-2 blocks ahead.
-                    // Empty headers is NORMAL here — the peer already applied
-                    // the block we need. Gossip will deliver it in <10s.
-                    // Do NOT count as fork evidence. Do NOT blacklist.
+                if gap <= 50 {
+                    // Peer is near our tip. Empty headers is NORMAL — the peer
+                    // already applied those blocks and can't serve headers for them
+                    // (especially if its block store has gaps from snap sync recovery).
+                    // Gossip will deliver blocks. Do NOT blacklist.
                     debug!(
-                        "Empty headers from {} (gap={}) — peer at tip, waiting for gossip.",
+                        "Empty headers from {} (gap={}) — peer near tip, waiting for gossip.",
                         peer, gap
                     );
                     self.state = SyncState::Idle;
