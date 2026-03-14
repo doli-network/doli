@@ -2867,16 +2867,20 @@ impl SyncManager {
         if self.consecutive_apply_failures >= 3 {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
             if gap <= 50 {
-                // Small gap + apply failures = transient issue, not corruption.
-                // A gap of <=50 blocks resolves via gossip in <10 minutes.
-                // Escalating to snap sync here destroys the block store
-                // unnecessarily and creates the cascade infection pattern.
+                // Small gap + repeated apply failures = fork, not transient issue.
+                // Gossip can't resolve this — the node is on a different chain and
+                // keeps trying to apply canonical blocks at the wrong height.
+                // Activate fork_sync (binary search for common ancestor) which will
+                // find the divergence point, rollback, and re-sync correctly.
                 warn!(
-                    "3+ consecutive apply failures but gap={} — resetting to Idle, \
-                     NOT escalating to snap sync (gap too small for genuine fork)",
+                    "3+ consecutive apply failures with gap={} — \
+                     activating fork_sync (binary search for common ancestor)",
                     gap
                 );
                 self.consecutive_apply_failures = 0;
+                // Signal fork_sync activation. The node's resolve_shallow_fork()
+                // checks consecutive_empty_headers >= 3, so set it to trigger.
+                self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
                 self.state = SyncState::Idle;
             } else {
                 warn!(
