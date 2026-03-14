@@ -2627,9 +2627,6 @@ impl SyncManager {
                 // 2. Large gap (>50): too deep for rollback. Accumulate fork
                 //    evidence for snap sync escalation.
                 self.consecutive_empty_headers += 1;
-                // Activate Layer 8 (sync failure fork detection) — peers
-                // don't recognize our tip hash, which is fork evidence.
-                self.consecutive_sync_failures += 1;
 
                 if gap <= 50 && self.local_height > 0 {
                     // Small fork: signal rollback. The node's periodic task
@@ -2671,9 +2668,8 @@ impl SyncManager {
             .process_headers(&headers, self.local_hash);
 
         if valid_count > 0 {
-            // Successfully received valid headers — reset fork counters
+            // Successfully received valid headers — reset fork counter
             self.consecutive_empty_headers = 0;
-            self.consecutive_sync_failures = 0;
             self.last_sync_activity = Instant::now();
 
             // Queue header hashes for body download
@@ -2701,7 +2697,6 @@ impl SyncManager {
             // process_headers() does NOT modify expected_prev_hash when valid_count == 0,
             // so the downloader state is still correct.
             self.consecutive_empty_headers += 1;
-            self.consecutive_sync_failures += 1;
             warn!(
                 "No valid headers from peer {} - header chain broken (consecutive={}). \
                  Peer has different chain at our tip.",
@@ -3322,7 +3317,6 @@ impl SyncManager {
 
     /// Pick the best snap sync vote group (largest with >= 2 peers).
     /// Returns (state_root, Vec<(peer_id, block_hash, height)>) or None.
-    #[allow(clippy::type_complexity)]
     fn pick_best_snap_group(&self) -> Option<(Hash, Vec<(PeerId, Hash, u64)>)> {
         let votes = if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
             votes
@@ -3756,7 +3750,9 @@ impl SyncManager {
         // and grace hasn't cleared (10 blocks not applied), force-clear it.
         // This prevents grace from permanently blocking fork_sync when the node
         // landed on a fork after snap sync (can't apply blocks → grace never clears).
-        if self.post_recovery_grace && self.post_recovery_grace_started.elapsed().as_secs() > 120 {
+        if self.post_recovery_grace
+            && self.post_recovery_grace_started.elapsed().as_secs() > 120
+        {
             warn!(
                 "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
                  Force-clearing to allow fork recovery.",
@@ -3779,7 +3775,9 @@ impl SyncManager {
         // node did snap sync but landed on a fork, it will be stuck forever
         // because grace requires 10 applied blocks to clear — but no blocks
         // can be applied on a fork. The 120s timeout is sufficient protection.
-        if !self.is_fork_sync_active() && self.should_sync() {
+        if !self.is_fork_sync_active()
+            && self.should_sync()
+        {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
             let stuck_secs = self.last_block_applied.elapsed().as_secs();
             if gap > 0 && stuck_secs > 120 {
@@ -3827,8 +3825,7 @@ impl SyncManager {
                                 "Height offset detected: gap={} has been stable for {}s while \
                                  blocks are being applied. This indicates a corrupted height \
                                  counter from a bad reorg. Forcing snap sync to correct.",
-                                gap,
-                                since.elapsed().as_secs()
+                                gap, since.elapsed().as_secs()
                             );
                             self.needs_genesis_resync = true;
                             self.stable_gap_since = None;

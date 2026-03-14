@@ -302,9 +302,7 @@ impl Node {
                 // Note: Height is updated when blocks are successfully applied (in apply_block).
                 {
                     let mut sync = self.sync_manager.write().await;
-                    // Only refresh the specific source peer — refreshing ALL peers
-                    // masks actually-stale peers and defeats stale chain detection.
-                    sync.note_block_received_from_peer(source_peer);
+                    sync.refresh_all_peers();
                     sync.update_network_tip_slot(block.header.slot);
                     sync.note_block_received_via_gossip();
                 }
