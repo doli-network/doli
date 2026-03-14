@@ -303,6 +303,9 @@ impl TxBuilder {
             // Input.sighash_type: SighashType — bincode writes enum variant as u32 LE
             // Always SighashType::All (0) for wallet-built transactions.
             buf.extend_from_slice(&0u32.to_le_bytes());
+            // Input.committed_output_count: u32 — always 0 for wallet-built transactions
+            // (only used with AnyoneCanPay sighash for partial-commitment signing)
+            buf.extend_from_slice(&0u32.to_le_bytes());
         }
 
         // Transaction.outputs: Vec<Output> — u64 LE element count prefix
