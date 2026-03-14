@@ -5971,7 +5971,7 @@ impl Node {
                         builder.add_transaction(coinbase);
                     } else {
                         debug!(
-                            "No qualified producers in epoch {} — pool burned",
+                            "No qualified producers in epoch {} — pool accumulates to next epoch",
                             completed_epoch
                         );
                     }
@@ -6081,10 +6081,11 @@ impl Node {
             Hash::ZERO
         } else {
             // Build sorted producer list (same ordering as DeterministicScheduler)
+            // Use height-aware method to match the decoding path in calculate_epoch_rewards()
             let sorted_producers: Vec<storage::producer::ProducerInfo> = {
                 let producers = self.producer_set.read().await;
                 let mut ps: Vec<storage::producer::ProducerInfo> = producers
-                    .active_producers()
+                    .active_producers_at_height(height)
                     .iter()
                     .map(|p| (*p).clone())
                     .collect();
@@ -6377,11 +6378,11 @@ impl Node {
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
 
-        // Get active producers at epoch end, sorted by pubkey (same order as bitfield encoding)
+        // Get active producers at epoch start, sorted by pubkey (same order as bitfield encoding)
         let sorted_producers: Vec<storage::producer::ProducerInfo> = {
             let producers = self.producer_set.read().await;
             let mut ps: Vec<storage::producer::ProducerInfo> = producers
-                .active_producers_at_height(epoch_end_height)
+                .active_producers_at_height(epoch_start_height)
                 .iter()
                 .map(|p| (*p).clone())
                 .collect();
@@ -6419,12 +6420,18 @@ impl Node {
 
         // Qualify producers: attested in ≥ ATTESTATION_QUALIFICATION_THRESHOLD minutes
         // Genesis epoch (epoch 0): all active producers qualify — no attestation data exists yet
+        //
+        // Never-burn fallback tiers:
+        //   Tier 1: 90% threshold (54/60 minutes)
+        //   Tier 2: 80% of median attendance (floor of 1 minute)
+        //   Tier 3: All producers have 0 attendance — pool accumulates to next epoch
         let threshold = ATTESTATION_QUALIFICATION_THRESHOLD;
         let qualified: Vec<&storage::producer::ProducerInfo> = if epoch == 0 {
             info!("Epoch 0 (genesis): all active producers qualify for rewards");
             sorted_producers.iter().collect()
         } else {
-            sorted_producers
+            // Tier 1: standard 90% threshold
+            let tier1: Vec<&storage::producer::ProducerInfo> = sorted_producers
                 .iter()
                 .enumerate()
                 .filter(|(idx, _)| {
@@ -6432,12 +6439,67 @@ impl Node {
                     minutes as u32 >= threshold
                 })
                 .map(|(_, p)| p)
-                .collect()
+                .collect();
+
+            if !tier1.is_empty() {
+                tier1
+            } else {
+                // Tier 2: fallback — 80% of median attendance, floor of 1 minute
+                let mut all_minutes: Vec<u32> = sorted_producers
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, _)| {
+                        attested_minutes
+                            .get(&idx)
+                            .map(|s| s.len() as u32)
+                            .unwrap_or(0)
+                    })
+                    .collect();
+                all_minutes.sort();
+
+                let median = if all_minutes.is_empty() {
+                    0
+                } else {
+                    let mid = all_minutes.len() / 2;
+                    if all_minutes.len().is_multiple_of(2) {
+                        (all_minutes[mid - 1] + all_minutes[mid]) / 2
+                    } else {
+                        all_minutes[mid]
+                    }
+                };
+
+                let fallback_threshold = (median * 80 / 100).max(1);
+
+                // Tier 3: if all producers have 0 attendance, accumulate
+                let max_attendance = all_minutes.last().copied().unwrap_or(0);
+                if max_attendance == 0 {
+                    warn!(
+                        "Epoch {}: all producers have 0 attendance — pool accumulates to next epoch",
+                        epoch
+                    );
+                    return Vec::new();
+                }
+
+                warn!(
+                    "Epoch {}: no producers met 90% threshold, using fallback: median={}, threshold={}",
+                    epoch, median, fallback_threshold
+                );
+
+                sorted_producers
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| {
+                        let minutes = attested_minutes.get(idx).map(|s| s.len()).unwrap_or(0);
+                        minutes as u32 >= fallback_threshold
+                    })
+                    .map(|(_, p)| p)
+                    .collect()
+            }
         };
 
         if qualified.is_empty() {
             warn!(
-                "Epoch {}: no producers qualified — all rewards burned",
+                "Epoch {}: no producers qualified — pool accumulates to next epoch",
                 epoch
             );
             return Vec::new();

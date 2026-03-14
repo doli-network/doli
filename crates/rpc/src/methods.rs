@@ -2224,7 +2224,7 @@ impl RpcContext {
             if let Some(ref ps) = self.producer_set {
                 let producers = ps.read().await;
                 let mut list: Vec<_> = producers
-                    .active_producers()
+                    .active_producers_at_height(epoch_start)
                     .iter()
                     .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
                     .collect();
