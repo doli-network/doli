@@ -2260,6 +2260,12 @@ impl Node {
                     new_blocks.push(triggering_block.clone());
                 } else if let Some(cached_block) = cache.get(block_hash) {
                     new_blocks.push(cached_block.clone());
+                } else if let Ok(Some(stored_block)) = self.block_store.get_block(block_hash) {
+                    debug!(
+                        "Reorg block {} found in block_store (not in fork cache)",
+                        block_hash
+                    );
+                    new_blocks.push(stored_block);
                 } else {
                     warn!(
                         "Cannot execute reorg: missing block {} (need to sync from peers)",
