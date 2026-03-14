@@ -477,6 +477,9 @@ pub struct SyncManager {
     post_recovery_grace_started: Instant,
     /// Blocks applied since last recovery — used to clear post_recovery_grace.
     blocks_applied_since_recovery: u32,
+    /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
+    /// Reset when gap closes to < 2.
+    behind_since: Option<Instant>,
 }
 
 impl SyncManager {
@@ -561,6 +564,7 @@ impl SyncManager {
             post_recovery_grace: false,
             post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,
+            behind_since: None,
         }
     }
 
@@ -1070,27 +1074,48 @@ impl SyncManager {
         // Layer 6.5: Height lag check — block production when behind by >= 2 blocks.
         //
         // If we know peers have a higher height, producing from our stale state
-        // creates a competing block that forks the chain. This is the #1 cause of
-        // fork-then-snap-sync on nodes under I/O contention (ai2 testnet pattern).
+        // creates a competing block that forks the chain.
         //
-        // Unlike slot-based Layer 6, height lag is reliable for BEHIND detection:
-        // a forked node can inflate its own height, but a behind node's height is
-        // definitionally lower than the canonical chain. Threshold of 2 allows
-        // normal 1-block propagation delay without blocking.
+        // TIMEOUT: If the node has been behind for >60s without closing the gap,
+        // allow production anyway. A node on the canonical chain (same hash lineage)
+        // that's 5 blocks behind will produce a valid block that extends the correct
+        // chain — the slight orphan risk is better than a permanently dead producer.
+        // Without this timeout, nodes that fall behind during I/O spikes or reorgs
+        // stay behind forever because gossip delivers blocks at chain speed (1 per slot).
         let best_peer_height = self.best_peer_height();
         if !self.peers.is_empty() && best_peer_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
             if height_lag >= 2 {
-                info!(
-                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} (must catch up before producing)",
-                    self.local_height, best_peer_height, height_lag
+                // Track how long we've been behind
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+
+                if behind_secs <= 60 {
+                    info!(
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (must catch up before producing)",
+                        self.local_height, best_peer_height, height_lag, behind_secs
+                    );
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: height_lag,
+                    };
+                }
+                // Timeout expired — allow production to prevent permanent stall
+                warn!(
+                    "[CAN_PRODUCE] Layer6.5: ALLOWING — behind for {}s (timeout 60s), lag={} \
+                     (local_h={}, peer_h={}). Producing to avoid permanent stall.",
+                    behind_secs, height_lag, self.local_height, best_peer_height
                 );
-                return ProductionAuthorization::BlockedBehindPeers {
-                    local_height: self.local_height,
-                    peer_height: best_peer_height,
-                    height_diff: height_lag,
-                };
+            } else {
+                // Gap closed — reset tracker
+                self.behind_since = None;
             }
+        } else {
+            self.behind_since = None;
         }
 
         // Layer 7: REMOVED — Satoshi principle: always extend your best chain.
