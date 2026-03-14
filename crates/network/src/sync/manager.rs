@@ -3635,32 +3635,43 @@ impl SyncManager {
             self.idle_behind_retries = 0;
         }
 
-        // Stuck-on-fork detection: if height hasn't advanced for >120s and we're
-        // behind peers, the node is likely on a fork with a small gap where peers
-        // don't recognize our tip hash (so GetHeaders returns 0 every time, and
-        // gossip can't help because our tip is on a different chain).
+        // Stuck-sync detection: if height hasn't advanced for >120s and we're
+        // behind peers, the node is stuck. The correct escalation depends on gap:
         //
-        // Escalate consecutive_empty_headers to trigger fork_sync in resolve_shallow_fork().
-        // 120s gives gossip plenty of time — if it hasn't worked by then, it won't.
+        // - gap <= 1000: likely on a fork with small gap. Escalate to fork_sync
+        //   via consecutive_empty_headers = 3 (triggers resolve_shallow_fork).
+        // - gap > 1000: too far behind for fork_sync (binary search only covers
+        //   1000 blocks). Force snap sync via needs_genesis_resync.
         //
-        // Guards:
-        // - Not during post-recovery grace (node is still syncing after snap sync)
-        // - Not if fork_sync is already active
-        // - Only if we're actually behind peers (gap > 0)
+        // 120s gives gossip/header-first plenty of time before escalating.
         if !self.post_recovery_grace
             && !self.is_fork_sync_active()
             && self.should_sync()
-            && self.local_height > 0
         {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
             let stuck_secs = self.last_block_applied.elapsed().as_secs();
-            if gap > 0 && stuck_secs > 120 && self.consecutive_empty_headers < 3 {
-                warn!(
-                    "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
-                     (local_h={}, network_tip={}). Escalating to fork_sync.",
-                    stuck_secs, gap, self.local_height, self.network_tip_height
-                );
-                self.consecutive_empty_headers = 3;
+            if gap > 0 && stuck_secs > 120 {
+                if gap > 1000 {
+                    // Large gap: fork_sync can't help (only searches 1000 blocks).
+                    // Force snap sync to jump to tip.
+                    if self.snap_sync_attempts < 3 && self.peers.len() >= 3 {
+                        warn!(
+                            "Stuck-sync detected: no block applied for {}s, behind by {} blocks \
+                             (local_h={}, network_tip={}). Gap too large for fork_sync — forcing snap sync.",
+                            stuck_secs, gap, self.local_height, self.network_tip_height
+                        );
+                        self.needs_genesis_resync = true;
+                    }
+                } else if self.consecutive_empty_headers < 3 && self.local_height > 0 {
+                    // Small gap with non-zero height: likely on a fork.
+                    // Escalate to fork_sync via resolve_shallow_fork().
+                    warn!(
+                        "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
+                         (local_h={}, network_tip={}). Escalating to fork_sync.",
+                        stuck_secs, gap, self.local_height, self.network_tip_height
+                    );
+                    self.consecutive_empty_headers = 3;
+                }
             }
         }
     }
