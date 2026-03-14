@@ -218,7 +218,20 @@ impl Node {
         // Sort new blocks by slot number (provides a total order)
         new_blocks.sort_by_key(|b| b.header.slot);
 
-        // Validate the chain: each block must build on the previous
+        // Validate the chain: first block must build on common ancestor,
+        // and each subsequent block must build on the previous.
+        if let Some(first) = new_blocks.first() {
+            if first.header.prev_hash != reorg_result.common_ancestor {
+                error!(
+                    "Reorg chain is broken: first block {} prev_hash={} doesn't match \
+                     common ancestor {}. Aborting reorg to prevent height offset.",
+                    first.hash(),
+                    first.header.prev_hash,
+                    reorg_result.common_ancestor
+                );
+                return Ok(());
+            }
+        }
         for i in 1..new_blocks.len() {
             if new_blocks[i].header.prev_hash != new_blocks[i - 1].hash() {
                 error!(
