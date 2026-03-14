@@ -3248,7 +3248,9 @@ impl Node {
         }
         self.consecutive_forced_recoveries = self.consecutive_forced_recoveries.saturating_add(1);
         self.last_resync_time = Some(std::time::Instant::now());
-        self.recover_from_peers_inner(true).await
+        self.recover_from_peers_inner(true).await?;
+        self.sync_manager.write().await.set_post_recovery_grace();
+        Ok(())
     }
 
     async fn recover_from_peers_inner(&mut self, force: bool) -> Result<()> {
@@ -7166,17 +7168,25 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, fork_sync_active) = {
+        let (empty_headers, local_height, fork_sync_active, grace_active) = {
             let sync = self.sync_manager.read().await;
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
                 sync.is_fork_sync_active(),
+                sync.post_recovery_grace_active(),
             )
         };
 
         // Don't start a new fork sync if one is already running
         if fork_sync_active {
+            return Ok(false);
+        }
+
+        // Post-recovery grace: don't activate fork_sync while the node is
+        // still syncing back up after a snap sync / forced recovery.
+        // The grace clears after 10 blocks are successfully applied.
+        if grace_active {
             return Ok(false);
         }
 
@@ -7424,15 +7434,24 @@ impl Node {
                 );
                 self.sync_manager.write().await.fork_sync_clear();
                 self.reset_state_only().await?;
+                self.sync_manager.write().await.set_post_recovery_grace();
                 return Ok(());
             }
 
             // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
             // and the block store covers the full range. Full resync required.
+            // BYPASS cooldown: fork_sync binary search is conclusive evidence.
+            // Repeating with cooldown gives the same result — skip directly to recovery.
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: binary search hit floor without finding common ancestor — full resync required");
+                warn!("Fork sync: binary search hit floor without finding common ancestor — forcing recovery (bypassing cooldown)");
                 self.sync_manager.write().await.fork_sync_clear();
-                self.force_recover_from_peers().await?;
+                // Bypass cooldown: call recover_from_peers_inner directly.
+                // fork_sync already proved we're on a different chain — waiting
+                // 60s to repeat the same search is pointless.
+                self.recover_from_peers_inner(true).await?;
+                // Set grace period so fork_sync doesn't reactivate immediately
+                // while the node is syncing back up.
+                self.sync_manager.write().await.set_post_recovery_grace();
                 return Ok(());
             }
             let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();

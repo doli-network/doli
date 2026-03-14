@@ -468,6 +468,19 @@ pub struct SyncManager {
     /// our tip is still on the fork (just 1 block shorter), so header-first will
     /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
     post_rollback: bool,
+
+    /// Consecutive empty header responses with small gap (≤50).
+    /// Each occurrence is likely "peer already applied those blocks" (normal),
+    /// but 5+ consecutive means gossip isn't delivering and we may be on a fork.
+    /// At >= 5, escalate to fork_sync instead of waiting forever.
+    consecutive_small_gap_empty_headers: u32,
+
+    /// Set after snap sync / force_recover to suppress fork_sync reactivation.
+    /// The node needs time to sync via header-first / gossip before fork detection
+    /// makes sense. Cleared after 10+ blocks are applied post-recovery.
+    post_recovery_grace: bool,
+    /// Blocks applied since last recovery — used to clear post_recovery_grace.
+    blocks_applied_since_recovery: u32,
 }
 
 impl SyncManager {
@@ -549,6 +562,9 @@ impl SyncManager {
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
             post_rollback: false,
+            consecutive_small_gap_empty_headers: 0,
+            post_recovery_grace: false,
+            blocks_applied_since_recovery: 0,
         }
     }
 
@@ -1586,6 +1602,23 @@ impl SyncManager {
         self.consecutive_empty_headers
     }
 
+    /// Check if post-recovery grace period is active.
+    /// During grace, fork_sync should not be activated — the node needs time
+    /// to sync via header-first / gossip before fork detection is meaningful.
+    pub fn post_recovery_grace_active(&self) -> bool {
+        self.post_recovery_grace
+    }
+
+    /// Activate post-recovery grace period. Called after snap sync / forced recovery.
+    pub fn set_post_recovery_grace(&mut self) {
+        self.post_recovery_grace = true;
+        self.blocks_applied_since_recovery = 0;
+        self.consecutive_empty_headers = 0;
+        self.consecutive_small_gap_empty_headers = 0;
+        self.consecutive_apply_failures = 0;
+        info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied.");
+    }
+
     /// Check if sync manager has signaled that a full genesis resync is needed
     pub fn needs_genesis_resync(&self) -> bool {
         self.needs_genesis_resync
@@ -2557,11 +2590,23 @@ impl SyncManager {
                     // Peer is near our tip. Empty headers is NORMAL — the peer
                     // already applied those blocks and can't serve headers for them
                     // (especially if its block store has gaps from snap sync recovery).
-                    // Gossip will deliver blocks. Do NOT blacklist.
-                    debug!(
-                        "Empty headers from {} (gap={}) — peer near tip, waiting for gossip.",
-                        peer, gap
-                    );
+                    self.consecutive_small_gap_empty_headers += 1;
+                    if self.consecutive_small_gap_empty_headers >= 5 {
+                        // 5+ consecutive empty headers with small gap = gossip isn't
+                        // delivering. We're likely on a fork. Escalate to fork_sync.
+                        warn!(
+                            "Empty headers from {} (gap={}, consecutive={}) — \
+                             gossip not delivering, activating fork_sync.",
+                            peer, gap, self.consecutive_small_gap_empty_headers
+                        );
+                        self.consecutive_small_gap_empty_headers = 0;
+                        self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
+                    } else {
+                        debug!(
+                            "Empty headers from {} (gap={}, consecutive={}) — waiting for gossip.",
+                            peer, gap, self.consecutive_small_gap_empty_headers
+                        );
+                    }
                     self.state = SyncState::Idle;
                     return;
                 }
@@ -2773,8 +2818,22 @@ impl SyncManager {
         self.body_stall_retries = 0;
         self.consecutive_apply_failures = 0;
 
-        // Applying a block means the chain is advancing — reset fork counter.
+        // Applying a block means the chain is advancing — reset fork counters.
         self.consecutive_empty_headers = 0;
+        self.consecutive_small_gap_empty_headers = 0;
+
+        // Post-recovery grace: clear after 10 blocks applied since recovery.
+        if self.post_recovery_grace {
+            self.blocks_applied_since_recovery += 1;
+            if self.blocks_applied_since_recovery >= 10 {
+                info!(
+                    "Post-recovery grace cleared: {} blocks applied since recovery.",
+                    self.blocks_applied_since_recovery
+                );
+                self.post_recovery_grace = false;
+                self.blocks_applied_since_recovery = 0;
+            }
+        }
 
         // Also update network tip - if we applied a block, the network has at least this height/slot
         // This helps the "behind peers" check work correctly even when peer status is stale
