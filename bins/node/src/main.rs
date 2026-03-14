@@ -2574,7 +2574,7 @@ fn truncate_chain(
     blocks_to_remove: u64,
     skip_confirm: bool,
 ) -> Result<()> {
-    use storage::{BlockStore, StateDb};
+    use storage::{BlockStore, ProducerSet, StateDb};
 
     let data_dir = expand_tilde_path(data_dir);
 
@@ -2584,20 +2584,21 @@ fn truncate_chain(
     println!("Blocks to remove: {}", blocks_to_remove);
     println!();
 
-    // Open block store to find current tip
     let blocks_path = data_dir.join("blocks");
     let block_store = BlockStore::open(&blocks_path)?;
 
     let state_db_path = data_dir.join("state_db");
     let state_db = StateDb::open(&state_db_path)?;
 
-    let current_height = match state_db.get_chain_state() {
-        Some(cs) => cs.best_height,
+    let mut chain_state = match state_db.get_chain_state() {
+        Some(cs) => cs,
         None => {
             println!("No chain state found. Nothing to truncate.");
             return Ok(());
         }
     };
+
+    let current_height = chain_state.best_height;
 
     if blocks_to_remove == 0 {
         println!("Nothing to truncate (--blocks 0).");
@@ -2611,6 +2612,19 @@ fn truncate_chain(
         ));
     }
 
+    // Check undo data availability
+    let oldest_undo = current_height.saturating_sub(2000);
+    if new_tip < oldest_undo {
+        return Err(anyhow!(
+            "Cannot truncate {} blocks — undo data only available for last 2000 blocks (height {} to {}). \
+             Max truncation: {} blocks. For deeper rollback, use 'recover'.",
+            blocks_to_remove,
+            oldest_undo,
+            current_height,
+            current_height - oldest_undo
+        ));
+    }
+
     println!("Current tip:  height {}", current_height);
     println!(
         "New tip:      height {} (removing {} blocks)",
@@ -2620,34 +2634,85 @@ fn truncate_chain(
 
     if !skip_confirm {
         println!(
-            "This will DELETE blocks {} through {} and wipe chain state.",
-            new_tip + 1,
-            current_height
+            "This will roll back state from height {} to {} using undo data,",
+            current_height, new_tip
         );
-        println!("The node will rebuild state from remaining blocks on next startup.");
+        println!("then delete blocks above the new tip.");
         println!("Press Ctrl+C to cancel, or wait 5 seconds to proceed...");
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
-    // Step 1: Delete blocks above new_tip from block store
-    println!("Deleting blocks above height {}...", new_tip);
+    // Step 1: Roll back state using undo data (newest first)
+    println!("Rolling back state using undo data...");
+    let mut rolled_back = 0u64;
+    for height in (new_tip + 1..=current_height).rev() {
+        let undo = state_db.get_undo(height).ok_or_else(|| {
+            anyhow!(
+                "Missing undo data at height {} — cannot continue rollback. \
+                 Use 'recover' for full state rebuild.",
+                height
+            )
+        })?;
+
+        // Remove UTXOs created by this block
+        for outpoint in &undo.created_utxos {
+            state_db.remove_utxo(outpoint);
+        }
+
+        // Restore UTXOs spent by this block
+        for (outpoint, entry) in &undo.spent_utxos {
+            state_db.insert_utxo(outpoint, entry);
+        }
+
+        rolled_back += 1;
+        if rolled_back.is_multiple_of(100) {
+            println!("  rolled back {} blocks...", rolled_back);
+        }
+    }
+
+    // Restore producer set from the undo data at new_tip + 1
+    // (contains the snapshot BEFORE that block was applied = state AT new_tip)
+    if let Some(undo) = state_db.get_undo(new_tip + 1) {
+        if let Ok(restored_ps) = bincode::deserialize::<ProducerSet>(&undo.producer_snapshot) {
+            state_db.write_producer_set(&restored_ps)?;
+            println!("Producer set restored from undo snapshot.");
+        } else {
+            println!("WARNING: Could not deserialize producer snapshot. Run 'recover' after startup if producers are wrong.");
+        }
+    }
+
+    // Update chain state to new tip
+    let new_tip_block = block_store.get_block_by_height(new_tip)?.ok_or_else(|| {
+        anyhow!(
+            "Block at new tip height {} not found in block store",
+            new_tip
+        )
+    })?;
+
+    chain_state.best_height = new_tip;
+    chain_state.best_hash = new_tip_block.hash();
+    chain_state.best_slot = new_tip_block.header.slot;
+    state_db.put_chain_state(&chain_state)?;
+
+    println!(
+        "State rolled back: {} blocks (height {} → {})",
+        rolled_back, current_height, new_tip
+    );
+
+    // Step 2: Delete blocks above new_tip from block store
+    println!(
+        "Deleting blocks above height {} from block store...",
+        new_tip
+    );
     let deleted = block_store.delete_blocks_above(new_tip)?;
     println!("Deleted {} blocks from block store.", deleted);
 
-    // Step 2: Wipe state_db (chain state, UTXO set, producer set, undo data)
-    // On next startup with 'recover', state will be rebuilt from remaining blocks.
-    println!("Wiping state_db...");
-    drop(state_db);
-    std::fs::remove_dir_all(&state_db_path)?;
-    println!("State cleared.");
+    // Step 3: Clean up undo data above new_tip
+    state_db.prune_undo_above(new_tip);
 
     println!();
-    println!(
-        "Truncation complete. Block store now has blocks 1 through {}.",
-        new_tip
-    );
-    println!("Run 'doli-node --network <net> --data-dir <dir> recover --yes' to rebuild state,");
-    println!("then start the node normally to re-sync from peers.");
+    println!("Truncation complete. Node is at height {}.", new_tip);
+    println!("Start the node normally — it will sync forward from peers.");
 
     Ok(())
 }

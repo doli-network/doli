@@ -823,6 +823,33 @@ impl StateDb {
         }
     }
 
+    /// Delete all undo data above the given height (for truncation).
+    pub fn prune_undo_above(&self, keep_height: BlockHeight) {
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut count = 0u64;
+        for (key, _) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if key.len() == 8 {
+                let h = u64::from_le_bytes(key[..8].try_into().unwrap());
+                if h > keep_height {
+                    batch.delete_cf(cf, &key);
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            let _ = self.db.write(batch);
+            let start = (keep_height + 1).to_le_bytes();
+            let end = u64::MAX.to_le_bytes();
+            self.db
+                .compact_range_cf(cf, Some(&start[..]), Some(&end[..]));
+        }
+    }
+
     // ==================== Batch Creation ====================
 
     /// Create a new BlockBatch for atomic writes.
