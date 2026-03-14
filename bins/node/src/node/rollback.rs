@@ -225,7 +225,10 @@ impl Node {
             info!(
                 "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
                  from h={} to find common ancestor (rollback #{})",
-                gap, empty_headers, local_height, self.shallow_rollback_count + 1
+                gap,
+                empty_headers,
+                local_height,
+                self.shallow_rollback_count + 1
             );
             let rolled_back = self.rollback_one_block().await?;
             if rolled_back {

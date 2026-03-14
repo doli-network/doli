@@ -1315,14 +1315,14 @@ impl Node {
         self.apply_block(block.clone(), ValidationMode::Full)
             .await?;
 
-        // Reset stale chain timer and refresh peers — we just produced a block.
-        // refresh_all_peers() prevents peers from going stale during long consecutive
-        // production windows (e.g., 30 bonds = 300s without gossip = stale_timeout).
-        {
-            let mut sync = self.sync_manager.write().await;
-            sync.refresh_all_peers();
-            sync.note_block_received_via_gossip();
-        }
+        // NOTE: Do NOT call note_block_received_via_gossip() here.
+        // Self-produced blocks must not reset the solo production watchdog —
+        // otherwise a node that loses gossip connectivity will produce solo
+        // indefinitely, deepening a fork without any circuit breaker firing.
+        //
+        // Similarly, do NOT call refresh_all_peers() — refreshing all peer
+        // timestamps after self-production masks actually-stale peers, preventing
+        // stale chain detection from triggering.
 
         // Mark that we produced for this slot
         self.last_produced_slot = Some(current_slot as u64);
