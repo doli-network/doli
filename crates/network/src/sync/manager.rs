@@ -3644,8 +3644,11 @@ impl SyncManager {
         //   1000 blocks). Force snap sync via needs_genesis_resync.
         //
         // 120s gives gossip/header-first plenty of time before escalating.
-        if !self.post_recovery_grace
-            && !self.is_fork_sync_active()
+        // Note: post_recovery_grace is intentionally NOT checked here. If the
+        // node did snap sync but landed on a fork, it will be stuck forever
+        // because grace requires 10 applied blocks to clear — but no blocks
+        // can be applied on a fork. The 120s timeout is sufficient protection.
+        if !self.is_fork_sync_active()
             && self.should_sync()
         {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
