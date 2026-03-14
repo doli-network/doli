@@ -630,6 +630,9 @@ impl Node {
         // This is the wait time at genesis before allowing production (chain evidence collection)
         {
             let mut sm = sync_manager.write().await;
+            if config.no_snap_sync {
+                sm.disable_snap_sync();
+            }
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
             // Configure min peers for production based on network and genesis phase.

@@ -150,6 +150,11 @@ enum Commands {
         /// Example: --archive-to /home/ilozada/.doli/mainnet/archive
         #[arg(long)]
         archive_to: Option<PathBuf>,
+
+        /// Disable snap sync. The node will only use header-first sync,
+        /// preserving full block history. Use on seed/archiver nodes.
+        #[arg(long)]
+        no_snap_sync: bool,
     },
 
     /// Initialize a new data directory
@@ -192,6 +197,21 @@ enum Commands {
     Maintainer {
         #[command(subcommand)]
         action: MaintainerCommands,
+    },
+
+    /// Truncate the chain by removing the top N blocks.
+    ///
+    /// Rolls back state using undo data (up to 2000 blocks) and deletes
+    /// blocks above the new tip. On restart, the node re-syncs from peers.
+    /// Use for manual fork recovery on seed/archiver nodes.
+    Truncate {
+        /// Number of blocks to remove from the tip
+        #[arg(long)]
+        blocks: u64,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Recover chain state from existing block data
@@ -529,6 +549,7 @@ async fn main() -> Result<()> {
             yes,
             chainspec,
             archive_to,
+            no_snap_sync,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -557,6 +578,7 @@ async fn main() -> Result<()> {
                 yes,
                 chainspec,
                 archive_to,
+                no_snap_sync,
             )
             .await?;
         }
@@ -578,6 +600,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Maintainer { action }) => {
             handle_maintainer_command(action, &data_dir, network).await?;
+        }
+        Some(Commands::Truncate { blocks, yes }) => {
+            truncate_chain(network, &data_dir, blocks, yes)?;
         }
         Some(Commands::Recover { yes }) => {
             recover_chain_state(network, &data_dir, yes)?;
@@ -646,6 +671,7 @@ async fn main() -> Result<()> {
                 false, // yes
                 None,  // chainspec
                 None,  // archive_to
+                false, // no_snap_sync
             )
             .await?;
         }
@@ -673,6 +699,7 @@ async fn run_node(
     yes: bool,
     chainspec_path: Option<PathBuf>,
     archive_to: Option<PathBuf>,
+    no_snap_sync: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -767,6 +794,10 @@ async fn run_node(
         // Clear default bootstrap nodes - only use explicitly provided ones
         config.bootstrap_nodes.clear();
         info!("DHT discovery disabled - cleared default bootstrap nodes, only connecting to explicit bootstrap addresses");
+    }
+    if no_snap_sync {
+        config.no_snap_sync = true;
+        info!("Snap sync disabled — node will only use header-first sync");
     }
     if relay_server {
         config.relay_server = true;
@@ -2537,6 +2568,90 @@ fn export_blocks(data_dir: &PathBuf, path: &PathBuf, from: u64, to: Option<u64>)
 /// - chain_state.bin (chain tip: height, hash, slot)
 /// - UTXO set (all unspent outputs)
 /// - producers.bin (registered producers)
+fn truncate_chain(
+    _network: Network,
+    data_dir: &Path,
+    blocks_to_remove: u64,
+    skip_confirm: bool,
+) -> Result<()> {
+    use storage::{BlockStore, StateDb};
+
+    let data_dir = expand_tilde_path(data_dir);
+
+    println!("=== DOLI Chain Truncation ===");
+    println!();
+    println!("Data directory: {:?}", data_dir);
+    println!("Blocks to remove: {}", blocks_to_remove);
+    println!();
+
+    // Open block store to find current tip
+    let blocks_path = data_dir.join("blocks");
+    let block_store = BlockStore::open(&blocks_path)?;
+
+    let state_db_path = data_dir.join("state_db");
+    let state_db = StateDb::open(&state_db_path)?;
+
+    let current_height = match state_db.get_chain_state() {
+        Some(cs) => cs.best_height,
+        None => {
+            println!("No chain state found. Nothing to truncate.");
+            return Ok(());
+        }
+    };
+
+    if blocks_to_remove == 0 {
+        println!("Nothing to truncate (--blocks 0).");
+        return Ok(());
+    }
+
+    let new_tip = current_height.saturating_sub(blocks_to_remove);
+    if new_tip == 0 {
+        return Err(anyhow!(
+            "Cannot truncate to height 0. Use 'recover' instead."
+        ));
+    }
+
+    println!("Current tip:  height {}", current_height);
+    println!(
+        "New tip:      height {} (removing {} blocks)",
+        new_tip, blocks_to_remove
+    );
+    println!();
+
+    if !skip_confirm {
+        println!(
+            "This will DELETE blocks {} through {} and wipe chain state.",
+            new_tip + 1,
+            current_height
+        );
+        println!("The node will rebuild state from remaining blocks on next startup.");
+        println!("Press Ctrl+C to cancel, or wait 5 seconds to proceed...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    // Step 1: Delete blocks above new_tip from block store
+    println!("Deleting blocks above height {}...", new_tip);
+    let deleted = block_store.delete_blocks_above(new_tip)?;
+    println!("Deleted {} blocks from block store.", deleted);
+
+    // Step 2: Wipe state_db (chain state, UTXO set, producer set, undo data)
+    // On next startup with 'recover', state will be rebuilt from remaining blocks.
+    println!("Wiping state_db...");
+    drop(state_db);
+    std::fs::remove_dir_all(&state_db_path)?;
+    println!("State cleared.");
+
+    println!();
+    println!(
+        "Truncation complete. Block store now has blocks 1 through {}.",
+        new_tip
+    );
+    println!("Run 'doli-node --network <net> --data-dir <dir> recover --yes' to rebuild state,");
+    println!("then start the node normally to re-sync from peers.");
+
+    Ok(())
+}
+
 fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool) -> Result<()> {
     use doli_core::consensus::{ConsensusParams, UNBONDING_PERIOD};
     use doli_core::transaction::TxType;

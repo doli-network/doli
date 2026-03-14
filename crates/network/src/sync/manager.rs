@@ -1790,6 +1790,10 @@ impl SyncManager {
     /// Set the lowest block height available in the local block store.
     /// Called by the node after startup or snap sync to inform fork sync
     /// where the block store coverage begins.
+    pub fn disable_snap_sync(&mut self) {
+        self.snap_sync_threshold = u64::MAX;
+    }
+
     pub fn set_store_floor(&mut self, floor: u64) {
         self.store_floor = floor;
     }
