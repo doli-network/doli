@@ -418,7 +418,9 @@ impl NetworkParams {
                 // Vesting (locked for mainnet — consensus critical)
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
-                // Gossip mesh (standard for DHT-enabled networks)
+                // Gossip mesh defaults — overridden at startup by dynamic mesh
+                // computation based on actual producer count. These are fallbacks
+                // only if producer count is unknown (fresh node, no state).
                 mesh_n: 6,
                 mesh_n_low: 4,
                 mesh_n_high: 12,
@@ -478,11 +480,12 @@ impl NetworkParams {
                 // Vesting (1-day: 6h quarters — faster than mainnet for testing)
                 vesting_quarter_slots: 2_160,
 
-                // Gossip mesh (standard for DHT-enabled networks)
-                mesh_n: 6,
-                mesh_n_low: 4,
-                mesh_n_high: 12,
-                gossip_lazy: 6,
+                // Gossip mesh — full mesh for small networks (<50 producers).
+                // Same rationale as mainnet: D=N-1 for instant propagation.
+                mesh_n: 14,
+                mesh_n_low: 10,
+                mesh_n_high: 28,
+                gossip_lazy: 14,
             },
 
             Network::Devnet => NetworkParams {
