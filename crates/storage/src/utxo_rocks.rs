@@ -14,10 +14,10 @@ use tracing::info;
 use crate::utxo::{Outpoint, UtxoEntry};
 use crate::StorageError;
 
-/// Column family for the primary UTXO index: outpoint → UtxoEntry
+/// Column family for the primary UTXO index: outpoint -> UtxoEntry
 const CF_UTXO: &str = "utxo";
 
-/// Column family for the secondary index: pubkey_hash ++ outpoint → empty
+/// Column family for the secondary index: pubkey_hash ++ outpoint -> empty
 const CF_UTXO_BY_PUBKEY: &str = "utxo_by_pubkey";
 
 /// RocksDB-backed UTXO store
@@ -54,7 +54,7 @@ impl RocksDbUtxoStore {
         })
     }
 
-    /// Get a UTXO by outpoint (returns owned value — RocksDB can't return references)
+    /// Get a UTXO by outpoint (returns owned value -- RocksDB can't return references)
     pub fn get(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
         let cf = self.db.cf_handle(CF_UTXO).unwrap();
         let key = outpoint.to_bytes();
@@ -78,7 +78,7 @@ impl RocksDbUtxoStore {
         height: BlockHeight,
         is_coinbase: bool,
         slot: u32,
-    ) {
+    ) -> Result<(), StorageError> {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
@@ -102,11 +102,12 @@ impl RocksDbUtxoStore {
             };
 
             let key = outpoint.to_bytes();
-            let value = bincode::serialize(&entry).expect("UtxoEntry serialization");
+            let value = bincode::serialize(&entry)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
             batch.put_cf(cf_utxo, &key, &value);
 
-            // Secondary index: pubkey_hash (32 bytes) ++ outpoint (36 bytes) → 0x00
+            // Secondary index: pubkey_hash (32 bytes) ++ outpoint (36 bytes) -> 0x00
             let mut idx_key = Vec::with_capacity(68);
             idx_key.extend_from_slice(output.pubkey_hash.as_bytes());
             idx_key.extend_from_slice(&key);
@@ -116,9 +117,11 @@ impl RocksDbUtxoStore {
         }
 
         if added > 0 {
-            self.db.write(batch).expect("RocksDB write batch");
+            self.db.write(batch)?;
             self.count.fetch_add(added, Ordering::Relaxed);
         }
+
+        Ok(())
     }
 
     /// Remove inputs spent by a transaction
@@ -345,12 +348,13 @@ impl RocksDbUtxoStore {
     }
 
     /// Insert a UTXO entry directly (for migration and reorgs)
-    pub fn insert(&self, outpoint: Outpoint, entry: UtxoEntry) {
+    pub fn insert(&self, outpoint: Outpoint, entry: UtxoEntry) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
         let key = outpoint.to_bytes();
-        let value = bincode::serialize(&entry).expect("UtxoEntry serialization");
+        let value =
+            bincode::serialize(&entry).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(cf_utxo, &key, &value);
@@ -360,18 +364,24 @@ impl RocksDbUtxoStore {
         idx_key.extend_from_slice(&key);
         batch.put_cf(cf_by_pk, &idx_key, [0u8]);
 
-        self.db.write(batch).expect("RocksDB write batch");
+        self.db.write(batch)?;
         self.count.fetch_add(1, Ordering::Relaxed);
+
+        Ok(())
     }
 
     /// Remove a UTXO entry directly (for reorgs)
-    pub fn remove(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+    pub fn remove(&self, outpoint: &Outpoint) -> Result<Option<UtxoEntry>, StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
         let key = outpoint.to_bytes();
-        let entry_bytes = self.db.get_cf(cf_utxo, &key).ok()??;
-        let entry: UtxoEntry = bincode::deserialize(&entry_bytes).ok()?;
+        let entry_bytes = match self.db.get_cf(cf_utxo, &key)? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let entry: UtxoEntry = bincode::deserialize(&entry_bytes)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.delete_cf(cf_utxo, &key);
@@ -381,10 +391,10 @@ impl RocksDbUtxoStore {
         idx_key.extend_from_slice(&key);
         batch.delete_cf(cf_by_pk, &idx_key);
 
-        self.db.write(batch).expect("RocksDB write batch");
+        self.db.write(batch)?;
         self.count.fetch_sub(1, Ordering::Relaxed);
 
-        Some(entry)
+        Ok(Some(entry))
     }
 
     /// Produce canonical bytes for deterministic state root computation.
@@ -440,7 +450,10 @@ impl RocksDbUtxoStore {
     /// Bulk import from an in-memory HashMap (for migration).
     ///
     /// Clears existing data and writes all entries from the iterator.
-    pub fn import_from<'a>(&self, entries: impl Iterator<Item = (&'a Outpoint, &'a UtxoEntry)>) {
+    pub fn import_from<'a>(
+        &self,
+        entries: impl Iterator<Item = (&'a Outpoint, &'a UtxoEntry)>,
+    ) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
@@ -449,7 +462,8 @@ impl RocksDbUtxoStore {
 
         for (outpoint, entry) in entries {
             let key = outpoint.to_bytes();
-            let value = bincode::serialize(entry).expect("UtxoEntry serialization");
+            let value = bincode::serialize(entry)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
             batch.put_cf(cf_utxo, &key, &value);
 
@@ -462,7 +476,7 @@ impl RocksDbUtxoStore {
 
             // Flush in batches to avoid huge memory usage
             if count.is_multiple_of(50_000) {
-                self.db.write(batch).expect("RocksDB write batch");
+                self.db.write(batch)?;
                 batch = rocksdb::WriteBatch::default();
                 info!("[UTXO_ROCKS] Imported {} entries...", count);
             }
@@ -470,11 +484,13 @@ impl RocksDbUtxoStore {
 
         // Write remaining
         if !count.is_multiple_of(50_000) {
-            self.db.write(batch).expect("RocksDB write batch");
+            self.db.write(batch)?;
         }
 
         self.count.store(count, Ordering::Relaxed);
         info!("[UTXO_ROCKS] Import complete: {} entries", count);
+
+        Ok(())
     }
 }
 
@@ -518,7 +534,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         // Add
-        store.add_transaction(&tx, 0, true, 0);
+        store.add_transaction(&tx, 0, true, 0).unwrap();
         assert_eq!(store.len(), 1);
 
         // Get
@@ -532,7 +548,7 @@ mod tests {
         assert!(!store.contains(&Outpoint::new(Hash::ZERO, 0)));
 
         // Remove
-        let removed = store.remove(&outpoint).unwrap();
+        let removed = store.remove(&outpoint).unwrap().unwrap();
         assert_eq!(removed.output.amount, 500_000_000);
         assert_eq!(store.len(), 0);
         assert!(!store.contains(&outpoint));
@@ -546,7 +562,7 @@ mod tests {
         // Create and add coinbase
         let coinbase = test_coinbase_tx(1_000_000, pk_hash);
         let cb_hash = coinbase.hash();
-        store.add_transaction(&coinbase, 0, true, 0);
+        store.add_transaction(&coinbase, 0, true, 0).unwrap();
         assert_eq!(store.len(), 1);
 
         // Spend it
@@ -569,10 +585,10 @@ mod tests {
         // Add 3 UTXOs for alice, 1 for bob
         for i in 0..3 {
             let tx = test_coinbase_tx(100_000 * (i + 1), alice);
-            store.add_transaction(&tx, i, true, 0);
+            store.add_transaction(&tx, i, true, 0).unwrap();
         }
         let bob_tx = test_coinbase_tx(500_000, bob);
-        store.add_transaction(&bob_tx, 3, true, 0);
+        store.add_transaction(&bob_tx, 3, true, 0).unwrap();
 
         assert_eq!(store.len(), 4);
 
@@ -607,7 +623,7 @@ mod tests {
             extra_data: vec![],
         };
 
-        store.add_transaction(&tx, 0, false, 0);
+        store.add_transaction(&tx, 0, false, 0).unwrap();
         assert_eq!(store.len(), 3);
         assert_eq!(store.total_value(), 600);
     }
@@ -619,7 +635,7 @@ mod tests {
 
         for i in 0..5 {
             let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i, true, 0);
+            store.add_transaction(&tx, i, true, 0).unwrap();
         }
 
         let bytes1 = store.serialize_canonical();
@@ -638,15 +654,15 @@ mod tests {
 
         let pk_hash = crypto::hash::hash(b"test");
         let tx1 = test_coinbase_tx(100, pk_hash);
-        store.add_transaction(&tx1, 0, true, 0);
+        store.add_transaction(&tx1, 0, true, 0).unwrap();
         assert_eq!(store.len(), 1);
 
         let tx2 = test_coinbase_tx(200, pk_hash);
-        store.add_transaction(&tx2, 1, true, 0);
+        store.add_transaction(&tx2, 1, true, 0).unwrap();
         assert_eq!(store.len(), 2);
 
         // Remove one
-        store.remove(&Outpoint::new(tx1.hash(), 0));
+        store.remove(&Outpoint::new(tx1.hash(), 0)).unwrap();
         assert_eq!(store.len(), 1);
         assert!(!store.is_empty());
     }
@@ -658,7 +674,7 @@ mod tests {
 
         for i in 0..10 {
             let tx = test_coinbase_tx(100 * (i + 1), pk_hash);
-            store.add_transaction(&tx, i, true, 0);
+            store.add_transaction(&tx, i, true, 0).unwrap();
         }
         assert_eq!(store.len(), 10);
 

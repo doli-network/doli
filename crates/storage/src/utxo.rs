@@ -482,9 +482,12 @@ impl UtxoSet {
         height: BlockHeight,
         is_coinbase: bool,
         slot: u32,
-    ) {
+    ) -> Result<(), StorageError> {
         match self {
-            UtxoSet::InMemory(store) => store.add_transaction(tx, height, is_coinbase, slot),
+            UtxoSet::InMemory(store) => {
+                store.add_transaction(tx, height, is_coinbase, slot);
+                Ok(())
+            }
             UtxoSet::RocksDb(store) => store.add_transaction(tx, height, is_coinbase, slot),
         }
     }
@@ -621,17 +624,20 @@ impl UtxoSet {
     }
 
     /// Insert a UTXO entry directly (for testing and reorgs)
-    pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
+    pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) -> Result<(), StorageError> {
         match self {
-            UtxoSet::InMemory(store) => store.insert(outpoint, entry),
+            UtxoSet::InMemory(store) => {
+                store.insert(outpoint, entry);
+                Ok(())
+            }
             UtxoSet::RocksDb(store) => store.insert(outpoint, entry),
         }
     }
 
     /// Remove a UTXO entry directly (for testing and reorgs)
-    pub fn remove(&mut self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+    pub fn remove(&mut self, outpoint: &Outpoint) -> Result<Option<UtxoEntry>, StorageError> {
         match self {
-            UtxoSet::InMemory(store) => store.remove(outpoint),
+            UtxoSet::InMemory(store) => Ok(store.remove(outpoint)),
             UtxoSet::RocksDb(store) => store.remove(outpoint),
         }
     }
@@ -684,7 +690,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         // Add to UTXO set
-        utxo_set.add_transaction(&tx, 0, true, 0);
+        utxo_set.add_transaction(&tx, 0, true, 0).unwrap();
         assert_eq!(utxo_set.len(), 1);
 
         // Check it exists
@@ -721,7 +727,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 100, false, 0); // height 100, not coinbase
+        utxo_set.add_transaction(&tx, 100, false, 0).unwrap(); // height 100, not coinbase
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -747,7 +753,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 50, true, 0);
+        utxo_set.add_transaction(&tx, 50, true, 0).unwrap();
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -780,7 +786,7 @@ mod tests {
         let tx_hash = tx.hash();
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 50, false, 0);
+        utxo_set.add_transaction(&tx, 50, false, 0).unwrap();
 
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -840,7 +846,7 @@ mod tests {
         let tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1_000_000, pubkey_hash);
 
         let mut utxo_set = UtxoSet::new();
-        utxo_set.add_transaction(&tx, 100, false, 0);
+        utxo_set.add_transaction(&tx, 100, false, 0).unwrap();
 
         let outpoint = Outpoint::new(tx.hash(), 0);
         let entry = utxo_set.get(&outpoint).unwrap();
@@ -869,8 +875,8 @@ mod tests {
         // Create RocksDB store with same entries
         let dir = tempfile::TempDir::new().unwrap();
         let rocks_store = RocksDbUtxoStore::open(dir.path()).unwrap();
-        rocks_store.add_transaction(&tx1, 0, true, 0);
-        rocks_store.add_transaction(&tx2, 1, true, 0);
+        rocks_store.add_transaction(&tx1, 0, true, 0).unwrap();
+        rocks_store.add_transaction(&tx2, 1, true, 0).unwrap();
 
         // Canonical bytes must match
         let mem_bytes = mem_store.serialize_canonical();
