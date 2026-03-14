@@ -203,6 +203,19 @@ impl Node {
         let state_db_path = config.data_dir.join("state_db");
         let state_db = Arc::new(StateDb::open(&state_db_path)?);
 
+        // Clean up old RocksDB diagnostic logs (LOG.old.*) to reclaim disk space
+        for db_dir in [&state_db_path, &blocks_path] {
+            if let Ok(entries) = std::fs::read_dir(db_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("LOG.old.") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+
         // Migration: if state_db is empty but old files exist, migrate into it
         if !state_db.has_state() {
             let state_path = config.data_dir.join("chain_state.bin");

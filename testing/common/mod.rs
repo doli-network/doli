@@ -135,7 +135,7 @@ impl TestNode {
                         is_coinbase: tx_idx == 0,
                         is_epoch_reward: tx.is_epoch_reward(),
                     };
-                    utxos.insert(outpoint, entry);
+                    let _ = utxos.insert(outpoint, entry);
                 }
 
                 // Remove spent UTXOs
@@ -144,7 +144,7 @@ impl TestNode {
                         tx_hash: input.prev_tx_hash,
                         index: input.output_index,
                     };
-                    utxos.remove(&outpoint);
+                    let _ = utxos.remove(&outpoint);
                 }
             }
         }
@@ -175,7 +175,7 @@ impl TestNode {
                             tx_hash,
                             index: out_idx as u32,
                         };
-                        utxos.remove(&outpoint);
+                        let _ = utxos.remove(&outpoint);
                     }
                 }
             }

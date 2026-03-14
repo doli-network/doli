@@ -814,6 +814,12 @@ impl StateDb {
         }
         if count > 0 {
             let _ = self.db.write(batch);
+            // Force compaction to reclaim disk space from deleted undo entries.
+            // Without this, RocksDB keeps tombstones in SST files indefinitely.
+            let start = 0u64.to_le_bytes();
+            let end = keep_height.to_le_bytes();
+            self.db
+                .compact_range_cf(cf, Some(&start[..]), Some(&end[..]));
         }
     }
 
