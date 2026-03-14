@@ -1166,8 +1166,13 @@ impl SyncManager {
             } else if status.best_height > self.local_height
                 && status.best_height <= self.local_height + 2
             {
-                // Peer is 1-2 blocks ahead — if we were on the same chain,
-                // gossip would have delivered their blocks by now. Diverged.
+                // Peer is 1-2 blocks ahead.
+                // Hash::ZERO means peer has a snap sync gap — no block store
+                // for this height. This is NOT a fork — skip silently.
+                if status.best_hash == Hash::ZERO {
+                    continue;
+                }
+                // Different non-zero hash = genuine divergence.
                 disagree += 1;
                 if first_mismatch_peer.is_none() {
                     first_mismatch_peer = Some(*peer_id);
@@ -2545,15 +2550,24 @@ impl SyncManager {
                 self.state = SyncState::DownloadingBodies { pending: 0, total };
                 info!("Starting body download for {} blocks", total);
             } else if self.pending_headers.is_empty() {
-                // Empty headers with no pending work — but check WHY it's empty.
-                // Snap-synced peers lack old blocks: their empty response means
-                // "I don't have that range", NOT "your chain is invalid".
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                // Empty response = peer doesn't recognize our chain tip.
-                // This is fork evidence regardless of gap size. A snap-synced peer
-                // far ahead still proves our tip is on a dead fork.
+                if gap <= 2 {
+                    // Peer is at our tip or 1-2 blocks ahead.
+                    // Empty headers is NORMAL here — the peer already applied
+                    // the block we need. Gossip will deliver it in <10s.
+                    // Do NOT count as fork evidence. Do NOT blacklist.
+                    debug!(
+                        "Empty headers from {} (gap={}) — peer at tip, waiting for gossip.",
+                        peer, gap
+                    );
+                    self.state = SyncState::Idle;
+                    return;
+                }
+
+                // Large gap + empty headers = peer doesn't recognize our tip.
+                // This is genuine fork evidence.
                 self.consecutive_empty_headers += 1;
                 self.header_blacklisted_peers.insert(peer, Instant::now());
                 warn!(
@@ -2851,8 +2865,26 @@ impl SyncManager {
         self.last_sync_activity = Instant::now();
 
         if self.consecutive_apply_failures >= 3 {
-            warn!("3+ consecutive apply failures — triggering genesis resync");
-            self.needs_genesis_resync = true;
+            let gap = self.network_tip_height.saturating_sub(self.local_height);
+            if gap <= 50 {
+                // Small gap + apply failures = transient issue, not corruption.
+                // A gap of <=50 blocks resolves via gossip in <10 minutes.
+                // Escalating to snap sync here destroys the block store
+                // unnecessarily and creates the cascade infection pattern.
+                warn!(
+                    "3+ consecutive apply failures but gap={} — resetting to Idle, \
+                     NOT escalating to snap sync (gap too small for genuine fork)",
+                    gap
+                );
+                self.consecutive_apply_failures = 0;
+                self.state = SyncState::Idle;
+            } else {
+                warn!(
+                    "3+ consecutive apply failures with gap={} — triggering genesis resync",
+                    gap
+                );
+                self.needs_genesis_resync = true;
+            }
         }
     }
 
