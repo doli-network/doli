@@ -1629,6 +1629,12 @@ impl SyncManager {
         self.consecutive_empty_headers
     }
 
+    /// Reset empty headers counter after a rollback changes the local tip.
+    /// The next sync attempt will use the new tip hash.
+    pub fn reset_empty_headers(&mut self) {
+        self.consecutive_empty_headers = 0;
+    }
+
     /// Check if post-recovery grace period is active.
     /// During grace, fork_sync should not be activated — the node needs time
     /// to sync via header-first / gossip before fork detection is meaningful.
@@ -2613,22 +2619,32 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                if gap <= 50 {
-                    // Peer is near our tip. Empty headers is NORMAL — the peer
-                    // already applied those blocks and can't serve headers for them
-                    // (especially if its block store has gaps from snap sync recovery).
-                    // Do NOT escalate to fork_sync — gossip will deliver these blocks.
-                    debug!(
-                        "Empty headers from {} (gap={}) — near tip, waiting for gossip.",
-                        peer, gap
+                // Empty headers = peer doesn't recognize our tip hash.
+                // Two cases:
+                // 1. Small gap (<=50): we're on a minor fork. Signal immediate
+                //    rollback — each rollback tries the parent hash until peers
+                //    recognize it. Recovery in seconds, not minutes.
+                // 2. Large gap (>50): too deep for rollback. Accumulate fork
+                //    evidence for snap sync escalation.
+                self.consecutive_empty_headers += 1;
+
+                if gap <= 50 && self.local_height > 0 {
+                    // Small fork: signal rollback. The node's periodic task
+                    // (resolve_shallow_fork) will roll back 1 block per tick,
+                    // changing local_hash to the parent. After 1-3 rollbacks,
+                    // GetHeaders succeeds and sync resumes normally.
+                    warn!(
+                        "Empty headers from {} (gap={}, consecutive={}) — minor fork. \
+                         Signaling rollback to find common ancestor.",
+                        peer, gap, self.consecutive_empty_headers
                     );
+                    // Set to 3 immediately to trigger resolve_shallow_fork
+                    // on the next periodic tick (no waiting for 3 separate responses)
+                    self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
                     self.state = SyncState::Idle;
                     return;
                 }
 
-                // Large gap + empty headers = peer doesn't recognize our tip.
-                // This is genuine fork evidence.
-                self.consecutive_empty_headers += 1;
                 self.header_blacklisted_peers.insert(peer, Instant::now());
                 warn!(
                     "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \

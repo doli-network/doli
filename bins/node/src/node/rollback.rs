@@ -195,13 +195,14 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub(super) async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, fork_sync_active, grace_active) = {
+        let (empty_headers, local_height, fork_sync_active, gap) = {
             let sync = self.sync_manager.read().await;
+            let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
                 sync.is_fork_sync_active(),
-                sync.post_recovery_grace_active(),
+                gap,
             )
         };
 
@@ -210,24 +211,39 @@ impl Node {
             return Ok(false);
         }
 
-        // Post-recovery grace: don't activate fork_sync while the node is
-        // still syncing back up after a snap sync / forced recovery.
-        // The grace clears after 10 blocks are successfully applied.
-        if grace_active {
-            return Ok(false);
-        }
-
         // Need at least 3 fork evidence signals before activating
         if empty_headers < 3 || local_height == 0 {
             return Ok(false);
         }
 
+        // Fast path: small gap (<= 10 blocks) — just rollback 1 block.
+        // This changes local_hash to the parent, and the next sync attempt
+        // will try GetHeaders with the parent hash. After 1-3 rollbacks,
+        // we find a hash peers recognize and sync resumes.
+        // No binary search needed, no grace check — immediate recovery.
+        if gap <= 10 && self.shallow_rollback_count < 10 {
+            info!(
+                "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
+                 from h={} to find common ancestor (rollback #{})",
+                gap, empty_headers, local_height, self.shallow_rollback_count + 1
+            );
+            let rolled_back = self.rollback_one_block().await?;
+            if rolled_back {
+                self.shallow_rollback_count += 1;
+                // Reset empty headers so sync retries with new tip hash
+                let mut sync = self.sync_manager.write().await;
+                sync.reset_empty_headers();
+                return Ok(true);
+            }
+        }
+
+        // Deep fork or rollback limit reached: use binary search
         let started = self.sync_manager.write().await.start_fork_sync();
         if started {
             info!(
                 "Fork sync: binary search for common ancestor initiated \
-                 (empty_headers={}, local_height={})",
-                empty_headers, local_height
+                 (empty_headers={}, local_height={}, gap={})",
+                empty_headers, local_height, gap
             );
             return Ok(true);
         }
