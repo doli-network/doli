@@ -177,7 +177,7 @@ fn test_tx_type_enum_values_match_protocol() {
     assert_eq!(TxType::RewardClaim as u8, 6);
     assert_eq!(TxType::AddBond as u8, 7);
     assert_eq!(TxType::RequestWithdrawal as u8, 8);
-    assert_eq!(TxType::MintAsset as u8, 9);
+    assert_eq!(TxType::ClaimWithdrawal as u8, 9);
     assert_eq!(TxType::SlashingEvidence as u8, 10);
     assert_eq!(TxType::TokenIssuance as u8, 11);
     assert_eq!(TxType::BridgeLock as u8, 12);

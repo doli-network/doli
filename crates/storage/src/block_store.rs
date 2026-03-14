@@ -980,7 +980,9 @@ impl BlockStore {
     /// `true` if a block exists for this slot, `false` otherwise.
     pub fn has_block_for_slot(&self, slot: u64) -> bool {
         // Convert to u32 for the slot index lookup
-        let slot_u32 = slot as u32;
+        let Ok(slot_u32) = u32::try_from(slot) else {
+            return false; // slot > u32::MAX cannot exist
+        };
         self.get_hash_by_slot(slot_u32)
             .map(|opt| opt.is_some())
             .unwrap_or(false)

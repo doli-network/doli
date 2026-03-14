@@ -66,7 +66,8 @@ impl TryFrom<producer::ProducerAnnouncement> for ProducerAnnouncement {
             return Err(ProtoError::InvalidPublicKey(proto.pubkey.len()));
         }
         let pubkey_bytes: [u8; 32] = proto.pubkey.try_into().unwrap();
-        let pubkey = PublicKey::from_bytes(pubkey_bytes);
+        let pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+            .map_err(|_| ProtoError::InvalidPublicKey(pubkey_bytes.len()))?;
 
         // Validate and convert signature
         if proto.signature.len() != 64 {

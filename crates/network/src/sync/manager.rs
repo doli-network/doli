@@ -436,7 +436,7 @@ pub struct SyncManager {
     /// Number of consecutive snap sync failures. After 3 failures, falls back
     /// to header-first sync. Reset on successful sync or state reset.
     snap_sync_attempts: u8,
-    /// When a fresh node first started waiting for 3 peers (for snap sync timeout)
+    /// When a fresh node first started waiting for 5 peers (for snap sync timeout)
     fresh_node_wait_start: Option<Instant>,
     /// After snap sync, block production until at least one canonical gossip block
     /// is received and applied. This proves the node is on the canonical chain and
@@ -537,7 +537,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync defaults
             snap_sync_threshold: 1000,
-            snap_sync_quorum: 3, // Minimum 3 peers for partition safety
+            snap_sync_quorum: 5, // Minimum 5 peers for partition safety
             snap_root_timeout: Duration::from_secs(10),
             snap_download_timeout: Duration::from_secs(60),
             snap_blacklisted_peers: HashSet::new(),
@@ -2012,9 +2012,9 @@ impl SyncManager {
                 && (self.local_height == 0 || gap > self.snap_sync_threshold);
 
             // Fresh node optimization: don't start slow header-first sync.
-            // Wait for 3 peers so snap sync can activate — it downloads state
+            // Wait for 5 peers so snap sync can activate — it downloads state
             // in seconds instead of replaying 60K+ blocks over hours.
-            // BUT: timeout after 60s to avoid deadlock when <3 peers are discoverable.
+            // BUT: timeout after 60s to avoid deadlock when <5 peers are discoverable.
             if self.local_height == 0
                 && !enough_peers
                 && self.snap_sync_attempts < 3
@@ -2030,7 +2030,7 @@ impl SyncManager {
                     return;
                 }
                 warn!(
-                    "[SNAP_SYNC] Fresh node waited {}s for 3 peers but only have {} — falling back to header-first sync",
+                    "[SNAP_SYNC] Fresh node waited {}s for 5 peers but only have {} — falling back to header-first sync",
                     waited.as_secs(), self.peers.len()
                 );
                 self.fresh_node_wait_start = None;

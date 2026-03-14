@@ -321,9 +321,10 @@ pub const VESTING_QUARTER_SLOTS: u64 = 3_153_600;
 // Unit conversion utilities
 // ============================================================================
 
-/// Convert base units to DOLI (floating point, for display only).
-pub fn units_to_coins(units: u64) -> f64 {
-    units as f64 / UNITS_PER_DOLI as f64
+/// Convert base units to DOLI display string (8 decimal places).
+/// Pure integer arithmetic — no f64 in the path.
+pub fn units_to_coins(units: u64) -> String {
+    format!("{}.{:08}", units / UNITS_PER_DOLI, units % UNITS_PER_DOLI)
 }
 
 /// Convert a DOLI string (e.g. "1.5") to base units using integer-only arithmetic.
@@ -396,8 +397,7 @@ pub fn coins_to_units(coins: &str) -> Result<u64, String> {
 
 /// Format base units as a DOLI string with 8 decimal places.
 pub fn format_balance(units: u64) -> String {
-    let coins = units_to_coins(units);
-    format!("{:.8} DOLI", coins)
+    format!("{} DOLI", units_to_coins(units))
 }
 
 #[cfg(test)]
@@ -411,17 +411,17 @@ mod tests {
 
     #[test]
     fn test_fr010_units_to_coins_one_doli() {
-        assert_eq!(units_to_coins(100_000_000), 1.0);
+        assert_eq!(units_to_coins(100_000_000), "1.00000000");
     }
 
     #[test]
     fn test_fr010_units_to_coins_fractional() {
-        assert_eq!(units_to_coins(12_345_678), 0.12345678);
+        assert_eq!(units_to_coins(12_345_678), "0.12345678");
     }
 
     #[test]
     fn test_fr010_units_to_coins_zero() {
-        assert_eq!(units_to_coins(0), 0.0);
+        assert_eq!(units_to_coins(0), "0.00000000");
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
         // Large value -- should not overflow
         let large_amount: u64 = 21_000_000 * UNITS_PER_DOLI; // 21M DOLI
         let result = units_to_coins(large_amount);
-        assert!((result - 21_000_000.0).abs() < 0.01);
+        assert_eq!(result, "21000000.00000000");
     }
 
     #[test]
@@ -505,7 +505,7 @@ mod tests {
     fn test_fr020_base_registration_fee() {
         // 0.001 DOLI = 100,000 base units
         assert_eq!(BASE_REGISTRATION_FEE, 100_000);
-        assert!((units_to_coins(BASE_REGISTRATION_FEE) - 0.001).abs() < 1e-10);
+        assert_eq!(units_to_coins(BASE_REGISTRATION_FEE), "0.00100000");
     }
 
     // ========================================================================

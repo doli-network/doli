@@ -203,6 +203,7 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::Coinbase => "coinbase",
             doli_core::TxType::AddBond => "add_bond",
             doli_core::TxType::RequestWithdrawal => "request_withdrawal",
+            doli_core::TxType::ClaimWithdrawal => "claim_withdrawal",
             doli_core::TxType::MintAsset => "mint_asset",
             doli_core::TxType::EpochReward => "epoch_reward",
             doli_core::TxType::RemoveMaintainer => "remove_maintainer",

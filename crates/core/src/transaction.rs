@@ -27,8 +27,8 @@ pub enum TxType {
     AddBond = 7,
     /// Request withdrawal of bonds (instant, with vesting penalty)
     RequestWithdrawal = 8,
-    /// Mint new units of a fungible asset (issuer-only, requires matching asset_id).
-    MintAsset = 9,
+    /// Reserved — DO NOT REUSE. Tombstone for wire compat (was ClaimWithdrawal).
+    ClaimWithdrawal = 9,
     /// Epoch reward transaction (automatic weighted presence rewards at epoch boundary)
     ///
     /// This is the primary reward mechanism. At each epoch boundary, rewards are
@@ -60,8 +60,10 @@ pub enum TxType {
     /// Schedules new consensus rules to activate at a future epoch boundary.
     /// All nodes switch simultaneously — deterministic, zero coordination.
     ProtocolActivation = 15,
+    /// Mint new units of a fungible asset (issuer-only, requires matching asset_id).
+    MintAsset = 17,
     /// Burn units of a fungible asset (holder burns own tokens, provably destroyed).
-    BurnAsset = 16,
+    BurnAsset = 18,
 }
 
 impl TxType {
@@ -76,14 +78,15 @@ impl TxType {
             6 => Some(Self::Coinbase),
             7 => Some(Self::AddBond),
             8 => Some(Self::RequestWithdrawal),
-            9 => Some(Self::MintAsset),
+            9 => Some(Self::ClaimWithdrawal),
             10 => Some(Self::EpochReward),
             11 => Some(Self::RemoveMaintainer),
             12 => Some(Self::AddMaintainer),
             13 => Some(Self::DelegateBond),
             14 => Some(Self::RevokeDelegation),
             15 => Some(Self::ProtocolActivation),
-            16 => Some(Self::BurnAsset),
+            17 => Some(Self::MintAsset),
+            18 => Some(Self::BurnAsset),
             _ => None,
         }
     }
@@ -1948,15 +1951,17 @@ mod tests {
         assert_eq!(TxType::from_u32(6), Some(TxType::Coinbase));
         assert_eq!(TxType::from_u32(7), Some(TxType::AddBond));
         assert_eq!(TxType::from_u32(8), Some(TxType::RequestWithdrawal));
-        assert_eq!(TxType::from_u32(9), Some(TxType::MintAsset));
+        assert_eq!(TxType::from_u32(9), Some(TxType::ClaimWithdrawal));
         assert_eq!(TxType::from_u32(10), Some(TxType::EpochReward));
         assert_eq!(TxType::from_u32(11), Some(TxType::RemoveMaintainer));
         assert_eq!(TxType::from_u32(12), Some(TxType::AddMaintainer));
         assert_eq!(TxType::from_u32(13), Some(TxType::DelegateBond));
         assert_eq!(TxType::from_u32(14), Some(TxType::RevokeDelegation));
         assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
-        assert_eq!(TxType::from_u32(16), Some(TxType::BurnAsset));
-        assert_eq!(TxType::from_u32(17), None);
+        assert_eq!(TxType::from_u32(16), None);
+        assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
+        assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
+        assert_eq!(TxType::from_u32(19), None);
         assert_eq!(TxType::from_u32(u32::MAX), None);
     }
 
@@ -2509,8 +2514,10 @@ mod tests {
     #[test]
     fn test_tx_type_from_u32_protocol_activation() {
         assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
-        assert_eq!(TxType::from_u32(16), Some(TxType::BurnAsset));
-        assert_eq!(TxType::from_u32(17), None);
+        assert_eq!(TxType::from_u32(16), None);
+        assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
+        assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
+        assert_eq!(TxType::from_u32(19), None);
     }
 
     // Property-based tests

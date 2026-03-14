@@ -2682,7 +2682,7 @@ fn recover_chain_state(network: Network, data_dir: &PathBuf, skip_confirm: bool)
         for (tx_index, tx) in block.transactions.iter().enumerate() {
             let is_coinbase = tx_index == 0 && tx.is_coinbase();
             let _ = utxo_set.spend_transaction(tx); // Ignore errors for coinbase
-            utxo_set.add_transaction(tx, height, is_coinbase, block.header.slot);
+            utxo_set.add_transaction(tx, height, is_coinbase, block.header.slot)?;
 
             // Process registration transactions
             if tx.tx_type == TxType::Registration {

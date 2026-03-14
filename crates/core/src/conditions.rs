@@ -150,6 +150,8 @@ pub enum ConditionError {
         lock: crate::types::BlockHeight,
         expiry: crate::types::BlockHeight,
     },
+    /// Invalid public key bytes in witness data.
+    InvalidPublicKey,
 }
 
 impl std::fmt::Display for ConditionError {
@@ -202,6 +204,7 @@ impl std::fmt::Display for ConditionError {
                     lock, expiry
                 )
             }
+            Self::InvalidPublicKey => write!(f, "invalid public key bytes in witness"),
         }
     }
 }
@@ -642,8 +645,10 @@ impl Witness {
                         pos += 32;
                         let sig_bytes: [u8; 64] = bytes[pos..pos + 64].try_into().unwrap();
                         pos += 64;
+                        let pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+                            .map_err(|_| ConditionError::InvalidPublicKey)?;
                         witness.signatures.push(WitnessSignature {
-                            pubkey: PublicKey::from_bytes(pubkey_bytes),
+                            pubkey,
                             signature: Signature::from_bytes(sig_bytes),
                         });
                     }

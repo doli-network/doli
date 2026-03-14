@@ -293,7 +293,7 @@ mod tests {
         // Add some UTXOs
         let pk_hash = crypto::hash::hash(b"test");
         let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0);
-        utxo.add_transaction(&tx, 0, true, 0);
+        utxo.add_transaction(&tx, 0, true, 0).unwrap();
 
         // Create and verify snapshot
         let snapshot = StateSnapshot::create(&cs, &utxo, &ps).unwrap();
@@ -362,7 +362,7 @@ mod tests {
         let mut utxo = UtxoSet::new();
         let pk = crypto::hash::hash(b"wallet");
         let tx = Transaction::new_coinbase(1_000_000, pk, 0);
-        utxo.add_transaction(&tx, 0, true, 0);
+        utxo.add_transaction(&tx, 0, true, 0).unwrap();
 
         let mut ps = ProducerSet::new();
         let pk1 = crypto::PublicKey::from_bytes([1u8; 32]);

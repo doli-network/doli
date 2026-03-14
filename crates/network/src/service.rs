@@ -923,8 +923,8 @@ async fn handle_behaviour_event(
                         );
                         return;
                     }
+                    rate_limiter.record_block(&propagation_source, msg_size);
                     if let Some(block) = Block::deserialize(&message.data) {
-                        rate_limiter.record_block(&propagation_source, msg_size);
                         let _ = event_tx
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
@@ -940,8 +940,8 @@ async fn handle_behaviour_event(
                         );
                         return;
                     }
+                    rate_limiter.record_transaction(&propagation_source, msg_size);
                     if let Some(txs) = crate::gossip::decode_tx_message(&message.data) {
-                        rate_limiter.record_transaction(&propagation_source, msg_size);
                         for tx in txs {
                             let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
                         }

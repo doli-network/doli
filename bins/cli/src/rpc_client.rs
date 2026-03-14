@@ -634,25 +634,42 @@ pub struct EpochInfoResponse {
     pub block_reward: u64,
 }
 
-/// Convert base units to display coins (8 decimal places)
-pub fn units_to_coins(units: u64) -> f64 {
-    units as f64 / 100_000_000.0
+/// Convert base units to display coins string (8 decimal places).
+/// Pure integer arithmetic — no f64 in the path.
+pub fn units_to_coins(units: u64) -> String {
+    format!("{}.{:08}", units / 100_000_000, units % 100_000_000)
 }
 
-/// Convert display coins to base units
-pub fn coins_to_units(coins: f64) -> u64 {
-    let units = coins * 100_000_000.0;
-    if units < 0.0 || units > u64::MAX as f64 {
-        0 // caller validates amount > 0 before calling
-    } else {
-        units.round() as u64
+/// Parse a decimal string like "1.23456789" into base units (u64).
+/// Supports 0-8 decimal places. No f64 in the path.
+pub fn coins_to_units(coins: &str) -> Result<u64, String> {
+    let coins = coins.trim();
+    if coins.is_empty() {
+        return Err("empty amount".to_string());
     }
+    let (integer_part, frac_part) = match coins.find('.') {
+        None => (coins, ""),
+        Some(dot) => (&coins[..dot], &coins[dot + 1..]),
+    };
+    if frac_part.len() > 8 {
+        return Err(format!("too many decimal places (max 8): {}", coins));
+    }
+    let int_units: u64 = integer_part
+        .parse()
+        .map_err(|_| format!("invalid amount: {}", coins))?;
+    let frac_padded = format!("{:0<8}", frac_part); // pad right to 8 digits
+    let frac_units: u64 = frac_padded
+        .parse()
+        .map_err(|_| format!("invalid fractional: {}", coins))?;
+    int_units
+        .checked_mul(100_000_000)
+        .and_then(|n| n.checked_add(frac_units))
+        .ok_or_else(|| format!("amount overflow: {}", coins))
 }
 
 /// Format balance for display
 pub fn format_balance(units: u64) -> String {
-    let coins = units_to_coins(units);
-    format!("{:.8} DOLI", coins)
+    format!("{} DOLI", units_to_coins(units))
 }
 
 #[cfg(test)]
@@ -661,16 +678,33 @@ mod tests {
 
     #[test]
     fn test_units_to_coins() {
-        assert_eq!(units_to_coins(100_000_000), 1.0);
-        assert_eq!(units_to_coins(500_000_000), 5.0);
-        assert_eq!(units_to_coins(12_345_678), 0.12345678);
+        assert_eq!(units_to_coins(100_000_000), "1.00000000");
+        assert_eq!(units_to_coins(500_000_000), "5.00000000");
+        assert_eq!(units_to_coins(12_345_678), "0.12345678");
+        assert_eq!(units_to_coins(0), "0.00000000");
+        assert_eq!(units_to_coins(1), "0.00000001");
     }
 
     #[test]
     fn test_coins_to_units() {
-        assert_eq!(coins_to_units(1.0), 100_000_000);
-        assert_eq!(coins_to_units(5.0), 500_000_000);
-        assert_eq!(coins_to_units(0.12345678), 12_345_678);
+        assert_eq!(coins_to_units("1").unwrap(), 100_000_000);
+        assert_eq!(coins_to_units("1.0").unwrap(), 100_000_000);
+        assert_eq!(coins_to_units("5").unwrap(), 500_000_000);
+        assert_eq!(coins_to_units("0.12345678").unwrap(), 12_345_678);
+        assert_eq!(coins_to_units("0.1").unwrap(), 10_000_000);
+        assert_eq!(coins_to_units("100.5").unwrap(), 10_050_000_000);
+        assert!(coins_to_units("1.123456789").is_err()); // 9 decimals
+        assert!(coins_to_units("").is_err());
+    }
+
+    #[test]
+    fn test_coins_to_units_large_amounts() {
+        // Values that would lose precision with f64 arithmetic
+        assert_eq!(
+            coins_to_units("99999999.99999999").unwrap(),
+            9_999_999_999_999_999
+        );
+        assert_eq!(coins_to_units("25200000").unwrap(), 2_520_000_000_000_000);
     }
 
     #[test]

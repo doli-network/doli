@@ -1242,25 +1242,19 @@ async fn cmd_send(
         .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
 
     // Parse amount
-    let amount_coins: f64 = amount
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
+    let amount_units =
+        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
 
-    if amount_coins <= 0.0 {
+    if amount_units == 0 {
         anyhow::bail!("Amount must be greater than zero");
     }
-    if amount_coins > 25_200_000.0 {
+    if amount_units > 2_520_000_000_000_000 {
         anyhow::bail!("Amount exceeds maximum supply (25.2M DOLI)");
     }
 
-    let amount_units = coins_to_units(amount_coins);
-
     // Parse explicit fee if provided; otherwise auto-calculate after UTXO selection
     let explicit_fee: Option<u64> = if let Some(f) = &fee {
-        let fee_coins: f64 = f
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
-        Some(coins_to_units(fee_coins))
+        Some(coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?)
     } else {
         None
     };
@@ -1335,7 +1329,7 @@ async fn cmd_send(
 
     println!("Preparing transaction:");
     println!("  To:     {}", recipient_display);
-    println!("  Amount: {} DOLI", amount_coins);
+    println!("  Amount: {} DOLI", format_balance(amount_units));
     println!("  Fee:    {}", format_balance(fee_units));
 
     println!();
@@ -1667,20 +1661,15 @@ async fn cmd_spend(
         .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
 
     // Parse amount
-    let amount_coins: f64 = amount
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
-    if amount_coins <= 0.0 {
+    let amount_units =
+        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+    if amount_units == 0 {
         anyhow::bail!("Amount must be greater than zero");
     }
-    let amount_units = coins_to_units(amount_coins);
 
     // Fee
     let fee_units = if let Some(f) = &fee {
-        let fee_coins: f64 = f
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
-        coins_to_units(fee_coins)
+        coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
     } else {
         1000 // Default fee for single-input spend
     };
@@ -1715,7 +1704,7 @@ async fn cmd_spend(
         output_index
     );
     println!("  To:      {}", recipient_display);
-    println!("  Amount:  {} DOLI", amount_coins);
+    println!("  Amount:  {} DOLI", format_balance(amount_units));
     println!("  Fee:     {}", format_balance(fee_units));
     println!("  Witness: {}", witness_str);
     println!("  TX Hash: {}", tx_hash.to_hex());
@@ -4294,10 +4283,10 @@ async fn cmd_mint(
         .ok_or_else(|| anyhow::anyhow!("Invalid minter pubkey hash"))?;
 
     // Parse amount (minimum 1 sat dust for pure NFT — protocol requires non-zero)
-    let amount_coins: f64 = amount
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
-    let amount_units = std::cmp::max(1u64, coins_to_units(amount_coins));
+    let amount_units = std::cmp::max(
+        1u64,
+        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?,
+    );
 
     // Content hash: if it looks like hex (64 chars), use as-is; otherwise treat as URI bytes
     let content_bytes = if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -4669,10 +4658,8 @@ async fn cmd_nft_buy(
     }
 
     // Parse price
-    let price_coins: f64 = price_str
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid price: {}", price_str))?;
-    let price_units = coins_to_units(price_coins);
+    let price_units =
+        coins_to_units(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {}", e))?;
     if price_units == 0 {
         anyhow::bail!("Price must be greater than 0");
     }
@@ -5068,10 +5055,8 @@ async fn cmd_nft_sell(
         anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
-    let price_coins: f64 = price_str
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid price: {}", price_str))?;
-    let price_units = coins_to_units(price_coins);
+    let price_units =
+        coins_to_units(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {}", e))?;
     if price_units == 0 {
         anyhow::bail!("Price must be greater than 0");
     }
@@ -5193,8 +5178,7 @@ async fn cmd_nft_buy_from_file(
         .ok_or_else(|| anyhow::anyhow!("Invalid tx hash in offer"))?;
 
     let utxo_ref = format!("{}:{}", nft_tx_hash_hex, nft_output_index);
-    let price_coins = rpc_client::units_to_coins(price_units);
-    let price_str = format!("{}", price_coins);
+    let price_str = rpc_client::units_to_coins(price_units);
 
     cmd_nft_buy(
         buyer_wallet_path,
@@ -5230,10 +5214,8 @@ async fn cmd_nft_sell_sign(
         anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
-    let price_coins: f64 = price_str
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid price: {}", price_str))?;
-    let price_units = coins_to_units(price_coins);
+    let price_units =
+        coins_to_units(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {}", e))?;
     if price_units == 0 {
         anyhow::bail!("Price must be greater than 0");
     }
@@ -5948,13 +5930,11 @@ async fn cmd_bridge_lock(
     let expected_hash =
         Hash::from_hex(hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid hash: {}", hash_hex))?;
 
-    let amount_coins: f64 = amount
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
-    if amount_coins <= 0.0 {
+    let amount_units =
+        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+    if amount_units == 0 {
         anyhow::bail!("Amount must be greater than zero");
     }
-    let amount_units = coins_to_units(amount_coins);
 
     let from_pubkey_hash = wallet.primary_pubkey_hash();
     let from_hash =
@@ -6026,7 +6006,7 @@ async fn cmd_bridge_lock(
     let chain_name = Output::bridge_chain_name(chain_id);
 
     println!("Bridge HTLC Lock:");
-    println!("  Amount:     {} DOLI", amount_coins);
+    println!("  Amount:     {} DOLI", format_balance(amount_units));
     println!("  Target:     {} -> {}", chain_name, target_address);
     println!("  Hash:       {}", hash_hex);
     println!("  Lock:       {} (claim after)", lock);
@@ -6044,7 +6024,9 @@ async fn cmd_bridge_lock(
             println!();
             println!(
                 "Counterparty should now lock {} on {} to address {}",
-                amount_coins, chain_name, target_address
+                format_balance(amount_units),
+                chain_name,
+                target_address
             );
             println!("using the same hash: {}", hash_hex);
         }
@@ -6472,13 +6454,11 @@ async fn cmd_channel(
                 .map_err(|e| anyhow::anyhow!("Invalid peer address: {}", e))?;
 
             // Parse capacity
-            let capacity_coins: f64 = capacity
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid capacity: {}", capacity))?;
-            if capacity_coins <= 0.0 {
+            let capacity_units = coins_to_units(&capacity)
+                .map_err(|e| anyhow::anyhow!("Invalid capacity: {}", e))?;
+            if capacity_units == 0 {
                 anyhow::bail!("Capacity must be greater than zero");
             }
-            let capacity_units = coins_to_units(capacity_coins);
 
             if capacity_units < config.min_channel_capacity {
                 anyhow::bail!(
@@ -6489,10 +6469,7 @@ async fn cmd_channel(
 
             // Parse fee
             let fee_units = if let Some(f) = &fee {
-                let fee_coins: f64 = f
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
-                coins_to_units(fee_coins)
+                coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
             } else {
                 2000u64 // default funding fee: slightly higher (2-of-2 output)
             };
@@ -6546,7 +6523,7 @@ async fn cmd_channel(
 
             println!("Opening payment channel:");
             println!("  Peer:     {}", peer);
-            println!("  Capacity: {} DOLI", capacity_coins);
+            println!("  Capacity: {} DOLI", format_balance(capacity_units));
             println!("  Fee:      {}", format_balance(fee_units));
             println!("  Inputs:   {} UTXO(s)", selected.len());
 
@@ -6631,13 +6608,11 @@ async fn cmd_channel(
         }
 
         ChannelCommands::Pay { channel, amount } => {
-            let amount_coins: f64 = amount
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid amount: {}", amount))?;
-            if amount_coins <= 0.0 {
+            let amount_units =
+                coins_to_units(&amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+            if amount_units == 0 {
                 anyhow::bail!("Amount must be greater than zero");
             }
-            let amount_units = coins_to_units(amount_coins);
 
             let mut store = ChannelStore::open(&store_path)?;
 
@@ -6679,7 +6654,7 @@ async fn cmd_channel(
             store.save()?;
 
             println!("Payment sent through channel {}:", ch.channel_id);
-            println!("  Amount:  {} DOLI", amount_coins);
+            println!("  Amount:  {} DOLI", format_balance(amount_units));
             println!("  Local:   {}", format_balance(new_balance.local));
             println!("  Remote:  {}", format_balance(new_balance.remote));
             println!("  Commit#: {}", ch.commitment_number + 1);
@@ -6711,10 +6686,7 @@ async fn cmd_channel(
             }
 
             let fee_units = if let Some(f) = &fee {
-                let fee_coins: f64 = f
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid fee: {}", f))?;
-                coins_to_units(fee_coins)
+                coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
             } else {
                 1500u64
             };

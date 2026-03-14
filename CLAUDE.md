@@ -39,7 +39,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 2. Never touch N1/N2 while any node syncs. They are chain tip.
 3. Code is SOT. For design intent: WHITEPAPER > specs/ > docs/. For reality: read the code.
 4. Simplest solution that doesn't compromise safety. Design for 1000s of producers in 10s slots.
-5. Commit: `--author "E. Weil <weil@doli.network>"`. Gate: `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test`.
+5. Commit: `--author "Ivan D. Lozada <ivan@doli.network>"`. Gate: `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test`.
 6. Ops: `→ doli-ops skill` — read FIRST before any infra task.
 7. Consensus-critical deploys: simultaneous across all nodes. NEVER rolling.
 8. Learning protocol: before following any doc/skill, check MEMORY.md hotfixes. Doc drifts from code? Register hotfix, fix the doc. A mistake not fixed at the source repeats forever.

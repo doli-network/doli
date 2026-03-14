@@ -248,6 +248,10 @@ pub enum ValidationError {
     #[error("invalid withdrawal request: {0}")]
     InvalidWithdrawalRequest(String),
 
+    /// Claim withdrawal validation failed.
+    #[error("invalid claim withdrawal: {0}")]
+    InvalidClaimWithdrawal(String),
+
     /// MintAsset validation failed.
     #[error("invalid mint asset: {0}")]
     InvalidMintAsset(String),
@@ -1288,6 +1292,7 @@ pub fn validate_transaction(
         && !tx.is_slash_producer()
         && !tx.is_add_bond()
         && !tx.is_request_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
         && tx.tx_type != TxType::MintAsset
         && tx.tx_type != TxType::BurnAsset
         && !tx.is_epoch_reward()
@@ -1310,6 +1315,7 @@ pub fn validate_transaction(
         && !tx.is_slash_producer()
         && !tx.is_add_bond()
         && !tx.is_request_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
         && tx.tx_type != TxType::MintAsset
         && tx.tx_type != TxType::BurnAsset
         && !tx.is_epoch_reward()
@@ -1366,6 +1372,12 @@ pub fn validate_transaction(
         }
         TxType::RequestWithdrawal => {
             validate_withdrawal_request_data(tx)?;
+        }
+        TxType::ClaimWithdrawal => {
+            // Reserved — DO NOT REUSE discriminant 9. Tombstone for wire compat.
+            return Err(ValidationError::InvalidClaimWithdrawal(
+                "ClaimWithdrawal is not supported".to_string(),
+            ));
         }
         TxType::MintAsset => {
             validate_mint_asset(tx)?;
@@ -2679,6 +2691,155 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ── MintAsset issuer authorization ──────────────────────────────────
+    // When minting fungible assets, verify:
+    // 1. All inputs are FungibleAsset with the same asset_id
+    // 2. The signer owns the genesis issuer UTXO (first input)
+    // 3. All outputs are FungibleAsset with the same asset_id
+    // 4. Total output amount does not exceed total_supply cap
+    if tx.tx_type == TxType::MintAsset {
+        // Get first input UTXO — must be a FungibleAsset (the genesis output)
+        let first_input = &tx.inputs[0]; // structural check already ensures non-empty
+        let genesis_utxo = utxo_provider
+            .get_utxo(&first_input.prev_tx_hash, first_input.output_index)
+            .ok_or(ValidationError::OutputNotFound {
+                tx_hash: first_input.prev_tx_hash,
+                output_index: first_input.output_index,
+            })?;
+
+        if genesis_utxo.output.output_type != OutputType::FungibleAsset {
+            return Err(ValidationError::InvalidMintAsset(
+                "first input must be a FungibleAsset UTXO".to_string(),
+            ));
+        }
+
+        let (asset_id, total_supply, _ticker) = genesis_utxo
+            .output
+            .fungible_asset_metadata()
+            .ok_or(ValidationError::InvalidMintAsset(
+                "genesis UTXO has invalid asset metadata".to_string(),
+            ))?;
+
+        // Verify signer == genesis UTXO owner (issuer auth via witness pubkey)
+        if let Some(ref pk) = genesis_utxo.pubkey {
+            let signer_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
+            if signer_hash != genesis_utxo.output.pubkey_hash {
+                return Err(ValidationError::InvalidMintAsset(
+                    "only the original issuer can mint".to_string(),
+                ));
+            }
+        }
+
+        // All inputs must share the same asset_id
+        for (i, input) in tx.inputs.iter().enumerate() {
+            let utxo = utxo_provider
+                .get_utxo(&input.prev_tx_hash, input.output_index)
+                .ok_or(ValidationError::OutputNotFound {
+                    tx_hash: input.prev_tx_hash,
+                    output_index: input.output_index,
+                })?;
+            if let Some((id, _, _)) = utxo.output.fungible_asset_metadata() {
+                if id != asset_id {
+                    return Err(ValidationError::InvalidMintAsset(format!(
+                        "input {} has different asset_id",
+                        i
+                    )));
+                }
+            } else {
+                return Err(ValidationError::InvalidMintAsset(format!(
+                    "input {} is not a FungibleAsset",
+                    i
+                )));
+            }
+        }
+
+        // Total output amount must not exceed total_supply
+        let output_total: u64 = tx
+            .outputs
+            .iter()
+            .try_fold(0u64, |acc, o| acc.checked_add(o.amount))
+            .ok_or(ValidationError::AmountOverflow {
+                context: "MintAsset output total".to_string(),
+            })?;
+        if output_total > total_supply {
+            return Err(ValidationError::InvalidMintAsset(format!(
+                "output total {} exceeds supply cap {}",
+                output_total, total_supply
+            )));
+        }
+
+        // All outputs must be FungibleAsset with the same asset_id
+        for (i, output) in tx.outputs.iter().enumerate() {
+            if let Some((id, _, _)) = output.fungible_asset_metadata() {
+                if id != asset_id {
+                    return Err(ValidationError::InvalidMintAsset(format!(
+                        "output {} has wrong asset_id",
+                        i
+                    )));
+                }
+            } else {
+                return Err(ValidationError::InvalidMintAsset(format!(
+                    "output {} has invalid asset metadata",
+                    i
+                )));
+            }
+        }
+    }
+
+    // ── BurnAsset input validation ─────────────────────────────────────
+    // When burning fungible assets, verify all inputs share the same asset_id
+    // and all outputs (change) use the same asset_id.
+    if tx.tx_type == TxType::BurnAsset {
+        let first_input = &tx.inputs[0];
+        let first_utxo = utxo_provider
+            .get_utxo(&first_input.prev_tx_hash, first_input.output_index)
+            .ok_or(ValidationError::OutputNotFound {
+                tx_hash: first_input.prev_tx_hash,
+                output_index: first_input.output_index,
+            })?;
+        let (asset_id, _, _) = first_utxo.output.fungible_asset_metadata().ok_or(
+            ValidationError::InvalidBurnAsset("first input is not a FungibleAsset".to_string()),
+        )?;
+
+        for (i, input) in tx.inputs.iter().skip(1).enumerate() {
+            let utxo = utxo_provider
+                .get_utxo(&input.prev_tx_hash, input.output_index)
+                .ok_or(ValidationError::OutputNotFound {
+                    tx_hash: input.prev_tx_hash,
+                    output_index: input.output_index,
+                })?;
+            if let Some((id, _, _)) = utxo.output.fungible_asset_metadata() {
+                if id != asset_id {
+                    return Err(ValidationError::InvalidBurnAsset(format!(
+                        "input {} has different asset_id",
+                        i + 1
+                    )));
+                }
+            } else {
+                return Err(ValidationError::InvalidBurnAsset(format!(
+                    "input {} is not a FungibleAsset",
+                    i + 1
+                )));
+            }
+        }
+
+        for (i, output) in tx.outputs.iter().enumerate() {
+            if let Some((id, _, _)) = output.fungible_asset_metadata() {
+                if id != asset_id {
+                    return Err(ValidationError::InvalidBurnAsset(format!(
+                        "output {} has wrong asset_id",
+                        i
+                    )));
+                }
+            } else {
+                return Err(ValidationError::InvalidBurnAsset(format!(
+                    "output {} has invalid asset metadata",
+                    i
+                )));
             }
         }
     }

@@ -665,7 +665,7 @@ mod tests {
             is_coinbase: false,
             is_epoch_reward: false,
         };
-        utxo_set.insert(outpoint, entry);
+        utxo_set.insert(outpoint, entry).unwrap();
         (utxo_set, tx_hash, pubkey_hash)
     }
 
@@ -795,15 +795,17 @@ mod tests {
         for i in 0..2u8 {
             let tx_hash = crypto::hash::hash(&[i, 1, 2, 3]);
             let outpoint = Outpoint::new(tx_hash, 0);
-            utxo_set.insert(
-                outpoint,
-                UtxoEntry {
-                    output: Output::normal(50_000, pubkey_hash),
-                    height: 1,
-                    is_coinbase: false,
-                    is_epoch_reward: false,
-                },
-            );
+            utxo_set
+                .insert(
+                    outpoint,
+                    UtxoEntry {
+                        output: Output::normal(50_000, pubkey_hash),
+                        height: 1,
+                        is_coinbase: false,
+                        is_epoch_reward: false,
+                    },
+                )
+                .unwrap();
             let tx = simple_transfer(tx_hash, 50_000, 5_000, pubkey_hash);
             mempool.add_transaction(tx, &utxo_set, 100).unwrap();
         }
@@ -827,15 +829,17 @@ mod tests {
         // Create parent UTXO (confirmed)
         let mut utxo_set = UtxoSet::new();
         let parent_funding = crypto::hash::hash(b"parent_fund");
-        utxo_set.insert(
-            Outpoint::new(parent_funding, 0),
-            UtxoEntry {
-                output: Output::normal(100_000, pubkey_hash),
-                height: 1,
-                is_coinbase: false,
-                is_epoch_reward: false,
-            },
-        );
+        utxo_set
+            .insert(
+                Outpoint::new(parent_funding, 0),
+                UtxoEntry {
+                    output: Output::normal(100_000, pubkey_hash),
+                    height: 1,
+                    is_coinbase: false,
+                    is_epoch_reward: false,
+                },
+            )
+            .unwrap();
 
         // Parent tx: low fee (fee = 100)
         let parent_tx = Transaction::new_transfer(
