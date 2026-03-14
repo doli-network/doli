@@ -48,11 +48,19 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 
 | What | Where |
 |------|-------|
-| **apply_block()** | `bins/node/src/node.rs:~3470` |
-| **try_produce_block()** | `bins/node/src/node.rs:~4649` |
-| **calculate_epoch_rewards()** | `bins/node/src/node.rs:~5993` |
-| **rollback_one_block()** | `bins/node/src/node.rs:~6492` |
-| **genesis phase end** | `bins/node/src/node.rs:~6129` |
+| **Node struct + getters** | `bins/node/src/node/mod.rs` |
+| **Node::new()** | `bins/node/src/node/init.rs` |
+| **run(), start_network(), start_rpc()** | `bins/node/src/node/startup.rs` |
+| **run_event_loop(), handle_network_event()** | `bins/node/src/node/event_loop.rs` |
+| **handle_new_block(), execute_reorg()** | `bins/node/src/node/block_handling.rs` |
+| **fork recovery (9 functions)** | `bins/node/src/node/fork_recovery.rs` |
+| **apply_block()** | `bins/node/src/node/apply_block.rs` |
+| **try_produce_block()** | `bins/node/src/node/production.rs` |
+| **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
+| **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
+| **rollback_one_block(), resolve_shallow_fork()** | `bins/node/src/node/rollback.rs` |
+| **run_periodic_tasks()** | `bins/node/src/node/periodic.rs` |
+| **genesis producer derivation** | `bins/node/src/node/genesis.rs` |
 | Constants | `crates/core/src/consensus.rs` |
 | Config/env | `crates/core/src/network_params.rs` |
 | Scheduler | `crates/core/src/scheduler.rs` |
