@@ -333,11 +333,12 @@ pub struct SyncManager {
     /// Last time we received a block via gossip (for gossip activity watchdog)
     last_block_received_via_gossip: Option<Instant>,
     /// Gossip inactivity timeout in seconds (default 180s = 3 minutes)
+    /// Retained for RPC configurability; not checked in can_produce() with full-mesh gossip.
+    #[allow(dead_code)]
     gossip_activity_timeout_secs: u64,
-    /// Maximum slots to produce solo without receiving any peer block via gossip.
-    /// After this many slots (slot_duration * N seconds of silence while we're the tip),
-    /// production pauses to avoid building a long orphan chain in isolation.
-    /// Default: 5 slots (50s at 10s/slot).
+    /// Maximum seconds to produce solo without receiving any peer block via gossip.
+    /// Retained for RPC configurability; not checked in can_produce() with full-mesh gossip.
+    #[allow(dead_code)]
     max_solo_production_secs: u64,
 
     // === SYNC FAILURE TRACKING (P0 #4) ===
@@ -1024,88 +1025,12 @@ impl SyncManager {
             };
         }
 
-        // Layer 6: Peer synchronization check - too far BEHIND
-        //
-        // IMPORTANT: Only compare SLOTS, not heights. Heights are unreliable because
-        // forked nodes accumulate inflated block counts (height > slot). A single
-        // forked peer with height=200 would block honest nodes at height=158.
-        // Slots are time-based and can't be inflated by forks.
-        //
-        // GUARD: Skip this check when local_height >= best_peer_height.
-        // When peers are still syncing (height=0) they report valid best_slot from
-        // their clock, creating a false "behind" signal. A node whose height is at
-        // or ahead of every peer is definitionally NOT behind the network —
-        // its local_slot is only stale because it stopped producing, and it can't
-        // produce because this layer blocks it, creating a deadlock.
-        let best_peer_slot = self.best_peer_slot();
+        // Layer 6/6.5/7: REMOVED — with full-mesh gossip (mesh_n = total_peers - 1),
+        // all blocks propagate in 1 hop. Slot-diff and height-lag checks were
+        // compensating for multi-hop propagation delays that no longer exist.
+        // Forks are detected by Layer 8/9 (hash-based), not by lag heuristics.
 
-        // Only check if we have peer data
-        if !self.peers.is_empty() && best_peer_slot > 0 {
-            let slot_diff = best_peer_slot.saturating_sub(self.local_slot);
-
-            if slot_diff > self.max_slots_behind {
-                let best_peer_height = self.best_peer_height();
-
-                // Guard: If we're at or ahead of all peers by height, slot lag
-                // is a stale artifact — we ARE the tip, just haven't produced
-                // recently. Don't block; let production advance local_slot.
-                if self.local_height >= best_peer_height {
-                    info!(
-                        "[CAN_PRODUCE] Layer6: slot_diff={} exceeds max={}, but local_height={} >= peer_height={} - allowing",
-                        slot_diff, self.max_slots_behind, self.local_height, best_peer_height
-                    );
-                } else {
-                    return ProductionAuthorization::BlockedBehindPeers {
-                        local_height: self.local_height,
-                        peer_height: best_peer_height,
-                        height_diff: best_peer_height.saturating_sub(self.local_height),
-                    };
-                }
-            }
-        }
-
-        // Layer 6.5: Height lag check — block production when behind by >= 2 blocks.
-        //
-        // If we know peers have a higher height, producing from our stale state
-        // creates a competing block that forks the chain. This is the #1 cause of
-        // fork-then-snap-sync on nodes under I/O contention (ai2 testnet pattern).
-        //
-        // Unlike slot-based Layer 6, height lag is reliable for BEHIND detection:
-        // a forked node can inflate its own height, but a behind node's height is
-        // definitionally lower than the canonical chain. Threshold of 2 allows
-        // normal 1-block propagation delay without blocking.
-        let best_peer_height = self.best_peer_height();
-        if !self.peers.is_empty() && best_peer_height > 0 {
-            let height_lag = best_peer_height.saturating_sub(self.local_height);
-            if height_lag >= 2 {
-                info!(
-                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} (must catch up before producing)",
-                    self.local_height, best_peer_height, height_lag
-                );
-                return ProductionAuthorization::BlockedBehindPeers {
-                    local_height: self.local_height,
-                    peer_height: best_peer_height,
-                    height_diff: height_lag,
-                };
-            }
-        }
-
-        // Layer 7: REMOVED — Satoshi principle: always extend your best chain.
-        //  Fork detection via AheadOfPeers caused chain deadlock (2026-02-25).
-        //  When the tip node's peers are syncing behind, AheadOfPeers blocks
-        //  production, which prevents peers from catching up, creating a
-        //  permanent deadlock where nobody produces.
-        //  Forks are resolved by: (1) longest chain reorg, (2) sync failures (Layer 8),
-        //  (3) chain mismatch detection (Layer 9).
-        info!(
-            "[CAN_PRODUCE] Layer7: SKIPPED (removed) — peers={} best_peer={} local={} ahead={}",
-            self.peers.len(),
-            best_peer_height,
-            self.local_height,
-            self.local_height.saturating_sub(best_peer_height)
-        );
-
-        // Layer 9: Chain Hash Verification — INFORMATIONAL ONLY
+        // Layer 8: Sync failure detection
         //
         // When our chain has diverged from peers:
         // - GetHeaders requests return empty (peer doesn't have our tip as ancestor)
@@ -1206,62 +1131,11 @@ impl SyncManager {
             }
         }
 
-        // Layer 10: Gossip Activity Watchdog (P0 #3)
-        //
-        // If we have peers but haven't received ANY blocks via gossip for a long time,
-        // we are likely isolated (e.g., in a "ping-only" partition).
-        // Exceptions:
-        // - No peers connected (handled by MinPeers check)
-        // - Initial bootstrap (handled by BootstrapGate)
-        // - No peer is ahead of us: gossip silence is expected when WE are the tip.
-        //   Without this exception, all nodes deadlock: nobody produces → no gossip
-        //   → watchdog blocks everyone → permanent halt.
-        if !self.peers.is_empty() && best_peer_height > self.local_height {
-            let last_gossip = self
-                .last_block_received_via_gossip
-                .unwrap_or(Instant::now());
-            let elapsed = last_gossip.elapsed();
-
-            if elapsed.as_secs() > self.gossip_activity_timeout_secs {
-                warn!(
-                    "FORK DETECTION: No gossip activity for {}s (timeout {}) with {} peers (peer_h={} > local_h={}) - blocking production",
-                    elapsed.as_secs(), self.gossip_activity_timeout_secs, self.peers.len(),
-                    best_peer_height, self.local_height
-                );
-                return ProductionAuthorization::BlockedNoGossipActivity {
-                    seconds_since_gossip: elapsed.as_secs(),
-                    peer_count: self.peers.len(),
-                };
-            }
-        }
-
-        // Layer 10.5: Solo production circuit breaker
-        //
-        // Complement to Layer 10: If WE are the tip (local_height >= best_peer_height),
-        // gossip silence is expected — Layer 10 allows it. But if gossip has been silent
-        // for max_solo_production_secs (default 50s = 5 slots), we're likely building
-        // an orphan chain in isolation. Pause to prevent long parallel forks.
-        //
-        // Exception: at genesis (height <= 1) — first blocks legitimately have no gossip.
-        if self.local_height > 1 && self.local_height >= best_peer_height {
-            let last_gossip = self
-                .last_block_received_via_gossip
-                .unwrap_or(Instant::now());
-            let silence_secs = last_gossip.elapsed().as_secs();
-
-            if silence_secs > self.max_solo_production_secs {
-                warn!(
-                    "CIRCUIT BREAKER: Produced solo for {}s (limit {}s) with no gossip blocks received. \
-                     Pausing production to avoid building orphan chain. local_h={} peer_h={}",
-                    silence_secs, self.max_solo_production_secs,
-                    self.local_height, best_peer_height
-                );
-                return ProductionAuthorization::BlockedNoGossipActivity {
-                    seconds_since_gossip: silence_secs,
-                    peer_count: self.peers.len(),
-                };
-            }
-        }
+        // Layer 10/10.5: REMOVED — gossip activity watchdog and solo production
+        // circuit breaker were compensating for incomplete mesh propagation.
+        // With full-mesh gossip, gossip silence means the network is idle (no
+        // blocks to propagate), not that we're partitioned. Partitions are
+        // detected by Layer 5.5 (min peers) and Layer 9 (hash minority).
 
         // Layer 11: Finality conflict check
         // If we have a finalized block, ensure our chain doesn't conflict with it.
