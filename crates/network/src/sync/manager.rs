@@ -3315,6 +3315,33 @@ impl SyncManager {
         }
     }
 
+    /// Pick the best snap sync vote group (largest with >= 2 peers).
+    /// Returns (state_root, Vec<(peer_id, block_hash, height)>) or None.
+    fn pick_best_snap_group(&self) -> Option<(Hash, Vec<(PeerId, Hash, u64)>)> {
+        let votes = if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+            votes
+        } else {
+            return None;
+        };
+
+        let mut groups: HashMap<Hash, Vec<(PeerId, Hash, u64)>> = HashMap::new();
+        for (pid, bhash, bheight, sroot) in votes {
+            groups
+                .entry(*sroot)
+                .or_default()
+                .push((*pid, *bhash, *bheight));
+        }
+
+        // Find the largest group with >= 2 peers (break ties by highest height)
+        groups
+            .into_iter()
+            .filter(|(_, peers)| peers.len() >= 2)
+            .max_by_key(|(_, peers)| {
+                let max_h = peers.iter().map(|(_, _, h)| *h).max().unwrap_or(0);
+                (peers.len(), max_h)
+            })
+    }
+
     /// Fall back from snap sync to normal header-first sync.
     /// Increments the snap attempt counter; after 3 failures, snap sync is skipped.
     pub fn snap_fallback_to_normal(&mut self) {
@@ -3404,11 +3431,42 @@ impl SyncManager {
         match &self.state {
             SyncState::SnapCollectingRoots { started_at, .. } => {
                 if started_at.elapsed() > self.snap_root_timeout {
-                    warn!(
-                        "[SNAP_SYNC] State root collection timed out after {:?} — falling back",
-                        self.snap_root_timeout
-                    );
-                    self.snap_fallback_to_normal();
+                    // Quorum wasn't reached in time. Instead of falling back to
+                    // header-first (which always fails for nodes at h=0 or on a
+                    // fork), pick the largest vote group with >= 2 peers.
+                    // Safety: the node independently verifies the snapshot via
+                    // compute_state_root_from_bytes() after download — quorum
+                    // only selects WHICH chain to download, not trust.
+                    if let Some((best_root, best_peers)) = self.pick_best_snap_group() {
+                        let (download_peer, download_hash, best_height) = best_peers
+                            .iter()
+                            .max_by_key(|(_, _, h)| *h)
+                            .copied()
+                            .unwrap();
+                        let alternate_peers: Vec<(PeerId, Hash, u64)> = best_peers
+                            .iter()
+                            .filter(|(pid, _, _)| *pid != download_peer)
+                            .copied()
+                            .collect();
+                        warn!(
+                            "[SNAP_SYNC] No quorum after {:?} — using best group: {} peers agree on root={:.16}, downloading from {} (height={})",
+                            self.snap_root_timeout, best_peers.len(), best_root, download_peer, best_height
+                        );
+                        self.state = SyncState::SnapDownloading {
+                            target_hash: download_hash,
+                            target_height: best_height,
+                            quorum_root: best_root,
+                            peer: download_peer,
+                            alternate_peers,
+                            started_at: Instant::now(),
+                        };
+                    } else {
+                        warn!(
+                            "[SNAP_SYNC] State root collection timed out after {:?} — no group with >= 2 peers, falling back",
+                            self.snap_root_timeout
+                        );
+                        self.snap_fallback_to_normal();
+                    }
                 }
             }
             SyncState::SnapDownloading {
