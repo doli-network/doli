@@ -5122,27 +5122,13 @@ impl Node {
                 peer_height,
                 height_diff,
             } => {
-                // Being behind peers is normal during active sync — NOT fork evidence.
-                // Only count as fork-like if sync is Idle (stuck, not making progress).
-                let sync_idle = {
-                    let sync = self.sync_manager.read().await;
-                    !sync.state().is_syncing()
-                };
-                if sync_idle {
-                    self.consecutive_fork_blocks += 1;
-                    warn!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (consecutive={}) sync=Idle",
-                        current_slot, local_height, peer_height, height_diff, self.consecutive_fork_blocks
-                    );
-                    self.maybe_auto_resync(current_slot).await;
-                } else {
-                    // Sync is active — reset fork counter, let sync finish.
-                    self.consecutive_fork_blocks = 0;
-                    info!(
-                        "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (sync active, not fork)",
-                        current_slot, local_height, peer_height, height_diff
-                    );
-                }
+                // Being behind peers is NOT fork evidence — it's normal sync lag.
+                // Never increment fork counter or trigger rollback from BehindPeers.
+                // Sync manager handles catching up; rollbacks only make it worse.
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: BehindPeers local_h={} peer_h={} diff={} (not fork, sync will catch up)",
+                    current_slot, local_height, peer_height, height_diff
+                );
                 return Ok(());
             }
             ProductionAuthorization::BlockedAheadOfPeers {
