@@ -4,6 +4,38 @@
 > Generated from code as the single source of truth on 2026-03-15.
 > Updated 2026-03-15 with 14 spec drifts fixed. Verified against commit `1248d3e`.
 
+## Index
+
+- [Quick Summary](#quick-summary)
+- [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+  - [Module Dependency Flow](#module-dependency-flow-bottom--top)
+  - [System Boundaries](#system-boundaries)
+  - [The Three States](#the-three-states)
+  - [Time Structure](#time-structure)
+  - [18 Transaction Types](#18-transaction-types)
+  - [9 Output Types](#9-output-types)
+- [Key Workflows](#key-workflows)
+  - [Block Production](#block-production)
+  - [Block Application (Critical Path)](#block-application-critical-path)
+  - [Epoch Reward Distribution](#epoch-reward-distribution)
+  - [Producer Selection (Anti-Grinding)](#producer-selection-anti-grinding)
+  - [Rollback (Undo-Based)](#rollback-undo-based)
+- [Data Storage](#data-storage)
+  - [Data Flow](#data-flow)
+  - [How Data Enters](#how-data-enters)
+  - [How Data Exits](#how-data-exits)
+- [Consensus Parameters](#consensus-parameters-from-code)
+- [Recent Additions](#recent-additions-since-last-analysis)
+  - [Internal Code Inconsistencies](#internal-code-inconsistencies-code-vs-code)
+- [Key Architectural Patterns](#key-architectural-patterns)
+- [Complexity & Risk Map](#complexity--risk-map)
+- [Technical Debt](#technical-debt)
+- [Convention Breaks](#convention-breaks)
+- [The Template: Adding a New Transaction Type](#the-template-adding-a-new-transaction-type)
+- [Onboarding Reading Order](#onboarding-reading-order)
+- [Key Files](#key-files)
+
 ## Quick Summary
 
 DOLI is a Proof-of-Time (PoT) blockchain implemented as a Rust workspace (edition 2021, MSRV 1.85, v3.7.2). It uses a UTXO model with deterministic bond-weighted round-robin scheduling (10-second slots, 1-hour epochs), pooled epoch reward distribution with attestation-based qualification, and 18 transaction types spanning transfers, producer lifecycle, governance, NFTs, fungible assets, payment channels, and cross-chain atomic swaps. The system comprises 11 library crates and 2 binaries (`doli-node` and `doli` CLI), with RocksDB for persistence, libp2p for networking, and an embedded auto-update system with community veto power.
