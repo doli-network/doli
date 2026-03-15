@@ -27,10 +27,10 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 ## If You Touch
 
 - `apply_block()` → verify both UTXO paths match, check rollback paths mirror it, test state root convergence. Producer mutations (Register, AddBond, Exit, Slash, Withdrawal, Delegation) are DEFERRED to epoch boundary — never mid-epoch except epoch 0. Maintainer changes are immediate.
-- rewards → check `calculate_epoch_rewards()` in `node.rs:~5993` AND `calculate_expected_epoch_rewards()` in `validation.rs` (currently disconnected — see MEMORY.md Open Items).
+- rewards → check `calculate_epoch_rewards()` in `rewards.rs` AND `calculate_expected_epoch_rewards()` in `validation/rewards_legacy.rs` (currently disconnected — see MEMORY.md Open Items).
 - storage serialization → every node diverges if canonical encoding changes. Requires chain reset. See `→ snapshot.rs`.
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
-- rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
+- rollback → undo-based rollback is first option (`rollback.rs`). Rebuild-from-genesis is fallback for blocks without undo data.
 - Bond `extra_data` → CLI sends `creation_slot=0`, node stamps real slot at apply. Never trust raw tx `extra_data`.
 
 ## Law
@@ -54,29 +54,28 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | **run_event_loop(), handle_network_event()** | `bins/node/src/node/event_loop.rs` |
 | **handle_new_block(), execute_reorg()** | `bins/node/src/node/block_handling.rs` |
 | **fork recovery (9 functions)** | `bins/node/src/node/fork_recovery.rs` |
-| **apply_block()** | `bins/node/src/node/apply_block.rs` |
-| **try_produce_block()** | `bins/node/src/node/production.rs` |
+| **apply_block()** | `bins/node/src/node/apply_block/` |
+| **try_produce_block()** | `bins/node/src/node/production/` |
 | **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
 | **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
 | **rollback_one_block(), resolve_shallow_fork()** | `bins/node/src/node/rollback.rs` |
 | **run_periodic_tasks()** | `bins/node/src/node/periodic.rs` |
 | **genesis producer derivation** | `bins/node/src/node/genesis.rs` |
-| Constants | `crates/core/src/consensus.rs` |
-| Config/env | `crates/core/src/network_params.rs` |
-| Scheduler | `crates/core/src/scheduler.rs` |
-| Validation (5,698 lines) | `crates/core/src/validation.rs` |
-| Transactions (16 types) | `crates/core/src/transaction.rs` |
+| Constants | `crates/core/src/consensus/` |
+| Config/env | `crates/core/src/network_params/` |
+| Scheduler | `crates/core/src/consensus/selection.rs` |
+| Validation | `crates/core/src/validation/` |
+| Transactions (18 types) | `crates/core/src/transaction/` |
 | Block + BlockBuilder | `crates/core/src/block.rs` |
 | Chainspec + genesis hash | `crates/core/src/chainspec.rs` |
-| Network/gossip | `crates/network/src/service.rs` |
-| Sync state machine | `crates/network/src/sync/manager.rs` |
+| Network/gossip | `crates/network/src/service/` |
+| Sync state machine | `crates/network/src/sync/manager/` |
 | Block storage | `crates/storage/src/block_store.rs` |
-| State DB (RocksDB) | `crates/storage/src/state_db.rs` |
-| UTXO set (in-memory) | `crates/storage/src/utxo.rs` |
-| UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
-| ProducerSet + bonds | `crates/storage/src/producer.rs` |
+| State DB (RocksDB) | `crates/storage/src/state_db/` |
+| UTXO set (in-memory) | `crates/storage/src/utxo/` |
+| ProducerSet + bonds | `crates/storage/src/producer/` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (31) | `crates/rpc/src/methods.rs` |
+| RPC methods (31) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update system | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |

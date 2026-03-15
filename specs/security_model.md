@@ -188,23 +188,23 @@ DOLI uses two VDF types for different purposes:
 
 #### 3.3.1 Block/Heartbeat VDF: Hash-Chain
 
-**Construction**: Iterated hash chain using SHA-256 with dynamic calibration
+**Construction**: Iterated hash chain using BLAKE3
 
 **Security Assumptions**:
 - Sequentiality of hash chain computation (no parallel speedup)
-- Preimage resistance of SHA-256
+- Preimage resistance of BLAKE3
 
 **Parameters**:
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Target Time | ~700ms | Heartbeat proof of presence |
-| Iterations | ~10,000,000 | Calibrated to achieve ~700ms |
+| Target Time | ~55ms | Heartbeat proof of presence |
+| Iterations | ~800,000 | Fixed per network (`heartbeat_vdf_iterations`) |
 
 **Properties**:
 - **Sequentiality**: Cannot be parallelized
 - **Verification**: Recompute the entire chain (O(T))
 - **Unique output**: Given input, only one valid output exists
-- **Fixed iterations**: Currently uses network-specific fixed iterations (~10M for mainnet/testnet)
+- **Fixed iterations**: 800,000 for all networks (mainnet/testnet/devnet)
 
 **Note**: A dynamic calibration module exists in the codebase but is not currently
 used for block production. Block iterations are fixed per network configuration.
@@ -214,27 +214,29 @@ used for block production. Block iterations are fixed per network configuration.
 2. Calibration bounds prevent extreme values (min: 100K, max: 100M iterations)
 3. Combined with Epoch Lookahead for grinding prevention
 
-#### 3.3.2 Registration VDF: Wesolowski Class Groups
+#### 3.3.2 Registration VDF: Hash-Chain
 
-**Construction**: Wesolowski VDF over imaginary quadratic class groups with 2048-bit discriminant
+**Construction**: Iterated BLAKE3 hash chain (same as block VDF, higher iteration count)
 
 **Security Assumptions**:
-- Unknown group order (requires factoring 2048-bit discriminant)
-- Hardness of computing discrete logs in class groups
-- Low-order assumption for proof security
+- Sequentiality of hash chain computation (no parallel speedup)
+- Preimage resistance of BLAKE3
 
 **Parameters**:
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| T_REGISTER_BASE | 600M iterations (~10 min) | Anti-Sybil protection |
-| T_REGISTER_CAP | 86.4B iterations (~24 hrs) | Prevents network closure |
-| Discriminant bits | 2048 | ~112-bit security |
+| T_REGISTER_BASE | 5,000,000 iterations (~30s) | Anti-Sybil protection |
+| T_REGISTER_CAP | 5,000,000 iterations | Fixed (not dynamically scaled) |
 
 **Properties**:
-- **Sequentiality**: x^(2^t) requires ~t squarings in unknown-order group
-- **Efficient verification**: O(log t) using Wesolowski proof
-- **ASIC resistance**: No known efficient ASIC design for class group operations
-- **Dynamic scaling**: Difficulty increases with registered producer count
+- **Sequentiality**: Cannot be parallelized
+- **Verification**: Recompute the entire chain (O(T))
+- **Unique output**: Given input, only one valid output exists
+- **Devnet exemption**: VDF validation skipped on devnet for fast testing
+
+**Note**: A Wesolowski VDF crate (`doli-vdf`) exists in the codebase using class groups
+with GMP, but is NOT used in production. Both block and registration VDFs use the
+iterated BLAKE3 hash-chain implementation in `doli-core/src/tpop/heartbeat.rs`.
 
 ### 3.4 Cryptographic Constants
 
@@ -272,7 +274,7 @@ The bond serves multiple security functions:
 | Accountability | Bond at risk for misbehavior |
 | Long-term alignment | Lock duration creates stake in network success |
 
-**Bond Unit**: Fixed at 10 DOLI per bond across all eras (never decreases). Producers can stake 1-10,000 bonds (10-100,000 DOLI). Bonds are stored as Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`) with `creation_slot` in `extra_data`.
+**Bond Unit**: Fixed at 10 DOLI per bond across all eras (never decreases). Producers can stake 1-3,000 bonds (10-30,000 DOLI). Bonds are stored as Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`) with `creation_slot` in `extra_data`.
 
 ### 4.2 Slashing Conditions
 
@@ -348,19 +350,20 @@ The chain selection rule (slot > height > hash) ensures:
 - Favors honest chains that follow timing rules
 - Provides unique canonical chain at any point
 
-### 5.2 Producer Selection
+### 5.2 Producer Selection (Deterministic Round-Robin)
 
 ```
-seed = HASH("SEED" || prev_hash || slot)
-score(producer) = HASH(seed || producer_pubkey)
-selected = argmin(score)
+sorted_producers = sort by pubkey (deterministic)
+total_tickets = sum of all bond counts (each bond = 1 ticket)
+ticket_index = slot % total_tickets
+selected = find producer whose cumulative ticket range contains ticket_index
 ```
 
 **Security Properties**:
-- **Unpredictable until prev_block finalized**: Seed depends on prev_hash
-- **Deterministic**: All honest nodes compute same result
-- **Uniform distribution**: HASH output is uniformly distributed
-- **Unbiasable**: Producer cannot influence their score for future slots
+- **Independent of prev_hash**: Selection uses `slot % total_tickets`, NOT hash-based lottery. This prevents grinding attacks entirely (Epoch Lookahead).
+- **Deterministic**: All honest nodes compute same result for any slot
+- **Proportional**: Each producer gets exactly their bond proportion of slots
+- **Unbiasable**: Attacker cannot influence future selection by manipulating block content
 
 ### 5.3 Timing Constraints
 
@@ -527,15 +530,14 @@ pub fn hash(&self) -> Hash {
 
 #### 6.2.1 Anti-Sybil Protection (Registration)
 
-Producer registration uses Wesolowski VDF over class groups for Sybil resistance.
+Producer registration uses a hash-chain VDF (iterated BLAKE3) for Sybil resistance.
 
 **Implementation Details**:
 
 | Parameter | Mainnet/Testnet | Devnet |
 |-----------|-----------------|--------|
-| Base Iterations (T_REGISTER_BASE) | 600,000,000 (~10 min) | 5,000,000 (~5s) |
-| Maximum (T_REGISTER_CAP) | 86,400,000,000 (~24 hrs) | - |
-| Discriminant Bits | 2048 | 256 |
+| Base Iterations (T_REGISTER_BASE) | 5,000,000 (~30s) | Skipped (no VDF validation) |
+| Maximum (T_REGISTER_CAP) | 5,000,000 | Skipped |
 
 **Chained Hash System** (`RegistrationData` in `transaction.rs`):
 ```rust
@@ -582,16 +584,16 @@ pub fn block_input(
 
 | Parameter | Value | Effect |
 |-----------|-------|--------|
-| T_BLOCK | 10,000,000 iterations | ~700ms computation |
-| Slot Duration | 10 seconds | ~9.3 seconds for grinding |
-| Max Attempts | ~14 per slot | 9300ms / 700ms ≈ 13.3 |
+| T_BLOCK | 800,000 iterations | ~55ms computation |
+| Slot Duration | 10 seconds | Full slot for production |
+| Fallback Window | 2,000ms per rank | 5 ranks fill entire slot |
 
 **Why Grinding Is Impractical**:
-1. **prev_hash Dependency**: Unknown until previous block is finalized
-2. **Limited Time**: Only ~9.3 seconds between prev_block and slot end
-3. **Sequential VDF**: Each attempt takes ~700ms, cannot parallelize
-4. **Max 14 Attempts**: Insufficient for meaningful statistical advantage
-5. **No Compounding**: Winning slot N provides no advantage for N+1
+1. **Epoch Lookahead**: Selection uses `slot % total_tickets`, independent of `prev_hash`
+2. **prev_hash in VDF input**: VDF output changes with different block content, but cannot influence selection
+3. **Sequential VDF**: Each attempt takes ~55ms, cannot parallelize
+4. **No Compounding**: Winning slot N provides no advantage for N+1
+5. **Deterministic rotation**: Producer schedule is fixed for the entire epoch at epoch boundary
 
 ### 6.3 Constant-Time Operations
 
@@ -762,7 +764,7 @@ Since `prev_hash = HASH(block_N-1)`, an attacker who produces block N-1 could:
 
 | Factor | Value | Impact |
 |--------|-------|--------|
-| VDF computation time | ~700ms | Fast heartbeat with Epoch Lookahead |
+| VDF computation time | ~55ms | Fast heartbeat with Epoch Lookahead |
 | Must win slot N-1 first | Probabilistic | Attacker needs prior slot control |
 | Benefit | Better position in N | Only probabilistic advantage |
 | Detection | None | Attack is indistinguishable from honest behavior |
@@ -903,7 +905,7 @@ A bug bounty program will be established after mainnet launch. Categories:
 
 ---
 
-*Last updated: 2026-02-02*
+*Last updated: 2026-03-15*
 *DOLI Security Team*
 # DOLI Security Checklist
 

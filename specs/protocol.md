@@ -87,7 +87,7 @@ message = HASH(tx_without_signatures)
 
 ### 2.3 Verifiable Delay Function (Hash-Chain VDF)
 
-Construction: **Iterated SHA-256 hash chain**
+Construction: **Iterated BLAKE3 hash chain**
 
 DOLI uses a hash-chain VDF with dynamic calibration to maintain consistent timing across all networks:
 
@@ -122,9 +122,12 @@ transaction = {
     type:       uint32,          // 0 = transfer, 1 = registration, 2 = exit,
                                  // 3 = claim_reward (DEPRECATED), 4 = claim_bond,
                                  // 5 = slash_producer, 6 = coinbase, 7 = add_bond,
-                                 // 8 = request_withdrawal, 9 = claim_withdrawal,
-                                 // 10 = epoch_reward (DEPRECATED),
-                                 // 11 = remove_maintainer, 12 = add_maintainer
+                                 // 8 = request_withdrawal, 9 = claim_withdrawal (tombstone),
+                                 // 10 = epoch_reward,
+                                 // 11 = remove_maintainer, 12 = add_maintainer,
+                                 // 13 = delegate_bond, 14 = revoke_delegation,
+                                 // 15 = protocol_activation,
+                                 // 17 = mint_asset, 18 = burn_asset (16 reserved)
     inputs:     input[],
     outputs:    output[],
     extra_data: bytes            // Type-specific data
@@ -295,12 +298,11 @@ evidence_data = {
 
 Burns 100% of producer's bond. This is the only slashable offense because it's the only one that cannot happen by accident.
 
-### 3.11 Epoch Reward Transaction (DEPRECATED)
+### 3.11 Epoch Reward Transaction
 
-> **Note**: This transaction type is deprecated per whitepaper compliance.
-> Block rewards are now distributed directly via coinbase transactions to block producers.
-
-The following documentation is kept for historical reference:
+Epoch rewards are the **primary reward mechanism**. At each epoch boundary (every 360 blocks),
+rewards are automatically distributed to qualified producers based on weighted presence
+(attestation qualification + bond count). This is NOT deprecated — it is the active reward path.
 
 Epoch rewards are distributed at epoch boundaries using a fully deterministic,
 BlockStore-derived model. All calculations derive from on-chain data with zero local state.
@@ -639,6 +641,82 @@ pub fn is_protocol_active(required: u32, active: u32) -> bool {
 }
 ```
 
+### 3.18 DelegateBond Transaction
+
+Delegates bond weight to a Tier 1/2 validator. The delegate receives the staker's weight for selection purposes. Rewards are split: delegate keeps 10% (`DELEGATE_REWARD_PCT`), stakers receive 90% (`STAKER_REWARD_PCT`).
+
+```
+delegate_bond_tx = {
+    version: 1,
+    type: 13,                    // TxType::DelegateBond
+    inputs: [{...}],             // Must spend from delegator's address
+    outputs: [{...}],            // Change output
+    extra_data: {
+        delegate_pubkey: 32 bytes,  // Public key of the delegate (Tier 1/2 validator)
+        bond_count: uint32          // Number of bonds to delegate
+    }
+}
+```
+
+**Validation rules:**
+- Delegator must be a registered producer with sufficient bonds
+- Delegate must be a registered, active Tier 1/2 validator
+- Bond count must be > 0 and <= delegator's available (undelegated) bonds
+
+### 3.19 RevokeDelegation Transaction
+
+Revokes a previous delegation. Subject to `DELEGATION_UNBONDING_SLOTS` delay (~7 days / 60,480 slots).
+
+```
+revoke_delegation_tx = {
+    version: 1,
+    type: 14,                    // TxType::RevokeDelegation
+    inputs: [{...}],             // Must spend from delegator's address
+    outputs: [{...}],            // Change output
+    extra_data: {
+        delegate_pubkey: 32 bytes   // Public key of the delegate to revoke from
+    }
+}
+```
+
+### 3.20 MintAsset Transaction
+
+Mints new units of a fungible asset. Issuer-only — requires matching `asset_id`.
+
+```
+mint_asset_tx = {
+    version: 1,
+    type: 17,                    // TxType::MintAsset
+    inputs: [{...}],             // Must spend from issuer's address
+    outputs: [{
+        output_type: 7,          // OutputType::FungibleAsset
+        amount: uint64,
+        pubkey_hash: 32 bytes,   // Recipient
+        lock_until: 0,
+        extra_data: {
+            asset_id: 32 bytes   // Asset identifier
+        }
+    }],
+    extra_data: {}
+}
+```
+
+### 3.21 BurnAsset Transaction
+
+Burns units of a fungible asset. Holder burns own tokens, provably destroyed.
+
+```
+burn_asset_tx = {
+    version: 1,
+    type: 18,                    // TxType::BurnAsset
+    inputs: [{...}],             // Must spend FungibleAsset UTXOs
+    outputs: [{...}],            // Optional change output (remaining asset balance)
+    extra_data: {}
+}
+```
+
+**Note**: TxType 16 is reserved and not used.
+
 ---
 
 ## 4. Blocks
@@ -863,13 +941,13 @@ def selected_producer(slot, active_producers, bond_snapshot):
 
 ### 5.4.1 Bond Stacking
 
-Producers can stake multiple bonds (1-100) to increase their block production share:
+Producers can stake multiple bonds (1-3,000) to increase their block production share:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | BOND_UNIT | 10 DOLI | 1 bond = 10 DOLI (1,000,000,000 base units) |
 | MIN_BONDS | 1 | Minimum to register |
-| MAX_BONDS | 10,000 | Anti-whale cap (100,000 DOLI max) |
+| MAX_BONDS | 3,000 | Anti-whale cap (30,000 DOLI max) |
 
 **FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
 This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
