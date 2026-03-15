@@ -3,6 +3,10 @@
 > Code is the single source of truth. Everything else is a projection.
 > When a doc drifts from code, the doc is wrong — register hotfix in MEMORY.md.
 
+## Deep Context
+
+For deeper understanding, consult the index of `docs/understanding/PROJECT-UNDERSTANDING.md`. Read only the sections relevant to your task — consume the full document only in critical moments (e.g., consensus changes, cross-cutting refactors, incident recovery).
+
 ## Mental Model
 
 DOLI is a PoS blockchain. Understand this flow or you will break things:
@@ -43,7 +47,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 6. Ops: `→ doli-ops skill` — read FIRST before any infra task.
 7. Consensus-critical deploys: simultaneous across all nodes. NEVER rolling.
 8. Learning protocol: before following any doc/skill, check MEMORY.md hotfixes. Doc drifts from code? Register hotfix, fix the doc. A mistake not fixed at the source repeats forever.
-9. Docs sync: after every code modification or new feature, update the relevant `specs/` and `docs/` files for the affected domain. Keep `specs/SPECS.md` and `docs/DOCS.md` indexes current — any new spec or doc file MUST be added to its index.
+9. Docs sync: after every code modification or new feature, update the relevant `specs/` and `docs/` files for the affected domain. Keep `specs/SPECS.md` and `docs/DOCS.md` indexes current — any new spec or doc file MUST be added to its index. `docs/understanding/PROJECT-UNDERSTANDING.md` MUST also be kept in sync — update affected sections when code changes alter architecture, workflows, parameters, or risk areas.
 
 ## Map — Code
 
