@@ -46,6 +46,23 @@ impl SyncManager {
         // Applying a block means the chain is advancing — reset fork counters.
         self.consecutive_empty_headers = 0;
 
+        // PGD-001: Track stable blocks after resync completion.
+        // After 5 consecutive block applications with no active resync,
+        // reset the exponential backoff counter. This prevents the counter
+        // from ratcheting up indefinitely (the root cause of the 2026-03-15 halt).
+        if !self.resync_in_progress && self.consecutive_resync_count > 0 {
+            self.blocks_since_resync_completed += 1;
+            if self.blocks_since_resync_completed >= 5 {
+                info!(
+                    "Resync counter reset: {} stable blocks applied after resync — \
+                     clearing consecutive_resync_count (was {})",
+                    self.blocks_since_resync_completed, self.consecutive_resync_count
+                );
+                self.reset_resync_counter();
+                self.blocks_since_resync_completed = 0;
+            }
+        }
+
         // Post-recovery grace: clear after 10 blocks applied since recovery.
         if self.post_recovery_grace {
             self.blocks_applied_since_recovery += 1;

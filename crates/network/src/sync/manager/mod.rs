@@ -489,6 +489,16 @@ pub struct SyncManager {
     /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
     /// Reset when gap closes to < 2.
     behind_since: Option<Instant>,
+
+    // === PRODUCTION GATE DEADLOCK FIX (PGD) FIELDS ===
+    /// Hard cap on effective grace period after resync (seconds).
+    /// Prevents exponential backoff from disabling producers for 480s+.
+    /// Default: 60s (6 slots at 10s/slot).
+    max_grace_cap_secs: u64,
+    /// Blocks applied since the last resync completed.
+    /// When this reaches 5, `reset_resync_counter()` is called to clear the
+    /// exponential backoff. Only incremented when `resync_in_progress` is false.
+    blocks_since_resync_completed: u32,
     /// Height offset detection: tracks (gap, timestamp) when we first observed
     /// a stable gap while blocks are still being applied. If the gap stays
     /// constant for >120s despite blocks being applied, the node has a corrupted
@@ -580,6 +590,9 @@ impl SyncManager {
             blocks_applied_since_recovery: 0,
             behind_since: None,
             stable_gap_since: None,
+            // PGD fix defaults
+            max_grace_cap_secs: 60,
+            blocks_since_resync_completed: 0,
         }
     }
 
@@ -634,13 +647,13 @@ impl SyncManager {
                         );
                     }
 
-                    // If we've been stable for a while, reset the consecutive resync counter
-                    // This prevents exponential backoff from persisting after recovery
+                    // Reset blocks-since-resync counter so block_applied_with_weight()
+                    // can track stable operation and call reset_resync_counter() after
+                    // 5 consecutive successful block applications.
                     if was_syncing && self.consecutive_resync_count > 0 {
-                        // We'll reset the counter after the grace period in can_produce()
-                        // For now, just note that sync completed successfully
+                        self.blocks_since_resync_completed = 0;
                         debug!(
-                            "Sync completed after {} consecutive resyncs",
+                            "Sync completed after {} consecutive resyncs — tracking stable blocks for counter reset",
                             self.consecutive_resync_count
                         );
                     }

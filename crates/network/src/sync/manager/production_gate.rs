@@ -156,13 +156,24 @@ impl SyncManager {
         }
 
         // Layer 5: Post-resync grace period (absorbs former Layer 5.6 first-sync grace)
+        // PGD-002: effective_grace is capped at max_grace_cap_secs to prevent
+        // exponential backoff from disabling producers for 480s+ (the root cause
+        // of the 2026-03-15 network halt).
         if let Some(completed) = self.last_resync_completed {
             let elapsed = completed.elapsed().as_secs();
-            let effective_grace = if self.consecutive_resync_count > 1 {
+            let uncapped_grace = if self.consecutive_resync_count > 1 {
                 self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4))
             } else {
                 self.resync_grace_period_secs
             };
+            let effective_grace = uncapped_grace.min(self.max_grace_cap_secs);
+
+            if uncapped_grace > self.max_grace_cap_secs {
+                debug!(
+                    "PGD-002: Grace period capped from {}s to {}s (resync #{})",
+                    uncapped_grace, effective_grace, self.consecutive_resync_count
+                );
+            }
 
             if elapsed < effective_grace {
                 return ProductionAuthorization::BlockedResync {
@@ -464,6 +475,15 @@ impl SyncManager {
         // for max_solo_production_secs (default 50s = 5 slots), we're likely building
         // an orphan chain in isolation. Pause to prevent long parallel forks.
         //
+        // PGD-003/PGD-004: NETWORK STALL RECOVERY — When the circuit breaker fires
+        // but ALL peers report the SAME height as us, this is "entire network stalled"
+        // not "solo orphan chain." Every earlier layer (8, 8.5, 9) has already verified
+        // hash agreement, so by the time we reach here with all peers at our height,
+        // the chain is healthy — just stalled. Allow production to break the deadlock.
+        // If the block propagates, gossip resumes naturally. If not (genuine isolation
+        // despite peer agreement), the circuit breaker fires again in 50s — limiting
+        // orphan growth to 1 block per 50s cycle.
+        //
         // Exception: at genesis (height <= 1) — first blocks legitimately have no gossip.
         if self.local_height > 1 && self.local_height >= best_peer_height {
             let last_gossip = self
@@ -472,16 +492,42 @@ impl SyncManager {
             let silence_secs = last_gossip.elapsed().as_secs();
 
             if silence_secs > self.max_solo_production_secs {
-                warn!(
-                    "CIRCUIT BREAKER: Produced solo for {}s (limit {}s) with no gossip blocks received. \
-                     Pausing production to avoid building orphan chain. local_h={} peer_h={}",
-                    silence_secs, self.max_solo_production_secs,
-                    self.local_height, best_peer_height
-                );
-                return ProductionAuthorization::BlockedNoGossipActivity {
-                    seconds_since_gossip: silence_secs,
-                    peer_count: self.peers.len(),
-                };
+                // PGD-003: Check for network stall — all peers at our exact height.
+                let all_peers_at_our_height = !self.peers.is_empty()
+                    && self
+                        .peers
+                        .values()
+                        .all(|p| p.best_height == self.local_height);
+
+                if all_peers_at_our_height {
+                    // Network stall: everyone stuck at the same height, nobody producing.
+                    // Allow production and reset gossip timer. If the block propagates,
+                    // peers advance, gossip resumes, and the circuit breaker stays clear.
+                    // If it doesn't propagate, silence grows back to 50s and we retry —
+                    // limiting orphan growth to 1 block per 50s.
+                    info!(
+                        "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
+                         network stall detected, allowing production (silence={}s)",
+                        self.peers.len(),
+                        self.local_height,
+                        silence_secs
+                    );
+                    self.last_block_received_via_gossip = Some(Instant::now());
+                    // Fall through to Authorized
+                } else {
+                    // Not all peers at our height — genuine isolation or mixed state.
+                    // Block until gossip resumes or state is reset.
+                    warn!(
+                        "CIRCUIT BREAKER: Produced solo for {}s (limit {}s) with no gossip blocks received. \
+                         Pausing production to avoid building orphan chain. local_h={} peer_h={}",
+                        silence_secs, self.max_solo_production_secs,
+                        self.local_height, best_peer_height
+                    );
+                    return ProductionAuthorization::BlockedNoGossipActivity {
+                        seconds_since_gossip: silence_secs,
+                        peer_count: self.peers.len(),
+                    };
+                }
             }
         }
 
@@ -536,14 +582,16 @@ impl SyncManager {
         info!("Resync started - production blocked");
         self.resync_in_progress = true;
         self.consecutive_resync_count += 1;
+        self.blocks_since_resync_completed = 0; // PGD-001: reset stable block counter
 
-        // Log exponential backoff info
+        // Log exponential backoff info (PGD-002: capped at max_grace_cap_secs)
         if self.consecutive_resync_count > 1 {
-            let effective_grace =
+            let uncapped =
                 self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4));
+            let effective_grace = uncapped.min(self.max_grace_cap_secs);
             warn!(
-                "Consecutive resync #{} - grace period extended to {}s",
-                self.consecutive_resync_count, effective_grace
+                "Consecutive resync #{} - grace period {}s (capped from {}s)",
+                self.consecutive_resync_count, effective_grace, uncapped
             );
         }
     }

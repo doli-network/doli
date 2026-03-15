@@ -702,6 +702,285 @@ fn test_stale_response_discarded_when_no_pending_request() {
     assert_eq!(manager.consecutive_empty_headers, 1);
 }
 
+// =========================================================================
+// Production Gate Deadlock (PGD) — Reproduction & Fix Verification Tests
+// REQ-PGD-001 through REQ-PGD-008
+// =========================================================================
+
+/// REQ-PGD-001: reset_resync_counter() is dead code — counter never resets.
+/// This test FAILS before the fix (counter stays at 5 after stable blocks).
+#[test]
+fn test_pgd001_resync_counter_resets_after_stable_blocks() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Simulate 5 consecutive resyncs
+    for _ in 0..5 {
+        manager.start_resync();
+        manager.complete_resync();
+    }
+    assert_eq!(
+        manager.consecutive_resync_count(),
+        5,
+        "Setup: should have 5 consecutive resyncs"
+    );
+
+    // Now simulate stable operation: apply 5 canonical blocks
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 100, Hash::ZERO, 100);
+    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+
+    for i in 1..=5 {
+        let hash = crypto::hash::hash(format!("stable_block_{}", i).as_bytes());
+        manager.block_applied_with_weight(hash, i, i as u32, 1, Hash::ZERO);
+    }
+
+    // After 5 stable blocks, counter should reset to 0
+    assert_eq!(
+        manager.consecutive_resync_count(),
+        0,
+        "REQ-PGD-001: consecutive_resync_count must reset to 0 after 5 stable blocks"
+    );
+}
+
+/// REQ-PGD-001: Counter must NOT reset during active resync
+#[test]
+fn test_pgd001_counter_not_reset_during_active_resync() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Resync 3 times, then start a 4th (still in progress)
+    for _ in 0..3 {
+        manager.start_resync();
+        manager.complete_resync();
+    }
+    manager.start_resync(); // 4th resync in progress
+    assert!(manager.is_resync_in_progress());
+    assert_eq!(manager.consecutive_resync_count(), 4);
+
+    // Apply blocks during active resync — counter should NOT reset
+    for i in 1..=5 {
+        let hash = crypto::hash::hash(format!("sync_block_{}", i).as_bytes());
+        manager.block_applied_with_weight(hash, i, i as u32, 1, Hash::ZERO);
+    }
+
+    assert!(
+        manager.consecutive_resync_count() > 0,
+        "Counter must NOT reset while resync is in progress"
+    );
+}
+
+/// REQ-PGD-002: Grace period must be capped at 60s
+#[test]
+fn test_pgd002_grace_period_capped() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Set local state FIRST (before adding peers, to prevent sync trigger)
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    let local_hash = crypto::hash::hash(b"block_100");
+    manager.local_hash = local_hash;
+
+    // Set up bootstrap + peers at SAME height (no sync trigger)
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 100, local_hash, 100);
+    manager.add_peer(peer2, 100, local_hash, 100);
+
+    // Simulate 5 resyncs → uncapped would be 30 * 2^4 = 480s
+    for _ in 0..5 {
+        manager.start_resync();
+        manager.complete_resync();
+    }
+
+    // Set last_resync_completed to just now (grace period active)
+    manager.last_resync_completed = Some(Instant::now());
+
+    // Check can_produce — should be blocked, but remaining grace should be ≤ 60s, NOT 480s
+    let result = manager.can_produce(101);
+    match result {
+        ProductionAuthorization::BlockedResync {
+            grace_remaining_secs,
+        } => {
+            assert!(
+                grace_remaining_secs <= 60,
+                "REQ-PGD-002: Grace period must be capped at 60s, got {}s (uncapped would be 480s)",
+                grace_remaining_secs
+            );
+        }
+        other => panic!("Expected BlockedResync with capped grace, got: {:?}", other),
+    }
+}
+
+/// REQ-PGD-003: Circuit breaker bypassed when all peers agree on same height (network stall).
+/// Before the fix: circuit breaker fires and locks permanently. After: bypasses to break stall.
+#[test]
+fn test_pgd003_circuit_breaker_bypassed_when_peers_agree() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 100, 2 peers at height 100, all agree
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let same_hash = crypto::hash::hash(b"canonical_block_100");
+    manager.local_hash = same_hash;
+    manager.add_peer(peer1, 100, same_hash, 100);
+    manager.add_peer(peer2, 100, same_hash, 100);
+
+    // Gossip silent for 60s (exceeds 50s threshold). All peers at same height.
+    // Before fix: BlockedNoGossipActivity (permanent deadlock).
+    // After fix: Authorized (network stall bypass).
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(60));
+
+    let result = manager.can_produce(101);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "REQ-PGD-003: Circuit breaker must bypass when all peers at same height (network stall)"
+    );
+}
+
+/// REQ-PGD-003: Circuit breaker still fires when peers are at DIFFERENT heights (genuine isolation)
+#[test]
+fn test_pgd003_circuit_breaker_fires_when_peers_at_different_heights() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 100, peers at different heights (99 and 100)
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let same_hash = crypto::hash::hash(b"block_100");
+    manager.local_hash = same_hash;
+    manager.add_peer(peer1, 100, same_hash, 100);
+    manager.add_peer(peer2, 99, Hash::ZERO, 99); // Peer at different height
+
+    // Gossip silent for 60s. Not all peers at our height → genuine isolation.
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(60));
+
+    let result = manager.can_produce(101);
+    assert!(
+        matches!(
+            result,
+            ProductionAuthorization::BlockedNoGossipActivity { .. }
+        ),
+        "Circuit breaker must fire when peers are at different heights, got: {:?}",
+        result
+    );
+}
+
+/// REQ-PGD-003: Circuit breaker must NOT recover when node is behind peers
+#[test]
+fn test_pgd003_circuit_breaker_stays_locked_when_behind() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 100, peers at height 105
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 105, Hash::ZERO, 105);
+    manager.add_peer(peer2, 105, Hash::ZERO, 105);
+
+    // Trigger gossip silence
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
+
+    // Should be blocked (peers ahead, not a network stall)
+    let result = manager.can_produce(101);
+    assert!(
+        !matches!(result, ProductionAuthorization::Authorized),
+        "Circuit breaker must NOT recover when node is behind peers, got: {:?}",
+        result
+    );
+}
+
+/// REQ-PGD-003/RC-2: Demonstrate the current deadlock — circuit breaker counter only grows.
+/// This test documents the bug: silence_secs at 100s, 200s, 300s all blocked, no recovery.
+#[test]
+fn test_pgd_circuit_breaker_deadlock_demonstrated() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let same_hash = crypto::hash::hash(b"block100");
+    manager.local_hash = same_hash;
+    manager.add_peer(peer1, 100, same_hash, 100);
+    manager.add_peer(peer2, 100, same_hash, 100);
+
+    // All peers agree. Simulate growing gossip silence.
+    for silence in [60, 120, 300, 600, 2500] {
+        manager.last_block_received_via_gossip =
+            Some(Instant::now() - Duration::from_secs(silence));
+        let result = manager.can_produce(101);
+
+        // After fix: at least ONE of these should return Authorized (recovery retry)
+        // Before fix: ALL return BlockedNoGossipActivity (permanent deadlock)
+        if silence >= 90 {
+            // 90s = 60s initial + 30s retry period
+            assert_eq!(
+                result,
+                ProductionAuthorization::Authorized,
+                "REQ-PGD-003: At {}s silence with peers agreeing, circuit breaker must allow retry",
+                silence
+            );
+            break; // First recovery attempt should succeed
+        }
+    }
+}
+
+/// REQ-PGD-008: Cross-layer interaction — resync grace + circuit breaker cascade
+#[test]
+fn test_pgd008_cross_layer_deadlock_scenario() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+    manager.local_height = 37406;
+    manager.local_slot = 38874;
+
+    let same_hash = crypto::hash::hash(b"last_block_37406");
+    manager.local_hash = same_hash;
+
+    // Add 11 peers all at same height (perfect consensus)
+    for _ in 0..11 {
+        let peer = PeerId::random();
+        manager.add_peer(peer, 37406, same_hash, 38874);
+    }
+
+    // Simulate gossip silence (no blocks for 70s)
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(70));
+
+    let result = manager.can_produce(38875);
+
+    // With 11 peers all at same height, the chain is healthy but stalled.
+    // The circuit breaker must NOT permanently lock production in this case.
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "REQ-PGD-008: With 11 peers at identical height/hash (network stall), production must be allowed. \
+         Got {:?} — this is the exact deadlock that killed testnet at h=37406.",
+        result
+    );
+}
+
 #[test]
 fn test_full_concurrent_scenario_no_corruption() {
     // Integration test: simulates the exact production scenario that caused the bug.
