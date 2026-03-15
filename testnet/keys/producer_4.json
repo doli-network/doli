@@ -1,0 +1,14 @@
+{
+  "name": "n4",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "467922a412378a0d2a91f3b9ad71550b54bff035",
+      "public_key": "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
+      "private_key": "5468da5875757e9fb207abeb3d7fa44e92f8f8c2a4d35a99ce0f9114e3c576bb",
+      "label": "primary",
+      "bls_private_key": "3545ba291339d3daaa18061725e853cf706b18276f120c06a8dcad8344a08220",
+      "bls_public_key": "a3d6eecbba54f60315dda968d4f4d387025b14a57adb0da0ec6d59bcb21a886cdcf6c762bdc2dba0976ca5e39ec21f6d"
+    }
+  ]
+}
