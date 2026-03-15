@@ -9,7 +9,7 @@ This is a local-only devnet environment. All nodes run on `127.0.0.1`.
 No remote servers (ai1/ai2/ai3), no GitHub access, no explorer API.
 
 - **Devnet data**: `~/.doli/devnet/` (keys, chainspec, data, logs, pids)
-- **Mainnet data** (copied from ai1): `~/mainnet/` (keys, seed, bin)
+- **Testnet data**: `~/testnet/` (keys, seed, n1-n12, logs)
 - **Binaries**: Built from source — `cargo build --release` → `target/release/doli-node`, `target/release/doli`
 - **RPC ports**: Devnet uses 28500-28550 (seed=28500, producers=28501+)
 - **P2P ports**: 50300+ (seed=50300)
@@ -88,19 +88,19 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Block archiver | `crates/storage/src/archiver.rs` |
 | CLI | `bins/cli/src/` |
 
-## Map — Scripts (local mainnet)
+## Map — Scripts (local testnet)
 
 | Task | Script |
 |------|--------|
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
-| Start/stop/status | `scripts/mainnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
-| Tail logs | `scripts/mainnet.sh logs [seed\|n1\|...]` |
+| Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
+| Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
 
-**Port layout** (matches remote servers):
+**Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000
 - N{i}: P2P=30300+i, RPC=8500+i, Metrics=9000+i
 
-**Directories**: `~/mainnet/` — keys, seed, n1-n12, logs, bin
+**Directories**: `~/testnet/` — keys, seed, n1-n12, logs, bin
 
 ## Map — Scripts (local devnet)
 

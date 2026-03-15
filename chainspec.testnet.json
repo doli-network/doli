@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773525629,
-    "message": "Local genesis 2026-03-14",
+    "timestamp": 1773613657,
+    "message": "Testnet genesis 2026-03-15",
     "initial_reward": 100000000
   },
   "consensus": {

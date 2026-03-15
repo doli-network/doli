@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install-local-services.sh — Create launchd plists for local mainnet nodes
+# install-local-services.sh — Create launchd plists for local testnet nodes
 #
 # Creates LaunchAgents for:
-#   - doli-mainnet-seed (relay + archive)
-#   - doli-mainnet-n1 through doli-mainnet-n12 (producers)
+#   - doli-testnet-seed (relay + archive)
+#   - doli-testnet-n1 through doli-testnet-n12 (producers)
 #
 # Usage:
 #   scripts/install-local-services.sh          # Install all (seed + n1-n12)
@@ -11,15 +11,15 @@
 #   scripts/install-local-services.sh 1 5      # Install n1 through n5
 #
 # Management:
-#   scripts/mainnet.sh start|stop|status [seed|n1|n2|...|all]
+#   scripts/testnet.sh start|stop|status [seed|n1|n2|...|all]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MAINNET_DIR="$HOME/mainnet"
+TESTNET_DIR="$HOME/testnet"
 NODE_BIN="$PROJECT_ROOT/target/release/doli-node"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="$MAINNET_DIR/logs"
+LOG_DIR="$TESTNET_DIR/logs"
 
 # Port scheme (matches remote servers)
 SEED_P2P=30300  SEED_RPC=8500  SEED_METRICS=9000
@@ -39,8 +39,8 @@ if [[ ! -f "$NODE_BIN" ]]; then
 fi
 
 install_seed() {
-  local plist="$LAUNCH_AGENTS_DIR/network.doli.mainnet-seed.plist"
-  mkdir -p "$MAINNET_DIR/seed/data" "$MAINNET_DIR/seed/blocks"
+  local plist="$LAUNCH_AGENTS_DIR/network.doli.testnet-seed.plist"
+  mkdir -p "$TESTNET_DIR/seed/data" "$TESTNET_DIR/seed/blocks"
 
   cat > "$plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -48,12 +48,14 @@ install_seed() {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>network.doli.mainnet-seed</string>
+    <string>network.doli.testnet-seed</string>
     <key>ProgramArguments</key>
     <array>
         <string>${NODE_BIN}</string>
+        <string>--network</string>
+        <string>testnet</string>
         <string>--data-dir</string>
-        <string>${MAINNET_DIR}/seed/data</string>
+        <string>${TESTNET_DIR}/seed/data</string>
         <string>run</string>
         <string>--relay-server</string>
         <string>--p2p-port</string>
@@ -63,7 +65,7 @@ install_seed() {
         <string>--metrics-port</string>
         <string>${SEED_METRICS}</string>
         <string>--archive-to</string>
-        <string>${MAINNET_DIR}/seed/blocks</string>
+        <string>${TESTNET_DIR}/seed/blocks</string>
         <string>--yes</string>
         <string>--no-snap-sync</string>
     </array>
@@ -94,9 +96,9 @@ install_producer() {
   local p2p=$((SEED_P2P + n))
   local rpc=$((SEED_RPC + n))
   local metrics=$((SEED_METRICS + n))
-  local plist="$LAUNCH_AGENTS_DIR/network.doli.mainnet-n${n}.plist"
+  local plist="$LAUNCH_AGENTS_DIR/network.doli.testnet-n${n}.plist"
 
-  mkdir -p "$MAINNET_DIR/n${n}/data"
+  mkdir -p "$TESTNET_DIR/n${n}/data"
 
   cat > "$plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -104,18 +106,18 @@ install_producer() {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>network.doli.mainnet-n${n}</string>
+    <string>network.doli.testnet-n${n}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${NODE_BIN}</string>
         <string>--network</string>
-        <string>mainnet</string>
+        <string>testnet</string>
         <string>--data-dir</string>
-        <string>${MAINNET_DIR}/n${n}/data</string>
+        <string>${TESTNET_DIR}/n${n}/data</string>
         <string>run</string>
         <string>--producer</string>
         <string>--producer-key</string>
-        <string>${MAINNET_DIR}/keys/producer_${n}.json</string>
+        <string>${TESTNET_DIR}/keys/producer_${n}.json</string>
         <string>--p2p-port</string>
         <string>${p2p}</string>
         <string>--rpc-port</string>
@@ -170,7 +172,7 @@ fi
 
 echo ""
 echo -e "${GREEN}Done.${NC} Manage with:"
-echo "  scripts/mainnet.sh start|stop|status [seed|n1|n2|...|all]"
+echo "  scripts/testnet.sh start|stop|status [seed|n1|n2|...|all]"
 echo ""
 echo "Port layout:"
 echo "  Seed: P2P=${SEED_P2P}  RPC=${SEED_RPC}  Metrics=${SEED_METRICS}"

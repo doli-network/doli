@@ -23,8 +23,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 NODE_BIN="$PROJECT_ROOT/target/release/doli-node"
-MAINNET_DIR="$HOME/mainnet"
-KEYS_DIR="$MAINNET_DIR/keys"
+TESTNET_DIR="$HOME/testnet"
+KEYS_DIR="$TESTNET_DIR/keys"
 
 # Port bases (seed=30300/8500/9000, N1-N12 use +1 to +12)
 # Stress nodes start at +13
@@ -69,9 +69,9 @@ do_start() {
   local batch=$1
   local range=($(batch_range $batch))
   local start=${range[0]} end=${range[1]}
-  local batch_dir="$MAINNET_DIR/nodes${batch}"
+  local batch_dir="$TESTNET_DIR/nodes${batch}"
   local pid_file="$batch_dir/pids"
-  local log_dir="$MAINNET_DIR/logs/nodes${batch}"
+  local log_dir="$TESTNET_DIR/logs/nodes${batch}"
   local bootstrap=$(bootstrap_for_batch $batch)
 
   mkdir -p "$log_dir"
@@ -109,7 +109,7 @@ do_start() {
     local node_log="$log_dir/n${i}.log"
     (
       $NODE_BIN \
-        --network mainnet \
+        --network testnet \
         --data-dir "$data_dir" \
         run \
         --producer \
@@ -139,7 +139,7 @@ do_start() {
 
 do_stop() {
   local batch=$1
-  local pid_file="$MAINNET_DIR/nodes${batch}/pids"
+  local pid_file="$TESTNET_DIR/nodes${batch}/pids"
 
   if [[ ! -f "$pid_file" ]]; then
     echo "Batch $batch: no pid file"
@@ -178,7 +178,7 @@ do_status() {
   for batch in $(seq 1 10); do
     local range=($(batch_range $batch))
     local start=${range[0]} end=${range[1]}
-    local pid_file="$MAINNET_DIR/nodes${batch}/pids"
+    local pid_file="$TESTNET_DIR/nodes${batch}/pids"
     local running=0 dead=0
 
     if [[ -f "$pid_file" ]]; then
@@ -210,7 +210,7 @@ do_status() {
 
   echo ""
   echo "Total stress nodes running: $total_running / 500"
-  echo "Plus genesis nodes (seed + N1-N12): check scripts/mainnet.sh status"
+  echo "Plus genesis nodes (seed + N1-N12): check scripts/testnet.sh status"
 }
 
 ACTION="${1:-status}"

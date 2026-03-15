@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="$HOME/mainnet/logs"
+LOG_DIR="$HOME/testnet/logs"
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
 

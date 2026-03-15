@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# mainnet.sh — Manage local mainnet launchd services
+# testnet.sh — Manage local testnet launchd services
 #
 # Usage:
-#   scripts/mainnet.sh start [seed|n1|n2|...|all]   Start services
-#   scripts/mainnet.sh stop [seed|n1|n2|...|all]     Stop services
-#   scripts/mainnet.sh restart [seed|n1|n2|...|all]  Restart services
-#   scripts/mainnet.sh status                        Show all service status
-#   scripts/mainnet.sh logs [seed|n1|n2|...]         Tail logs
+#   scripts/testnet.sh start [seed|n1|n2|...|all]   Start services
+#   scripts/testnet.sh stop [seed|n1|n2|...|all]     Stop services
+#   scripts/testnet.sh restart [seed|n1|n2|...|all]  Restart services
+#   scripts/testnet.sh status                        Show all service status
+#   scripts/testnet.sh logs [seed|n1|n2|...]         Tail logs
 #
 # Examples:
-#   scripts/mainnet.sh start all          # Start seed + all producers
-#   scripts/mainnet.sh start seed         # Start seed only
-#   scripts/mainnet.sh start n1 n5 n12    # Start specific producers
-#   scripts/mainnet.sh stop all           # Stop everything
-#   scripts/mainnet.sh status             # Show status of all services
-#   scripts/mainnet.sh logs n1            # Tail n1 log
+#   scripts/testnet.sh start all          # Start seed + all producers
+#   scripts/testnet.sh start seed         # Start seed only
+#   scripts/testnet.sh start n1 n5 n12    # Start specific producers
+#   scripts/testnet.sh stop all           # Stop everything
+#   scripts/testnet.sh status             # Show status of all services
+#   scripts/testnet.sh logs n1            # Tail n1 log
 set -euo pipefail
 
-MAINNET_DIR="$HOME/mainnet"
-LOG_DIR="$MAINNET_DIR/logs"
-LABEL_PREFIX="network.doli.mainnet"
+TESTNET_DIR="$HOME/testnet"
+LOG_DIR="$TESTNET_DIR/logs"
+LABEL_PREFIX="network.doli.testnet"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -238,7 +238,7 @@ do_logs() {
 
   case "$target" in
     seed) logfile="$LOG_DIR/seed.log" ;;
-    swap) logfile="$MAINNET_DIR/doli-swap-bot/stdout.log" ;;
+    swap) logfile="$TESTNET_DIR/doli-swap-bot/stdout.log" ;;
     explorer) logfile="$LOG_DIR/explorer.log" ;;
     n[0-9]|n[0-9][0-9]) logfile="$LOG_DIR/${target}.log" ;;
     [0-9]|[0-9][0-9]) logfile="$LOG_DIR/n${target}.log" ;;
