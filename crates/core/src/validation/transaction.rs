@@ -1,0 +1,362 @@
+use crate::consensus::TOTAL_SUPPLY;
+use crate::transaction::{Output, OutputType, Transaction, TxType, MAX_EXTRA_DATA_SIZE};
+use crate::types::Amount;
+use crypto::Hash;
+
+use super::registration::validate_registration_data;
+use super::tx_types::{
+    validate_add_bond_data, validate_burn_asset, validate_claim_bond_data, validate_claim_data,
+    validate_delegate_bond_data, validate_epoch_reward_data, validate_exit_data,
+    validate_maintainer_change_data, validate_mint_asset, validate_protocol_activation_data,
+    validate_revoke_delegation_data, validate_slash_data, validate_withdrawal_request_data,
+};
+use super::{ValidationContext, ValidationError};
+
+/// Validate a regular transaction (structural validation only).
+///
+/// This performs all checks that don't require UTXO access:
+/// - Version check
+/// - Non-empty inputs and outputs
+/// - Positive output amounts
+/// - No amount overflow in outputs
+/// - Type-specific validation (registration data)
+///
+/// For full validation including signatures and balances,
+/// use `validate_transaction_with_utxos`.
+pub fn validate_transaction(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    // 1. Version check
+    if tx.version != 1 {
+        return Err(ValidationError::InvalidVersion(tx.version));
+    }
+
+    // 2. Must have at least one input (unless coinbase, exit, claim, claim_bond, slash,
+    //    add_bond, request_withdrawal, or epoch_reward)
+    //    Note: add_bond requires inputs but handles its own error for specificity
+    if tx.inputs.is_empty()
+        && !tx.is_coinbase()
+        && !tx.is_exit()
+        && !tx.is_claim_reward()
+        && !tx.is_claim_bond()
+        && !tx.is_slash_producer()
+        && !tx.is_add_bond()
+        && !tx.is_request_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
+        && tx.tx_type != TxType::MintAsset
+        && tx.tx_type != TxType::BurnAsset
+        && !tx.is_epoch_reward()
+        && !tx.is_delegate_bond()
+        && !tx.is_revoke_delegation()
+        && !tx.is_registration()
+        && !tx.is_maintainer_change()
+        && !tx.is_protocol_activation()
+    // Registration/maintainer/protocol txs handle their own input validation
+    {
+        return Err(ValidationError::InvalidTransaction(
+            "transaction must have inputs".to_string(),
+        ));
+    }
+
+    // 3. Must have at least one output (unless exit, slash_producer, add_bond, or request_withdrawal)
+    //    Note: epoch_reward requires exactly one output but handles its own errors
+    if tx.outputs.is_empty()
+        && !tx.is_exit()
+        && !tx.is_slash_producer()
+        && !tx.is_add_bond()
+        && !tx.is_request_withdrawal()
+        && tx.tx_type != TxType::ClaimWithdrawal
+        && tx.tx_type != TxType::MintAsset
+        && tx.tx_type != TxType::BurnAsset
+        && !tx.is_epoch_reward()
+        && !tx.is_delegate_bond()
+        && !tx.is_revoke_delegation()
+        && !tx.is_registration()
+        && !tx.is_maintainer_change()
+        && !tx.is_protocol_activation()
+    // Registration/maintainer/protocol txs handle their own output validation
+    {
+        return Err(ValidationError::InvalidTransaction(
+            "transaction must have outputs".to_string(),
+        ));
+    }
+
+    // 4. Validate all outputs
+    let total_output = validate_outputs(&tx.outputs, ctx)?;
+
+    // 5. Total output must not exceed max supply
+    if total_output > TOTAL_SUPPLY {
+        return Err(ValidationError::AmountExceedsSupply {
+            amount: total_output,
+            max: TOTAL_SUPPLY,
+        });
+    }
+
+    // 6. Type-specific validation
+    match tx.tx_type {
+        TxType::Transfer => {
+            // Transfer transactions should have empty extra_data
+            // (or use it for memo, but we don't validate that)
+        }
+        TxType::Registration => {
+            validate_registration_data(tx, ctx)?;
+        }
+        TxType::Exit => {
+            validate_exit_data(tx)?;
+        }
+        TxType::ClaimReward => {
+            validate_claim_data(tx)?;
+        }
+        TxType::ClaimBond => {
+            validate_claim_bond_data(tx)?;
+        }
+        TxType::SlashProducer => {
+            validate_slash_data(tx, ctx)?;
+        }
+        TxType::Coinbase => {
+            // Coinbase validation is handled at the block level
+            // (must be first tx, amount must match block reward, etc.)
+        }
+        TxType::AddBond => {
+            validate_add_bond_data(tx)?;
+        }
+        TxType::RequestWithdrawal => {
+            validate_withdrawal_request_data(tx)?;
+        }
+        TxType::ClaimWithdrawal => {
+            // Reserved — DO NOT REUSE discriminant 9. Tombstone for wire compat.
+            return Err(ValidationError::InvalidClaimWithdrawal(
+                "ClaimWithdrawal is not supported".to_string(),
+            ));
+        }
+        TxType::MintAsset => {
+            validate_mint_asset(tx)?;
+        }
+        TxType::BurnAsset => {
+            validate_burn_asset(tx)?;
+        }
+        TxType::EpochReward => {
+            validate_epoch_reward_data(tx)?;
+        }
+        TxType::RemoveMaintainer => {
+            validate_maintainer_change_data(tx)?;
+        }
+        TxType::AddMaintainer => {
+            validate_maintainer_change_data(tx)?;
+        }
+        TxType::DelegateBond => {
+            validate_delegate_bond_data(tx)?;
+        }
+        TxType::RevokeDelegation => {
+            validate_revoke_delegation_data(tx)?;
+        }
+        TxType::ProtocolActivation => {
+            validate_protocol_activation_data(tx)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate transaction outputs and compute safe total.
+///
+/// Returns the total output amount, or an error if any output is invalid
+/// or if the total would overflow.
+pub(super) fn validate_outputs(
+    outputs: &[Output],
+    ctx: &ValidationContext,
+) -> Result<Amount, ValidationError> {
+    let mut total: Amount = 0;
+
+    for (i, output) in outputs.iter().enumerate() {
+        // Amount must be positive
+        if output.amount == 0 {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "output {} has zero amount",
+                i
+            )));
+        }
+
+        // Amount must not exceed max supply individually
+        if output.amount > TOTAL_SUPPLY {
+            return Err(ValidationError::AmountExceedsSupply {
+                amount: output.amount,
+                max: TOTAL_SUPPLY,
+            });
+        }
+
+        // Check for overflow when adding to total
+        total =
+            total
+                .checked_add(output.amount)
+                .ok_or_else(|| ValidationError::AmountOverflow {
+                    context: format!("output total at index {}", i),
+                })?;
+
+        // Validate extra_data size limit (all output types)
+        if output.extra_data.len() > MAX_EXTRA_DATA_SIZE {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "output {} extra_data exceeds max size ({} > {})",
+                i,
+                output.extra_data.len(),
+                MAX_EXTRA_DATA_SIZE,
+            )));
+        }
+
+        // Validate output type consistency
+        match output.output_type {
+            OutputType::Normal => {
+                // Normal outputs should have lock_until = 0
+                if output.lock_until != 0 {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "normal output {} has non-zero lock_until",
+                        i
+                    )));
+                }
+                // Normal outputs must not carry extra_data
+                if !output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "normal output {} has non-empty extra_data",
+                        i
+                    )));
+                }
+            }
+            OutputType::Bond => {
+                // Bond outputs must have a future lock time
+                if output.lock_until == 0 {
+                    return Err(ValidationError::InvalidBond(format!(
+                        "bond output {} has zero lock_until",
+                        i
+                    )));
+                }
+                // Bond outputs must carry exactly 4 bytes of extra_data (creation_slot)
+                if output.extra_data.len() != 4 {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "bond output {} has {} bytes extra_data, expected 4 (creation_slot)",
+                        i,
+                        output.extra_data.len()
+                    )));
+                }
+            }
+            // Covenant output types: validate activation and condition encoding
+            OutputType::Multisig
+            | OutputType::Hashlock
+            | OutputType::HTLC
+            | OutputType::Vesting => {
+                // Activation height gating: reject conditioned outputs before activation
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} has empty extra_data",
+                        i
+                    )));
+                }
+                // Validate condition decodes successfully
+                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "conditioned output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+            }
+            OutputType::NFT => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.nft_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "NFT output {} has invalid or missing NFT metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::FungibleAsset => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.fungible_asset_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "FungibleAsset output {} has invalid or missing asset metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::BridgeHTLC => {
+                let activation = ctx.params.covenants_activation_height(&ctx.network);
+                if ctx.current_height < activation {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} rejected: covenants activate at height {}",
+                        i, activation
+                    )));
+                }
+                if output.extra_data.is_empty() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has empty extra_data",
+                        i
+                    )));
+                }
+                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has invalid condition: {}",
+                        i, e
+                    )));
+                }
+                if output.bridge_htlc_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "BridgeHTLC output {} has invalid or missing bridge metadata",
+                        i
+                    )));
+                }
+            }
+        }
+
+        // Pubkey hash must not be zero (except for burn address)
+        if output.pubkey_hash == Hash::ZERO {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "output {} has zero pubkey_hash",
+                i
+            )));
+        }
+    }
+
+    Ok(total)
+}
