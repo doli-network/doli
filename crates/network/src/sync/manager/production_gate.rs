@@ -1,0 +1,904 @@
+//! Production gate — single source of truth for block production authorization
+//!
+//! Implements defense-in-depth with 11 layers of safety checks that ALL must pass
+//! before block production is authorized.
+
+use std::time::Instant;
+
+use libp2p::PeerId;
+use tracing::{debug, info, warn};
+
+use crypto::Hash;
+
+use super::{
+    ProductionAuthorization, SyncManager, MIN_PEERS_TIER1, MIN_PEERS_TIER2, MIN_PEERS_TIER3,
+};
+
+impl SyncManager {
+    // =========================================================================
+    // PRODUCTION GATE - Single source of truth for block production authorization
+    // =========================================================================
+
+    /// Check if block production is authorized - THE SINGLE SOURCE OF TRUTH
+    ///
+    /// This method implements defense-in-depth for production safety:
+    /// 1. Explicit block check (invariant violations, manual blocks)
+    /// 2. Resync-in-progress check
+    /// 3. Active sync check (downloading headers/bodies/processing)
+    /// 4. Post-resync grace period check
+    /// 5. Peer synchronization check (within N slots/heights)
+    ///
+    /// ALL checks must pass for production to be authorized.
+    pub fn can_produce(&mut self, current_slot: u32) -> ProductionAuthorization {
+        // === CHECKPOINT: Entry point with all key values ===
+        let best_peer_h = self.best_peer_height();
+        let best_peer_s = self.best_peer_slot();
+        info!(
+            "[CAN_PRODUCE] slot={} local_h={} local_s={} peer_h={} peer_s={} peers={} state={:?}",
+            current_slot,
+            self.local_height,
+            self.local_slot,
+            best_peer_h,
+            best_peer_s,
+            self.peers.len(),
+            self.state
+        );
+
+        // Layer 1: Explicit production block
+        if self.production_blocked {
+            return ProductionAuthorization::BlockedExplicit {
+                reason: self
+                    .production_block_reason
+                    .clone()
+                    .unwrap_or_else(|| "Unknown reason".to_string()),
+            };
+        }
+
+        // Layer 2: Resync in progress
+        if self.resync_in_progress {
+            return ProductionAuthorization::BlockedResync {
+                grace_remaining_secs: self.resync_grace_period_secs,
+            };
+        }
+
+        // Layer 2.5: Post-snap-sync canonical block gate
+        // After snap sync, the block store is empty — producing immediately would create
+        // a fork because there's no real parent block to build on. Wait until at least
+        // one canonical gossip block has been received and applied, proving we're on the
+        // canonical chain and giving the block store a real parent.
+        if self.awaiting_canonical_block {
+            return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
+        }
+
+        // Layer 3: Active sync in progress
+        if self.state.is_syncing() {
+            return ProductionAuthorization::BlockedSyncing;
+        }
+
+        // Layer 4: Bootstrap gate - CRITICAL for preventing isolated forks
+        //
+        // Defense in depth: We use is_in_bootstrap_phase() which DERIVES the bootstrap
+        // state from actual conditions (height == 0, lost peers, etc.) rather than
+        // relying on stored flags. This makes invalid states impossible.
+        //
+        // During bootstrap, ALL nodes start at height 0. If late-joining nodes only
+        // connect to other late-joining nodes (also at height 0), they'll think
+        // they're caught up and produce at height 1 - creating isolated forks.
+        //
+        // The fix: Wait until we have CREDIBLE EVIDENCE the network has advanced:
+        // - Either a block arrived via gossip (network_tip_slot > 0)
+        // - Or a peer reported height > 0
+        // - Or we ARE at height 0 and can legitimately produce the first block
+        //
+        // This prevents the scenario where late nodes produce competing genesis chains.
+        if self.is_in_bootstrap_phase() && self.has_connected_to_peer {
+            // Bootstrap phase detected (derived from state):
+            // - height == 0: We're at genesis, need to verify network state
+            // - peers empty after connecting: Lost all peers, need to re-establish
+            //
+            // We need evidence the network is real before producing
+
+            // Check 1: Have we received any peer status at all?
+            if self.first_peer_status_received.is_none() {
+                return ProductionAuthorization::BlockedBootstrap {
+                    reason: "Waiting for peer status response".to_string(),
+                };
+            }
+
+            // Check 2: If we lost all peers (height > 0 but peers empty), wait for reconnection.
+            // After peer_loss_timeout_secs, allow production to resume solo — the peer
+            // may be permanently down and halting the chain is worse than a temporary fork.
+            if self.local_height > 0 && self.peers.is_empty() {
+                let past_timeout = self
+                    .peers_lost_at
+                    .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
+                    .unwrap_or(false);
+                if !past_timeout {
+                    return ProductionAuthorization::BlockedBootstrap {
+                        reason: "Lost all peers - waiting for reconnection".to_string(),
+                    };
+                }
+                info!(
+                    "Peer loss timeout reached ({}s) — resuming solo production at height {}",
+                    self.peer_loss_timeout_secs, self.local_height
+                );
+            }
+
+            // Check 3: Have we seen any chain activity? (block via gossip OR peer with height > 0)
+            let has_chain_activity = self.network_tip_slot > 0
+                || self.network_tip_height > 0
+                || self.best_peer_height() > 0
+                || self.best_peer_slot() > 0;
+
+            if !has_chain_activity {
+                // All peers are at height 0 too - this could be:
+                // (A) True genesis - we're the first producer
+                // (B) Partition of late nodes - dangerous!
+                //
+                // To distinguish: Wait for the bootstrap grace period.
+                // If we're truly first, no harm in waiting a bit.
+                // If we're partitioned, waiting gives us time to connect to the real network.
+                if let Some(first_status) = self.first_peer_status_received {
+                    let elapsed = first_status.elapsed().as_secs();
+                    if elapsed < self.bootstrap_grace_period_secs {
+                        // Still in bootstrap window - wait longer for chain evidence
+                        return ProductionAuthorization::BlockedBootstrap {
+                            reason: format!(
+                                "All peers at height 0 - waiting for chain evidence ({}s/{}s)",
+                                elapsed, self.bootstrap_grace_period_secs
+                            ),
+                        };
+                    }
+                    // Grace period expired - if still no chain activity, we're probably first
+                    // Allow production
+                }
+            }
+        }
+
+        // Layer 5: Post-resync grace period (absorbs former Layer 5.6 first-sync grace)
+        if let Some(completed) = self.last_resync_completed {
+            let elapsed = completed.elapsed().as_secs();
+            let effective_grace = if self.consecutive_resync_count > 1 {
+                self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4))
+            } else {
+                self.resync_grace_period_secs
+            };
+
+            if elapsed < effective_grace {
+                return ProductionAuthorization::BlockedResync {
+                    grace_remaining_secs: effective_grace - elapsed,
+                };
+            }
+        }
+
+        // Layer 5.5: Minimum peer count check (echo chamber prevention)
+        //
+        // With too few peers, a node might form an isolated cluster with other forked nodes
+        // where all peers agree on the wrong chain. This check ensures we have enough
+        // diverse viewpoints before trusting peer data for production decisions.
+        //
+        // Example: Node 8 has only 1 peer (another forked node at same height)
+        // Without this check: height_ahead = 0 → "not ahead" → AUTHORIZED (bad!)
+        // With this check: peers=1 < min=2 → BLOCKED (prevents echo chamber)
+        info!(
+            "[CAN_PRODUCE] Layer5.5: peers={} min_required={}",
+            self.peers.len(),
+            self.min_peers_for_production
+        );
+        let past_peer_loss_timeout = self
+            .peers_lost_at
+            .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
+            .unwrap_or(false);
+        if self.peers.len() < self.min_peers_for_production
+            && self.local_height > 0
+            && !past_peer_loss_timeout
+        {
+            // Only apply this check if we're past genesis (height > 0)
+            // At genesis (height 0), we may legitimately be the first producer
+            // Skip if peer loss timeout expired — solo production is preferable to chain halt
+            warn!(
+                "FORK PREVENTION: Only {} peers (need {}) - blocking production to prevent echo chamber",
+                self.peers.len(), self.min_peers_for_production
+            );
+            return ProductionAuthorization::BlockedInsufficientPeers {
+                peer_count: self.peers.len(),
+                min_required: self.min_peers_for_production,
+            };
+        }
+
+        // Layer 6: Peer synchronization check - too far BEHIND
+        //
+        // IMPORTANT: Only compare SLOTS, not heights. Heights are unreliable because
+        // forked nodes accumulate inflated block counts (height > slot). A single
+        // forked peer with height=200 would block honest nodes at height=158.
+        // Slots are time-based and can't be inflated by forks.
+        //
+        // GUARD: Skip this check when local_height >= best_peer_height.
+        // When peers are still syncing (height=0) they report valid best_slot from
+        // their clock, creating a false "behind" signal. A node whose height is at
+        // or ahead of every peer is definitionally NOT behind the network —
+        // its local_slot is only stale because it stopped producing, and it can't
+        // produce because this layer blocks it, creating a deadlock.
+        let best_peer_slot = self.best_peer_slot();
+
+        // Only check if we have peer data
+        if !self.peers.is_empty() && best_peer_slot > 0 {
+            let slot_diff = best_peer_slot.saturating_sub(self.local_slot);
+
+            if slot_diff > self.max_slots_behind {
+                let best_peer_height = self.best_peer_height();
+
+                // Guard: If we're at or ahead of all peers by height, slot lag
+                // is a stale artifact — we ARE the tip, just haven't produced
+                // recently. Don't block; let production advance local_slot.
+                if self.local_height >= best_peer_height {
+                    info!(
+                        "[CAN_PRODUCE] Layer6: slot_diff={} exceeds max={}, but local_height={} >= peer_height={} - allowing",
+                        slot_diff, self.max_slots_behind, self.local_height, best_peer_height
+                    );
+                } else {
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: best_peer_height.saturating_sub(self.local_height),
+                    };
+                }
+            }
+        }
+
+        // Layer 6.5: Height lag check — graduated production gate.
+        //
+        // If we know peers have a higher height, producing from our stale state
+        // creates a competing block that forks the chain. The gate is graduated:
+        //
+        // - lag > 3 blocks: BLOCK unconditionally (no timeout escape).
+        //   At this lag the node may be on a fork — producing deepens it.
+        //   Sync mechanisms (header-first, small-gap retry at 25s, stuck-sync
+        //   detector at 120s → snap sync) will close the gap.
+        //
+        // - lag 2-3 blocks: BLOCK for 30s, then allow.
+        //   Almost certainly gossip propagation delay, not a fork.
+        //   30s gives small-gap retry (25s) time to fire first.
+        //   Producing at this lag extends the correct chain lineage.
+        //
+        // - lag 0-1 blocks: allow (normal operation).
+        let best_peer_height = self.best_peer_height();
+        if !self.peers.is_empty() && best_peer_height > 0 {
+            let height_lag = best_peer_height.saturating_sub(self.local_height);
+            if height_lag > 3 {
+                // Large lag — unconditionally block. Sync will recover.
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+                info!(
+                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (lag>3, must sync, no timeout escape)",
+                    self.local_height, best_peer_height, height_lag, behind_secs
+                );
+                return ProductionAuthorization::BlockedBehindPeers {
+                    local_height: self.local_height,
+                    peer_height: best_peer_height,
+                    height_diff: height_lag,
+                };
+            } else if height_lag >= 2 {
+                // Small lag (2-3 blocks) — block for 30s, then allow.
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+                if behind_secs <= 30 {
+                    info!(
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (small lag, waiting for sync)",
+                        self.local_height, best_peer_height, height_lag, behind_secs
+                    );
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: height_lag,
+                    };
+                }
+                warn!(
+                    "[CAN_PRODUCE] Layer6.5: ALLOWING — behind for {}s (timeout 30s), lag={} \
+                     (local_h={}, peer_h={}). Small lag, same chain lineage likely.",
+                    behind_secs, height_lag, self.local_height, best_peer_height
+                );
+            } else {
+                // Gap closed — reset tracker
+                self.behind_since = None;
+            }
+        } else {
+            self.behind_since = None;
+        }
+
+        // Layer 7: REMOVED — Satoshi principle: always extend your best chain.
+        //  Fork detection via AheadOfPeers caused chain deadlock (2026-02-25).
+        //  When the tip node's peers are syncing behind, AheadOfPeers blocks
+        //  production, which prevents peers from catching up, creating a
+        //  permanent deadlock where nobody produces.
+        //  Forks are resolved by: (1) longest chain reorg, (2) sync failures (Layer 8),
+        //  (3) chain mismatch detection (Layer 9).
+        info!(
+            "[CAN_PRODUCE] Layer7: SKIPPED (removed) — peers={} best_peer={} local={} ahead={}",
+            self.peers.len(),
+            best_peer_height,
+            self.local_height,
+            self.local_height.saturating_sub(best_peer_height)
+        );
+
+        // Layer 9: Chain Hash Verification — INFORMATIONAL ONLY
+        //
+        // When our chain has diverged from peers:
+        // - GetHeaders requests return empty (peer doesn't have our tip as ancestor)
+        // - This increments consecutive_sync_failures
+        // - After 3+ failures, we're likely on a fork
+        //
+        // This catches forks where height comparison is inconclusive.
+        info!(
+            "[CAN_PRODUCE] Layer8: sync_failures={} max_failures={}",
+            self.consecutive_sync_failures, self.max_sync_failures_before_fork_detection
+        );
+        if self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection {
+            warn!(
+                "FORK DETECTION: {} consecutive sync failures - blocking production",
+                self.consecutive_sync_failures
+            );
+            return ProductionAuthorization::BlockedSyncFailures {
+                failure_count: self.consecutive_sync_failures,
+            };
+        }
+
+        // Layer 8.5: Persistent fork mismatch flag.
+        //
+        // If a prior Layer 9 check detected we're in the minority, keep blocking
+        // until a successful resync clears the flag. Without this, Layer 9 oscillates:
+        // detects fork → blocks → peers advance beyond ±2 window → Layer 9 forgets
+        // → node resumes producing on orphan chain → repeat.
+        if self.fork_mismatch_detected {
+            warn!(
+                "[CAN_PRODUCE] Layer8.5: BLOCKED — fork_mismatch_detected flag set, awaiting resync (local_h={})",
+                self.local_height
+            );
+            return ProductionAuthorization::BlockedChainMismatch {
+                peer_id: self
+                    .peers
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or_else(PeerId::random),
+                local_hash: self.local_hash,
+                peer_hash: Hash::default(),
+                local_height: self.local_height,
+            };
+        }
+
+        // Layer 9: Chain Hash Verification (P0 #1)
+        //
+        // Count peers at same height that agree (same hash) vs disagree (different hash).
+        // Only block production if we're in the clear minority — the majority keeps
+        // producing so the heaviest chain rule resolves the fork naturally.
+        let mut agree = 1u32; // Count ourselves — we agree with our own chain
+        let mut disagree = 0u32;
+        let mut first_mismatch_peer = None;
+        let mut first_mismatch_hash = self.local_hash;
+        for (peer_id, status) in &self.peers {
+            if status.best_height == self.local_height {
+                // Same height: compare hashes directly
+                if status.best_hash == self.local_hash {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                    if first_mismatch_peer.is_none() {
+                        first_mismatch_peer = Some(*peer_id);
+                        first_mismatch_hash = status.best_hash;
+                    }
+                }
+            } else if status.best_height > self.local_height
+                && status.best_height <= self.local_height + 2
+            {
+                // Peer is 1-2 blocks ahead.
+                // Hash::ZERO means peer has a snap sync gap — no block store
+                // for this height. This is NOT a fork — skip silently.
+                if status.best_hash == Hash::ZERO {
+                    continue;
+                }
+                // Different non-zero hash = genuine divergence.
+                disagree += 1;
+                if first_mismatch_peer.is_none() {
+                    first_mismatch_peer = Some(*peer_id);
+                    first_mismatch_hash = status.best_hash;
+                }
+            }
+        }
+        // Only block if we're in the minority — majority keeps producing
+        if disagree > 0 && agree < disagree {
+            if let Some(peer_id) = first_mismatch_peer {
+                warn!(
+                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
+                    self.local_height, agree, disagree
+                );
+                self.fork_mismatch_detected = true;
+                return ProductionAuthorization::BlockedChainMismatch {
+                    peer_id,
+                    local_hash: self.local_hash,
+                    peer_hash: first_mismatch_hash,
+                    local_height: self.local_height,
+                };
+            }
+        }
+
+        // Layer 10: Gossip Activity Watchdog (P0 #3)
+        //
+        // If we have peers but haven't received ANY blocks via gossip for a long time,
+        // we are likely isolated (e.g., in a "ping-only" partition).
+        // Exceptions:
+        // - No peers connected (handled by MinPeers check)
+        // - Initial bootstrap (handled by BootstrapGate)
+        // - No peer is ahead of us: gossip silence is expected when WE are the tip.
+        //   Without this exception, all nodes deadlock: nobody produces → no gossip
+        //   → watchdog blocks everyone → permanent halt.
+        if !self.peers.is_empty() && best_peer_height > self.local_height {
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let elapsed = last_gossip.elapsed();
+
+            if elapsed.as_secs() > self.gossip_activity_timeout_secs {
+                warn!(
+                    "FORK DETECTION: No gossip activity for {}s (timeout {}) with {} peers (peer_h={} > local_h={}) - blocking production",
+                    elapsed.as_secs(), self.gossip_activity_timeout_secs, self.peers.len(),
+                    best_peer_height, self.local_height
+                );
+                return ProductionAuthorization::BlockedNoGossipActivity {
+                    seconds_since_gossip: elapsed.as_secs(),
+                    peer_count: self.peers.len(),
+                };
+            }
+        }
+
+        // Layer 10.5: Solo production circuit breaker
+        //
+        // Complement to Layer 10: If WE are the tip (local_height >= best_peer_height),
+        // gossip silence is expected — Layer 10 allows it. But if gossip has been silent
+        // for max_solo_production_secs (default 50s = 5 slots), we're likely building
+        // an orphan chain in isolation. Pause to prevent long parallel forks.
+        //
+        // Exception: at genesis (height <= 1) — first blocks legitimately have no gossip.
+        if self.local_height > 1 && self.local_height >= best_peer_height {
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let silence_secs = last_gossip.elapsed().as_secs();
+
+            if silence_secs > self.max_solo_production_secs {
+                warn!(
+                    "CIRCUIT BREAKER: Produced solo for {}s (limit {}s) with no gossip blocks received. \
+                     Pausing production to avoid building orphan chain. local_h={} peer_h={}",
+                    silence_secs, self.max_solo_production_secs,
+                    self.local_height, best_peer_height
+                );
+                return ProductionAuthorization::BlockedNoGossipActivity {
+                    seconds_since_gossip: silence_secs,
+                    peer_count: self.peers.len(),
+                };
+            }
+        }
+
+        // Layer 11: Finality conflict check
+        // If we have a finalized block, ensure our chain doesn't conflict with it.
+        // This prevents producing blocks on a fork that has been superseded by finality.
+        if let Some(finalized_height) = self.last_finalized_height() {
+            if self.local_height < finalized_height {
+                info!(
+                    "[CAN_PRODUCE] Layer11: local_height={} < finalized_height={} - blocked",
+                    self.local_height, finalized_height
+                );
+                return ProductionAuthorization::BlockedConflictsFinality {
+                    local_finalized_height: finalized_height,
+                };
+            }
+        }
+
+        // All checks passed - production is authorized
+        info!("[CAN_PRODUCE] AUTHORIZED - all checks passed");
+        ProductionAuthorization::Authorized
+    }
+
+    /// Quick boolean check for production authorization
+    pub fn is_production_safe(&mut self, current_slot: u32) -> bool {
+        matches!(
+            self.can_produce(current_slot),
+            ProductionAuthorization::Authorized
+        )
+    }
+
+    /// Explicitly block production (e.g., due to invariant violation)
+    pub fn block_production(&mut self, reason: &str) {
+        warn!("Production blocked: {}", reason);
+        self.production_blocked = true;
+        self.production_block_reason = Some(reason.to_string());
+    }
+
+    /// Clear explicit production block
+    pub fn unblock_production(&mut self) {
+        if self.production_blocked {
+            info!("Production unblocked");
+            self.production_blocked = false;
+            self.production_block_reason = None;
+        }
+    }
+
+    /// Signal that a forced resync is starting
+    ///
+    /// This blocks production until the resync completes and grace period expires.
+    pub fn start_resync(&mut self) {
+        info!("Resync started - production blocked");
+        self.resync_in_progress = true;
+        self.consecutive_resync_count += 1;
+
+        // Log exponential backoff info
+        if self.consecutive_resync_count > 1 {
+            let effective_grace =
+                self.resync_grace_period_secs * (1 << (self.consecutive_resync_count - 1).min(4));
+            warn!(
+                "Consecutive resync #{} - grace period extended to {}s",
+                self.consecutive_resync_count, effective_grace
+            );
+        }
+    }
+
+    /// Signal that a forced resync has completed
+    ///
+    /// Starts the grace period timer before production can resume.
+    pub fn complete_resync(&mut self) {
+        info!("Resync completed - starting grace period");
+        self.resync_in_progress = false;
+        self.last_resync_completed = Some(Instant::now());
+    }
+
+    /// Clear the post-snap-sync production gate.
+    /// Called when a canonical gossip block has been successfully applied,
+    /// proving we're on the canonical chain.
+    pub fn clear_awaiting_canonical_block(&mut self) {
+        if self.awaiting_canonical_block {
+            info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
+            self.awaiting_canonical_block = false;
+        }
+        if self.fork_mismatch_detected {
+            info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
+            self.fork_mismatch_detected = false;
+        }
+    }
+
+    /// Check if we're waiting for a canonical block after snap sync.
+    pub fn is_awaiting_canonical_block(&self) -> bool {
+        self.awaiting_canonical_block
+    }
+
+    /// Reset consecutive resync counter (call after stable operation)
+    pub fn reset_resync_counter(&mut self) {
+        if self.consecutive_resync_count > 0 {
+            debug!(
+                "Resetting consecutive resync counter (was {})",
+                self.consecutive_resync_count
+            );
+            self.consecutive_resync_count = 0;
+        }
+    }
+
+    /// Check if a resync is currently in progress
+    pub fn is_resync_in_progress(&self) -> bool {
+        self.resync_in_progress
+    }
+
+    /// Get the current consecutive resync count
+    pub fn consecutive_resync_count(&self) -> u32 {
+        self.consecutive_resync_count
+    }
+
+    /// Get blocks applied since last reset (indicates active sync progress)
+    pub fn blocks_applied(&self) -> u64 {
+        self.blocks_applied
+    }
+
+    /// Signal that we have connected to at least one peer
+    ///
+    /// This enables the bootstrap gate - production will be blocked until
+    /// we receive at least one peer status response.
+    pub fn set_peer_connected(&mut self) {
+        if !self.has_connected_to_peer {
+            debug!("First peer connection - enabling bootstrap gate");
+            self.has_connected_to_peer = true;
+        }
+    }
+
+    /// Signal that we received a valid peer status response
+    ///
+    /// This is called when a PeerStatus arrives. It updates the timestamps
+    /// used by the bootstrap gate to determine if we have peer info.
+    pub fn note_peer_status_received(&mut self) {
+        let now = Instant::now();
+        // Track FIRST status for grace period calculation
+        if self.first_peer_status_received.is_none() {
+            self.first_peer_status_received = Some(now);
+            debug!("First peer status received - starting bootstrap grace period");
+        }
+        self.last_peer_status_received = Some(now);
+    }
+
+    /// Check if bootstrap gate is satisfied (have peer status or grace period expired)
+    pub fn is_bootstrap_ready(&self) -> bool {
+        if !self.has_connected_to_peer {
+            // No peers connected yet - standalone mode, OK to produce
+            return true;
+        }
+        // Need at least one peer status
+        self.first_peer_status_received.is_some()
+    }
+
+    /// Check if we're in bootstrap phase - DERIVED FROM STATE, NOT STORED
+    ///
+    /// Defense in depth: This method computes bootstrap state from actual conditions
+    /// rather than relying on a stored flag. This makes invalid states impossible:
+    /// - If height == 0, we're definitionally in bootstrap (no matter how we got here)
+    /// - If we lost all peers after connecting, we need to re-bootstrap
+    ///
+    /// This is the "make invalid states unrepresentable" principle.
+    pub fn is_in_bootstrap_phase(&self) -> bool {
+        // Primary: at genesis height = ALWAYS bootstrap mode
+        // This is the key insight: height 0 means newbie, period.
+        if self.local_height == 0 {
+            return true;
+        }
+
+        // Secondary: connected to peers but lost them all
+        // This could indicate network partition or need to resync
+        if self.has_connected_to_peer && self.peers.is_empty() {
+            return true;
+        }
+
+        false
+    }
+
+    /// Configure the production gate settings
+    pub fn configure_production_gate(
+        &mut self,
+        grace_period_secs: u64,
+        max_slots_behind: u32,
+        max_heights_behind: u64,
+    ) {
+        self.resync_grace_period_secs = grace_period_secs;
+        self.max_slots_behind = max_slots_behind;
+        self.max_heights_behind = max_heights_behind;
+    }
+
+    /// Set the bootstrap grace period (wait time at genesis for chain evidence)
+    ///
+    /// At genesis, when all peers are at height 0, the node waits this duration
+    /// before allowing block production. This helps distinguish between:
+    /// - True genesis (we're first producer, safe to start)
+    /// - Network partition (we're isolated, dangerous to produce)
+    pub fn set_bootstrap_grace_period_secs(&mut self, secs: u64) {
+        self.bootstrap_grace_period_secs = secs;
+    }
+
+    /// Set the maximum heights ahead threshold for fork detection (P0 #2)
+    pub fn set_max_heights_ahead(&mut self, heights: u64) {
+        self.max_heights_ahead = heights;
+    }
+
+    /// Set the minimum peers required for production (P0 #5 echo chamber prevention)
+    ///
+    /// - For mainnet/testnet: 2 (default) - require multiple peers to prevent echo chambers
+    /// - For devnet without DHT: 1 - allow single-peer production since discovery is limited
+    pub fn set_min_peers_for_production(&mut self, min_peers: usize) {
+        self.min_peers_for_production = min_peers;
+        info!(
+            "Set min_peers_for_production to {} for echo chamber prevention",
+            min_peers
+        );
+    }
+
+    /// Set the producer tier and adjust min_peers_for_production accordingly.
+    ///
+    /// If no blocks are received via gossip for this duration, production is blocked.
+    /// This should be calibrated to the slot duration (e.g., 18 * slot_duration).
+    pub fn set_gossip_activity_timeout_secs(&mut self, secs: u64) {
+        self.gossip_activity_timeout_secs = secs;
+        info!("Set gossip_activity_timeout_secs to {} seconds", secs);
+    }
+
+    /// Set the producer tier and adjust min_peers_for_production accordingly.
+    ///
+    /// Tier 1 validators need more peers (dense mesh), Tier 3 stakers need fewer.
+    /// The `active_producer_count` caps min_peers so small networks aren't deadlocked
+    /// (a node can have at most `active_producer_count - 1` peers).
+    pub fn set_tier(&mut self, tier: u8, active_producer_count: usize) {
+        self.tier = tier;
+
+        // Tier-based min_peers only applies to large networks (500+ producers).
+        // In small networks ALL producers are trivially "Tier 1", but the Tier 1
+        // min_peers (3) is designed for dense validator meshes at scale.
+        // Keep the default min_peers (2) until the network grows enough for
+        // tiering to be meaningful.
+        if active_producer_count < 500 {
+            info!(
+                "Set tier={} min_peers_for_production={} (skipped tier override: network_size={} < 500)",
+                tier, self.min_peers_for_production, active_producer_count
+            );
+            return;
+        }
+
+        let tier_min = match tier {
+            1 => MIN_PEERS_TIER1,
+            2 => MIN_PEERS_TIER2,
+            3 => MIN_PEERS_TIER3,
+            _ => MIN_PEERS_TIER3, // Default: backward compatible
+        };
+        let max_possible = active_producer_count.saturating_sub(1).max(1);
+        self.min_peers_for_production = tier_min.min(max_possible);
+        info!(
+            "Set tier={} min_peers_for_production={} (tier_req={}, network_size={})",
+            tier, self.min_peers_for_production, tier_min, active_producer_count
+        );
+    }
+
+    /// Get the current tier.
+    pub fn tier(&self) -> u8 {
+        self.tier
+    }
+
+    // =========================================================================
+    // FINALITY TRACKING
+    // =========================================================================
+
+    /// Track a newly applied block for finality.
+    pub fn track_block_for_finality(
+        &mut self,
+        hash: crypto::Hash,
+        height: u64,
+        slot: u32,
+        total_weight: u64,
+    ) {
+        self.finality_tracker
+            .track_block(hash, height, slot, total_weight);
+    }
+
+    /// Add attestation weight to a pending block.
+    pub fn add_attestation_weight(&mut self, block_hash: &crypto::Hash, weight: u64) {
+        self.finality_tracker
+            .add_attestation_weight(*block_hash, weight);
+        // Check if this triggers finality
+        if let Some(checkpoint) = self.finality_tracker.check_finality() {
+            info!(
+                "FINALITY: Block {} finalized at height {} (attestation {}/{})",
+                checkpoint.block_hash,
+                checkpoint.height,
+                checkpoint.attestation_weight,
+                checkpoint.total_weight
+            );
+            self.reorg_handler
+                .set_last_finality_height(checkpoint.height);
+        }
+    }
+
+    /// Prune stale pending blocks from the finality tracker.
+    pub fn prune_finality(&mut self, current_slot: u32) {
+        self.finality_tracker.prune_old_pending(current_slot);
+    }
+
+    /// Get the last finalized height, if any.
+    pub fn last_finalized_height(&self) -> Option<u64> {
+        self.finality_tracker
+            .last_finalized
+            .as_ref()
+            .map(|c| c.height)
+    }
+
+    // =========================================================================
+    // DIAGNOSTICS
+    // =========================================================================
+
+    /// Check if sync failures indicate we're on a fork (no-op, kept for API compatibility)
+    pub fn has_sync_failure_fork_indicator(&self) -> bool {
+        false
+    }
+
+    /// Network tip height (best seen via gossip or peer status)
+    pub fn network_tip_height(&self) -> u64 {
+        self.network_tip_height
+    }
+
+    /// Network tip slot (best seen via gossip or peer status)
+    pub fn network_tip_slot(&self) -> u32 {
+        self.network_tip_slot
+    }
+
+    /// Get consecutive sync failure count (for health diagnostics)
+    pub fn consecutive_sync_failure_count(&self) -> u32 {
+        self.consecutive_sync_failures
+    }
+
+    /// Get consecutive empty header response count (for shallow fork detection)
+    pub fn consecutive_empty_headers(&self) -> u32 {
+        self.consecutive_empty_headers
+    }
+
+    /// Reset empty headers counter after a rollback changes the local tip.
+    /// The next sync attempt will use the new tip hash.
+    pub fn reset_empty_headers(&mut self) {
+        self.consecutive_empty_headers = 0;
+    }
+
+    /// Check if post-recovery grace period is active.
+    /// During grace, fork_sync should not be activated — the node needs time
+    /// to sync via header-first / gossip before fork detection is meaningful.
+    pub fn post_recovery_grace_active(&self) -> bool {
+        self.post_recovery_grace
+    }
+
+    /// Activate post-recovery grace period. Called after snap sync / forced recovery.
+    pub fn set_post_recovery_grace(&mut self) {
+        self.post_recovery_grace = true;
+        self.post_recovery_grace_started = Instant::now();
+        self.blocks_applied_since_recovery = 0;
+        self.consecutive_empty_headers = 0;
+        self.consecutive_apply_failures = 0;
+        info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");
+    }
+
+    /// Check if sync manager has signaled that a full genesis resync is needed
+    pub fn needs_genesis_resync(&self) -> bool {
+        self.needs_genesis_resync
+    }
+
+    /// Returns true if peers consistently reject our chain tip (deep fork).
+    /// Requires ALL conditions:
+    /// 1. Many consecutive empty header responses (peers don't recognize our chain)
+    /// 2. We are significantly behind peers (not just a 1-block fork)
+    /// 3. At least one peer is at a similar height (within 100 blocks) — proving
+    ///    they SHOULD have our block range. Peers far ahead may be snap-synced
+    ///    without old blocks; empty responses from them are history gaps, not forks.
+    ///
+    /// Short forks (1-2 blocks) are normal and resolve naturally via heaviest chain.
+    /// Only trigger genesis resync for genuine deep forks where we're stuck.
+    pub fn is_deep_fork_detected(&self) -> bool {
+        if self.consecutive_empty_headers < 10 {
+            return false;
+        }
+        // Must be significantly behind peers to qualify as deep fork
+        let best_peer_height = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        if best_peer_height <= self.local_height + 5 {
+            return false;
+        }
+        // Small gaps (≤12 blocks) are NOT deep forks — resolve_shallow_fork()
+        // and fork_sync can handle them via rollback without wiping state.
+        // Snap sync for small gaps loses block history and creates a cascade:
+        // snap → no block 1 → next fork → rollback impossible → re-snap.
+        let gap = best_peer_height.saturating_sub(self.local_height);
+        if gap <= 12 {
+            return false;
+        }
+        // If snap sync can handle this gap, don't escalate to deep fork.
+        // next_request() will attempt snap sync first.
+        let gap = best_peer_height.saturating_sub(self.local_height);
+        let enough_peers = self.peers.len() >= 3;
+        if enough_peers && gap > self.snap_sync_threshold {
+            return false;
+        }
+        // Require at least one peer whose height is close to ours (within 100 blocks).
+        // If ALL peers are far ahead, empty headers likely mean they snap-synced
+        // and lack our block range — not that we're on a fork.
+        let has_close_peer = self
+            .peers
+            .values()
+            .any(|p| p.best_height <= self.local_height + 100);
+        has_close_peer
+    }
+}
