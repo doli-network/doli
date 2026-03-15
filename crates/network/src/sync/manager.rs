@@ -1777,12 +1777,12 @@ impl SyncManager {
         if best_peer_height <= self.local_height + 5 {
             return false;
         }
-        // Small gaps (≤50 blocks) are NOT deep forks — resolve_shallow_fork()
+        // Small gaps (≤12 blocks) are NOT deep forks — resolve_shallow_fork()
         // and fork_sync can handle them via rollback without wiping state.
         // Snap sync for small gaps loses block history and creates a cascade:
         // snap → no block 1 → next fork → rollback impossible → re-snap.
         let gap = best_peer_height.saturating_sub(self.local_height);
-        if gap <= 50 {
+        if gap <= 12 {
             return false;
         }
         // If snap sync can handle this gap, don't escalate to deep fork.
@@ -2316,12 +2316,12 @@ impl SyncManager {
                         self.start_sync();
                         return None;
                     }
-                    // Small gaps (≤50): redirect to fork_sync/rollback instead of
+                    // Small gaps (≤12): redirect to fork_sync/rollback instead of
                     // genesis resync. Snap sync for small gaps loses block history
                     // and creates a cascade (snap → no block 1 → future rollback
                     // fails → re-snap). Rollback is O(1) per block and preserves
                     // full chain history.
-                    if gap <= 50 && self.local_height > 0 {
+                    if gap <= 12 && self.local_height > 0 {
                         warn!(
                             "Small fork (gap={}, empties={}): redirecting to fork_sync \
                              instead of genesis resync — rollback can handle this",
@@ -3723,11 +3723,11 @@ impl SyncManager {
                 if self.consecutive_empty_headers >= 20 {
                     // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
                     // Escalate to snap sync if enough peers AND gap is large enough.
-                    // For small gaps (≤50), redirect to rollback/fork_sync to preserve
+                    // For small gaps (≤12), redirect to rollback/fork_sync to preserve
                     // block history and avoid snap sync cascade.
                     let enough_peers = self.peers.len() >= 3;
                     let gap = self.network_tip_height.saturating_sub(self.local_height);
-                    if enough_peers && gap > 50 {
+                    if enough_peers && gap > 12 {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers — \
                              escalating to snap sync (gap={})",
@@ -3735,7 +3735,7 @@ impl SyncManager {
                         );
                         self.header_blacklisted_peers.clear();
                         self.needs_genesis_resync = true;
-                    } else if enough_peers && gap <= 50 {
+                    } else if enough_peers && gap <= 12 {
                         warn!(
                             "All peers blacklisted for >120s (gap={}) — clearing blacklist \
                              and redirecting to rollback (small gap, preserving block history)",
