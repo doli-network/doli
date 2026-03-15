@@ -48,6 +48,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 7. Consensus-critical deploys: simultaneous across all nodes. NEVER rolling.
 8. Learning protocol: before following any doc/skill, check MEMORY.md hotfixes. Doc drifts from code? Register hotfix, fix the doc. A mistake not fixed at the source repeats forever.
 9. Docs sync: after every code modification or new feature, update the relevant `specs/` and `docs/` files for the affected domain. Keep `specs/SPECS.md` and `docs/DOCS.md` indexes current — any new spec or doc file MUST be added to its index. `docs/understanding/PROJECT-UNDERSTANDING.md` MUST also be kept in sync — update affected sections when code changes alter architecture, workflows, parameters, or risk areas.
+10. Strict modularity: max **500 lines per module**. If a file exceeds 500 lines, split it. Exceptions only for strictly critical cases (consensus, apply_block, validation) where splitting would compromise safety — and even then, hard cap at **1000 lines**.
 
 ## Map — Code
 
