@@ -545,7 +545,7 @@ impl SyncManager {
             max_heights_ahead: 5,         // Fork detection: if >5 blocks ahead, suspicious
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
-            max_solo_production_secs: 50, // 5 slots × 10s — halt before building long orphan chain
+            max_solo_production_secs: 86400, // Disabled for local dev (was 50s)
             consecutive_sync_failures: 0,
             max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
             min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers

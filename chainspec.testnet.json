@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773186873,
-    "message": "DOLI Testnet v29 Genesis - Mandatory BLS + 5 producers + pool leak fix 2026-03-10",
+    "timestamp": 1773525629,
+    "message": "Local genesis 2026-03-14",
     "initial_reward": 100000000
   },
   "consensus": {

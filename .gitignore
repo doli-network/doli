@@ -70,6 +70,3 @@ docs/genesis.md
 docs/legacy/bugs/REPORT_CONSENSUS.md
 scripts/install-services.sh
 scripts/health-check.sh
-scripts/bonds.sh
-scripts/balances.sh
-scripts/chain-reset.sh
