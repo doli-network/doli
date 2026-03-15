@@ -75,7 +75,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | UTXO set (in-memory) | `crates/storage/src/utxo/` |
 | ProducerSet + bonds | `crates/storage/src/producer/` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (31) | `crates/rpc/src/methods/` |
+| RPC methods (32) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update system | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
@@ -95,7 +95,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 |------|-------|
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
-| RPC reference (31 methods) | `docs/rpc_reference.md` |
+| RPC reference (32 methods) | `docs/rpc_reference.md` |
 | CLI reference | `docs/cli.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Protocol spec | `specs/protocol.md` |

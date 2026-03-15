@@ -49,7 +49,7 @@ Key properties:
 - Atomic writes (tmp + rename) — crash-safe
 - Non-blocking streaming via `mpsc::channel` — never stalls sync
 - Catches up missed blocks on restart from local BlockStore
-- 3 mainnet seeds (ai1 + ai2 + ai3), 2 testnet seeds (ai1 + ai3) for full redundancy
+- Multiple seeds per network (DNS: `seed1/seed2.doli.network` for mainnet, `bootstrap1/2.testnet.doli.network` for testnet)
 
 Recovery methods (all verify BLAKE3 + genesis_hash):
 - **File-based** (offline): `doli-node restore --from /path/to/archive --backfill --yes`
@@ -311,7 +311,7 @@ def select_producer(slot, active_producers):
 
 #### Bond Stacking
 
-Producers can stake 1-100 bonds to increase their block production share:
+Producers can stake 1-3,000 bonds to increase their block production share:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -370,18 +370,17 @@ Hash-Chain VDF:
 - Iterations adjusted ±20% per cycle
 - Min iterations: 100,000 | Max iterations: 100,000,000
 
-**Registration VDF (Wesolowski Class Groups):**
+**Registration VDF (Hash-Chain):**
 ```
-Wesolowski VDF:
+Hash-Chain VDF:
 ├── Input: HASH("DOLI_VDF_REGISTER_V1" || producer_key || epoch)
-├── Group: Imaginary quadratic class group (2048-bit discriminant)
-├── Iterations: T_REGISTER_BASE = 600M (~10 min)
-├── Output: ~512 bytes (class group element)
-└── Verification: O(log T) using Wesolowski proof
+├── Iterations: T_REGISTER_BASE = 5,000,000 (~30 seconds)
+├── Output: 32 bytes (final hash)
+└── Verification: Recompute (no separate proof)
 ```
 
 - Provides anti-Sybil protection via time investment
-- Difficulty scales with network size (capped at ~24 hours)
+- Fixed iterations (no dynamic scaling) — bond provides primary Sybil resistance at scale
 
 #### Operations
 | Operation        | Time (mainnet) | Time (testnet) | Time (devnet) |
@@ -489,9 +488,9 @@ Wesolowski VDF:
 ### Current Limits
 | Resource          | Limit              | Notes                    |
 |-------------------|--------------------|-----------------------------|
-| Block size        | 1 MB               | Protocol parameter          |
+| Block size        | 2 MB (Era 0)       | Doubles per era, max 32 MB  |
 | TX per block      | ~3,000             | Depends on TX size          |
-| TPS (theoretical) | ~50                | 1 block/minute             |
+| TPS (theoretical) | ~300               | 1 block/10 seconds          |
 | Header size       | ~340 bytes         | Fixed                       |
 | Headers per year  | ~178 MB            | Linear growth               |
 
@@ -661,7 +660,7 @@ RIGHT: Faster VDF hardware = Same speed (wall clock enforced)
 ```
 
 VDF serves as a heartbeat proof of presence:
-- ~700ms computation across all networks
+- ~55ms computation across all networks (800K iterations)
 - Cannot be parallelized (sequential by design)
 - Grinding prevention comes from Epoch Lookahead (deterministic leader selection)
 
@@ -711,7 +710,7 @@ doli/
 │   │   ├── tpop/       # Telemetry (heartbeat, presence - NOT consensus)
 │   │   └── discovery/  # Producer discovery (bloom, gossip, gset)
 │   ├── crypto/         # BLAKE3, Ed25519, signatures, merkle (~2,500 lines)
-│   ├── vdf/            # Hash-chain VDF (blocks), Wesolowski (registration) (~2,200 lines)
+│   ├── vdf/            # Wesolowski VDF crate (compiled, NOT used in production) (~2,200 lines)
 │   ├── mempool/        # Transaction pool with fee policies (~760 lines)
 │   ├── network/        # libp2p P2P networking (~5,900 lines)
 │   │   ├── sync/       # Sync manager, headers, bodies, equivocation, reorg
@@ -754,7 +753,7 @@ bins/node (doli-node)          bins/cli (doli)
 | Crate | Lines | Purpose | Key Files |
 |-------|-------|---------|-----------|
 | `crypto` | ~2,500 | BLAKE3-256 hashing, Ed25519 signatures, merkle trees | `hash.rs` (591), `keys.rs` (764), `signature.rs` (552), `merkle.rs` (496) |
-| `vdf` | ~2,200 | Wesolowski VDF (registration), hash-chain VDF (blocks) | `vdf.rs` (619), `class_group.rs` (880), `proof.rs` (280) |
+| `vdf` | ~2,200 | Wesolowski VDF crate (compiled but NOT used in production — both block and registration VDFs use hash-chain BLAKE3 in doli-core) | `vdf.rs` (619), `class_group.rs` (880), `proof.rs` (280) |
 | `core` | ~24,000 | Types, validation, consensus, scheduler, maintainer bootstrap, network params | `validation.rs` (4,501), `consensus.rs` (3,688), `transaction.rs` (1,628), `network.rs` (1,120), `network_params.rs` (~500), `heartbeat.rs` (803), `maintainer.rs` (701), `scheduler.rs` (653), `block.rs` (383) |
 | `storage` | ~4,500 | RocksDB blocks, UTXO, chain state, producer registry | `producer.rs` (2,698), `block_store.rs` (846), `chain_state.rs` (406), `utxo.rs` (432) |
 | `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection | `service.rs` (1,081), `sync/manager.rs` (744), `sync/reorg.rs` (595), `sync/equivocation.rs` (359), `scoring.rs` (450) |
@@ -893,22 +892,40 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 
 ### Binary Crates
 
-**bins/node** (doli-node) - ~6,000 lines:
-| File | Lines | Purpose |
-|------|-------|---------|
-| `node.rs` | 2,721 | Main node logic, block production |
-| `main.rs` | 1,527 | CLI parsing, node startup |
-| `updater.rs` | 884 | Update management integration |
-| `metrics.rs` | 388 | Prometheus metrics |
-| `producer/signed_slots.rs` | 194 | Double-sign prevention |
-| `producer/guard.rs` | 112 | Lock file for single instance |
+**bins/node** (doli-node) - modularized:
+| Directory/File | Purpose |
+|---------------|---------|
+| `node/mod.rs` | Node struct (50+ fields), public API |
+| `node/init.rs` | `Node::new()` — storage, migration, state load |
+| `node/startup.rs` | `run()`, `start_network()`, `start_rpc()` |
+| `node/event_loop.rs` | Main event loop (biased select!) |
+| `node/block_handling.rs` | `handle_new_block()`, `execute_reorg()` |
+| `node/validation_checks.rs` | Producer eligibility, block validation |
+| `node/rewards.rs` | Epoch reward calculation |
+| `node/rollback.rs` | Undo-based rollback |
+| `node/fork_recovery.rs` | 9 fork recovery functions |
+| `node/apply_block/` | Core state transition (5 sub-modules) |
+| `node/production/` | Block production pipeline (4 sub-modules) |
+| `node/periodic.rs` | Periodic tasks, maintainer bootstrap |
+| `node/genesis.rs` | Genesis producer derivation |
+| `main.rs` | CLI parsing, node startup |
+| `updater.rs` | Update management integration |
+| `producer.rs` | Lock file, signed slots DB |
 
-**bins/cli** (doli) - ~2,500 lines:
-| File | Lines | Purpose |
-|------|-------|---------|
-| `main.rs` | 1,667 | CLI commands (wallet, tx, producer) |
-| `rpc_client.rs` | 623 | JSON-RPC client |
-| `wallet.rs` | 232 | Wallet file management |
+**bins/cli** (doli) - modularized:
+| File | Purpose |
+|------|---------|
+| `main.rs` | Entry point, 30+ subcommands |
+| `commands.rs` | Cli/Commands enums |
+| `rpc_client.rs` | JSON-RPC HTTP client |
+| `wallet.rs` | Key management |
+| `cmd_producer.rs/` | Producer lifecycle (7 sub-modules) |
+| `cmd_nft.rs/` | NFT operations (7 sub-modules) |
+| `cmd_chain.rs` | Chain info, rewards |
+| `cmd_token.rs` | Fungible asset operations |
+| `cmd_bridge.rs` | Cross-chain atomic swaps |
+| `cmd_channel.rs` | Payment channels |
+| `cmd_governance.rs` | Governance operations |
 
 ---
 
@@ -925,9 +942,10 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 ### Storage
 | Component     | Technology                 |
 |---------------|----------------------------|
-| Block store   | RocksDB / LevelDB          |
-| UTXO set      | In-memory + snapshots      |
-| Index         | Custom B-tree              |
+| Block store   | RocksDB (headers, bodies, height/slot indexes) |
+| State DB      | RocksDB (6 CFs: cf_utxo, cf_utxo_by_pubkey, cf_producers, cf_exit_history, cf_meta, cf_undo) |
+| UTXO set      | In-memory HashMap (loaded from StateDb on startup) |
+| Archive       | Flat files ({height}.block + {height}.blake3 + manifest.json) |
 
 ---
 

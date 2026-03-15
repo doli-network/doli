@@ -56,8 +56,8 @@ We assume an adversary that can:
 
 The adversary **cannot**:
 
-1. **Break cryptographic assumptions**: Ed25519, BLAKE3, class group DLP
-2. **Accelerate sequential computation**: VDFs require inherently sequential work
+1. **Break cryptographic assumptions**: Ed25519, BLAKE3 preimage/collision resistance
+2. **Accelerate sequential computation**: Hash-chain VDFs require inherently sequential work
 3. **Forge signatures**: Without possessing private keys
 4. **Violate timing bounds**: VDF output cannot be computed faster than T iterations
 
@@ -76,7 +76,7 @@ The adversary **cannot**:
 | Attack | Mitigation |
 |--------|------------|
 | Identity flooding | VDF registration requires sequential time |
-| Cheap identity creation | Bond requirement (1000 coins initially) |
+| Cheap identity creation | Bond requirement (10 DOLI per bond, 1-3,000 bonds) |
 | Identity accumulation | Registration difficulty scales with demand |
 
 #### 2.2.3 Consensus Attacks
@@ -84,7 +84,7 @@ The adversary **cannot**:
 | Attack | Mitigation |
 |--------|------------|
 | Nothing-at-stake | Bond slashing for equivocation |
-| Grinding | Selection seed derived from previous block hash |
+| Grinding | Epoch Lookahead: selection uses `slot % total_tickets`, independent of `prev_hash` |
 | Time manipulation | Slot anchored to VDF-proven timestamp |
 | Genesis-time hijack | `genesis_hash` in every block header (see 2.2.5) |
 
@@ -320,9 +320,9 @@ To control the network, an attacker would need to:
 3. **Risk detection**: Equivocation leads to permanent bond loss
 
 **Cost Analysis** (Era 0, assuming 100 active producers):
-- Minimum 51 registrations: 51 * 10 minutes = 8.5 hours sequential time
-- Bond requirement: 51 * 1000 = 51,000 coins at risk
-- Potential loss if detected: 51,000 coins
+- Minimum 51 registrations: 51 * ~30 seconds = ~25 minutes sequential time (5M VDF iterations each)
+- Bond requirement: 51 * 10 DOLI = 510 DOLI minimum at risk (1 bond each)
+- Potential loss if detected: All bonded capital slashed
 
 ### 4.4 Time-Based Economics
 
@@ -337,18 +337,24 @@ This creates a fundamental limit on how fast identities can be created, regardle
 
 ## 5. Consensus Security
 
-### 5.1 Chain Selection
+### 5.1 Chain Selection (Weight-Based Fork Choice)
 
-The chain selection rule (slot > height > hash) ensures:
+DOLI uses a **weight-based fork choice rule**. The chain with the highest accumulated
+producer weight wins. Each block's weight equals the producer's `effective_weight`
+(seniority-based: 1 for Year 1, up to 4 for Year 4+).
 
-1. **Time coverage**: Chains covering more slots are preferred
-2. **Density**: Among equal slot coverage, denser chains win
-3. **Determinism**: Hash comparison provides final tiebreaker
+```python
+def should_reorg(current_chain, new_chain):
+    current_weight = accumulated_weight(current_chain.tip)
+    new_weight = accumulated_weight(new_chain.tip)
+    return new_weight > current_weight
+```
 
 **Security Properties**:
-- Cannot be manipulated by content grinding (slot is time-derived)
-- Favors honest chains that follow timing rules
-- Provides unique canonical chain at any point
+- Prevents Sybil attacks with many low-weight producers
+- Senior producers' chains are preferred (seniority = trust)
+- Favors honest, long-running chains
+- Deterministic: all nodes converge to the heaviest chain
 
 ### 5.2 Producer Selection (Deterministic Round-Robin)
 
@@ -380,7 +386,7 @@ valid_window = [slot_start + SLOT_DURATION - NETWORK_MARGIN,
 
 ### 5.4 Bootstrap Phase Security
 
-During bootstrap (first 10,080 blocks):
+During bootstrap (first 60,480 blocks, ~1 week):
 
 | Risk | Mitigation |
 |------|------------|
@@ -722,7 +728,7 @@ impl Transaction {
 **Risk**: Custom hardware (ASICs) could compute VDFs faster
 
 **Mitigations**:
-- Class group VDFs have no known efficient ASIC design
+- BLAKE3 hash-chain VDF computation is inherently sequential
 - T parameter can be increased via protocol upgrade
 - Security degrades gracefully (faster blocks, not broken security)
 
@@ -842,8 +848,8 @@ Track producer win rates. Statistically significant deviation from expected dist
 - **Fix**: Changed SlashingEvidence to include full BlockHeaders for VDF verification
 - **Commit**: `5863805`
 
-**Note**: VDF iterations are currently network-dependent (fixed per network), not
-era-dependent. Block production uses ~10M iterations across all eras.
+**Note**: VDF iterations are fixed per network. Block production uses ~800,000
+iterations (~55ms) across all eras. Registration uses 5,000,000 iterations (~30s).
 
 ### 8.3 Test Coverage
 
@@ -1085,7 +1091,7 @@ This checklist helps node operators and producers secure their DOLI infrastructu
   # Check metrics
   curl http://localhost:9000/metrics | grep vdf_compute
 
-  # Should complete in ~700ms (heartbeat VDF)
+  # Should complete in ~55ms (heartbeat VDF)
   ```
 
 - [ ] **Ensure clock synchronization**

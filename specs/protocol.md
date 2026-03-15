@@ -138,23 +138,47 @@ transaction = {
 
 ```
 input = {
-    prev_tx_hash:  32 bytes,     // Hash of previous transaction
-    output_index:  uint32,       // Index of output being spent
-    signature:     64 bytes      // Ed25519 signature
+    prev_tx_hash:          32 bytes,     // Hash of previous transaction
+    output_index:          uint32,       // Index of output being spent
+    signature:             64 bytes,     // Ed25519 signature
+    sighash_type:          uint8,        // 0 = All (default), 1 = AnyoneCanPay
+    committed_output_count: uint32       // 0 = all outputs (default); N > 0 = first N outputs only (AnyoneCanPay)
 }
 ```
+
+Both `sighash_type` and `committed_output_count` default to 0 for backwards compatibility
+with pre-v3.7.1 transactions. `AnyoneCanPay` allows partial signing (PSBT-style) — the
+signer commits only to their own input + the first `committed_output_count` outputs,
+allowing other parties to add inputs (and optionally outputs) after signing.
 
 ### 3.3 Output Structure
 
 ```
 output = {
-    output_type:   uint8,        // 0 = normal, 1 = bond
+    output_type:   uint8,        // See output types below
     amount:        uint64,       // Amount in base units
     pubkey_hash:   32 bytes,     // HASH(public_key)
     lock_until:    uint64,       // 0 for normal, u64::MAX for bonds
-    extra_data:    bytes         // Empty for normal; 4 bytes LE creation_slot for bond
+    extra_data:    bytes         // Type-specific (see below)
 }
 ```
+
+**Output Types (9 total):**
+
+| ID | Type | Purpose | extra_data |
+|----|------|---------|------------|
+| 0 | Normal | Standard spendable output | Empty |
+| 1 | Bond | Time-locked bond UTXO | 4 bytes LE `creation_slot` |
+| 2 | Multisig | Threshold-of-N signatures | Covenant conditions |
+| 3 | Hashlock | Preimage reveal | Covenant conditions |
+| 4 | HTLC | Hashlock + timelock | Covenant conditions |
+| 5 | Vesting | Signature + timelock | Covenant conditions |
+| 6 | NFT | Non-fungible token with metadata | Covenant conditions |
+| 7 | FungibleAsset | User-issued token | Covenant conditions + asset_id |
+| 8 | BridgeHTLC | Cross-chain atomic swap | Covenant conditions + chain metadata |
+
+Output types 2-8 use the programmable conditions system (`crates/core/src/conditions/`)
+with composable predicates (Signature, Multisig, Hashlock, Timelock, And, Or, Threshold).
 
 **Bond UTXO extra_data format:**
 ```
@@ -192,9 +216,10 @@ min_fee = tx_size_bytes * BASE_FEE_RATE
 
 ### 3.6 Coinbase Transaction
 
-In DirectCoinbase mode, the first transaction in each block rewards the producer directly.
-In EpochPool mode, coinbase is omitted and rewards are distributed via EpochReward
-transactions at epoch boundaries (see section 3.11).
+Every block contains a coinbase transaction as the first transaction. The coinbase
+sends the block reward to the **reward pool address** (`reward_pool_pubkey_hash()`),
+NOT directly to the producer. Rewards are then distributed from the pool at epoch
+boundaries via EpochReward transactions (see section 3.11).
 
 ```
 coinbase_tx = {
@@ -204,7 +229,7 @@ coinbase_tx = {
     outputs: [{
         output_type: 0,
         amount: block_reward + total_fees,
-        pubkey_hash: producer_pubkey_hash,
+        pubkey_hash: reward_pool_pubkey_hash,  // Pool address, NOT producer
         lock_until: 0
     }],
     extra_data: block_height as uint64
@@ -232,7 +257,7 @@ Initiates the 7-day unbonding period. Producer is removed from active set. Exit 
 ### 3.8 Claim Reward Transaction (DEPRECATED)
 
 > **Note**: This transaction type is deprecated per whitepaper compliance.
-> Block rewards are now distributed directly via coinbase transactions.
+> Block rewards are now distributed via EpochReward transactions at epoch boundaries (section 3.11).
 
 ```
 claim_reward_tx = {
@@ -289,10 +314,11 @@ slash_tx = {
     }
 }
 
-evidence_data = {
-    block_hash_1: 32 bytes,      // First block
-    block_hash_2: 32 bytes,      // Second block (must differ)
-    slot: uint32                 // Same slot for both
+evidence_data = SlashingEvidence::DoubleProduction {
+    block_header_1: BlockHeader,  // Full header with VDF proof
+    block_header_2: BlockHeader,  // Full header with VDF proof (must differ)
+    // Both headers must have same producer + same slot + different hashes
+    // Full headers required so validators can verify VDF proofs
 }
 ```
 
@@ -465,7 +491,7 @@ add_bond_tx = {
 - `bond_count` must be > 0
 - Input amount must equal `bond_count × BOND_UNIT` (plus fees)
 - Each output must be type Bond with correct amount, lock_until=u64::MAX, and 4-byte extra_data
-- Total bonds after addition must not exceed MAX_BONDS (10,000)
+- Total bonds after addition must not exceed MAX_BONDS (3,000)
 
 ### 3.13 WithdrawalRequest Transaction
 
@@ -829,7 +855,7 @@ vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || merkle_root || slot || prod
 ### 5.1 Time Constants
 
 ```
-GENESIS_TIME = 1769904000         // 2026-02-01T00:00:00Z
+GENESIS_TIME = 1773186873         // Mainnet genesis (must match chainspec)
 SLOT_DURATION = 10                // seconds (all networks)
 SLOTS_PER_EPOCH = 360             // 1 hour (360 × 10s)
 SLOTS_PER_ERA = 12_614_400        // ~4 years
@@ -874,7 +900,8 @@ A block B is valid if ALL conditions hold.
    B.slot > prev_block.slot
 
 4. PRODUCER (if height >= BOOTSTRAP_BLOCKS):
-   B.producer == selected_producer(prev_hash, B.slot)
+   B.producer == selected_producer(B.slot, active_producer_set)
+   // Note: selection uses slot % total_tickets, independent of prev_hash (Epoch Lookahead)
    B.producer is in active_producer_set
 
 5. VDF:
@@ -1075,7 +1102,9 @@ registration_tx = {
         vdf_proof: bytes,
         prev_registration_hash: 32 bytes,  // Chain to previous registration
         sequence_number: uint64,           // Monotonic counter
-        bond_count: uint32                 // Initial bond count at registration
+        bond_count: uint32,                // Initial bond count at registration
+        bls_pubkey: 48 bytes,              // BLS12-381 public key for aggregate attestations (optional, default empty)
+        bls_pop: 96 bytes                  // BLS proof-of-possession over bls_pubkey (optional, default empty)
     }
 }
 ```
@@ -1087,8 +1116,8 @@ def bond_amount(bond_count):
     return bond_count * BOND_UNIT
 
 BOND_UNIT = 1_000_000_000        // 10 DOLI per bond
-MAX_BONDS = 10_000               // Maximum bonds per producer
-LOCK_DURATION = VESTING_PERIOD_SLOTS  // 1 day (4 quarters × 6h) for full vesting
+MAX_BONDS = 3_000                // Maximum bonds per producer (30,000 DOLI max)
+LOCK_DURATION = VESTING_PERIOD_SLOTS  // Mainnet: 4 years (4 × 1-year quarters); Testnet: 1 day (4 × 6h quarters)
 ```
 
 **Bond tracking:** Registration creates Bond UTXOs (one per bond unit) with
@@ -1110,19 +1139,18 @@ reg_input = HASH("DOLI_VDF_REGISTER_V1" || public_key || epoch)
 vdf_output = VDF(reg_input, T_REGISTER(epoch))
 ```
 
-### 6.4 Dynamic Registration Difficulty
+### 6.4 Registration Difficulty
+
+Registration VDF is **fixed** at 5,000,000 iterations (~30 seconds on reference hardware).
+There is no dynamic difficulty scaling — `T_REGISTER_BASE == T_REGISTER_CAP == 5,000,000`.
+
+At scale, the bond (10 DOLI per bond) provides Sybil protection via economic dilution.
+The VDF is a lightweight anti-flash-attack barrier, not the primary defense.
 
 ```
-def T_REGISTER(epoch):
-    R_prev = registrations_in_epoch(epoch - 1)
-    D_prev = smoothed_demand(epoch - 1)
-    D = (D_prev + R_prev) / 2
-    T = T_BASE * max(1, D / R_TARGET)
-    return min(T, T_CAP)
-
-T_BASE = 600           // 10 minutes
-R_TARGET = 10          // registrations per epoch
-T_CAP = 86400          // 24 hours
+T_REGISTER_BASE = 5_000_000    // ~30 seconds (fixed, no escalation)
+T_REGISTER_CAP  = 5_000_000    // Same as base
+R_TARGET = 10                  // Target registrations per epoch (fee calculation)
 ```
 
 ### 6.5 Registration Validity
@@ -1249,7 +1277,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
-All networks use hash-chain VDF with ~700ms target time for block production heartbeat.
+All networks use hash-chain VDF with ~55ms target time (800K iterations) for block production heartbeat.
 
 ### 8.2.1 Environment Configuration
 
@@ -1441,10 +1469,9 @@ Result:
 | VDF_ITERATIONS_MIN | 100,000                  |
 | VDF_ITERATIONS_MAX | 100,000,000              |
 | VDF_TARGET_TIME_MS | 55                       |
-| T_REGISTER_BASE    | 600,000,000              |
-| T_REGISTER_CAP     | 86,400,000,000           |
+| T_REGISTER_BASE    | 5,000,000 (~30s)         |
+| T_REGISTER_CAP     | 5,000,000 (same as base) |
 | R_TARGET           | 10                       |
-| R_CAP              | 100                      |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
 | BOND_UNIT          | 1,000,000,000 (10 DOLI)   |
 | MAX_BONDS_PER_PRODUCER | 3,000                |
@@ -1456,10 +1483,10 @@ Result:
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 6                        |
-| BASE_BLOCK_SIZE    | 1,000,000                |
+| BASE_BLOCK_SIZE    | 2,000,000                |
 | MAX_BLOCK_SIZE_CAP | 32,000,000               |
 | BLOCK_SIZE_GROWTH  | ×2 per era               |
-| EXCLUSION_PERIOD   | 10,080                   |
+| EXCLUSION_PERIOD   | 60,480 (~7 days)         |
 | TOTAL_SUPPLY       | 2,522,880,000,000,000    |
 
 | VETO_PERIOD        | 300 (5 min early*)       |
