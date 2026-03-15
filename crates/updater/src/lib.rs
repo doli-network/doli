@@ -21,6 +21,7 @@
 //! - Mainnet/Testnet: Production timing (2 epochs veto, 1 epoch grace)
 //! - Devnet: Accelerated timing (60s veto, 30s grace) for fast testing
 
+// Existing sub-modules
 mod apply;
 mod download;
 pub mod hardfork;
@@ -28,820 +29,69 @@ pub mod test_keys;
 mod vote;
 pub mod watchdog;
 
+// Domain modules
+mod constants;
+mod enforcement;
+mod params;
+mod types;
+mod util;
+mod verification;
+
+// Re-exports: apply
 pub use apply::{
     apply_update, auto_apply_from_github, backup_current, current_binary_path,
     extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary, restart_node,
     rollback,
 };
+
+// Re-exports: download
 pub use download::{
     download_binary, download_checksums_txt, download_from_url, download_signatures_json,
     fetch_github_release, fetch_latest_release, verify_hash, GithubReleaseInfo,
 };
+
+// Re-exports: test_keys
 pub use test_keys::{
     create_test_release_signatures, should_use_test_keys, sign_with_test_key,
     test_maintainer_pubkeys, TestMaintainerKey, TEST_MAINTAINER_KEYS,
 };
+
+// Re-exports: vote
 pub use vote::{Vote, VoteMessage, VoteTracker};
 
-use crypto::{PublicKey, Signature as CryptoSignature};
-use doli_core::network::Network;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use thiserror::Error;
-use tracing::{debug, info, warn};
-
-// ============================================================================
-// Constants - Simple, fixed, no exceptions
-// ============================================================================
-
-/// Veto period: 5 minutes for ALL updates (early network; target: 7 days)
-pub const VETO_PERIOD: Duration = Duration::from_secs(5 * 60);
-
-/// Grace period after approval: 1 epoch (~1h) to update before enforcement
-pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);
-
-/// Veto threshold: 40% of active producers (weighted by seniority)
-///
-/// Why 40% instead of 33%:
-/// - 33% allows a $44K early attacker to block governance for 4 years
-/// - 40% raises the cost: requires 15 nodes instead of 10 for sustained blocking
-/// - Combined with activity penalty, makes "register and wait" attacks expensive
-///
-/// Note: This must match VETO_THRESHOLD_PERCENT in doli-storage
-pub const VETO_THRESHOLD_PERCENT: u8 = 40;
-
-/// Required maintainer signatures: 3 of 5
-pub const REQUIRED_SIGNATURES: usize = 3;
-
-/// Bootstrap maintainer public keys for mainnet (Ed25519, hex-encoded)
-///
-/// N1-N5 are both **producers AND maintainers** on mainnet (dual role).
-/// N6-N12 are producers only — they produce blocks but cannot sign releases.
-/// These keys are used as fallback for release signature verification (3-of-5)
-/// before on-chain state is available. Once synced, on-chain keys take precedence.
-pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
-    // N1 — producer + maintainer
-    "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
-    // N2 — producer + maintainer
-    "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
-    // N3 — producer + maintainer
-    "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
-    // N4 — producer + maintainer
-    "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
-    // N5 — producer + maintainer
-    "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
-];
-
-/// Bootstrap maintainer public keys for testnet (Ed25519, hex-encoded)
-///
-/// NT1-NT5 are both **producers AND maintainers** on testnet (dual role).
-/// NT6-NT12 are producers only — they produce blocks but cannot sign releases.
-/// These keys are used as fallback for release signature verification (3-of-5)
-/// before on-chain state is available. Once synced, on-chain keys take precedence.
-pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
-    // NT1 — producer + maintainer
-    "273a257357a0fefeba0d97f4e61ea069e2cb2758239b315824ea73410d06a199",
-    // NT2 — producer + maintainer
-    "d70259cb4fc7acaeddb5028014a62b8d359a8e9fbd98b6cc7b8ca6e9bb1270df",
-    // NT3 — producer + maintainer
-    "f23fb0840f985b781cdce2a8f9996e58dc154909e6fc36eb419b2b31a88fcc7f",
-    // NT4 — producer + maintainer
-    "7e5f6f49f934099c78edfbc7967143d8e32c88feb36a10864e8f5575b4f0028b",
-    // NT5 — producer + maintainer
-    "952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d",
-];
-
-/// Get the bootstrap maintainer keys for a specific network
-pub fn bootstrap_maintainer_keys(network: Network) -> &'static [&'static str; 5] {
-    match network {
-        Network::Mainnet => &BOOTSTRAP_MAINTAINER_KEYS_MAINNET,
-        Network::Testnet | Network::Devnet => &BOOTSTRAP_MAINTAINER_KEYS_TESTNET,
-    }
-}
-
-/// Check if the bootstrap maintainer keys are still placeholders
-///
-/// Returns `true` if any key starts with "00000000" (placeholder pattern).
-/// This MUST return `false` before mainnet launch.
-pub fn is_using_placeholder_keys(network: Network) -> bool {
-    bootstrap_maintainer_keys(network)
-        .iter()
-        .any(|k| k.starts_with("00000000"))
-}
-
-/// Verify that bootstrap maintainer keys are production-ready
-///
-/// Panics if placeholder keys are detected.
-/// Call this during node initialization.
-pub fn assert_production_keys(network: Network) {
-    if is_using_placeholder_keys(network) {
-        panic!(
-            "FATAL: Placeholder bootstrap maintainer keys detected for {:?}!\n\
-             This build cannot be used for {}.\n\
-             Replace bootstrap maintainer keys in doli-updater/src/lib.rs with real keys.",
-            network,
-            network.name()
-        );
-    }
-}
-
-/// Get the bootstrap maintainer public keys for a network
-///
-/// Returns test keys if DOLI_TEST_KEYS=1 is set, otherwise returns
-/// the network-specific bootstrap keys.
-pub fn get_maintainer_keys(network: Network) -> Vec<&'static str> {
-    if should_use_test_keys() && network == Network::Devnet {
-        test_maintainer_pubkeys()
-    } else {
-        bootstrap_maintainer_keys(network).to_vec()
-    }
-}
-
-/// Default update check interval: 6 hours
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
-
-/// GitHub repository for releases (primary source)
-/// Using author's personal repo for authenticity (like torvalds/linux, antirez/redis)
-pub const GITHUB_REPO: &str = "e-weil/doli";
-
-/// GitHub API URL for latest release
-pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
-
-/// GitHub releases download base URL
-pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/download";
-
-/// Fallback update server (if GitHub is unreachable)
-pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
-
-// ============================================================================
-// Network-Aware Parameters
-// ============================================================================
-
-/// Update system parameters derived from network configuration
-///
-/// Use this struct to get network-specific timing parameters instead of
-/// the global constants. This enables accelerated testing on devnet.
-///
-/// # Example
-///
-/// ```rust
-/// use updater::UpdateParams;
-/// use doli_core::network::Network;
-///
-/// let params = UpdateParams::for_network(Network::Devnet);
-/// assert_eq!(params.veto_period_secs, 60); // 1 minute on devnet
-///
-/// let params = UpdateParams::for_network(Network::Mainnet);
-/// assert_eq!(params.veto_period_secs, 5 * 60); // 5 minutes (early network)
-/// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UpdateParams {
-    /// Veto period in seconds
-    pub veto_period_secs: u64,
-    /// Grace period after approval in seconds
-    pub grace_period_secs: u64,
-    /// Minimum producer age before voting is allowed (seconds)
-    pub min_voting_age_secs: u64,
-    /// Minimum producer age before voting is allowed (blocks)
-    pub min_voting_age_blocks: u64,
-    /// Update check interval in seconds
-    pub check_interval_secs: u64,
-    /// Crash detection window in seconds
-    pub crash_window_secs: u64,
-    /// Number of crashes within window that triggers rollback
-    pub crash_threshold: u32,
-    /// Blocks needed to reach full seniority (4x vote weight)
-    pub seniority_maturity_blocks: u64,
-    /// Blocks per seniority step (1 year equivalent)
-    pub seniority_step_blocks: u64,
-    /// Network identifier
-    pub network: Network,
-}
-
-impl UpdateParams {
-    /// Create update parameters for a specific network
-    pub fn for_network(network: Network) -> Self {
-        Self {
-            veto_period_secs: network.veto_period_secs(),
-            grace_period_secs: network.grace_period_secs(),
-            min_voting_age_secs: network.min_voting_age_secs(),
-            min_voting_age_blocks: network.min_voting_age_blocks(),
-            check_interval_secs: network.update_check_interval_secs(),
-            crash_window_secs: network.crash_window_secs(),
-            crash_threshold: network.crash_threshold(),
-            seniority_maturity_blocks: network.seniority_maturity_blocks(),
-            seniority_step_blocks: network.seniority_step_blocks(),
-            network,
-        }
-    }
-
-    /// Get veto period as Duration
-    pub fn veto_period(&self) -> Duration {
-        Duration::from_secs(self.veto_period_secs)
-    }
-
-    /// Get grace period as Duration
-    pub fn grace_period(&self) -> Duration {
-        Duration::from_secs(self.grace_period_secs)
-    }
-
-    /// Get check interval as Duration
-    pub fn check_interval(&self) -> Duration {
-        Duration::from_secs(self.check_interval_secs)
-    }
-
-    /// Get crash window as Duration
-    pub fn crash_window(&self) -> Duration {
-        Duration::from_secs(self.crash_window_secs)
-    }
-
-    /// Calculate vote weight based on bonds staked and producer seniority.
-    ///
-    /// weight = bond_count × seniority_multiplier
-    /// seniority_multiplier = 1.0 + min(years, 4) × 0.75
-    ///
-    /// This balances economic stake (bonds) with time commitment (seniority).
-    /// A whale with 100 bonds registered yesterday gets 100 × 1.0 = 100,
-    /// while 25 veterans at 4 years get 25 × 4.0 = 100 — equal power.
-    pub fn calculate_vote_weight(&self, bond_count: u32, blocks_active: u64) -> f64 {
-        let years = blocks_active as f64 / self.seniority_step_blocks as f64;
-        let capped_years = years.min(4.0);
-        let seniority_multiplier = 1.0 + capped_years * 0.75;
-        bond_count as f64 * seniority_multiplier
-    }
-
-    /// Calculate seniority multiplier only (for display purposes).
-    pub fn seniority_multiplier(&self, blocks_active: u64) -> f64 {
-        let years = blocks_active as f64 / self.seniority_step_blocks as f64;
-        let capped_years = years.min(4.0);
-        1.0 + capped_years * 0.75
-    }
-
-    /// Check if a producer is old enough to vote
-    pub fn is_eligible_to_vote(&self, blocks_since_registration: u64) -> bool {
-        blocks_since_registration >= self.min_voting_age_blocks
-    }
-
-    /// Get veto deadline for a release
-    pub fn veto_deadline(&self, release: &Release) -> u64 {
-        release.published_at + self.veto_period_secs
-    }
-
-    /// Get grace period deadline (when enforcement begins)
-    pub fn grace_period_deadline(&self, release: &Release) -> u64 {
-        self.veto_deadline(release) + self.grace_period_secs
-    }
-
-    /// Check if veto period has ended for a release
-    pub fn veto_period_ended(&self, release: &Release) -> bool {
-        current_timestamp() >= self.veto_deadline(release)
-    }
-
-    /// Check if we're in the grace period (after approval, before enforcement)
-    pub fn in_grace_period(&self, release: &Release) -> bool {
-        let now = current_timestamp();
-        let veto_end = self.veto_deadline(release);
-        let grace_end = self.grace_period_deadline(release);
-        now >= veto_end && now < grace_end
-    }
-}
-
-impl Default for UpdateParams {
-    /// Default parameters use mainnet timing
-    fn default() -> Self {
-        Self::for_network(Network::Mainnet)
-    }
-}
-
-// ============================================================================
-// Types
-// ============================================================================
-
-/// Release metadata for network targeting (metadata.json in GitHub Releases)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReleaseMetadata {
-    pub version: String,
-    pub networks: Vec<String>,
-    #[serde(default)]
-    pub min_protocol_version: Option<u32>,
-}
-
-/// A signed release from maintainers
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Release {
-    /// Semantic version (e.g., "1.0.1")
-    pub version: String,
-
-    /// SHA-256 hash of the binary (hex-encoded)
-    pub binary_sha256: String,
-
-    /// URL template for binary download
-    /// Use {platform} for: linux-x64, linux-arm64, macos-x64, macos-arm64
-    pub binary_url_template: String,
-
-    /// Human-readable changelog
-    pub changelog: String,
-
-    /// Unix timestamp when release was published
-    pub published_at: u64,
-
-    /// Maintainer signatures
-    pub signatures: Vec<MaintainerSignature>,
-
-    /// Target networks from metadata.json. Empty = all networks (backward compat).
-    #[serde(default)]
-    pub target_networks: Vec<String>,
-}
-
-/// A maintainer's signature on a release
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MaintainerSignature {
-    /// Maintainer's public key (hex-encoded)
-    pub public_key: String,
-
-    /// Signature over "version:checksums_sha256" (hex-encoded)
-    pub signature: String,
-}
-
-/// SIGNATURES.json file format (uploaded to GitHub Releases)
-///
-/// Each maintainer signs `"{version}:{sha256(CHECKSUMS.txt)}"` — one signature
-/// covers all platforms since CHECKSUMS.txt contains per-platform hashes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignaturesFile {
-    /// Semantic version (e.g., "1.0.27")
-    pub version: String,
-
-    /// SHA-256 hash of CHECKSUMS.txt (hex-encoded)
-    pub checksums_sha256: String,
-
-    /// Maintainer signatures
-    pub signatures: Vec<MaintainerSignature>,
-}
-
-/// Update configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UpdateConfig {
-    /// Enable auto-updates (default: true)
-    pub enabled: bool,
-
-    /// Only notify, don't apply (default: false)
-    pub notify_only: bool,
-
-    /// Enable automatic rollback on update failures (default: true)
-    pub auto_rollback: bool,
-
-    /// Check interval in seconds (default: 6 hours)
-    pub check_interval_secs: u64,
-
-    /// Veto period in seconds (default: 2 hours)
-    pub veto_period_secs: u64,
-
-    /// Grace period after approval in seconds (default: 1 hour)
-    pub grace_period_secs: u64,
-
-    /// Custom update URL (optional, uses mirrors by default)
-    pub custom_url: Option<String>,
-}
-
-impl Default for UpdateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            notify_only: false,
-            auto_rollback: true,
-            check_interval_secs: CHECK_INTERVAL.as_secs(),
-            veto_period_secs: VETO_PERIOD.as_secs(),
-            grace_period_secs: GRACE_PERIOD.as_secs(),
-            custom_url: None,
-        }
-    }
-}
-
-/// Errors that can occur during updates
-#[derive(Error, Debug)]
-pub enum UpdateError {
-    #[error("Insufficient signatures: {found}/{required}")]
-    InsufficientSignatures { found: usize, required: usize },
-
-    #[error("Invalid signature from maintainer {0}")]
-    InvalidSignature(String),
-
-    #[error("Binary hash mismatch: expected {expected}, got {actual}")]
-    HashMismatch { expected: String, actual: String },
-
-    #[error("Download failed: {0}")]
-    DownloadFailed(String),
-
-    #[error("Installation failed: {0}")]
-    InstallFailed(String),
-
-    #[error("Network error: {0}")]
-    Network(#[from] reqwest::Error),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("Veto period still active: {remaining_hours}h remaining")]
-    VetoPeriodActive {
-        remaining_hours: u64,
-        message: String,
-    },
-
-    #[error("Update rejected by community: {veto_percent}% veto (threshold: {threshold}%)")]
-    RejectedByVeto { veto_percent: u8, threshold: u8 },
-
-    #[error("Update not yet approved")]
-    NotApproved,
-}
-
-pub type Result<T> = std::result::Result<T, UpdateError>;
-
-/// Result of the veto period
-#[derive(Debug, Clone)]
-pub struct VoteResult {
-    pub total_producers: usize,
-    pub veto_count: usize,
-    pub veto_percent: u8,
-    pub approved: bool,
-}
-
-/// Version enforcement state - tracks when production should be blocked
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VersionEnforcement {
-    /// Minimum required version to produce blocks
-    pub min_version: String,
-    /// Timestamp when enforcement begins (after grace period)
-    pub enforcement_time: u64,
-    /// Whether this enforcement is active
-    pub active: bool,
-}
-
-impl VersionEnforcement {
-    /// Create enforcement for an approved release (using mainnet defaults)
-    ///
-    /// For network-aware timing, use `from_approved_release_with_params` instead.
-    pub fn from_approved_release(release: &Release) -> Self {
-        let enforcement_time = veto_deadline(release) + GRACE_PERIOD.as_secs();
-        Self {
-            min_version: release.version.clone(),
-            enforcement_time,
-            active: false,
-        }
-    }
-
-    /// Create enforcement for an approved release with network-specific timing
-    ///
-    /// This is the preferred method when you have access to network context.
-    pub fn from_approved_release_with_params(release: &Release, params: &UpdateParams) -> Self {
-        let enforcement_time = params.grace_period_deadline(release);
-        Self {
-            min_version: release.version.clone(),
-            enforcement_time,
-            active: false,
-        }
-    }
-
-    /// Check if enforcement should now be active
-    pub fn should_enforce(&self) -> bool {
-        current_timestamp() >= self.enforcement_time
-    }
-
-    /// Calculate seconds until enforcement
-    pub fn seconds_until_enforcement(&self) -> u64 {
-        self.enforcement_time.saturating_sub(current_timestamp())
-    }
-
-    /// Calculate hours until enforcement
-    pub fn hours_until_enforcement(&self) -> u64 {
-        self.seconds_until_enforcement() / 3600
-    }
-
-    /// Check if current version meets requirement
-    pub fn version_meets_requirement(&self, current: &str) -> bool {
-        !is_newer_version(&self.min_version, current)
-    }
-}
-
-/// Production blocked error with helpful message
-#[derive(Debug, Clone)]
-pub struct ProductionBlocked {
-    pub current_version: String,
-    pub required_version: String,
-}
-
-impl std::fmt::Display for ProductionBlocked {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            r#"
-╔══════════════════════════════════════════════════════════════════╗
-║                    ⚠️  PRODUCTION PAUSED                          ║
-╠══════════════════════════════════════════════════════════════════╣
-║                                                                  ║
-║  Your node ({}) is outdated.                                     ║
-║  Required version: {}                                            ║
-║                                                                  ║
-║  Network security requires all producers to be updated.          ║
-║  Block production is paused until update is complete.            ║
-║                                                                  ║
-║  To update, run:                                                 ║
-║    doli-node update apply                                        ║
-║                                                                  ║
-║  After updating, production will resume automatically.           ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-"#,
-            self.current_version, self.required_version
-        )
-    }
-}
-
-impl std::error::Error for ProductionBlocked {}
-
-/// Check if production is allowed based on version enforcement
-pub fn check_production_allowed(
-    enforcement: Option<&VersionEnforcement>,
-) -> std::result::Result<(), ProductionBlocked> {
-    if let Some(enf) = enforcement {
-        if enf.should_enforce() && !enf.version_meets_requirement(current_version()) {
-            return Err(ProductionBlocked {
-                current_version: current_version().to_string(),
-                required_version: enf.min_version.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Grace period deadline (when enforcement begins)
-///
-/// Uses mainnet defaults. For network-aware timing, use `UpdateParams::grace_period_deadline`.
-pub fn grace_period_deadline(release: &Release) -> u64 {
-    veto_deadline(release) + GRACE_PERIOD.as_secs()
-}
-
-/// Grace period deadline with network-specific timing
-pub fn grace_period_deadline_for_network(release: &Release, network: Network) -> u64 {
-    let params = UpdateParams::for_network(network);
-    params.grace_period_deadline(release)
-}
-
-/// Check if we're in the grace period (after approval, before enforcement)
-///
-/// Uses mainnet defaults. For network-aware timing, use `UpdateParams::in_grace_period`.
-pub fn in_grace_period(release: &Release) -> bool {
-    let now = current_timestamp();
-    let veto_end = veto_deadline(release);
-    let grace_end = grace_period_deadline(release);
-    now >= veto_end && now < grace_end
-}
-
-/// Check if we're in the grace period with network-specific timing
-pub fn in_grace_period_for_network(release: &Release, network: Network) -> bool {
-    let params = UpdateParams::for_network(network);
-    params.in_grace_period(release)
-}
-
-// ============================================================================
-// Release Signing
-// ============================================================================
-
-/// Sign a release hash with a maintainer's private key
-///
-/// Signs the message `"version:sha256"` which matches the format verified by
-/// `verify_release_signatures_with_keys()`. Returns a `MaintainerSignature`
-/// containing the public key and hex-encoded signature.
-///
-/// # Usage
-///
-/// ```ignore
-/// let keypair = crypto::KeyPair::from_private_key(private_key);
-/// let sig = sign_release_hash(&keypair, "0.2.0", "abcdef1234...");
-/// println!("{}", serde_json::to_string(&sig).unwrap());
-/// ```
-pub fn sign_release_hash(
-    keypair: &crypto::KeyPair,
-    version: &str,
-    binary_sha256: &str,
-) -> MaintainerSignature {
-    let message = format!("{}:{}", version, binary_sha256);
-    let signature = crypto::signature::sign(message.as_bytes(), keypair.private_key());
-    MaintainerSignature {
-        public_key: keypair.public_key().to_hex(),
-        signature: signature.to_hex(),
-    }
-}
-
-// ============================================================================
-// Core Logic
-// ============================================================================
-
-/// Verify release signatures using bootstrap keys only (convenience wrapper)
-///
-/// Use this for CLI commands and contexts where on-chain state is not available.
-/// For the running node, prefer `verify_release_signatures_with_keys()`.
-pub fn verify_release_signatures(release: &Release, network: Network) -> Result<()> {
-    verify_release_signatures_with_keys(release, &[], network)
-}
-
-/// Verify that a release has sufficient valid maintainer signatures
-///
-/// If `on_chain_keys` is non-empty, those keys are used for verification
-/// (derived from first 5 registered producers on-chain). If empty, falls
-/// back to the network-specific bootstrap maintainer keys.
-pub fn verify_release_signatures_with_keys(
-    release: &Release,
-    on_chain_keys: &[String],
-    network: Network,
-) -> Result<()> {
-    let message = format!("{}:{}", release.version, release.binary_sha256);
-    let message_bytes = message.as_bytes();
-
-    // Determine which keys to use
-    let using_on_chain = !on_chain_keys.is_empty();
-    let allowed_keys: Vec<&str> = if using_on_chain {
-        info!(
-            "Verifying release signatures with {} on-chain maintainer keys",
-            on_chain_keys.len()
-        );
-        on_chain_keys.iter().map(|s| s.as_str()).collect()
-    } else {
-        debug!(
-            "Verifying release signatures with {:?} bootstrap maintainer keys",
-            network
-        );
-        bootstrap_maintainer_keys(network).to_vec()
-    };
-
-    let mut valid_count = 0;
-
-    for sig in &release.signatures {
-        // Check if this is a known maintainer
-        if !allowed_keys.contains(&sig.public_key.as_str()) {
-            debug!("Ignoring signature from unknown key: {}", sig.public_key);
-            continue;
-        }
-
-        // Decode public key
-        let pubkey_bytes = match hex::decode(&sig.public_key) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                warn!("Invalid hex in public key: {}", sig.public_key);
-                continue;
-            }
-        };
-
-        // Decode signature
-        let sig_bytes = match hex::decode(&sig.signature) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                warn!("Invalid hex in signature");
-                continue;
-            }
-        };
-
-        // Verify signature using doli-crypto
-        if verify_ed25519(&pubkey_bytes, message_bytes, &sig_bytes) {
-            valid_count += 1;
-            debug!(
-                "Valid signature from maintainer: {}...",
-                &sig.public_key[..16]
-            );
-        } else {
-            warn!(
-                "Invalid signature from maintainer: {}...",
-                &sig.public_key[..16]
-            );
-        }
-    }
-
-    if valid_count >= REQUIRED_SIGNATURES {
-        info!(
-            "Release {} verified: {}/{} valid signatures (source: {})",
-            release.version,
-            valid_count,
-            REQUIRED_SIGNATURES,
-            if using_on_chain {
-                "on-chain"
-            } else {
-                "bootstrap"
-            }
-        );
-        Ok(())
-    } else {
-        Err(UpdateError::InsufficientSignatures {
-            found: valid_count,
-            required: REQUIRED_SIGNATURES,
-        })
-    }
-}
-
-/// Calculate veto result
-pub fn calculate_veto_result(veto_count: usize, total_producers: usize) -> VoteResult {
-    let veto_percent = if total_producers > 0 {
-        ((veto_count * 100) / total_producers) as u8
-    } else {
-        0
-    };
-
-    let approved = veto_percent < VETO_THRESHOLD_PERCENT;
-
-    VoteResult {
-        total_producers,
-        veto_count,
-        veto_percent,
-        approved,
-    }
-}
-
-/// Get the deadline timestamp for when veto period ends
-pub fn veto_deadline(release: &Release) -> u64 {
-    release.published_at + VETO_PERIOD.as_secs()
-}
-
-/// Check if veto period has ended
-pub fn veto_period_ended(release: &Release) -> bool {
-    current_timestamp() >= veto_deadline(release)
-}
-
-/// Get current version from the running binary
-pub fn current_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-/// Compare versions (simple semver comparison)
-pub fn is_newer_version(new: &str, current: &str) -> bool {
-    // Parse as semver and compare
-    let parse = |v: &str| -> (u32, u32, u32) {
-        let parts: Vec<&str> = v.trim_start_matches('v').split('.').collect();
-        (
-            parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
-            parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-            parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-        )
-    };
-
-    parse(new) > parse(current)
-}
-
-/// Get platform identifier for binary download
-pub fn platform_identifier() -> &'static str {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "linux-x64";
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "linux-arm64";
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "macos-x64";
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "macos-arm64";
-
-    #[cfg(not(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64"),
-    )))]
-    return "unknown";
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Get current Unix timestamp
-pub fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Verify Ed25519 signature using doli-crypto
-fn verify_ed25519(pubkey_bytes: &[u8], message: &[u8], sig_bytes: &[u8]) -> bool {
-    use crypto::signature::verify;
-
-    // Parse public key
-    let pubkey = match PublicKey::try_from_slice(pubkey_bytes) {
-        Ok(pk) => pk,
-        Err(_) => return false,
-    };
-
-    // Parse signature
-    let signature = match CryptoSignature::try_from_slice(sig_bytes) {
-        Ok(sig) => sig,
-        Err(_) => return false,
-    };
-
-    // Verify
-    verify(message, &signature, &pubkey).is_ok()
-}
+// Re-exports: constants
+pub use constants::{
+    assert_production_keys, bootstrap_maintainer_keys, get_maintainer_keys,
+    is_using_placeholder_keys, BOOTSTRAP_MAINTAINER_KEYS_MAINNET,
+    BOOTSTRAP_MAINTAINER_KEYS_TESTNET, CHECK_INTERVAL, FALLBACK_MIRROR, GITHUB_API_URL,
+    GITHUB_RELEASES_URL, GITHUB_REPO, GRACE_PERIOD, REQUIRED_SIGNATURES, VETO_PERIOD,
+    VETO_THRESHOLD_PERCENT,
+};
+
+// Re-exports: types
+pub use types::{
+    MaintainerSignature, Release, ReleaseMetadata, Result, SignaturesFile, UpdateConfig,
+    UpdateError, VoteResult,
+};
+
+// Re-exports: params
+pub use params::UpdateParams;
+
+// Re-exports: enforcement
+pub use enforcement::{
+    check_production_allowed, grace_period_deadline, grace_period_deadline_for_network,
+    in_grace_period, in_grace_period_for_network, veto_deadline, veto_period_ended,
+    ProductionBlocked, VersionEnforcement,
+};
+
+// Re-exports: verification
+pub use verification::{
+    calculate_veto_result, sign_release_hash, verify_release_signatures,
+    verify_release_signatures_with_keys,
+};
+
+// Re-exports: util
+pub use util::{current_timestamp, current_version, is_newer_version, platform_identifier};
 
 // ============================================================================
 // Tests
@@ -904,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_vote_weight_bonds_times_seniority() {
-        let params = UpdateParams::for_network(Network::Devnet);
+        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
         // Devnet: seniority_step_blocks = 144 (1 "year")
 
         // 1 bond, 0 years → 1.0 × 1.0 = 1.0
@@ -938,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_vote_weight_as_u64_for_tracker() {
-        let params = UpdateParams::for_network(Network::Devnet);
+        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
 
         // Weights stored as u64 with 100x multiplier for 2-decimal precision
         let w = params.calculate_vote_weight(1, 0);
@@ -957,7 +207,7 @@ mod tests {
     #[test]
     fn test_vote_weight_veto_with_bonds() {
         use crate::vote::{Vote, VoteTracker};
-        let params = UpdateParams::for_network(Network::Devnet);
+        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
 
         // Scenario: 5 genesis producers (1 bond, ~24 blocks active) + 1 whale (10 bonds, new)
         let mut weights = std::collections::HashMap::new();
@@ -1002,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_seniority_multiplier() {
-        let params = UpdateParams::for_network(Network::Devnet);
+        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
 
         assert!((params.seniority_multiplier(0) - 1.0).abs() < 0.001);
         assert!((params.seniority_multiplier(params.seniority_step_blocks) - 1.75).abs() < 0.001);
