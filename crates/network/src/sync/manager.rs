@@ -1777,6 +1777,14 @@ impl SyncManager {
         if best_peer_height <= self.local_height + 5 {
             return false;
         }
+        // Small gaps (≤50 blocks) are NOT deep forks — resolve_shallow_fork()
+        // and fork_sync can handle them via rollback without wiping state.
+        // Snap sync for small gaps loses block history and creates a cascade:
+        // snap → no block 1 → next fork → rollback impossible → re-snap.
+        let gap = best_peer_height.saturating_sub(self.local_height);
+        if gap <= 50 {
+            return false;
+        }
         // If snap sync can handle this gap, don't escalate to deep fork.
         // next_request() will attempt snap sync first.
         let gap = best_peer_height.saturating_sub(self.local_height);
@@ -2308,7 +2316,22 @@ impl SyncManager {
                         self.start_sync();
                         return None;
                     }
-                    // Not enough peers or gap too small — fall back to genesis resync
+                    // Small gaps (≤50): redirect to fork_sync/rollback instead of
+                    // genesis resync. Snap sync for small gaps loses block history
+                    // and creates a cascade (snap → no block 1 → future rollback
+                    // fails → re-snap). Rollback is O(1) per block and preserves
+                    // full chain history.
+                    if gap <= 50 && self.local_height > 0 {
+                        warn!(
+                            "Small fork (gap={}, empties={}): redirecting to fork_sync \
+                             instead of genesis resync — rollback can handle this",
+                            gap, self.consecutive_empty_headers
+                        );
+                        self.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
+                        self.state = SyncState::Idle;
+                        return None;
+                    }
+                    // Large gap with not enough peers — fall back to genesis resync
                     info!(
                         "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
                         self.consecutive_empty_headers
@@ -3699,16 +3722,27 @@ impl SyncManager {
             if stuck_duration > Duration::from_secs(120) {
                 if self.consecutive_empty_headers >= 20 {
                     // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
-                    // Escalate to snap sync if enough peers, otherwise clear and retry.
+                    // Escalate to snap sync if enough peers AND gap is large enough.
+                    // For small gaps (≤50), redirect to rollback/fork_sync to preserve
+                    // block history and avoid snap sync cascade.
                     let enough_peers = self.peers.len() >= 3;
-                    if enough_peers {
+                    let gap = self.network_tip_height.saturating_sub(self.local_height);
+                    if enough_peers && gap > 50 {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers — \
-                             escalating to snap sync",
-                            self.consecutive_empty_headers
+                             escalating to snap sync (gap={})",
+                            self.consecutive_empty_headers, gap
                         );
                         self.header_blacklisted_peers.clear();
                         self.needs_genesis_resync = true;
+                    } else if enough_peers && gap <= 50 {
+                        warn!(
+                            "All peers blacklisted for >120s (gap={}) — clearing blacklist \
+                             and redirecting to rollback (small gap, preserving block history)",
+                            gap
+                        );
+                        self.header_blacklisted_peers.clear();
+                        self.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
                     } else {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers \

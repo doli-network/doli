@@ -216,12 +216,16 @@ impl Node {
             return Ok(false);
         }
 
-        // Fast path: small gap (<= 10 blocks) — just rollback 1 block.
+        // Fast path: small gap (<= 50 blocks) — just rollback 1 block.
         // This changes local_hash to the parent, and the next sync attempt
-        // will try GetHeaders with the parent hash. After 1-3 rollbacks,
+        // will try GetHeaders with the parent hash. After 1-N rollbacks,
         // we find a hash peers recognize and sync resumes.
         // No binary search needed, no grace check — immediate recovery.
-        if gap <= 10 && self.shallow_rollback_count < 10 {
+        //
+        // Range expanded from 10→50 to prevent small/medium forks from
+        // escalating to snap sync, which loses block history and creates
+        // a cascade (snap → no block 1 → future rollback fails → re-snap).
+        if gap <= 50 && self.shallow_rollback_count < 50 {
             info!(
                 "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
                  from h={} to find common ancestor (rollback #{})",
