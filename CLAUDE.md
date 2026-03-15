@@ -49,6 +49,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 8. Learning protocol: before following any doc/skill, check MEMORY.md hotfixes. Doc drifts from code? Register hotfix, fix the doc. A mistake not fixed at the source repeats forever.
 9. Docs sync: after every code modification or new feature, update the relevant `specs/` and `docs/` files for the affected domain. Keep `specs/SPECS.md` and `docs/DOCS.md` indexes current — any new spec or doc file MUST be added to its index. `docs/understanding/PROJECT-UNDERSTANDING.md` MUST also be kept in sync — update affected sections when code changes alter architecture, workflows, parameters, or risk areas.
 10. Strict modularity: max **500 lines per module**. If a file exceeds 500 lines, split it. Exceptions only for strictly critical cases (consensus, apply_block, validation) where splitting would compromise safety — and even then, hard cap at **1000 lines**.
+11. Adversarial verification: when given a report, audit finding, or bug claim to investigate — you are **forbidden** from repeating or accepting the report's claims without independent verification. You MUST read the actual code, run the actual commands, and form your own conclusion. Your job is not to confirm — it is to **verify or refute**. Success = producing evidence that either confirms or disproves the claim. Parroting the report back is failure.
 
 ## Map — Code
 
