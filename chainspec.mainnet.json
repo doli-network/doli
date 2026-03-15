@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773616098,
+    "timestamp": 1773615082,
     "message": "Time is the only fair currency. Chain reset 15/Mar/2026",
     "initial_reward": 100000000
   },
