@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use libp2p::gossipsub::{
     Behaviour as Gossipsub, ConfigBuilder, IdentTopic, Message, MessageAuthenticity, MessageId,
-    TopicHash, ValidationMode,
+    PeerScoreParams, PeerScoreThresholds, TopicHash, TopicScoreParams, ValidationMode,
 };
 use libp2p::identity::Keypair;
 use tracing::debug;
@@ -301,8 +301,33 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
 
-    Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
-        .map_err(|e| GossipError::Init(e.to_string()))
+    let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
+        .map_err(|e| GossipError::Init(e.to_string()))?;
+
+    // REQ-NET-002: Peer scoring to prioritize producers in the mesh.
+    // Producers naturally deliver first-seen blocks (they create them).
+    // Non-producers only relay. This makes GossipSub preferentially keep
+    // producers in the mesh without any explicit "is_producer" check.
+    let mut topic_scores = std::collections::HashMap::new();
+    topic_scores.insert(
+        IdentTopic::new(BLOCKS_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 1.0,
+            first_message_deliveries_weight: 10.0,
+            first_message_deliveries_decay: 0.5,
+            first_message_deliveries_cap: 100.0,
+            ..Default::default()
+        },
+    );
+    let peer_score_params = PeerScoreParams {
+        topics: topic_scores,
+        ..Default::default()
+    };
+    gossipsub
+        .with_peer_score(peer_score_params, PeerScoreThresholds::default())
+        .map_err(GossipError::Config)?;
+
+    Ok(gossipsub)
 }
 
 /// Subscribe to block, transaction, producer, vote, and heartbeat topics

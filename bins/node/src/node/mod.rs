@@ -140,6 +140,10 @@ pub struct Node {
     pub(super) pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
     /// Last time we attempted to redial bootstrap nodes (rate limiter)
     pub(super) last_peer_redial: Option<Instant>,
+    /// REQ-NET-001: Exponential backoff tracking for bootstrap node reconnection.
+    /// Maps bootstrap address → (failure_count, last_attempt_time).
+    /// Reset when any peer connects (peer_count > 0).
+    pub(super) bootstrap_backoff: HashMap<String, (u32, Instant)>,
     /// Last height at which each producer produced a block (for liveness filter).
     /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
     /// Used by bootstrap scheduling to exclude stale producers from primary rotation.

@@ -33,6 +33,7 @@ pub(crate) async fn run_node(
     chainspec_path: Option<PathBuf>,
     archive_to: Option<PathBuf>,
     no_snap_sync: bool,
+    snap_sync: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -132,6 +133,11 @@ pub(crate) async fn run_node(
     if no_snap_sync {
         config.no_snap_sync = true;
         info!("Snap sync disabled — node will only use header-first sync");
+    }
+    // REQ-SYNC-002: --snap-sync explicitly enables snap sync (overrides mainnet default)
+    if snap_sync {
+        config.no_snap_sync = false;
+        info!("Snap sync explicitly enabled via --snap-sync");
     }
     if relay_server {
         config.relay_server = true;

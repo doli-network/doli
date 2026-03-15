@@ -59,7 +59,8 @@ pub struct NodeConfig {
     pub external_address: Option<String>,
 
     /// Disable snap sync entirely. The node will only use header-first sync.
-    /// Use on archiver/seed nodes to prevent losing block history on restart.
+    /// Defaults to true on mainnet (full sync from genesis).
+    /// Use --snap-sync to explicitly enable for faster initial sync.
     #[serde(default)]
     pub no_snap_sync: bool,
 }
@@ -92,7 +93,10 @@ impl NodeConfig {
             chainspec: None,
             slot_duration_override: None,
             external_address: None,
-            no_snap_sync: false,
+            // REQ-SYNC-002: Mainnet defaults to full sync (no snap sync).
+            // Snap sync skips block_store, making producer_liveness empty and
+            // consensus-critical scheduling divergent between full and snap-synced nodes.
+            no_snap_sync: network == Network::Mainnet,
         }
     }
 }

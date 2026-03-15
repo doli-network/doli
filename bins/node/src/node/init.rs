@@ -121,16 +121,32 @@ impl Node {
         }
 
         // Load state from StateDb (or create fresh genesis)
+        let canonical_spec = match config.network {
+            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+        };
+        let canonical_genesis_hash = canonical_spec.genesis_hash();
+
         let mut chain_state = if let Some(cs) = state_db.get_chain_state() {
+            // REQ-SYNC-003: Validate StateDb genesis hash against embedded chainspec.
+            // A stale StateDb (from a different chain or pre-reset) causes consensus
+            // divergence — producers compute different scheduling at the same height.
+            if cs.genesis_hash != canonical_genesis_hash && cs.best_height > 0 {
+                return Err(anyhow::anyhow!(
+                    "StateDb genesis hash mismatch!\n\
+                     StateDb has:    {}\n\
+                     Chainspec has:  {}\n\
+                     The state database belongs to a different chain (stale data from a prior reset or wrong network).\n\
+                     Fix: wipe data directory ({}) and restart, or pass --snap-sync to re-sync from peers.",
+                    cs.genesis_hash,
+                    canonical_genesis_hash,
+                    config.data_dir.display()
+                ));
+            }
             cs
         } else {
-            let spec = match config.network {
-                Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
-                Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
-                Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
-            };
-            let genesis_hash = spec.genesis_hash();
-            let cs = ChainState::new(genesis_hash);
+            let cs = ChainState::new(canonical_genesis_hash);
             state_db.put_chain_state(&cs)?;
             cs
         };
@@ -603,6 +619,7 @@ impl Node {
             vote_tx: None,
             pending_update: None,
             last_peer_redial: None,
+            bootstrap_backoff: HashMap::new(),
             producer_liveness,
             snap_sync_height: None,
             genesis_vdf_output: None,

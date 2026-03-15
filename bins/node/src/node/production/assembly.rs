@@ -114,11 +114,14 @@ impl Node {
         }
 
         // Add transactions from mempool (validate covenant conditions before inclusion)
+        // REQ-PROD-001: Time-bounded block building — 60% of slot for TX validation,
+        // leaving 40% for VDF, signing, and gossip broadcast.
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
         };
         {
+            let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
             let utxo_ctx = validation::ValidationContext::new(
                 ConsensusParams::for_network(self.config.network),
@@ -126,7 +129,16 @@ impl Node {
                 0,
                 height,
             );
+            let total_mempool = mempool_txs.len();
+            let mut included_count = 0usize;
             for tx in &mempool_txs {
+                if Instant::now() > deadline {
+                    warn!(
+                        "Block building deadline reached: including {}/{} mempool TXs",
+                        included_count, total_mempool
+                    );
+                    break;
+                }
                 if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
                     warn!(
                         "Skipping mempool tx {} — UTXO validation failed: {}",
@@ -135,6 +147,7 @@ impl Node {
                     );
                     continue;
                 }
+                included_count += 1;
                 builder.add_transaction(tx.clone());
             }
         }

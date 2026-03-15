@@ -190,21 +190,29 @@ impl Node {
         }
 
         // PEER MAINTENANCE: Periodically redial bootstrap nodes when isolated.
-        // Unlike stale chain detection (which requires chain inactivity), this runs
-        // even when the node is producing solo — ensuring reconnection attempts
-        // happen regardless of local production state.
+        // REQ-NET-001: Exponential backoff per bootstrap address to avoid
+        // saturating the event loop with failed TCP handshakes to dead peers.
         {
             let peer_count = self.sync_manager.read().await.peer_count();
-            if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
-                // Redial every 10 seconds (slot duration) when isolated
-                let should_redial = self
-                    .last_peer_redial
-                    .map(|t| t.elapsed().as_secs() >= self.params.slot_duration)
-                    .unwrap_or(true);
-                if should_redial {
-                    self.last_peer_redial = Some(std::time::Instant::now());
-                    if let Some(ref network) = self.network {
-                        for addr in &self.config.bootstrap_nodes {
+            if peer_count > 0 {
+                // Connected — reset all backoff counters
+                self.bootstrap_backoff.clear();
+            } else if !self.config.bootstrap_nodes.is_empty() {
+                let now = std::time::Instant::now();
+                if let Some(ref network) = self.network {
+                    for addr in &self.config.bootstrap_nodes {
+                        let (count, last_attempt) = self
+                            .bootstrap_backoff
+                            .entry(addr.clone())
+                            .or_insert((0, now - Duration::from_secs(300)));
+
+                        // Backoff: 1s, 2s, 4s, 8s, ... capped at 60s for bootstrap nodes
+                        let backoff_secs = std::cmp::min(60, 1u64 << (*count).min(6));
+                        let backoff = Duration::from_secs(backoff_secs);
+
+                        if last_attempt.elapsed() >= backoff {
+                            *last_attempt = now;
+                            *count = count.saturating_add(1);
                             let _ = network.connect(addr).await;
                         }
                     }

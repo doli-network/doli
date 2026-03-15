@@ -125,8 +125,14 @@ pub(crate) enum Commands {
 
         /// Disable snap sync. The node will only use header-first sync,
         /// preserving full block history. Use on seed/archiver nodes.
+        /// Default on mainnet.
         #[arg(long)]
         no_snap_sync: bool,
+
+        /// Explicitly enable snap sync (faster initial sync, but skips block history).
+        /// Overrides the mainnet default of full sync.
+        #[arg(long)]
+        snap_sync: bool,
     },
 
     /// Initialize a new data directory

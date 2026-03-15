@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
             chainspec,
             archive_to,
             no_snap_sync,
+            snap_sync,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -163,6 +164,7 @@ async fn main() -> Result<()> {
                 chainspec,
                 archive_to,
                 no_snap_sync,
+                snap_sync,
             )
             .await?;
         }
@@ -266,6 +268,7 @@ async fn main() -> Result<()> {
                 None,  // chainspec
                 None,  // archive_to
                 false, // no_snap_sync
+                false, // snap_sync
             )
             .await?;
         }

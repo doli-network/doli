@@ -189,6 +189,19 @@ impl Node {
         network_config.mesh_n_high = mesh.mesh_n_high;
         network_config.gossip_lazy = mesh.gossip_lazy;
 
+        // REQ-OPS-001: Warn when --no-dht used with many producers
+        if network_config.no_dht && active_producers > 5 {
+            warn!("════════════════════════════════════════════════════════════════");
+            warn!(
+                "  WARNING: --no-dht is set but {} active producers detected.",
+                active_producers
+            );
+            warn!("  Peer discovery will be limited to bootstrap nodes only.");
+            warn!("  Snap sync requires 3+ peers. Gossip mesh requires 6+ peers.");
+            warn!("  Consider enabling DHT for networks with >5 nodes.");
+            warn!("════════════════════════════════════════════════════════════════");
+        }
+
         // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
         if self.config.relay_server {
             network_config.nat_config = network::NatConfig::relay_server();
