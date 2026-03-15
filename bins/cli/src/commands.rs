@@ -1,0 +1,642 @@
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "doli")]
+#[command(about = "DOLI wallet CLI", long_about = None)]
+#[command(version = env!("DOLI_VERSION_STRING"))]
+pub(crate) struct Cli {
+    /// Wallet file path
+    #[arg(
+        short,
+        long,
+        default_value = "~/.doli/wallet.json",
+        env = "DOLI_WALLET_FILE"
+    )]
+    pub(crate) wallet: String,
+
+    /// Node RPC endpoint (auto-detected from --network if not set)
+    #[arg(short, long, env = "DOLI_RPC_URL")]
+    pub(crate) rpc: Option<String>,
+
+    /// Network (mainnet, testnet, devnet)
+    #[arg(short, long, default_value = "mainnet", env = "DOLI_NETWORK")]
+    pub(crate) network: String,
+
+    #[command(subcommand)]
+    pub(crate) command: Commands,
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Commands {
+    /// Create a new wallet
+    New {
+        /// Wallet name
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Restore a wallet from a 24-word seed phrase
+    Restore {
+        /// Wallet name
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Generate a new address
+    Address {
+        /// Label for the address
+        #[arg(short, long)]
+        label: Option<String>,
+    },
+
+    /// List all addresses
+    Addresses,
+
+    /// Show wallet balance
+    Balance {
+        /// Specific address (default: all)
+        #[arg(short, long)]
+        address: Option<String>,
+    },
+
+    /// Send coins (optionally with a covenant condition)
+    Send {
+        /// Recipient address
+        to: String,
+
+        /// Amount to send
+        amount: String,
+
+        /// Fee (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+
+        /// Covenant condition on the output. Examples:
+        ///   multisig(2, addr1, addr2, addr3)
+        ///   hashlock(hex_hash)
+        ///   htlc(hex_hash, lock_height, expiry_height)
+        ///   timelock(min_height)
+        ///   vesting(addr, unlock_height)
+        #[arg(short, long)]
+        condition: Option<String>,
+    },
+
+    /// Spend a covenant-conditioned UTXO
+    Spend {
+        /// UTXO to spend: txhash:output_index
+        utxo: String,
+
+        /// Recipient address
+        to: String,
+
+        /// Amount to send (remaining goes to change)
+        amount: String,
+
+        /// Witness data to satisfy the condition. Examples:
+        ///   preimage(hex_secret)
+        ///   sign(wallet1.json, wallet2.json)
+        ///   branch(right, preimage(hex_secret))
+        #[arg(short, long)]
+        witness: String,
+
+        /// Fee (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+    },
+
+    /// Show transaction history
+    History {
+        /// Maximum number of transactions
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Export wallet
+    Export {
+        /// Output file path
+        output: PathBuf,
+    },
+
+    /// Import wallet
+    Import {
+        /// Input file path
+        input: PathBuf,
+    },
+
+    /// Show wallet info
+    Info,
+
+    /// Add BLS attestation key to an existing wallet
+    AddBls,
+
+    /// Sign a message
+    Sign {
+        /// Message to sign
+        message: String,
+
+        /// Address to sign with
+        #[arg(short, long)]
+        address: Option<String>,
+    },
+
+    /// Verify a signature
+    Verify {
+        /// Message that was signed
+        message: String,
+
+        /// Signature (hex)
+        signature: String,
+
+        /// Public key or address
+        pubkey: String,
+    },
+
+    /// Producer commands
+    Producer {
+        #[command(subcommand)]
+        command: ProducerCommands,
+    },
+
+    /// Rewards commands (epoch presence rewards)
+    Rewards {
+        #[command(subcommand)]
+        command: RewardsCommands,
+    },
+
+    /// Show chain information
+    Chain,
+
+    /// Verify chain integrity and compute chain commitment
+    ///
+    /// Scans all blocks 1..tip and computes a running BLAKE3 commitment:
+    ///   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
+    /// Two nodes with the same commitment have identical chains.
+    ChainVerify,
+
+    /// Update governance commands
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommands,
+    },
+
+    /// Maintainer governance commands
+    Maintainer {
+        #[command(subcommand)]
+        command: MaintainerCommands,
+    },
+
+    /// Upgrade doli binaries to the latest release
+    Upgrade {
+        /// Target version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        /// Custom path to doli-node binary (skip auto-detection)
+        #[arg(long)]
+        doli_node_path: Option<std::path::PathBuf>,
+
+        /// Restart only this systemd service (e.g. doli-mainnet-node3)
+        #[arg(long)]
+        service: Option<String>,
+    },
+
+    /// Release management commands (maintainer signing)
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
+    /// Protocol activation commands (on-chain consensus upgrades)
+    Protocol {
+        #[command(subcommand)]
+        command: ProtocolCommands,
+    },
+
+    /// NFT operations (mint, transfer, buy, sell, list, info)
+    Nft {
+        /// List NFTs owned by this wallet
+        #[arg(short, long)]
+        list: bool,
+
+        /// Show info for a specific NFT UTXO (txhash:index)
+        #[arg(short, long, value_name = "UTXO")]
+        info: Option<String>,
+
+        /// Mint a new NFT with given content (hash, URI, or text)
+        #[arg(short, long, value_name = "CONTENT")]
+        mint: Option<String>,
+
+        /// Transfer an NFT to a new owner (requires --to)
+        #[arg(short, long, value_name = "UTXO")]
+        transfer: Option<String>,
+
+        /// Create a sell offer file (requires --price, -o)
+        #[arg(short, long, value_name = "UTXO")]
+        sell: Option<String>,
+
+        /// Create a SIGNED sell offer (PSBT). Seller signs their NFT input, buyer completes later.
+        /// No --seller-wallet needed on buy side. Requires --price, --to (buyer address), -o.
+        #[arg(long, value_name = "UTXO")]
+        sell_sign: Option<String>,
+
+        /// Buy an NFT directly (requires --price, --seller-wallet)
+        #[arg(short, long, value_name = "UTXO")]
+        buy: Option<String>,
+
+        /// Buy from a sell offer file. If offer is signed (PSBT), no --seller-wallet needed.
+        #[arg(long, value_name = "FILE")]
+        from: Option<String>,
+
+        /// Recipient address (for --transfer or --sell-sign)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Price in DOLI (for --sell, --sell-sign, or --buy)
+        #[arg(long)]
+        price: Option<String>,
+
+        /// Output file for sell offer (for --sell or --sell-sign)
+        #[arg(short = 'o', long = "out", value_name = "FILE")]
+        output: Option<String>,
+
+        /// Seller's wallet path (for --buy or unsigned --from)
+        #[arg(long)]
+        seller_wallet: Option<String>,
+
+        /// Condition on the NFT (for --mint, default: signature)
+        #[arg(short, long)]
+        condition: Option<String>,
+
+        /// DOLI value to attach to NFT (for --mint, default: 0)
+        #[arg(short, long, default_value = "0")]
+        amount: String,
+
+        /// Witness to satisfy spending condition (for --transfer)
+        #[arg(short, long, default_value = "none()")]
+        witness: String,
+
+        /// Royalty in percent for the creator (for --mint, e.g. 5 = 5%)
+        #[arg(long)]
+        royalty: Option<f64>,
+    },
+
+    /// Issue a fungible token (meme coin, stablecoin, etc.)
+    IssueToken {
+        /// Token ticker (e.g. DOGEOLI, max 16 chars)
+        ticker: String,
+
+        /// Total supply (fixed at issuance, in token units)
+        #[arg(long)]
+        supply: u64,
+
+        /// Optional condition on spending (default: signature of issuer)
+        #[arg(short, long)]
+        condition: Option<String>,
+    },
+
+    /// Show token info from a UTXO
+    TokenInfo {
+        /// UTXO containing the fungible asset: txhash:output_index
+        utxo: String,
+    },
+
+    /// Lock DOLI in a bridge HTLC for cross-chain atomic swap
+    BridgeLock {
+        /// Amount of DOLI to lock
+        amount: String,
+
+        /// BLAKE3 hashlock hash (64 hex chars) — use this OR --preimage, not both
+        #[arg(long, conflicts_with = "preimage")]
+        hash: Option<String>,
+
+        /// Preimage (64 hex chars) — computes the hashlock automatically
+        #[arg(long, conflicts_with = "hash")]
+        preimage: Option<String>,
+
+        /// Lock height (claim available after this)
+        #[arg(long)]
+        lock: u64,
+
+        /// Expiry height (refund available after this)
+        #[arg(long)]
+        expiry: u64,
+
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        #[arg(long)]
+        chain: String,
+
+        /// Recipient address on the target chain
+        #[arg(long)]
+        to: String,
+    },
+
+    /// Claim a bridge HTLC with the preimage (receiver side)
+    BridgeClaim {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
+
+        /// Preimage (64 hex chars) that hashes to the locked hash
+        #[arg(long)]
+        preimage: String,
+
+        /// Send claimed funds to this address instead of your wallet
+        #[arg(long)]
+        to: Option<String>,
+    },
+
+    /// Refund a bridge HTLC after expiry (sender side)
+    BridgeRefund {
+        /// UTXO containing the bridge HTLC: txhash:output_index
+        utxo: String,
+    },
+
+    /// Payment channel operations (open, pay, close, list, info)
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommands,
+    },
+
+    /// Wipe chain data for a fresh resync (preserves keys/ and .env)
+    Wipe {
+        /// Network (mainnet, testnet, devnet)
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// Data directory (overrides network default)
+        #[arg(short, long)]
+        data_dir: Option<PathBuf>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ChannelCommands {
+    /// Open a payment channel with a counterparty
+    Open {
+        /// Counterparty's address (doli1... or hex pubkey_hash)
+        peer: String,
+
+        /// Channel capacity in DOLI
+        capacity: String,
+
+        /// Fee for the funding transaction (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+    },
+
+    /// Send a payment through a channel
+    Pay {
+        /// Channel ID (hex, first 16 chars sufficient)
+        channel: String,
+
+        /// Amount to send in DOLI
+        amount: String,
+    },
+
+    /// Cooperatively close a channel
+    Close {
+        /// Channel ID (hex)
+        channel: String,
+
+        /// Fee for the close transaction (default: auto)
+        #[arg(short, long)]
+        fee: Option<String>,
+
+        /// Force close (unilateral, uses latest commitment tx)
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// List all channels
+    List {
+        /// Show all channels including closed
+        #[arg(short, long)]
+        all: bool,
+    },
+
+    /// Show detailed channel info
+    Info {
+        /// Channel ID (hex)
+        channel: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProducerCommands {
+    /// Register as a block producer
+    Register {
+        /// Number of bonds to stake (1-10000, each bond = 1 bond_unit)
+        #[arg(short, long, default_value = "1")]
+        bonds: u32,
+    },
+
+    /// Check producer status
+    Status {
+        /// Public key (optional, uses wallet if not specified)
+        #[arg(short, long)]
+        pubkey: Option<String>,
+    },
+
+    /// Show per-bond vesting details
+    Bonds {
+        /// Public key (optional, uses wallet if not specified)
+        #[arg(short, long)]
+        pubkey: Option<String>,
+    },
+
+    /// List all producers in the network
+    List {
+        /// Show only active producers
+        #[arg(short, long)]
+        active: bool,
+    },
+
+    /// Add more bonds to increase stake (bond stacking)
+    AddBond {
+        /// Number of bonds to add (1-10000)
+        #[arg(short, long)]
+        count: u32,
+    },
+
+    /// Withdraw bonds instantly (FIFO, vesting penalty applies)
+    RequestWithdrawal {
+        /// Number of bonds to withdraw
+        #[arg(short, long)]
+        count: u32,
+
+        /// Destination address for withdrawn funds (hex pubkey_hash)
+        #[arg(short, long)]
+        destination: Option<String>,
+    },
+
+    /// Simulate bond withdrawal (dry run, no transaction)
+    SimulateWithdrawal {
+        /// Number of bonds to simulate withdrawing
+        #[arg(short, long)]
+        count: u32,
+    },
+
+    /// Exit the producer set (early exit incurs penalty)
+    Exit {
+        /// Force early exit with penalty
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Submit slashing evidence for double production (equivocation)
+    Slash {
+        /// Block 1 hash (first conflicting block)
+        #[arg(long)]
+        block1: String,
+
+        /// Block 2 hash (second conflicting block for same slot)
+        #[arg(long)]
+        block2: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RewardsCommands {
+    /// List all claimable epochs with estimated rewards
+    List,
+
+    /// Claim rewards for a specific epoch
+    Claim {
+        /// Epoch number to claim
+        epoch: u64,
+
+        /// Recipient address (defaults to wallet address)
+        #[arg(short, long)]
+        recipient: Option<String>,
+    },
+
+    /// Claim all available rewards (one tx per epoch)
+    ClaimAll {
+        /// Recipient address (defaults to wallet address)
+        #[arg(short, long)]
+        recipient: Option<String>,
+    },
+
+    /// Show claim history
+    History {
+        /// Maximum number of entries to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Show current epoch info and BLOCKS_PER_REWARD_EPOCH
+    Info,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum UpdateCommands {
+    /// Check for available updates
+    Check,
+
+    /// Show pending update status, veto progress, deadlines
+    Status,
+
+    /// Vote on a pending update
+    Vote {
+        /// Version to vote on (e.g., "1.0.1")
+        #[arg(long)]
+        version: String,
+
+        /// Cast a veto vote
+        #[arg(long, conflicts_with = "approve")]
+        veto: bool,
+
+        /// Cast an approval vote
+        #[arg(long, conflicts_with = "veto")]
+        approve: bool,
+    },
+
+    /// Show current votes for a version
+    Votes {
+        /// Version to check (e.g., "1.0.1")
+        #[arg(long)]
+        version: String,
+    },
+
+    /// Manually apply an approved update
+    Apply,
+
+    /// Rollback to previous version
+    Rollback,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MaintainerCommands {
+    /// List current maintainers
+    List,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ReleaseCommands {
+    /// Sign a release (maintainer workflow)
+    ///
+    /// Signs the message "{version}:{sha256(CHECKSUMS.txt)}" with a producer key.
+    /// Output is a JSON signature block for inclusion in SIGNATURES.json.
+    Sign {
+        /// Release version to sign (e.g., v1.0.27)
+        #[arg(long)]
+        version: String,
+
+        /// Path to producer key file (overrides -w wallet)
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProtocolCommands {
+    /// Sign a protocol activation (one maintainer at a time)
+    ///
+    /// Signs "activate:{version}:{epoch}" with a producer key.
+    /// Output is a JSON signature block. Collect 3/5 and pass to `protocol activate`.
+    Sign {
+        /// Protocol version to activate (e.g., 2)
+        #[arg(long)]
+        version: u32,
+
+        /// Epoch at which activation occurs
+        #[arg(long)]
+        epoch: u64,
+
+        /// Path to producer key file (overrides -w wallet)
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
+
+    /// Submit a protocol activation transaction (requires 3/5 signatures)
+    ///
+    /// Reads signature blocks from a JSON file, builds the ProtocolActivation tx,
+    /// and submits it to the network.
+    Activate {
+        /// Protocol version to activate (e.g., 2)
+        #[arg(long)]
+        version: u32,
+
+        /// Epoch at which activation occurs
+        #[arg(long)]
+        epoch: u64,
+
+        /// Description of consensus changes
+        #[arg(long)]
+        description: String,
+
+        /// Path to JSON file containing collected signatures
+        #[arg(long)]
+        signatures: PathBuf,
+    },
+}
