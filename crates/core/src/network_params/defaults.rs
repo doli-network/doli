@@ -94,8 +94,8 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773613657,  // Testnet genesis 2026-03-15
-                veto_period_secs: 5 * 60,  // 5 minutes (early network)
+                genesis_time: 1773615082, // Testnet v30 genesis - Full chain reset 2026-03-15
+                veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: 720, // 2 epochs (2 × 360 blocks) — fast withdrawal for testing
