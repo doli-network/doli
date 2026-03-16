@@ -15,3 +15,26 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Testnet/devnet local data (keys, binaries, logs, node data)
+testnet/
+devnet/
+
+# Sensitive scripts (contain server IPs, SSH targets)
+scripts/install-nt-services.sh
+scripts/stress_test_600.sh
+scripts/stress-batch.sh
+scripts/deploy_producers.sh
+
+# Binaries (build from source)
+*.backup
+*.bak
+
+# Logs
+*.log
+*.log.*
+
+# Keys and credentials
+*.json.key
+*.seed.txt
+*.pem

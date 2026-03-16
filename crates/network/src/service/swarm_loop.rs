@@ -53,6 +53,12 @@ pub(super) async fn run_swarm(
     // rejected for 1 hour. Prevents reconnection spam from stale-chain nodes.
     let mut genesis_mismatch_cooldown: HashMap<PeerId, Instant> = HashMap::new();
 
+    // REQ-SCALE-004: Dead peer exponential backoff.
+    // Track failed connection attempts per peer: (failure_count, last_attempt).
+    // On each failure, backoff doubles: 1s → 2s → 4s → ... → 5min max.
+    // Reset on successful connection.
+    let mut dial_backoff: HashMap<PeerId, (u32, Instant)> = HashMap::new();
+
     // Peer ID mismatch redial cooldown: tracks (address → last_redial_time).
     // Prevents exponential redial storms when stale DHT entries circulate
     // multiple old peer IDs for the same address after a chain reset.
@@ -67,7 +73,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -118,6 +124,8 @@ pub(super) async fn run_swarm(
                 rate_limiter.cleanup(Duration::from_secs(600));
                 // Purge expired mismatch redial cooldowns (older than 60s)
                 mismatch_redial_cooldown.retain(|_, last| last.elapsed() < Duration::from_secs(60));
+                // Purge expired dial backoff entries (older than 10 minutes)
+                dial_backoff.retain(|_, (_, last)| last.elapsed() < Duration::from_secs(600));
             }
         }
     }

@@ -150,16 +150,36 @@ impl Node {
         let total_producers = producers.total_count();
         drop(producers);
 
-        // Derive bond counts from UTXO set (source of truth for bonds)
+        // Derive bond counts from UTXO set (source of truth for bonds),
+        // then apply inactivity leak decay for offline producers.
+        let slots_per_epoch = self.params.slots_per_epoch as u64;
         let utxo = self.utxo_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = active_producers
             .into_iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
+                let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                (pk, count)
+                // REQ-SCALE-003: Inactivity leak — decay bond weight for offline producers.
+                // All nodes compute the same decay from chain height + producer_liveness,
+                // so this is consensus-safe (no additional state needed).
+                let effective = match self.producer_liveness.get(&pk) {
+                    Some(&last_h) => {
+                        let missed = height.saturating_sub(last_h);
+                        if missed > consensus::INACTIVITY_LEAK_START {
+                            let epochs_inactive =
+                                (missed - consensus::INACTIVITY_LEAK_START) / slots_per_epoch;
+                            let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
+                            let eff = raw_bonds * (100 - decay) / 100;
+                            eff.max(consensus::INACTIVITY_LEAK_FLOOR)
+                        } else {
+                            raw_bonds
+                        }
+                    }
+                    None => raw_bonds, // New producer, no liveness data yet
+                };
+                (pk, effective)
             })
             .collect();
         drop(utxo);
@@ -213,7 +233,50 @@ impl Node {
                 None => return Ok(()),
             }
         } else {
-            let eligible = self.resolve_epoch_eligibility(current_slot, &active_with_weights);
+            // REQ-SCALE-003b: Emergency chain stall detection.
+            // If >3 consecutive slots are empty, apply instant weight equalization:
+            // only producers that produced in the last 10 blocks get tickets.
+            let slot_gap = (current_slot as u64).saturating_sub(prev_slot as u64);
+            let weights_for_scheduler = if slot_gap > 3 {
+                let emergency: Vec<(PublicKey, u64)> = active_with_weights
+                    .iter()
+                    .filter_map(|(pk, _)| {
+                        let live = self
+                            .producer_liveness
+                            .get(pk)
+                            .map(|&h| height.saturating_sub(h) < 10)
+                            .unwrap_or(false);
+                        if live {
+                            Some((*pk, 1u64))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if emergency.is_empty() {
+                    // Deadlock safety: if nobody produced recently, use everyone at weight=1
+                    warn!(
+                        "Chain stall (gap={}) and no live producers — equalizing all weights",
+                        slot_gap
+                    );
+                    active_with_weights
+                        .iter()
+                        .map(|(pk, _)| (*pk, 1u64))
+                        .collect()
+                } else {
+                    warn!(
+                        "Chain stall (gap={}): emergency equalization — {}/{} live producers",
+                        slot_gap,
+                        emergency.len(),
+                        active_with_weights.len()
+                    );
+                    emergency
+                }
+            } else {
+                active_with_weights.clone()
+            };
+            let eligible =
+                self.resolve_epoch_eligibility(current_slot, height, &weights_for_scheduler);
             (eligible, None)
         };
 

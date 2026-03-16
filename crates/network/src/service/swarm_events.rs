@@ -36,6 +36,7 @@ pub(super) async fn handle_swarm_event(
     rate_limiter: &mut RateLimiter,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     mismatch_redial_cooldown: &mut HashMap<String, Instant>,
+    dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -49,9 +50,37 @@ pub(super) async fn handle_swarm_event(
                 peer_id, endpoint, num_established
             );
 
+            // REQ-SCALE-004: Reset dial backoff on successful connection
+            dial_backoff.remove(&peer_id);
+
             // Only register peer on first connection (dedup)
             if num_established.get() == 1 {
                 let mut peers = peers.write().await;
+                if peers.len() >= config.max_peers {
+                    // REQ-SCALE-005: Peer eviction by gossipsub score.
+                    // When at max capacity, evict the peer with the lowest gossipsub
+                    // score. Producers naturally have higher scores (they deliver
+                    // first-seen blocks), so non-producers are evicted first.
+                    let evictable = peers
+                        .keys()
+                        .map(|pid| {
+                            let score = swarm.behaviour().gossipsub.peer_score(pid).unwrap_or(0.0);
+                            (*pid, score)
+                        })
+                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                    if let Some((evict_id, score)) = evictable {
+                        info!(
+                            "Peer table full ({}) — evicting {} (score={:.1}) for new peer {}",
+                            config.max_peers, evict_id, score, peer_id
+                        );
+                        peers.remove(&evict_id);
+                        let _ = swarm.disconnect_peer_id(evict_id);
+                        let _ = event_tx
+                            .send(NetworkEvent::PeerDisconnected(evict_id))
+                            .await;
+                    }
+                }
                 if peers.len() < config.max_peers {
                     let addr = endpoint.get_remote_address().to_string();
                     peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
@@ -169,7 +198,36 @@ pub(super) async fn handle_swarm_event(
                     // Adding here re-injects into the DHT propagation cycle.
                 }
             } else {
-                warn!("Failed to connect to peer {:?}: {}", peer_id, error);
+                // REQ-SCALE-004: Dead peer exponential backoff.
+                // Track failures per peer. After repeated failures, remove from
+                // Kademlia to stop redial storms that starve the event loop.
+                if let Some(pid) = &peer_id {
+                    let (prev_count, _) = dial_backoff
+                        .get(pid)
+                        .copied()
+                        .unwrap_or((0, Instant::now()));
+                    let count = prev_count + 1;
+                    let backoff_secs = std::cmp::min(300u64, 1u64 << count.min(8));
+                    dial_backoff.insert(*pid, (count, Instant::now()));
+
+                    if count >= 5 {
+                        // Persistently failing — remove from Kademlia routing table
+                        // to prevent automatic redial. Peer will be rediscovered via
+                        // DHT bootstrap if it comes back online.
+                        swarm.behaviour_mut().kademlia.remove_peer(pid);
+                        warn!(
+                            "Dead peer {:?}: {} failures, backoff {}s — removed from DHT",
+                            pid, count, backoff_secs
+                        );
+                    } else {
+                        warn!(
+                            "Failed to connect to peer {:?}: {} (attempt {}, backoff {}s)",
+                            pid, error, count, backoff_secs
+                        );
+                    }
+                } else {
+                    warn!("Failed to connect to peer {:?}: {}", peer_id, error);
+                }
             }
         }
 

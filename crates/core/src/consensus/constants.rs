@@ -111,6 +111,14 @@ pub const LIVENESS_WINDOW_MIN: u64 = 500;
 /// K=50 → 2% overhead per stale producer. Capped at 20% total (K/5 stale max).
 pub const REENTRY_INTERVAL: u32 = 50;
 
+/// Inactivity leak: after INACTIVITY_LEAK_START missed consecutive slots,
+/// a producer's effective bond weight decays by INACTIVITY_LEAK_RATE% per epoch.
+/// Matches Ethereum's inactivity leak: offline validators lose stake
+/// quadratically until online validators control >2/3.
+pub const INACTIVITY_LEAK_START: u64 = 360; // 1 epoch of missed slots
+pub const INACTIVITY_LEAK_RATE: u64 = 10; // 10% per epoch
+pub const INACTIVITY_LEAK_FLOOR: u64 = 1; // Minimum 1 bond (never fully zeroed)
+
 /// Bootstrap grace period in seconds.
 ///
 /// At genesis startup, when all peers are at height 0, the node waits this
