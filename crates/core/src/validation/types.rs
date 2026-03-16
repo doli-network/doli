@@ -1,4 +1,3 @@
-use crate::block::Block;
 use crate::consensus::ConsensusParams;
 use crate::network::Network;
 use crate::transaction::Output;
@@ -41,49 +40,6 @@ pub trait UtxoProvider {
     ///
     /// Returns `None` if the output doesn't exist or has been spent.
     fn get_utxo(&self, tx_hash: &Hash, output_index: u32) -> Option<UtxoInfo>;
-}
-
-/// Trait for accessing epoch block data needed for deterministic reward validation.
-///
-/// Implement this trait in the storage layer to provide the validator with
-/// access to historical blocks for exact epoch reward verification.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// struct MyBlockStore { /* ... */ }
-///
-/// impl EpochBlockSource for MyBlockStore {
-///     fn last_rewarded_epoch(&self) -> Result<u64, String> {
-///         // Scan backwards to find last EpochReward tx
-///     }
-///     fn blocks_in_slot_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String> {
-///         // Return all blocks in [start, end)
-///     }
-/// }
-/// ```
-pub trait EpochBlockSource {
-    /// Get the last epoch that has received rewards.
-    ///
-    /// Scans backwards from chain tip to find the most recent block
-    /// containing an `EpochReward` transaction and returns its epoch number.
-    ///
-    /// Returns 0 if no rewards have been distributed yet.
-    fn last_rewarded_epoch(&self) -> Result<u64, String>;
-
-    /// Get all blocks in the specified slot range.
-    ///
-    /// Range is `[start, end)` - inclusive start, exclusive end.
-    /// Empty slots are skipped (not included in result).
-    fn blocks_in_slot_range(&self, start: u32, end: u32) -> Result<Vec<Block>, String>;
-
-    /// Check if any block exists in the specified slot range.
-    ///
-    /// Range is `[start, end)` - inclusive start, exclusive end.
-    /// Returns true if at least one block exists in the range.
-    ///
-    /// This is used to skip empty epochs during reward catch-up.
-    fn has_any_block_in_slot_range(&self, start: u32, end: u32) -> Result<bool, String>;
 }
 
 /// Registration chain state for anti-Sybil verification.

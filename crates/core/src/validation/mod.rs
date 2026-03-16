@@ -38,15 +38,8 @@ pub use error::ValidationError;
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
-#[allow(deprecated)]
-pub use rewards_legacy::{
-    calculate_expected_epoch_rewards, epoch_needing_rewards, validate_block_rewards_exact,
-};
-#[cfg(test)]
-use rewards_legacy::{validate_block_rewards, validate_coinbase};
 pub use transaction::validate_transaction;
 pub use types::{
-    EpochBlockSource, RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext,
-    ValidationMode,
+    RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };
 pub use utxo::validate_transaction_with_utxos;

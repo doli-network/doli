@@ -264,7 +264,7 @@ impl Node {
         &self,
         block: &Block,
         height: u64,
-        mode: ValidationMode,
+        _mode: ValidationMode,
     ) -> Result<()> {
         // === Coinbase validation ===
         if block.transactions.is_empty() {
@@ -328,25 +328,27 @@ impl Node {
             let epoch_tx = epoch_reward_txs[0];
 
             // Validate extra_data contains correct height + epoch
-            if epoch_tx.extra_data.len() >= 16 {
-                let embedded_height =
-                    u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
-                let embedded_epoch =
-                    u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
-                if embedded_height != height {
-                    anyhow::bail!(
-                        "EpochReward embedded height {} != block height {}",
-                        embedded_height,
-                        height
-                    );
-                }
-                if embedded_epoch != completed_epoch {
-                    anyhow::bail!(
-                        "EpochReward embedded epoch {} != completed epoch {}",
-                        embedded_epoch,
-                        completed_epoch
-                    );
-                }
+            if epoch_tx.extra_data.len() < 16 {
+                anyhow::bail!(
+                    "EpochReward extra_data too short: expected >= 16 bytes, got {}",
+                    epoch_tx.extra_data.len()
+                );
+            }
+            let embedded_height = u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
+            let embedded_epoch = u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
+            if embedded_height != height {
+                anyhow::bail!(
+                    "EpochReward embedded height {} != block height {}",
+                    embedded_height,
+                    height
+                );
+            }
+            if embedded_epoch != completed_epoch {
+                anyhow::bail!(
+                    "EpochReward embedded epoch {} != completed epoch {}",
+                    embedded_epoch,
+                    completed_epoch
+                );
             }
 
             // Conservation: total distributed must not exceed pool balance
@@ -367,29 +369,38 @@ impl Node {
                 );
             }
 
-            // Full mode: exact match of amounts and recipients
-            if mode == ValidationMode::Full {
+            // Exact match of amounts and recipients (both Full and Light modes)
+            let expected = self.calculate_epoch_rewards(completed_epoch).await;
+
+            let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
+            expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+            let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
+                .outputs
+                .iter()
+                .map(|o| (o.amount, o.pubkey_hash))
+                .collect();
+            actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+            if expected_sorted != actual_sorted {
+                let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                anyhow::bail!(
+                    "EpochReward distribution mismatch: expected {} outputs totaling {}, \
+                     got {} outputs totaling {} — possible reward theft",
+                    expected_sorted.len(),
+                    expected_total,
+                    actual_sorted.len(),
+                    total_distributed
+                );
+            }
+        } else if is_epoch_boundary {
+            let completed_epoch = (height / blocks_per_epoch) - 1;
+            if completed_epoch > 0 {
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
-
-                let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
-                expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-
-                let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
-                    .outputs
-                    .iter()
-                    .map(|o| (o.amount, o.pubkey_hash))
-                    .collect();
-                actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-
-                if expected_sorted != actual_sorted {
-                    let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                if !expected.is_empty() {
                     anyhow::bail!(
-                        "EpochReward distribution mismatch: expected {} outputs totaling {}, \
-                         got {} outputs totaling {} — possible reward theft",
-                        expected_sorted.len(),
-                        expected_total,
-                        actual_sorted.len(),
-                        total_distributed
+                        "epoch boundary block at height {} missing EpochReward TX for epoch {} ({} qualified producers)",
+                        height, completed_epoch, expected.len()
                     );
                 }
             }
