@@ -542,12 +542,14 @@ impl Node {
         let local_height = self.chain_state.read().await.best_height;
         let best_peer = self.sync_manager.read().await.best_peer_height();
 
-        // Block 1 missing means block store has a gap. Do NOT snap sync — it makes the gap worse.
-        // Let header-first sync fill in the missing blocks naturally.
-        if self.block_store.get_block_by_height(1)?.is_none() {
+        // Block 1 missing means block store has a gap. Do NOT snap sync for nodes that
+        // were previously synced — it makes the gap worse. BUT allow it for fresh nodes
+        // at height 0 that have never synced (initial sync requires snap sync when
+        // header-first can't bridge a large gap).
+        if self.block_store.get_block_by_height(1)?.is_none() && local_height > 0 {
             warn!(
-                "Recovery: block 1 missing — skipping state reset. \
-                 Header-first sync will recover (local h={}, peer h={})",
+                "Recovery: block 1 missing at h={} — skipping state reset (would deepen gap). \
+                 Header-first sync will recover (peer h={})",
                 local_height, best_peer
             );
             return Ok(());
