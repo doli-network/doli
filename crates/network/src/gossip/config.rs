@@ -20,9 +20,10 @@ use super::{
 /// via gossip, leading to permanent desync.
 const PROTECTED_TOPICS: &[&str] = &[BLOCKS_TOPIC, TRANSACTIONS_TOPIC];
 
-/// Maximum mesh_n when scaling dynamically with producer count.
-/// Matches Tier 1 (dense validator mesh) value.
-const MESH_N_CAP: usize = 20;
+/// Maximum mesh_n when scaling dynamically with network size.
+/// Raised from 20 to 50 to support 100+ node networks.
+/// For 106 nodes: mesh_n=11, for 500: mesh_n=23, for 1000: mesh_n=32.
+const MESH_N_CAP: usize = 50;
 
 /// Create a new GossipSub behaviour with tier-appropriate mesh parameters.
 ///
@@ -232,16 +233,15 @@ pub fn reconfigure_topics_for_tier(
     subscribe_to_topics_for_tier(gossipsub, tier, region)
 }
 
-/// Compute gossipsub mesh parameters dynamically based on active producer count.
+/// Compute gossipsub mesh parameters dynamically based on total network peers.
 ///
-/// Formula: mesh_n = min(active_producers - 1, MESH_N_CAP)
+/// For small networks (≤20): mesh_n = total_peers - 1 (full mesh, every node in eager-push).
+/// For large networks (>20): mesh_n = sqrt(total_peers) * 1.5, capped at MESH_N_CAP.
+/// sqrt(N) ensures O(log N) propagation hops even with 1000+ nodes.
 ///
-/// This ensures all producers are in each other's eager-push mesh for small networks,
-/// eliminating lazy-gossip propagation delay that causes missed slots and sync loops.
-/// For large networks (>21 producers), caps at MESH_N_CAP=20 to bound bandwidth.
-pub fn compute_dynamic_mesh(active_producers: usize) -> MeshConfig {
-    // Need at least 2 producers for meaningful mesh; fall back to defaults
-    if active_producers <= 1 {
+/// Examples: 8 peers → mesh_n=7, 50 peers → mesh_n=11, 106 peers → mesh_n=16, 500 → mesh_n=34.
+pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
+    if total_peers <= 1 {
         return MeshConfig {
             mesh_n: 6,
             mesh_n_low: 4,
@@ -250,9 +250,18 @@ pub fn compute_dynamic_mesh(active_producers: usize) -> MeshConfig {
         };
     }
 
-    let mesh_n = (active_producers - 1).min(MESH_N_CAP);
-    let mesh_n_low = (mesh_n * 3 / 4).max(1);
-    let mesh_n_high = mesh_n * 2;
+    let mesh_n = if total_peers <= 20 {
+        // Small network: full mesh (all peers in eager-push)
+        total_peers - 1
+    } else {
+        // Large network: sqrt scaling for O(log N) propagation
+        let sqrt_n = (total_peers as f64).sqrt();
+        (sqrt_n * 1.5).ceil() as usize
+    }
+    .clamp(6, MESH_N_CAP);
+
+    let mesh_n_low = (mesh_n * 3 / 4).max(4);
+    let mesh_n_high = (mesh_n * 2).min(MESH_N_CAP * 2);
     let gossip_lazy = mesh_n.max(6);
 
     MeshConfig {

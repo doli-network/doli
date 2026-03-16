@@ -58,7 +58,7 @@ impl NetworkConfig {
                 .parse()
                 .unwrap(),
             bootstrap_nodes: network.bootstrap_nodes(),
-            max_peers: 50,
+            max_peers: 200,
             node_key_path: None,
             network_id: network.id(),
             genesis_hash,

@@ -194,51 +194,51 @@ fn test_dynamic_mesh_fallback_for_one_producer() {
 
 #[test]
 fn test_dynamic_mesh_small_network() {
-    // 3 producers: mesh_n = 2, everyone in mesh
+    // Small networks (≤20): full mesh (total_peers - 1)
     let m = compute_dynamic_mesh(3);
-    assert_eq!(m.mesh_n, 2);
-    assert_eq!(m.mesh_n_low, 1);
-    assert_eq!(m.mesh_n_high, 4);
-    assert_eq!(m.gossip_lazy, 6); // min 6
+    assert_eq!(m.mesh_n, 6); // min 6
+    assert_eq!(m.mesh_n_low, 4);
 
-    // 5 producers: mesh_n = 4
     let m = compute_dynamic_mesh(5);
-    assert_eq!(m.mesh_n, 4);
-    assert_eq!(m.mesh_n_low, 3);
-    assert_eq!(m.mesh_n_high, 8);
-}
+    assert_eq!(m.mesh_n, 6); // min 6
 
-#[test]
-fn test_dynamic_mesh_medium_network() {
-    // 10 producers: mesh_n = 9, full mesh
     let m = compute_dynamic_mesh(10);
     assert_eq!(m.mesh_n, 9);
-    assert_eq!(m.mesh_n_low, 6);
-    assert_eq!(m.mesh_n_high, 18);
-    assert_eq!(m.gossip_lazy, 9);
 
-    // 15 producers: mesh_n = 14, full mesh
     let m = compute_dynamic_mesh(15);
     assert_eq!(m.mesh_n, 14);
+
+    let m = compute_dynamic_mesh(20);
+    assert_eq!(m.mesh_n, 19);
 }
 
 #[test]
-fn test_dynamic_mesh_caps_at_20() {
-    // 21 producers: mesh_n = 20 (capped)
-    let m = compute_dynamic_mesh(21);
-    assert_eq!(m.mesh_n, 20);
+fn test_dynamic_mesh_large_network_sqrt_scaling() {
+    // Large networks (>20): sqrt(N) * 1.5
+    // 50 peers: sqrt(50)*1.5 = 10.6 → 11
+    let m = compute_dynamic_mesh(50);
+    assert_eq!(m.mesh_n, 11);
 
-    // 100 producers: still capped at 20
-    let m = compute_dynamic_mesh(100);
-    assert_eq!(m.mesh_n, 20);
-    assert_eq!(m.mesh_n_low, 15);
-    assert_eq!(m.mesh_n_high, 40);
-    assert_eq!(m.gossip_lazy, 20);
+    // 106 peers: sqrt(106)*1.5 = 15.4 → 16
+    let m = compute_dynamic_mesh(106);
+    assert_eq!(m.mesh_n, 16);
+
+    // 200 peers: sqrt(200)*1.5 = 21.2 → 22
+    let m = compute_dynamic_mesh(200);
+    assert_eq!(m.mesh_n, 22);
+
+    // 1000 peers: sqrt(1000)*1.5 = 47.4 → 48
+    let m = compute_dynamic_mesh(1000);
+    assert_eq!(m.mesh_n, 48);
+
+    // 2000 peers: capped at 50
+    let m = compute_dynamic_mesh(2000);
+    assert_eq!(m.mesh_n, 50);
 }
 
 #[test]
 fn test_dynamic_mesh_invariants() {
-    for n in 0..=200 {
+    for n in 0..=2000 {
         let m = compute_dynamic_mesh(n);
         assert!(m.mesh_n_low >= 1, "mesh_n_low must be >= 1 for n={}", n);
         assert!(m.mesh_n_low <= m.mesh_n, "mesh_n_low <= mesh_n for n={}", n);
