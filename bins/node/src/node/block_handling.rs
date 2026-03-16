@@ -509,13 +509,18 @@ impl Node {
             return Ok(());
         }
 
-        // Pre-check: verify block store has blocks from height 1 (required for UTXO rebuild).
-        // Without block 1, reorg can't rebuild UTXO state. Skip the reorg and let
-        // header-first sync catch up naturally. Do NOT snap sync — it destroys the block store.
-        if self.block_store.get_block_by_height(1)?.is_none() {
+        // Pre-check: verify rollback stays within blocks that have undo data.
+        // Snap-synced nodes don't have blocks before the snap anchor, but DO have
+        // undo data for blocks applied after snap sync. Allow reorg if the rollback
+        // only touches blocks with undo data (post-snap). Block only if rollback
+        // would need to rebuild from genesis (below store floor).
+        let store_floor = self.sync_manager.read().await.store_floor();
+        let rollback_depth = current_height.saturating_sub(result.ancestor_height);
+        if result.ancestor_height < store_floor && store_floor > 0 {
             warn!(
-                "Fork sync reorg: block 1 missing (block store gap). \
-                 Skipping reorg — header-first sync will catch up."
+                "Fork sync reorg: ancestor h={} below store floor h={} (rollback depth={}). \
+                 Skipping — undo-based rollback can't reach that far.",
+                result.ancestor_height, store_floor, rollback_depth
             );
             let mut sync = self.sync_manager.write().await;
             sync.mark_fork_sync_rejected();
