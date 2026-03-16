@@ -259,49 +259,62 @@ impl SyncManager {
 
         // Layer 6.5: Height lag check — graduated production gate.
         //
-        // If we know peers have a higher height, producing from our stale state
-        // creates a competing block that forks the chain. The gate is graduated:
+        // Industry standard (cf. Eth2 beacon, Tendermint, Substrate): nodes MUST NOT
+        // produce blocks while syncing or significantly behind peers. Producing from
+        // stale state creates competing forks and can trigger infinite reorg loops
+        // (the old 60s timeout escape caused exactly this — see postmortem).
         //
-        // - lag > 3 blocks: BLOCK unconditionally (no timeout escape).
-        //   At this lag the node may be on a fork — producing deepens it.
-        //   Sync mechanisms (header-first, small-gap retry at 25s, stuck-sync
-        //   detector at 120s → snap sync) will close the gap.
+        // Two gates:
+        //   1. Sync state gate: block production in any active sync state
+        //   2. Height lag gate: block production when >3 blocks behind peers
         //
-        // - lag 2-3 blocks: BLOCK for 30s, then allow.
-        //   Almost certainly gossip propagation delay, not a fork.
-        //   30s gives small-gap retry (25s) time to fire first.
-        //   Producing at this lag extends the correct chain lineage.
-        //
-        // - lag 0-1 blocks: allow (normal operation).
+        // The only timeout escape is for tiny lags (2-3 blocks) where the node is
+        // likely on the same chain lineage, just slightly behind gossip propagation.
+
+        // Gate 1: Active sync state — never produce while downloading/processing/fork-resolving
+        if self.state.is_syncing() || self.fork_sync.is_some() {
+            info!(
+                "[CAN_PRODUCE] Layer6.5: BLOCKED — active sync state={}, cannot produce",
+                self.sync_state_name()
+            );
+            return ProductionAuthorization::BlockedBehindPeers {
+                local_height: self.local_height,
+                peer_height: self.best_peer_height(),
+                height_diff: self.best_peer_height().saturating_sub(self.local_height),
+            };
+        }
+
+        // Gate 2: Height lag — block production when significantly behind
         let best_peer_height = self.best_peer_height();
         if !self.peers.is_empty() && best_peer_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
+
             if height_lag > 3 {
-                // Large lag — unconditionally block. Sync will recover.
-                let behind_secs = self
-                    .behind_since
-                    .get_or_insert_with(Instant::now)
-                    .elapsed()
-                    .as_secs();
+                // Large lag: unconditionally block. No timeout escape.
+                // The node must sync to tip before producing.
                 info!(
-                    "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (lag>3, must sync, no timeout escape)",
-                    self.local_height, best_peer_height, height_lag, behind_secs
+                    "[CAN_PRODUCE] Layer6.5: BLOCKED — lag={} (local_h={}, peer_h={}). \
+                     Must sync to tip before producing.",
+                    height_lag, self.local_height, best_peer_height
                 );
+                self.behind_since = None;
                 return ProductionAuthorization::BlockedBehindPeers {
                     local_height: self.local_height,
                     peer_height: best_peer_height,
                     height_diff: height_lag,
                 };
             } else if height_lag >= 2 {
-                // Small lag (2-3 blocks) — block for 30s, then allow.
+                // Small lag (2-3 blocks): allow after brief timeout.
+                // Node is likely on the correct chain, just behind gossip propagation.
                 let behind_secs = self
                     .behind_since
                     .get_or_insert_with(Instant::now)
                     .elapsed()
                     .as_secs();
+
                 if behind_secs <= 30 {
                     info!(
-                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (small lag, waiting for sync)",
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (catching up)",
                         self.local_height, best_peer_height, height_lag, behind_secs
                     );
                     return ProductionAuthorization::BlockedBehindPeers {
@@ -310,10 +323,11 @@ impl SyncManager {
                         height_diff: height_lag,
                     };
                 }
+                // Small lag timeout expired — allow production
                 warn!(
-                    "[CAN_PRODUCE] Layer6.5: ALLOWING — behind for {}s (timeout 30s), lag={} \
-                     (local_h={}, peer_h={}). Small lag, same chain lineage likely.",
-                    behind_secs, height_lag, self.local_height, best_peer_height
+                    "[CAN_PRODUCE] Layer6.5: ALLOWING — small lag={} behind for {}s \
+                     (local_h={}, peer_h={}). Producing on same chain lineage.",
+                    height_lag, behind_secs, self.local_height, best_peer_height
                 );
             } else {
                 // Gap closed — reset tracker

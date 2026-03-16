@@ -111,6 +111,14 @@ pub const LIVENESS_WINDOW_MIN: u64 = 500;
 /// K=50 → 2% overhead per stale producer. Capped at 20% total (K/5 stale max).
 pub const REENTRY_INTERVAL: u32 = 50;
 
+/// Inactivity leak: after INACTIVITY_LEAK_START missed consecutive slots,
+/// a producer's effective bond weight decays by INACTIVITY_LEAK_RATE% per epoch.
+/// Matches Ethereum's inactivity leak: offline validators lose stake
+/// quadratically until online validators control >2/3.
+pub const INACTIVITY_LEAK_START: u64 = 360; // 1 epoch of missed slots
+pub const INACTIVITY_LEAK_RATE: u64 = 10; // 10% per epoch
+pub const INACTIVITY_LEAK_FLOOR: u64 = 1; // Minimum 1 bond (never fully zeroed)
+
 /// Bootstrap grace period in seconds.
 ///
 /// At genesis startup, when all peers are at height 0, the node waits this
@@ -180,7 +188,7 @@ pub const COINBASE_MATURITY: BlockHeight = 6;
 // More bonds = more selection weight = more block production opportunities.
 // Each bond has its own vesting timer (4 years to full maturity).
 
-/// Bond unit: 10 DOLI = 1 slot per cycle
+/// Bond unit: 0.1 DOLI = 1 slot per cycle (local dev)
 /// This is the atomic unit for staking. You can only stake in multiples of this.
 /// With 10 DOLI per bond unit:
 /// - Producer with 100 DOLI = 10 slots per cycle
@@ -198,16 +206,15 @@ pub const MAX_BONDS_PER_PRODUCER: u32 = 3_000;
 /// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
 pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 
-/// One vesting quarter (1 year = 3,153,600 slots at 10s/slot)
-/// Mainnet: 4-year vesting with 1-year quarters (75/50/25/0% at Y1/Y2/Y3/Y4)
-/// Testnet overrides to 2,160 (6h) via NetworkParams
-pub const VESTING_QUARTER_SLOTS: Slot = YEAR_IN_SLOTS;
+/// One vesting quarter (local dev: half an epoch = 180 slots)
+/// Full maturity in 2 epochs = 720 slots = 4 quarters of 180
+pub const VESTING_QUARTER_SLOTS: Slot = 180;
 
-/// Full vesting period (4 years = 4 quarters = 12,614,400 slots)
+/// Full vesting period (2 epochs = 720 slots at 10s/slot = 2 hours)
 pub const VESTING_PERIOD_SLOTS: Slot = 4 * VESTING_QUARTER_SLOTS;
 
-/// Commitment period for full vesting (4 years = 4 quarters)
-/// After 4 years, bonds can be withdrawn with 0% penalty
+/// Commitment period for full vesting (2 epochs)
+/// After 2 epochs, bonds can be withdrawn with 0% penalty
 pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 
 /// Unbonding period for exit (~7 days at 10-second slots)

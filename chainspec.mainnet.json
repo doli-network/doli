@@ -10,7 +10,7 @@
   "consensus": {
     "slot_duration": 10,
     "slots_per_epoch": 360,
-    "bond_amount": 1000000000
+    "bond_amount": 10000000
   },
   "genesis_producers": []
 }

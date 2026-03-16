@@ -92,22 +92,22 @@ impl NetworkParams {
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
 
-                // Timing (same as mainnet)
+                // Timing
                 slot_duration: consensus::SLOT_DURATION,
                 genesis_time: 1773615082, // Testnet v30 genesis - Full chain reset 2026-03-15
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: consensus::UNBONDING_PERIOD,
+                unbonding_period: 720, // 2 epochs (2 × 360 blocks) — fast withdrawal for testing
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
-                // Economics (same as mainnet)
-                bond_unit: consensus::BOND_UNIT,
+                // Economics (lower bond for testnet)
+                bond_unit: 1_000_000, // 0.01 DOLI (testnet-friendly)
                 initial_reward: consensus::INITIAL_REWARD,
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
-                automatic_genesis_bond: consensus::BOND_UNIT,
-                genesis_blocks: 360, // 1 hour — same as mainnet
+                automatic_genesis_bond: 1_000_000, // 0.01 DOLI (matches testnet bond_unit)
+                genesis_blocks: 360,               // 1 hour
 
                 // VDF (800K iterations ~= 55ms, same as mainnet)
                 vdf_iterations: 800_000,
