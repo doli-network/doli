@@ -84,7 +84,7 @@ impl NodeConfig {
             data_dir,
             listen_addr: format!("0.0.0.0:{}", network.default_p2p_port()),
             bootstrap_nodes: network.bootstrap_nodes(),
-            max_peers: 50,
+            max_peers: network.params().max_peers,
             rpc: RpcConfig::for_network(network),
             producer: None,
             no_dht: false,
