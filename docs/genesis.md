@@ -1,290 +1,255 @@
 # DOLI Genesis & Full Chain Reset
 
-> Last updated: 2026-03-15 | Layout v6 (5 servers)
+> Last updated: 2026-03-16 | Layout v7
 
-Complete procedure for resetting and relaunching both DOLI networks from a new genesis.
+Complete procedure for resetting and relaunching DOLI networks from a new genesis.
 
 ---
 
-## Infrastructure
+## Network Topology
 
-| Server | Network | Nodes | Binary Paths |
-|--------|---------|-------|--------------|
-| ai1 | Testnet | NT1-NT5 + testnet seed + mainnet seed | `/testnet/bin/`, `/mainnet/bin/` |
-| ai2 | Mainnet | N1-N5 + mainnet seed + testnet seed + swap bot + explorer | `/mainnet/bin/`, `/testnet/bin/` |
-| ai3 | Both | Mainnet seed3 + Testnet seed3 + SANTIAGO (mainnet producer) | `/mainnet/bin/`, `/testnet/bin/` |
-| ai4 | Mainnet | N6-N12 | `/mainnet/bin/` |
-| ai5 | Testnet | NT6-NT12 | `/testnet/bin/` |
+### Mainnet (3 servers: ai1, ai2, ai3)
+
+| Server | Role | Nodes |
+|--------|------|-------|
+| ai1 | Seed | Mainnet seed1 |
+| ai2 | Seed + Producers + Build | Mainnet seed2 + N1-N5 |
+| ai3 | Seed | Mainnet seed3 |
+
+### Testnet (3 servers: ai1, ai2, ai5)
+
+| Server | Role | Nodes |
+|--------|------|-------|
+| ai1 | Seed + Producers | Testnet seed1 + NT1-NT5 |
+| ai2 | Seed | Testnet seed2 |
+| ai5 | Producers | NT6-NT12 |
 
 ### Seed Topology (6 seeds total)
 
-| Seed | Server | Network | P2P Port | RPC Port | Data Dir | Archive Dir |
-|------|--------|---------|----------|----------|----------|-------------|
-| Seed1 | ai1 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` | `/mainnet/seed/blocks` |
-| Seed1 | ai1 | Testnet | 40300 | 18500 | `/testnet/seed/data` | `/testnet/seed/blocks` |
-| Seed2 | ai2 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` | `/mainnet/seed/blocks` |
-| Seed2 | ai2 | Testnet | 40300 | 18500 | `/testnet/seed/data` | `/testnet/seed/blocks` |
-| Seed3 | ai3 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` | `/mainnet/seed/blocks` |
-| Seed3 | ai3 | Testnet | 40300 | 18500 | `/testnet/seed/data` | `/testnet/seed/blocks` |
+| Seed | Server | Network | P2P Port | RPC Port | Data Dir |
+|------|--------|---------|----------|----------|----------|
+| Seed1 | ai1 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` |
+| Seed1 | ai1 | Testnet | 40300 | 18500 | `/testnet/seed/data` |
+| Seed2 | ai2 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` |
+| Seed2 | ai2 | Testnet | 40300 | 18500 | `/testnet/seed/data` |
+| Seed3 | ai3 | Mainnet | 30300 | 8500 | `/mainnet/seed/data` |
+| Seed3 | ai3 | Testnet | 40300 | 18500 | `/testnet/seed/data` |
 
 Service names: `doli-mainnet-seed`, `doli-testnet-seed` on each server.
-SANTIAGO service: `doli-mainnet-santiago` (ai3, ports P2P=30313 RPC=8513 Metrics=9013).
 
 ---
 
 ## Genesis Timestamp Sources
 
-There are exactly **4 files** that must be updated for a genesis reset. Miss one and nodes will compute different genesis hashes or tests will fail.
+### Mainnet-only reset (2 files)
 
 | # | File | Field | Notes |
 |---|------|-------|-------|
 | 1 | `chainspec.mainnet.json` | `genesis.timestamp` + `genesis.message` | Canonical mainnet chainspec |
-| 2 | `chainspec.testnet.json` | `genesis.timestamp` + `genesis.message` | Canonical testnet chainspec |
-| 3 | `crates/core/src/consensus/constants.rs` | `GENESIS_TIME` (line ~25) | **Mainnet is LOCKED at runtime** — cannot be overridden by env vars |
-| 4 | `crates/core/src/network_params/defaults.rs` | Testnet `genesis_time:` (line ~97) | Hardcoded `u64`, must match chainspec.testnet.json |
+| 2 | `crates/core/src/consensus/constants.rs` | `GENESIS_TIME` (line ~25) | **LOCKED at runtime** — cannot be overridden |
+
+Also update `chainspec.rs:ChainSpec::mainnet()` genesis message to match JSON.
+
+### Testnet-only reset (2 files)
+
+| # | File | Field | Notes |
+|---|------|-------|-------|
+| 1 | `chainspec.testnet.json` | `genesis.timestamp` + `genesis.message` | Canonical testnet chainspec |
+| 2 | `crates/core/src/network_params/defaults.rs` | Testnet `genesis_time:` (line ~97) | Hardcoded `u64`, must match JSON |
+
+### Full reset (all 4 files)
+
+Update all 4 files above.
 
 **How it flows:**
-- Mainnet `defaults.rs` uses `consensus::GENESIS_TIME` (not hardcoded) — so updating `constants.rs` covers mainnet defaults automatically.
+- Mainnet `defaults.rs` uses `consensus::GENESIS_TIME` (not hardcoded) — updating `constants.rs` covers mainnet defaults automatically.
 - Testnet `defaults.rs` has its own hardcoded value — must be updated separately.
-- `genesis_hash = BLAKE3(timestamp || network_id || slot_duration || message)` — included in every block header. Different timestamp = incompatible chain.
-- Two unit tests (`test_genesis_time_matches_chainspec`, `test_testnet_genesis_time_matches_chainspec`) verify the JSON and code stay in sync.
-
-### Priority Override Chain (testnet/devnet only)
-
-1. `DOLI_GENESIS_TIME` env var (highest)
-2. `~/.doli/{network}/.env` file
-3. Chainspec JSON
-4. Hardcoded defaults in `defaults.rs` (lowest)
-
-Mainnet ignores all overrides — `GENESIS_TIME` constant is the only source.
+- `genesis_hash = BLAKE3(timestamp || network_id || slot_duration || message)` — included in every block header.
+- Two unit tests verify sync: `cargo test -p doli-core test_genesis_time`
 
 ---
 
-## Full Chain Reset Procedure
+## Mainnet Chain Reset Procedure
 
-### Phase 1: Stop & Wipe (ALL 3 servers)
+### Phase 1: Stop & Wipe (ai1, ai2, ai3 only)
 
-**1. Inventory all running processes:**
+**1. Inventory ALL running processes on ALL servers:**
 ```bash
-# On EACH of ai1, ai2, ai3:
-pgrep -a doli-node
+# On EACH of ai1, ai2, ai3, ai4 (ai4 may have stale mainnet processes):
+pgrep -a doli-node | grep mainnet
 ```
-Record everything. Don't rely on service names — standby nodes may be running too.
+**CRITICAL**: Check ai4 too — it may have leftover mainnet processes from previous layouts. Kill any mainnet processes on ai4 before proceeding.
 
-**2. Verify SSH to all 3 servers** before stopping anything. If a server is unreachable, decide whether to proceed BEFORE stopping nodes.
-
-**3. Stop ALL doli services simultaneously:**
+**2. Stop mainnet services:**
 ```bash
-# ai1 (testnet NT1-NT5 + both seeds):
-sudo systemctl stop doli-testnet-{nt1,nt2,nt3,nt4,nt5}
-sudo systemctl stop doli-testnet-seed doli-mainnet-seed
+# ai1:
+sudo systemctl stop doli-mainnet-seed
 
-# ai2 (mainnet N1-N5 + both seeds):
-sudo systemctl stop doli-mainnet-{n1,n2,n3,n4,n5}
-sudo systemctl stop doli-mainnet-seed doli-testnet-seed
+# ai2:
+sudo systemctl stop doli-mainnet-{n1,n2,n3,n4,n5} doli-mainnet-seed
 
-# ai3 (both seeds + SANTIAGO):
-sudo systemctl stop doli-mainnet-seed doli-testnet-seed doli-mainnet-santiago
+# ai3:
+sudo systemctl stop doli-mainnet-seed
 
-# ai4 (mainnet N6-N12):
-sudo systemctl stop doli-mainnet-{n6,n7,n8,n9,n10,n11,n12}
-
-# ai5 (testnet NT6-NT12):
-sudo systemctl stop doli-testnet-{nt6,nt7,nt8,nt9,nt10,nt11,nt12}
+# ai4 (cleanup only — no mainnet services, but check for strays):
+sudo pkill -f "doli-node.*mainnet" 2>/dev/null
 ```
 
-**4. Verify nothing remains:**
+**3. Verify nothing remains:**
 ```bash
-# On EACH server:
-pgrep -a doli-node   # must return nothing
+for server in ai1 ai2 ai3 ai4; do
+  echo "=== $server ===" && ssh $server "pgrep -a doli-node | grep mainnet || echo 'clean'"
+done
 ```
 
-**5. Wipe ALL data dirs.** The runtime data lives inside `<node>/data/`:
-
+**4. Wipe ALL mainnet data dirs:**
 ```bash
-# ai1 — testnet NT1-NT5 + both seeds:
-for node in /testnet/nt{1..5} /testnet/seed /mainnet/seed; do
+# ai1 — mainnet seed:
+for node in /mainnet/seed; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 
-# ai2 — mainnet N1-N5 + both seeds:
-for node in /mainnet/n{1..5} /mainnet/seed /testnet/seed; do
+# ai2 — mainnet N1-N5 + seed:
+for node in /mainnet/n{1..5} /mainnet/seed; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 
-# ai3 — both seeds + SANTIAGO:
-for node in /mainnet/seed /testnet/seed /mainnet/santiago; do
-  find "$node/data" -mindepth 1 -delete 2>/dev/null
-  rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
-done
-
-# ai4 — mainnet N6-N12:
-for node in /mainnet/n{6..12}; do
-  find "$node/data" -mindepth 1 -delete 2>/dev/null
-  rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
-done
-
-# ai5 — testnet NT6-NT12:
-for node in /testnet/nt{6..12}; do
+# ai3 — mainnet seed:
+for node in /mainnet/seed; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 ```
 
-**KEEP ONLY**: `keys/` directories. Binaries are shared at `/mainnet/bin/` and `/testnet/bin/`.
+**KEEP ONLY**: `keys/` directories.
 
-**6. Wipe archive dirs** (optional — for a fully clean restart):
+**5. Verify wipe:**
 ```bash
-# On ALL 3 servers:
-rm -rf /mainnet/seed/blocks/* /testnet/seed/blocks/*
+for server in ai1 ai2 ai3; do
+  echo "=== $server ===" && ssh $server 'for node in /mainnet/seed /mainnet/n{1..5}; do [ -d "$node" ] && echo "$node: $(ls "$node/" 2>/dev/null | tr "\n" " ")"; done'
+done
 ```
-
-**7. Verify wipe:**
-```bash
-# Spot-check on each server:
-ls <node>/data/    # must be empty
-ls <node>/         # must show only keys/ (and empty data/)
-```
+Must show only `data keys` (data dir empty).
 
 If `signed_slots.db` survives anywhere, nodes will hit slashing protection and refuse to produce.
 
 ---
 
-### Phase 2: Update Genesis
+### Phase 2: Update Genesis (local machine)
 
-**8. Calculate new genesis timestamp** = NOW + 6 minutes:
+**6. Calculate new genesis timestamp** = NOW + 15 minutes (enough for compile + deploy):
 ```bash
-echo $(( $(date +%s) + 360 ))
+echo $(( $(date +%s) + 900 ))
 ```
 
-**9. Update ALL 4 sources** with the new timestamp:
+**7. Update 2 files** with the new timestamp:
+- `chainspec.mainnet.json` → `genesis.timestamp` + `genesis.message`
+- `crates/core/src/consensus/constants.rs` → `GENESIS_TIME`
+- `crates/core/src/chainspec.rs` → `ChainSpec::mainnet()` genesis message
 
+**8. Run sync tests:**
 ```bash
-# 1. chainspec.mainnet.json → genesis.timestamp + genesis.message
-# 2. chainspec.testnet.json → genesis.timestamp + genesis.message
-# 3. crates/core/src/consensus/constants.rs → GENESIS_TIME constant
-# 4. crates/core/src/network_params/defaults.rs → testnet genesis_time field
+cargo test -p doli-core test_genesis_time
 ```
 
-**10. Grep for the OLD timestamp** — 0 matches must remain:
+**9. Commit & push:**
 ```bash
-grep -r "OLD_TIMESTAMP" --include="*.rs" --include="*.json" .
-```
-
-**11. Run sync tests:**
-```bash
-cargo test test_genesis_time_matches_chainspec test_testnet_genesis_time_matches_chainspec
-```
-Both must pass.
-
-**12. Commit & push** (no sensitive info):
-```bash
-git add chainspec.mainnet.json chainspec.testnet.json \
-  crates/core/src/consensus/constants.rs \
-  crates/core/src/network_params/defaults.rs
+git add chainspec.mainnet.json crates/core/src/consensus/constants.rs crates/core/src/chainspec.rs
 git commit --author "Ivan D. Lozada <ivan@doli.network>" \
-  -m "chain reset: new genesis $(date -u +%Y-%m-%d)"
+  -m "chain reset: mainnet genesis TIMESTAMP (YYYY-MM-DD)"
 git push
 ```
 
 ---
 
-### Phase 3: Compile & Deploy (ALL 3 servers)
+### Phase 3: Compile & Deploy (ai2 → ai1, ai3)
 
-**13. Compile on ai2** (dedicated CPU, 0% steal):
+**10. Compile on ai2:**
 ```bash
-cd ~/repos/doli && git pull && cargo build --release
+ssh ai2 "source ~/.cargo/env && cd ~/repos/doli && git pull && cargo build --release"
 ```
 
-**14. Record checksums:**
+**11. Record checksums:**
 ```bash
-md5sum target/release/doli-node target/release/doli
+ssh ai2 "md5sum ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli"
 ```
 
-**15. Deploy on ai2** (local):
+**12. Deploy on ai2 (local):**
 ```bash
-cp target/release/doli-node /mainnet/bin/doli-node
-cp target/release/doli      /mainnet/bin/doli
-cp target/release/doli-node /testnet/bin/doli-node
-cp target/release/doli      /testnet/bin/doli
+ssh ai2 "sudo cp ~/repos/doli/target/release/doli-node /mainnet/bin/doli-node && sudo cp ~/repos/doli/target/release/doli /mainnet/bin/doli"
 ```
 
-**16. Transfer to ai1:**
+**13. Transfer to ai1 and ai3:**
 ```bash
-ssh ai1 "cat > /mainnet/bin/doli-node" < target/release/doli-node
-ssh ai1 "cat > /mainnet/bin/doli"      < target/release/doli
-ssh ai1 "cat > /testnet/bin/doli-node" < target/release/doli-node
-ssh ai1 "cat > /testnet/bin/doli"      < target/release/doli
-ssh ai1 "chmod +x /mainnet/bin/{doli-node,doli} /testnet/bin/{doli-node,doli}"
+for server in ai1 ai3; do
+  ssh ai2 "cat ~/repos/doli/target/release/doli-node" | ssh $server "cat > /tmp/doli-node && sudo cp /tmp/doli-node /mainnet/bin/doli-node && sudo chmod +x /mainnet/bin/doli-node && rm /tmp/doli-node"
+  ssh ai2 "cat ~/repos/doli/target/release/doli" | ssh $server "cat > /tmp/doli && sudo cp /tmp/doli /mainnet/bin/doli && sudo chmod +x /mainnet/bin/doli && rm /tmp/doli"
+done
 ```
 
-**17. Transfer to ai3:**
+**14. Verify binaries on ALL servers (ai1-ai5) with `ls -l` and `md5sum`:**
+
+Even servers that are not part of this network reset may have stale binaries that get used later. Verify everywhere.
+
 ```bash
-ssh ai3 "cat > /mainnet/bin/doli-node" < target/release/doli-node
-ssh ai3 "cat > /mainnet/bin/doli"      < target/release/doli
-ssh ai3 "cat > /testnet/bin/doli-node" < target/release/doli-node
-ssh ai3 "cat > /testnet/bin/doli"      < target/release/doli
-ssh ai3 "chmod +x /mainnet/bin/{doli-node,doli} /testnet/bin/{doli-node,doli}"
+echo "=== BUILD ===" && ssh ai2 "md5sum ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli"
+echo ""
+for server in ai1 ai2 ai3 ai4 ai5; do
+  echo "=== $server ==="
+  ssh $server "ls -l /mainnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli-node /testnet/bin/doli 2>/dev/null"
+  ssh $server "md5sum /mainnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli-node /testnet/bin/doli 2>/dev/null"
+  echo ""
+done
 ```
 
-**18. Verify checksums** on all 3 servers (12 binaries total):
-```bash
-# ai2 (local):
-md5sum /mainnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli-node /testnet/bin/doli
-# ai1:
-ssh ai1 "md5sum /mainnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli-node /testnet/bin/doli"
-# ai3:
-ssh ai3 "md5sum /mainnet/bin/doli-node /mainnet/bin/doli /testnet/bin/doli-node /testnet/bin/doli"
-```
-All 12 must match build output.
+Check:
+- **Date**: `ls -l` timestamp must be from the current deploy (not yesterday/last week)
+- **md5**: must match build output for every binary on every server
+- **Stale binaries**: if any server shows an old date or mismatched md5, redeploy before proceeding
 
 ---
 
 ### Phase 4: Start & Verify
 
-**DO NOT start nodes until Phases 1-3 are fully verified** — binaries match, data dirs empty, no stale `signed_slots.db`.
+**DO NOT start nodes until Phases 1-3 are fully verified.**
 
-**19. Start seeds first** (all 3 servers, both networks):
+**15. Start seeds first (ai1, ai2, ai3):**
 ```bash
-# ai1:
-sudo systemctl start doli-mainnet-seed doli-testnet-seed
-# ai2:
-sudo systemctl start doli-mainnet-seed doli-testnet-seed
-# ai3:
-sudo systemctl start doli-mainnet-seed doli-testnet-seed
+for server in ai1 ai2 ai3; do
+  ssh $server "sudo systemctl start doli-mainnet-seed"
+done
 ```
-Wait ~10 seconds for seeds to peer with each other.
+Wait ~10 seconds for seeds to peer.
 
-**20. Start genesis producers** (only nodes with genesis wallets — SANTIAGO cannot start here):
+**16. Start producers (ai2 only):**
 ```bash
-# ai2 — mainnet (active first, then standby):
-sudo systemctl start doli-mainnet-{n1,n2,n3,n4,n5}
-# (then n6-n12 as needed)
-
-# ai1 — testnet (active first, then standby):
-sudo systemctl start doli-testnet-{nt1,nt2,nt3,nt4,nt5}
-# (then nt6-nt12 as needed)
+ssh ai2 "sudo systemctl start doli-mainnet-{n1,n2,n3,n4,n5}"
 ```
 
-**21. Immediate health check** via `getChainInfo`:
+**17. Health check:**
 ```bash
-curl -s -X POST http://127.0.0.1:<port>/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":[],"id":1}' | jq .result
+ssh ai2 'curl -s -X POST http://127.0.0.1:8500/ -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":[],\"id\":1}" | jq .result'
 ```
 
 | Check | Expected |
 |-------|----------|
 | Before genesis time | `h=0`, `s=0` |
-| After genesis time | `h` and `s` incrementing from 1 |
-| `h=0` after genesis passed | Check logs for `SLASHING PROTECTION` — means `signed_slots.db` wasn't wiped |
+| After genesis time | `h` and `s` incrementing |
+| `h=0` after genesis passed | Check logs for `SLASHING PROTECTION` — `signed_slots.db` wasn't wiped |
 
-**22. Full status check:**
-```bash
-scripts/status.sh all
-```
+---
+
+## Testnet Chain Reset Procedure
+
+Same structure but different servers:
+
+- **Stop/wipe**: ai1 (NT1-NT5 + testnet seed), ai2 (testnet seed), ai3 (testnet seed), ai5 (NT6-NT12)
+- **Update**: `chainspec.testnet.json` + `defaults.rs` testnet `genesis_time`
+- **Deploy**: ai1, ai2, ai3, ai5 (`/testnet/bin/`)
+- **Start seeds**: ai1, ai2, ai3
+- **Start producers**: ai1 (NT1-NT5), ai5 (NT6-NT12)
 
 ---
 
@@ -296,45 +261,24 @@ scripts/status.sh all
 | Epoch length | 360 blocks (1 hour) | `constants.rs:SLOTS_PER_EPOCH` |
 | Block reward | 1 DOLI (100,000,000 atomic) | `constants.rs:INITIAL_REWARD` |
 | Bond unit | 10 DOLI (1,000,000,000 atomic) | `constants.rs:BOND_UNIT` |
+| Vesting | 4 years (3,153,600 slots/quarter) | `constants.rs:VESTING_QUARTER_SLOTS` |
 | Max bonds per producer | 3,000 (30,000 DOLI max) | `constants.rs:MAX_BONDS_PER_PRODUCER` |
 | Halving interval | ~4 years (12,614,400 blocks) | `constants.rs:BLOCKS_PER_ERA` |
 | Total supply | 25,228,800 DOLI | `constants.rs:TOTAL_SUPPLY` |
 | Unbonding period | ~7 days (60,480 blocks) | `constants.rs:UNBONDING_PERIOD` |
 | Genesis open registration | 1 hour (360 blocks) | `defaults.rs:genesis_blocks` |
-| Bootstrap grace period | 15 seconds | `constants.rs:BOOTSTRAP_GRACE_PERIOD_SECS` |
-| Fallback timeout | 2s per rank, 5 ranks | `constants.rs:FALLBACK_TIMEOUT_MS` |
 | Coinbase maturity | 6 blocks | `constants.rs:COINBASE_MATURITY` |
 
 ### Testnet Overrides
 
 | Parameter | Mainnet | Testnet |
 |-----------|---------|---------|
+| Bond unit | 10 DOLI | 0.01 DOLI |
 | P2P port | 30300 | 40300 |
 | RPC port | 8500 | 18500 |
 | Metrics port | 9000 | 19000 |
 | Vesting quarter | 1 year (3,153,600 slots) | 6 hours (2,160 slots) |
-| Bootstrap nodes | seed1/seed2/seeds.doli.network | bootstrap1/bootstrap2/seeds.testnet.doli.network |
-
-### Genesis Hash
-
-```
-genesis_hash = BLAKE3(timestamp_le || network_id_le || slot_duration_le || message_bytes)
-```
-
-Included in every block header (v2+). Nodes reject blocks with a different genesis hash immediately.
-
----
-
-## DNS
-
-| Record | Purpose |
-|--------|---------|
-| `seed1.doli.network` | ai1 mainnet P2P |
-| `seed2.doli.network` | ai2 mainnet P2P |
-| `seeds.doli.network` | Round-robin ai1+ai2+ai3 (mainnet) |
-| `bootstrap1.testnet.doli.network` | ai1 testnet P2P |
-| `bootstrap2.testnet.doli.network` | ai2 testnet P2P |
-| `seeds.testnet.doli.network` | Round-robin ai1+ai2+ai3 (testnet) |
+| Unbonding | 60,480 blocks (~7 days) | 720 blocks (~2 hours) |
 
 ---
 
@@ -343,12 +287,13 @@ Included in every block header (v2+). Nodes reject blocks with a different genes
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Node stuck at h=0 after genesis | `signed_slots.db` not wiped | Stop, `find <node>/data -mindepth 1 -delete`, restart |
-| Nodes can't peer | Seeds not started first, or different genesis hash | Verify all 6 seeds running, check genesis timestamp matches across all 4 sources |
+| Nodes can't peer | Seeds not started first, or different genesis hash | Verify all 3 seeds running, check genesis timestamp matches |
 | "SLASHING PROTECTION" in logs | Stale `signed_slots.db` from previous chain | Wipe `<node>/data/signed_slots.db` |
-| Different genesis hash across nodes | One of the 4 timestamp sources wasn't updated | Grep for old timestamp, rebuild, redeploy |
+| Different genesis hash across nodes | Timestamp source not updated | Grep for old timestamp, rebuild, redeploy |
 | md5 mismatch after transfer | Incomplete SSH transfer | Re-transfer binary, verify again |
+| "Text file busy" on deploy | Stale doli-node process still running | `pgrep -a doli-node` on that server, kill it, then deploy |
 
 ---
 
-**Document Version**: 3.0
+**Document Version**: 4.0
 **Author**: DOLI Core Team
