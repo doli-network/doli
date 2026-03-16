@@ -478,6 +478,13 @@ pub struct SyncManager {
     /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
     post_rollback: bool,
 
+    /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
+    /// suppress further fork syncs for this duration. Prevents infinite reorg loops
+    /// when multiple peers offer equal-weight competing chains (e.g., 50 nodes
+    /// joining simultaneously with propagation delay).
+    last_fork_sync_rejection: Instant,
+    fork_sync_cooldown_secs: u64,
+
     /// Set after snap sync / force_recover to suppress fork_sync reactivation.
     /// The node needs time to sync via header-first / gossip before fork detection
     /// makes sense. Cleared after 10+ blocks are applied post-recovery.
@@ -585,6 +592,8 @@ impl SyncManager {
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
             post_rollback: false,
+            last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
+            fork_sync_cooldown_secs: 30,
             post_recovery_grace: false,
             post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,

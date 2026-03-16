@@ -485,6 +485,12 @@ impl SyncManager {
     /// Reset sync state after a shallow fork rollback.
     /// Clears the fork signal counters, resets downloaders, and returns to Idle
     /// so sync can restart from the new (rolled-back) tip.
+    /// Record that a fork sync was rejected (equal or lighter chain).
+    /// Activates a cooldown to prevent infinite reorg loops.
+    pub fn mark_fork_sync_rejected(&mut self) {
+        self.last_fork_sync_rejection = Instant::now();
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         self.consecutive_empty_headers = 0;
         // needs_genesis_resync intentionally preserved — rollbacks must not

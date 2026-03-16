@@ -504,6 +504,7 @@ impl Node {
                 new_chain_height, current_height
             );
             let mut sync = self.sync_manager.write().await;
+            sync.mark_fork_sync_rejected();
             sync.reset_sync_for_rollback();
             return Ok(());
         }
@@ -566,6 +567,9 @@ impl Node {
                 weight_delta, new_chain_weight, old_chain_weight
             );
             let mut sync = self.sync_manager.write().await;
+            // Record rejection time to activate reorg cooldown.
+            // This prevents the infinite loop: reject → post_rollback → fork_sync → reject.
+            sync.mark_fork_sync_rejected();
             sync.reset_sync_for_rollback();
             return Ok(());
         }

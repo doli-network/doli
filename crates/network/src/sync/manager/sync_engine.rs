@@ -199,7 +199,22 @@ impl SyncManager {
                 // If fork_sync can't start (e.g., no recovery peer), escalate to
                 // snap sync via needs_genesis_resync.
                 self.post_rollback = false;
-                if self.start_fork_sync() {
+
+                // Reorg cooldown: if we just rejected a fork sync (delta=0),
+                // don't start another one immediately. This breaks the infinite
+                // reorg loop when 50+ peers offer equal-weight competing chains.
+                let cooldown_elapsed = self.last_fork_sync_rejection.elapsed().as_secs();
+                if cooldown_elapsed < self.fork_sync_cooldown_secs {
+                    info!(
+                        "Post-rollback: fork sync in cooldown ({}s/{}) — using header-first",
+                        cooldown_elapsed, self.fork_sync_cooldown_secs
+                    );
+                    self.state = SyncState::DownloadingHeaders {
+                        target_slot,
+                        peer,
+                        headers_count: 0,
+                    };
+                } else if self.start_fork_sync() {
                     info!(
                         "Post-rollback: started fork_sync (binary search) instead of header-first",
                     );
