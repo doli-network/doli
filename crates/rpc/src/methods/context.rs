@@ -55,7 +55,7 @@ pub struct RpcContext {
     pub blocks_per_reward_epoch: u64,
     /// Coinbase maturity (network-specific: mainnet/testnet=100, devnet=10)
     pub coinbase_maturity: u64,
-    /// Bond unit in base units (network-specific: mainnet/testnet=10B, devnet=100M)
+    /// Bond unit in base units (network-specific: mainnet/testnet=1B [10 DOLI], devnet=100M [1 DOLI])
     pub bond_unit: u64,
     /// Local peer ID
     pub peer_id: String,
@@ -157,7 +157,7 @@ impl RpcContext {
                 network: "mainnet".to_string(),
                 blocks_per_reward_epoch: BLOCKS_PER_REWARD_EPOCH,
                 coinbase_maturity: DEFAULT_REWARD_MATURITY,
-                bond_unit: 10_000_000_000, // 100 DOLI default (mainnet/testnet)
+                bond_unit: 1_000_000_000, // 10 DOLI default (mainnet/testnet)
                 peer_id: "unknown".to_string(),
                 peer_count: Arc::new(|| 0),
                 peer_list: Arc::new(std::vec::Vec::new),

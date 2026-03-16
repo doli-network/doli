@@ -545,20 +545,20 @@ mod tests {
     #[test]
     fn test_from_bond_amount() {
         let pubkey = make_pubkey(1);
-        // Use mainnet bond_unit: 100 DOLI = 10_000_000_000 base units
-        let bond_unit = 10_000_000_000u64;
+        // Use mainnet bond_unit: 10 DOLI = 1_000_000_000 base units
+        let bond_unit = 1_000_000_000u64;
 
-        // 100 DOLI = 1 bond unit
-        let producer = ScheduledProducer::from_bond_amount(pubkey, 10_000_000_000, bond_unit);
+        // 10 DOLI = 1 bond unit
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 1_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 1);
 
-        // 1000 DOLI = 10 bond units
-        let producer = ScheduledProducer::from_bond_amount(pubkey, 100_000_000_000, bond_unit);
+        // 100 DOLI = 10 bond units
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 10_000_000_000, bond_unit);
         assert_eq!(producer.bond_units, 10);
 
         // Partial bonds round down
-        let producer = ScheduledProducer::from_bond_amount(pubkey, 15_000_000_000, bond_unit);
-        assert_eq!(producer.bond_units, 1); // 150 DOLI = 1 bond (rounds down)
+        let producer = ScheduledProducer::from_bond_amount(pubkey, 1_500_000_000, bond_unit);
+        assert_eq!(producer.bond_units, 1); // 15 DOLI = 1 bond (rounds down)
     }
 
     #[test]

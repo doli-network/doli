@@ -340,7 +340,7 @@ apply_block():
 
 | What | Correct | Wrong | Risk |
 |------|---------|-------|------|
-| `BOND_UNIT` | `consensus/constants.rs:188` = 1B (10 DOLI) | `storage/producer/constants.rs:95` = 10B (100 DOLI) | **High** — storage crate's constant is deprecated but still exists. Direct reference would break consensus. |
+| `BOND_UNIT` | `consensus/constants.rs:188` = 1B (10 DOLI) | ~~`storage/producer/constants.rs:95` = 10B (100 DOLI)~~ **FIXED 2026-03-16** — storage constant now matches core (1B = 10 DOLI) | **Resolved** |
 | `HEARTBEAT_VDF_ITERATIONS` | `network_params/defaults.rs:47` = 800K | `heartbeat.rs:45` = 10M | **Medium** — legacy constant 12.5x too high. Any new code referencing it directly would produce incorrect VDF proofs. |
 | VDF comment | `vdf.rs:15` T_BLOCK=800K (~55ms) | `constants.rs:41` says "~7s" | **Low** — stale comment only |
 
@@ -376,13 +376,13 @@ apply_block():
 | execute_reorg() | **High** — rollback + apply, weight comparison | `bins/node/src/node/block_handling.rs` |
 | Scheduling | **High** — all nodes MUST compute identical results | `crates/core/src/consensus/selection.rs` |
 | Producer rebuilding | **High** — replays ALL producer txs from genesis | `bins/node/src/node/rewards.rs:366` |
-| Reward validation | **Gap** — `validate_block_rewards_exact()` never called | `crates/core/src/validation/rewards_legacy.rs` |
+| Reward validation | ~~Gap~~ **FIXED 2026-03-16** — legacy dead code removed, 3 gaps in `validate_block_economics()` closed | `bins/node/src/node/validation_checks.rs` |
 
 ## Technical Debt
 
-1. **Reward validation disconnected** — malicious producer can inflate rewards (Open Item)
+1. ~~**Reward validation disconnected**~~ — **FIXED 2026-03-16**: Legacy dead code removed, 3 gaps in `validate_block_economics()` closed (Light mode exact-match, missing EpochReward detection, truncated extra_data rejection)
 2. **VDF crate overhead** — Wesolowski (GMP) compiled but never used in production
-3. **`wallet` serialization duplication** — must manually match `doli-core`, silent divergence risk
+3. **`wallet` serialization duplication** — must manually match `doli-core`; **mitigated 2026-03-16** with 6 new cross-crate safety net tests (constant parity, TxType variant count, fee parity)
 4. **Deprecated constants** — many `#[allow(deprecated)]` in core lib.rs
 5. **Test coverage gaps** — no integration tests for snap sync or fork recovery
 6. **ProducerSet snapshot every block** — undo data serializes entire ProducerSet (scales poorly)

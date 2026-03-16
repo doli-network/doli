@@ -184,7 +184,7 @@ pub const COINBASE_MATURITY: BlockHeight = 6;
 /// This is the atomic unit for staking. You can only stake in multiples of this.
 /// With 10 DOLI per bond unit:
 /// - Producer with 100 DOLI = 10 slots per cycle
-/// - Maximum 10,000 bonds = 100,000 DOLI maximum per producer
+/// - Maximum 3,000 bonds = 30,000 DOLI maximum per producer
 pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 
 /// Initial bond amount - alias for backward compatibility

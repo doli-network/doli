@@ -65,7 +65,7 @@ impl ProducerInfo {
     ) -> Self {
         // Calculate bond count from amount using network-specific bond unit
         // For devnet: bond_unit = 100_000_000 (1 DOLI per bond)
-        // For mainnet/testnet: bond_unit = 100_000_000_000 (1000 DOLI per bond)
+        // For mainnet/testnet: bond_unit = 1_000_000_000 (10 DOLI per bond)
         let bond_unit = if bond_unit == 0 { BOND_UNIT } else { bond_unit };
         let bond_count = (bond_amount / bond_unit).min(MAX_BONDS_PER_PRODUCER as u64) as u32;
         let bond_count = bond_count.max(1); // Minimum 1 bond

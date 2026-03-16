@@ -259,7 +259,7 @@ impl Node {
     /// - EpochReward TX only allowed at epoch boundaries, post-genesis, epoch > 0
     /// - At most one EpochReward TX per block
     /// - Total distributed must not exceed pool balance (conservation)
-    /// - (Full mode) Exact match of amounts and recipients
+    /// - Exact match of amounts and recipients (both Full and Light modes)
     pub(super) async fn validate_block_economics(
         &self,
         block: &Block,

@@ -16,7 +16,7 @@ impl Network {
     /// Get initial bond amount for this network
     ///
     /// Initial bond = 1 bond unit = minimum to become a producer.
-    /// For mainnet/testnet: 100 DOLI (1 slot per cycle)
+    /// For mainnet/testnet: 10 DOLI (1 slot per cycle)
     pub fn initial_bond(&self) -> u64 {
         self.bond_unit() // Initial bond equals 1 bond unit
     }
@@ -24,8 +24,8 @@ impl Network {
     /// Get bond unit size for slot allocation
     ///
     /// Each bond unit grants 1 consecutive slot per cycle.
-    /// - 100 DOLI = 1 bond unit = 1 slot per cycle
-    /// - 1,000 DOLI = 10 bond units = 10 slots per cycle
+    /// - 10 DOLI = 1 bond unit = 1 slot per cycle
+    /// - 100 DOLI = 10 bond units = 10 slots per cycle
     ///
     /// Configurable via `DOLI_BOND_UNIT` environment variable (devnet only).
     /// Locked for mainnet to ensure consensus compatibility.
@@ -62,7 +62,7 @@ impl Network {
     ///
     /// After genesis ends, each producer who participated gets this amount
     /// automatically bonded (deducted from their earned rewards).
-    /// This equals 1 bond unit (100 DOLI on mainnet/testnet, 100 DOLI on devnet).
+    /// This equals 1 bond unit (10 DOLI on mainnet/testnet, 1 DOLI on devnet).
     ///
     /// Configurable via `DOLI_AUTOMATIC_GENESIS_BOND` environment variable (devnet only).
     pub fn automatic_genesis_bond(&self) -> u64 {

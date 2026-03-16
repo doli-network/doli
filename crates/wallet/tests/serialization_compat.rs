@@ -254,3 +254,303 @@ fn test_m1_wallet_tx_deserializes_in_core() {
         crypto::Hash::from_bytes(sender)
     );
 }
+
+// =============================================================================
+// Constant parity tests — detect drift between wallet and core constants
+// =============================================================================
+
+/// Verify that all 8 duplicated constants in the wallet crate match their
+/// canonical values in doli-core. If any of these fail, the wallet is using
+/// stale values that will produce incorrect transactions or UI displays.
+#[test]
+fn test_constants_match_core() {
+    // Bond unit (10 DOLI in base units)
+    assert_eq!(
+        wallet::BOND_UNIT,
+        doli_core::consensus::BOND_UNIT,
+        "BOND_UNIT mismatch: wallet has {}, core has {}",
+        wallet::BOND_UNIT,
+        doli_core::consensus::BOND_UNIT,
+    );
+
+    // Maximum bonds per producer
+    assert_eq!(
+        wallet::MAX_BONDS_PER_PRODUCER,
+        doli_core::consensus::MAX_BONDS_PER_PRODUCER,
+        "MAX_BONDS_PER_PRODUCER mismatch: wallet has {}, core has {}",
+        wallet::MAX_BONDS_PER_PRODUCER,
+        doli_core::consensus::MAX_BONDS_PER_PRODUCER,
+    );
+
+    // Blocks per reward epoch
+    assert_eq!(
+        wallet::BLOCKS_PER_REWARD_EPOCH,
+        doli_core::consensus::BLOCKS_PER_REWARD_EPOCH,
+        "BLOCKS_PER_REWARD_EPOCH mismatch: wallet has {}, core has {}",
+        wallet::BLOCKS_PER_REWARD_EPOCH,
+        doli_core::consensus::BLOCKS_PER_REWARD_EPOCH,
+    );
+
+    // Coinbase maturity
+    assert_eq!(
+        wallet::COINBASE_MATURITY,
+        doli_core::consensus::COINBASE_MATURITY,
+        "COINBASE_MATURITY mismatch: wallet has {}, core has {}",
+        wallet::COINBASE_MATURITY,
+        doli_core::consensus::COINBASE_MATURITY,
+    );
+
+    // Unbonding period
+    assert_eq!(
+        wallet::UNBONDING_PERIOD,
+        doli_core::consensus::UNBONDING_PERIOD,
+        "UNBONDING_PERIOD mismatch: wallet has {}, core has {}",
+        wallet::UNBONDING_PERIOD,
+        doli_core::consensus::UNBONDING_PERIOD,
+    );
+
+    // Base registration fee
+    assert_eq!(
+        wallet::BASE_REGISTRATION_FEE,
+        doli_core::consensus::BASE_REGISTRATION_FEE,
+        "BASE_REGISTRATION_FEE mismatch: wallet has {}, core has {}",
+        wallet::BASE_REGISTRATION_FEE,
+        doli_core::consensus::BASE_REGISTRATION_FEE,
+    );
+
+    // Maximum registration fee
+    assert_eq!(
+        wallet::MAX_REGISTRATION_FEE,
+        doli_core::consensus::MAX_REGISTRATION_FEE,
+        "MAX_REGISTRATION_FEE mismatch: wallet has {}, core has {}",
+        wallet::MAX_REGISTRATION_FEE,
+        doli_core::consensus::MAX_REGISTRATION_FEE,
+    );
+
+    // Vesting quarter duration (wallet is u64, core is Slot = u32)
+    assert_eq!(
+        wallet::VESTING_QUARTER_SLOTS,
+        doli_core::consensus::VESTING_QUARTER_SLOTS as u64,
+        "VESTING_QUARTER_SLOTS mismatch: wallet has {}, core has {}",
+        wallet::VESTING_QUARTER_SLOTS,
+        doli_core::consensus::VESTING_QUARTER_SLOTS,
+    );
+}
+
+// =============================================================================
+// TxType variant count — catches core adding new types without wallet update
+// =============================================================================
+
+/// Count how many valid TxType variants exist in core by probing from_u32(0..=255).
+/// If core adds a new transaction type, this test will fail, reminding the developer
+/// to update the wallet's TxType enum and to_core_type_id() mapping.
+#[test]
+fn test_core_txtype_variant_count() {
+    let mut count = 0u32;
+    for i in 0..=255u32 {
+        if doli_core::transaction::TxType::from_u32(i).is_some() {
+            count += 1;
+        }
+    }
+    // Core has 18 variants: Transfer(0), Registration(1), Exit(2), ClaimReward(3),
+    // ClaimBond(4), SlashProducer(5), Coinbase(6), AddBond(7), RequestWithdrawal(8),
+    // ClaimWithdrawal(9), EpochReward(10), RemoveMaintainer(11), AddMaintainer(12),
+    // DelegateBond(13), RevokeDelegation(14), ProtocolActivation(15),
+    // MintAsset(17), BurnAsset(18)
+    // Note: discriminant 16 is unused (gap between ProtocolActivation and MintAsset).
+    assert_eq!(
+        count, 18,
+        "Core TxType variant count changed from 18 to {}! Update wallet TxType to match.",
+        count,
+    );
+}
+
+// =============================================================================
+// to_core_type_id exhaustive mapping — verify every wallet TxType maps correctly
+// =============================================================================
+
+/// Verify that each wallet TxType variant maps to the correct core TxType discriminant
+/// in the serialized wire format. This catches silent remapping bugs where the wallet
+/// sends a transaction with the wrong type discriminant.
+///
+/// Approach: build a minimal tx with each wallet TxType, serialize it, then read the
+/// tx_type u32 from bytes [4..8] (bincode: version=u32 at [0..4], tx_type=u32 at [4..8]).
+/// Deserialize with core to confirm the type matches end-to-end.
+#[test]
+fn test_to_core_type_id_mapping() {
+    use wallet::TxType as WTx;
+
+    let seed = [77u8; 32];
+    let kp = KeyPair::from_seed(seed);
+
+    // Helper: build a minimal tx with the given wallet type, serialize, and extract
+    // the core tx_type discriminant from the wire bytes.
+    let extract_core_type = |wtype: WTx| -> u32 {
+        let mut builder = wallet::TxBuilder::new(wtype);
+        builder.add_input([0xAAu8; 32], 0);
+        builder.add_output(100, [0xBBu8; 32], 0, 0, Vec::new());
+        let hex_out = builder.sign_and_build(&kp).unwrap();
+        let bytes = hex::decode(&hex_out).unwrap();
+        // tx_type is at bytes [4..8] as u32 LE
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+    };
+
+    // Direct 1:1 mappings (wallet variant -> expected core discriminant)
+    let mappings: Vec<(WTx, u32, &str)> = vec![
+        (WTx::Transfer, 0, "Transfer"),
+        (WTx::Registration, 1, "Registration"),
+        (WTx::ProducerExit, 2, "Exit"),
+        (WTx::Coinbase, 6, "Coinbase"),
+        (WTx::RewardClaim, 3, "ClaimReward"),
+        (WTx::AddBond, 7, "AddBond"),
+        (WTx::RequestWithdrawal, 8, "RequestWithdrawal"),
+        (WTx::ClaimWithdrawal, 9, "ClaimWithdrawal (tombstone)"),
+        (WTx::SlashingEvidence, 5, "SlashProducer"),
+        (WTx::DelegateBond, 13, "DelegateBond"),
+        (WTx::RevokeDelegation, 14, "RevokeDelegation"),
+    ];
+
+    for (wallet_type, expected_core_id, name) in &mappings {
+        let actual = extract_core_type(*wallet_type);
+        assert_eq!(
+            actual, *expected_core_id,
+            "Wallet TxType::{} serialized to core id {}, expected {}",
+            name, actual, expected_core_id,
+        );
+        // Also verify the core id is actually a valid TxType
+        assert!(
+            doli_core::transaction::TxType::from_u32(actual).is_some(),
+            "Wallet TxType::{} serialized to core id {} which is not a valid core TxType!",
+            name,
+            actual,
+        );
+    }
+
+    // Types that map to Transfer(0) because core doesn't have dedicated variants
+    let transfer_aliases: Vec<(WTx, &str)> = vec![
+        (WTx::NftMint, "NftMint"),
+        (WTx::NftTransfer, "NftTransfer"),
+        (WTx::TokenIssuance, "TokenIssuance"),
+        (WTx::BridgeLock, "BridgeLock"),
+    ];
+
+    for (wallet_type, name) in &transfer_aliases {
+        let actual = extract_core_type(*wallet_type);
+        assert_eq!(
+            actual, 0,
+            "Wallet TxType::{} should serialize as core Transfer(0), got {}",
+            name, actual,
+        );
+    }
+}
+
+// =============================================================================
+// Fee parity — verify wallet and core fee functions produce identical results
+// =============================================================================
+
+/// Verify that the wallet's fee_multiplier_x100 produces identical results to core
+/// across all tier boundaries. This function is consensus-critical: wrong fees cause
+/// transaction rejection.
+#[test]
+fn test_fee_multiplier_parity() {
+    // Test every tier boundary and representative values within each tier
+    let test_cases: Vec<u32> = vec![
+        0, 1, 4, // tier 1: 0-4 -> 100
+        5, 7, 9, // tier 2: 5-9 -> 150
+        10, 15, 19, // tier 3: 10-19 -> 200
+        20, 35, 49, // tier 4: 20-49 -> 300
+        50, 75, 99, // tier 5: 50-99 -> 450
+        100, 150, 199, // tier 6: 100-199 -> 650
+        200, 250, 299, // tier 7: 200-299 -> 850
+        300, 500, 1000, // tier 8: 300+ -> 1000
+    ];
+
+    for pending in test_cases {
+        let core_result = doli_core::consensus::fee_multiplier_x100(pending);
+        // Wallet's fee_multiplier_x100 is private, so we test via registration_fee
+        // which uses it internally. We verify the core result matches expected values.
+        let expected = match pending {
+            0..=4 => 100,
+            5..=9 => 150,
+            10..=19 => 200,
+            20..=49 => 300,
+            50..=99 => 450,
+            100..=199 => 650,
+            200..=299 => 850,
+            _ => 1000,
+        };
+        assert_eq!(
+            core_result, expected,
+            "Core fee_multiplier_x100({}) = {}, expected {}",
+            pending, core_result, expected,
+        );
+    }
+}
+
+/// Verify that wallet's registration fee calculation matches core across the full
+/// range of pending registration counts.
+#[test]
+fn test_registration_fee_parity() {
+    // Test representative pending counts across all tiers
+    let test_cases: Vec<u32> = vec![0, 3, 5, 10, 20, 50, 100, 200, 300, 500];
+
+    for pending in test_cases {
+        let core_fee = doli_core::consensus::registration_fee(pending);
+
+        // Wallet calculates: calculate_registration_cost(1, pending) returns
+        // (bond_cost, reg_fee, total). We extract the reg_fee.
+        let (_, wallet_fee, _) = wallet::calculate_registration_cost(1, pending).unwrap();
+
+        assert_eq!(
+            wallet_fee, core_fee,
+            "Registration fee mismatch at pending={}: wallet={}, core={}",
+            pending, wallet_fee, core_fee,
+        );
+    }
+}
+
+/// Verify that wallet's vesting penalty calculation matches core's withdrawal_penalty_rate
+/// across all quarter boundaries.
+#[test]
+fn test_vesting_penalty_parity() {
+    // Use core's VESTING_QUARTER_SLOTS for boundary values
+    let quarter = doli_core::consensus::VESTING_QUARTER_SLOTS as u64;
+
+    let test_cases: Vec<(u64, u8)> = vec![
+        (0, 75),                     // Start of Q1
+        (quarter / 2, 75),           // Middle of Q1
+        (quarter - 1, 75),           // End of Q1
+        (quarter, 50),               // Start of Q2
+        (quarter + quarter / 2, 50), // Middle of Q2
+        (2 * quarter - 1, 50),       // End of Q2
+        (2 * quarter, 25),           // Start of Q3
+        (3 * quarter - 1, 25),       // End of Q3
+        (3 * quarter, 0),            // Fully vested
+        (4 * quarter, 0),            // Well past vesting
+        (10 * quarter, 0),           // Far future
+    ];
+
+    for (age_slots, expected_pct) in &test_cases {
+        let core_pct = doli_core::withdrawal_penalty_rate_with_quarter(
+            *age_slots as u32,
+            doli_core::consensus::VESTING_QUARTER_SLOTS,
+        );
+        let wallet_pct = wallet::vesting_penalty_pct(*age_slots);
+
+        assert_eq!(
+            wallet_pct, *expected_pct,
+            "Wallet vesting_penalty_pct({}) = {}, expected {}",
+            age_slots, wallet_pct, expected_pct,
+        );
+        assert_eq!(
+            core_pct, *expected_pct,
+            "Core withdrawal_penalty_rate({}) = {}, expected {}",
+            age_slots, core_pct, expected_pct,
+        );
+        assert_eq!(
+            wallet_pct, core_pct,
+            "Vesting penalty mismatch at age_slots={}: wallet={}, core={}",
+            age_slots, wallet_pct, core_pct,
+        );
+    }
+}

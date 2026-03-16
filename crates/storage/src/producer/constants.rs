@@ -89,13 +89,13 @@ pub const INACTIVITY_THRESHOLD: u64 = 60_480;
 /// At 10s slots (6 blocks/minute): 1 day × 24 hours × 360 blocks/hour = 8,640 blocks
 pub const REACTIVATION_THRESHOLD: u64 = 8_640;
 
-/// Bond unit constant for mainnet/testnet: 1 bond = 100 DOLI = 10,000,000,000 base units
+/// Bond unit constant for mainnet/testnet: 1 bond = 10 DOLI = 1,000,000,000 base units
 /// Note: For devnet, use Network::initial_bond() which returns 100_000_000 (1 DOLI per bond)
 /// IMPORTANT: For production code, prefer using `NetworkParams::bond_unit()` instead.
-pub const BOND_UNIT: u64 = 10_000_000_000;
+pub const BOND_UNIT: u64 = 1_000_000_000;
 
 /// Get the bond unit for a specific network
-/// - Mainnet/Testnet: 100_000_000_000 (1000 DOLI per bond)
+/// - Mainnet/Testnet: 1_000_000_000 (10 DOLI per bond)
 /// - Devnet: 100_000_000 (1 DOLI per bond)
 pub fn bond_unit_for_network(network: Network) -> u64 {
     network.initial_bond()

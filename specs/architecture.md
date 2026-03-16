@@ -775,7 +775,7 @@ DOLI uses a strict 3-level configuration hierarchy to prevent inconsistencies:
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1: consensus.rs (RAW CONSTANTS - DNA)                    │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │  BOND_UNIT = 10_000_000_000                                 ││
+│  │  BOND_UNIT = 1_000_000_000                                  ││
 │  │  SLOTS_PER_EPOCH = 360                                      ││
 │  │  T_BLOCK = 800_000                                            ││
 │  │  (immutable protocol constants)                             ││
