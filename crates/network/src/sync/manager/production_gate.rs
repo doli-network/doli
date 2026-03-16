@@ -910,8 +910,23 @@ impl SyncManager {
         info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");
     }
 
-    /// Check if sync manager has signaled that a full genesis resync is needed
+    /// Check if sync manager has signaled that a full genesis resync is needed.
+    /// Returns false if snap sync is disabled (--no-snap-sync), regardless of
+    /// how many internal paths set the flag. This is the SINGLE gate that
+    /// prevents snap sync from firing when the operator has forbidden it.
     pub fn needs_genesis_resync(&self) -> bool {
+        if self.snap_sync_threshold == u64::MAX {
+            // Snap sync disabled — never allow genesis resync regardless of signals.
+            // Log once when suppressing to make debugging easier.
+            if self.needs_genesis_resync {
+                tracing::warn!(
+                    "--no-snap-sync: suppressing genesis resync signal (local_h={}, gap={})",
+                    self.local_height,
+                    self.best_peer_height().saturating_sub(self.local_height)
+                );
+            }
+            return false;
+        }
         self.needs_genesis_resync
     }
 

@@ -118,8 +118,10 @@ impl SyncManager {
             // Snap sync decision: use snap sync when far behind and enough peers
             let gap = best_height.saturating_sub(self.local_height);
             let enough_peers = self.peers.len() >= 3;
+            let snap_allowed = self.snap_sync_threshold < u64::MAX;
             let should_snap = enough_peers
                 && self.snap_sync_attempts < 3
+                && snap_allowed
                 && (self.local_height == 0 || gap > self.snap_sync_threshold);
 
             // Fresh node optimization: don't start slow header-first sync.
@@ -129,6 +131,7 @@ impl SyncManager {
             if self.local_height == 0
                 && !enough_peers
                 && self.snap_sync_attempts < 3
+                && snap_allowed
                 && gap > self.snap_sync_threshold
             {
                 let wait_start = self.fresh_node_wait_start.get_or_insert(Instant::now());
@@ -218,7 +221,7 @@ impl SyncManager {
                     info!(
                         "Post-rollback: started fork_sync (binary search) instead of header-first",
                     );
-                } else if enough_peers && self.snap_sync_attempts < 3 {
+                } else if enough_peers && snap_allowed && self.snap_sync_attempts < 3 {
                     warn!(
                         "Post-rollback: fork_sync failed to start, escalating to snap sync \
                          (gap={}, peers={})",
