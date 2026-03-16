@@ -3,14 +3,14 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1773615082,
-    "message": "Time is the only fair currency. Chain reset 15/Mar/2026",
+    "timestamp": 1773689074,
+    "message": "DOLI Mainnet Genesis - Chain reset 16/Mar/2026",
     "initial_reward": 100000000
   },
   "consensus": {
     "slot_duration": 10,
     "slots_per_epoch": 360,
-    "bond_amount": 10000000
+    "bond_amount": 1000000000
   },
   "genesis_producers": []
 }

@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1773686121;
+pub const GENESIS_TIME: u64 = 1773689074;
 
 /// Deterministic reward pool address.
 /// All per-block coinbase goes here; distributed to qualified producers at epoch end.
@@ -206,15 +206,16 @@ pub const MAX_BONDS_PER_PRODUCER: u32 = 3_000;
 /// 365 days * 24 hours * 360 slots/hour = 3,153,600 slots
 pub const YEAR_IN_SLOTS: Slot = 3_153_600;
 
-/// One vesting quarter (local dev: half an epoch = 180 slots)
-/// Full maturity in 2 epochs = 720 slots = 4 quarters of 180
-pub const VESTING_QUARTER_SLOTS: Slot = 180;
+/// One vesting quarter (1 year at 10s slots = 3,153,600 slots)
+/// 4 quarters = 4 years to full maturity on mainnet.
+/// Testnet/devnet override via NetworkParams.vesting_quarter_slots.
+pub const VESTING_QUARTER_SLOTS: Slot = 3_153_600;
 
-/// Full vesting period (2 epochs = 720 slots at 10s/slot = 2 hours)
+/// Full vesting period (4 years = 4 × 3,153,600 = 12,614,400 slots)
 pub const VESTING_PERIOD_SLOTS: Slot = 4 * VESTING_QUARTER_SLOTS;
 
-/// Commitment period for full vesting (2 epochs)
-/// After 2 epochs, bonds can be withdrawn with 0% penalty
+/// Commitment period for full vesting (4 years)
+/// After 4 years, bonds can be withdrawn with 0% penalty
 pub const COMMITMENT_PERIOD: BlockHeight = VESTING_PERIOD_SLOTS as BlockHeight;
 
 /// Unbonding period for exit (~7 days at 10-second slots)
