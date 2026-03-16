@@ -268,14 +268,6 @@ sudo systemctl start doli-testnet-{nt1,nt2,nt3,nt4,nt5}
 # (then nt6-nt12 as needed)
 ```
 
-> **SANTIAGO (ai3)**: Cannot start at genesis. It's a regular producer — needs bond (10 DOLI),
-> which requires receiving funds from an existing producer first. Start SANTIAGO only after:
-> 1. Chain is producing blocks and past genesis phase (360 blocks)
-> 2. Send DOLI to SANTIAGO's wallet: `doli send -w <source_wallet> -r <santiago_address> 10`
-> 3. Register as producer: `doli producer register --bonds 1 -w /mainnet/santiago/keys/wallet.json`
-> 4. Wait for activation delay (10 blocks)
-> 5. Then: `sudo systemctl start doli-mainnet-santiago`
-
 **21. Immediate health check** via `getChainInfo`:
 ```bash
 curl -s -X POST http://127.0.0.1:<port>/ \
