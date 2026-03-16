@@ -510,17 +510,16 @@ impl Node {
         }
 
         // Pre-check: verify block store has blocks from height 1 (required for UTXO rebuild).
-        // Snap-synced nodes don't have early blocks — reorg would fail. Re-snap to recover.
+        // Without block 1, reorg can't rebuild UTXO state. Skip the reorg and let
+        // header-first sync catch up naturally. Do NOT snap sync — it destroys the block store.
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
-                "Fork sync reorg: snap sync gap detected (block 1 missing). \
-                 Re-snapping to get back to tip."
+                "Fork sync reorg: block 1 missing (block store gap). \
+                 Skipping reorg — header-first sync will catch up."
             );
-            {
-                let mut sync = self.sync_manager.write().await;
-                sync.reset_sync_for_rollback();
-            }
-            self.reset_state_only().await?;
+            let mut sync = self.sync_manager.write().await;
+            sync.mark_fork_sync_rejected();
+            sync.reset_sync_for_rollback();
             return Ok(());
         }
 
@@ -631,11 +630,11 @@ impl Node {
                 if err_msg.contains("missing block") || err_msg.contains("UTXO rebuild") {
                     if self.block_store.get_block_by_height(1)?.is_none() {
                         warn!(
-                            "Fork sync reorg failed due to snap sync gap: {}. \
-                             Re-snapping to recover.",
+                            "Fork sync reorg failed due to block store gap: {}. \
+                             Skipping — header-first sync will recover.",
                             e
                         );
-                        self.reset_state_only().await?;
+                        // Do NOT snap sync. Let header-first sync catch up.
                     } else {
                         warn!(
                             "Reorg failed with block store intact — possible corruption: {}",

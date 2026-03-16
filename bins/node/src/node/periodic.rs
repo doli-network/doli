@@ -315,11 +315,11 @@ impl Node {
                 let floor = self.sync_manager.read().await.store_floor();
                 warn!(
                     "Fork sync: search limited by block store floor (height {}). \
-                     Re-snapping to restore state — NOT a deep fork.",
+                     Skipping — NOT a deep fork. Header-first sync will recover.",
                     floor
                 );
                 self.sync_manager.write().await.fork_sync_clear();
-                self.reset_state_only().await?;
+                // Do NOT snap sync. Clear fork state and let header-first sync handle it.
                 self.sync_manager.write().await.set_post_recovery_grace();
                 return Ok(());
             }

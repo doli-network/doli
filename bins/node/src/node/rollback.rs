@@ -85,10 +85,11 @@ impl Node {
                 local_height
             );
 
-            // Pre-check: snap-synced nodes can't rebuild from genesis — re-snap to recover
+            // Pre-check: can't rebuild from genesis without block 1.
+            // Do NOT snap sync — it destroys the block store further.
+            // Skip the rollback and let header-first sync recover.
             if self.block_store.get_block_by_height(1)?.is_none() {
-                warn!("Rollback: snap-synced node with no undo data. Re-snapping to recover.");
-                self.reset_state_only().await?;
+                warn!("Rollback: block 1 missing — cannot rebuild. Skipping rollback, header-first sync will recover.");
                 return Ok(true);
             }
 

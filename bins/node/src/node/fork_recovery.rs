@@ -542,14 +542,14 @@ impl Node {
         let local_height = self.chain_state.read().await.best_height;
         let best_peer = self.sync_manager.read().await.best_peer_height();
 
-        // Snap-synced nodes missing genesis blocks can never reorg — re-snap to recover
+        // Block 1 missing means block store has a gap. Do NOT snap sync — it makes the gap worse.
+        // Let header-first sync fill in the missing blocks naturally.
         if self.block_store.get_block_by_height(1)?.is_none() {
             warn!(
-                "Recovery: snap sync gap detected (block 1 missing). \
-                 Re-snapping to get back to tip (local h={}, peer h={})",
+                "Recovery: block 1 missing — skipping state reset. \
+                 Header-first sync will recover (local h={}, peer h={})",
                 local_height, best_peer
             );
-            self.reset_state_only().await?;
             return Ok(());
         }
 
