@@ -42,7 +42,7 @@ Only finalized blocks (67%+ attestation weight) are archived — blocks that the
 ### Option A: Copy from the archive server
 
 ```bash
-# From ai2 (mainnet seed — same machine as mainnet producers)
+# From ai2 (mainnet seed — same machine as mainnet N1-N5 producers)
 cp -r /mainnet/seed/data/blocks/ /path/to/local/archive/
 
 # From another machine via rsync

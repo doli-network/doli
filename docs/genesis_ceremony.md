@@ -44,13 +44,15 @@
   - Proper log routing
   - At least 2 `--bootstrap` entries pointing to seed nodes
 
-## Server Layout (v4, 2026-03-13)
+## Server Layout (v6, 2026-03-15)
 
 | Server | Role |
 |--------|------|
-| ai1 | Testnet producers |
-| ai2 | Mainnet producers (compile here) |
-| ai3 | Seeds (mainnet + testnet, 3 per network) |
+| ai1 | Testnet NT1-NT5 + seeds (both networks) |
+| ai2 | Mainnet N1-N5 + seeds (both networks) + build + explorer |
+| ai3 | Seeds only (both networks) + SANTIAGO |
+| ai4 | Mainnet N6-N12 |
+| ai5 | Testnet NT6-NT12 |
 
 ## Post-Genesis Verification
 
