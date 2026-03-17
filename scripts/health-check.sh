@@ -3,9 +3,10 @@
 #
 # Usage: scripts/health-check.sh [mainnet|testnet|all]
 #
-# Architecture v6 (2026-03-15):
-#   ai1 = testnet NT1-NT5 + seeds, ai2 = mainnet N1-N5 + seeds + build
-#   ai3 = seeds only + SANTIAGO (port 50790), ai4 = mainnet N6-N12, ai5 = testnet NT6-NT12
+# Architecture v8 (2026-03-17):
+#   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
+#   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
+#   ai3 = seeds only (both networks), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
 # Checks (all must pass):
 #   1. All nodes responding to RPC
@@ -17,11 +18,11 @@
 #   7. Service files have LimitNOFILE=65535
 set -euo pipefail
 
-AI1="ilozada@72.60.228.233"    # Testnet NT1-NT5 + seeds
-AI2="ilozada@187.124.95.188"   # Mainnet N1-N5 + seeds + build
-AI3="ilozada@187.124.148.93"   # Seeds only + SANTIAGO (SSH port 50790)
-AI4="ilozada@204.168.150.118"  # Mainnet N6-N12
-AI5="ilozada@46.62.156.244"    # Testnet NT6-NT12
+AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
+AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
+AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,14 +36,10 @@ pass()  { echo -e "  ${GREEN}PASS${NC} $1"; }
 fail()  { echo -e "  ${RED}FAIL${NC} $1"; ERRORS=$((ERRORS+1)); }
 warn()  { echo -e "  ${YELLOW}WARN${NC} $1"; WARNINGS=$((WARNINGS+1)); }
 
-# SSH wrapper: uses port 50790 for AI3
+# SSH wrapper
 do_ssh() {
   local server="$1"; shift
-  if [[ "$server" == "$AI3" ]]; then
-    ssh -p 50790 -o ConnectTimeout=5 "$server" "$@"
-  else
-    ssh -o ConnectTimeout=5 "$server" "$@"
-  fi
+  ssh -p "${DOLI_SSH_PORT:-22}" -o ConnectTimeout=5 "$server" "$@"
 }
 
 rpc_call() {
@@ -180,18 +177,18 @@ do_mainnet() {
     "Seed1:${AI1}:8500:/var/log/doli/mainnet/seed.log:doli-mainnet-seed"
     "Seed2:${AI2}:8500:/var/log/doli/mainnet/seed.log:doli-mainnet-seed"
     "Seed3:${AI3}:8500:/var/log/doli/mainnet/seed.log:doli-mainnet-seed"
-    "N1:${AI2}:8501:/var/log/doli/mainnet/n1.log:doli-mainnet-n1"
-    "N2:${AI2}:8502:/var/log/doli/mainnet/n2.log:doli-mainnet-n2"
-    "N3:${AI2}:8503:/var/log/doli/mainnet/n3.log:doli-mainnet-n3"
+    "N1:${AI1}:8501:/var/log/doli/mainnet/n1.log:doli-mainnet-n1"
+    "N2:${AI1}:8502:/var/log/doli/mainnet/n2.log:doli-mainnet-n2"
+    "N3:${AI1}:8503:/var/log/doli/mainnet/n3.log:doli-mainnet-n3"
     "N4:${AI2}:8504:/var/log/doli/mainnet/n4.log:doli-mainnet-n4"
     "N5:${AI2}:8505:/var/log/doli/mainnet/n5.log:doli-mainnet-n5"
     "N6:${AI4}:8506:/var/log/doli/mainnet/n6.log:doli-mainnet-n6"
     "N7:${AI4}:8507:/var/log/doli/mainnet/n7.log:doli-mainnet-n7"
     "N8:${AI4}:8508:/var/log/doli/mainnet/n8.log:doli-mainnet-n8"
-    "N9:${AI4}:8509:/var/log/doli/mainnet/n9.log:doli-mainnet-n9"
-    "N10:${AI4}:8510:/var/log/doli/mainnet/n10.log:doli-mainnet-n10"
-    "N11:${AI4}:8511:/var/log/doli/mainnet/n11.log:doli-mainnet-n11"
-    "N12:${AI4}:8512:/var/log/doli/mainnet/n12.log:doli-mainnet-n12"
+    "N9:${AI5}:8509:/var/log/doli/mainnet/n9.log:doli-mainnet-n9"
+    "N10:${AI5}:8510:/var/log/doli/mainnet/n10.log:doli-mainnet-n10"
+    "N11:${AI5}:8511:/var/log/doli/mainnet/n11.log:doli-mainnet-n11"
+    "N12:${AI5}:8512:/var/log/doli/mainnet/n12.log:doli-mainnet-n12"
   )
   check_network "Mainnet" "mainnet" "${nodes[@]}"
 }

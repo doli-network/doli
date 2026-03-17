@@ -3,9 +3,10 @@
 #
 # Usage: scripts/chain-reset.sh [mainnet|testnet] [--skip-backup]
 #
-# Architecture v6 (2026-03-15):
-#   ai1 = testnet NT1-NT5 + seeds, ai2 = mainnet N1-N5 + seeds + build
-#   ai3 = seeds only + SANTIAGO (port 50790), ai4 = mainnet N6-N12, ai5 = testnet NT6-NT12
+# Architecture v8 (2026-03-17):
+#   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
+#   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
+#   ai3 = seeds only (both networks), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
 # Sequence:
 #   1. Validate ALL service files have --bootstrap (blocks reset if not)
@@ -19,11 +20,11 @@
 # See: docs/postmortems/2026-03-11-network-partition.md
 set -euo pipefail
 
-AI1="ilozada@72.60.228.233"    # Testnet NT1-NT5 + seeds
-AI2="ilozada@187.124.95.188"   # Mainnet N1-N5 + seeds + build
-AI3="ilozada@187.124.148.93"   # Seeds only + SANTIAGO (SSH port 50790)
-AI4="ilozada@204.168.150.118"  # Mainnet N6-N12
-AI5="ilozada@46.62.156.244"    # Testnet NT6-NT12
+AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
+AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
+AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,14 +39,10 @@ if [[ -z "$NETWORK" || ! "$NETWORK" =~ ^(mainnet|testnet)$ ]]; then
   exit 1
 fi
 
-# SSH wrapper: uses port 50790 for AI3
+# SSH wrapper
 do_ssh() {
   local server="$1"; shift
-  if [[ "$server" == "$AI3" ]]; then
-    ssh -p 50790 -o ConnectTimeout=10 "$server" "$@"
-  else
-    ssh -o ConnectTimeout=10 "$server" "$@"
-  fi
+  ssh -p "${DOLI_SSH_PORT:-22}" -o ConnectTimeout=10 "$server" "$@"
 }
 
 echo -e "${YELLOW}=== DOLI Chain Reset: ${NETWORK} ===${NC}"
@@ -53,18 +50,26 @@ echo ""
 
 # Determine which servers to target
 if [[ "$NETWORK" == "mainnet" ]]; then
-  PRIMARY="$AI2"       # Mainnet N1-N5 + seed
-  SECONDARY="$AI4"     # Mainnet N6-N12
+  PRIMARY="$AI1"       # Mainnet seed + N1-N3
+  SECONDARY="$AI2"     # Mainnet seed + N4-N5
+  TERTIARY="$AI4"      # Mainnet N6-N8
+  QUATERNARY="$AI5"    # Mainnet N9-N12
   PRODUCERS="N"
-  PRIMARY_LIST="1 2 3 4 5"
-  SECONDARY_LIST="6 7 8 9 10 11 12"
+  PRIMARY_LIST="1 2 3"
+  SECONDARY_LIST="4 5"
+  TERTIARY_LIST="6 7 8"
+  QUATERNARY_LIST="9 10 11 12"
   NODE_LIST="1 2 3 4 5 6 7 8 9 10 11 12"
 else
   PRIMARY="$AI1"       # Testnet NT1-NT5 + seed
   SECONDARY="$AI5"     # Testnet NT6-NT12
+  TERTIARY=""
+  QUATERNARY=""
   PRODUCERS="NT"
   PRIMARY_LIST="1 2 3 4 5"
   SECONDARY_LIST="6 7 8 9 10 11 12"
+  TERTIARY_LIST=""
+  QUATERNARY_LIST=""
   NODE_LIST="1 2 3 4 5 6 7 8 9 10 11 12"
 fi
 
@@ -162,7 +167,7 @@ fi
 # ── Phase 2: Stop all services ─────────────────────────────────────────
 echo "Phase 2: Stopping all ${NETWORK} services..."
 
-# Stop producers on primary (N1-N5 / NT1-NT5)
+# Stop producers on primary
 local_prefix=$(echo "$PRODUCERS" | tr '[:upper:]' '[:lower:]')
 do_ssh "$PRIMARY" "
   for N in ${PRIMARY_LIST}; do
@@ -171,22 +176,35 @@ do_ssh "$PRIMARY" "
   sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true
 " 2>/dev/null && echo "  Stopped on primary" || echo "  Warning: stop failed on primary"
 
-# Stop producers on secondary (N6-N12 / NT6-NT12)
+# Stop producers on secondary
 do_ssh "$SECONDARY" "
   for N in ${SECONDARY_LIST}; do
     sudo systemctl stop doli-${NETWORK}-${local_prefix}\${N} 2>/dev/null || true
   done
+  sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true
 " 2>/dev/null && echo "  Stopped on secondary" || echo "  Warning: stop failed on secondary"
+
+# Stop producers on tertiary (mainnet N6-N8 on ai4)
+if [[ -n "$TERTIARY" ]]; then
+  do_ssh "$TERTIARY" "
+    for N in ${TERTIARY_LIST}; do
+      sudo systemctl stop doli-${NETWORK}-${local_prefix}\${N} 2>/dev/null || true
+    done
+  " 2>/dev/null && echo "  Stopped on tertiary" || echo "  Warning: stop failed on tertiary"
+fi
+
+# Stop producers on quaternary (mainnet N9-N12 on ai5)
+if [[ -n "$QUATERNARY" ]]; then
+  do_ssh "$QUATERNARY" "
+    for N in ${QUATERNARY_LIST}; do
+      sudo systemctl stop doli-${NETWORK}-${local_prefix}\${N} 2>/dev/null || true
+    done
+  " 2>/dev/null && echo "  Stopped on quaternary" || echo "  Warning: stop failed on quaternary"
+fi
 
 # Stop seed on ai3
 do_ssh "$AI3" "sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true" \
   && echo "  Stopped seed on ai3" || echo "  Warning: stop failed on ai3"
-
-# Stop cross-server seed (mainnet has seed on ai1)
-if [[ "$NETWORK" == "mainnet" ]]; then
-  do_ssh "$AI1" "sudo systemctl stop doli-mainnet-seed 2>/dev/null || true" \
-    && echo "  Stopped mainnet seed on ai1" || echo "  Warning: stop failed on ai1"
-fi
 
 echo ""
 
@@ -202,23 +220,33 @@ do_ssh "$PRIMARY" "
 " 2>/dev/null && echo "  Wiped on primary" || echo "  Warning: wipe failed on primary"
 
 do_ssh "$SECONDARY" "
+  sudo find /${NETWORK}/seed/data -mindepth 1 -delete 2>/dev/null || true
+  sudo find /${NETWORK}/seed/blocks -mindepth 1 -delete 2>/dev/null || true
   for N in ${SECONDARY_LIST}; do
     sudo find /${NETWORK}/${local_prefix}\${N}/data -mindepth 1 -delete 2>/dev/null || true
   done
 " 2>/dev/null && echo "  Wiped on secondary" || echo "  Warning: wipe failed on secondary"
 
+if [[ -n "$TERTIARY" ]]; then
+  do_ssh "$TERTIARY" "
+    for N in ${TERTIARY_LIST}; do
+      sudo find /${NETWORK}/${local_prefix}\${N}/data -mindepth 1 -delete 2>/dev/null || true
+    done
+  " 2>/dev/null && echo "  Wiped on tertiary" || echo "  Warning: wipe failed on tertiary"
+fi
+
+if [[ -n "$QUATERNARY" ]]; then
+  do_ssh "$QUATERNARY" "
+    for N in ${QUATERNARY_LIST}; do
+      sudo find /${NETWORK}/${local_prefix}\${N}/data -mindepth 1 -delete 2>/dev/null || true
+    done
+  " 2>/dev/null && echo "  Wiped on quaternary" || echo "  Warning: wipe failed on quaternary"
+fi
+
 do_ssh "$AI3" "
   sudo find /${NETWORK}/seed/data -mindepth 1 -delete 2>/dev/null || true
   sudo find /${NETWORK}/seed/blocks -mindepth 1 -delete 2>/dev/null || true
 " 2>/dev/null && echo "  Wiped seed on ai3" || echo "  Warning: wipe failed on ai3"
-
-# Wipe cross-server seed (mainnet has seed on ai1)
-if [[ "$NETWORK" == "mainnet" ]]; then
-  do_ssh "$AI1" "
-    sudo find /mainnet/seed/data -mindepth 1 -delete 2>/dev/null || true
-    sudo find /mainnet/seed/blocks -mindepth 1 -delete 2>/dev/null || true
-  " 2>/dev/null && echo "  Wiped mainnet seed on ai1" || echo "  Warning: wipe failed on ai1"
-fi
 
 echo ""
 
@@ -228,24 +256,26 @@ do_ssh "$PRIMARY" "sudo systemctl daemon-reload" 2>/dev/null \
   && echo "  Reloaded on primary" || echo "  Warning: reload failed on primary"
 do_ssh "$SECONDARY" "sudo systemctl daemon-reload" 2>/dev/null \
   && echo "  Reloaded on secondary" || echo "  Warning: reload failed on secondary"
+if [[ -n "$TERTIARY" ]]; then
+  do_ssh "$TERTIARY" "sudo systemctl daemon-reload" 2>/dev/null \
+    && echo "  Reloaded on tertiary" || echo "  Warning: reload failed on tertiary"
+fi
+if [[ -n "$QUATERNARY" ]]; then
+  do_ssh "$QUATERNARY" "sudo systemctl daemon-reload" 2>/dev/null \
+    && echo "  Reloaded on quaternary" || echo "  Warning: reload failed on quaternary"
+fi
 do_ssh "$AI3" "sudo systemctl daemon-reload" 2>/dev/null \
   && echo "  Reloaded on ai3" || echo "  Warning: reload failed on ai3"
-if [[ "$NETWORK" == "mainnet" && "$PRIMARY" != "$AI1" ]]; then
-  do_ssh "$AI1" "sudo systemctl daemon-reload" 2>/dev/null \
-    && echo "  Reloaded on ai1" || echo "  Warning: reload failed on ai1"
-fi
 echo ""
 
 # ── Phase 5: Start seeds first ─────────────────────────────────────────
 echo "Phase 5: Starting seeds..."
 do_ssh "$PRIMARY" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
   && echo "  Seed started on primary" || echo "  Warning: seed start failed on primary"
+do_ssh "$SECONDARY" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
+  && echo "  Seed started on secondary" || echo "  Warning: seed start failed on secondary"
 do_ssh "$AI3" "sudo systemctl start doli-${NETWORK}-seed" 2>/dev/null \
   && echo "  Seed started on ai3" || echo "  Warning: seed start failed on ai3"
-if [[ "$NETWORK" == "mainnet" ]]; then
-  do_ssh "$AI1" "sudo systemctl start doli-mainnet-seed" 2>/dev/null \
-    && echo "  Mainnet seed started on ai1" || echo "  Warning: seed start failed on ai1"
-fi
 
 echo "  Waiting 15 seconds for seeds to initialize..."
 sleep 15
@@ -254,19 +284,37 @@ echo ""
 # ── Phase 6: Start producers ───────────────────────────────────────────
 echo "Phase 6: Starting producers..."
 
-# Start primary producers (N1-N5 / NT1-NT5)
+# Start primary producers
 for N in $PRIMARY_LIST; do
   do_ssh "$PRIMARY" "sudo systemctl start doli-${NETWORK}-${local_prefix}${N}" 2>/dev/null \
     && echo "  ${PRODUCERS}${N} started (primary)" || echo "  Warning: ${PRODUCERS}${N} start failed"
   sleep 2
 done
 
-# Start secondary producers (N6-N12 / NT6-NT12)
+# Start secondary producers
 for N in $SECONDARY_LIST; do
   do_ssh "$SECONDARY" "sudo systemctl start doli-${NETWORK}-${local_prefix}${N}" 2>/dev/null \
     && echo "  ${PRODUCERS}${N} started (secondary)" || echo "  Warning: ${PRODUCERS}${N} start failed"
   sleep 2
 done
+
+# Start tertiary producers (mainnet N6-N8 on ai4)
+if [[ -n "$TERTIARY" && -n "$TERTIARY_LIST" ]]; then
+  for N in $TERTIARY_LIST; do
+    do_ssh "$TERTIARY" "sudo systemctl start doli-${NETWORK}-${local_prefix}${N}" 2>/dev/null \
+      && echo "  ${PRODUCERS}${N} started (tertiary)" || echo "  Warning: ${PRODUCERS}${N} start failed"
+    sleep 2
+  done
+fi
+
+# Start quaternary producers (mainnet N9-N12 on ai5)
+if [[ -n "$QUATERNARY" && -n "$QUATERNARY_LIST" ]]; then
+  for N in $QUATERNARY_LIST; do
+    do_ssh "$QUATERNARY" "sudo systemctl start doli-${NETWORK}-${local_prefix}${N}" 2>/dev/null \
+      && echo "  ${PRODUCERS}${N} started (quaternary)" || echo "  Warning: ${PRODUCERS}${N} start failed"
+    sleep 2
+  done
+fi
 echo ""
 
 # ── Phase 7: Health check ──────────────────────────────────────────────

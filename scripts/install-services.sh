@@ -2,14 +2,17 @@
 # install-services.sh — Generate and install standardized systemd service files
 #
 # Usage (run locally, deploys via SSH):
-#   scripts/install-services.sh mainnet    # Install all mainnet services on ai2+ai4+ai1+ai3
-#   scripts/install-services.sh testnet    # Install all testnet services on ai1+ai5+ai3
+#   scripts/install-services.sh mainnet    # Install all mainnet services on ai1+ai2+ai3+ai4+ai5
+#   scripts/install-services.sh testnet    # Install all testnet services on ai1+ai2+ai3+ai5
 #   scripts/install-services.sh all        # Both networks
 #   scripts/install-services.sh validate   # Validate deployed service files match expected
 #
-# Architecture v6 (2026-03-15):
-#   ai1 = testnet NT1-NT5 + seeds, ai2 = mainnet N1-N5 + seeds + build
-#   ai3 = seeds only + SANTIAGO, ai4 = mainnet N6-N12, ai5 = testnet NT6-NT12
+# Architecture v8 (2026-03-17):
+#   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
+#   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
+#   ai3 = seeds only (both networks)
+#   ai4 = mainnet N6-N8
+#   ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
 # This is the ONLY way to create/update service files. Never hand-edit.
 set -euo pipefail
@@ -17,11 +20,11 @@ set -euo pipefail
 # Capitalize first letter (bash 3.x compat)
 ucfirst() { echo "$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')${1:1}"; }
 
-AI1="ilozada@72.60.228.233"    # Testnet NT1-NT5 + seeds
-AI2="ilozada@187.124.95.188"   # Mainnet N1-N5 + seeds + build
-AI3="ilozada@187.124.148.93"   # Seeds only + SANTIAGO (SSH port 50790)
-AI4="ilozada@204.168.150.118"  # Mainnet N6-N12
-AI5="ilozada@46.62.156.244"    # Testnet NT6-NT12
+AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
+AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
+AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
 # ── Mainnet config ──────────────────────────────────────────────────────
 MN_BINARY="/mainnet/bin/doli-node"
@@ -146,10 +149,10 @@ install_remote() {
   echo "  Installed ${service_name} on ${server}"
 }
 
-# ── SSH wrapper (all servers use port 50790) ──────────────────────────
+# ── SSH wrapper ───────────────────────────────────────────────────────
 do_ssh() {
   local server="$1"; shift
-  ssh -p 50790 -o ConnectTimeout=10 "$server" "$@"
+  ssh -p "${DOLI_SSH_PORT:-22}" -o ConnectTimeout=10 "$server" "$@"
 }
 
 reload_daemon() {
@@ -179,8 +182,17 @@ install_mainnet() {
     30300 8500 9000 "$MN_BOOTSTRAP_1" "" "/var/log/doli/mainnet/seed.log" "/mainnet/seed/blocks")
   install_remote "$AI3" "doli-mainnet-seed" "$svc" "$dry_run"
 
-  # N1-N5 on ai2
-  for N in 1 2 3 4 5; do
+  # N1-N3 on ai1
+  for N in 1 2 3; do
+    svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
+      "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
+      "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+    install_remote "$AI1" "doli-mainnet-n${N}" "$svc" "$dry_run"
+  done
+
+  # N4-N5 on ai2
+  for N in 4 5; do
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
@@ -188,8 +200,8 @@ install_mainnet() {
     install_remote "$AI2" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
-  # N6-N12 on ai4
-  for N in 6 7 8 9 10 11 12; do
+  # N6-N8 on ai4
+  for N in 6 7 8; do
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
@@ -197,11 +209,21 @@ install_mainnet() {
     install_remote "$AI4" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
+  # N9-N12 on ai5
+  for N in 9 10 11 12; do
+    svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
+      "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
+      "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+    install_remote "$AI5" "doli-mainnet-n${N}" "$svc" "$dry_run"
+  done
+
   # Reload systemd
   reload_daemon "$AI1" "$dry_run" "ai1"
   reload_daemon "$AI2" "$dry_run" "ai2"
   reload_daemon "$AI3" "$dry_run" "ai3"
   reload_daemon "$AI4" "$dry_run" "ai4"
+  reload_daemon "$AI5" "$dry_run" "ai5"
   echo ""
 }
 
@@ -296,8 +318,17 @@ validate_mainnet() {
     30300 8500 9000 "$MN_BOOTSTRAP_1" "" "/var/log/doli/mainnet/seed.log" "/mainnet/seed/blocks")
   validate_service "$AI3" "doli-mainnet-seed" "$svc" "Seed3 (ai3)"
 
-  # N1-N5 on ai2
-  for N in 1 2 3 4 5; do
+  # N1-N3 on ai1
+  for N in 1 2 3; do
+    svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
+      "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
+      "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+    validate_service "$AI1" "doli-mainnet-n${N}" "$svc" "N${N} (ai1)"
+  done
+
+  # N4-N5 on ai2
+  for N in 4 5; do
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
@@ -305,13 +336,22 @@ validate_mainnet() {
     validate_service "$AI2" "doli-mainnet-n${N}" "$svc" "N${N} (ai2)"
   done
 
-  # N6-N12 on ai4
-  for N in 6 7 8 9 10 11 12; do
+  # N6-N8 on ai4
+  for N in 6 7 8; do
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
       "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
     validate_service "$AI4" "doli-mainnet-n${N}" "$svc" "N${N} (ai4)"
+  done
+
+  # N9-N12 on ai5
+  for N in 9 10 11 12; do
+    svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
+      "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
+      "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+    validate_service "$AI5" "doli-mainnet-n${N}" "$svc" "N${N} (ai5)"
   done
   echo ""
 }
@@ -416,12 +456,15 @@ if [[ "${1:-}" != "validate" ]]; then
   echo "=== Installing Watchdog ==="
   case "${1:-}" in
     mainnet)
+      install_watchdog "$AI1" "ai1"
       install_watchdog "$AI2" "ai2"
       install_watchdog "$AI3" "ai3"
       install_watchdog "$AI4" "ai4"
+      install_watchdog "$AI5" "ai5"
       ;;
     testnet)
       install_watchdog "$AI1" "ai1"
+      install_watchdog "$AI2" "ai2"
       install_watchdog "$AI3" "ai3"
       install_watchdog "$AI5" "ai5"
       ;;

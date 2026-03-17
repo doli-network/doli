@@ -1,6 +1,6 @@
 # DOLI Genesis & Full Chain Reset
 
-> Last updated: 2026-03-16 | Layout v7
+> Last updated: 2026-03-17 | Layout v8
 
 Complete procedure for resetting and relaunching DOLI networks from a new genesis.
 
@@ -8,13 +8,15 @@ Complete procedure for resetting and relaunching DOLI networks from a new genesi
 
 ## Network Topology
 
-### Mainnet (3 servers: ai1, ai2, ai3)
+### Mainnet (5 servers: ai1, ai2, ai3, ai4, ai5)
 
 | Server | Role | Nodes |
 |--------|------|-------|
-| ai1 | Seed | Mainnet seed1 |
-| ai2 | Seed + Producers + Build | Mainnet seed2 + N1-N5 |
+| ai1 | Seed + Producers | Mainnet seed1 + N1, N2, N3 |
+| ai2 | Seed + Producers + Build | Mainnet seed2 + N4, N5 |
 | ai3 | Seed | Mainnet seed3 |
+| ai4 | Producers | N6, N7, N8 |
+| ai5 | Producers | N9, N10, N11, N12 |
 
 ### Testnet (3 servers: ai1, ai2, ai5)
 
@@ -75,49 +77,65 @@ Update all 4 files above.
 
 **1. Inventory ALL running processes on ALL servers:**
 ```bash
-# On EACH of ai1, ai2, ai3, ai4 (ai4 may have stale mainnet processes):
-pgrep -a doli-node | grep mainnet
+# On EACH of ai1, ai2, ai3, ai4, ai5:
+for server in ai1 ai2 ai3 ai4 ai5; do
+  echo "=== $server ===" && ssh $server "pgrep -a doli-node | grep mainnet || echo 'clean'"
+done
 ```
-**CRITICAL**: Check ai4 too — it may have leftover mainnet processes from previous layouts. Kill any mainnet processes on ai4 before proceeding.
 
 **2. Stop mainnet services:**
 ```bash
-# ai1:
+# ai1 — seed + N1-N3:
+sudo systemctl stop doli-mainnet-seed doli-mainnet-{n1,n2,n3}
+
+# ai2 — seed + N4-N5:
+sudo systemctl stop doli-mainnet-seed doli-mainnet-{n4,n5}
+
+# ai3 — seed only:
 sudo systemctl stop doli-mainnet-seed
 
-# ai2:
-sudo systemctl stop doli-mainnet-{n1,n2,n3,n4,n5} doli-mainnet-seed
+# ai4 — N6-N8:
+sudo systemctl stop doli-mainnet-{n6,n7,n8}
 
-# ai3:
-sudo systemctl stop doli-mainnet-seed
-
-# ai4 (cleanup only — no mainnet services, but check for strays):
-sudo pkill -f "doli-node.*mainnet" 2>/dev/null
+# ai5 — N9-N12:
+sudo systemctl stop doli-mainnet-{n9,n10,n11,n12}
 ```
 
 **3. Verify nothing remains:**
 ```bash
-for server in ai1 ai2 ai3 ai4; do
+for server in ai1 ai2 ai3 ai4 ai5; do
   echo "=== $server ===" && ssh $server "pgrep -a doli-node | grep mainnet || echo 'clean'"
 done
 ```
 
 **4. Wipe ALL mainnet data dirs:**
 ```bash
-# ai1 — mainnet seed:
+# ai1 — seed + N1-N3:
+for node in /mainnet/seed /mainnet/n{1..3}; do
+  find "$node/data" -mindepth 1 -delete 2>/dev/null
+  rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
+done
+
+# ai2 — seed + N4-N5:
+for node in /mainnet/seed /mainnet/n{4..5}; do
+  find "$node/data" -mindepth 1 -delete 2>/dev/null
+  rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
+done
+
+# ai3 — seed only:
 for node in /mainnet/seed; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 
-# ai2 — mainnet N1-N5 + seed:
-for node in /mainnet/n{1..5} /mainnet/seed; do
+# ai4 — N6-N8:
+for node in /mainnet/n{6..8}; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 
-# ai3 — mainnet seed:
-for node in /mainnet/seed; do
+# ai5 — N9-N12:
+for node in /mainnet/n{9..12}; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
@@ -127,8 +145,8 @@ done
 
 **5. Verify wipe:**
 ```bash
-for server in ai1 ai2 ai3; do
-  echo "=== $server ===" && ssh $server 'for node in /mainnet/seed /mainnet/n{1..5}; do [ -d "$node" ] && echo "$node: $(ls "$node/" 2>/dev/null | tr "\n" " ")"; done'
+for server in ai1 ai2 ai3 ai4 ai5; do
+  echo "=== $server ===" && ssh $server 'for node in /mainnet/seed /mainnet/n{1..12}; do [ -d "$node" ] && echo "$node: $(ls "$node/" 2>/dev/null | tr "\n" " ")"; done'
 done
 ```
 Must show only `data keys` (data dir empty).
@@ -223,9 +241,12 @@ done
 ```
 Wait ~10 seconds for seeds to peer.
 
-**16. Start producers (ai2 only):**
+**16. Start producers (ai1, ai2, ai4, ai5):**
 ```bash
-ssh ai2 "sudo systemctl start doli-mainnet-{n1,n2,n3,n4,n5}"
+ssh ai1 "sudo systemctl start doli-mainnet-{n1,n2,n3}"
+ssh ai2 "sudo systemctl start doli-mainnet-{n4,n5}"
+ssh ai4 "sudo systemctl start doli-mainnet-{n6,n7,n8}"
+ssh ai5 "sudo systemctl start doli-mainnet-{n9,n10,n11,n12}"
 ```
 
 **17. Health check:**

@@ -17,11 +17,11 @@ Archiver nodes are full sync-only nodes that run with `--archive-to` and `--rela
 ### Deployment
 
 ```
-Producer nodes (N1-N6)
+Producer nodes (N1-N12 across ai1, ai2, ai4, ai5)
        │
        │ gossip (blocks + attestations)
        ▼
-Archiver / Seed nodes (ai1 + ai2)
+Archiver / Seed nodes (ai1, ai2, ai3)
        │
        ├── P2P seed (DNS: seed1/seed2.doli.network)
        ├── Public RPC → doli.network/explorer.html
@@ -63,9 +63,9 @@ See [disaster-recovery.md](./disaster-recovery.md) for the full runbook.
 
 | Node | Server | P2P | RPC | Service | DNS |
 |------|--------|-----|-----|---------|-----|
-| Seed1 | ai1 (72.60.228.233) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
-| Seed2 | ai2 (187.124.95.188) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
-| Seed3 | ai3 (187.124.148.93) | 30300 | 8500 | `doli-mainnet-seed` | `seed3.doli.network` |
+| Seed1 | ai1 (<ai1-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
+| Seed2 | ai2 (<ai2-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
+| Seed3 | ai3 (<ai3-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed3.doli.network` |
 
 Archive directory: `/mainnet/seed/blocks/`
 
@@ -83,14 +83,14 @@ Archive directory: `/testnet/seed/blocks/`
 
 | Record | Type | Value | Purpose |
 |--------|------|-------|---------|
-| `seed1.doli.network` | A | 72.60.228.233 | Mainnet P2P seed + RPC |
-| `seed2.doli.network` | A | 187.124.95.188 | Mainnet P2P seed + RPC |
-| `seed3.doli.network` | A | 187.124.148.93 | Mainnet P2P seed + RPC |
-| `archive.doli.network` | A | 187.124.95.188 | Mainnet archive RPC (legacy alias) |
-| `bootstrap1.testnet.doli.network` | A | 72.60.228.233 | Testnet P2P seed + RPC |
-| `bootstrap2.testnet.doli.network` | A | 187.124.95.188 | Testnet P2P seed + RPC |
-| `bootstrap3.testnet.doli.network` | A | 187.124.148.93 | Testnet P2P seed + RPC |
-| `archive.testnet.doli.network` | A | 72.60.228.233 | Testnet archive RPC (legacy alias) |
+| `seed1.doli.network` | A | <ai1-ip> | Mainnet P2P seed + RPC |
+| `seed2.doli.network` | A | <ai2-ip> | Mainnet P2P seed + RPC |
+| `seed3.doli.network` | A | <ai3-ip> | Mainnet P2P seed + RPC |
+| `archive.doli.network` | A | <ai2-ip> | Mainnet archive RPC (legacy alias) |
+| `bootstrap1.testnet.doli.network` | A | <ai1-ip> | Testnet P2P seed + RPC |
+| `bootstrap2.testnet.doli.network` | A | <ai2-ip> | Testnet P2P seed + RPC |
+| `bootstrap3.testnet.doli.network` | A | <ai3-ip> | Testnet P2P seed + RPC |
+| `archive.testnet.doli.network` | A | <ai1-ip> | Testnet archive RPC (legacy alias) |
 
 ---
 
@@ -180,7 +180,7 @@ Copy the archive from the seed node, then import:
 
 ```bash
 # Copy archive via rsync
-rsync -av ilozada@seed2.doli.network:/mainnet/seed/blocks/ /path/to/local/archive/
+rsync -av $USER@seed2.doli.network:/mainnet/seed/blocks/ /path/to/local/archive/
 
 # Full restore — imports all blocks + rebuilds state
 doli-node --network mainnet restore --from /path/to/local/archive --yes

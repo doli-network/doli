@@ -1,24 +1,28 @@
 # DOLI Infrastructure
 
-## Architecture Overview (v3 — March 13, 2026)
+## Architecture Overview (v8 — March 17, 2026)
 
-Clean separation: all mainnet on ai2, all testnet on ai1, seeds on ai3. ai2 is also the build server.
+Mainnet producers distributed across ai1, ai2, ai4, ai5. Seeds on ai1, ai2, ai3. ai2 is the build server.
 
 ### Design Principles
 
-- **Network isolation**: Mainnet exclusively on ai2, testnet exclusively on ai1 — zero risk of cross-contamination
-- **Dedicated build server**: ai2 compiles release binaries, distributes to ai1 and ai3
+- **Load distribution**: Mainnet producers spread across 4 servers for resilience
+- **Dedicated build server**: ai2 compiles release binaries, distributes to all servers
 - **Deterministic ports**: Node N → P2P 3030N, RPC 850N, Metrics 900N. Seeds use port suffix 00.
 - **Central key backup**: All keys duplicated in `/mainnet/keys/` and `/testnet/keys/` on their respective servers
 - **Unified paths**: All nodes under `/mainnet/` and `/testnet/` from root, owned by `ilozada:doliadmin`
 
 ## Servers
 
-| Server | IP | Alias | Role | SSH |
-|--------|-----|-------|------|-----|
-| ai1 | 72.60.228.233 | ai1 | ALL testnet (Seed-T, NT1-NT6) | `ssh ilozada@72.60.228.233` |
-| ai2 | 187.124.95.188 | ai2 | ALL mainnet (Seed, N1-N6) + build server | `ssh ilozada@187.124.95.188` |
-| ai3 | 187.124.148.93 | ai3 | Seeds only (mainnet + testnet) | `ssh -p 50790 ilozada@187.124.148.93` |
+| Server | Role |
+|--------|------|
+| ai1 | Mainnet seed + N1-N3, Testnet seed + NT1-NT5 |
+| ai2 | Mainnet seed + N4-N5, Testnet seed + build + explorer |
+| ai3 | Seeds only (mainnet + testnet) |
+| ai4 | Mainnet N6-N8 |
+| ai5 | Mainnet N9-N12, Testnet NT6-NT12 |
+
+> IPs, SSH credentials, and ports are in the private `doli-ops` repo. See `~/.doli/servers.env`.
 
 ### Users & Permissions
 
@@ -83,15 +87,15 @@ Both users can operate any node via the shared `doliadmin` group.
 
 | Record | Type | Value | Purpose |
 |--------|------|-------|---------|
-| `doli.network` | A | 187.124.95.188 (ai2) | Website |
+| `doli.network` | A | <ai2-ip> (ai2) | Website |
 | `www.doli.network` | CNAME | → doli.network | Website alias |
-| `seed1.doli.network` | A | 187.124.95.188 (ai2) | Mainnet P2P seed |
-| `seed2.doli.network` | A | 187.124.148.93 (ai3) | Mainnet P2P seed |
-| `archive.doli.network` | A | 187.124.95.188 (ai2) | Mainnet archive RPC |
-| `testnet.doli.network` | A | 72.60.228.233 (ai1) | Testnet web |
-| `bootstrap1.testnet.doli.network` | A | 72.60.228.233 (ai1) | Testnet P2P seed |
-| `bootstrap2.testnet.doli.network` | A | 187.124.148.93 (ai3) | Testnet P2P seed |
-| `archive.testnet.doli.network` | A | 72.60.228.233 (ai1) | Testnet archive RPC |
+| `seed1.doli.network` | A | <ai2-ip> (ai2) | Mainnet P2P seed |
+| `seed2.doli.network` | A | <ai3-ip> (ai3) | Mainnet P2P seed |
+| `archive.doli.network` | A | <ai2-ip> (ai2) | Mainnet archive RPC |
+| `testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet web |
+| `bootstrap1.testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet P2P seed |
+| `bootstrap2.testnet.doli.network` | A | <ai3-ip> (ai3) | Testnet P2P seed |
+| `archive.testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet archive RPC |
 
 DNS managed at Hostinger (ns1.dns-parking.com / ns2.dns-parking.com).
 
@@ -113,34 +117,26 @@ Non-producing, sync-only, publicly accessible. These are the network entry point
 
 | Node | Server | P2P | RPC | Metrics | Service | DNS |
 |------|--------|-----|-----|---------|---------|-----|
-| Seed1 | ai2 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed1.doli.network` |
-| Seed2 | ai3 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed2.doli.network` |
+| Seed1 | ai1 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed1.doli.network` |
+| Seed2 | ai2 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed2.doli.network` |
+| Seed3 | ai3 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed3.doli.network` |
 
-Both run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/blocks`.
+All run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/blocks`.
 
-### Producer Nodes (N1-N6)
+### Producer Nodes (N1-N12)
 
-All producers run on **ai2**.
+Producers distributed across 4 servers. N1-N5 = maintainers + producers. N6-N12 = producers only.
 
-| Node | Server | P2P | RPC | Metrics | Service | Key |
-|------|--------|-----|-----|---------|---------|-----|
-| N1 | ai2 | 30301 | 8501 | 9001 | `doli-mainnet-n1` | `/mainnet/n1/keys/producer.json` |
-| N2 | ai2 | 30302 | 8502 | 9002 | `doli-mainnet-n2` | `/mainnet/n2/keys/producer.json` |
-| N3 | ai2 | 30303 | 8503 | 9003 | `doli-mainnet-n3` | `/mainnet/n3/keys/producer.json` |
-| N6 | ai2 | 30306 | 8506 | 9006 | `doli-mainnet-n6` | `/mainnet/n6/keys/producer.json` |
+| Nodes | Server | P2P | RPC | Metrics | Service |
+|-------|--------|-----|-----|---------|---------|
+| N1-N3 | ai1 | 30301-30303 | 8501-8503 | 9001-9003 | `doli-mainnet-n{1,2,3}` |
+| N4-N5 | ai2 | 30304-30305 | 8504-8505 | 9004-9005 | `doli-mainnet-n{4,5}` |
+| N6-N8 | ai4 | 30306-30308 | 8506-8508 | 9006-9008 | `doli-mainnet-n{6,7,8}` |
+| N9-N12 | ai5 | 30309-30312 | 8509-8512 | 9009-9012 | `doli-mainnet-n{9,10,11,12}` |
 
 All bootstrap from `--bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300`.
 
-**On-chain status (as of March 8, 2026):**
-
-| Node | PubKey (prefix) | On-chain | Bonds |
-|------|-----------------|----------|-------|
-| N1 | `202047...` | active | 1 |
-| N2 | `effe88...` | active | 1 |
-| N3 | `54323c...` | NOT bonded | 0 |
-| N6 | `d13ae3...` | active | 1 |
-
-N3 is running but not yet registered on-chain. N4, N5 directories reserved for future expansion.
+Keys: `/mainnet/n{N}/keys/producer.json`. Data: `/mainnet/n{N}/data/`.
 
 ### Port Formula
 
@@ -152,11 +148,13 @@ Seeds:    suffix = 00 (i.e., 30300, 8500, 9000 / 40300, 18500, 19000)
 
 ### Binaries
 
-| Network | Server | Binary Path |
-|---------|--------|-------------|
-| Mainnet | ai2 | `/mainnet/bin/doli-node`, `/mainnet/bin/doli` |
-| Testnet | ai1 | `/testnet/bin/doli-node`, `/testnet/bin/doli` |
-| Both | ai3 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (seeds only) |
+| Server | Binary Paths |
+|--------|-------------|
+| ai1 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` |
+| ai2 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (build server) |
+| ai3 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (seeds only) |
+| ai4 | `/mainnet/bin/doli-node` |
+| ai5 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` |
 
 **Upgrade procedure (non-consensus changes only — UI, RPC, logging, etc.):**
 
@@ -167,14 +165,14 @@ Seeds:    suffix = 00 (i.e., 30300, 8500, 9000 / 40300, 18500, 19000)
 
 ```bash
 # 1. Build on ai2 (exclude GUI — glib-2.0 not available on server)
-ssh ilozada@187.124.95.188
+ssh $USER@<ai2-ip>
 source ~/.cargo/env && cd ~/repos/doli
 git fetch origin && git reset --hard origin/main   # safe after force pushes
 cargo build --release -p doli-node -p doli-cli
 
 # 2. Distribute to ai1 and ai3 BEFORE stopping anything
-scp target/release/doli-node ilozada@72.60.228.233:/tmp/doli-node-new
-scp -P 50790 target/release/doli-node ilozada@187.124.148.93:/tmp/doli-node-new
+scp target/release/doli-node $USER@<ai1-ip>:/tmp/doli-node-new
+scp -P $AI3_SSH_PORTtarget/release/doli-node $USER@<ai3-ip>:/tmp/doli-node-new
 
 # 3. Stop ALL nodes on ai2 (active + standby + cross-network seeds)
 sudo systemctl stop doli-mainnet-seed doli-mainnet-n{1..12} doli-testnet-seed 2>/dev/null
@@ -189,7 +187,7 @@ sudo systemctl start doli-mainnet-n{1..6}
 sudo systemctl start doli-mainnet-n{7..12} 2>/dev/null  # standby nodes
 
 # 6. Deploy ai1 — stop all, copy, restart
-ssh ilozada@72.60.228.233 '
+ssh $USER@<ai1-ip> '
   sudo systemctl stop doli-testnet-seed doli-testnet-nt{1..12} doli-mainnet-seed 2>/dev/null
   pgrep -la doli-node || echo "ai1: all stopped"
   sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
@@ -198,7 +196,7 @@ ssh ilozada@72.60.228.233 '
   sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
 
 # 7. Deploy ai3 — seeds only
-ssh -p 50790 ilozada@187.124.148.93 '
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
   sudo systemctl stop doli-mainnet-seed doli-testnet-seed
   sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
   sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
@@ -217,15 +215,15 @@ All producers use DNS-based bootstrap:
 
 ### Log Paths
 
-All mainnet logs on **ai2**:
+Logs are on each node's respective server at `/var/log/doli/mainnet/n{N}.log`. Seeds at `/var/log/doli/mainnet/seed.log`.
 
-| Node | Path |
-|------|------|
-| Seed | `/var/log/doli/mainnet/seed.log` |
-| N1 | `/var/log/doli/mainnet/n1.log` |
-| N2 | `/var/log/doli/mainnet/n2.log` |
-| N3 | `/var/log/doli/mainnet/n3.log` |
-| N6 | `/var/log/doli/mainnet/n6.log` |
+| Server | Logs |
+|--------|------|
+| ai1 | `seed.log`, `n1.log`, `n2.log`, `n3.log` |
+| ai2 | `seed.log`, `n4.log`, `n5.log` |
+| ai3 | `seed.log` |
+| ai4 | `n6.log`, `n7.log`, `n8.log` |
+| ai5 | `n9.log`, `n10.log`, `n11.log`, `n12.log` |
 
 ## Testnet
 
@@ -372,7 +370,7 @@ A change is consensus-critical if different binary versions would produce or val
 
 ```bash
 # 1. Build on ai2 (build server)
-ssh ilozada@187.124.95.188
+ssh $USER@<ai2-ip>
 source ~/.cargo/env && cd ~/repos/doli
 git fetch origin && git reset --hard origin/main   # safe after force pushes
 cargo build --release -p doli-node -p doli-cli      # exclude GUI (no glib-2.0 on server)
@@ -385,19 +383,19 @@ sudo cp target/release/doli-node /mainnet/bin/doli-node && sudo chmod 755 /mainn
 sudo cp target/release/doli /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
 
 # 4. Distribute to ai1 (testnet)
-scp target/release/doli-node ilozada@72.60.228.233:/tmp/doli-node-new
-scp target/release/doli ilozada@72.60.228.233:/tmp/doli-new
-ssh ilozada@72.60.228.233 '
+scp target/release/doli-node $USER@<ai1-ip>:/tmp/doli-node-new
+scp target/release/doli $USER@<ai1-ip>:/tmp/doli-new
+ssh $USER@<ai1-ip> '
   sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
   sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
 
 # 5. Distribute to ai3 (seeds — via Mac relay if no direct connectivity)
 # Option A: direct from ai2
-scp -P 50790 target/release/doli-node ilozada@187.124.148.93:/tmp/doli-node-new
-scp -P 50790 target/release/doli ilozada@187.124.148.93:/tmp/doli-new
+scp -P $AI3_SSH_PORTtarget/release/doli-node $USER@<ai3-ip>:/tmp/doli-node-new
+scp -P $AI3_SSH_PORTtarget/release/doli $USER@<ai3-ip>:/tmp/doli-new
 # Option B: via Mac if ai2→ai3 has no route
-#   scp from ai2 to Mac, then scp -P 50790 from Mac to ai3
-ssh -p 50790 ilozada@187.124.148.93 '
+#   scp from ai2 to Mac, then scp -P $AI3_SSH_PORTfrom Mac to ai3
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
   sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
   sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
   sudo cp /tmp/doli-new /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
@@ -405,8 +403,8 @@ ssh -p 50790 ilozada@187.124.148.93 '
 
 # 6. Verify checksums match on ALL THREE servers
 cat /tmp/source_md5.txt
-ssh ilozada@72.60.228.233 'md5sum /testnet/bin/doli-node /testnet/bin/doli'
-ssh -p 50790 ilozada@187.124.148.93 'md5sum /mainnet/bin/doli-node /testnet/bin/doli-node'
+ssh $USER@<ai1-ip> 'md5sum /testnet/bin/doli-node /testnet/bin/doli'
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'md5sum /mainnet/bin/doli-node /testnet/bin/doli-node'
 # All must be identical
 ```
 
@@ -414,15 +412,15 @@ ssh -p 50790 ilozada@187.124.148.93 'md5sum /mainnet/bin/doli-node /testnet/bin/
 
 ```bash
 # Terminal 1 (ai2 — mainnet + standby + testnet seed):
-ssh ilozada@187.124.95.188 'sudo systemctl stop \
+ssh $USER@<ai2-ip> 'sudo systemctl stop \
   doli-mainnet-seed doli-mainnet-n{1..12} doli-testnet-seed 2>/dev/null'
 
 # Terminal 2 (ai1 — testnet + standby + mainnet seed):
-ssh ilozada@72.60.228.233 'sudo systemctl stop \
+ssh $USER@<ai1-ip> 'sudo systemctl stop \
   doli-testnet-seed doli-testnet-nt{1..12} doli-mainnet-seed 2>/dev/null'
 
 # Terminal 3 (ai3 — seeds only):
-ssh -p 50790 ilozada@187.124.148.93 'sudo systemctl stop doli-mainnet-seed doli-testnet-seed'
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'sudo systemctl stop doli-mainnet-seed doli-testnet-seed'
 ```
 
 **WAIT until ALL nodes are confirmed stopped on ALL THREE servers before proceeding.**
@@ -430,9 +428,9 @@ Use `pgrep -la doli-node` — `systemctl stop` may miss nodes with old-gen servi
 
 ```bash
 # Verify no nodes running
-ssh ilozada@72.60.228.233 'pgrep -la doli-node || echo "ai1: all stopped"'
-ssh ilozada@187.124.95.188 'pgrep -la doli-node || echo "ai2: all stopped"'
-ssh -p 50790 ilozada@187.124.148.93 'pgrep -la doli-node || echo "ai3: all stopped"'
+ssh $USER@<ai1-ip> 'pgrep -la doli-node || echo "ai1: all stopped"'
+ssh $USER@<ai2-ip> 'pgrep -la doli-node || echo "ai2: all stopped"'
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'pgrep -la doli-node || echo "ai3: all stopped"'
 ```
 
 #### Phase 3: Wipe Data (If Genesis Changed)
@@ -441,21 +439,21 @@ Only needed if `genesis_hash` changed (timestamp, message, network_id, or slot_d
 
 ```bash
 # ai2 — wipe mainnet data (ALL nodes including standby)
-ssh ilozada@187.124.95.188 '
+ssh $USER@<ai2-ip> '
   for N in seed n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12; do
     sudo rm -rf /mainnet/$N/data/* && echo "wiped /mainnet/$N/data"
   done
   sudo rm -rf /mainnet/seed/blocks/*'
 
 # ai1 — wipe testnet data (ALL nodes including standby)
-ssh ilozada@72.60.228.233 '
+ssh $USER@<ai1-ip> '
   for N in seed nt1 nt2 nt3 nt4 nt5 nt6 nt7 nt8 nt9 nt10 nt11 nt12; do
     sudo rm -rf /testnet/$N/data/* && echo "wiped /testnet/$N/data"
   done
   sudo rm -rf /testnet/seed/blocks/*'
 
 # ai3 — wipe seed data
-ssh -p 50790 ilozada@187.124.148.93 '
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
   sudo rm -rf /mainnet/seed/data/* /testnet/seed/data/* && echo "wiped ai3 seed data"
   sudo rm -rf /mainnet/seed/blocks/* /testnet/seed/blocks/*'
 ```
@@ -466,18 +464,18 @@ Start seeds first (all three servers), wait for them to peer, then start produce
 
 ```bash
 # Step 1: Start ALL seeds on ALL THREE servers
-ssh ilozada@187.124.95.188 'sudo systemctl start doli-mainnet-seed doli-testnet-seed 2>/dev/null'
-ssh ilozada@72.60.228.233 'sudo systemctl start doli-testnet-seed doli-mainnet-seed 2>/dev/null'
-ssh -p 50790 ilozada@187.124.148.93 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-seed doli-testnet-seed 2>/dev/null'
+ssh $USER@<ai1-ip> 'sudo systemctl start doli-testnet-seed doli-mainnet-seed 2>/dev/null'
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
 
 # Wait 10 seconds for seeds to initialize and peer with each other
 sleep 10
 
 # Step 2: Start ai2 mainnet producers (active + standby)
-ssh ilozada@187.124.95.188 'sudo systemctl start doli-mainnet-n{1..12} 2>/dev/null'
+ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-n{1..12} 2>/dev/null'
 
 # Step 3: Start ai1 testnet producers (active + standby)
-ssh ilozada@72.60.228.233 'sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
+ssh $USER@<ai1-ip> 'sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
 ```
 
 #### Phase 5: Verify Consensus
@@ -486,7 +484,7 @@ Wait ~30 seconds, then confirm all nodes are on the same chain.
 
 ```bash
 # ai2 mainnet (all N1-N12 + seed)
-ssh ilozada@187.124.95.188 '
+ssh $USER@<ai2-ip> '
 for entry in "8500:Seed" "8501:N1" "8502:N2" "8503:N3" "8504:N4" "8505:N5" "8506:N6" \
              "8507:N7" "8508:N8" "8509:N9" "8510:N10" "8511:N11" "8512:N12"; do
   port=${entry%%:*}; name=${entry##*:}
@@ -498,7 +496,7 @@ for entry in "8500:Seed" "8501:N1" "8502:N2" "8503:N3" "8504:N4" "8505:N5" "8506
 done'
 
 # ai1 testnet (all NT1-NT12 + seed)
-ssh ilozada@72.60.228.233 '
+ssh $USER@<ai1-ip> '
 for entry in "18500:Seed" "18501:NT1" "18502:NT2" "18503:NT3" "18504:NT4" "18505:NT5" "18506:NT6" \
              "18507:NT7" "18508:NT8" "18509:NT9" "18510:NT10" "18511:NT11" "18512:NT12"; do
   port=${entry%%:*}; name=${entry##*:}
@@ -510,7 +508,7 @@ for entry in "18500:Seed" "18501:NT1" "18502:NT2" "18503:NT3" "18504:NT4" "18505
 done'
 
 # ai3 seeds
-ssh -p 50790 ilozada@187.124.148.93 '
+ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
 for entry in "8500:Seed-M" "18500:Seed-T"; do
   port=${entry%%:*}; name=${entry##*:}
   h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
@@ -551,10 +549,10 @@ Mixed mainnet/testnet on both ai1 and ai2:
 
 | Server | IP | Role |
 |--------|-----|------|
-| omegacortex (ai1) | 72.60.228.233 | N1 (seed+relay+producer), N2, N6, Archiver, NT1-NT5, Archive-T |
-| omegacortex (ai2) | 187.124.95.188 | Non-producing mirrors of ai1 + Web + Swap Bot |
-| N3 | 147.93.84.44 (SSH port 50790) | N3, NT6-NT8 |
-| N4 | 72.60.115.209 (SSH port 50790) | N4, N8-N12 |
-| N5 | 72.60.70.166 (SSH port 50790) | N5, N7, NT9-NT12 |
+| omegacortex (ai1) | <ai1-ip> | N1 (seed+relay+producer), N2, N6, Archiver, NT1-NT5, Archive-T |
+| omegacortex (ai2) | <ai2-ip> | Non-producing mirrors of ai1 + Web + Swap Bot |
+| N3 | <n3-ip> | N3, NT6-NT8 |
+| N4 | <n4-ip> | N4, N8-N12 |
+| N5 | <n5-ip> | N5, N7, NT9-NT12 |
 
 Problems: N1 was producer AND seed, DNS round-robin to same server, 5 servers to manage, inconsistent paths, N4/N5 keys swapped.
