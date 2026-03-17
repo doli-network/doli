@@ -172,26 +172,19 @@ impl Node {
         network_config.node_key_path = Some(node_key_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
-        // Dynamic gossip mesh: scale with expected peer count.
-        // Use max_peers as the expected network size — the mesh must handle
-        // the maximum number of peers that will connect, not just the producers
-        // known at startup. Non-producing nodes (stress test, relays) also
-        // participate in gossip and need adequate mesh coverage.
-        let active_producers = self.producer_set.read().await.active_count();
-        let seed_count = network_config.bootstrap_nodes.len();
-        let known_peers = active_producers + seed_count;
-        let expected_peers = network_config.max_peers.max(known_peers);
-        let mesh = network::gossip::compute_dynamic_mesh(expected_peers);
+        // Gossip mesh uses network defaults from defaults.rs (e.g., testnet: mesh_n=14).
+        // recompute_tier() overrides with tier-specific values (Tier 1: mesh_n=20,
+        // Tier 2: mesh_n=8) after the first block is applied (~10s).
         info!(
-            "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (producers={}, seeds={}, max_peers={}, expected={})",
-            mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers, seed_count, network_config.max_peers, expected_peers
+            "Gossip mesh (initial): mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={}",
+            network_config.mesh_n,
+            network_config.mesh_n_low,
+            network_config.mesh_n_high,
+            network_config.gossip_lazy
         );
-        network_config.mesh_n = mesh.mesh_n;
-        network_config.mesh_n_low = mesh.mesh_n_low;
-        network_config.mesh_n_high = mesh.mesh_n_high;
-        network_config.gossip_lazy = mesh.gossip_lazy;
 
         // REQ-OPS-001: Warn when --no-dht used with many producers
+        let active_producers = self.producer_set.read().await.active_count();
         if network_config.no_dht && active_producers > 5 {
             warn!("════════════════════════════════════════════════════════════════");
             warn!(
