@@ -381,6 +381,11 @@ pub(super) async fn handle_behaviour_event(
                         peer_info.best_height = response.best_height;
                         peer_info.best_hash = response.best_hash;
                         peer_info.touch();
+                        // SCALE-T2-004: Mark producer peers so eviction logic
+                        // protects them from being dropped at max_peers capacity.
+                        if response.producer_pubkey.is_some() {
+                            peer_info.is_producer = true;
+                        }
                     }
 
                     let _ = event_tx

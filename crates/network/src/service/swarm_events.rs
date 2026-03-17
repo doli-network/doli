@@ -57,13 +57,16 @@ pub(super) async fn handle_swarm_event(
             if num_established.get() == 1 {
                 let mut peers = peers.write().await;
                 if peers.len() >= config.max_peers {
-                    // REQ-SCALE-005: Peer eviction by gossipsub score.
-                    // When at max capacity, evict the peer with the lowest gossipsub
-                    // score. Producers naturally have higher scores (they deliver
-                    // first-seen blocks), so non-producers are evicted first.
+                    // SCALE-T2-004: Producer-aware peer eviction.
+                    // When at max capacity, evict the lowest-gossipsub-scored peer,
+                    // but NEVER evict a peer marked as a producer (is_producer=true).
+                    // Producers are marked when their StatusResponse includes a
+                    // producer_pubkey — this protects them even before their gossipsub
+                    // score accumulates from block deliveries.
                     let evictable = peers
-                        .keys()
-                        .map(|pid| {
+                        .iter()
+                        .filter(|(_, info)| !info.is_producer)
+                        .map(|(pid, _)| {
                             let score = swarm.behaviour().gossipsub.peer_score(pid).unwrap_or(0.0);
                             (*pid, score)
                         })
