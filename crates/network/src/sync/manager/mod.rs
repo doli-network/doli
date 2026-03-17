@@ -427,6 +427,13 @@ pub struct SyncManager {
     last_fork_sync_rejection: Instant,
     fork_sync_cooldown_secs: u64,
 
+    /// Fork sync blacklist: peers temporarily excluded from fork sync peer selection.
+    /// Unlike a full P2P ban, blacklisted peers remain connected and can gossip/sync
+    /// normally — they're just not chosen for fork recovery. A syncing peer isn't
+    /// malicious, it just doesn't have the blocks yet.
+    /// TTL: 5 minutes (cleared in cleanup()).
+    fork_sync_blacklist: HashMap<PeerId, Instant>,
+
     /// Set after snap sync / force_recover to suppress fork_sync reactivation.
     /// The node needs time to sync via header-first / gossip before fork detection
     /// makes sense. Cleared after 10+ blocks are applied post-recovery.
@@ -524,6 +531,7 @@ impl SyncManager {
             post_rollback: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
+            fork_sync_blacklist: HashMap::new(),
             post_recovery_grace: false,
             post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,
@@ -926,11 +934,43 @@ impl SyncManager {
         self.checkpoint_state_root
     }
 
-    /// Pick the best peer for fork recovery (highest height).
+    /// Pick the best peer for fork recovery (highest height, excluding unsuitable peers).
+    ///
+    /// Filters out:
+    /// - Peers at height 0 (still at genesis, can't serve fork data)
+    /// - Peers significantly behind network tip (still syncing — they don't have
+    ///   the blocks we need for fork resolution)
+    /// - Peers in the fork_sync_blacklist (recently failed to serve fork data;
+    ///   temporary 5-min exclusion, NOT a full P2P ban)
     pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
+        let network_tip = self.network_tip_height;
+        // Peers must be within 10 blocks of the network tip to be useful for
+        // fork recovery. A peer at height 5 when the network is at 500 is still
+        // syncing and can't serve the blocks we need.
+        let min_useful_height = if network_tip > 10 {
+            network_tip - 10
+        } else {
+            1 // At minimum, peer must be past genesis
+        };
+
         self.peers
             .iter()
+            .filter(|(pid, status)| {
+                status.best_height >= min_useful_height
+                    && !self.fork_sync_blacklist.contains_key(pid)
+            })
             .max_by_key(|(_, status)| status.best_height)
             .map(|(peer, _)| *peer)
+    }
+
+    /// Temporarily blacklist a peer for fork sync (5 minutes).
+    /// The peer remains connected for gossip and normal sync — this only
+    /// excludes it from `best_peer_for_recovery()` selection.
+    pub fn blacklist_peer_for_fork_sync(&mut self, peer: PeerId) {
+        info!(
+            "Fork sync: blacklisting peer {} for 5 minutes (still syncing or missing blocks)",
+            peer
+        );
+        self.fork_sync_blacklist.insert(peer, Instant::now());
     }
 }

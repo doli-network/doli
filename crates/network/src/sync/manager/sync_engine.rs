@@ -171,7 +171,13 @@ impl SyncManager {
         // Fork sync takes priority when active (runs in Idle state)
         if let Some(ref mut fs) = self.fork_sync {
             if fs.is_timed_out() {
-                warn!("Fork sync timed out — cancelling");
+                let timed_out_peer = fs.peer();
+                warn!(
+                    "Fork sync timed out — blacklisting peer {} for fork sync (5 min)",
+                    timed_out_peer
+                );
+                self.fork_sync_blacklist
+                    .insert(timed_out_peer, Instant::now());
                 self.fork_sync = None;
             } else {
                 let peer = fs.peer();

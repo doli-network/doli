@@ -127,6 +127,10 @@ pub struct Node {
     /// Number of shallow fork rollbacks performed since last successful sync.
     /// Capped at MAX_SHALLOW_ROLLBACKS to prevent rolling back the entire chain.
     pub(super) shallow_rollback_count: u32,
+    /// Cumulative rollback depth since last successful block application.
+    /// Tracks how far we've rolled back in total. Capped at MAX_CUMULATIVE_ROLLBACK (50)
+    /// to prevent cascading rollbacks from reaching genesis.
+    pub(super) cumulative_rollback_depth: u32,
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
     pub(super) cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,

@@ -322,6 +322,18 @@ impl SyncManager {
         self.fork_recovery.take_exceeded_max_depth()
     }
 
+    /// Drain any cancelled fork-recovery peer into the fork_sync_blacklist.
+    /// Called from cleanup() so the blacklist is populated promptly after cancellation.
+    pub fn drain_cancelled_recovery_peer(&mut self) {
+        if let Some(peer) = self.fork_recovery.take_last_cancelled_peer() {
+            info!(
+                "Fork recovery peer {} cancelled — blacklisting for fork sync (5 min)",
+                peer
+            );
+            self.fork_sync_blacklist.insert(peer, Instant::now());
+        }
+    }
+
     /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
     /// Used during fork recovery to populate weights before plan_reorg.
     pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {

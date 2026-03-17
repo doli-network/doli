@@ -31,6 +31,9 @@ impl SyncManager {
         // This moves timed-out hashes back to the failed queue for retry
         self.body_downloader.cleanup_timeouts();
 
+        // Drain cancelled fork recovery peers into fork_sync_blacklist
+        self.drain_cancelled_recovery_peer();
+
         // Remove timed out requests
         let timed_out: Vec<super::SyncRequestId> = self
             .pending_requests
@@ -259,6 +262,13 @@ impl SyncManager {
         // so peers become available between stuck-sync timeout cycles)
         self.header_blacklisted_peers
             .retain(|_, added| added.elapsed() < Duration::from_secs(30));
+
+        // Expire fork sync blacklist entries (5-minute TTL).
+        // These peers were temporarily excluded from fork recovery peer selection
+        // because they were syncing or missing blocks. After 5 minutes they may
+        // have caught up and become useful again.
+        self.fork_sync_blacklist
+            .retain(|_, added| added.elapsed() < Duration::from_secs(300));
 
         // NT8 fix: When ALL peers are blacklisted and we've been stuck for >120s
         // total, clear the blacklist entirely to retry with a fresh slate.

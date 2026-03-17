@@ -610,6 +610,7 @@ impl Node {
             signed_slots_db,
             consecutive_fork_blocks: 0,
             shallow_rollback_count: 0,
+            cumulative_rollback_depth: 0,
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,

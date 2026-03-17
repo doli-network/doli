@@ -21,6 +21,33 @@ impl Node {
 
         let target_height = local_height - 1;
 
+        // Fix 3: Never rollback to genesis from an established chain.
+        // Rolling back to height 0 destroys all chain state and is never the right
+        // recovery action for a running node. If we're at height 1, the chain is
+        // effectively at genesis — there's nothing useful to rollback to.
+        if target_height == 0 && local_height > 1 {
+            warn!(
+                "Refusing rollback to genesis from height {} — would destroy chain state. \
+                 Manual intervention required (recover --yes).",
+                local_height
+            );
+            return Ok(false);
+        }
+
+        // Fix 4: Cap cumulative rollback depth at 50 blocks.
+        // Prevents cascading rollbacks from gradually eroding the chain back to genesis.
+        // After 50 rollbacks without a successful block application, the fork is too
+        // deep for rollback-based recovery — manual intervention or sync is needed.
+        const MAX_CUMULATIVE_ROLLBACK: u32 = 50;
+        if self.cumulative_rollback_depth >= MAX_CUMULATIVE_ROLLBACK {
+            warn!(
+                "Refusing rollback: cumulative depth {} reached limit {} — \
+                 too deep for rollback recovery. Waiting for sync or manual intervention.",
+                self.cumulative_rollback_depth, MAX_CUMULATIVE_ROLLBACK
+            );
+            return Ok(false);
+        }
+
         // Invalidate genesis producer cache if rollback crosses genesis boundary
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks > 0 && target_height <= genesis_blocks {
@@ -177,9 +204,12 @@ impl Node {
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
         }
 
+        // Track cumulative rollback depth (Fix 4)
+        self.cumulative_rollback_depth += 1;
+
         info!(
-            "Fork recovery rollback complete: now at height {} (hash {:.8})",
-            target_height, parent_hash
+            "Fork recovery rollback complete: now at height {} (hash {:.8}, cumulative_rollback={})",
+            target_height, parent_hash, self.cumulative_rollback_depth
         );
 
         Ok(true)

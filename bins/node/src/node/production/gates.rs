@@ -34,6 +34,7 @@ impl Node {
             ProductionAuthorization::Authorized => {
                 self.consecutive_fork_blocks = 0;
                 self.shallow_rollback_count = 0;
+                self.cumulative_rollback_depth = 0;
                 info!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot

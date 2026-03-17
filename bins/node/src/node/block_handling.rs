@@ -616,6 +616,7 @@ impl Node {
 
                 self.shallow_rollback_count = 0;
                 self.consecutive_fork_blocks = 0;
+                self.cumulative_rollback_depth = 0;
 
                 info!(
                     "Fork sync reorg complete: now at height {}",
