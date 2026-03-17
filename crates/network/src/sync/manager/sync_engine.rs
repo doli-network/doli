@@ -194,14 +194,14 @@ impl SyncManager {
                     asked: HashSet::new(),
                     started_at: Instant::now(),
                 };
-            } else if self.post_rollback {
+            } else if matches!(self.recovery_phase, super::RecoveryPhase::PostRollback) {
                 // NT10 fix: After a fork rollback, our tip is still on the fork
                 // (just 1 block shorter). Header-first sync will always get 0
                 // headers because peers don't recognize our rolled-back fork tip.
                 // Instead, try fork_sync (binary search for common ancestor).
                 // If fork_sync can't start (e.g., no recovery peer), escalate to
                 // snap sync via needs_genesis_resync.
-                self.post_rollback = false;
+                self.recovery_phase = super::RecoveryPhase::Normal;
 
                 // Reorg cooldown: if we just rejected a fork sync (delta=0),
                 // don't start another one immediately. This breaks the infinite
@@ -727,7 +727,7 @@ impl SyncManager {
                         peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
                     );
                     self.header_blacklisted_peers.clear();
-                    self.stuck_fork_signal = true;
+                    self.signal_stuck_fork();
                 } else {
                     // First 1-2 empties: could be a peer-specific issue. Blacklist this peer.
                     self.header_blacklisted_peers.insert(peer, Instant::now());

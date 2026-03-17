@@ -283,6 +283,41 @@ struct PendingRequest {
     epoch: u64,
 }
 
+/// Recovery phase of the sync manager.
+///
+/// Replaces 5 independent booleans (`resync_in_progress`, `post_rollback`,
+/// `post_recovery_grace`, `awaiting_canonical_block`, `stuck_fork_signal`) with
+/// a single enum. Illegal states (e.g., resync AND post_recovery_grace simultaneously)
+/// become unrepresentable. State space drops from 2^5=32 to 6 variants.
+///
+/// Lifecycle:
+///   Normal → StuckForkDetected → (fork_sync/rollback) → PostRollback → (sync) → Normal
+///   Normal → ResyncInProgress → PostRecoveryGrace → Normal
+///   Normal → (snap sync) → AwaitingCanonicalBlock → Normal
+#[derive(Clone, Debug)]
+pub enum RecoveryPhase {
+    /// No recovery in progress. Normal operation.
+    Normal,
+    /// Stuck fork detected by cleanup or sync engine.
+    /// Waiting for fork_sync (binary search) to resolve.
+    StuckForkDetected,
+    /// Fork sync completed with rollback. Next start_sync() should
+    /// NOT use header-first sync (our tip is still on the fork).
+    PostRollback,
+    /// Forced resync from genesis/snap is in progress.
+    ResyncInProgress,
+    /// Resync/recovery completed. Grace period suppresses fork_sync reactivation.
+    PostRecoveryGrace {
+        /// When grace started.
+        started: Instant,
+        /// Blocks applied since recovery (cleared at 10).
+        blocks_applied: u32,
+    },
+    /// Snap sync completed. Waiting for first canonical gossip block
+    /// before allowing production.
+    AwaitingCanonicalBlock,
+}
+
 /// Sync manager
 pub struct SyncManager {
     /// Configuration
@@ -323,8 +358,9 @@ pub struct SyncManager {
     production_blocked: bool,
     /// Reason for explicit production block
     production_block_reason: Option<String>,
-    /// True when a forced resync is in progress
-    resync_in_progress: bool,
+    /// Current recovery phase (replaces 5 independent booleans).
+    /// See `RecoveryPhase` enum docs for lifecycle.
+    pub(crate) recovery_phase: RecoveryPhase,
     /// Timestamp when last resync completed (for grace period)
     last_resync_completed: Option<Instant>,
     /// Number of consecutive resyncs (for exponential backoff)
@@ -447,10 +483,7 @@ pub struct SyncManager {
     snap_sync_attempts: u8,
     /// When a fresh node first started waiting for 5 peers (for snap sync timeout)
     fresh_node_wait_start: Option<Instant>,
-    /// After snap sync, block production until at least one canonical gossip block
-    /// is received and applied. This proves the node is on the canonical chain and
-    /// its block store has a real parent to build on.
-    awaiting_canonical_block: bool,
+    // `awaiting_canonical_block` moved to RecoveryPhase::AwaitingCanonicalBlock
     /// Lowest block height available in the local block store.
     /// Set by the node after startup / snap sync. Used by fork sync to
     /// avoid binary-searching below available block data.
@@ -472,12 +505,7 @@ pub struct SyncManager {
     /// that oscillation by remembering "we saw a fork, don't produce until resolved."
     fork_mismatch_detected: bool,
 
-    /// NT10 fix: Set by `reset_sync_for_rollback()` to signal that the next
-    /// `start_sync()` call should NOT use header-first sync. After a fork rollback,
-    /// our tip is still on the fork (just 1 block shorter), so header-first will
-    /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
-    post_rollback: bool,
-
+    // `post_rollback` moved to RecoveryPhase::PostRollback
     /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
     /// suppress further fork syncs for this duration. Prevents infinite reorg loops
     /// when multiple peers offer equal-weight competing chains (e.g., 50 nodes
@@ -485,14 +513,8 @@ pub struct SyncManager {
     last_fork_sync_rejection: Instant,
     fork_sync_cooldown_secs: u64,
 
-    /// Set after snap sync / force_recover to suppress fork_sync reactivation.
-    /// The node needs time to sync via header-first / gossip before fork detection
-    /// makes sense. Cleared after 10+ blocks are applied post-recovery.
-    post_recovery_grace: bool,
-    /// When post_recovery_grace was activated (for timeout-based clearing)
-    post_recovery_grace_started: Instant,
-    /// Blocks applied since last recovery — used to clear post_recovery_grace.
-    blocks_applied_since_recovery: u32,
+    // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
+    // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
     /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
     /// Reset when gap closes to < 2.
     behind_since: Option<Instant>,
@@ -511,15 +533,7 @@ pub struct SyncManager {
     /// constant for >120s despite blocks being applied, the node has a corrupted
     /// height counter (from a bad reorg) and needs snap sync to correct it.
     stable_gap_since: Option<(u64, Instant)>,
-
-    /// Dedicated fork signal from cleanup/stuck detection.
-    ///
-    /// Replaces the pattern of force-setting `consecutive_empty_headers = 3` in
-    /// cleanup.rs and block_lifecycle.rs. The old pattern caused counter oscillation:
-    /// cleanup sets to 3 → rollback resets to 0 → cleanup sets to 3 → repeat.
-    /// This dedicated flag breaks the oscillation by decoupling fork signaling
-    /// from the counter that tracks actual empty header responses.
-    pub(crate) stuck_fork_signal: bool,
+    // `stuck_fork_signal` moved to RecoveryPhase::StuckForkDetected
 }
 
 impl SyncManager {
@@ -552,7 +566,7 @@ impl SyncManager {
             // Production gate defaults
             production_blocked: false,
             production_block_reason: None,
-            resync_in_progress: false,
+            recovery_phase: RecoveryPhase::Normal,
             last_resync_completed: None,
             consecutive_resync_count: 0,
             resync_grace_period_secs: 30, // Default 30 seconds after resync
@@ -596,22 +610,18 @@ impl SyncManager {
             header_blacklisted_peers: HashMap::new(),
             snap_sync_attempts: 0,
             fresh_node_wait_start: None,
-            awaiting_canonical_block: false,
+            // `awaiting_canonical_block`, `post_rollback`, `post_recovery_grace`,
+            // `stuck_fork_signal` all replaced by `recovery_phase` (see above)
             store_floor: 1, // Default: full-sync node has block 1
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
-            post_rollback: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
-            post_recovery_grace: false,
-            post_recovery_grace_started: Instant::now(),
-            blocks_applied_since_recovery: 0,
             behind_since: None,
             stable_gap_since: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
-            stuck_fork_signal: false,
         }
     }
 
@@ -658,7 +668,7 @@ impl SyncManager {
                     info!("Chain synchronized at height {}", height);
 
                     // If we were in a resync, complete it now
-                    if self.resync_in_progress {
+                    if matches!(self.recovery_phase, RecoveryPhase::ResyncInProgress) {
                         self.complete_resync();
                         info!(
                             "Resync complete at height {} - grace period started ({}s)",

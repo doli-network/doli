@@ -123,7 +123,7 @@ impl SyncManager {
         }
 
         // Layer 2: Resync in progress
-        if self.resync_in_progress {
+        if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
             return ProductionAuthorization::BlockedResync {
                 grace_remaining_secs: self.resync_grace_period_secs,
             };
@@ -134,7 +134,10 @@ impl SyncManager {
         // a fork because there's no real parent block to build on. Wait until at least
         // one canonical gossip block has been received and applied, proving we're on the
         // canonical chain and giving the block store a real parent.
-        if self.awaiting_canonical_block {
+        if matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        ) {
             return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
         }
 
@@ -660,7 +663,7 @@ impl SyncManager {
     /// This blocks production until the resync completes and grace period expires.
     pub fn start_resync(&mut self) {
         info!("Resync started - production blocked");
-        self.resync_in_progress = true;
+        self.recovery_phase = super::RecoveryPhase::ResyncInProgress;
         self.consecutive_resync_count += 1;
         self.blocks_since_resync_completed = 0; // PGD-001: reset stable block counter
 
@@ -681,7 +684,7 @@ impl SyncManager {
     /// Starts the grace period timer before production can resume.
     pub fn complete_resync(&mut self) {
         info!("Resync completed - starting grace period");
-        self.resync_in_progress = false;
+        self.recovery_phase = super::RecoveryPhase::Normal;
         self.last_resync_completed = Some(Instant::now());
     }
 
@@ -689,9 +692,12 @@ impl SyncManager {
     /// Called when a canonical gossip block has been successfully applied,
     /// proving we're on the canonical chain.
     pub fn clear_awaiting_canonical_block(&mut self) {
-        if self.awaiting_canonical_block {
+        if matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        ) {
             info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
-            self.awaiting_canonical_block = false;
+            self.recovery_phase = super::RecoveryPhase::Normal;
         }
         if self.fork_mismatch_detected {
             info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
@@ -701,7 +707,10 @@ impl SyncManager {
 
     /// Check if we're waiting for a canonical block after snap sync.
     pub fn is_awaiting_canonical_block(&self) -> bool {
-        self.awaiting_canonical_block
+        matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        )
     }
 
     /// Reset consecutive resync counter (call after stable operation)
@@ -717,7 +726,7 @@ impl SyncManager {
 
     /// Check if a resync is currently in progress
     pub fn is_resync_in_progress(&self) -> bool {
-        self.resync_in_progress
+        matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
     }
 
     /// Get the current consecutive resync count
@@ -963,22 +972,46 @@ impl SyncManager {
     /// During grace, fork_sync should not be activated — the node needs time
     /// to sync via header-first / gossip before fork detection is meaningful.
     pub fn post_recovery_grace_active(&self) -> bool {
-        self.post_recovery_grace
+        matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::PostRecoveryGrace { .. }
+        )
     }
 
     /// Check if a stuck-fork signal was raised by cleanup or apply-failure detection.
-    /// Replaces the old pattern of force-setting consecutive_empty_headers to 3.
+    /// Reads and clears the signal (transitions from StuckForkDetected → Normal).
     pub fn take_stuck_fork_signal(&mut self) -> bool {
-        let signal = self.stuck_fork_signal;
-        self.stuck_fork_signal = false;
-        signal
+        if matches!(self.recovery_phase, super::RecoveryPhase::StuckForkDetected) {
+            self.recovery_phase = super::RecoveryPhase::Normal;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Signal a stuck fork. Only transitions to StuckForkDetected from Normal
+    /// or PostRollback phases — other phases have higher priority.
+    pub fn signal_stuck_fork(&mut self) {
+        match self.recovery_phase {
+            super::RecoveryPhase::Normal | super::RecoveryPhase::PostRollback => {
+                self.recovery_phase = super::RecoveryPhase::StuckForkDetected;
+            }
+            _ => {
+                // Don't override active resync, post-recovery grace, or snap sync
+                debug!(
+                    "Stuck fork signal ignored — recovery phase {:?} has priority",
+                    self.recovery_phase
+                );
+            }
+        }
     }
 
     /// Activate post-recovery grace period. Called after snap sync / forced recovery.
     pub fn set_post_recovery_grace(&mut self) {
-        self.post_recovery_grace = true;
-        self.post_recovery_grace_started = Instant::now();
-        self.blocks_applied_since_recovery = 0;
+        self.recovery_phase = super::RecoveryPhase::PostRecoveryGrace {
+            started: Instant::now(),
+            blocks_applied: 0,
+        };
         self.consecutive_empty_headers = 0;
         self.consecutive_apply_failures = 0;
         info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");

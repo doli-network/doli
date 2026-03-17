@@ -634,6 +634,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             consecutive_forced_recoveries: 0,
+            sync_requests_this_interval: 0,
         })
     }
 }

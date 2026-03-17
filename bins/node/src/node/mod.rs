@@ -181,6 +181,9 @@ pub struct Node {
     pub(super) minute_tracker: MinuteAttestationTracker,
     /// Consecutive forced recoveries (for exponential backoff: 60→120→300→600→960s)
     pub(super) consecutive_forced_recoveries: u32,
+    /// Sync requests served since last production check (global rate limit).
+    /// Prevents thundering herd from 100+ syncing nodes starving production.
+    pub(super) sync_requests_this_interval: u32,
 }
 
 impl Node {

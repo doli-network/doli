@@ -45,13 +45,14 @@ impl SyncManager {
 
         // Applying a block means the chain is advancing — reset fork counters.
         self.consecutive_empty_headers = 0;
-        self.stuck_fork_signal = false;
+        if matches!(self.recovery_phase, super::RecoveryPhase::StuckForkDetected) {
+            self.recovery_phase = super::RecoveryPhase::Normal;
+        }
 
         // PGD-001: Track stable blocks after resync completion.
-        // After 5 consecutive block applications with no active resync,
-        // reset the exponential backoff counter. This prevents the counter
-        // from ratcheting up indefinitely (the root cause of the 2026-03-15 halt).
-        if !self.resync_in_progress && self.consecutive_resync_count > 0 {
+        if !matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
+            && self.consecutive_resync_count > 0
+        {
             self.blocks_since_resync_completed += 1;
             if self.blocks_since_resync_completed >= 5 {
                 info!(
@@ -65,15 +66,18 @@ impl SyncManager {
         }
 
         // Post-recovery grace: clear after 10 blocks applied since recovery.
-        if self.post_recovery_grace {
-            self.blocks_applied_since_recovery += 1;
-            if self.blocks_applied_since_recovery >= 10 {
+        if let super::RecoveryPhase::PostRecoveryGrace {
+            ref mut blocks_applied,
+            ..
+        } = self.recovery_phase
+        {
+            *blocks_applied += 1;
+            if *blocks_applied >= 10 {
                 info!(
                     "Post-recovery grace cleared: {} blocks applied since recovery.",
-                    self.blocks_applied_since_recovery
+                    blocks_applied
                 );
-                self.post_recovery_grace = false;
-                self.blocks_applied_since_recovery = 0;
+                self.recovery_phase = super::RecoveryPhase::Normal;
             }
         }
         // Also clear grace by timeout (handled in cleanup(), not here — this
@@ -117,7 +121,7 @@ impl SyncManager {
             self.header_blacklisted_peers.clear();
 
             // If we were in a resync, complete it now
-            if self.resync_in_progress {
+            if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
                 self.complete_resync();
                 info!(
                     "Resync complete at height {} - grace period started ({}s)",
@@ -181,10 +185,8 @@ impl SyncManager {
                     gap
                 );
                 self.consecutive_apply_failures = 0;
-                // Signal fork recovery via dedicated flag (not counter force-set).
-                // The old pattern of forcing consecutive_empty_headers to 3 caused
-                // oscillation with cleanup resets.
-                self.stuck_fork_signal = true;
+                // Signal fork recovery via RecoveryPhase (replaces old stuck_fork_signal boolean).
+                self.signal_stuck_fork();
                 self.state = SyncState::Idle;
             } else {
                 warn!(
@@ -238,13 +240,10 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
-        self.stuck_fork_signal = false;
+        // Note: recovery_phase is already ResyncInProgress (set by start_resync above)
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
         self.consecutive_apply_failures = 0;
-
-        // Clear snap sync production gate (genesis resync starts fresh)
-        self.awaiting_canonical_block = false;
 
         // Clear fork mismatch flag (resync will re-establish correct chain)
         self.fork_mismatch_detected = false;
@@ -509,7 +508,7 @@ impl SyncManager {
         // NT10 fix: Signal that the next start_sync() should skip header-first sync.
         // After a fork rollback, our tip is still on the fork — header-first will
         // always get 0 headers because peers don't recognize our (rolled-back) tip.
-        self.post_rollback = true;
+        self.recovery_phase = super::RecoveryPhase::PostRollback;
         // Clear stale weight history to prevent minority fork weights from
         // contaminating future fork choice decisions after a resync.
         self.reorg_handler.clear();

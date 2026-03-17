@@ -1163,10 +1163,10 @@ fn test_no_forced_counter_oscillation() {
     // AFTER FIX: cleanup should NOT force-set counter to 3.
     // Instead, it should use a dedicated signaling mechanism.
     // The counter should remain at 0 or 1 (if stuck Processing contributed).
-    // The fork signal should go through stuck_fork_signal flag.
+    // The fork signal should go through RecoveryPhase::StuckForkDetected.
     assert!(
-        manager.stuck_fork_signal,
-        "cleanup() must set stuck_fork_signal instead of forcing consecutive_empty_headers to 3"
+        matches!(manager.recovery_phase, super::RecoveryPhase::StuckForkDetected),
+        "cleanup() must set RecoveryPhase::StuckForkDetected instead of forcing consecutive_empty_headers to 3"
     );
 }
 
@@ -1218,10 +1218,13 @@ fn test_blacklist_escalation_uses_signal_not_counter() {
 
     manager.cleanup();
 
-    // For small gap (5 blocks), cleanup should use stuck_fork_signal, not force counter to 3
+    // For small gap (5 blocks), cleanup should use RecoveryPhase::StuckForkDetected
     assert!(
-        manager.stuck_fork_signal,
-        "Blacklist escalation for small gap must use stuck_fork_signal"
+        matches!(
+            manager.recovery_phase,
+            super::RecoveryPhase::StuckForkDetected
+        ),
+        "Blacklist escalation for small gap must use RecoveryPhase::StuckForkDetected"
     );
 }
 

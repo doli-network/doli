@@ -13,6 +13,11 @@ impl Node {
         };
         let mut production_timer = tokio::time::interval(production_interval);
 
+        // Track when production last ran, to guarantee scheduling under event flooding.
+        // Without this, biased select! starves production when 100+ peers generate
+        // continuous gossip/sync events (the event channel is never empty).
+        let mut last_production_check = Instant::now();
+
         // Gossip our producer identity using adaptive intervals
         // This ensures nodes that aren't directly connected (e.g., Node 2 -> Node 1 -> Node 3)
         // learn about each other through the GossipSub mesh relay
@@ -36,6 +41,12 @@ impl Node {
             //
             // With biased select, we always process pending network events first,
             // ensuring the chain tip is up-to-date before attempting production.
+            //
+            // PRODUCTION ESCAPE HATCH: After each network event, we check if
+            // production is overdue (elapsed > production_interval). If so, we
+            // force a production check regardless of pending events. This prevents
+            // event flooding from permanently starving block production — the root
+            // cause of chain stalls at 100+ peers (see diagnosis-report.md).
             tokio::select! {
                 biased;
 
@@ -53,6 +64,22 @@ impl Node {
                             warn!("Error handling network event: {}", e);
                         }
                     }
+
+                    // PRODUCTION ESCAPE HATCH: If production hasn't run for a full
+                    // interval, force it now. This guarantees production runs at least
+                    // once per interval even under infinite event load.
+                    if last_production_check.elapsed() >= production_interval {
+                        if self.producer_key.is_some() {
+                            if let Err(e) = self.try_produce_block().await {
+                                warn!("Block production error: {}", e);
+                            }
+                        }
+                        if let Err(e) = self.run_periodic_tasks().await {
+                            warn!("Periodic task error: {}", e);
+                        }
+                        last_production_check = Instant::now();
+                        self.sync_requests_this_interval = 0;
+                    }
                 }
 
                 // Production timer tick
@@ -68,6 +95,8 @@ impl Node {
                     if let Err(e) = self.run_periodic_tasks().await {
                         warn!("Periodic task error: {}", e);
                     }
+                    last_production_check = Instant::now();
+                    self.sync_requests_this_interval = 0;
                 }
 
                 // Gossip timer tick - ANTI-ENTROPY: broadcast producer view
@@ -442,8 +471,21 @@ impl Node {
                 request,
                 channel,
             } => {
-                debug!("Sync request from {}: {:?}", peer_id, request);
-                self.handle_sync_request(request, channel).await?;
+                // GLOBAL SYNC SERVING RATE LIMIT: Cap aggregate sync responses per
+                // production interval. Without this, 100+ syncing peers each sending
+                // 20 req/sec (per-peer limit) create 2000+ req/sec aggregate, saturating
+                // the event loop with block_store I/O and starving production.
+                const MAX_SYNC_REQUESTS_PER_INTERVAL: u32 = 8;
+                if self.sync_requests_this_interval >= MAX_SYNC_REQUESTS_PER_INTERVAL {
+                    debug!(
+                        "Sync request from {} deferred — serving limit reached ({}/{})",
+                        peer_id, self.sync_requests_this_interval, MAX_SYNC_REQUESTS_PER_INTERVAL
+                    );
+                } else {
+                    debug!("Sync request from {}: {:?}", peer_id, request);
+                    self.sync_requests_this_interval += 1;
+                    self.handle_sync_request(request, channel).await?;
+                }
             }
 
             NetworkEvent::SyncResponse { peer_id, response } => {

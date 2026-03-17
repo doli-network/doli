@@ -336,7 +336,7 @@ impl SyncManager {
                             gap
                         );
                         self.header_blacklisted_peers.clear();
-                        self.stuck_fork_signal = true; // Signal fork recovery without forcing counter
+                        self.signal_stuck_fork(); // Signal fork recovery without forcing counter
                     } else {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers \
@@ -403,14 +403,19 @@ impl SyncManager {
         // and grace hasn't cleared (10 blocks not applied), force-clear it.
         // This prevents grace from permanently blocking fork_sync when the node
         // landed on a fork after snap sync (can't apply blocks → grace never clears).
-        if self.post_recovery_grace && self.post_recovery_grace_started.elapsed().as_secs() > 120 {
-            warn!(
-                "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
-                 Force-clearing to allow fork recovery.",
-                self.blocks_applied_since_recovery
-            );
-            self.post_recovery_grace = false;
-            self.blocks_applied_since_recovery = 0;
+        if let super::RecoveryPhase::PostRecoveryGrace {
+            started,
+            blocks_applied,
+        } = self.recovery_phase
+        {
+            if started.elapsed().as_secs() > 120 {
+                warn!(
+                    "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
+                     Force-clearing to allow fork recovery.",
+                    blocks_applied
+                );
+                self.recovery_phase = super::RecoveryPhase::Normal;
+            }
         }
 
         // Stuck-sync detection: if height hasn't advanced for >120s and we're
@@ -449,7 +454,7 @@ impl SyncManager {
                          (local_h={}, network_tip={}). Signaling fork recovery.",
                         stuck_secs, gap, self.local_height, self.network_tip_height
                     );
-                    self.stuck_fork_signal = true;
+                    self.signal_stuck_fork();
                 }
             }
         }

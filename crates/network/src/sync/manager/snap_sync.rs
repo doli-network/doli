@@ -215,13 +215,13 @@ impl SyncManager {
             // Snap sync bypasses the normal sync pipeline, so complete_resync()
             // is never reached via handle_applied_block(). Clear it here so
             // production resumes after the grace period.
-            if self.resync_in_progress {
+            if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
                 self.complete_resync();
             }
             // Block production until a canonical gossip block arrives.
             // Snap sync restores state but leaves the block store empty —
             // producing now would create a fork with no real parent.
-            self.awaiting_canonical_block = true;
+            self.recovery_phase = super::RecoveryPhase::AwaitingCanonicalBlock;
             info!("[SNAP_SYNC] Production gated: awaiting first canonical gossip block");
             if let SyncState::SnapReady { snapshot } = old {
                 Some(snapshot)

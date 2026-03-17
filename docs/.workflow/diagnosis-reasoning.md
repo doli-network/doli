@@ -1,299 +1,318 @@
-# Diagnostic Reasoning Trace: Fork Sync Recovery Infinite Loop (4 Bugs)
+# Diagnostic Reasoning Trace: Why Every Fix Creates a New Bug (Meta-Diagnosis)
 
 **Date**: 2026-03-17
-**Session**: Code-level root cause analysis of 4 interacting fork sync bugs
-**Builds on**: Previous structural diagnosis (state explosion in SyncManager)
+**Session**: Structural meta-diagnosis of the recurring failure pattern
+**Supersedes**: Previous trace (4 specific fork sync bugs)
+**Focus**: Why does fixing one problem always reveal another? What is the architectural root cause?
 
 ---
 
 ## Phase 1: Symptom Characterization
 
-### Symptom Profile (extracted from bug report + log evidence)
+### The Meta-Symptom
 
-1. **16% of sync-only nodes** become trapped in a 7-second infinite loop
-2. Three `--no-snap-sync` nodes (seed, n3, n4) **permanently deadlocked** -- never recover
-3. The loop: fork_sync finds ancestor at h=0, downloads 1 canonical block, reorg rejected (weight_delta=0), empty headers blacklist peers, cycle repeats
-4. **Trigger condition**: 50+ nodes join simultaneously, genesis producers compete on blocks at same height (natural fork propagation race)
-5. **Determinism**: The `--no-snap-sync` deadlock is 100% deterministic. The 16% rate is probabilistic (depends on which fork block a node receives first).
+The user describes a pattern, not a single bug:
+1. Fix snap sync cascade -> production gate deadlock appears
+2. Fix production gate deadlock -> fork sync weight rejection appears
+3. Fix 4 fork sync bugs (39169ae) -> deploy 50 sync nodes -> chain stalls from gossip flooding
+4. User: "You fix one problem and another one arises, and so on. What is this?"
 
-### What Changed Recently
+### Current Specific Symptom (chain stall at 112 nodes)
+- Chain at h=1133, s=1561, gap=428 missed blocks
+- Producers flooded with GSet DUPLICATE gossip from 100+ peers
+- Event loop starved: production timer never fires
+- Several original producers (n3, n4, n8) fell behind
+- n10 stuck at genesis
 
-Commit 7259d47 ("fix: address 3 root causes of persistent sync cascades") made 3 changes:
-1. `remove_peer()` now recomputes `network_tip_height` from remaining peers
-2. `stuck_fork_signal` boolean replaces force-setting `consecutive_empty_headers = 3`
-3. `can_produce()` side effects extracted to dedicated `update_production_state()` method
-
-These fixes addressed the state management layer. The 4 bugs under investigation exist at the decision logic layer above that.
+### Key Observation
+The gossip flooding stall is NOT one of the 4 bugs fixed in 39169ae. It is an entirely different failure class (event loop architecture vs sync recovery logic). The fixes did not CAUSE the stall -- the stall was always latent, only triggered at 112-node scale.
 
 ---
 
 ## Phase 2: Evidence Assembly
 
-### Constraint Table (from prior failed approaches)
+### Constraint Table (from ALL prior fix rounds)
 
-| Fix Attempted | What It Changed | Result | What This Eliminates |
-|---|---|---|---|
-| 7259d47 fix 1: network_tip_height recompute | `remove_peer()` recalculates tip from live peers | Correct, but stuck nodes have REAL gap, not phantom | The problem is not phantom gap inflation |
-| 7259d47 fix 2: stuck_fork_signal decoupling | New boolean replaces counter force-setting to 3 | Fork_sync triggers correctly now, but reorg is rejected | Counter oscillation was one problem; reorg rejection is another |
-| 7259d47 fix 3: can_produce() side effects | Mutations moved out of query function | Irrelevant to sync-only nodes (they never produce) | Production gate bugs are orthogonal to sync recovery |
-| 0d49b78: 30s fork_sync cooldown | Timer after fork_sync rejection | Prevents rapid re-triggering but creates delayed loop | The loop itself is not the root cause -- the rejection is |
-| fb37e7c: --no-snap-sync single gate | `needs_genesis_resync()` returns false when flag set | Prevents snap sync correctly but blocks ALL recovery | The bug is not that snap sync fires -- it is that recovery is blocked |
+| Fix Round | What Changed | Scale Tested | Result | What Emerged |
+|---|---|---|---|---|
+| dd77c7e: snap sync cascade fix | Hash::ZERO rejection, quorum validation | 22 nodes | Fixed cascade | Production gate deadlock from exponential grace backoff |
+| Production gate deadlock fix | Grace period cap, resync counter reset | 13 nodes | Fixed deadlock | Fork sync weight rejection (latent since genesis) |
+| 7259d47: 3 sync root causes | network_tip_height recompute, stuck_fork_signal, can_produce() purity | 13 nodes | Fixed 3 specific state machine bugs | 4 deeper fork sync bugs revealed |
+| 39169ae: 4 fork sync bugs | Weight comparison, blacklisting, recovery gate, peer selection | 56 nodes | Fixed fork sync recovery | Chain stall from gossip flooding at 112 nodes |
 
-### Data Flow Mapping
+### Data Flow for Current Stall
 
-I mapped the exact code flow for the stuck sync cycle. Key files in the path:
+```
+[112 nodes, each with gossip_timer at 1-60s intervals]
+    |
+    v
+[Each node broadcasts ALL 13 producer announcements to mesh peers]
+    | GossipSub propagates to mesh_n (6-12) peers per node
+    | Total messages per round: 112 * mesh_n * 13_announcements
+    v
+[Each node receives ~100+ ProducerAnnouncementsReceived events per round]
+    | Each event -> merge_one() * 13 -> 13 signature verifications + DUPLICATE classification
+    v
+[Events queued in mpsc::channel(1024)]
+    |
+    v
+[Node event loop: biased select!]
+    | Branch 1 (HIGHEST PRIORITY): network.next_event() -> handle_network_event()
+    | Branch 2: production_timer.tick() -> try_produce_block()
+    | Branch 3: gossip_timer.tick() -> broadcast more announcements
+    |
+    | With biased select, Branch 1 always wins if events are in the channel.
+    | With 100+ events per gossip round, the channel is never empty.
+    | Production timer NEVER fires.
+    v
+[Chain stalls. No blocks produced.]
+```
 
-1. `rollback.rs:198` -- `resolve_shallow_fork()` triggers fork_sync
-2. `block_lifecycle.rs:391` -- `start_fork_sync()` picks peer via `best_peer_for_recovery()`
-3. `fork_sync.rs` -- Binary search, download headers+bodies
-4. `block_handling.rs:455` -- `execute_fork_sync_reorg()` makes weight decision
-5. `sync_engine.rs:698` -- `handle_headers_response()` handles empty responses
-6. `production_gate.rs:991` -- `needs_genesis_resync()` gates recovery escalation
-7. `block_lifecycle.rs:497` -- `reset_sync_for_rollback()` resets counters
+### Architecture Inventory
 
-### Trust Boundaries Identified
+**SyncManager**: 73 fields, 9 boolean flags, 8 SyncState variants, ~10 counters, ~15 Option<Instant> timestamps.
+- Minimum state combinations: 8 * 2^9 = 4,096 (before counters/timestamps)
+- Practical state space: millions of reachable combinations
+- Each fix adds conditions to prevent one path, potentially opening others
 
-- **Weight computation boundary** (block_handling.rs:540-565): Both chains weighted by same producer_set. Seniority-based `producer_weight()` returns 1 for ALL producers on young networks. Weight is useless as a fork choice signal in year 1.
-- **Empty headers interpretation** (sync_engine.rs:698-726): Code always blames the peer. Never considers "we might be on a fork."
-- **Recovery gating** (production_gate.rs:991-1003): `needs_genesis_resync()` hardcodes false for `--no-snap-sync`, conflating "snap sync" with "any state reset."
-- **Peer selection** (mod.rs:985-991): `best_peer_for_recovery()` takes max height without filtering degraded/stuck peers.
+**Event loop** (`event_loop.rs`): Single tokio task with `biased select!`
+- Network events: absolute priority (Branch 1)
+- Production: second priority (Branch 2, same task)
+- Gossip: third priority (Branch 3, same task, creates more Branch 1 events)
+- No priority separation between production-critical and non-critical events
 
----
+**GSet gossip**: Full-state CRDT with O(N^2) convergence messages
+- Each node sends ALL producers to mesh peers every gossip_interval
+- Delta sync only activates for >50 producers (current: 13)
+- Adaptive backoff helps but minimum interval is 1s
 
-## Explorer Round 1: Hypothesis Generation
+**Sync serving**: Unbounded, same task as production
+- Each SyncRequest event processed synchronously on main task
+- No global limit on concurrent sync requests served
+- 100 peers * 20 req/sec rate limit = 2000 req/sec aggregate
 
-### H1: Weight comparison uses strict `<=` instead of `<`, rejecting equal-weight canonical chains during remedial fork sync
-- **Thesis**: `execute_fork_sync_reorg()` rejects the canonical chain when `weight_delta == 0`. For fork_sync (which is remedial -- the node KNOWS it is on a fork), equal weight should accept.
-- **Preconditions**: Fork sync downloads 1 canonical block, both producers have weight 1, delta = 0.
-- **Falsification**: If fork_sync always downloads multiple blocks (delta would be > 0). Disproved if fork_sync.rs limits downloads.
-
-### H2: Empty headers cause immediate peer blacklist, isolating the node from canonical peers
-- **Thesis**: When our tip is a fork hash, canonical peers return empty headers. The handler blacklists each peer, eventually removing all canonical peers.
-- **Preconditions**: The handler blacklists on empty response, `best_peer()` filters blacklisted peers.
-- **Falsification**: If `best_peer()` does NOT filter blacklisted peers, or if blacklist expires fast enough to prevent isolation.
-
-### H3: `--no-snap-sync` unconditionally blocks the only recovery escalation path
-- **Thesis**: `needs_genesis_resync()` returns false when `snap_sync_threshold == u64::MAX`, blocking state-reset recovery that actually preserves block data.
-- **Preconditions**: The recovery path uses `reset_state_only()` which preserves blocks. The gate doesn't distinguish between "snap sync" and "state reset."
-- **Falsification**: If `is_deep_fork_detected()` provides an alternative recovery path. Requires checking whether `consecutive_empty_headers` can reach 10.
-
-### H4: Fork sync downloads only fork_depth blocks (as bug report claims)
-- **Thesis**: Fork sync limits header download count to `fork_depth`, which might be 1-3. This means the canonical chain is short, making weight_delta=0.
-- **Preconditions**: Fork sync code uses `fork_depth` or similar limit in GetHeaders.
-- **Falsification**: If fork_sync.rs requests 500 headers regardless of fork_depth.
-
-### H5: `consecutive_empty_headers` counter is reset to 0 by every fork_sync run, preventing escalation threshold (10) from being reached
-- **Thesis**: `reset_sync_for_rollback()` resets the counter to 0 after both successful AND rejected reorgs. Since fork_sync runs every ~30-60s, the counter oscillates 0->3->0 and never reaches 10.
-- **Preconditions**: `reset_sync_for_rollback()` always resets the counter. Fork_sync runs frequently enough.
-- **Falsification**: If the counter is NOT reset on rejection, or if fork_sync runs infrequently enough for the counter to climb.
-
-### H6: Peer selection (`best_peer_for_recovery()`) picks stuck/low-height nodes under load
-- **Thesis**: Under extreme load, canonical peers disconnect. The remaining peer table has mostly stuck nodes. `best_peer_for_recovery()` picks max height from degraded pool.
-- **Preconditions**: No minimum height filter in peer selection. Load causes canonical peers to drop.
-- **Falsification**: If `best_peer_for_recovery()` filters by minimum height or network tip proximity.
-
-### H7: The bug report's 4 bugs are actually a single feedback loop, not 4 independent issues
-- **Thesis**: Bugs 1-4 interact in a cycle. Fixing any one might break the loop. The loop is: fork_sync triggered -> rejected at equal weight (Bug 1) -> empty headers blacklist peers (Bug 2) -> escalation blocked (Bug 3) -> peer degradation (Bug 4) -> fork_sync from stuck peer -> back to start.
-- **Preconditions**: The bugs form a dependency chain where each one feeds the next.
-- **Falsification**: If any bug is independently sufficient to cause permanent stuck state without the others.
+**Event channel**: `mpsc::channel(1024)`, blocking `.send().await`
+- Swarm loop pushes events without admission control
+- Node loop drains events with biased priority
+- 1024-deep buffer means ~1s of production starvation when full
 
 ---
 
-## Skeptic Round 1: Hypothesis Elimination
+## Explorer Round 1 -- Hypothesis Generation
 
-### H1 (Weight `<=` vs `<`): SURVIVES
-- **Evidence**: Code at block_handling.rs:568 confirms `if weight_delta <= 0`. The comment says "new chain not heavier -- keeping current."
-- Weight computation at seniority.rs:20 confirms ALL producers return weight 1 for < 1 year.
-- For 1-block fork vs 1 canonical block: delta = 1 - 1 = 0. REJECTED.
-- **Consistent with failed approaches**: 7259d47 did not touch this line. The fork_sync_cooldown (0d49b78) delays re-triggering but does not change the rejection decision.
-- **Status**: SURVIVES. This is a confirmed logic error in the weight gate.
+### H1: Biased select! + single-task architecture causes production starvation under sustained event load
+- The event loop processes ALL events (gossip, sync, status, blocks) before production
+- At 100+ peers, event volume exceeds production timer cadence
+- Production is literally unreachable while events are pending
+- **Falsification**: Run with un-biased select and observe if production resumes
 
-### H2 (Blacklist escalation): SURVIVES
-- **Evidence**: sync_engine.rs:720 confirms `self.header_blacklisted_peers.insert(peer, Instant::now())` for gap > 50.
-- sync_engine.rs:80-86 confirms `best_peer()` filters blacklisted peers.
-- cleanup.rs:303 confirms 30s blacklist expiry.
-- cleanup.rs:310-357 confirms "all peers blacklisted > 120s" recovery -- but this is 2 minutes of dead time.
-- **Consistent with failed approaches**: 7259d47 did not modify the blacklist logic.
-- **Status**: SURVIVES. Blacklisting canonical peers is counterproductive when the node is the one on a fork.
+### H2: GSet gossip creates O(N^2) message amplification at the application layer
+- GossipSub message-level dedup prevents same-message delivery, but each node creates UNIQUE messages (different signatures, sequences)
+- Application-level dedup (DUPLICATE) works but happens AFTER deserialization and signature verification
+- The event loop cost is paid regardless of whether the merge succeeds
+- **Falsification**: If GossipSub dedup catches all duplicates before they reach the event channel
 
-### H3 (`--no-snap-sync` blocking recovery): SURVIVES
-- **Evidence**: production_gate.rs:991 confirms `if self.snap_sync_threshold == u64::MAX { return false; }`.
-- fork_recovery.rs:518-584 confirms `force_recover_from_peers()` uses `reset_state_only()` which preserves block data.
-- The gate conflates "snap sync disabled" with "all recovery disabled."
-- **Consistent with failed approaches**: fb37e7c explicitly added this gate. It was intentional but based on a flawed premise.
-- **Status**: SURVIVES. This is a confirmed semantic error in the recovery gate.
+### H3: No backpressure between network layer and node event loop causes buffering-induced starvation
+- The 1024-event channel acts as a shock absorber but delays production
+- Even if events arrive at moderate rate, 1024 pending events = 1024 biased-select iterations before production
+- **Falsification**: If the channel is always nearly empty (events processed faster than produced)
 
-### H4 (Fork sync downloads only fork_depth blocks): ELIMINATED
-- **Evidence**: fork_sync.rs:193-196 shows `GetHeaders { start_hash, max_count: 500 }`. The download limit is 500, not fork_depth.
-- The bug report's claim is wrong. Fork sync requests up to 500 headers.
-- The reason nodes download only 1-3 blocks is not the request limit -- it is the PEER's height.
-- **Status**: ELIMINATED. The bug report's diagnosis was incorrect.
+### H4: Sync request serving on the main task competes directly with production
+- Each of 100 sync-only nodes sends periodic requests
+- Each request is a NetworkEvent::SyncRequest processed on the same biased select
+- Block store I/O (reading headers, bodies, state) is done synchronously
+- **Falsification**: If sync requests are handled on a separate spawned task
 
-### H5 (Counter reset preventing escalation): SURVIVES
-- **Evidence**: block_lifecycle.rs:498 confirms `self.consecutive_empty_headers = 0` in `reset_sync_for_rollback()`.
-- `execute_fork_sync_reorg()` at block_handling.rs:577 calls `reset_sync_for_rollback()` AFTER rejection.
-- The counter goes: 0 -> 1 -> 2 -> 3 (triggers fork_sync) -> 0 (reset after rejection) -> 1 -> 2 -> 3 -> 0 -> ...
-- Never reaches 10 (the threshold for `is_deep_fork_detected()` escalation).
-- **Consistent with failed approaches**: 7259d47's `stuck_fork_signal` bypasses the counter for TRIGGERING fork_sync, but the counter is still needed for ESCALATION gating. The reset after rejection prevents escalation.
-- **Status**: SURVIVES. This is a confirmed amplifier for Bug 3.
+### H5: The SyncManager's 73-field state machine creates emergent bugs that local fixes cannot prevent
+- Each fix reasons about one code path but cannot cover all 4,096+ state combinations
+- New fixes add fields (stuck_fork_signal, behind_since, stable_gap_since), growing the state space
+- The "whack-a-mole" pattern is the natural consequence of local reasoning about a global state space
+- **Falsification**: If a state machine refactor (hierarchical, with invariants) stops the pattern
 
-### H6 (Peer selection degradation): SURVIVES
-- **Evidence**: mod.rs:985-991 confirms `best_peer_for_recovery()` uses `max_by_key(height)` with no minimum height filter.
-- Under load with 56 processes on one machine, canonical peers can disconnect or become unresponsive.
-- Log evidence: "Fork sync: new chain not heavier (delta=0, new=1, old=1)" -- only 1 canonical block downloaded.
-- If the peer were at h=500, it would return 500 headers. Getting 1 means the peer is at h=1 (a stuck node).
-- **Status**: SURVIVES. This explains WHY fork_sync gets insufficient data even though it requests 500.
+### H6: The recurring pattern is an artifact of testing at progressively larger scales
+- 13 -> 22 -> 56 -> 112 nodes
+- Each scale reveals latent bugs that were below threshold at smaller scale
+- The bugs are not CAUSED by fixes -- they were always present, just untriggered
+- **Falsification**: If bugs reappear at the SAME scale after fixes (not just at larger scale)
 
-### H7 (Single feedback loop): PARTIALLY SURVIVES
-- Bugs 1-4 DO interact in a cycle, but Bug 3 is independently sufficient for `--no-snap-sync` deadlock.
-- Bug 1 alone can trap nodes even without Bugs 2, 3, 4 (if fork_sync picks a near-tip peer that has only 1 more block).
-- **Status**: WEAKENED to "contributing interaction" rather than "single unified cause."
+### H7: GossipSub mesh scaling creates super-linear event growth
+- mesh_n scales with sqrt(N) * 1.5: from 6 at 13 nodes to 16 at 112 nodes
+- Total messages: N * mesh_n = 112 * 16 = 1,792 per round (vs 78 at 13 nodes) = 23x increase
+- But nodes only increased 8.6x, so message growth is super-linear
+- **Falsification**: If mesh_n is fixed at config time and does not dynamically scale
 
 ---
 
-## Explorer Round 2: Refined Hypotheses
+## Skeptic Round 1 -- Elimination
 
-After eliminating H4 and weakening H7, the surviving hypotheses refine as follows:
+### H1: SURVIVES -- Confirmed by code
+- `event_loop.rs:39-40`: `biased` keyword present
+- `event_loop.rs:44-56`: Network event branch is first
+- `event_loop.rs:59-71`: Production timer is second
+- With biased, ready Branch 1 always wins over ready Branch 2
+- **None of the 4 prior fixes touched the event loop architecture.** This is a completely different subsystem.
 
-### H1a: Weight gate is the PRIMARY loop mechanism
-- For ANY fork_sync that downloads exactly as many canonical blocks as rollback blocks, delta=0 and reorg is rejected.
-- On young networks (all weights = 1), this is: "canonical blocks downloaded == fork blocks replaced."
-- For 1-block forks, this means 1 canonical block -> rejection. For 2-block forks, 2 canonical blocks -> rejection.
-- The ONLY escape is downloading MORE canonical blocks than fork blocks. This requires the peer to be ahead by more than the fork depth.
+### H2: SURVIVES with refinement
+- GossipSub `duplicate_cache_time: 60s` prevents re-delivery of the SAME message
+- But 112 different nodes produce 112 DIFFERENT messages per round (different senders = different message IDs)
+- Each message contains all 13 producer announcements
+- Application-level GSet merge correctly identifies duplicates but AFTER deserializing and verifying signatures
+- **Cost**: 112 messages * 13 announcements * crypto_verify() = 1,456 signature verifications per gossip round, plus event loop overhead
 
-### H3a: Counter reset is the critical Bug 3 amplifier
-- Even if `needs_genesis_resync()` were fixed to allow `--no-snap-sync` recovery, the counter never reaches 10 anyway.
-- Both gates must be fixed: the unconditional suppression AND the counter reset.
-- Without fixing the counter reset, the deep fork detection path (`is_deep_fork_detected()`) is also permanently blocked for ALL nodes.
+### H3: WEAKENED
+- The swarm loop uses `.send().await` (blocking when channel full). This is ACCIDENTAL backpressure.
+- When channel is full, swarm blocks, which slows new event arrival. This prevents overflow.
+- But the 1024 events already buffered are sufficient to starve production for many iterations.
+- **Revised**: The issue is not channel overflow but buffered-event draining taking priority over production.
 
-### H2a: Blacklist threshold should match fork detection threshold
-- After 3 empty header responses, the node knows it is on a fork (this is the `resolve_shallow_fork()` threshold).
-- Blacklisting past this point is counterproductive -- it removes the canonical peers the node needs for recovery.
-- Fix: stop blacklisting after `consecutive_empty_headers >= 3`, clear existing blacklist, set `stuck_fork_signal`.
+### H4: SURVIVES
+- `handle_sync_request()` at `validation_checks.rs:460` runs on the main task. No `tokio::spawn`.
+- Reads block_store (I/O), serializes state (CPU). All synchronous on main task.
+- Rate limiting at 20 req/sec PER PEER. But 100 peers = 2000 req/sec aggregate.
+- Each request becomes a NetworkEvent::SyncRequest queued in the same channel as gossip.
 
-### H6a: Peer selection should filter by network tip proximity
-- `best_peer_for_recovery()` should require peers to be near `network_tip_height` (within 10 blocks).
-- Fallback to max height if no near-tip peers exist.
-- This prevents "stuck peer poisoning" where two low-height nodes sync from each other.
+### H5: SURVIVES as meta-explanation for prior rounds
+- 73 fields confirmed by code count
+- 9 boolean flags confirmed: production_blocked, resync_in_progress, has_connected_to_peer, needs_genesis_resync, awaiting_canonical_block, fork_mismatch_detected, post_rollback, post_recovery_grace, stuck_fork_signal
+- BUT: this explains the prior whack-a-mole pattern (Mechanism A), not the current stall (Mechanism B)
+
+### H6: SURVIVES as partial explanation
+- Each incident was at increasing scale
+- The gossip stall was always latent -- it just was not triggered at 13 nodes
+- But the prior fork sync bugs (Mechanism A) appeared at the SAME 13-node scale, so H6 does not fully explain the pattern
+
+### H7: WEAKENED
+- mesh_n is set at startup from NetworkConfig, not dynamically recalculated
+- Default mesh_n=6, mesh_n_high=12. GossipSub may graft up to 12 mesh peers.
+- The dynamic scaling function (`calculate_adaptive_mesh_params`) exists but appears to be for creating the gossipsub config, not runtime adjustment.
+- Even at mesh_n=6 with 112 nodes: 112 * 6 = 672 messages per gossip round. Still a lot.
+
+---
+
+## Explorer Round 2 -- Refined Hypotheses
+
+### H1a: The biased select is the PROXIMATE cause of the current stall
+- Remove biased -> production resumes (but may introduce race forks)
+- Better: decouple production to its own task -> immune to event volume
+
+### H1b: Gossip timer shares the biased select, creating a positive feedback loop
+- Gossip timer is Branch 3. When it fires (during a lull in events), it BROADCASTS to peers.
+- Those peers receive the broadcast, creating MORE events in their channels.
+- Some of those events propagate back to this node via mesh forwarding.
+- The gossip timer creates the events that starve the production timer.
+
+### H2a: Full-set gossip below the delta sync threshold (50 producers) is wasteful
+- 13 producers << 50 threshold
+- Every round sends all 13 announcements, all 13 are DUPLICATE on every receiving node
+- Useful information content per round: ~0 (network is stable)
+- The adaptive gossip backs off to max 60s, but minimum 1s is too fast
+
+### H4a: Sync request serving has no global admission control
+- Per-peer rate limit: 20 req/sec. Aggregate with 100 peers: 2000 req/sec.
+- No limit on how many sync requests the node serves concurrently.
+- A producer surrounded by 100 sync-only nodes becomes a de facto serving-only node.
+
+### H8 (NEW): The two failure classes (Mechanism A and Mechanism B) have a common root cause: the absence of architectural boundaries
+- **Mechanism A** (same-scale bugs): SyncManager is a 73-field god object with no internal boundaries. Any function can read/write any field. No invariants enforce valid state combinations.
+- **Mechanism B** (scale bugs): The event loop is a single task with no priority boundaries. All events compete for the same processing time. No admission control separates critical (production) from non-critical (gossip, sync serving).
+- **Common root cause**: The system lacks architectural boundaries between concerns. When everything shares everything, any change can affect anything, and any load pattern can displace any function.
 
 ---
 
 ## Skeptic Round 2
 
-### H1a (Weight gate = primary loop mechanism): CONFIRMED
-- Code evidence at block_handling.rs:568 is unambiguous.
-- Explains the log evidence: "delta=0, new=1, old=1" -- the exact scenario.
-- Not contradicted by any failed approach (no prior fix touched this comparison).
-- Cross-reference: The `mark_fork_sync_rejected()` + 30s cooldown (0d49b78) is a mitigation for THIS problem -- it slows the loop but doesn't fix the rejection.
+### H1a: CONFIRMED
+- Direct code evidence of biased select with network-first priority
+- Production is unreachable when event channel is non-empty
+- At 112 nodes, event channel is effectively always non-empty
 
-### H3a (Counter reset = Bug 3 amplifier): CONFIRMED
-- `reset_sync_for_rollback()` at block_lifecycle.rs:498 unconditionally resets to 0.
-- Called after BOTH success and rejection at block_handling.rs:577.
-- The counter path: 0->1->2->3 (fork_sync triggered) -> 0 (reset) -> repeat. Never reaches 10.
-- This blocks `is_deep_fork_detected()` for ALL nodes, not just `--no-snap-sync`.
+### H1b: CONFIRMED
+- Gossip timer at event_loop.rs:76 fires on the same select
+- When it fires (lines 83-170), it broadcasts to peers via GossipSub
+- Remote nodes receive, generate events, some propagate back
+- This is a measurable positive feedback loop
 
-### H2a (Blacklist threshold alignment): CONFIRMED
-- sync_engine.rs:698-726 blacklists immediately on first empty response (for gap > 50).
-- After 3 empties, the node already knows it is on a fork. Continuing to blacklist removes recovery peers.
-- The 120s "all peers blacklisted" timeout at cleanup.rs:310-357 is a safety valve but adds 2 minutes of dead time.
+### H2a: CONFIRMED
+- 13 producers < 50 delta_sync threshold
+- Full-set gossip every round
+- All merges return DUPLICATE for established producers
+- CPU cost: 13 * signature_verify per incoming gossip message, hundreds of messages per round
 
-### H6a (Peer selection filtering): CONFIRMED
-- mod.rs:985-991 confirms no height filter.
-- Log evidence (1 block downloaded) confirms peers at low height are being selected.
-- The fallback mechanism (try all peers if no near-tip peers) preserves current behavior as safety net.
+### H4a: CONFIRMED
+- No global admission control in code
+- `handle_sync_request()` is synchronous, no tokio::spawn
+- Each request blocks the main task during block_store I/O
 
----
-
-## Analogist: Known Failure Patterns
-
-### Pattern 1: "Remedial reorg should have different acceptance criteria than opportunistic reorg"
-From Bitcoin's fork choice: Bitcoin uses "first seen" for equal-weight blocks during normal operation (no reorg). But during IBD (initial block download) or explicit fork recovery, the node accepts ANY chain that extends its known-good ancestry. DOLI's fork_sync is analogous to IBD -- the node knows it is broken and is actively seeking repair. Applying the same conservative "strictly heavier" rule as normal gossip reorgs defeats the purpose.
-
-### Pattern 2: "Blame-self before blame-peer in fork detection"
-From Ethereum's sync protocol: When a peer returns unexpected data during sync, Ethereum's protocol first checks "am I on a minority fork?" before penalizing the peer. The heuristic: if N out of M peers disagree with our state, and N > M/2, we are wrong. DOLI's current code always blames the peer.
-
-### Pattern 3: "Recovery escalation counters must be monotonic until resolution"
-From Raft's election timeout: Raft's election counter is never reset until a leader is actually elected. Resetting it on failed elections would prevent elections from ever succeeding. Similarly, DOLI's `consecutive_empty_headers` counter should not reset until the fork is actually resolved (successful reorg), not merely attempted (rejected reorg).
-
-### Pattern 4: "Peer selection for recovery must use quality thresholds, not just max"
-From BitTorrent's piece selection: BitTorrent picks peers based on their upload speed, not just their piece availability. Picking the peer with the "most" pieces from a degraded swarm leads to downloading from peers that are themselves incomplete. DOLI's `best_peer_for_recovery()` is equivalent to picking the peer with the most pieces without checking if they are "good enough."
+### H8: CONFIRMED as unifying hypothesis
+- Mechanism A: SyncManager as god object (73 fields, no boundaries)
+- Mechanism B: Event loop as single task (no priority boundaries)
+- Both are instances of the same architectural pattern: **missing separation of concerns**
+- The "fix one thing, break another" pattern is the natural consequence of a system without boundaries
 
 ---
 
-## Diagnostic Tests (Designed, Not Yet Executed)
+## Analogist -- Known Failure Patterns
 
-### Test 1: Reproduce weight_delta=0 rejection
-- Start 3-node network
-- Kill one producer mid-slot so it misses a block
-- Force node to store a fork block at h=1 (from different producer)
-- Observe: does `execute_fork_sync_reorg()` reject with delta=0?
-- **Expected**: Yes, because both blocks have weight 1.
-- **Distinguishes**: H1a (confirmed) vs "weight works fine" (eliminated)
+### Pattern 1: Head-of-Line Blocking in Single-Threaded Event Loops
+- **Redis, Node.js, Nginx workers**: All single-threaded event loops. Work at moderate load. Fail when one event type monopolizes the loop.
+- **Standard fix**: Separate critical-path work to its own thread/task.
+- **DOLI match**: Production is critical-path work competing with non-critical gossip/sync on the same loop.
 
-### Test 2: Observe counter oscillation
-- On the stuck node from Test 1, add logging to `consecutive_empty_headers` at every write site
-- Observe: does the counter oscillate 0->3->0->3?
-- **Expected**: Yes, because `reset_sync_for_rollback()` resets to 0 after rejection.
-- **Distinguishes**: H3a (confirmed) vs "counter reaches 10 eventually" (eliminated)
+### Pattern 2: God Object Anti-Pattern in State Machines
+- **Classic OOP**: A god object that knows everything and does everything cannot be modified safely. Changes have unpredictable side effects because any field can interact with any other.
+- **Standard fix**: Decompose into smaller, focused objects with explicit interfaces and invariants.
+- **DOLI match**: SyncManager is a textbook god object. 73 fields, methods spread across 5 files, no internal invariants.
 
-### Test 3: Verify `--no-snap-sync` deadlock
-- Start a seed node with `--no-snap-sync`
-- Force it onto a fork
-- Observe: does it recover?
-- **Expected**: No, permanently stuck. `needs_genesis_resync()` returns false, counter never reaches 10.
-- **Distinguishes**: H3 (confirmed) vs "alternative recovery path exists" (eliminated)
+### Pattern 3: Gossip Amplification in CRDT Systems
+- **Riak, CockroachDB, Cassandra**: Full-state CRDTs converge at O(N^2) cost. Production systems use deltas, bloom filters, or frequency scaling proportional to N.
+- **DOLI match**: Full-set gossip below delta threshold. The adaptive gossip helps but thresholds are too high for current problem.
 
-### Test 4: Verify peer selection under load
-- Start 10 nodes, force 5 onto forks at h=1-3
-- Check which peer each stuck node selects for fork_sync
-- **Expected**: Some stuck nodes select other stuck nodes, leading to delta=0 even with weight fix.
-- **Distinguishes**: H6a (confirmed) vs "peer selection always picks canonical peer" (eliminated)
+### Pattern 4: Missing Admission Control (Thundering Herd)
+- **Web servers**: Without connection limits, a sudden spike in clients overwhelms the server. Each client gets worse service, causing retries, which make the spike worse.
+- **Standard fix**: Global connection/request limits. Serve N clients well, reject the rest with backpressure signal.
+- **DOLI match**: 100 sync-only nodes create a thundering herd of sync requests. No global limit. Producer drowns in serving requests instead of producing blocks.
+
+### Pattern 5: Cooperative Scheduling Starvation in Blockchain Nodes
+- **Ethereum geth (2020)**: Block import starved the miner. Fix: separate authoring thread.
+- **Substrate (2021)**: Import queue starved block authorship. Fix: priority-separated tasks.
+- **DOLI match**: Identical pattern. Network event processing starves block production.
 
 ---
 
-## Results: Root Cause Synthesis
+## Synthesis: Two Orthogonal Failure Mechanisms
 
-All 4 hypotheses (H1a, H2a, H3a, H6a) CONFIRMED through code analysis:
+### Mechanism A: State Machine Complexity (whack-a-mole at same scale)
 
-| Bug | Root Cause | Code Location | Confirmed By |
-|-----|-----------|---------------|-------------|
-| Bug 1 | `weight_delta <= 0` rejects equal-weight canonical chain during remedial fork_sync | block_handling.rs:568 | Code reads `<=`, seniority.rs returns 1 for all producers |
-| Bug 2 | Empty headers always blacklist the responding peer, never self-detect fork | sync_engine.rs:698-726 | Code unconditionally blacklists; `best_peer()` filters blacklisted |
-| Bug 3 | `needs_genesis_resync()` hardcodes false for `--no-snap-sync` + counter reset prevents escalation | production_gate.rs:991 + block_lifecycle.rs:498 | Code returns false when `snap_sync_threshold == u64::MAX`; counter reset on rejection |
-| Bug 4 | `best_peer_for_recovery()` picks max height without quality threshold | mod.rs:985-991 | Code has no minimum height filter |
+**Root cause**: SyncManager is a 73-field god object with no internal invariants. 9 boolean flags for mutually exclusive states (should be an enum). 10+ counters serving multiple purposes (should be purpose-specific). Monotonic high-water marks without decay. Side effects in query functions.
 
-### The Interaction Loop
+**Why fixes create new bugs**: Each fix adds conditions to prevent one state-space path. But the fix cannot reason about all 4,096+ state combinations. New bugs are state combinations that were reachable before but became likely after the fix redirected control flow. This is mathematically inevitable when the state space exceeds human reasoning capacity.
 
-```
-Fork block stored -> empty headers from canonical peers (they don't know fork hash)
-    -> [Bug 2] blacklist canonical peers -> only stuck peers left
-    -> [Bug 6a/4] fork_sync picks stuck peer -> downloads 1-3 blocks
-    -> [Bug 1] weight_delta=0, rejected -> counter reset [Bug 3 amplifier]
-    -> escalation blocked [Bug 3] for --no-snap-sync nodes
-    -> back to start
-```
+**Evidence**: 20+ fixes to SyncManager over 6 days. Each correct for its target. Each revealed new failure modes at the same or similar scale. The memory.db lesson (confidence 0.7) correctly identified this pattern.
 
-### Why Commit 7259d47 Did Not Fix This
+**Minimum intervention**: Replace the 9 boolean flags with a RecoveryState enum. Split the overloaded `consecutive_empty_headers` counter into purpose-specific counters. Add invariant checks that assert mutual exclusivity of states. This reduces the reachable state space by 2-3 orders of magnitude and makes illegal states unrepresentable.
 
-7259d47 fixed three bugs in the SyncManager's internal state management (phantom gap, counter oscillation via force-setting, production gate side effects). These are prerequisites -- fork_sync now triggers correctly. But the decision logic AFTER fork_sync triggers was not modified:
-- The weight comparison was not changed
-- The blacklist logic was not changed
-- The `--no-snap-sync` gate was not changed
-- The peer selection was not changed
-- The counter reset after rejection was not changed
+### Mechanism B: Event Loop Architecture (system breaks at new scale)
 
-The 7259d47 fixes ensured fork_sync STARTS correctly. These 4 bugs cause it to FAIL correctly-started fork_sync.
+**Root cause**: Single tokio task with biased select!, no priority separation between production (critical) and gossip/sync-serving (non-critical). The architecture was designed for 10-20 peers and works up to ~30. Beyond that, network event volume exceeds production timer cadence.
 
----
+**Why the current stall happened**: Adding 100 sync-only nodes created 10x more network events. The biased select gives these events absolute priority over production. Production timer never fires. Chain stalls.
 
-## Fix Design Rationale
+**Why the 4 fork sync fixes did not prevent it**: The fixes were in sync recovery logic (Mechanism A). The stall is in event loop architecture (Mechanism B). They are in different subsystems. The stall was always latent -- just untriggered at 13-node scale.
 
-### Fix Priority: Bug 1 -> Bug 3 -> Bug 2 + Bug 4
+**Minimum intervention**: Three changes, in order of impact:
+1. **Decouple production to its own tokio::spawn task** with a dedicated timer and channel. This makes production immune to ANY sustained event stream.
+2. **Add global sync serving admission control**: Max 8 concurrent sync request handlers. Queue or drop excess.
+3. **Scale gossip frequency with peer count**: Minimum interval = max(5, sqrt(peer_count) * 2) seconds.
 
-**Bug 1** is the primary loop mechanism. Fix this and fork_sync succeeds when it downloads canonical blocks from a good peer. Estimated to fix ~50% of stuck nodes immediately.
+### Why BOTH mechanisms must be addressed
 
-**Bug 3** is the permanent deadlock for `--no-snap-sync` nodes. Requires both allowing the recovery signal AND fixing the counter reset. This is the second priority because `--no-snap-sync` affects seed/archiver nodes which are critical infrastructure.
+Fixing only Mechanism B (event loop) will stop the current stall but leave the SyncManager as a 73-field time bomb. Next fix to sync logic will create another Mechanism A bug.
 
-**Bugs 2+4** together prevent the peer degradation that makes Bug 1 fixes insufficient under extreme load. With blacklist fixed (Bug 2), canonical peers stay available. With peer selection filtered (Bug 4), fork_sync always picks a good peer.
+Fixing only Mechanism A (state machine) will prevent same-scale whack-a-mole but leave the system vulnerable to the next scale increase. At 200 or 500 nodes, the event loop will stall again.
 
-All 4 fixes together close the loop completely. No single fix is sufficient under all conditions, but Bug 1 alone handles the common case.
+The minimum intervention that breaks the cycle is:
+1. Production decoupling (Mechanism B -- immediate fix for the stall)
+2. RecoveryState enum replacing 9 booleans (Mechanism A -- reduces state space 512x)
+3. Global sync admission control (Mechanism B -- prevents thundering herd)
+
+These three changes total ~200-300 lines and do not require a full rewrite.
