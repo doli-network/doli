@@ -495,7 +495,12 @@ impl SyncManager {
     }
 
     pub fn reset_sync_for_rollback(&mut self) {
-        self.consecutive_empty_headers = 0;
+        // NOTE: consecutive_empty_headers is NOT reset here. It must keep climbing
+        // toward the escalation threshold (10) that triggers genesis resync via
+        // is_deep_fork_detected(). Resetting after rejected reorgs prevents
+        // escalation (counter oscillates 0→3→0 instead of reaching 10).
+        // The counter is reset explicitly on SUCCESSFUL reorgs by the caller.
+        //
         // needs_genesis_resync intentionally preserved — rollbacks must not
         // suppress the genesis resync signal set by the sync manager.
         self.consecutive_sync_failures = 0;

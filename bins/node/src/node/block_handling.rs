@@ -565,9 +565,9 @@ impl Node {
         };
         let weight_delta = new_chain_weight - old_chain_weight;
 
-        if weight_delta <= 0 {
+        if weight_delta < 0 {
             info!(
-                "Fork sync: new chain not heavier (delta={}, new={}, old={}) — keeping current",
+                "Fork sync: new chain strictly lighter (delta={}, new={}, old={}) — keeping current",
                 weight_delta, new_chain_weight, old_chain_weight
             );
             let mut sync = self.sync_manager.write().await;
@@ -576,6 +576,16 @@ impl Node {
             sync.mark_fork_sync_rejected();
             sync.reset_sync_for_rollback();
             return Ok(());
+        }
+        // Fork sync is REMEDIAL: the node entered this path because it knows it is
+        // on a minority fork. At equal weight (delta=0), accept the canonical chain —
+        // rejecting it traps the node in an infinite loop (fork_sync → reject → retry).
+        // This differs from gossip reorgs where equal weight means "no reason to switch."
+        if weight_delta == 0 {
+            info!(
+                "Fork sync: equal weight (new={}, old={}) — accepting canonical chain (remedial reorg)",
+                new_chain_weight, old_chain_weight
+            );
         }
 
         // Insert canonical blocks into fork_block_cache so execute_reorg can find them
@@ -603,10 +613,12 @@ impl Node {
         // infinite fork sync retry loops.
         match self.execute_reorg(reorg_result, trigger_block).await {
             Ok(()) => {
-                // Reset sync state so normal sync can resume from the new tip
+                // Reset sync state so normal sync can resume from the new tip.
+                // Also reset consecutive_empty_headers — the fork is resolved.
                 {
                     let mut sync = self.sync_manager.write().await;
                     sync.reset_sync_for_rollback();
+                    sync.reset_empty_headers();
                     let (height, hash, slot) = {
                         let state = self.chain_state.read().await;
                         (state.best_height, state.best_hash, state.best_slot)

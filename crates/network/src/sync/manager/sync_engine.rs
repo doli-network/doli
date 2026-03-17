@@ -717,12 +717,26 @@ impl SyncManager {
                     return;
                 }
 
-                self.header_blacklisted_peers.insert(peer, Instant::now());
-                warn!(
-                    "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                     fork evidence (consecutive={}). Blacklisted peer, resetting to Idle.",
-                    peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
-                );
+                if self.consecutive_empty_headers >= 3 {
+                    // 3+ consecutive empties from different peers = WE are on a fork.
+                    // Stop blacklisting — removing canonical peers prevents recovery.
+                    // Clear any existing blacklist and signal fork recovery.
+                    warn!(
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}, consecutive={}) — \
+                         node is on a fork (3+ peers reject our chain). Clearing blacklist.",
+                        peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
+                    );
+                    self.header_blacklisted_peers.clear();
+                    self.stuck_fork_signal = true;
+                } else {
+                    // First 1-2 empties: could be a peer-specific issue. Blacklist this peer.
+                    self.header_blacklisted_peers.insert(peer, Instant::now());
+                    warn!(
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
+                         fork evidence (consecutive={}). Blacklisted peer.",
+                        peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
+                    );
+                }
                 self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;

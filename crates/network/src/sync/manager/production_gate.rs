@@ -990,16 +990,20 @@ impl SyncManager {
     /// prevents snap sync from firing when the operator has forbidden it.
     pub fn needs_genesis_resync(&self) -> bool {
         if self.snap_sync_threshold == u64::MAX {
-            // Snap sync disabled — never allow genesis resync regardless of signals.
-            // Log once when suppressing to make debugging easier.
+            // --no-snap-sync: allow the genesis resync signal through.
+            // The recovery path (reset_state_only) preserves block data — it only
+            // resets UTXO, ProducerSet, and ChainState to genesis, then header-first
+            // sync rebuilds state from preserved blocks. No snap sync is needed.
+            // Previously this hardcoded false, creating a permanent deadlock for
+            // forked --no-snap-sync nodes with no recovery path.
             if self.needs_genesis_resync {
                 tracing::warn!(
-                    "--no-snap-sync: suppressing genesis resync signal (local_h={}, gap={})",
+                    "--no-snap-sync: genesis resync signal active (local_h={}, gap={}). \
+                     Recovery will use header-first full resync (block data preserved).",
                     self.local_height,
                     self.best_peer_height().saturating_sub(self.local_height)
                 );
             }
-            return false;
         }
         self.needs_genesis_resync
     }

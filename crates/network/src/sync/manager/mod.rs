@@ -982,11 +982,24 @@ impl SyncManager {
         }
     }
 
-    /// Pick the best peer for fork recovery (highest height).
+    /// Pick the best peer for fork recovery.
+    /// Prefers peers near the network tip to avoid syncing from other stuck/low nodes.
+    /// Falls back to max-height peer if no near-tip peers are available.
     pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
-        self.peers
+        let min_acceptable = self.network_tip_height.saturating_sub(10);
+        // First: try peers near the network tip
+        let near_tip = self
+            .peers
             .iter()
+            .filter(|(_, status)| status.best_height >= min_acceptable)
             .max_by_key(|(_, status)| status.best_height)
-            .map(|(peer, _)| *peer)
+            .map(|(peer, _)| *peer);
+        // Fallback: best available (preserves current behavior when no good peers exist)
+        near_tip.or_else(|| {
+            self.peers
+                .iter()
+                .max_by_key(|(_, status)| status.best_height)
+                .map(|(peer, _)| *peer)
+        })
     }
 }
