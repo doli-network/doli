@@ -96,11 +96,11 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773786121, // Testnet v38 genesis - Fork sync safety guards 2026-03-17
+                genesis_time: 1773788070, // Testnet v39 genesis - Revert epoch to 360 2026-03-17
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: 72, // 2 epochs (2 × 36 blocks) — fast withdrawal for testing
+                unbonding_period: 720, // 2 epochs (2 × 360 blocks)
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (lower bond for testnet)
@@ -118,9 +118,9 @@ impl NetworkParams {
 
                 // Time structure (shorter epochs for faster testing)
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
-                blocks_per_reward_epoch: 36, // 36 blocks (~6 min) vs mainnet 360 (~1 hr)
+                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
                 coinbase_maturity: consensus::COINBASE_MATURITY,
-                slots_per_reward_epoch: 36, // 36 slots — matches blocks_per_reward_epoch
+                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH,
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system
