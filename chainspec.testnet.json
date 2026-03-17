@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773776483,
-    "message": "DOLI Testnet v37 Genesis - Clean genesis (seed + N1-N5 only) 2026-03-17",
+    "timestamp": 1773786121,
+    "message": "DOLI Testnet v38 Genesis - Fork sync safety guards 2026-03-17",
     "initial_reward": 100000000
   },
   "consensus": {
