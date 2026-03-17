@@ -605,7 +605,7 @@ impl Node {
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_resync_time: None,
-            last_producer_list_change: None,
+            last_producer_list_change: Arc::new(RwLock::new(None)),
             producer_gset,
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),

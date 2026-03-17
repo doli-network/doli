@@ -653,7 +653,7 @@ impl Node {
         // LAYER 9: Reset production timing state
         self.last_produced_slot = None;
         self.first_peer_connected = None;
-        self.last_producer_list_change = None;
+        *self.last_producer_list_change.write().await = None;
 
         // LAYER 9.5: Clear block store INDEXES only (not block data).
         // Stale indexes from fork blocks would pollute get_last_rewarded_epoch()

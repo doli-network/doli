@@ -109,8 +109,10 @@ pub struct Node {
     pub(super) fork_block_cache: Arc<RwLock<HashMap<Hash, Block>>>,
     /// Last time we triggered a forced resync (cooldown to prevent loops)
     pub(super) last_resync_time: Option<Instant>,
-    /// Time when the bootstrap producer list last changed (for stability check)
-    pub(super) last_producer_list_change: Option<Instant>,
+    /// Time when the bootstrap producer list last changed (for stability check).
+    /// Arc<RwLock<>> allows spawned gossip tasks to signal producer discovery
+    /// back to the main loop without blocking the event pipeline.
+    pub(super) last_producer_list_change: Arc<RwLock<Option<Instant>>>,
     /// Producer discovery CRDT with cryptographic announcements
     pub(super) producer_gset: Arc<RwLock<ProducerGSet>>,
     /// Adaptive gossip controller for smart interval management

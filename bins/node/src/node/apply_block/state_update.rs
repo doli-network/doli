@@ -32,7 +32,7 @@ impl Node {
 
             // Trigger stability check so round-robin waits for convergence
             if added_any {
-                self.last_producer_list_change = Some(std::time::Instant::now());
+                *self.last_producer_list_change.write().await = Some(std::time::Instant::now());
             }
         }
     }

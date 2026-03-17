@@ -68,8 +68,15 @@ pub struct NetworkService {
 impl NetworkService {
     /// Create a new network service
     pub async fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        let (event_tx, event_rx) = mpsc::channel(1024);
-        let (command_tx, command_rx) = mpsc::channel(1024);
+        // SCALE-T2-003: Channel buffers scale with max_peers.
+        // At 5000 nodes, the old 1024-slot buffer fills in ~2 seconds causing
+        // backpressure that blocks the swarm loop → cascade disconnections.
+        // Formula: max(4096, max_peers * 16) for events, max(2048, max_peers * 4) for commands.
+        // Capped at 32768 to bound memory (~1MB per channel at max capacity).
+        let event_buf = (config.max_peers * 16).clamp(4096, 32768);
+        let command_buf = (config.max_peers * 4).clamp(2048, 32768);
+        let (event_tx, event_rx) = mpsc::channel(event_buf);
+        let (command_tx, command_rx) = mpsc::channel(command_buf);
 
         let peers = Arc::new(RwLock::new(HashMap::new()));
 

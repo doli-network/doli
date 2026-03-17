@@ -69,7 +69,7 @@ impl Node {
                         &pubkey_hash.to_hex()[..16],
                         known.len()
                     );
-                    self.last_producer_list_change = Some(Instant::now());
+                    *self.last_producer_list_change.write().await = Some(Instant::now());
                 }
                 drop(known);
 

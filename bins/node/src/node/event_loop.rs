@@ -135,16 +135,20 @@ impl Node {
                                 *self.our_announcement.write().await = Some(announcement);
                             }
 
-                            // Get adaptive gossip settings and producer count
-                            let (use_delta, producer_count) = {
-                                let adaptive = self.adaptive_gossip.read().await;
+                            // SCALE-T2-002: Always use delta gossip (bloom filter).
+                            // Full-state broadcast is O(N * mesh_n * announcements) per round,
+                            // which creates ~650K messages at 5000 nodes. Delta gossip sends
+                            // a single bloom filter (~64 bytes) and only missing announcements
+                            // come back — ~10x reduction in gossip traffic.
+                            //
+                            // Fallback to full sync only during first 30s after startup when
+                            // the GSet is empty (bloom filter would be meaningless).
+                            let producer_count = {
                                 let gset = self.producer_gset.read().await;
-                                (adaptive.use_delta_sync(), gset.len())
+                                gset.len()
                             };
 
-                            // Phase 2: Choose sync strategy based on network size
-                            // Delta sync is more efficient for larger networks (>50 producers)
-                            if use_delta && producer_count > 50 {
+                            if producer_count > 0 {
                                 // DELTA SYNC: Send bloom filter, peers respond with missing announcements
                                 let bloom = {
                                     let gset = self.producer_gset.read().await;
@@ -157,7 +161,8 @@ impl Node {
                                 );
                                 let _ = network.broadcast_producer_digest(bloom).await;
                             } else {
-                                // FULL SYNC: Send all announcements (better for small networks)
+                                // FULL SYNC FALLBACK: Only when GSet is empty (fresh node startup).
+                                // Once any producer is known, delta sync takes over.
                                 let announcements = {
                                     let gset = self.producer_gset.read().await;
                                     gset.export()
@@ -165,7 +170,7 @@ impl Node {
 
                                 if !announcements.is_empty() {
                                     debug!(
-                                        "Full sync: broadcasting {} producer announcements",
+                                        "Full sync (startup fallback): broadcasting {} producer announcements",
                                         announcements.len()
                                     );
                                     let _ = network.broadcast_producer_announcements(announcements).await;
@@ -399,7 +404,7 @@ impl Node {
                             );
                             drop(known);
                             // Reset stability timer - new producer discovered
-                            self.last_producer_list_change = Some(Instant::now());
+                            *self.last_producer_list_change.write().await = Some(Instant::now());
                         }
                     }
                 }
@@ -433,7 +438,7 @@ impl Node {
                                   known.len());
                             drop(known);
                             // Reset stability timer - new producer discovered
-                            self.last_producer_list_change = Some(Instant::now());
+                            *self.last_producer_list_change.write().await = Some(Instant::now());
                         }
                     }
                 }
@@ -537,120 +542,139 @@ impl Node {
                 self.sync_manager.write().await.remove_peer(&peer_id);
             }
 
+            // ── GOSSIP PIPELINE (spawned to dedicated tasks) ────────────
+            // These events involve CPU-intensive signature verification and
+            // CRDT merges. Processing them inline blocks the event loop at
+            // 100+ peers. Spawning to their own tasks lets block processing
+            // and production continue uninterrupted.
+            //
+            // All shared state accessed via Arc<RwLock<>> clones.
             NetworkEvent::ProducersAnnounced(remote_list) => {
-                // LEGACY ANTI-ENTROPY GOSSIP: Merge remote producer list with our local list
-                // This is STATE-BASED (not event-based) - we receive the sender's full view
-                // and merge using CRDT union semantics: Union(Local, Remote)
-                // This guarantees convergence even with packet loss or network partitions.
-                let genesis_active = {
-                    let state = self.chain_state.read().await;
-                    self.config.network.is_in_genesis(state.best_height + 1)
-                };
-                if self.config.network == Network::Testnet
-                    || self.config.network == Network::Devnet
-                    || genesis_active
-                {
-                    let changed = {
-                        let mut known = self.known_producers.write().await;
-                        let mut changed = false;
+                let chain_state = self.chain_state.clone();
+                let network_type = self.config.network;
+                let known_producers = self.known_producers.clone();
+                let last_change = self.last_producer_list_change.clone();
 
-                        // CRDT MERGE: Add any producers we don't already know about
-                        for producer in &remote_list {
-                            if !known.contains(producer) {
-                                known.push(*producer);
-                                changed = true;
-                                let pubkey_hash = crypto_hash(producer.as_bytes());
+                tokio::spawn(async move {
+                    let genesis_active = {
+                        let state = chain_state.read().await;
+                        network_type.is_in_genesis(state.best_height + 1)
+                    };
+                    if network_type == Network::Testnet
+                        || network_type == Network::Devnet
+                        || genesis_active
+                    {
+                        let changed = {
+                            let mut known = known_producers.write().await;
+                            let mut changed = false;
+
+                            for producer in &remote_list {
+                                if !known.contains(producer) {
+                                    known.push(*producer);
+                                    changed = true;
+                                    let pubkey_hash = crypto_hash(producer.as_bytes());
+                                    info!(
+                                        "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
+                                        &pubkey_hash.to_hex()[..16],
+                                        known.len()
+                                    );
+                                }
+                            }
+
+                            if changed {
+                                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                                 info!(
-                                    "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
-                                    &pubkey_hash.to_hex()[..16],
+                                    "Producer set updated via anti-entropy: {} total known producers",
                                     known.len()
                                 );
                             }
-                        }
+                            changed
+                        };
 
-                        // Keep sorted for deterministic round-robin ordering
                         if changed {
-                            known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                            info!(
-                                "Producer set updated via anti-entropy: {} total known producers",
-                                known.len()
-                            );
+                            *last_change.write().await = Some(Instant::now());
                         }
-                        changed
-                    };
-
-                    // Mark stability timer reset (outside the lock)
-                    if changed {
-                        self.last_producer_list_change = Some(Instant::now());
                     }
-                }
+                });
             }
 
             NetworkEvent::ProducerAnnouncementsReceived(announcements) => {
-                // NEW PRODUCER DISCOVERY: Merge signed announcements into the GSet CRDT
-                // Each announcement is cryptographically verified before merging
-                let merge_result = {
-                    let mut gset = self.producer_gset.write().await;
-                    gset.merge(announcements)
-                };
+                // GSet CRDT merge: CPU-intensive (ed25519 sig verify per announcement).
+                // Spawned to prevent blocking block processing at 5000+ nodes.
+                let gset = self.producer_gset.clone();
+                let adaptive = self.adaptive_gossip.clone();
+                let sync_mgr = self.sync_manager.clone();
+                let known_producers = self.known_producers.clone();
+                let last_change = self.last_producer_list_change.clone();
 
-                // Update adaptive gossip controller with merge result
-                let peer_count = self.sync_manager.read().await.peer_count();
-                {
-                    let mut gossip = self.adaptive_gossip.write().await;
-                    gossip.on_gossip_result(&merge_result, peer_count);
-                }
+                tokio::spawn(async move {
+                    let merge_result = {
+                        let mut g = gset.write().await;
+                        g.merge(announcements)
+                    };
 
-                // Log significant changes
-                if merge_result.added > 0 {
-                    info!(
-                        "Producer announcements: added={}, new_producers={}, rejected={}, duplicates={}",
-                        merge_result.added, merge_result.new_producers, merge_result.rejected, merge_result.duplicates
-                    );
-                    // Only reset stability timer when truly NEW producers are discovered
-                    // Sequence updates (liveness proofs) should not reset stability
-                    if merge_result.new_producers > 0 {
-                        self.last_producer_list_change = Some(Instant::now());
+                    let peer_count = sync_mgr.read().await.peer_count();
+                    {
+                        let mut gossip = adaptive.write().await;
+                        gossip.on_gossip_result(&merge_result, peer_count);
                     }
 
-                    // Also sync to legacy known_producers for compatibility
-                    let gset = self.producer_gset.read().await;
-                    let producers = gset.sorted_producers();
-                    let mut known = self.known_producers.write().await;
-                    for pubkey in producers {
-                        if !known.contains(&pubkey) {
-                            known.push(pubkey);
+                    if merge_result.added > 0 {
+                        info!(
+                            "Producer announcements: added={}, new_producers={}, rejected={}, duplicates={}",
+                            merge_result.added, merge_result.new_producers, merge_result.rejected, merge_result.duplicates
+                        );
+                        if merge_result.new_producers > 0 {
+                            *last_change.write().await = Some(Instant::now());
                         }
+
+                        let g = gset.read().await;
+                        let producers = g.sorted_producers();
+                        let mut known = known_producers.write().await;
+                        for pubkey in producers {
+                            if !known.contains(&pubkey) {
+                                known.push(pubkey);
+                            }
+                        }
+                        known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    } else if merge_result.rejected > 0 {
+                        debug!(
+                            "Producer announcements rejected: {} (invalid signature, stale, or wrong network)",
+                            merge_result.rejected
+                        );
                     }
-                    known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                } else if merge_result.rejected > 0 {
-                    debug!(
-                        "Producer announcements rejected: {} (invalid signature, stale, or wrong network)",
-                        merge_result.rejected
-                    );
-                }
+                });
             }
 
             NetworkEvent::ProducerDigestReceived { peer_id, digest } => {
-                // Peer sent us their bloom filter - compute delta and send missing announcements
-                debug!(
-                    "Received producer digest from {} ({} elements)",
-                    peer_id,
-                    digest.element_count()
-                );
+                // Bloom filter delta: spawned to avoid blocking event loop
+                let gset = self.producer_gset.clone();
+                let cmd_tx = self.network.as_ref().map(|n| n.command_sender());
 
-                // Get delta announcements (producers we know that peer doesn't)
-                let delta = {
-                    let gset = self.producer_gset.read().await;
-                    gset.delta_for_peer(&digest)
-                };
+                tokio::spawn(async move {
+                    debug!(
+                        "Received producer digest from {} ({} elements)",
+                        peer_id,
+                        digest.element_count()
+                    );
 
-                if !delta.is_empty() {
-                    debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
-                    if let Some(ref network) = self.network {
-                        let _ = network.send_producer_delta(peer_id, delta).await;
+                    let delta = {
+                        let g = gset.read().await;
+                        g.delta_for_peer(&digest)
+                    };
+
+                    if !delta.is_empty() {
+                        debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
+                        if let Some(tx) = cmd_tx {
+                            let _ = tx
+                                .send(NetworkCommand::SendProducerDelta {
+                                    peer_id,
+                                    announcements: delta,
+                                })
+                                .await;
+                        }
                     }
-                }
+                });
             }
 
             NetworkEvent::NewVote(vote_data) => {

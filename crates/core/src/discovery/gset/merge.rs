@@ -24,10 +24,10 @@ impl ProducerGSet {
     ///
     /// # Validation Steps
     ///
-    /// 1. Verify signature
-    /// 2. Check network_id matches
-    /// 3. Check timestamp bounds (not stale, not future)
-    /// 4. Check sequence is newer than known
+    /// 1. Fast-path: check sequence (skip sig verify for known duplicates)
+    /// 2. Verify signature (ed25519 — expensive, ~50μs)
+    /// 3. Check network_id matches
+    /// 4. Check timestamp bounds (not stale, not future)
     ///
     /// # Arguments
     ///
@@ -45,13 +45,29 @@ impl ProducerGSet {
     ) -> Result<MergeOneResult, ProducerSetError> {
         let pubkey_hex = hex::encode(&announcement.pubkey.as_bytes()[..8]);
 
-        // Step 1: Verify signature
+        // SCALE-T2-005: FAST-PATH DUPLICATE CHECK (before signature verification).
+        // At 5000 nodes, 99%+ of gossip messages are duplicates (DIAG-ARCH-003).
+        // Each duplicate previously paid ~50μs for ed25519 sig verify before being
+        // discarded by the sequence check. By checking the sequence FIRST, duplicates
+        // return in ~1μs (HashMap lookup). Safe because:
+        // - Known pubkeys were verified when first added to the sequences map
+        // - Stale sequences can't corrupt state (we don't merge anything)
+        // - New pubkeys and higher sequences still get full verification
+        let is_new_producer = !self.sequences.contains_key(&announcement.pubkey);
+        if let Some(&current_sequence) = self.sequences.get(&announcement.pubkey) {
+            if announcement.sequence <= current_sequence {
+                // Known producer, stale or duplicate sequence — skip sig verify
+                return Ok(MergeOneResult::Duplicate);
+            }
+        }
+
+        // Step 2: Verify signature (only reached for new producers or newer sequences)
         if !announcement.verify() {
             info!("GSet merge_one {}: REJECT invalid_signature", pubkey_hex);
             return Err(ProducerSetError::InvalidSignature);
         }
 
-        // Step 2: Check network ID
+        // Step 3: Check network ID
         if announcement.network_id != self.network_id {
             return Err(ProducerSetError::NetworkMismatch {
                 expected: self.network_id,
@@ -59,7 +75,7 @@ impl ProducerGSet {
             });
         }
 
-        // Step 2b: Check genesis hash (prevents cross-genesis contamination)
+        // Step 3b: Check genesis hash (prevents cross-genesis contamination)
         if announcement.genesis_hash != self.genesis_hash {
             info!(
                 "GSet merge_one {}: REJECT genesis_hash_mismatch expected={} got={}",
@@ -70,7 +86,7 @@ impl ProducerGSet {
             return Err(ProducerSetError::GenesisHashMismatch);
         }
 
-        // Step 3: Check timestamp bounds
+        // Step 4: Check timestamp bounds
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
@@ -91,19 +107,6 @@ impl ProducerGSet {
         // Check for future timestamp (> 5 minutes ahead)
         if announcement.timestamp > now + MAX_FUTURE_TIMESTAMP_SECS {
             return Err(ProducerSetError::FutureTimestamp);
-        }
-
-        // Step 4: Check sequence version vector
-        let is_new_producer = !self.sequences.contains_key(&announcement.pubkey);
-        if let Some(&current_sequence) = self.sequences.get(&announcement.pubkey) {
-            // If we already have a higher or equal sequence, this is a duplicate
-            if announcement.sequence <= current_sequence {
-                info!(
-                    "GSet merge_one {}: DUPLICATE incoming_seq={} stored_seq={} ts={}",
-                    pubkey_hex, announcement.sequence, current_sequence, announcement.timestamp
-                );
-                return Ok(MergeOneResult::Duplicate);
-            }
         }
 
         info!(
