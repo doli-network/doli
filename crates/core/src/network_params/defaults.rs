@@ -154,7 +154,7 @@ impl NetworkParams {
                 default_rpc_port: 28500,
                 default_metrics_port: 29000,
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
-                max_peers: 150, // Devnet: local machine, 100+ nodes stress tests
+                max_peers: 150,          // Devnet: local machine, 100+ nodes stress tests
 
                 // Timing (accelerated for testing)
                 slot_duration: consensus::SLOT_DURATION, // Same as mainnet for realistic testing

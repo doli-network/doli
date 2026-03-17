@@ -857,6 +857,7 @@ fn test_pgd003_circuit_breaker_fires_when_peers_at_different_heights() {
     manager.local_slot = 100;
     manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
+    manager.max_solo_production_secs = 50; // Override default (86400) to test circuit breaker
 
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
