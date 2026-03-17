@@ -196,14 +196,16 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub(super) async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, fork_sync_active, gap) = {
-            let sync = self.sync_manager.read().await;
+        let (empty_headers, local_height, fork_sync_active, gap, stuck_signal) = {
+            let mut sync = self.sync_manager.write().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
+            let stuck = sync.take_stuck_fork_signal();
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
                 sync.is_fork_sync_active(),
                 gap,
+                stuck,
             )
         };
 
@@ -212,8 +214,11 @@ impl Node {
             return Ok(false);
         }
 
-        // Need at least 3 fork evidence signals before activating
-        if empty_headers < 3 || local_height == 0 {
+        // Need at least 3 fork evidence signals OR a stuck_fork_signal before activating.
+        // The stuck_fork_signal is set by cleanup() and block_apply_failed() as a
+        // dedicated signal that doesn't interfere with the counter's natural progression.
+        let has_fork_evidence = empty_headers >= 3 || stuck_signal;
+        if !has_fork_evidence || local_height == 0 {
             return Ok(false);
         }
 

@@ -1033,3 +1033,261 @@ fn test_full_concurrent_scenario_no_corruption() {
     // Verify: no empty headers (no fork detection triggered)
     assert_eq!(manager.consecutive_empty_headers, 0);
 }
+
+// =========================================================================
+// ROOT CAUSE FIX: network_tip_height decay on peer removal (Path E)
+// =========================================================================
+
+/// Root cause: network_tip_height is monotonically inflated. When a peer
+/// with inflated height disconnects, network_tip_height stays high forever.
+/// This creates a phantom gap that triggers unnecessary sync/snap sync.
+#[test]
+fn test_network_tip_decays_on_peer_removal() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+
+    // Peer A at height 200
+    let peer_a = PeerId::random();
+    manager.add_peer(peer_a, 200, Hash::ZERO, 200);
+    assert_eq!(manager.network_tip_height, 200);
+
+    // Peer B at height 150
+    let peer_b = PeerId::random();
+    manager.add_peer(peer_b, 150, Hash::ZERO, 150);
+    assert_eq!(manager.network_tip_height, 200);
+
+    // Remove peer A (the one with highest height)
+    manager.remove_peer(&peer_a);
+
+    // AFTER FIX: network_tip_height should drop to max(remaining peers, local)
+    // = max(150, 100) = 150. NOT stay at 200.
+    assert_eq!(
+        manager.network_tip_height, 150,
+        "network_tip_height must decay to max of remaining peers after peer removal (not stay inflated at 200)"
+    );
+}
+
+/// Path E reproduction: phantom gap causes production gate to block forever.
+#[test]
+fn test_phantom_gap_does_not_block_production() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Add peer that briefly claims height 40000 (e.g., during a fork)
+    let forked_peer = PeerId::random();
+    manager.add_peer(forked_peer, 40000, Hash::ZERO, 40000);
+    assert_eq!(manager.network_tip_height, 40000);
+
+    // Peer disconnects
+    manager.remove_peer(&forked_peer);
+
+    // Add 2 normal peers at height 100 (same as us)
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let our_hash = crypto::hash::hash(b"block_100");
+    manager.local_hash = our_hash;
+    manager.add_peer(peer1, 100, our_hash, 100);
+    manager.add_peer(peer2, 100, our_hash, 100);
+
+    // should_sync() must NOT return true (we're at same height as all peers)
+    assert!(
+        !manager.should_sync(),
+        "should_sync() must NOT trigger from phantom gap after inflated peer disconnected"
+    );
+
+    // Production should be authorized (not blocked by phantom gap)
+    let result = manager.can_produce(101);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "Production must not be blocked by phantom network_tip from disconnected peer"
+    );
+}
+
+/// Verify best_peer_height() reflects only connected peers + local, not historical max.
+#[test]
+fn test_best_peer_height_no_historical_inflation() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 50;
+
+    // Peer at height 1000
+    let peer = PeerId::random();
+    manager.add_peer(peer, 1000, Hash::ZERO, 1000);
+    assert_eq!(manager.best_peer_height(), 1000);
+
+    // Remove peer
+    manager.remove_peer(&peer);
+
+    // best_peer_height should NOT return 1000 anymore
+    assert!(
+        manager.best_peer_height() <= 50,
+        "best_peer_height must not retain historical max after peer removal, got {}",
+        manager.best_peer_height()
+    );
+}
+
+// =========================================================================
+// ROOT CAUSE FIX: consecutive_empty_headers oscillation (Path D)
+// =========================================================================
+
+/// Root cause: cleanup() force-sets consecutive_empty_headers to 3, which
+/// triggers resolve_shallow_fork, which resets to 0, then cleanup sets to 3
+/// again. Counter oscillates 0→3→0→3, never reaching 10 for definitive recovery.
+#[test]
+fn test_no_forced_counter_oscillation() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.state = SyncState::Idle;
+
+    let peer = PeerId::random();
+    manager.add_peer(peer, 105, Hash::ZERO, 105);
+
+    // Simulate stuck-on-fork: no block applied for >120s
+    manager.last_block_applied = Instant::now() - Duration::from_secs(130);
+
+    // Counter starts at 0
+    assert_eq!(manager.consecutive_empty_headers, 0);
+
+    // Run cleanup — stuck-on-fork detection should signal fork, not force counter
+    manager.cleanup();
+
+    // AFTER FIX: cleanup should NOT force-set counter to 3.
+    // Instead, it should use a dedicated signaling mechanism.
+    // The counter should remain at 0 or 1 (if stuck Processing contributed).
+    // The fork signal should go through stuck_fork_signal flag.
+    assert!(
+        manager.stuck_fork_signal,
+        "cleanup() must set stuck_fork_signal instead of forcing consecutive_empty_headers to 3"
+    );
+}
+
+/// Verify blacklist escalation doesn't force counter to 3 for small gaps.
+#[test]
+fn test_blacklist_escalation_uses_signal_not_counter() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.state = SyncState::Idle;
+
+    // Insert peers directly (not via add_peer which triggers start_sync)
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let peer3 = PeerId::random();
+    for peer in [peer1, peer2, peer3] {
+        manager.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: 105,
+                best_hash: Hash::ZERO,
+                best_slot: 105,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+            },
+        );
+    }
+    manager.network_tip_height = 105;
+
+    // Set counter to 20+ for blacklist escalation
+    manager.consecutive_empty_headers = 25;
+
+    // Blacklist all peers so best_peer() returns None.
+    // Use recent timestamps (within 30s) so they survive cleanup's stale blacklist expiry.
+    manager
+        .header_blacklisted_peers
+        .insert(peer1, Instant::now());
+    manager
+        .header_blacklisted_peers
+        .insert(peer2, Instant::now());
+    manager
+        .header_blacklisted_peers
+        .insert(peer3, Instant::now());
+
+    // Stuck for >120s
+    manager.last_block_applied = Instant::now() - Duration::from_secs(130);
+
+    manager.cleanup();
+
+    // For small gap (5 blocks), cleanup should use stuck_fork_signal, not force counter to 3
+    assert!(
+        manager.stuck_fork_signal,
+        "Blacklist escalation for small gap must use stuck_fork_signal"
+    );
+}
+
+// =========================================================================
+// ROOT CAUSE FIX: can_produce() side effects (Layer 9 + 10.5)
+// =========================================================================
+
+/// Root cause: can_produce() mutates fork_mismatch_detected (Layer 9) and
+/// last_block_received_via_gossip (Layer 10.5). A query function with side
+/// effects creates race-like behavior in a single-threaded system.
+#[test]
+fn test_can_produce_no_side_effects() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Setup minority fork: 1 agree, 2 disagree
+    let local_hash = crypto::hash::hash(b"our_fork_block");
+    manager.local_hash = local_hash;
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let peer3 = PeerId::random();
+    let canonical_hash = crypto::hash::hash(b"canonical_block");
+    manager.add_peer(peer1, 100, canonical_hash, 100);
+    manager.add_peer(peer2, 100, canonical_hash, 100);
+    manager.add_peer(peer3, 100, local_hash, 100); // Agrees with us
+
+    // can_produce should detect the fork but NOT set fork_mismatch_detected
+    let fork_mismatch_before = manager.fork_mismatch_detected;
+    let _result = manager.can_produce(101);
+
+    assert_eq!(
+        manager.fork_mismatch_detected, fork_mismatch_before,
+        "can_produce() must NOT mutate fork_mismatch_detected (side-effect-free query)"
+    );
+}
+
+/// Verify update_production_state() is the designated mutation point.
+#[test]
+fn test_update_production_state_sets_fork_flag() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Setup minority fork
+    let local_hash = crypto::hash::hash(b"our_fork_block");
+    manager.local_hash = local_hash;
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let canonical_hash = crypto::hash::hash(b"canonical_block");
+    manager.add_peer(peer1, 100, canonical_hash, 100);
+    manager.add_peer(peer2, 100, canonical_hash, 100);
+
+    assert!(!manager.fork_mismatch_detected);
+
+    // update_production_state IS the designated mutation point
+    manager.update_production_state();
+
+    assert!(
+        manager.fork_mismatch_detected,
+        "update_production_state() must set fork_mismatch_detected when in minority"
+    );
+}

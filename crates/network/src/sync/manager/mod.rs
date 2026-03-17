@@ -511,6 +511,15 @@ pub struct SyncManager {
     /// constant for >120s despite blocks being applied, the node has a corrupted
     /// height counter (from a bad reorg) and needs snap sync to correct it.
     stable_gap_since: Option<(u64, Instant)>,
+
+    /// Dedicated fork signal from cleanup/stuck detection.
+    ///
+    /// Replaces the pattern of force-setting `consecutive_empty_headers = 3` in
+    /// cleanup.rs and block_lifecycle.rs. The old pattern caused counter oscillation:
+    /// cleanup sets to 3 → rollback resets to 0 → cleanup sets to 3 → repeat.
+    /// This dedicated flag breaks the oscillation by decoupling fork signaling
+    /// from the counter that tracks actual empty header responses.
+    pub(crate) stuck_fork_signal: bool,
 }
 
 impl SyncManager {
@@ -602,6 +611,7 @@ impl SyncManager {
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
+            stuck_fork_signal: false,
         }
     }
 
@@ -763,6 +773,20 @@ impl SyncManager {
     /// Remove a peer
     pub fn remove_peer(&mut self, peer: &PeerId) {
         self.peers.remove(peer);
+
+        // FIX: Recompute network_tip_height from remaining peers + local height.
+        // Without this, a peer that briefly reported an inflated height (e.g.,
+        // during a fork) permanently inflates network_tip_height, creating a
+        // phantom gap that triggers unnecessary sync/snap sync (Path E cascade).
+        let peer_max_height = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        let peer_max_slot = self.peers.values().map(|p| p.best_slot).max().unwrap_or(0);
+        self.network_tip_height = peer_max_height.max(self.local_height);
+        self.network_tip_slot = peer_max_slot.max(self.local_slot);
 
         // Track when we lost all peers (for peer loss timeout)
         if self.peers.is_empty() && self.peers_lost_at.is_none() {

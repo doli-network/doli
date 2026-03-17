@@ -45,6 +45,7 @@ impl SyncManager {
 
         // Applying a block means the chain is advancing — reset fork counters.
         self.consecutive_empty_headers = 0;
+        self.stuck_fork_signal = false;
 
         // PGD-001: Track stable blocks after resync completion.
         // After 5 consecutive block applications with no active resync,
@@ -180,9 +181,10 @@ impl SyncManager {
                     gap
                 );
                 self.consecutive_apply_failures = 0;
-                // Signal fork_sync activation. The node's resolve_shallow_fork()
-                // checks consecutive_empty_headers >= 3, so set it to trigger.
-                self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
+                // Signal fork recovery via dedicated flag (not counter force-set).
+                // The old pattern of forcing consecutive_empty_headers to 3 caused
+                // oscillation with cleanup resets.
+                self.stuck_fork_signal = true;
                 self.state = SyncState::Idle;
             } else {
                 warn!(
@@ -236,6 +238,7 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
+        self.stuck_fork_signal = false;
         self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
         self.consecutive_apply_failures = 0;

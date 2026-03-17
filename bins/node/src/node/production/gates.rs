@@ -22,6 +22,10 @@ impl Node {
     pub(super) async fn handle_production_authorization(&mut self, current_slot: u32) -> bool {
         let auth_result = {
             let mut sync_state = self.sync_manager.write().await;
+            // Update fork detection and gossip state BEFORE querying production auth.
+            // This was previously done inside can_produce() as side effects, which
+            // violated the principle of least surprise (a "query" that mutates state).
+            sync_state.update_production_state();
             let result = sync_state.can_produce(current_slot);
             info!(
                 "[NODE_PRODUCE] slot={} can_produce result: {:?}",

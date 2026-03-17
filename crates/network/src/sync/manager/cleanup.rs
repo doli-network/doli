@@ -332,11 +332,11 @@ impl SyncManager {
                     } else if enough_peers && gap <= 12 {
                         warn!(
                             "All peers blacklisted for >120s (gap={}) — clearing blacklist \
-                             and redirecting to rollback (small gap, preserving block history)",
+                             and signaling fork recovery (small gap, preserving block history)",
                             gap
                         );
                         self.header_blacklisted_peers.clear();
-                        self.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
+                        self.stuck_fork_signal = true; // Signal fork recovery without forcing counter
                     } else {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers \
@@ -443,13 +443,13 @@ impl SyncManager {
                     }
                 } else if self.consecutive_empty_headers < 3 && self.local_height > 0 {
                     // Small gap with non-zero height: likely on a fork.
-                    // Escalate to fork_sync via resolve_shallow_fork().
+                    // Signal fork recovery via dedicated flag (not counter force-set).
                     warn!(
                         "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
-                         (local_h={}, network_tip={}). Escalating to fork_sync.",
+                         (local_h={}, network_tip={}). Signaling fork recovery.",
                         stuck_secs, gap, self.local_height, self.network_tip_height
                     );
-                    self.consecutive_empty_headers = 3;
+                    self.stuck_fork_signal = true;
                 }
             }
         }

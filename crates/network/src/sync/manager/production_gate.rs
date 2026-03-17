@@ -19,6 +19,71 @@ impl SyncManager {
     // PRODUCTION GATE - Single source of truth for block production authorization
     // =========================================================================
 
+    /// Update fork detection and gossip state. Call BEFORE can_produce().
+    ///
+    /// Side effects extracted from can_produce() to make it a pure query.
+    /// This fixes a class of race-like bugs where a "read" operation (can_produce)
+    /// mutated state, causing the system to behave differently depending on how
+    /// often production was checked.
+    pub fn update_production_state(&mut self) {
+        // Layer 9 side effect: detect minority fork and set persistent flag.
+        // Previously embedded in can_produce() where it was called every slot.
+        let mut agree = 1u32;
+        let mut disagree = 0u32;
+        for status in self.peers.values() {
+            if status.best_height == self.local_height {
+                if status.best_hash == self.local_hash {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                }
+            } else if status.best_height > self.local_height
+                && status.best_height <= self.local_height + 2
+            {
+                if status.best_hash == Hash::ZERO {
+                    continue;
+                }
+                disagree += 1;
+            }
+        }
+        if disagree > 0 && agree < disagree && !self.fork_mismatch_detected {
+            warn!(
+                "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
+                self.local_height, agree, disagree
+            );
+            self.fork_mismatch_detected = true;
+        }
+
+        // Layer 10.5 side effect: reset gossip timer on network stall bypass.
+        // Previously embedded in can_produce() at the circuit breaker.
+        let best_peer_height = self.best_peer_height();
+        if self.local_height > 1 && self.local_height >= best_peer_height {
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let silence_secs = last_gossip.elapsed().as_secs();
+
+            if silence_secs > self.max_solo_production_secs {
+                let all_peers_at_our_height = !self.peers.is_empty()
+                    && self
+                        .peers
+                        .values()
+                        .all(|p| p.best_height == self.local_height);
+
+                if all_peers_at_our_height {
+                    info!(
+                        "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
+                         network stall detected, resetting gossip timer (silence={}s)",
+                        self.peers.len(),
+                        self.local_height,
+                        silence_secs
+                    );
+                    self.last_block_received_via_gossip = Some(Instant::now());
+                }
+            }
+        }
+    }
+
     /// Check if block production is authorized - THE SINGLE SOURCE OF TRUTH
     ///
     /// This method implements defense-in-depth for production safety:
@@ -29,6 +94,9 @@ impl SyncManager {
     /// 5. Peer synchronization check (within N slots/heights)
     ///
     /// ALL checks must pass for production to be authorized.
+    ///
+    /// NOTE: This method is now side-effect-free. Call update_production_state()
+    /// before this to handle fork detection and gossip timer mutations.
     pub fn can_produce(&mut self, current_slot: u32) -> ProductionAuthorization {
         // === CHECKPOINT: Entry point with all key values ===
         let best_peer_h = self.best_peer_height();
@@ -436,14 +504,15 @@ impl SyncManager {
                 }
             }
         }
-        // Only block if we're in the minority — majority keeps producing
+        // Only block if we're in the minority — majority keeps producing.
+        // NOTE: fork_mismatch_detected is now set by update_production_state(),
+        // not here. can_produce() is side-effect-free.
         if disagree > 0 && agree < disagree {
             if let Some(peer_id) = first_mismatch_peer {
                 warn!(
-                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
+                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree)",
                     self.local_height, agree, disagree
                 );
-                self.fork_mismatch_detected = true;
                 return ProductionAuthorization::BlockedChainMismatch {
                     peer_id,
                     local_hash: self.local_hash,
@@ -515,10 +584,8 @@ impl SyncManager {
 
                 if all_peers_at_our_height {
                     // Network stall: everyone stuck at the same height, nobody producing.
-                    // Allow production and reset gossip timer. If the block propagates,
-                    // peers advance, gossip resumes, and the circuit breaker stays clear.
-                    // If it doesn't propagate, silence grows back to 50s and we retry —
-                    // limiting orphan growth to 1 block per 50s.
+                    // Allow production. The gossip timer was already reset by
+                    // update_production_state() (called before can_produce).
                     info!(
                         "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
                          network stall detected, allowing production (silence={}s)",
@@ -526,7 +593,6 @@ impl SyncManager {
                         self.local_height,
                         silence_secs
                     );
-                    self.last_block_received_via_gossip = Some(Instant::now());
                     // Fall through to Authorized
                 } else {
                     // Not all peers at our height — genuine isolation or mixed state.
@@ -898,6 +964,14 @@ impl SyncManager {
     /// to sync via header-first / gossip before fork detection is meaningful.
     pub fn post_recovery_grace_active(&self) -> bool {
         self.post_recovery_grace
+    }
+
+    /// Check if a stuck-fork signal was raised by cleanup or apply-failure detection.
+    /// Replaces the old pattern of force-setting consecutive_empty_headers to 3.
+    pub fn take_stuck_fork_signal(&mut self) -> bool {
+        let signal = self.stuck_fork_signal;
+        self.stuck_fork_signal = false;
+        signal
     }
 
     /// Activate post-recovery grace period. Called after snap sync / forced recovery.
