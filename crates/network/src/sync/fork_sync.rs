@@ -419,7 +419,12 @@ impl ForkSync {
             && self.pending_height.is_none()
         {
             if !self.low_verified && self.low > 0 {
-                // Floor hit without any match — fork deeper than search range
+                if !self.floor_probed {
+                    // Floor probe hasn't been attempted yet — don't declare failure.
+                    // next_request() will send the probe on the next tick.
+                    return None;
+                }
+                // Floor was probed and still no match — genuine deep fork
                 return None;
             }
             Some(self.low)
@@ -431,6 +436,11 @@ impl ForkSync {
     /// Returns true when the binary search completed but hit the floor without
     /// finding a common ancestor AND the search was NOT limited by block store range.
     /// This indicates a genuine deep fork requiring full resync.
+    ///
+    /// IMPORTANT: Only returns true AFTER the floor probe has been attempted.
+    /// Without this check, the node clears fork sync before the floor probe
+    /// has a chance to verify the ancestor — causing an infinite loop where
+    /// fork sync finds an ancestor, gets killed, restarts, finds it again...
     pub fn search_bottomed_out(&self) -> bool {
         matches!(self.phase, ForkSyncPhase::Searching)
             && self.high <= self.low + 1
@@ -438,6 +448,7 @@ impl ForkSync {
             && !self.low_verified
             && !self.store_limited
             && self.low > 0
+            && self.floor_probed // Only after floor verification was attempted
     }
 
     /// Returns true when the binary search stopped because the block store
