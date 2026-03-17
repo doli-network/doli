@@ -111,6 +111,43 @@ impl Node {
             }
         }
 
+        // Check for ready checkpoint state (downloaded from peer, waiting to be applied)
+        {
+            let checkpoint_data = self.sync_manager.write().await.take_checkpoint_state();
+            if let Some((block_hash, block_height, cs_bytes, utxo_bytes, ps_bytes, state_root)) =
+                checkpoint_data
+            {
+                info!(
+                    "[CHECKPOINT] Consuming checkpoint state at height={}",
+                    block_height
+                );
+                match self
+                    .apply_checkpoint_state(
+                        block_hash,
+                        block_height,
+                        cs_bytes,
+                        utxo_bytes,
+                        ps_bytes,
+                        state_root,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        info!(
+                            "[CHECKPOINT] Successfully applied checkpoint state at height={}",
+                            block_height
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "[CHECKPOINT] Failed to apply checkpoint state: {} — falling back to header-first sync",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
         // Clean up sync manager and prune stale finality entries
         {
             let current_slot = {

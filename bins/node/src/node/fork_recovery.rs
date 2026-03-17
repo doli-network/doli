@@ -363,6 +363,105 @@ impl Node {
         self.last_resync_time = Some(Instant::now());
     }
 
+    /// Apply checkpoint state downloaded from a peer.
+    ///
+    /// This replaces local state (chain_state, utxo_set, producer_set) with the
+    /// received checkpoint data after verifying the state root matches the hardcoded
+    /// CHECKPOINT_STATE_ROOT constant compiled into the binary.
+    ///
+    /// Only called for new nodes (height=0) during initial sync.
+    pub(super) async fn apply_checkpoint_state(
+        &mut self,
+        block_hash: Hash,
+        block_height: u64,
+        chain_state_bytes: Vec<u8>,
+        utxo_set_bytes: Vec<u8>,
+        producer_set_bytes: Vec<u8>,
+        received_state_root: Hash,
+    ) -> Result<()> {
+        // 1. Recompute state root from received bytes
+        let computed_root = storage::compute_state_root_from_bytes(
+            &chain_state_bytes,
+            &utxo_set_bytes,
+            &producer_set_bytes,
+        );
+        if computed_root == Hash::ZERO {
+            anyhow::bail!("Checkpoint state deserialization failed (computed root = ZERO)");
+        }
+        if computed_root != received_state_root {
+            anyhow::bail!(
+                "Checkpoint state root mismatch: computed={} received={}",
+                &computed_root.to_string()[..16],
+                &received_state_root.to_string()[..16]
+            );
+        }
+
+        // 2. Verify against hardcoded checkpoint state root
+        let expected_root_str = doli_core::consensus::CHECKPOINT_STATE_ROOT;
+        let expected_root = Hash::from_hex(expected_root_str).unwrap_or(Hash::ZERO);
+        if expected_root == Hash::ZERO {
+            // Checkpoint state root not configured (all zeros) — skip verification
+            // This is normal for the initial release before any checkpoint is set
+            info!(
+                "[CHECKPOINT] State root verification skipped (CHECKPOINT_STATE_ROOT not configured)"
+            );
+        } else if computed_root != expected_root {
+            anyhow::bail!(
+                "Checkpoint state root doesn't match hardcoded constant: computed={} expected={}",
+                &computed_root.to_string()[..16],
+                &expected_root.to_string()[..16]
+            );
+        } else {
+            info!(
+                "[CHECKPOINT] State root verified: {}",
+                &computed_root.to_string()[..16]
+            );
+        }
+
+        // 3. Deserialize components
+        let new_cs: ChainState = bincode::deserialize(&chain_state_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint ChainState deserialize failed: {}", e))?;
+        let new_ps: storage::ProducerSet = bincode::deserialize(&producer_set_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint ProducerSet deserialize failed: {}", e))?;
+        // UtxoSet uses canonical format
+        let new_utxo = storage::UtxoSet::deserialize_canonical(&utxo_set_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint UtxoSet deserialize failed: {}", e))?;
+
+        info!(
+            "[CHECKPOINT] Applying state: height={}, hash={}, utxos={}",
+            block_height,
+            &block_hash.to_string()[..16],
+            new_utxo.len()
+        );
+
+        // 4. Replace local state
+        {
+            let mut cs = self.chain_state.write().await;
+            *cs = new_cs;
+        }
+        {
+            let mut utxo = self.utxo_set.write().await;
+            *utxo = new_utxo;
+        }
+        {
+            let mut ps = self.producer_set.write().await;
+            *ps = new_ps;
+        }
+
+        // 5. Update sync manager
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(block_height, block_hash, 0);
+        }
+
+        info!(
+            "[CHECKPOINT] State applied successfully at height={} — resuming normal sync",
+            block_height
+        );
+
+        Ok(())
+    }
+
     /// Nuclear reset: wipe ALL state INCLUDING block data.
     ///
     /// This is a complete state reset + full block store clear.

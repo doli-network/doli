@@ -429,15 +429,32 @@ pub(crate) async fn run_node(
     )
     .await?;
 
-    // Set checkpoint if provided via CLI
+    // Set checkpoint: CLI override takes priority, otherwise use compiled-in constants
     if let (Some(cp_height), Some(cp_hash_str)) = (checkpoint_height, checkpoint_hash.as_deref()) {
         let cp_hash = crypto::Hash::from_hex(cp_hash_str)
             .ok_or_else(|| anyhow!("Invalid --checkpoint-hash: {}", cp_hash_str))?;
         node.set_checkpoint(cp_height, cp_hash).await;
         info!(
-            "Checkpoint sync configured: height={}, hash={}",
+            "Checkpoint sync configured (CLI): height={}, hash={}",
             cp_height, cp_hash_str
         );
+    } else {
+        // Use compiled-in checkpoint constants (updated with each release)
+        use doli_core::consensus::{CHECKPOINT_HASH, CHECKPOINT_HEIGHT, CHECKPOINT_STATE_ROOT};
+        #[allow(clippy::absurd_extreme_comparisons)]
+        if CHECKPOINT_HEIGHT > 0 {
+            let cp_hash = crypto::Hash::from_hex(CHECKPOINT_HASH).unwrap_or(crypto::Hash::ZERO);
+            let cp_state_root =
+                crypto::Hash::from_hex(CHECKPOINT_STATE_ROOT).unwrap_or(crypto::Hash::ZERO);
+            node.set_checkpoint_with_state_root(CHECKPOINT_HEIGHT, cp_hash, cp_state_root)
+                .await;
+            info!(
+                "Checkpoint sync configured (built-in): height={}, hash={}..., state_root={}...",
+                CHECKPOINT_HEIGHT,
+                &CHECKPOINT_HASH[..16],
+                &CHECKPOINT_STATE_ROOT[..16]
+            );
+        }
     }
 
     // Connect vote forwarding: gossip votes → UpdateService

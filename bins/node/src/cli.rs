@@ -262,6 +262,12 @@ pub(crate) enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Print checkpoint constants compiled into this binary.
+    ///
+    /// Used in the release workflow to verify checkpoint values
+    /// before publishing a new binary.
+    CheckpointInfo,
 }
 
 #[derive(Subcommand)]

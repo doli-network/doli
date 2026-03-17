@@ -550,6 +550,72 @@ impl Node {
                 _ => SyncResponse::Block(Box::new(None)),
             },
 
+            SyncRequest::GetStateAtCheckpoint { height } => {
+                let best_height = self.chain_state.read().await.best_height;
+                // Only serve if we have this height
+                if best_height < height {
+                    info!(
+                        "[CHECKPOINT] Cannot serve state at height={} — we're at height={}",
+                        height, best_height
+                    );
+                    if let Some(ref network) = self.network {
+                        let _ = network
+                            .send_sync_response(
+                                channel,
+                                SyncResponse::Error(format!(
+                                    "Behind checkpoint: local_h={} < requested_h={}",
+                                    best_height, height
+                                )),
+                            )
+                            .await;
+                    }
+                    return Ok(());
+                }
+                // Only serve if we have at least 10 blocks (not near genesis)
+                if best_height < 10 {
+                    warn!(
+                        "[CHECKPOINT] Refusing to serve state at height={} — too close to genesis (h={})",
+                        height, best_height
+                    );
+                    if let Some(ref network) = self.network {
+                        let _ = network
+                            .send_sync_response(
+                                channel,
+                                SyncResponse::Error("Too close to genesis".to_string()),
+                            )
+                            .await;
+                    }
+                    return Ok(());
+                }
+
+                let cs = self.chain_state.read().await;
+                let utxo = self.utxo_set.read().await;
+                let ps = self.producer_set.read().await;
+
+                match storage::StateSnapshot::create(&cs, &utxo, &ps) {
+                    Ok(snap) => {
+                        info!(
+                            "[CHECKPOINT] Serving state at height={}, size={}KB, root={}",
+                            snap.block_height,
+                            snap.total_bytes() / 1024,
+                            &snap.state_root.to_string()[..16]
+                        );
+                        SyncResponse::StateAtCheckpoint {
+                            block_hash: snap.block_hash,
+                            block_height: snap.block_height,
+                            chain_state: snap.chain_state_bytes,
+                            utxo_set: snap.utxo_set_bytes,
+                            producer_set: snap.producer_set_bytes,
+                            state_root: snap.state_root,
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[CHECKPOINT] State snapshot error: {}", e);
+                        SyncResponse::Error(format!("Checkpoint state error: {}", e))
+                    }
+                }
+            }
+
             SyncRequest::GetBlocksByHeightRange {
                 start_height,
                 count,

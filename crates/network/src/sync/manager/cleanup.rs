@@ -69,6 +69,20 @@ impl SyncManager {
             self.remove_peer(&peer);
         }
 
+        // Checkpoint download timeout: if downloading checkpoint state for >30s, try another peer
+        if let SyncState::CheckpointDownloading { peer, started_at } = &self.state {
+            if started_at.elapsed() > Duration::from_secs(30) {
+                warn!(
+                    "[CHECKPOINT] Download from peer {} timed out after 30s — resetting to Idle",
+                    peer
+                );
+                self.state = SyncState::Idle;
+                if self.should_sync() {
+                    self.start_sync();
+                }
+            }
+        }
+
         // Stall recovery: if "Synchronized" but significantly behind in slots,
         // we're in a deadlock (height matches but slot lags). Reset to Idle
         // to allow re-evaluation and potential resync.

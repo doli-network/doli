@@ -14,8 +14,8 @@ use doli_core::{Block, BlockHeader};
 /// Protocol identifier for sync
 pub const SYNC_PROTOCOL: &str = "/doli/sync/1.0.0";
 
-/// Maximum message size for sync messages (4MB for block data)
-const MAX_SYNC_SIZE: usize = 4 * 1024 * 1024;
+/// Maximum message size for sync messages (64MB for state transfers)
+const MAX_SYNC_SIZE: usize = 64 * 1024 * 1024;
 
 /// Sync request types
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +53,14 @@ pub enum SyncRequest {
         /// Number of blocks to return (max 500)
         count: u32,
     },
+
+    /// Request state at a checkpoint height (for trusted initial sync).
+    /// Only new nodes (height=0) send this. The response is verified against
+    /// the hardcoded CHECKPOINT_STATE_ROOT in the binary.
+    GetStateAtCheckpoint {
+        /// Checkpoint height
+        height: u64,
+    },
 }
 
 /// Sync response types
@@ -66,6 +74,23 @@ pub enum SyncResponse {
 
     /// Single block response
     Block(Box<Option<Block>>),
+
+    /// State at checkpoint (for trusted initial sync).
+    /// Contains the full serialized state at a checkpoint height.
+    StateAtCheckpoint {
+        /// Block hash at the checkpoint
+        block_hash: Hash,
+        /// Block height
+        block_height: u64,
+        /// Serialized ChainState (bincode)
+        chain_state: Vec<u8>,
+        /// Serialized UtxoSet (canonical format)
+        utxo_set: Vec<u8>,
+        /// Serialized ProducerSet (bincode)
+        producer_set: Vec<u8>,
+        /// State root for verification
+        state_root: Hash,
+    },
 
     /// Error response
     Error(String),
@@ -97,6 +122,10 @@ impl SyncRequest {
             count,
         }
     }
+
+    pub fn get_state_at_checkpoint(height: u64) -> Self {
+        Self::GetStateAtCheckpoint { height }
+    }
 }
 
 impl SyncResponse {
@@ -119,6 +148,7 @@ impl SyncResponse {
             }
             SyncResponse::Block(b) if b.is_some() => "Block(Some)",
             SyncResponse::Block(_) => "Block(None)",
+            SyncResponse::StateAtCheckpoint { .. } => "StateAtCheckpoint",
             SyncResponse::Error(_) => "Error",
         }
     }

@@ -242,6 +242,13 @@ async fn main() -> Result<()> {
         Some(Commands::Upgrade { version, yes }) => {
             commands::handle_upgrade_command(version, yes).await?;
         }
+        Some(Commands::CheckpointInfo) => {
+            use doli_core::consensus::{CHECKPOINT_HASH, CHECKPOINT_HEIGHT, CHECKPOINT_STATE_ROOT};
+            println!("DOLI Checkpoint Info (compiled into binary)");
+            println!("  Height:     {}", CHECKPOINT_HEIGHT);
+            println!("  Hash:       {}", CHECKPOINT_HASH);
+            println!("  State Root: {}", CHECKPOINT_STATE_ROOT);
+        }
         None => {
             // Default: run the node with auto-updates enabled
             run::run_node(

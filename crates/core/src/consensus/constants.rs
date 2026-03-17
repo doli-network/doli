@@ -31,6 +31,12 @@ pub const CHECKPOINT_HEIGHT: u64 = 0;
 pub const CHECKPOINT_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
+/// State root at the checkpoint height.
+/// Used to verify state downloads — if this doesn't match, reject the state.
+/// Updated alongside CHECKPOINT_HEIGHT/CHECKPOINT_HASH in each release.
+pub const CHECKPOINT_STATE_ROOT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Deterministic reward pool address.
 /// All per-block coinbase goes here; distributed to qualified producers at epoch end.
 /// No private key exists for this address — only the consensus engine can move funds.

@@ -213,6 +213,14 @@ impl Node {
         self.sync_manager.write().await.set_checkpoint(height, hash);
     }
 
+    /// Set checkpoint with state root for checkpoint-anchored state sync.
+    pub async fn set_checkpoint_with_state_root(&self, height: u64, hash: Hash, state_root: Hash) {
+        self.sync_manager
+            .write()
+            .await
+            .set_checkpoint_with_state_root(height, hash, state_root);
+    }
+
     pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {
         self.maintainer_state = Some(state);
     }

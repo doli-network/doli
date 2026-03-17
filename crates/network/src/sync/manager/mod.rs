@@ -96,6 +96,28 @@ pub enum SyncState {
         /// Current height being processed
         height: u64,
     },
+    /// Checkpoint sync: downloading state from a peer at the checkpoint height
+    CheckpointDownloading {
+        /// Peer serving the checkpoint state
+        peer: PeerId,
+        /// When the download started
+        started_at: Instant,
+    },
+    /// Checkpoint sync: state ready for node to consume
+    CheckpointReady {
+        /// Block hash at the checkpoint
+        block_hash: Hash,
+        /// Block height
+        block_height: u64,
+        /// Serialized ChainState
+        chain_state: Vec<u8>,
+        /// Serialized UtxoSet
+        utxo_set: Vec<u8>,
+        /// Serialized ProducerSet
+        producer_set: Vec<u8>,
+        /// State root
+        state_root: Hash,
+    },
     /// Fully synchronized
     Synchronized,
 }
@@ -176,7 +198,10 @@ pub enum ProductionAuthorization {
 impl SyncState {
     /// Check if we're actively syncing
     pub fn is_syncing(&self) -> bool {
-        !matches!(self, SyncState::Idle | SyncState::Synchronized)
+        !matches!(
+            self,
+            SyncState::Idle | SyncState::Synchronized | SyncState::CheckpointReady { .. }
+        )
     }
 }
 
@@ -392,6 +417,8 @@ pub struct SyncManager {
     checkpoint_height: u64,
     /// Checkpoint block hash (must match checkpoint_height)
     checkpoint_hash: Hash,
+    /// Checkpoint state root (for verifying downloaded state)
+    checkpoint_state_root: Hash,
 
     /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
     /// suppress further fork syncs for this duration. Prevents infinite reorg loops
@@ -493,6 +520,7 @@ impl SyncManager {
             fork_mismatch_detected: false,
             checkpoint_height: 0,
             checkpoint_hash: Hash::ZERO,
+            checkpoint_state_root: Hash::ZERO,
             post_rollback: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
@@ -803,6 +831,8 @@ impl SyncManager {
             SyncState::DownloadingHeaders { .. } => "DownloadingHeaders",
             SyncState::DownloadingBodies { .. } => "DownloadingBodies",
             SyncState::Processing { .. } => "Processing",
+            SyncState::CheckpointDownloading { .. } => "CheckpointDownloading",
+            SyncState::CheckpointReady { .. } => "CheckpointReady",
             SyncState::Synchronized => "Synchronized",
         }
     }
@@ -810,7 +840,8 @@ impl SyncManager {
     /// Get sync progress as a percentage
     pub fn progress(&self) -> Option<f64> {
         match &self.state {
-            SyncState::Idle | SyncState::Synchronized => None,
+            SyncState::Idle | SyncState::Synchronized | SyncState::CheckpointReady { .. } => None,
+            SyncState::CheckpointDownloading { .. } => Some(50.0),
             SyncState::DownloadingHeaders { target_slot, .. } => {
                 if *target_slot > 0 {
                     Some(self.local_slot as f64 / *target_slot as f64 * 100.0)
@@ -843,6 +874,56 @@ impl SyncManager {
     pub fn set_checkpoint(&mut self, height: u64, hash: Hash) {
         self.checkpoint_height = height;
         self.checkpoint_hash = hash;
+    }
+
+    /// Set checkpoint with state root for checkpoint-anchored state sync.
+    pub fn set_checkpoint_with_state_root(&mut self, height: u64, hash: Hash, state_root: Hash) {
+        self.checkpoint_height = height;
+        self.checkpoint_hash = hash;
+        self.checkpoint_state_root = state_root;
+    }
+
+    /// Take checkpoint state data if ready. Returns the data and transitions to Synchronized.
+    /// Returns None if not in CheckpointReady state.
+    #[allow(clippy::type_complexity)]
+    pub fn take_checkpoint_state(
+        &mut self,
+    ) -> Option<(Hash, u64, Vec<u8>, Vec<u8>, Vec<u8>, Hash)> {
+        if matches!(self.state, SyncState::CheckpointReady { .. }) {
+            let old_state = std::mem::replace(&mut self.state, SyncState::Synchronized);
+            if let SyncState::CheckpointReady {
+                block_hash,
+                block_height,
+                chain_state,
+                utxo_set,
+                producer_set,
+                state_root,
+            } = old_state
+            {
+                info!(
+                    "Checkpoint state taken: height={}, hash={}",
+                    block_height,
+                    &block_hash.to_string()[..16]
+                );
+                Some((
+                    block_hash,
+                    block_height,
+                    chain_state,
+                    utxo_set,
+                    producer_set,
+                    state_root,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get checkpoint state root
+    pub fn checkpoint_state_root(&self) -> Hash {
+        self.checkpoint_state_root
     }
 
     /// Pick the best peer for fork recovery (highest height).

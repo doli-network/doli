@@ -5,6 +5,7 @@ use std::time::Instant;
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
+use crypto::Hash;
 use doli_core::{Block, BlockHeader};
 
 use super::{PendingRequest, SyncManager, SyncRequestId, SyncState};
@@ -121,6 +122,30 @@ impl SyncManager {
                         headers_count: 0,
                     };
                 }
+            } else if self.local_height == 0
+                && self.checkpoint_height > 0
+                && self.checkpoint_state_root != crypto::Hash::ZERO
+            {
+                // Checkpoint-anchored state sync: new node at height 0 with a
+                // checkpoint that includes a state root. Download state instead
+                // of replaying the full chain from genesis.
+                info!(
+                    "Starting checkpoint state sync epoch {} with peer {} (checkpoint_h={})",
+                    self.sync_epoch, peer, self.checkpoint_height
+                );
+
+                let request = SyncRequest::GetStateAtCheckpoint {
+                    height: self.checkpoint_height,
+                };
+                let id = self.register_request(peer, request.clone());
+                if let Some(status) = self.peers.get_mut(&peer) {
+                    status.pending_request = Some(id);
+                }
+
+                self.state = SyncState::CheckpointDownloading {
+                    peer,
+                    started_at: Instant::now(),
+                };
             } else {
                 info!(
                     "Starting sync epoch {} with peer {} (target_slot={})",
@@ -284,6 +309,8 @@ impl SyncManager {
             }
 
             SyncState::Processing { .. } => None,
+            SyncState::CheckpointDownloading { .. } => None, // Request already sent
+            SyncState::CheckpointReady { .. } => None,       // Waiting for node to consume
         }
     }
 
@@ -414,6 +441,60 @@ impl SyncManager {
                 } else {
                     vec![]
                 }
+            }
+            SyncResponse::StateAtCheckpoint {
+                block_hash,
+                block_height,
+                chain_state,
+                utxo_set,
+                producer_set,
+                state_root,
+            } => {
+                info!(
+                    "[CHECKPOINT] Received state at height={} from peer={}, size={}KB, root={}",
+                    block_height,
+                    peer,
+                    (chain_state.len() + utxo_set.len() + producer_set.len()) / 1024,
+                    &state_root.to_string()[..16]
+                );
+
+                // Verify height matches our checkpoint
+                if block_height != self.checkpoint_height {
+                    warn!(
+                        "[CHECKPOINT] Height mismatch: got {} expected {} — rejecting",
+                        block_height, self.checkpoint_height
+                    );
+                    self.state = SyncState::Idle;
+                    return vec![];
+                }
+
+                // Verify block hash matches checkpoint (if non-zero)
+                if self.checkpoint_hash != Hash::ZERO && block_hash != self.checkpoint_hash {
+                    warn!(
+                        "[CHECKPOINT] Block hash mismatch: got {} expected {} — rejecting",
+                        &block_hash.to_string()[..16],
+                        &self.checkpoint_hash.to_string()[..16]
+                    );
+                    self.state = SyncState::Idle;
+                    return vec![];
+                }
+
+                // Store as CheckpointReady — the node will verify state_root
+                // against the hardcoded CHECKPOINT_STATE_ROOT constant.
+                self.state = SyncState::CheckpointReady {
+                    block_hash,
+                    block_height,
+                    chain_state,
+                    utxo_set,
+                    producer_set,
+                    state_root,
+                };
+                info!(
+                    "[CHECKPOINT] State stored as CheckpointReady at height={}",
+                    block_height
+                );
+
+                vec![]
             }
             SyncResponse::Error(err) => {
                 warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
