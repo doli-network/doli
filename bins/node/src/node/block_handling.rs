@@ -641,11 +641,11 @@ impl Node {
                         );
                         // Do NOT snap sync. Let header-first sync catch up.
                     } else {
-                        warn!(
-                            "Reorg failed with block store intact — possible corruption: {}",
+                        error!(
+                            "Reorg failed with block store intact — possible corruption: {}. \
+                             Sync will attempt recovery via header-first download.",
                             e
                         );
-                        self.force_recover_from_peers().await?;
                     }
                     return Ok(());
                 }

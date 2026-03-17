@@ -133,8 +133,8 @@ async fn main() -> Result<()> {
             yes,
             chainspec,
             archive_to,
-            no_snap_sync,
-            snap_sync,
+            checkpoint_height,
+            checkpoint_hash,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -163,8 +163,8 @@ async fn main() -> Result<()> {
                 yes,
                 chainspec,
                 archive_to,
-                no_snap_sync,
-                snap_sync,
+                checkpoint_height,
+                checkpoint_hash,
             )
             .await?;
         }
@@ -267,8 +267,8 @@ async fn main() -> Result<()> {
                 false, // yes
                 None,  // chainspec
                 None,  // archive_to
-                false, // no_snap_sync
-                false, // snap_sync
+                None,  // checkpoint_height
+                None,  // checkpoint_hash
             )
             .await?;
         }

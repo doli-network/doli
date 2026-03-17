@@ -32,8 +32,8 @@ pub(crate) async fn run_node(
     yes: bool,
     chainspec_path: Option<PathBuf>,
     archive_to: Option<PathBuf>,
-    no_snap_sync: bool,
-    snap_sync: bool,
+    checkpoint_height: Option<u64>,
+    checkpoint_hash: Option<String>,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -129,15 +129,6 @@ pub(crate) async fn run_node(
         // Clear default bootstrap nodes - only use explicitly provided ones
         config.bootstrap_nodes.clear();
         info!("DHT discovery disabled - cleared default bootstrap nodes, only connecting to explicit bootstrap addresses");
-    }
-    if no_snap_sync {
-        config.no_snap_sync = true;
-        info!("Snap sync disabled — node will only use header-first sync");
-    }
-    // REQ-SYNC-002: --snap-sync explicitly enables snap sync (overrides mainnet default)
-    if snap_sync {
-        config.no_snap_sync = false;
-        info!("Snap sync explicitly enabled via --snap-sync");
     }
     if relay_server {
         config.relay_server = true;
@@ -437,6 +428,17 @@ pub(crate) async fn run_node(
         Some(shutdown_flag_for_node),
     )
     .await?;
+
+    // Set checkpoint if provided via CLI
+    if let (Some(cp_height), Some(cp_hash_str)) = (checkpoint_height, checkpoint_hash.as_deref()) {
+        let cp_hash = crypto::Hash::from_hex(cp_hash_str)
+            .ok_or_else(|| anyhow!("Invalid --checkpoint-hash: {}", cp_hash_str))?;
+        node.set_checkpoint(cp_height, cp_hash).await;
+        info!(
+            "Checkpoint sync configured: height={}, hash={}",
+            cp_height, cp_hash_str
+        );
+    }
 
     // Connect vote forwarding: gossip votes → UpdateService
     node.set_vote_tx(vote_tx);

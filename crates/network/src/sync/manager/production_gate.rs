@@ -61,15 +61,6 @@ impl SyncManager {
             };
         }
 
-        // Layer 2.5: Post-snap-sync canonical block gate
-        // After snap sync, the block store is empty — producing immediately would create
-        // a fork because there's no real parent block to build on. Wait until at least
-        // one canonical gossip block has been received and applied, proving we're on the
-        // canonical chain and giving the block store a real parent.
-        if self.awaiting_canonical_block {
-            return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
-        }
-
         // Layer 3: Active sync in progress
         if self.state.is_syncing() {
             return ProductionAuthorization::BlockedSyncing;
@@ -619,23 +610,12 @@ impl SyncManager {
         self.last_resync_completed = Some(Instant::now());
     }
 
-    /// Clear the post-snap-sync production gate.
-    /// Called when a canonical gossip block has been successfully applied,
-    /// proving we're on the canonical chain.
+    /// Clear the fork mismatch flag after a canonical block is applied.
     pub fn clear_awaiting_canonical_block(&mut self) {
-        if self.awaiting_canonical_block {
-            info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
-            self.awaiting_canonical_block = false;
-        }
         if self.fork_mismatch_detected {
             info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
             self.fork_mismatch_detected = false;
         }
-    }
-
-    /// Check if we're waiting for a canonical block after snap sync.
-    pub fn is_awaiting_canonical_block(&self) -> bool {
-        self.awaiting_canonical_block
     }
 
     /// Reset consecutive resync counter (call after stable operation)
@@ -911,23 +891,9 @@ impl SyncManager {
     }
 
     /// Check if sync manager has signaled that a full genesis resync is needed.
-    /// Returns false if snap sync is disabled (--no-snap-sync), regardless of
-    /// how many internal paths set the flag. This is the SINGLE gate that
-    /// prevents snap sync from firing when the operator has forbidden it.
+    /// Snap sync has been removed — this always returns false.
     pub fn needs_genesis_resync(&self) -> bool {
-        if self.snap_sync_threshold == u64::MAX {
-            // Snap sync disabled — never allow genesis resync regardless of signals.
-            // Log once when suppressing to make debugging easier.
-            if self.needs_genesis_resync {
-                tracing::warn!(
-                    "--no-snap-sync: suppressing genesis resync signal (local_h={}, gap={})",
-                    self.local_height,
-                    self.best_peer_height().saturating_sub(self.local_height)
-                );
-            }
-            return false;
-        }
-        self.needs_genesis_resync
+        false
     }
 
     /// Returns true if peers consistently reject our chain tip (deep fork).
@@ -960,13 +926,6 @@ impl SyncManager {
         // snap → no block 1 → next fork → rollback impossible → re-snap.
         let gap = best_peer_height.saturating_sub(self.local_height);
         if gap <= 12 {
-            return false;
-        }
-        // If snap sync can handle this gap, don't escalate to deep fork.
-        // next_request() will attempt snap sync first.
-        let gap = best_peer_height.saturating_sub(self.local_height);
-        let enough_peers = self.peers.len() >= 3;
-        if enough_peers && gap > self.snap_sync_threshold {
             return false;
         }
         // Require at least one peer whose height is close to ours (within 100 blocks).

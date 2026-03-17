@@ -123,16 +123,14 @@ pub(crate) enum Commands {
         #[arg(long)]
         archive_to: Option<PathBuf>,
 
-        /// Disable snap sync. The node will only use header-first sync,
-        /// preserving full block history. Use on seed/archiver nodes.
-        /// Default on mainnet.
+        /// Start syncing from a trusted checkpoint height (skip earlier blocks).
+        /// Use with --checkpoint-hash for fast initial sync from a known-good state.
         #[arg(long)]
-        no_snap_sync: bool,
+        checkpoint_height: Option<u64>,
 
-        /// Explicitly enable snap sync (faster initial sync, but skips block history).
-        /// Overrides the mainnet default of full sync.
+        /// Hash of the trusted checkpoint block (must match --checkpoint-height).
         #[arg(long)]
-        snap_sync: bool,
+        checkpoint_hash: Option<String>,
     },
 
     /// Initialize a new data directory

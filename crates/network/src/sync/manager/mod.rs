@@ -9,17 +9,16 @@
 mod block_lifecycle;
 mod cleanup;
 mod production_gate;
-mod snap_sync;
 mod sync_engine;
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crypto::Hash;
 use doli_core::{Block, BlockHeader};
@@ -99,59 +98,6 @@ pub enum SyncState {
     },
     /// Fully synchronized
     Synchronized,
-    /// Snap sync: collecting state root votes from peers
-    SnapCollectingRoots {
-        /// Target block hash to snapshot at (initial estimate, may differ from quorum)
-        target_hash: Hash,
-        /// Target block height (initial estimate)
-        target_height: u64,
-        /// Collected (peer, block_hash, block_height, state_root) votes
-        votes: Vec<(PeerId, Hash, u64, Hash)>,
-        /// Peers already asked
-        asked: HashSet<PeerId>,
-        /// When this phase started
-        started_at: Instant,
-    },
-    /// Snap sync: downloading full snapshot from a peer
-    SnapDownloading {
-        /// Target block hash
-        target_hash: Hash,
-        /// Target block height
-        target_height: u64,
-        /// Quorum-agreed state root
-        quorum_root: Hash,
-        /// Peer serving the snapshot
-        peer: PeerId,
-        /// Alternate peers that agreed on the same quorum root (fallback on error)
-        alternate_peers: Vec<(PeerId, Hash, u64)>,
-        /// When download started
-        started_at: Instant,
-    },
-    /// Snap sync: snapshot ready for node to consume
-    SnapReady {
-        /// The verified snapshot
-        snapshot: VerifiedSnapshot,
-    },
-}
-
-/// A verified state snapshot ready for application by the node.
-///
-/// SyncManager collects this from the network; the Node verifies
-/// the state root and applies it.
-#[derive(Clone, Debug)]
-pub struct VerifiedSnapshot {
-    /// Block hash this snapshot is valid at
-    pub block_hash: Hash,
-    /// Block height
-    pub block_height: u64,
-    /// Serialized ChainState (bincode)
-    pub chain_state: Vec<u8>,
-    /// Serialized UtxoSet (bincode)
-    pub utxo_set: Vec<u8>,
-    /// Serialized ProducerSet (bincode)
-    pub producer_set: Vec<u8>,
-    /// Quorum-agreed state root (node re-verifies)
-    pub state_root: Hash,
 }
 
 /// Production authorization result - the single source of truth for whether block production is safe
@@ -225,24 +171,12 @@ pub enum ProductionAuthorization {
         /// Height of the last finalized block.
         local_finalized_height: u64,
     },
-    /// Production is blocked after snap sync until a canonical gossip block is received.
-    /// Prevents producing on an empty block store before the node proves it's on the
-    /// canonical chain.
-    BlockedAwaitingCanonicalBlock,
 }
 
 impl SyncState {
     /// Check if we're actively syncing
     pub fn is_syncing(&self) -> bool {
         !matches!(self, SyncState::Idle | SyncState::Synchronized)
-    }
-
-    /// Check if snap sync is in progress (collecting roots or downloading snapshot)
-    pub fn is_snap_syncing(&self) -> bool {
-        matches!(
-            self,
-            SyncState::SnapCollectingRoots { .. } | SyncState::SnapDownloading { .. }
-        )
     }
 }
 
@@ -404,10 +338,6 @@ pub struct SyncManager {
     /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
     consecutive_empty_headers: u32,
 
-    /// Flag set when genesis fallback confirms peers reject our chain —
-    /// node must call force_resync_from_genesis().
-    needs_genesis_resync: bool,
-
     /// Monotonic epoch counter incremented on every new sync cycle (start_sync).
     /// Requests are tagged with the epoch they belong to; responses from old
     /// epochs are discarded to prevent stale data from corrupting the current cycle.
@@ -429,28 +359,8 @@ pub struct SyncManager {
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
 
-    // === SNAP SYNC FIELDS ===
-    /// Height gap threshold to trigger snap sync instead of header-first
-    snap_sync_threshold: u64,
-    /// Number of peers that must agree on the same state root
-    snap_sync_quorum: usize,
-    /// Timeout for collecting state root votes
-    snap_root_timeout: Duration,
-    /// Timeout for downloading snapshot from a peer
-    snap_download_timeout: Duration,
-    /// Peers that served bad snapshots (blacklisted for this session)
-    snap_blacklisted_peers: HashSet<PeerId>,
     /// Peers that returned empty headers (blacklisted with cooldown)
     header_blacklisted_peers: HashMap<PeerId, Instant>,
-    /// Number of consecutive snap sync failures. After 3 failures, falls back
-    /// to header-first sync. Reset on successful sync or state reset.
-    snap_sync_attempts: u8,
-    /// When a fresh node first started waiting for 5 peers (for snap sync timeout)
-    fresh_node_wait_start: Option<Instant>,
-    /// After snap sync, block production until at least one canonical gossip block
-    /// is received and applied. This proves the node is on the canonical chain and
-    /// its block store has a real parent to build on.
-    awaiting_canonical_block: bool,
     /// Lowest block height available in the local block store.
     /// Set by the node after startup / snap sync. Used by fork sync to
     /// avoid binary-searching below available block data.
@@ -477,6 +387,11 @@ pub struct SyncManager {
     /// our tip is still on the fork (just 1 block shorter), so header-first will
     /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
     post_rollback: bool,
+
+    /// Checkpoint height for fast initial sync (skip genesis replay)
+    checkpoint_height: u64,
+    /// Checkpoint block hash (must match checkpoint_height)
+    checkpoint_hash: Hash,
 
     /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
     /// suppress further fork syncs for this duration. Prevents infinite reorg loops
@@ -506,11 +421,6 @@ pub struct SyncManager {
     /// When this reaches 5, `reset_resync_counter()` is called to clear the
     /// exponential backoff. Only incremented when `resync_in_progress` is false.
     blocks_since_resync_completed: u32,
-    /// Height offset detection: tracks (gap, timestamp) when we first observed
-    /// a stable gap while blocks are still being applied. If the gap stays
-    /// constant for >120s despite blocks being applied, the node has a corrupted
-    /// height counter (from a bad reorg) and needs snap sync to correct it.
-    stable_gap_since: Option<(u64, Instant)>,
 }
 
 impl SyncManager {
@@ -572,25 +482,17 @@ impl SyncManager {
             last_block_applied: Instant::now(),
             last_sync_activity: Instant::now(),
             consecutive_empty_headers: 0,
-            needs_genesis_resync: false,
             sync_epoch: 0,
             body_stall_retries: 0,
             consecutive_apply_failures: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
-            // Snap sync defaults
-            snap_sync_threshold: 1000,
-            snap_sync_quorum: 5, // Minimum 5 peers for partition safety
-            snap_root_timeout: Duration::from_secs(10),
-            snap_download_timeout: Duration::from_secs(60),
-            snap_blacklisted_peers: HashSet::new(),
             header_blacklisted_peers: HashMap::new(),
-            snap_sync_attempts: 0,
-            fresh_node_wait_start: None,
-            awaiting_canonical_block: false,
             store_floor: 1, // Default: full-sync node has block 1
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
+            checkpoint_height: 0,
+            checkpoint_hash: Hash::ZERO,
             post_rollback: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
@@ -598,7 +500,6 @@ impl SyncManager {
             post_recovery_grace_started: Instant::now(),
             blocks_applied_since_recovery: 0,
             behind_since: None,
-            stable_gap_since: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
@@ -793,20 +694,6 @@ impl SyncManager {
                 }
             }
         }
-
-        // If snap downloading from this peer, try alternate or fall back
-        if let SyncState::SnapDownloading {
-            peer: snap_peer, ..
-        } = &self.state
-        {
-            if snap_peer == peer {
-                warn!(
-                    "[SNAP_SYNC] Download peer {} disconnected — trying alternate",
-                    peer
-                );
-                self.handle_snap_download_error(*peer);
-            }
-        }
     }
 
     /// Get the number of connected peers with known status
@@ -917,9 +804,6 @@ impl SyncManager {
             SyncState::DownloadingBodies { .. } => "DownloadingBodies",
             SyncState::Processing { .. } => "Processing",
             SyncState::Synchronized => "Synchronized",
-            SyncState::SnapCollectingRoots { .. } => "SnapCollectingRoots",
-            SyncState::SnapDownloading { .. } => "SnapDownloading",
-            SyncState::SnapReady { .. } => "SnapReady",
         }
     }
 
@@ -952,10 +836,13 @@ impl SyncManager {
                     None
                 }
             }
-            SyncState::SnapCollectingRoots { .. } => Some(5.0),
-            SyncState::SnapDownloading { .. } => Some(50.0),
-            SyncState::SnapReady { .. } => Some(95.0),
         }
+    }
+
+    /// Set checkpoint for fast initial sync.
+    pub fn set_checkpoint(&mut self, height: u64, hash: Hash) {
+        self.checkpoint_height = height;
+        self.checkpoint_hash = hash;
     }
 
     /// Pick the best peer for fork recovery (highest height).

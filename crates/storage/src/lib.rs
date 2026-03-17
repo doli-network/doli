@@ -108,7 +108,7 @@ pub use producer::{
     INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD, VETO_BOND_AMOUNT,
     VETO_THRESHOLD_PERCENT,
 };
-pub use snapshot::{compute_state_root, compute_state_root_from_bytes, StateSnapshot};
+pub use snapshot::{compute_state_root, StateSnapshot};
 pub use state_db::{BlockBatch, LastApplied, StateDb, UndoData};
 pub use update::UpdateState;
 pub use utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet};

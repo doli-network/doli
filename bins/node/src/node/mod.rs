@@ -148,10 +148,6 @@ pub struct Node {
     /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
     /// Used by bootstrap scheduling to exclude stale producers from primary rotation.
     pub(super) producer_liveness: HashMap<PublicKey, u64>,
-    /// Height at which snap sync last completed. Used to determine validation mode:
-    /// blocks near the tip (within 1 epoch / 360 blocks) get full VDF verification,
-    /// older blocks get light validation (VDF skipped — already trusted via state root quorum).
-    pub(super) snap_sync_height: Option<u64>,
     /// Cached genesis VDF proof output (computed in background at startup during genesis).
     /// Used to create a zero-bond Registration TX that proves VDF work on-chain.
     pub(super) genesis_vdf_output: Option<[u8; 32]>,
@@ -179,8 +175,6 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub(super) minute_tracker: MinuteAttestationTracker,
-    /// Consecutive forced recoveries (for exponential backoff: 60→120→300→600→960s)
-    pub(super) consecutive_forced_recoveries: u32,
 }
 
 impl Node {
@@ -212,6 +206,11 @@ impl Node {
     /// Get the current chain tip height
     pub async fn best_height(&self) -> u64 {
         self.chain_state.read().await.best_height
+    }
+
+    /// Set checkpoint for fast initial sync (delegates to SyncManager).
+    pub async fn set_checkpoint(&self, height: u64, hash: Hash) {
+        self.sync_manager.write().await.set_checkpoint(height, hash);
     }
 
     pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {

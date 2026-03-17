@@ -175,8 +175,8 @@ impl Node {
             }
         }
 
-        // SAFETY NET: If fork recovery exceeded max depth, the fork is too deep
-        // for reorg. Recover from peers (snap sync).
+        // SAFETY NET: If fork recovery exceeded max depth, log warning.
+        // The fork is too deep for reorg — sync will recover via header-first download.
         {
             let exceeded = self
                 .sync_manager
@@ -184,8 +184,9 @@ impl Node {
                 .await
                 .take_fork_exceeded_max_depth();
             if exceeded {
-                warn!("Fork recovery exceeded max depth — recovering from peers");
-                self.force_recover_from_peers().await?;
+                warn!(
+                    "Fork recovery exceeded max depth — waiting for header-first sync to recover"
+                );
             }
         }
 
@@ -339,18 +340,11 @@ impl Node {
             }
 
             // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
-            // and the block store covers the full range. Full resync required.
-            // BYPASS cooldown: fork_sync binary search is conclusive evidence.
-            // Repeating with cooldown gives the same result — skip directly to recovery.
+            // and the block store covers the full range. Log warning, clear fork sync,
+            // and let header-first sync attempt recovery.
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: binary search hit floor without finding common ancestor — forcing recovery (bypassing cooldown)");
+                warn!("Fork sync: binary search hit floor without finding common ancestor — clearing fork sync, header-first sync will recover");
                 self.sync_manager.write().await.fork_sync_clear();
-                // Bypass cooldown: call recover_from_peers_inner directly.
-                // fork_sync already proved we're on a different chain — waiting
-                // 60s to repeat the same search is pointless.
-                self.recover_from_peers_inner(true).await?;
-                // Set grace period so fork_sync doesn't reactivate immediately
-                // while the node is syncing back up.
                 self.sync_manager.write().await.set_post_recovery_grace();
                 return Ok(());
             }
@@ -378,42 +372,18 @@ impl Node {
             }
         }
 
-        // GENESIS RESYNC: sync manager detected persistent chain rejection.
-        // Peers don't recognize our tip and the gap is too large for shallow fork recovery.
-        {
-            let needs_resync = self.sync_manager.read().await.needs_genesis_resync();
-            if needs_resync {
-                warn!("Persistent chain rejection: peers reject our tip. Recovering from peers.");
-                self.force_recover_from_peers().await?;
-                return Ok(());
-            }
-        }
-
-        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (10+ empty
-        // header responses), normal sync and fork recovery can't bridge the gap.
+        // DEEP FORK DETECTION: If peers consistently reject our chain tip (10+ empty
+        // header responses), log warning. Fork sync handles recovery via binary search.
         {
             let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
             if is_deep_fork {
-                warn!("Deep fork detected: peers consistently reject our chain tip. Recovering from peers.");
-                self.force_recover_from_peers().await?;
-                return Ok(());
+                warn!("Deep fork detected: peers consistently reject our chain tip. Fork sync will attempt recovery.");
             }
         }
 
         // Check if we need to request sync
         {
             let mut sm = self.sync_manager.write().await;
-            // Snap sync: batch-send GetStateRoot to ALL peers simultaneously.
-            // Responses cluster in ~1-2s so peers report the same height/root.
-            let snap_batch = sm.next_snap_requests();
-            if !snap_batch.is_empty() {
-                if let Some(ref network) = self.network {
-                    for (peer_id, request) in snap_batch {
-                        let _ = network.request_sync(peer_id, request).await;
-                    }
-                }
-            }
-            // Normal sync: one request per tick
             if let Some((peer_id, request)) = sm.next_request() {
                 if let Some(ref network) = self.network {
                     let _ = network.request_sync(peer_id, request).await;

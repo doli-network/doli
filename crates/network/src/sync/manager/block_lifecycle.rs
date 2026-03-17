@@ -112,7 +112,6 @@ impl SyncManager {
                 height, slot, self.network_tip_height, self.network_tip_slot
             );
             self.state = SyncState::Synchronized;
-            self.snap_sync_attempts = 0;
             self.header_blacklisted_peers.clear();
 
             // If we were in a resync, complete it now
@@ -168,29 +167,17 @@ impl SyncManager {
 
         if self.consecutive_apply_failures >= 3 {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
-            if gap <= 50 {
-                // Small gap + repeated apply failures = fork, not transient issue.
-                // Gossip can't resolve this — the node is on a different chain and
-                // keeps trying to apply canonical blocks at the wrong height.
-                // Activate fork_sync (binary search for common ancestor) which will
-                // find the divergence point, rollback, and re-sync correctly.
-                warn!(
-                    "3+ consecutive apply failures with gap={} — \
-                     activating fork_sync (binary search for common ancestor)",
-                    gap
-                );
-                self.consecutive_apply_failures = 0;
-                // Signal fork_sync activation. The node's resolve_shallow_fork()
-                // checks consecutive_empty_headers >= 3, so set it to trigger.
-                self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
-                self.state = SyncState::Idle;
-            } else {
-                warn!(
-                    "3+ consecutive apply failures with gap={} — triggering genesis resync",
-                    gap
-                );
-                self.needs_genesis_resync = true;
-            }
+            // Repeated apply failures = fork. Activate fork_sync (binary search
+            // for common ancestor) which will find the divergence point, rollback,
+            // and re-sync correctly.
+            warn!(
+                "3+ consecutive apply failures with gap={} — \
+                 activating fork_sync (binary search for common ancestor)",
+                gap
+            );
+            self.consecutive_apply_failures = 0;
+            self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
+            self.state = SyncState::Idle;
         }
     }
 
@@ -236,18 +223,11 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
-        self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
         self.consecutive_apply_failures = 0;
 
-        // Clear snap sync production gate (genesis resync starts fresh)
-        self.awaiting_canonical_block = false;
-
         // Clear fork mismatch flag (resync will re-establish correct chain)
         self.fork_mismatch_detected = false;
-
-        // Reset snap sync attempt counter so recovery gets fresh tries.
-        self.snap_sync_attempts = 0;
 
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
@@ -349,15 +329,6 @@ impl SyncManager {
             .record_fork_block(hash, prev_hash, weight);
     }
 
-    /// Seed the reorg handler with the snap sync tip so fork detection works immediately.
-    /// Called once after snap sync completes — the snap tip becomes the root of recent_blocks.
-    pub fn record_block_applied_after_snap(&mut self, hash: Hash, height: u64) {
-        self.reorg_handler
-            .record_block_with_weight(hash, Hash::ZERO, 1);
-        self.local_height = height;
-        self.local_hash = hash;
-    }
-
     /// Get read-only access to the reorg handler (for plan_reorg from Node).
     pub fn reorg_handler(&self) -> &super::super::reorg::ReorgHandler {
         &self.reorg_handler
@@ -366,13 +337,6 @@ impl SyncManager {
     // =========================================================================
     // FORK SYNC (binary search for common ancestor)
     // =========================================================================
-
-    /// Set the lowest block height available in the local block store.
-    /// Called by the node after startup or snap sync to inform fork sync
-    /// where the block store coverage begins.
-    pub fn disable_snap_sync(&mut self) {
-        self.snap_sync_threshold = u64::MAX;
-    }
 
     pub fn set_store_floor(&mut self, floor: u64) {
         self.store_floor = floor;

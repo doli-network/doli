@@ -540,94 +540,38 @@ impl Node {
 
             SyncRequest::GetBlockByHeight { height } => {
                 match self.block_store.get_block_by_height(height) {
-                    Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                    _ => SyncResponse::Block(None),
+                    Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
+                    _ => SyncResponse::Block(Box::new(None)),
                 }
             }
 
             SyncRequest::GetBlockByHash { hash } => match self.block_store.get_block(&hash) {
-                Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                _ => SyncResponse::Block(None),
+                Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
+                _ => SyncResponse::Block(Box::new(None)),
             },
 
-            SyncRequest::GetStateRoot { block_hash: _ } => {
-                // Use cached state root to avoid race conditions.
-                // The cache is updated atomically after each apply_block, so all
-                // three components (ChainState, UTXO, ProducerSet) are guaranteed
-                // to be at the same height.
-                let cache = self.cached_state_root.read().await;
-                if let Some((root, hash, height)) = *cache {
-                    SyncResponse::StateRoot {
-                        block_hash: hash,
-                        block_height: height,
-                        state_root: root,
-                    }
-                } else {
-                    // Fallback: compute on-the-fly if cache not yet populated (pre-first-block)
-                    drop(cache);
-                    let chain_state = self.chain_state.read().await;
-                    let current_hash = chain_state.best_hash;
-                    let current_height = chain_state.best_height;
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
-                        Ok(root) => SyncResponse::StateRoot {
-                            block_hash: current_hash,
-                            block_height: current_height,
-                            state_root: root,
-                        },
-                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
+            SyncRequest::GetBlocksByHeightRange {
+                start_height,
+                count,
+            } => {
+                let mut blocks = Vec::new();
+                let end_height = start_height.saturating_add(count as u64).saturating_sub(1);
+                let best_height = self.chain_state.read().await.best_height;
+                let actual_end = end_height.min(best_height);
+                for h in start_height..=actual_end {
+                    if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                        blocks.push(block);
+                    } else {
+                        break;
                     }
                 }
-            }
-
-            SyncRequest::GetStateSnapshot { block_hash } => {
-                let chain_state = self.chain_state.read().await;
-
-                // FIX #1: Don't serve snapshots when at or near genesis.
-                // A node at height=0 would serve empty/genesis state, infecting
-                // the requesting node and triggering a contagion cascade where
-                // wiped nodes spread genesis snapshots across the network.
-                if chain_state.best_height < 10 {
-                    warn!(
-                        "[SNAP_SYNC] Refusing to serve snapshot at height={} — too close to genesis",
-                        chain_state.best_height
-                    );
-                    return Ok(());
-                }
-
-                // Serve snapshot at current tip regardless of requested hash.
-                // The requesting node verifies the state root against quorum votes.
-                // Previously this rejected requests where best_hash != block_hash,
-                // causing a race condition: the peer advances between vote and
-                // download, making snap sync fail 100% of the time on active chains.
-                if chain_state.best_hash != block_hash {
-                    info!(
-                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
-                        block_hash, chain_state.best_hash
-                    );
-                }
-                let utxo_set = self.utxo_set.read().await;
-                let ps = self.producer_set.read().await;
-                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
-                    Ok(snap) => {
-                        info!(
-                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
-                            snap.block_height,
-                            snap.total_bytes() / 1024,
-                            snap.state_root
-                        );
-                        SyncResponse::StateSnapshot {
-                            block_hash: snap.block_hash,
-                            block_height: snap.block_height,
-                            chain_state: snap.chain_state_bytes,
-                            utxo_set: snap.utxo_set_bytes,
-                            producer_set: snap.producer_set_bytes,
-                            state_root: snap.state_root,
-                        }
-                    }
-                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
-                }
+                debug!(
+                    "GetBlocksByHeightRange: returning {} blocks (heights {}..={})",
+                    blocks.len(),
+                    start_height,
+                    actual_end
+                );
+                SyncResponse::Bodies(blocks)
             }
         };
 

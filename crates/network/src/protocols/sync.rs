@@ -14,8 +14,8 @@ use doli_core::{Block, BlockHeader};
 /// Protocol identifier for sync
 pub const SYNC_PROTOCOL: &str = "/doli/sync/1.0.0";
 
-/// Maximum message size for sync messages (64MB for state snapshots)
-const MAX_SYNC_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum message size for sync messages (4MB for block data)
+const MAX_SYNC_SIZE: usize = 4 * 1024 * 1024;
 
 /// Sync request types
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,16 +46,12 @@ pub enum SyncRequest {
         hash: Hash,
     },
 
-    /// Request a complete state snapshot at a specific block (snap sync)
-    GetStateSnapshot {
-        /// Block hash to snapshot at (should be a recent finalized block)
-        block_hash: Hash,
-    },
-
-    /// Request only the state root hash for cross-peer verification (snap sync)
-    GetStateRoot {
-        /// Block hash to compute state root for
-        block_hash: Hash,
+    /// Request blocks by height range (for efficient backfill)
+    GetBlocksByHeightRange {
+        /// Starting height (inclusive)
+        start_height: u64,
+        /// Number of blocks to return (max 500)
+        count: u32,
     },
 }
 
@@ -69,33 +65,7 @@ pub enum SyncResponse {
     Bodies(Vec<Block>),
 
     /// Single block response
-    Block(Option<Block>),
-
-    /// Complete state snapshot (snap sync)
-    StateSnapshot {
-        /// Block this snapshot is valid at
-        block_hash: Hash,
-        /// Block height at snapshot
-        block_height: u64,
-        /// Serialized ChainState (bincode)
-        chain_state: Vec<u8>,
-        /// Serialized UtxoSet (bincode)
-        utxo_set: Vec<u8>,
-        /// Serialized ProducerSet (bincode)
-        producer_set: Vec<u8>,
-        /// Merkle root: H(H(chain_state) || H(utxo_set) || H(producer_set))
-        state_root: Hash,
-    },
-
-    /// State root only, for cross-peer verification (snap sync)
-    StateRoot {
-        /// Block hash this root is for
-        block_hash: Hash,
-        /// Block height this root is for (for grouping votes by height)
-        block_height: u64,
-        /// The computed state root
-        state_root: Hash,
-    },
+    Block(Box<Option<Block>>),
 
     /// Error response
     Error(String),
@@ -121,12 +91,11 @@ impl SyncRequest {
         Self::GetBlockByHash { hash }
     }
 
-    pub fn get_state_snapshot(block_hash: Hash) -> Self {
-        Self::GetStateSnapshot { block_hash }
-    }
-
-    pub fn get_state_root(block_hash: Hash) -> Self {
-        Self::GetStateRoot { block_hash }
+    pub fn get_blocks_by_height_range(start_height: u64, count: u32) -> Self {
+        Self::GetBlocksByHeightRange {
+            start_height,
+            count,
+        }
     }
 }
 
@@ -148,10 +117,8 @@ impl SyncResponse {
                     "Bodies"
                 }
             }
-            SyncResponse::Block(Some(_)) => "Block(Some)",
-            SyncResponse::Block(None) => "Block(None)",
-            SyncResponse::StateSnapshot { .. } => "StateSnapshot",
-            SyncResponse::StateRoot { .. } => "StateRoot",
+            SyncResponse::Block(b) if b.is_some() => "Block(Some)",
+            SyncResponse::Block(_) => "Block(None)",
             SyncResponse::Error(_) => "Error",
         }
     }

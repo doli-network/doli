@@ -20,7 +20,6 @@ pub use fork_recovery::CompletedRecovery;
 pub use fork_sync::{ForkSync, ForkSyncResult, ProbeResult};
 pub use headers::HeaderDownloader;
 pub use manager::{
-    ProductionAuthorization, SyncConfig, SyncManager, SyncState, VerifiedSnapshot,
-    MAX_CONSECUTIVE_RESYNCS,
+    ProductionAuthorization, SyncConfig, SyncManager, SyncState, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{ReorgHandler, ReorgResult};

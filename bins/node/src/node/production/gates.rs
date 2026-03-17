@@ -34,7 +34,6 @@ impl Node {
             ProductionAuthorization::Authorized => {
                 self.consecutive_fork_blocks = 0;
                 self.shallow_rollback_count = 0;
-                self.consecutive_forced_recoveries = 0;
                 info!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot
@@ -156,13 +155,6 @@ impl Node {
                 warn!(
                     "[NODE_PRODUCE] slot={} BLOCKED: Chain conflicts with finalized block at height {}",
                     current_slot, local_finalized_height
-                );
-                false
-            }
-            ProductionAuthorization::BlockedAwaitingCanonicalBlock => {
-                info!(
-                    "[NODE_PRODUCE] slot={} BLOCKED: Awaiting first canonical gossip block after snap sync",
-                    current_slot
                 );
                 false
             }

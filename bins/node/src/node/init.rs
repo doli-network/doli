@@ -138,7 +138,7 @@ impl Node {
                      StateDb has:    {}\n\
                      Chainspec has:  {}\n\
                      The state database belongs to a different chain (stale data from a prior reset or wrong network).\n\
-                     Fix: wipe data directory ({}) and restart, or pass --snap-sync to re-sync from peers.",
+                     Fix: wipe data directory ({}) and restart to re-sync from peers.",
                     cs.genesis_hash,
                     canonical_genesis_hash,
                     config.data_dir.display()
@@ -480,9 +480,6 @@ impl Node {
         // This is the wait time at genesis before allowing production (chain evidence collection)
         {
             let mut sm = sync_manager.write().await;
-            if config.no_snap_sync {
-                sm.disable_snap_sync();
-            }
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
             // Configure min peers for production based on network and genesis phase.
@@ -621,7 +618,6 @@ impl Node {
             last_peer_redial: None,
             bootstrap_backoff: HashMap::new(),
             producer_liveness,
-            snap_sync_height: None,
             genesis_vdf_output: None,
             cached_state_root: Arc::new(RwLock::new(None)),
             cached_genesis_producers: std::sync::OnceLock::new(),
@@ -633,7 +629,6 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
-            consecutive_forced_recoveries: 0,
         })
     }
 }

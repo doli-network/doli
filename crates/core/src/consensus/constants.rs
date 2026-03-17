@@ -24,6 +24,13 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 /// Guarded by `test_genesis_time_matches_chainspec` test.
 pub const GENESIS_TIME: u64 = 1773771303;
 
+/// Checkpoint: trusted block for fast initial sync.
+/// Updated with each release. New nodes sync from here instead of genesis.
+/// Same trust level as the binary itself — if you trust the binary, you trust the checkpoint.
+pub const CHECKPOINT_HEIGHT: u64 = 0;
+pub const CHECKPOINT_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Deterministic reward pool address.
 /// All per-block coinbase goes here; distributed to qualified producers at epoch end.
 /// No private key exists for this address — only the consensus engine can move funds.
