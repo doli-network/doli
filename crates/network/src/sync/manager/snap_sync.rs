@@ -134,7 +134,35 @@ impl SyncManager {
         producer_set: Vec<u8>,
         response_root: Hash,
     ) {
-        if let SyncState::SnapDownloading { quorum_root, .. } = &self.state {
+        if let SyncState::SnapDownloading {
+            quorum_root,
+            target_height,
+            ..
+        } = &self.state
+        {
+            // FIX #2: Reject snapshots far below the target height.
+            // Between the vote (peer was healthy) and the download, the peer
+            // may have been wiped to genesis. Without this check, a height=0
+            // snapshot would be accepted and propagate the contagion.
+            if block_height + 100 < *target_height {
+                warn!(
+                    "[SNAP_SYNC] Rejecting snapshot from {} — height {} is far below target {} — blacklisting",
+                    peer, block_height, target_height
+                );
+                self.handle_snap_download_error(peer);
+                return;
+            }
+
+            // FIX #4: Reject snapshots from peers at height 0 (genesis/wiped).
+            if block_height == 0 {
+                warn!(
+                    "[SNAP_SYNC] Rejecting snapshot from {} — height 0 indicates wiped/genesis node",
+                    peer
+                );
+                self.handle_snap_download_error(peer);
+                return;
+            }
+
             if response_root != *quorum_root {
                 info!(
                     "[SNAP_SYNC] Peer {} advanced since vote: response_root={:.16} != quorum_root={:.16} (height={}). Accepting — node verifies independently.",

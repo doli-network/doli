@@ -377,6 +377,19 @@ impl Node {
             snapshot.block_height, snapshot.block_hash, snapshot.state_root
         );
 
+        // FIX #3: Never allow snap sync to roll the chain backwards.
+        // A wiped peer may serve genesis state (height=0). Applying it would
+        // overwrite a healthy chain and start a contagion cascade.
+        let current_height = self.chain_state.read().await.best_height;
+        if snapshot.block_height < current_height {
+            error!(
+                "[SNAP_SYNC] REJECTED: snapshot height {} < current height {} — would roll chain backwards",
+                snapshot.block_height, current_height
+            );
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
         // Step 1: Verify state root (node-side, since network crate has no storage dep)
         let computed_root = storage::compute_state_root_from_bytes(
             &snapshot.chain_state,

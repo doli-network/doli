@@ -237,6 +237,20 @@ impl Node {
 
             if is_stale && !is_syncing {
                 if peer_count == 0 {
+                    // FIX #5: Infected node auto-recovery.
+                    // If we're stuck near genesis (height < 10) with 0 peers, we were
+                    // likely wiped by a bad snap sync. The DHT cache is full of dead/infected
+                    // peers. Reset bootstrap backoff so we reconnect immediately to
+                    // hardcoded seeds instead of waiting 256s between retries.
+                    let local_height = self.chain_state.read().await.best_height;
+                    if local_height < 10 {
+                        warn!(
+                            "INFECTED NODE RECOVERY: height={} with 0 peers — resetting bootstrap backoff for immediate reconnection",
+                            local_height
+                        );
+                        self.bootstrap_backoff.clear();
+                    }
+
                     // No peers — redial bootstrap nodes and re-bootstrap DHT
                     info!("Stale chain detected (no blocks for 3 slots) with 0 peers — redialing bootstrap nodes");
                     if let Some(ref network) = self.network {

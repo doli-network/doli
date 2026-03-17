@@ -583,6 +583,19 @@ impl Node {
 
             SyncRequest::GetStateSnapshot { block_hash } => {
                 let chain_state = self.chain_state.read().await;
+
+                // FIX #1: Don't serve snapshots when at or near genesis.
+                // A node at height=0 would serve empty/genesis state, infecting
+                // the requesting node and triggering a contagion cascade where
+                // wiped nodes spread genesis snapshots across the network.
+                if chain_state.best_height < 10 {
+                    warn!(
+                        "[SNAP_SYNC] Refusing to serve snapshot at height={} — too close to genesis",
+                        chain_state.best_height
+                    );
+                    return Ok(());
+                }
+
                 // Serve snapshot at current tip regardless of requested hash.
                 // The requesting node verifies the state root against quorum votes.
                 // Previously this rejected requests where best_hash != block_hash,
