@@ -131,10 +131,10 @@ jobs:
             doli-*.tar.gz
             doli-*.pkg
 
-  # ── macOS x86_64 (Intel, cross-compiled on ARM) ──────────────
+  # ── macOS x86_64 (Intel, native build on Intel runner) ───────
   build-macos-x64:
     name: Build macOS x86_64
-    runs-on: macos-latest
+    runs-on: macos-13
     env:
       TARGET: x86_64-apple-darwin
     steps:
