@@ -237,10 +237,11 @@ impl Node {
             }
         } else {
             // REQ-SCALE-003b: Emergency chain stall detection.
-            // If >3 consecutive slots are empty, apply instant weight equalization:
-            // only producers that produced in the last 10 blocks get tickets.
+            // Threshold raised from 3 to 10: at 33+ nodes, propagation delays cause
+            // 3-4 slot gaps normally. Nodes seeing different gaps disagree on the
+            // eligible producer list → "invalid producer" rejections → forks.
             let slot_gap = (current_slot as u64).saturating_sub(prev_slot as u64);
-            let weights_for_scheduler = if slot_gap > 3 {
+            let weights_for_scheduler = if slot_gap > 10 {
                 let emergency: Vec<(PublicKey, u64)> = active_with_weights
                     .iter()
                     .filter_map(|(pk, _)| {
@@ -256,13 +257,11 @@ impl Node {
                         }
                     })
                     .collect();
-                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) || slot_gap > 30 {
+                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 20) || slot_gap > 60 {
                     // Deadlock safety: fall back to ALL producers at equal weight when:
                     // 1. Nobody produced recently (empty emergency list)
-                    // 2. Only 1 live producer and gap > 10 (single producer can't cover all slots)
-                    // 3. Gap > 30 regardless of live count — 2 live producers with slot % 2
-                    //    can deadlock if one is offline. After 5 minutes of stall, give
-                    //    everyone a chance.
+                    // 2. Only 1 live producer and gap > 20
+                    // 3. Gap > 60 (~10 minutes of total stall)
                     warn!(
                         "Chain stall (gap={}): {} live of {} total — equalizing ALL producers",
                         slot_gap,

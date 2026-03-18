@@ -54,9 +54,9 @@ impl Node {
             .collect();
         drop(utxo);
 
-        // Step 2: Emergency equalization (mirrors production/mod.rs:237-284)
+        // Step 2: Emergency equalization (must match production/mod.rs threshold!)
         let slot_gap = (block.header.slot as u64).saturating_sub(prev_slot as u64);
-        let weighted: Vec<(PublicKey, u64)> = if slot_gap > 3
+        let weighted: Vec<(PublicKey, u64)> = if slot_gap > 10
             && !active_with_weights.is_empty()
             && !self.config.network.is_in_genesis(height)
         {
@@ -75,7 +75,7 @@ impl Node {
                     }
                 })
                 .collect();
-            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) || slot_gap > 30 {
+            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 20) || slot_gap > 60 {
                 active_with_weights
                     .iter()
                     .map(|(pk, _)| (*pk, 1u64))
