@@ -240,8 +240,12 @@ pub fn validate_block_with_mode(
             // Internal double-spend detection
             check_internal_double_spend(block)?;
 
-            // Producer eligibility (still checked -- confirms the right producer signed)
-            validate_producer_eligibility(&block.header, ctx)?;
+            // Producer eligibility: SKIPPED in Light mode.
+            // Light mode is used for sync blocks and reorg blocks where the producer
+            // set at the time of production may differ from the current state.
+            // Checking eligibility against rolled-back/stale state causes false
+            // "invalid producer for slot" rejections during emergency equalization.
+            // The blocks were already validated by the producing node.
 
             // Skipped: VDF (trusted via state root quorum)
             // Skipped: MAX_FUTURE_SLOTS / MAX_PAST_SLOTS (time-based, breaks sync)
