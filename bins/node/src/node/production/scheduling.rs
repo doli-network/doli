@@ -279,9 +279,22 @@ impl Node {
                     }
                 };
 
-                // Always include ourselves
+                // Include ourselves if not already in the list.
+                // The GSet may contain stale entries from remote bootstrap nodes that
+                // don't match our local producer keys. In that case, replace the GSet
+                // list entirely with just the locally-known producers.
                 if !known_producers.iter().any(|p| p == &our_pubkey) {
-                    known_producers.push(our_pubkey);
+                    // Our pubkey is not in the GSet — the GSet likely has stale entries
+                    // from a previous genesis or remote nodes. Fall back to the locally
+                    // known producers list which is populated from peer discovery.
+                    let local_known = self.known_producers.read().await;
+                    if !local_known.is_empty() {
+                        known_producers = local_known.clone();
+                    }
+                    // Always include ourselves
+                    if !known_producers.iter().any(|p| p == &our_pubkey) {
+                        known_producers.push(our_pubkey);
+                    }
                 }
 
                 // Filter out producers who are registered but haven't passed
