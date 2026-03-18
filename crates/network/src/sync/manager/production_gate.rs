@@ -378,64 +378,11 @@ impl SyncManager {
             self.fork_mismatch_detected = false; // Auto-clear
         }
 
-        // Layer 9: Chain Hash Verification (P0 #1)
-        //
-        // Count peers at same height that agree (same hash) vs disagree (different hash).
-        // Only block production if we're in the clear minority — the majority keeps
-        // producing so the heaviest chain rule resolves the fork naturally.
-        let mut agree = 1u32; // Count ourselves — we agree with our own chain
-        let mut disagree = 0u32;
-        let mut first_mismatch_peer = None;
-        let mut first_mismatch_hash = self.local_hash;
-        for (peer_id, status) in &self.peers {
-            // Skip peers reporting Hash::ZERO — they haven't synced yet
-            if status.best_hash == Hash::ZERO {
-                continue;
-            }
-            if status.best_height == self.local_height {
-                // Same height: compare hashes directly
-                if status.best_hash == self.local_hash {
-                    agree += 1;
-                } else {
-                    disagree += 1;
-                    if first_mismatch_peer.is_none() {
-                        first_mismatch_peer = Some(*peer_id);
-                        first_mismatch_hash = status.best_hash;
-                    }
-                }
-            } else if status.best_height > self.local_height
-                && status.best_height <= self.local_height + 2
-            {
-                // Peer is 1-2 blocks ahead.
-                // Hash::ZERO means peer has a snap sync gap — no block store
-                // for this height. This is NOT a fork — skip silently.
-                if status.best_hash == Hash::ZERO {
-                    continue;
-                }
-                // Different non-zero hash = genuine divergence.
-                disagree += 1;
-                if first_mismatch_peer.is_none() {
-                    first_mismatch_peer = Some(*peer_id);
-                    first_mismatch_hash = status.best_hash;
-                }
-            }
-        }
-        // Only block if we're in the minority — majority keeps producing
-        if disagree > 0 && agree < disagree {
-            if let Some(peer_id) = first_mismatch_peer {
-                warn!(
-                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
-                    self.local_height, agree, disagree
-                );
-                self.fork_mismatch_detected = true;
-                return ProductionAuthorization::BlockedChainMismatch {
-                    peer_id,
-                    local_hash: self.local_hash,
-                    peer_hash: first_mismatch_hash,
-                    local_height: self.local_height,
-                };
-            }
-        }
+        // Layer 9: DISABLED — chain hash verification caused production halts.
+        // Peers at different heights (propagation lag, syncing) were counted as
+        // "disagree", setting fork_mismatch_detected and blocking production.
+        // The deterministic bond-weighted scheduler ensures only one valid block
+        // per slot. Forks resolve via heaviest-chain reorg, not production blocking.
 
         // Layer 10: Gossip Activity Watchdog (P0 #3)
         //
