@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773793680,
-    "message": "DOLI Testnet v40 Genesis - Catastrophic reorg prevention 2026-03-17",
+    "timestamp": 1773796875,
+    "message": "DOLI Testnet v41 Genesis - 36-block epochs 2026-03-17",
     "initial_reward": 100000000
   },
   "consensus": {
