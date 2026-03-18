@@ -452,7 +452,11 @@ impl Node {
                     total_distributed
                 );
             }
-        } else if is_epoch_boundary {
+        } else if is_epoch_boundary && matches!(mode, ValidationMode::Full) {
+            // Only enforce missing-EpochReward check in Full mode.
+            // In Light mode (sync/reorg), the canonical chain may have blocks at epoch
+            // boundaries produced by nodes with different epoch parameters (ConsensusParams
+            // vs NetworkParams mismatch). Rejecting these blocks prevents recovery.
             let completed_epoch = (height / blocks_per_epoch) - 1;
             if completed_epoch > 0 {
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
