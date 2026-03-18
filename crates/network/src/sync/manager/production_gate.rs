@@ -365,28 +365,17 @@ impl SyncManager {
             };
         }
 
-        // Layer 8.5: Persistent fork mismatch flag.
-        //
-        // If a prior Layer 9 check detected we're in the minority, keep blocking
-        // until a successful resync clears the flag. Without this, Layer 9 oscillates:
-        // detects fork → blocks → peers advance beyond ±2 window → Layer 9 forgets
-        // → node resumes producing on orphan chain → repeat.
+        // Layer 8.5: DISABLED — persistent fork flag caused chain halt.
+        // When a newly-joining peer reports hash=0000 (not yet synced), Layer 9
+        // counted it as "disagree", set fork_mismatch_detected=true, and blocked
+        // ALL production permanently. The flag never cleared because no blocks
+        // were produced to trigger resync completion.
+        // Finality (Phase 1) replaces this with a deterministic check.
         if self.fork_mismatch_detected {
-            warn!(
-                "[CAN_PRODUCE] Layer8.5: BLOCKED — fork_mismatch_detected flag set, awaiting resync (local_h={})",
-                self.local_height
+            info!(
+                "[CAN_PRODUCE] Layer8.5: fork_mismatch_detected flag set but IGNORED (disabled)",
             );
-            return ProductionAuthorization::BlockedChainMismatch {
-                peer_id: self
-                    .peers
-                    .keys()
-                    .next()
-                    .copied()
-                    .unwrap_or_else(PeerId::random),
-                local_hash: self.local_hash,
-                peer_hash: Hash::default(),
-                local_height: self.local_height,
-            };
+            self.fork_mismatch_detected = false; // Auto-clear
         }
 
         // Layer 9: Chain Hash Verification (P0 #1)
@@ -399,6 +388,10 @@ impl SyncManager {
         let mut first_mismatch_peer = None;
         let mut first_mismatch_hash = self.local_hash;
         for (peer_id, status) in &self.peers {
+            // Skip peers reporting Hash::ZERO — they haven't synced yet
+            if status.best_hash == Hash::ZERO {
+                continue;
+            }
             if status.best_height == self.local_height {
                 // Same height: compare hashes directly
                 if status.best_hash == self.local_hash {
