@@ -123,12 +123,10 @@ impl Node {
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
-            let mut utxo_params = ConsensusParams::for_network(self.config.network);
-            if let Some(ref spec) = self.config.chainspec {
-                utxo_params.apply_chainspec(spec);
-            }
+            // Use self.params which already has chainspec overrides applied
+            // (ConsensusParams::for_network() ignores chainspec env vars for bond_unit)
             let utxo_ctx = validation::ValidationContext::new(
-                utxo_params,
+                self.params.clone(),
                 self.config.network,
                 0,
                 height,

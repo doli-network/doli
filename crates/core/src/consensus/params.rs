@@ -73,7 +73,7 @@ impl ConsensusParams {
             bootstrap_blocks: BOOTSTRAP_BLOCKS, // Same as mainnet (~1 week)
             bootstrap_grace_period_secs: BOOTSTRAP_GRACE_PERIOD_SECS, // Same as mainnet (15s)
             initial_reward: INITIAL_REWARD,
-            initial_bond: INITIAL_BOND, // Same as mainnet (1000 DOLI)
+            initial_bond: spec.consensus.bond_amount, // From chainspec (0.01 DOLI for testnet)
             base_block_size: BASE_BLOCK_SIZE,
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
