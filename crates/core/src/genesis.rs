@@ -142,25 +142,25 @@ pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
     (
-        "273a257357a0fefeba0d97f4e61ea069e2cb2758239b315824ea73410d06a199",
+        "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
         1,
-    ), // nt1 — omegacortex
+    ), // nt1
     (
-        "d70259cb4fc7acaeddb5028014a62b8d359a8e9fbd98b6cc7b8ca6e9bb1270df",
+        "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
         1,
-    ), // nt2 — omegacortex
+    ), // nt2
     (
-        "f23fb0840f985b781cdce2a8f9996e58dc154909e6fc36eb419b2b31a88fcc7f",
+        "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
         1,
-    ), // nt3 — omegacortex
+    ), // nt3
     (
-        "7e5f6f49f934099c78edfbc7967143d8e32c88feb36a10864e8f5575b4f0028b",
+        "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
         1,
-    ), // nt4 — omegacortex
+    ), // nt4
     (
-        "952f3d72abd9708ea7f3760b0113a522143895a0948e76220e8c5b320c3ca91d",
+        "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
         1,
-    ), // nt5 — omegacortex
+    ), // nt5
 ];
 
 /// Parse testnet genesis producers into (PublicKey, bond_count) pairs
