@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use libp2p::gossipsub::{
@@ -32,21 +30,22 @@ const MESH_N_CAP: usize = 50;
 /// - Tier 3: mesh_n=4 (light mesh for header-only validation)
 /// - Tier 0 (default/legacy): mesh_n=6 (backward compatible)
 pub fn new_gossipsub_for_tier(keypair: &Keypair, tier: u8) -> Result<Gossipsub, GossipError> {
+    // Ethereum-aligned: SHA256 message IDs
     let message_id_fn = |message: &Message| {
-        let mut hasher = DefaultHasher::new();
-        message.data.hash(&mut hasher);
-        MessageId::from(hasher.finish().to_be_bytes().to_vec())
+        let hash = crypto::hash::hash(&message.data);
+        MessageId::from(hash.as_bytes()[..20].to_vec())
     };
 
+    // Tier mesh sizes aligned with Ethereum's D=8 as the baseline
     let (mesh_n, mesh_n_low, mesh_n_high, mesh_outbound_min) = match tier {
-        1 => (20, 15, 30, 5), // Tier 1: dense mesh
-        2 => (8, 5, 15, 3),   // Tier 2: moderate mesh
+        1 => (12, 8, 20, 4),  // Tier 1: dense (Ethereum-like for validators)
+        2 => (8, 6, 12, 3),   // Tier 2: standard (matches Ethereum D=8)
         3 => (4, 2, 8, 1),    // Tier 3: light mesh
-        _ => (6, 4, 12, 2),   // Default/legacy
+        _ => (8, 6, 12, 3),   // Default: Ethereum standard D=8
     };
 
     let config = ConfigBuilder::default()
-        .heartbeat_interval(Duration::from_secs(1))
+        .heartbeat_interval(Duration::from_millis(700)) // Ethereum: 0.7s
         .validation_mode(ValidationMode::Strict)
         .message_id_fn(message_id_fn)
         .mesh_n(mesh_n)
@@ -55,10 +54,11 @@ pub fn new_gossipsub_for_tier(keypair: &Keypair, tier: u8) -> Result<Gossipsub, 
         .mesh_outbound_min(mesh_outbound_min)
         .gossip_lazy(6)
         .gossip_factor(0.25)
-        .history_length(5)
+        .flood_publish(true)
+        .history_length(6)
         .history_gossip(3)
         .max_transmit_size(1024 * 1024)
-        .duplicate_cache_time(Duration::from_secs(60))
+        .duplicate_cache_time(Duration::from_secs(330))
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
 
@@ -243,9 +243,9 @@ pub fn reconfigure_topics_for_tier(
 pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
     if total_peers <= 1 {
         return MeshConfig {
-            mesh_n: 6,
-            mesh_n_low: 4,
-            mesh_n_high: 12,
+            mesh_n: 8,       // Ethereum baseline D=8
+            mesh_n_low: 6,   // Ethereum D_low=6
+            mesh_n_high: 12, // Ethereum D_high=12
             gossip_lazy: 6,
         };
     }
@@ -258,10 +258,10 @@ pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
         let sqrt_n = (total_peers as f64).sqrt();
         (sqrt_n * 1.5).ceil() as usize
     }
-    .clamp(6, MESH_N_CAP);
+    .clamp(8, MESH_N_CAP); // Min D=8 (Ethereum baseline)
 
-    let mesh_n_low = (mesh_n * 3 / 4).max(4);
-    let mesh_n_high = (mesh_n * 2).min(MESH_N_CAP * 2);
+    let mesh_n_low = (mesh_n * 3 / 4).max(6); // Ethereum D_low=6 minimum
+    let mesh_n_high = (mesh_n * 3 / 2).min(MESH_N_CAP * 2); // 1.5x mesh_n
     let gossip_lazy = mesh_n.max(6);
 
     MeshConfig {
@@ -274,66 +274,156 @@ pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
 
 /// Create a new GossipSub behaviour with configurable mesh parameters.
 ///
-/// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.
-/// Devnet uses larger mesh (12/8/48) for --no-dht star topology.
-/// Mainnet/testnet use standard mesh (6/4/12) with DHT peer rotation.
+/// Parameters aligned with Ethereum's consensus layer (Lighthouse/Prysm)
+/// for battle-tested reliability. Key differences from previous config:
+/// - SHA256 message IDs (collision-resistant, matches Ethereum)
+/// - 700ms heartbeat (30% faster mesh maintenance, matches Ethereum)
+/// - Flood publishing for self-originated messages
+/// - Full P1-P4 peer scoring with harsh invalid message penalties
+/// - Longer seen_ttl (330s vs 60s) to prevent message re-delivery
+/// - Scoring on blocks AND attestation topics
 pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, GossipError> {
-    // Message ID function: hash of message data
+    // Ethereum-style message ID: SHA256(data)[:20] — collision-resistant.
+    // Previous DefaultHasher (SipHash) was non-cryptographic and could collide,
+    // causing valid blocks to be silently dropped as "duplicates."
     let message_id_fn = |message: &Message| {
-        let mut hasher = DefaultHasher::new();
-        message.data.hash(&mut hasher);
-        MessageId::from(hasher.finish().to_be_bytes().to_vec())
+        let hash = crypto::hash::hash(&message.data);
+        MessageId::from(hash.as_bytes()[..20].to_vec())
     };
 
     let config = ConfigBuilder::default()
-        // Heartbeat interval
-        .heartbeat_interval(Duration::from_secs(1))
+        // Heartbeat: 700ms (Ethereum uses 0.7s for faster mesh repair)
+        .heartbeat_interval(Duration::from_millis(700))
         // Message validation
         .validation_mode(ValidationMode::Strict)
-        // Message ID function
+        // Cryptographic message ID
         .message_id_fn(message_id_fn)
         // Mesh parameters (from NetworkParams)
         .mesh_n(mesh.mesh_n)
         .mesh_n_low(mesh.mesh_n_low)
         .mesh_n_high(mesh.mesh_n_high)
-        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2)) // Scale with mesh_n, capped at mesh_n/2 (gossipsub constraint)
+        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2))
         // Gossip parameters
         .gossip_lazy(mesh.gossip_lazy)
-        .gossip_factor(0.25) // Gossip to 25% of non-mesh peers
-        // History
-        .history_length(5)
+        .gossip_factor(0.25) // Gossip to 25% of non-mesh peers (Ethereum: same)
+        // Flood publishing: send self-originated messages to ALL connected peers,
+        // not just mesh peers. Critical for block producers — ensures their blocks
+        // propagate even if the mesh is temporarily degraded.
+        .flood_publish(true)
+        // History: 6 windows (Ethereum: 6), gossip last 3
+        .history_length(6)
         .history_gossip(3)
         // Message size limit (1MB for blocks)
         .max_transmit_size(1024 * 1024)
-        // Duplicate cache time
-        .duplicate_cache_time(Duration::from_secs(60))
+        // Seen cache: 330s (~471 heartbeats at 700ms). Ethereum uses 550 heartbeats
+        // (~385s). Prevents re-delivery of messages during partitions.
+        .duplicate_cache_time(Duration::from_secs(330))
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
 
     let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
         .map_err(|e| GossipError::Init(e.to_string()))?;
 
-    // REQ-NET-002: Peer scoring to prioritize producers in the mesh.
-    // Producers naturally deliver first-seen blocks (they create them).
-    // Non-producers only relay. This makes GossipSub preferentially keep
-    // producers in the mesh without any explicit "is_producer" check.
+    // =========================================================================
+    // PEER SCORING — Ethereum-aligned P1-P4 parameters
+    //
+    // Ethereum's scoring is what makes its mesh resilient:
+    // - P1: time_in_mesh — reward long-lived mesh connections
+    // - P2: first_message_deliveries — reward peers who deliver blocks first
+    // - P3: mesh_message_deliveries — penalize freeloading mesh peers
+    // - P4: invalid_message_deliveries — harshly punish bad data
+    // - IP colocation — penalize Sybil from single machine
+    // =========================================================================
     let mut topic_scores = std::collections::HashMap::new();
+
+    // BLOCKS topic — highest weight, harshest penalties (Ethereum: beacon_block)
     topic_scores.insert(
         IdentTopic::new(BLOCKS_TOPIC).hash(),
         TopicScoreParams {
-            topic_weight: 1.0,
-            first_message_deliveries_weight: 10.0,
-            first_message_deliveries_decay: 0.5,
-            first_message_deliveries_cap: 100.0,
+            topic_weight: 0.8, // Ethereum: 0.8
+            // P1: time in mesh — reward stable connections
+            time_in_mesh_weight: 0.5,
+            time_in_mesh_quantum: Duration::from_secs(12), // 1 slot
+            time_in_mesh_cap: 300.0,
+            // P2: first message deliveries — reward block originators
+            first_message_deliveries_weight: 1.0,
+            first_message_deliveries_decay: 0.631, // ~12s half-life at 700ms heartbeat
+            first_message_deliveries_cap: 23.0, // Ethereum: 23
+            // P3: mesh message deliveries — penalize freeloaders
+            mesh_message_deliveries_weight: -0.717, // Ethereum: -0.717
+            mesh_message_deliveries_decay: 0.631,
+            mesh_message_deliveries_threshold: 0.5,
+            mesh_message_deliveries_cap: 5.0,
+            mesh_message_deliveries_activation: Duration::from_secs(384), // ~1 epoch
+            mesh_message_deliveries_window: Duration::from_millis(2000),
+            // P4: invalid messages — HARSH penalty (Ethereum: -140x)
+            invalid_message_deliveries_weight: -140.0,
+            invalid_message_deliveries_decay: 0.997, // Slow decay — bad actors stay punished
             ..Default::default()
         },
     );
+
+    // ATTESTATION topic — moderate weight
+    topic_scores.insert(
+        IdentTopic::new(ATTESTATION_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 0.5,
+            first_message_deliveries_weight: 1.0,
+            first_message_deliveries_decay: 0.631,
+            first_message_deliveries_cap: 23.0,
+            invalid_message_deliveries_weight: -50.0,
+            invalid_message_deliveries_decay: 0.997,
+            ..Default::default()
+        },
+    );
+
+    // TRANSACTIONS topic — lower weight but still scored
+    topic_scores.insert(
+        IdentTopic::new(TRANSACTIONS_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 0.3,
+            first_message_deliveries_weight: 0.5,
+            first_message_deliveries_decay: 0.631,
+            first_message_deliveries_cap: 50.0,
+            invalid_message_deliveries_weight: -20.0,
+            invalid_message_deliveries_decay: 0.997,
+            ..Default::default()
+        },
+    );
+
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,
+        // IP colocation penalty: penalize many peers from same IP (Sybil defense)
+        ip_colocation_factor_weight: -35.0, // Ethereum: -35.11
+        ip_colocation_factor_threshold: 10.0, // Ethereum: 10
+        // Behaviour penalty: punish protocol violations
+        behaviour_penalty_weight: -16.0, // Ethereum: -15.92
+        behaviour_penalty_threshold: 6.0,
+        behaviour_penalty_decay: 0.631,
+        // Decay: 12s interval (1 slot), matching Ethereum
+        decay_interval: Duration::from_secs(12),
+        decay_to_zero: 0.01,
+        // Retain score for ~1 hour after disconnect
+        retain_score: Duration::from_secs(3600),
         ..Default::default()
     };
+
+    // Scoring thresholds — Ethereum-inspired but scaled for smaller network.
+    // These determine when a peer gets restricted:
+    // - gossip_threshold: below this, no gossip exchanged
+    // - publish_threshold: below this, flood-published msgs not sent
+    // - graylist_threshold: below this, all RPCs ignored
+    // - accept_px_threshold: must be above this to accept peer exchange
+    let thresholds = PeerScoreThresholds {
+        gossip_threshold: -4000.0,   // Ethereum: -4000
+        publish_threshold: -8000.0,  // Ethereum: -8000
+        graylist_threshold: -16000.0, // Ethereum: -16000
+        accept_px_threshold: 100.0,  // Ethereum: 100
+        opportunistic_graft_threshold: 5.0, // Ethereum: 5
+    };
+
     gossipsub
-        .with_peer_score(peer_score_params, PeerScoreThresholds::default())
+        .with_peer_score(peer_score_params, thresholds)
         .map_err(GossipError::Config)?;
 
     Ok(gossipsub)
