@@ -21,9 +21,12 @@ fn default_data_dir(network: &str) -> Result<PathBuf> {
     Ok(home.join(".doli").join(network))
 }
 
-pub(crate) async fn cmd_snap(network: &str) -> Result<()> {
+pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) -> Result<()> {
     let seeds = seed_rpcs(network);
-    let data_dir = default_data_dir(network)?;
+    let data_dir = match data_dir_override {
+        Some(d) => d,
+        None => default_data_dir(network)?,
+    };
 
     println!("Snap Sync");
     println!("{:-<60}", "");

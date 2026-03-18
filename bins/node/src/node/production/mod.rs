@@ -256,12 +256,13 @@ impl Node {
                         }
                     })
                     .collect();
-                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) {
-                    // Deadlock safety: if nobody produced recently, OR only 1 producer
-                    // is "live" but the gap keeps growing (>10 slots), fall back to ALL
-                    // producers at equal weight. A single live producer can't cover the
-                    // network alone — the round-robin assigns it to only 1/N slots,
-                    // leaving the rest empty, which deepens the stall indefinitely.
+                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) || slot_gap > 30 {
+                    // Deadlock safety: fall back to ALL producers at equal weight when:
+                    // 1. Nobody produced recently (empty emergency list)
+                    // 2. Only 1 live producer and gap > 10 (single producer can't cover all slots)
+                    // 3. Gap > 30 regardless of live count — 2 live producers with slot % 2
+                    //    can deadlock if one is offline. After 5 minutes of stall, give
+                    //    everyone a chance.
                     warn!(
                         "Chain stall (gap={}): {} live of {} total — equalizing ALL producers",
                         slot_gap,

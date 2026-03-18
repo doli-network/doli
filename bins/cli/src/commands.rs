@@ -364,7 +364,11 @@ pub(crate) enum Commands {
     },
 
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
-    Snap,
+    Snap {
+        /// Data directory (for multi-node servers with custom paths)
+        #[arg(short, long)]
+        data_dir: Option<PathBuf>,
+    },
 
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
     Wipe {

@@ -75,7 +75,7 @@ impl Node {
                     }
                 })
                 .collect();
-            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) {
+            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) || slot_gap > 30 {
                 active_with_weights
                     .iter()
                     .map(|(pk, _)| (*pk, 1u64))
