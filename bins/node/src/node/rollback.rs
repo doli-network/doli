@@ -287,8 +287,10 @@ impl Node {
                  post_recovery_grace active (gap={}, empty_headers={})",
                 gap, empty_headers
             );
-            // Reset empty headers so header-first sync gets another chance
-            self.sync_manager.write().await.reset_empty_headers();
+            // Do NOT reset empty_headers here — that creates a deadlock where
+            // grace prevents fork sync AND resets the counter that would
+            // eventually trigger it. Let the counter accumulate so fork sync
+            // can activate once grace expires.
             return Ok(false);
         }
 
