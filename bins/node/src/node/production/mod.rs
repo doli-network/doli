@@ -236,54 +236,20 @@ impl Node {
                 None => return Ok(()),
             }
         } else {
-            // REQ-SCALE-003b: Emergency chain stall detection.
-            // Threshold raised from 3 to 10: at 33+ nodes, propagation delays cause
-            // 3-4 slot gaps normally. Nodes seeing different gaps disagree on the
-            // eligible producer list → "invalid producer" rejections → forks.
-            let slot_gap = (current_slot as u64).saturating_sub(prev_slot as u64);
-            let weights_for_scheduler = if slot_gap > 10 {
-                let emergency: Vec<(PublicKey, u64)> = active_with_weights
-                    .iter()
-                    .filter_map(|(pk, _)| {
-                        let live = self
-                            .producer_liveness
-                            .get(pk)
-                            .map(|&h| height.saturating_sub(h) < 10)
-                            .unwrap_or(false);
-                        if live {
-                            Some((*pk, 1u64))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 20) || slot_gap > 60 {
-                    // Deadlock safety: fall back to ALL producers at equal weight when:
-                    // 1. Nobody produced recently (empty emergency list)
-                    // 2. Only 1 live producer and gap > 20
-                    // 3. Gap > 60 (~10 minutes of total stall)
-                    warn!(
-                        "Chain stall (gap={}): {} live of {} total — equalizing ALL producers",
-                        slot_gap,
-                        emergency.len(),
-                        active_with_weights.len()
-                    );
-                    active_with_weights
-                        .iter()
-                        .map(|(pk, _)| (*pk, 1u64))
-                        .collect()
-                } else {
-                    warn!(
-                        "Chain stall (gap={}): emergency equalization — {}/{} live producers",
-                        slot_gap,
-                        emergency.len(),
-                        active_with_weights.len()
-                    );
-                    emergency
-                }
-            } else {
-                active_with_weights.clone()
-            };
+            // REMOVED: Emergency equalization was the #1 source of forks.
+            //
+            // When nodes see different slot_gap values (due to propagation delay
+            // or backup restore), equalization changes the producer weights from
+            // bond-weighted to all-equal, causing different slot→producer mappings
+            // across nodes → "invalid producer for slot" → forks.
+            //
+            // Ethereum doesn't have emergency equalization. If a producer misses
+            // their slot, the slot is empty. The next slot's producer takes their
+            // turn via the normal deterministic scheduler.
+            //
+            // The bond-weighted scheduler is ALWAYS deterministic — all nodes
+            // compute the same producer for each slot from on-chain state.
+            let weights_for_scheduler = active_with_weights.clone();
             let eligible =
                 self.resolve_epoch_eligibility(current_slot, height, &weights_for_scheduler);
             (eligible, None)

@@ -54,38 +54,10 @@ impl Node {
             .collect();
         drop(utxo);
 
-        // Step 2: Emergency equalization (must match production/mod.rs threshold!)
-        let slot_gap = (block.header.slot as u64).saturating_sub(prev_slot as u64);
-        let weighted: Vec<(PublicKey, u64)> = if slot_gap > 10
-            && !active_with_weights.is_empty()
-            && !self.config.network.is_in_genesis(height)
-        {
-            let emergency: Vec<(PublicKey, u64)> = active_with_weights
-                .iter()
-                .filter_map(|(pk, _)| {
-                    let live = self
-                        .producer_liveness
-                        .get(pk)
-                        .map(|&h| height.saturating_sub(h) < 10)
-                        .unwrap_or(false);
-                    if live {
-                        Some((*pk, 1u64))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 20) || slot_gap > 60 {
-                active_with_weights
-                    .iter()
-                    .map(|(pk, _)| (*pk, 1u64))
-                    .collect()
-            } else {
-                emergency
-            }
-        } else {
-            active_with_weights
-        };
+        // REMOVED: Emergency equalization — was the #1 source of scheduling
+        // disagreements and forks. Must match production/mod.rs (also removed).
+        // Bond-weighted scheduler is always deterministic from on-chain state.
+        let weighted = active_with_weights;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
