@@ -98,6 +98,15 @@ impl SyncManager {
                         peer,
                         headers_count: 0,
                     };
+                } else if self.post_recovery_grace {
+                    info!(
+                        "Post-rollback: skipping fork_sync — post_recovery_grace active, using header-first",
+                    );
+                    self.state = SyncState::DownloadingHeaders {
+                        target_slot,
+                        peer,
+                        headers_count: 0,
+                    };
                 } else if self.start_fork_sync() {
                     info!(
                         "Post-rollback: started fork_sync (binary search) instead of header-first",
