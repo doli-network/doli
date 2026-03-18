@@ -45,6 +45,7 @@ impl RpcContext {
             "getAttestationStats" => self.get_attestation_stats().await,
             "getStateRootDebug" => self.get_state_root_debug().await,
             "getUtxoDiff" => self.get_utxo_diff(request.params).await,
+            "getStateSnapshot" => self.get_state_snapshot().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
