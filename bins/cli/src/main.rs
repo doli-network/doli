@@ -271,12 +271,8 @@ async fn main() -> Result<()> {
         } => {
             cmd_chain::cmd_wipe(&network, data_dir, yes)?;
         }
-        Commands::Snap {
-            yes,
-            network,
-            data_dir,
-        } => {
-            cmd_snap::cmd_snap(&rpc_endpoint, &network, data_dir, yes).await?;
+        Commands::Snap => {
+            cmd_snap::cmd_snap(&cli.network).await?;
         }
     }
 

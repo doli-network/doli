@@ -2,73 +2,48 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 
-use crate::rpc_client::RpcClient;
+/// Seed RPC endpoints per network for state root consensus verification.
+fn seed_rpcs(network: &str) -> Vec<&'static str> {
+    match network {
+        "mainnet" => vec![
+            "http://seed1.doli.network:8500",
+            "http://seed2.doli.network:8500",
+            "http://seeds.doli.network:8500",
+        ],
+        "testnet" => vec!["http://seeds.testnet.doli.network:18500"],
+        _ => vec!["http://127.0.0.1:8500"],
+    }
+}
 
-/// Mainnet seed RPC endpoints for state root consensus verification.
-/// The CLI queries multiple seeds and only proceeds if 2/3 agree on the state root.
-const MAINNET_SEED_RPCS: &[&str] = &[
-    "http://seed1.doli.network:8500",
-    "http://seed2.doli.network:8500",
-    "http://seeds.doli.network:8500",
-];
+/// Default data directory for a network.
+fn default_data_dir(network: &str) -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
+    Ok(home.join(".doli").join(network))
+}
 
-const TESTNET_SEED_RPCS: &[&str] = &["http://seeds.testnet.doli.network:18500"];
+pub(crate) async fn cmd_snap(network: &str) -> Result<()> {
+    let seeds = seed_rpcs(network);
+    let data_dir = default_data_dir(network)?;
 
-pub(crate) async fn cmd_snap(
-    rpc_endpoint: &str,
-    network: &str,
-    data_dir: Option<PathBuf>,
-    yes: bool,
-) -> Result<()> {
     println!("Snap Sync");
     println!("{:-<60}", "");
     println!();
-    println!("This will:");
-    println!("  1. Stop the running doli-node service");
-    println!("  2. WIPE all chain data (preserving keys)");
-    println!("  3. Download a state snapshot from the network");
-    println!("  4. Verify the snapshot against multiple seeds");
-    println!("  5. Apply the snapshot and restart the node");
+    println!("Network:  {}", network);
+    println!("Data dir: {}", data_dir.display());
+    println!("Seeds:    {}", seeds.len());
     println!();
 
-    // 1. Resolve data dir
-    let data_dir = match data_dir {
-        Some(d) => d,
-        None => {
-            let home =
-                dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
-            home.join(".doli").join(network)
-        }
-    };
-
-    println!("Network:    {}", network);
-    println!("Data dir:   {:?}", data_dir);
-    println!("Source RPC: {}", rpc_endpoint);
-    println!();
-
-    // 2. Confirm
-    if !yes {
-        println!("Run with --yes to proceed.");
-        return Ok(());
-    }
-
-    // 3. Verify state root consensus across multiple seeds
+    // 1. Verify state root consensus across seeds
     println!("Verifying state root across seeds...");
-    let seed_rpcs = match network {
-        "mainnet" => MAINNET_SEED_RPCS.to_vec(),
-        "testnet" => TESTNET_SEED_RPCS.to_vec(),
-        _ => vec![rpc_endpoint],
-    };
-
-    let mut state_roots: Vec<(String, u64, String)> = Vec::new(); // (rpc, height, state_root)
-    for seed_rpc in &seed_rpcs {
-        match query_state_root(seed_rpc).await {
+    let mut state_roots: Vec<(&str, u64, String)> = Vec::new();
+    for seed in &seeds {
+        match query_state_root(seed).await {
             Ok((height, root)) => {
-                println!("  {} — h={} root={:.16}...", seed_rpc, height, root);
-                state_roots.push((seed_rpc.to_string(), height, root));
+                println!("  {} — h={} root={:.16}...", seed, height, root);
+                state_roots.push((seed, height, root));
             }
             Err(e) => {
-                println!("  {} — UNREACHABLE ({})", seed_rpc, e);
+                println!("  {} — UNREACHABLE ({})", seed, e);
             }
         }
     }
@@ -77,45 +52,35 @@ pub(crate) async fn cmd_snap(
         anyhow::bail!("No seeds reachable. Cannot verify snapshot safety.");
     }
 
-    // Check consensus: at least 2 seeds must agree on the state root
-    let consensus_root = if state_roots.len() >= 2 {
-        let mut root_counts: std::collections::HashMap<String, usize> =
+    // Consensus: 2/3 must agree (or trust single seed for testnet/devnet)
+    let (source_rpc, consensus_root) = if state_roots.len() >= 2 {
+        let mut counts: std::collections::HashMap<&str, (usize, &str)> =
             std::collections::HashMap::new();
-        for (_, _, root) in &state_roots {
-            *root_counts.entry(root.clone()).or_insert(0) += 1;
+        for (rpc, _, root) in &state_roots {
+            let entry = counts.entry(root.as_str()).or_insert((0, rpc));
+            entry.0 += 1;
         }
-        let (best_root, count) = root_counts.iter().max_by_key(|(_, c)| *c).unwrap();
-        if *count < 2 {
+        let (best_root, (count, best_rpc)) =
+            counts.into_iter().max_by_key(|(_, (c, _))| *c).unwrap();
+        if count < 2 {
             anyhow::bail!(
-                "Seeds disagree on state root — no consensus. Manual intervention required.\n\
-                 Roots: {:?}",
-                state_roots
-                    .iter()
-                    .map(|(rpc, h, r)| format!("{}: h={} root={:.16}", rpc, h, r))
-                    .collect::<Vec<_>>()
+                "Seeds disagree on state root — no consensus. Try again later or check seed health."
             );
         }
-        println!(
-            "  Consensus: {}/{} seeds agree on root {:.16}...",
-            count,
-            state_roots.len(),
-            best_root
-        );
-        best_root.clone()
+        println!("  Consensus: {}/{} seeds agree", count, state_roots.len());
+        (best_rpc.to_string(), best_root.to_string())
     } else {
-        // Only 1 seed reachable — trust it (devnet/testnet with single seed)
         println!("  Warning: only 1 seed reachable — trusting without consensus");
-        state_roots[0].2.clone()
+        (state_roots[0].0.to_string(), state_roots[0].2.clone())
     };
     println!();
 
-    // 4. Stop the node service
-    println!("Stopping doli-node service...");
+    // 2. Stop the node service
+    println!("Stopping doli-node...");
     stop_doli_service();
-    // Brief pause to ensure process exits and releases locks
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // 5. Wipe data directory (preserve keys/, .env, node_key)
+    // 3. Wipe data directory (preserve keys/, .env, node_key)
     println!("Wiping chain data...");
     if data_dir.exists() {
         let preserve = ["keys", ".env", "node_key"];
@@ -132,177 +97,163 @@ pub(crate) async fn cmd_snap(
                 }
             }
         }
-        println!("  Wiped (preserved keys/, .env, node_key)");
     } else {
         std::fs::create_dir_all(&data_dir)?;
-        println!("  Created fresh data directory");
     }
+    println!("  Done (preserved keys/, .env, node_key)");
 
-    // 6. Download snapshot from source RPC
-    println!("Downloading state snapshot from {}...", rpc_endpoint);
-    let rpc = RpcClient::new(rpc_endpoint);
-    let snap: serde_json::Value = rpc
-        .call_raw("getStateSnapshot", serde_json::json!({}))
-        .await
-        .map_err(|e| anyhow!("Failed to download snapshot: {}", e))?;
+    // 4. Download snapshot
+    println!("Downloading snapshot from {}...", source_rpc);
+    let snap = download_snapshot(&source_rpc).await?;
 
     let height = snap["height"]
         .as_u64()
-        .ok_or_else(|| anyhow!("Invalid snapshot: missing height"))?;
+        .ok_or_else(|| anyhow!("Missing height"))?;
     let snap_root = snap["stateRoot"]
         .as_str()
-        .ok_or_else(|| anyhow!("Invalid snapshot: missing stateRoot"))?;
+        .ok_or_else(|| anyhow!("Missing stateRoot"))?;
     let cs_hex = snap["chainState"]
         .as_str()
-        .ok_or_else(|| anyhow!("Invalid snapshot: missing chainState"))?;
+        .ok_or_else(|| anyhow!("Missing chainState"))?;
     let utxo_hex = snap["utxoSet"]
         .as_str()
-        .ok_or_else(|| anyhow!("Invalid snapshot: missing utxoSet"))?;
+        .ok_or_else(|| anyhow!("Missing utxoSet"))?;
     let ps_hex = snap["producerSet"]
         .as_str()
-        .ok_or_else(|| anyhow!("Invalid snapshot: missing producerSet"))?;
-    let total_bytes = snap["totalBytes"].as_u64().unwrap_or(0);
+        .ok_or_else(|| anyhow!("Missing producerSet"))?;
+    let total_kb = snap["totalBytes"].as_u64().unwrap_or(0) / 1024;
 
-    println!(
-        "  Height: {}, Size: {}KB, Root: {:.16}...",
-        height,
-        total_bytes / 1024,
-        snap_root
-    );
+    println!("  Height: {}, Size: {}KB", height, total_kb);
 
-    // 7. Verify snapshot state root matches seed consensus
+    // 5. Verify against seed consensus
     if snap_root != consensus_root {
         anyhow::bail!(
-            "SECURITY: Snapshot state root does not match seed consensus!\n\
-             Snapshot: {}\n\
-             Seeds:    {}\n\
-             The source RPC may be serving a fraudulent snapshot.",
+            "SECURITY: Snapshot root does not match seed consensus!\n\
+             Snapshot: {}\n  Seeds: {}",
             snap_root,
             consensus_root
         );
     }
-    println!("  State root verified against seed consensus");
 
-    // 8. Decode and verify data integrity
-    let cs_bytes = hex::decode(cs_hex).map_err(|e| anyhow!("Invalid chainState hex: {}", e))?;
-    let utxo_bytes = hex::decode(utxo_hex).map_err(|e| anyhow!("Invalid utxoSet hex: {}", e))?;
-    let ps_bytes = hex::decode(ps_hex).map_err(|e| anyhow!("Invalid producerSet hex: {}", e))?;
+    // 6. Verify data integrity (recompute root from bytes)
+    let cs_bytes = hex::decode(cs_hex)?;
+    let utxo_bytes = hex::decode(utxo_hex)?;
+    let ps_bytes = hex::decode(ps_hex)?;
 
-    // Recompute state root from raw bytes to verify integrity
-    let computed_root =
+    let computed =
         storage::snapshot::compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes);
-    let computed_root_hex = computed_root.to_hex();
-    if computed_root_hex != consensus_root {
-        anyhow::bail!(
-            "INTEGRITY: Recomputed state root does not match!\n\
-             Computed: {}\n\
-             Expected: {}\n\
-             The snapshot data is corrupted.",
-            computed_root_hex,
-            consensus_root
-        );
+    if computed.to_hex() != consensus_root {
+        anyhow::bail!("INTEGRITY: Recomputed state root does not match. Snapshot corrupted.");
     }
-    println!("  Data integrity verified (recomputed root matches)");
+    println!("  Verified (root matches {} seeds)", state_roots.len());
 
-    // 9. Deserialize state components
-    let chain_state: storage::ChainState = bincode::deserialize(&cs_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize ChainState: {}", e))?;
-    let producer_set: storage::ProducerSet = bincode::deserialize(&ps_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize ProducerSet: {}", e))?;
+    // 7. Write to StateDb
+    println!("Applying snapshot...");
+    let chain_state: storage::ChainState = bincode::deserialize(&cs_bytes)?;
+    let producer_set: storage::ProducerSet = bincode::deserialize(&ps_bytes)?;
     let utxo_set = storage::UtxoSet::deserialize_canonical(&utxo_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize UtxoSet: {}", e))?;
+        .map_err(|e| anyhow!("UtxoSet deserialize: {}", e))?;
 
-    // 10. Write to StateDb
-    println!("Writing snapshot to StateDb...");
-    let state_db_path = data_dir.join("state_db");
-    let state_db = storage::StateDb::open(&state_db_path)
-        .map_err(|e| anyhow!("Failed to open StateDb: {}", e))?;
+    let state_db = storage::StateDb::open(&data_dir.join("state_db"))
+        .map_err(|e| anyhow!("StateDb open: {}", e))?;
 
     let utxo_iter: Vec<(storage::Outpoint, storage::UtxoEntry)> = match &utxo_set {
         storage::UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-        _ => return Err(anyhow!("Expected InMemory UtxoSet from deserialization")),
+        _ => return Err(anyhow!("Expected InMemory UtxoSet")),
     };
 
     state_db
         .atomic_replace(&chain_state, &producer_set, utxo_iter.into_iter())
-        .map_err(|e| anyhow!("Failed to write snapshot: {}", e))?;
+        .map_err(|e| anyhow!("StateDb write: {}", e))?;
 
     println!(
-        "  Written: h={}, hash={:.16}..., {} UTXOs, {} producers",
-        chain_state.best_height,
-        chain_state.best_hash.to_hex(),
+        "  Applied: h={}, {} UTXOs, {} producers",
+        height,
         utxo_set.len(),
         producer_set.active_count()
     );
 
-    // 11. Restart the node
-    println!();
-    println!("Starting doli-node service...");
+    // 8. Restart
+    println!("Starting doli-node...");
     crate::cmd_upgrade::restart_doli_service(None);
 
     println!();
-    println!("Snap sync complete!");
-    println!("  Height:     {}", chain_state.best_height);
-    println!("  State root: {}", consensus_root);
-    println!("  The node will sync remaining blocks from this height.");
+    println!("Snap sync complete at height {}.", height);
+    println!("The node will sync remaining blocks automatically.");
 
     Ok(())
 }
 
-/// Query a seed's state root via getStateRootDebug RPC.
+/// Query state root from a seed via getStateRootDebug RPC.
 async fn query_state_root(rpc_url: &str) -> Result<(u64, String)> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "getStateRootDebug",
-        "params": {},
-        "id": 1
-    });
+    let body: serde_json::Value = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getStateRootDebug",
+            "params": {},
+            "id": 1
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
 
-    let response = client.post(rpc_url).json(&request).send().await?;
-    let body: serde_json::Value = response.json().await?;
+    let r = body.get("result").ok_or_else(|| anyhow!("No result"))?;
+    Ok((
+        r["height"].as_u64().ok_or_else(|| anyhow!("No height"))?,
+        r["stateRoot"]
+            .as_str()
+            .ok_or_else(|| anyhow!("No stateRoot"))?
+            .to_string(),
+    ))
+}
 
-    let result = body
-        .get("result")
-        .ok_or_else(|| anyhow!("No result in response"))?;
-    let height = result["height"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("Missing height"))?;
-    let state_root = result["stateRoot"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Missing stateRoot"))?
-        .to_string();
+/// Download full state snapshot via getStateSnapshot RPC.
+async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120)) // large payload
+        .build()?;
 
-    Ok((height, state_root))
+    let body: serde_json::Value = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "getStateSnapshot",
+            "params": {},
+            "id": 1
+        }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("Connection failed: {}", e))?
+        .json()
+        .await?;
+
+    if let Some(err) = body.get("error") {
+        anyhow::bail!("RPC error: {}", err);
+    }
+
+    body.get("result")
+        .cloned()
+        .ok_or_else(|| anyhow!("No result"))
 }
 
 /// Stop the doli-node service (systemd or launchd).
 fn stop_doli_service() {
-    // Try systemd first
-    let result = std::process::Command::new("sudo")
-        .args(["systemctl", "stop", "doli-producer"])
-        .output();
-
-    match result {
-        Ok(o) if o.status.success() => {
-            println!("  Stopped doli-producer service");
-            return;
-        }
-        _ => {}
-    }
-
-    // Try finding any doli-mainnet service
+    // systemd
     if let Ok(output) = std::process::Command::new("systemctl")
         .args(["list-units", "--type=service", "--no-pager", "-q"])
         .output()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("doli") && line.contains("producer") {
+            if line.contains("doli") {
                 let service = line.split_whitespace().next().unwrap_or("");
                 if !service.is_empty() {
                     let _ = std::process::Command::new("sudo")
@@ -315,7 +266,7 @@ fn stop_doli_service() {
         }
     }
 
-    // Try launchd (macOS)
+    // launchd (macOS)
     if let Ok(output) = std::process::Command::new("launchctl")
         .args(["list"])
         .output()
@@ -335,5 +286,5 @@ fn stop_doli_service() {
         }
     }
 
-    println!("  No running doli-node service found (may need manual stop)");
+    println!("  No running service found");
 }

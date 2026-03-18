@@ -363,6 +363,7 @@ impl RpcClient {
     }
 
     /// Make an RPC call returning raw JSON Value (for dynamic/large responses).
+    #[allow(dead_code)]
     pub async fn call_raw<P: Serialize>(
         &self,
         method: &str,
