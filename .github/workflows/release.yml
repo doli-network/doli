@@ -131,61 +131,10 @@ jobs:
             doli-*.tar.gz
             doli-*.pkg
 
-  # ── macOS x86_64 (Intel, native build on Intel runner) ───────
-  build-macos-x64:
-    name: Build macOS x86_64
-    runs-on: macos-13
-    env:
-      TARGET: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: brew install gmp mpfr protobuf 2>/dev/null || true
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: x86_64-apple-darwin
-
-      - name: Build
-        run: cargo build --release --target $TARGET --package doli-node --package doli-cli
-
-      - name: Package tarball
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          DIR="doli-${VERSION}-${TARGET}"
-          mkdir -p "$DIR"
-          cp "target/${TARGET}/release/doli-node" "$DIR/"
-          cp "target/${TARGET}/release/doli" "$DIR/"
-          cp README.md LICENSE* "$DIR/" 2>/dev/null || true
-          tar -czf "${DIR}.tar.gz" "$DIR"
-
-      - name: Build .pkg
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION_NUM=${VERSION#v}
-          mkdir -p pkg-root/usr/local/bin
-          cp "target/${TARGET}/release/doli-node" pkg-root/usr/local/bin/
-          cp "target/${TARGET}/release/doli" pkg-root/usr/local/bin/
-          pkgbuild --root pkg-root \
-            --identifier network.doli.node \
-            --version "$VERSION_NUM" \
-            --install-location / \
-            "doli-${VERSION}-${TARGET}.pkg"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64
-          path: |
-            doli-*.tar.gz
-            doli-*.pkg
+  # ── macOS x86_64 REMOVED ─────────────────────────────────────
+  # Intel macOS runners (macos-13) retired from GitHub Actions.
+  # Apple Silicon builds run x86_64 binaries via Rosetta 2.
+  # Users on Intel Macs should use the aarch64 .pkg (works via Rosetta).
 
   # ── GUI: Linux x86_64 (.AppImage, .deb) ──────────────────────
   build-gui-linux:
@@ -337,7 +286,7 @@ jobs:
   # ── Create GitHub Release ─────────────────────────────────────
   release:
     name: Create Release
-    needs: [build-linux-x64, build-macos-arm64, build-macos-x64, build-gui-linux, build-gui-macos, build-gui-windows]
+    needs: [build-linux-x64, build-macos-arm64, build-gui-linux, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
