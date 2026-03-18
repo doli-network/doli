@@ -61,6 +61,22 @@ impl Node {
                     if self.producer_key.is_some() {
                         if let Err(e) = self.try_produce_block().await {
                             warn!("Block production error: {}", e);
+                            // If block failed due to a bad mempool TX (e.g., duplicate
+                            // registration), purge registration TXs from mempool to
+                            // prevent infinite retry loops that halt the chain.
+                            let err_msg = e.to_string();
+                            if err_msg.contains("registration") || err_msg.contains("already") {
+                                let mut mempool = self.mempool.write().await;
+                                let before = mempool.len();
+                                mempool.remove_registration_txs();
+                                let after = mempool.len();
+                                if before != after {
+                                    warn!(
+                                        "Purged {} registration TXs from mempool after production error",
+                                        before - after
+                                    );
+                                }
+                            }
                         }
                     }
 
