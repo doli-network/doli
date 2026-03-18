@@ -275,7 +275,23 @@ impl Node {
             }
         }
 
-        // Deep fork or rollback limit reached: use binary search
+        // Deep fork or rollback limit reached: use binary search.
+        // BUT: if post_recovery_grace is active, fork sync JUST failed and cleared.
+        // Re-triggering immediately creates a Sisyphean loop:
+        //   fork_sync → bottoms out → grace → 1 header → empty → fork_sync again
+        // Let header-first sync make progress during grace instead.
+        let grace_active = self.sync_manager.read().await.post_recovery_grace_active();
+        if grace_active {
+            debug!(
+                "resolve_shallow_fork: skipping fork sync escalation — \
+                 post_recovery_grace active (gap={}, empty_headers={})",
+                gap, empty_headers
+            );
+            // Reset empty headers so header-first sync gets another chance
+            self.sync_manager.write().await.reset_empty_headers();
+            return Ok(false);
+        }
+
         let started = self.sync_manager.write().await.start_fork_sync();
         if started {
             info!(
