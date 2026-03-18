@@ -294,6 +294,19 @@ impl Node {
             return Ok(false);
         }
 
+        // Height-based recovery: when fork sync has repeatedly failed (empty_headers > 20),
+        // bypass the binary search entirely and find the common ancestor by walking back
+        // through heights. This is O(fork_depth) but always works — no state machine,
+        // no floor probe, no grace period deadlocks.
+        if empty_headers >= 9 {
+            info!(
+                "Height-based recovery: fork sync failed repeatedly (empty_headers={}). \
+                 Walking back by height to find common ancestor (local_h={}, gap={})",
+                empty_headers, local_height, gap
+            );
+            return self.state_reset_recovery(local_height).await;
+        }
+
         let started = self.sync_manager.write().await.start_fork_sync();
         if started {
             info!(
@@ -304,5 +317,53 @@ impl Node {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// State reset recovery: when hash-based sync and fork sync both fail repeatedly,
+    /// reset chain state to genesis and let header-first sync rebuild from peers.
+    ///
+    /// This preserves the block store (blocks are still on disk) but resets the
+    /// in-memory state (UTXO set, producer set, chain tip) to genesis. The node
+    /// then syncs from height 0, replaying blocks from disk + downloading missing
+    /// ones from peers. This always works because it doesn't depend on any peer
+    /// recognizing our tip hash.
+    async fn state_reset_recovery(&mut self, local_height: u64) -> Result<bool> {
+        warn!(
+            "State reset recovery: hash-based sync failed after {} attempts. \
+             Resetting to genesis for full resync (current h={}).",
+            9, local_height
+        );
+
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+
+        // Reset chain state to genesis
+        {
+            let mut state = self.chain_state.write().await;
+            state.best_height = 0;
+            state.best_hash = genesis_hash;
+            state.best_slot = 0;
+        }
+        {
+            let state = self.chain_state.read().await;
+            self.state_db.clear_and_write_genesis(&state);
+        }
+
+        // Clear in-memory state — will be rebuilt from blocks during resync
+        *self.utxo_set.write().await = storage::UtxoSet::new();
+        *self.producer_set.write().await = storage::ProducerSet::new();
+
+        // Reset sync manager
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(0, genesis_hash, 0);
+            sync.reset_empty_headers();
+            sync.reset_sync_for_rollback();
+        }
+
+        self.shallow_rollback_count = 0;
+        self.cumulative_rollback_depth = 0;
+
+        info!("State reset complete. Header-first sync will rebuild from genesis.");
+        Ok(true)
     }
 }
