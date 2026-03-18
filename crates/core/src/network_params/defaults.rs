@@ -100,7 +100,7 @@ impl NetworkParams {
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: 720, // 2 epochs (2 × 360 blocks)
+                unbonding_period: 72, // 2 epochs (2 × 36 blocks)
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (lower bond for testnet)
@@ -118,9 +118,9 @@ impl NetworkParams {
 
                 // Time structure (shorter epochs for faster testing)
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
-                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
+                blocks_per_reward_epoch: 36, // ~6 min per epoch (10x faster than mainnet)
                 coinbase_maturity: consensus::COINBASE_MATURITY,
-                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH,
+                slots_per_reward_epoch: 36, // ~6 min per epoch
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system

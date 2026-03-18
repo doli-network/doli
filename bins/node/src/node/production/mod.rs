@@ -167,9 +167,10 @@ impl Node {
                 let effective = match self.producer_liveness.get(&pk) {
                     Some(&last_h) => {
                         let missed = height.saturating_sub(last_h);
-                        if missed > consensus::INACTIVITY_LEAK_START {
+                        let inactivity_leak_start = self.config.network.blocks_per_reward_epoch();
+                        if missed > inactivity_leak_start {
                             let epochs_inactive =
-                                (missed - consensus::INACTIVITY_LEAK_START) / slots_per_epoch;
+                                (missed - inactivity_leak_start) / slots_per_epoch;
                             let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
                             let eff = raw_bonds * (100 - decay) / 100;
                             eff.max(consensus::INACTIVITY_LEAK_FLOOR)
@@ -253,11 +254,17 @@ impl Node {
                         }
                     })
                     .collect();
-                if emergency.is_empty() {
-                    // Deadlock safety: if nobody produced recently, use everyone at weight=1
+                if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) {
+                    // Deadlock safety: if nobody produced recently, OR only 1 producer
+                    // is "live" but the gap keeps growing (>10 slots), fall back to ALL
+                    // producers at equal weight. A single live producer can't cover the
+                    // network alone — the round-robin assigns it to only 1/N slots,
+                    // leaving the rest empty, which deepens the stall indefinitely.
                     warn!(
-                        "Chain stall (gap={}) and no live producers — equalizing all weights",
-                        slot_gap
+                        "Chain stall (gap={}): {} live of {} total — equalizing ALL producers",
+                        slot_gap,
+                        emergency.len(),
+                        active_with_weights.len()
                     );
                     active_with_weights
                         .iter()

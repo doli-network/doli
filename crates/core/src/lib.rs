@@ -231,8 +231,9 @@ pub use presence::PresenceCommitment;
 
 // Weighted presence reward calculation
 pub use rewards::{
-    complete_epoch_range, complete_epochs_at_height, epoch_boundaries, is_epoch_complete,
-    BlockSource, ClaimableSummary, RewardError, WeightedRewardCalculation,
+    complete_epoch_range, complete_epoch_range_with, complete_epochs_at_height,
+    complete_epochs_at_height_with, epoch_boundaries, epoch_boundaries_with, is_epoch_complete,
+    is_epoch_complete_with, BlockSource, ClaimableSummary, RewardError, WeightedRewardCalculation,
     WeightedRewardCalculator,
 };
 

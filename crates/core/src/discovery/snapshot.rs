@@ -90,13 +90,25 @@ impl EpochSnapshot {
     }
 
     /// Compute the epoch number from a block height.
+    /// Uses mainnet default (SLOTS_PER_EPOCH = 360).
     pub fn epoch_from_height(height: u64) -> u64 {
         height / SLOTS_PER_EPOCH as u64
     }
 
+    /// Compute the epoch number from a block height (network-aware).
+    pub fn epoch_from_height_with(height: u64, blocks_per_epoch: u64) -> u64 {
+        height / blocks_per_epoch
+    }
+
     /// Check if a height is an epoch boundary (first block of new epoch).
+    /// Uses mainnet default (SLOTS_PER_EPOCH = 360).
     pub fn is_epoch_boundary(height: u64) -> bool {
         height > 0 && height.is_multiple_of(SLOTS_PER_EPOCH as u64)
+    }
+
+    /// Check if a height is an epoch boundary (network-aware).
+    pub fn is_epoch_boundary_with(height: u64, blocks_per_epoch: u64) -> bool {
+        height > 0 && height.is_multiple_of(blocks_per_epoch)
     }
 }
 

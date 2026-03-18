@@ -427,9 +427,9 @@ impl Node {
     }
 
     /// Recompute our tier classification from the active producer set.
-    /// Called once per epoch boundary (when `height / SLOTS_PER_EPOCH` changes).
+    /// Called once per epoch boundary (when `height / blocks_per_epoch` changes).
     pub(super) async fn recompute_tier(&mut self, height: u64) {
-        let current_epoch = height / SLOTS_PER_EPOCH as u64;
+        let current_epoch = height / self.config.network.blocks_per_reward_epoch();
         if self.last_tier_epoch == Some(current_epoch) {
             return; // Already computed for this epoch
         }
