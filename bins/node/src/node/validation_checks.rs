@@ -8,8 +8,13 @@ impl Node {
     pub(super) async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
         let state = self.chain_state.read().await;
         let height = state.best_height + 1;
+        let prev_slot = state.best_slot;
+        drop(state);
 
-        // Build weighted producer list (bond counts derived from UTXO set)
+        // Build weighted producer list with inactivity leak + emergency equalization.
+        // CRITICAL: Must match production side exactly (production/mod.rs:153-284).
+        // Without this, production selects one producer but validation expects another,
+        // causing all blocks to be rejected during chain stalls.
         let producers = self.producer_set.read().await;
         let active: Vec<PublicKey> = producers
             .active_producers_at_height(height)
@@ -18,18 +23,69 @@ impl Node {
             .collect();
         drop(producers);
 
+        // Step 1: Bond counts + inactivity leak (mirrors production/mod.rs:153-185)
+        let slots_per_epoch = self.params.slots_per_epoch as u64;
         let utxo = self.utxo_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = active
+        let active_with_weights: Vec<(PublicKey, u64)> = active
             .into_iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
+                let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                (pk, count)
+                let effective = match self.producer_liveness.get(&pk) {
+                    Some(&last_h) => {
+                        let missed = height.saturating_sub(last_h);
+                        let inactivity_leak_start = self.config.network.blocks_per_reward_epoch();
+                        if missed > inactivity_leak_start {
+                            let epochs_inactive =
+                                (missed - inactivity_leak_start) / slots_per_epoch;
+                            let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
+                            let eff = raw_bonds * (100 - decay) / 100;
+                            eff.max(consensus::INACTIVITY_LEAK_FLOOR)
+                        } else {
+                            raw_bonds
+                        }
+                    }
+                    None => raw_bonds,
+                };
+                (pk, effective)
             })
             .collect();
         drop(utxo);
+
+        // Step 2: Emergency equalization (mirrors production/mod.rs:237-284)
+        let slot_gap = (block.header.slot as u64).saturating_sub(prev_slot as u64);
+        let weighted: Vec<(PublicKey, u64)> = if slot_gap > 3
+            && !active_with_weights.is_empty()
+            && !self.config.network.is_in_genesis(height)
+        {
+            let emergency: Vec<(PublicKey, u64)> = active_with_weights
+                .iter()
+                .filter_map(|(pk, _)| {
+                    let live = self
+                        .producer_liveness
+                        .get(pk)
+                        .map(|&h| height.saturating_sub(h) < 10)
+                        .unwrap_or(false);
+                    if live {
+                        Some((*pk, 1u64))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if emergency.is_empty() || (emergency.len() < 2 && slot_gap > 10) {
+                active_with_weights
+                    .iter()
+                    .map(|(pk, _)| (*pk, 1u64))
+                    .collect()
+            } else {
+                emergency
+            }
+        } else {
+            active_with_weights
+        };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
