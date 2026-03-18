@@ -96,8 +96,8 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773798846, // Testnet v42 genesis 2026-03-17
-                veto_period_secs: 5 * 60, // 5 minutes (early network)
+                genesis_time: 1773798846,  // Testnet v42 genesis 2026-03-17
+                veto_period_secs: 5 * 60,  // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
                 unbonding_period: 72, // 2 epochs (2 × 36 blocks)
@@ -109,7 +109,7 @@ impl NetworkParams {
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
                 automatic_genesis_bond: 1_000_000, // 0.01 DOLI (matches testnet bond_unit)
-                genesis_blocks: 360,               // 1 hour
+                genesis_blocks: 36, // 1 epoch (~6 min) — matches blocks_per_reward_epoch
 
                 // VDF (800K iterations ~= 55ms, same as mainnet)
                 vdf_iterations: 800_000,

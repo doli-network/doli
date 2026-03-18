@@ -310,11 +310,11 @@ fn test_genesis_blocks_mainnet_testnet() {
     assert!(Network::Mainnet.is_in_genesis(360));
     assert!(!Network::Mainnet.is_in_genesis(361));
 
-    // Testnet has 1-hour genesis phase (same as mainnet)
-    assert_eq!(Network::Testnet.genesis_blocks(), 360);
+    // Testnet has 1-epoch genesis phase (36 blocks = ~6 min)
+    assert_eq!(Network::Testnet.genesis_blocks(), 36);
     assert!(Network::Testnet.is_in_genesis(1));
-    assert!(Network::Testnet.is_in_genesis(360));
-    assert!(!Network::Testnet.is_in_genesis(361));
+    assert!(Network::Testnet.is_in_genesis(36));
+    assert!(!Network::Testnet.is_in_genesis(37));
 }
 
 #[test]
