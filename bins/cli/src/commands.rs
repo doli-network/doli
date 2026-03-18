@@ -363,6 +363,21 @@ pub(crate) enum Commands {
         command: ChannelCommands,
     },
 
+    /// Download state snapshot from a running node (wipes local data, restarts service)
+    Snap {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        /// Network (mainnet, testnet, devnet)
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// Data directory (overrides network default)
+        #[arg(short, long)]
+        data_dir: Option<PathBuf>,
+    },
+
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
     Wipe {
         /// Network (mainnet, testnet, devnet)
