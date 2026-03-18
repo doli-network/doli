@@ -535,15 +535,24 @@ impl Node {
         // Guard: reject reorgs where the new chain is marginally longer but the
         // rollback depth is catastrophically deep. A peer offering 440 blocks when
         // we need to rollback 437 is NOT a legitimate fork — it's a different chain.
-        // Legitimate forks have small rollback relative to chain length.
-        // Rule: rollback depth must be < 50% of current height (shallow fork).
+        //
+        // Exception: if the new chain is significantly longer (>20% more blocks),
+        // the deep rollback IS legitimate — we're on a minority fork and need to
+        // switch to the canonical chain. This happens when a node produced a
+        // different Block 1 during bootstrap and needs to resync from genesis.
         if rollback_depth > 0 && current_height > 10 {
             let rollback_ratio = rollback_depth * 100 / current_height;
-            if rollback_ratio > 50 {
+            let length_gain = new_chain_height.saturating_sub(current_height);
+            let gain_ratio = if current_height > 0 {
+                length_gain * 100 / current_height
+            } else {
+                100
+            };
+            if rollback_ratio > 50 && gain_ratio < 20 {
                 warn!(
                     "Fork sync: rollback depth {} is {}% of chain height {} — too deep for a \
-                     legitimate fork (ancestor h={}). Rejecting to prevent chain destruction.",
-                    rollback_depth, rollback_ratio, current_height, result.ancestor_height
+                     legitimate fork (ancestor h={}, gain={}%). Rejecting.",
+                    rollback_depth, rollback_ratio, current_height, result.ancestor_height, gain_ratio
                 );
                 let mut sync = self.sync_manager.write().await;
                 sync.mark_fork_sync_rejected();
@@ -552,6 +561,12 @@ impl Node {
                 }
                 sync.reset_sync_for_rollback();
                 return Ok(());
+            }
+            if rollback_ratio > 50 {
+                info!(
+                    "Fork sync: allowing deep rollback ({}% of h={}) because new chain is {}% longer ({} vs {})",
+                    rollback_ratio, current_height, gain_ratio, new_chain_height, current_height
+                );
             }
         }
 
