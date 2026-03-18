@@ -4,7 +4,7 @@
   "network": "Mainnet",
   "genesis": {
     "timestamp": 1773771303,
-    "message": "DOLI Mainnet Genesis - Snap sync contagion fix 17/Mar/2026",
+    "message": "DOLI Mainnet Genesis - Chain reset 16/Mar/2026",
     "initial_reward": 100000000
   },
   "consensus": {
