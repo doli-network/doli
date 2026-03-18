@@ -87,6 +87,13 @@ impl Node {
 
     /// Run periodic tasks
     pub(super) async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // Clean stale entries from seen_blocks_for_slot (keep last 10 slots)
+        {
+            let current_slot = self.chain_state.read().await.best_slot;
+            self.seen_blocks_for_slot
+                .retain(|&s| (s as u64) + 10 > current_slot as u64);
+        }
+
         // Apply pending sync blocks in correct order BEFORE cleanup.
         //
         // The body downloader fetches blocks in parallel, so they arrive out of order.
@@ -360,31 +367,10 @@ impl Node {
 
             // Transition: search complete — provide ancestor hash from our block_store.
             //
-            // Store-limited: search stopped because block store doesn't cover the range
-            // (snap sync gap). This is NOT a deep fork — the node just doesn't have
-            // the historical blocks. Re-snap to get back to tip and resume producing.
-            if self.sync_manager.read().await.fork_sync_store_limited() {
-                let floor = self.sync_manager.read().await.store_floor();
-                warn!(
-                    "Fork sync: search limited by block store floor (height {}). \
-                     Skipping — NOT a deep fork. Header-first sync will recover.",
-                    floor
-                );
-                self.sync_manager.write().await.fork_sync_clear();
-                // Do NOT snap sync. Clear fork state and let header-first sync handle it.
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
-
-            // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
-            // and the block store covers the full range. Log warning, clear fork sync,
-            // and let header-first sync attempt recovery.
-            if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: binary search hit floor without finding common ancestor — clearing fork sync, header-first sync will recover");
-                self.sync_manager.write().await.fork_sync_clear();
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
+            // IMPORTANT: Check ancestor_height (happy path) FIRST, before failure cases.
+            // The binary search may find the ancestor at the exact floor height. If we
+            // check bottomed_out() first, it can race with the final probe response and
+            // incorrectly declare "no ancestor found" when one was actually found.
             let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
             if let Some(height) = ancestor_height {
                 let ancestor_hash = self
@@ -397,6 +383,29 @@ impl Node {
                     .write()
                     .await
                     .fork_sync_set_ancestor(height, ancestor_hash);
+            }
+
+            // Failure case 1: Store-limited — block store doesn't cover the search range.
+            // NOT a deep fork, just a snap sync gap. Header-first sync will recover.
+            if self.sync_manager.read().await.fork_sync_store_limited() {
+                let floor = self.sync_manager.read().await.store_floor();
+                warn!(
+                    "Fork sync: search limited by block store floor (height {}). \
+                     Skipping — NOT a deep fork. Header-first sync will recover.",
+                    floor
+                );
+                self.sync_manager.write().await.fork_sync_clear();
+                self.sync_manager.write().await.set_post_recovery_grace();
+                return Ok(());
+            }
+
+            // Failure case 2: Bottomed out — genuine deep fork, no common ancestor
+            // within MAX_FORK_SYNC_DEPTH. Clear and let header-first sync try.
+            if self.sync_manager.read().await.fork_sync_bottomed_out() {
+                warn!("Fork sync: binary search hit floor without finding common ancestor — clearing fork sync, header-first sync will recover");
+                self.sync_manager.write().await.fork_sync_clear();
+                self.sync_manager.write().await.set_post_recovery_grace();
+                return Ok(());
             }
 
             // Phase 2/3 complete: take result and execute reorg

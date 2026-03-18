@@ -62,12 +62,14 @@ impl Node {
             );
         }
 
-        // EARLY BLOCK EXISTENCE CHECK (optimization)
-        // Check if a block already exists for this slot before spending time on eligibility
-        // checks and VDF computation. This is safe because:
-        // 1. If we see a block, another producer already succeeded
-        // 2. We'll check again after VDF to catch blocks that appeared during computation
-        if self.block_store.has_block_for_slot(current_slot as u64) {
+        // EARLY BLOCK EXISTENCE CHECK — gossip-aware
+        // Check BOTH block_store (disk) AND seen_blocks_for_slot (gossip).
+        // The gossip set catches blocks that arrived via gossip but haven't been
+        // applied to disk yet — critical for rank 1 to avoid producing a competing
+        // block when rank 0 already produced.
+        if self.block_store.has_block_for_slot(current_slot as u64)
+            || self.seen_blocks_for_slot.contains(&current_slot)
+        {
             debug!(
                 "Block already exists for slot {} - skipping production",
                 current_slot

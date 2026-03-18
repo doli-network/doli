@@ -131,6 +131,10 @@ pub struct Node {
     /// Tracks how far we've rolled back in total. Capped at MAX_CUMULATIVE_ROLLBACK (50)
     /// to prevent cascading rollbacks from reaching genesis.
     pub(super) cumulative_rollback_depth: u32,
+    /// Slots for which we've seen a block via gossip (not yet applied to block_store).
+    /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
+    /// but the block hasn't been applied to disk yet. Cleaned periodically.
+    pub(super) seen_blocks_for_slot: std::collections::HashSet<u32>,
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
     pub(super) cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,

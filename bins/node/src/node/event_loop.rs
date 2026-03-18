@@ -301,6 +301,12 @@ impl Node {
                     sync.update_network_tip_slot(block.header.slot);
                     sync.note_block_received_via_gossip();
                 }
+                // Track that we've seen a block for this slot via gossip.
+                // Rank 1 checks this before producing — if rank 0's block arrived
+                // via gossip but hasn't been applied to block_store yet, rank 1
+                // must NOT produce a competing block.
+                self.seen_blocks_for_slot.insert(block.header.slot);
+
                 self.handle_new_block(block, source_peer).await?;
             }
 
@@ -454,6 +460,8 @@ impl Node {
                     .await
                     .handle_response(peer_id, response);
                 for block in blocks {
+                    // Track block seen for gossip-aware fallback production
+                    self.seen_blocks_for_slot.insert(block.header.slot);
                     // Route through handle_new_block for orphan/fork detection.
                     // For normal sync blocks that build on tip, this falls through
                     // to apply_block unchanged. For orphan blocks (e.g., peer's tip
