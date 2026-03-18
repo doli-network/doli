@@ -944,11 +944,12 @@ impl SyncManager {
     ///   temporary 5-min exclusion, NOT a full P2P ban)
     pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
         let network_tip = self.network_tip_height;
-        // Peers must be within 10 blocks of the network tip to be useful for
-        // fork recovery. A peer at height 5 when the network is at 500 is still
-        // syncing and can't serve the blocks we need.
-        let min_useful_height = if network_tip > 10 {
-            network_tip - 10
+        // Use the higher of network_tip and local_height as reference.
+        // This prevents selecting peers far behind US even if network_tip is stale.
+        // A node at h=437 should never fork-sync with a peer at h=3.
+        let reference_height = network_tip.max(self.local_height);
+        let min_useful_height = if reference_height > 10 {
+            reference_height - 10
         } else {
             1 // At minimum, peer must be past genesis
         };

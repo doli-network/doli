@@ -414,12 +414,35 @@ impl Node {
         // validated when originally produced, and re-validating against rolled-back
         // state uses the wrong producer set (common ancestor, not fork chain).
         info!("Applying {} new blocks from fork", new_blocks.len());
-        for block in new_blocks {
+        let pre_reorg_height = current_height;
+        for (i, block) in new_blocks.into_iter().enumerate() {
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
+                let post_height = self.chain_state.read().await.best_height;
                 error!(
-                    "Reorg apply_block failed: {} — state is at common ancestor + applied blocks, sync will catch up",
-                    e
+                    "Reorg apply_block failed at block {}: {} — rolled back from {} to {}, \
+                     only applied {}/{} blocks. State is at height {}.",
+                    i + 1,
+                    e,
+                    pre_reorg_height,
+                    target_height,
+                    i,
+                    new_block_count,
+                    post_height
                 );
+                // CRITICAL: If we rolled back significantly but applied very few blocks,
+                // this was a bad reorg (peer had a different/invalid chain). Log the
+                // damage so the operator knows what happened. Header-first sync will
+                // recover from post_height, but the height loss is real.
+                if pre_reorg_height > post_height + 10 {
+                    error!(
+                        "CATASTROPHIC REORG: lost {} blocks ({} → {}). \
+                         The fork sync peer had an incompatible chain. \
+                         Header-first sync will recover but this should not happen.",
+                        pre_reorg_height - post_height,
+                        pre_reorg_height,
+                        post_height
+                    );
+                }
                 // State is consistent (common ancestor + whatever blocks succeeded).
                 // Don't propagate error — let normal sync fill the gap.
                 return Ok(());
@@ -507,6 +530,29 @@ impl Node {
             sync.mark_fork_sync_rejected();
             sync.reset_sync_for_rollback();
             return Ok(());
+        }
+
+        // Guard: reject reorgs where the new chain is marginally longer but the
+        // rollback depth is catastrophically deep. A peer offering 440 blocks when
+        // we need to rollback 437 is NOT a legitimate fork — it's a different chain.
+        // Legitimate forks have small rollback relative to chain length.
+        // Rule: rollback depth must be < 50% of current height (shallow fork).
+        if rollback_depth > 0 && current_height > 10 {
+            let rollback_ratio = rollback_depth * 100 / current_height;
+            if rollback_ratio > 50 {
+                warn!(
+                    "Fork sync: rollback depth {} is {}% of chain height {} — too deep for a \
+                     legitimate fork (ancestor h={}). Rejecting to prevent chain destruction.",
+                    rollback_depth, rollback_ratio, current_height, result.ancestor_height
+                );
+                let mut sync = self.sync_manager.write().await;
+                sync.mark_fork_sync_rejected();
+                if let Some(peer) = sync.best_peer_for_recovery() {
+                    sync.blacklist_peer_for_fork_sync(peer);
+                }
+                sync.reset_sync_for_rollback();
+                return Ok(());
+            }
         }
 
         // Pre-check: verify rollback stays within blocks that have undo data.
