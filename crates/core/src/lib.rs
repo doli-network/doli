@@ -134,9 +134,10 @@ pub mod types;
 pub mod validation;
 
 pub use attestation::{
-    attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield,
-    validate_attestation_bitfield, Attestation, AttestationError, MinuteAttestationTracker,
-    RegionAggregate, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
+    attestation_minute, attestation_minutes_per_epoch, attestation_qualification_threshold,
+    decode_attestation_bitfield, encode_attestation_bitfield, validate_attestation_bitfield,
+    Attestation, AttestationError, MinuteAttestationTracker, RegionAggregate,
+    ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
 pub use block::{Block, BlockBuilder, BlockHeader};
 pub use conditions::{

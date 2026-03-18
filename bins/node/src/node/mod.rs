@@ -44,7 +44,7 @@ use doli_core::validation::ValidationMode;
 use doli_core::{
     attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
     Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
-    ProducerGSet, Transaction, ATTESTATION_QUALIFICATION_THRESHOLD,
+    ProducerGSet, Transaction,
 };
 use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::protocols::{SyncRequest, SyncResponse};

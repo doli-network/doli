@@ -63,7 +63,9 @@ impl Node {
         //   Tier 1: 90% threshold (54/60 minutes)
         //   Tier 2: 80% of median attendance (floor of 1 minute)
         //   Tier 3: All producers have 0 attendance — pool accumulates to next epoch
-        let threshold = ATTESTATION_QUALIFICATION_THRESHOLD;
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        let threshold =
+            doli_core::attestation::attestation_qualification_threshold(blocks_per_epoch);
         let qualified: Vec<&storage::producer::ProducerInfo> = if epoch == 0 {
             info!("Epoch 0 (genesis): all active producers qualify for rewards");
             sorted_producers.iter().collect()

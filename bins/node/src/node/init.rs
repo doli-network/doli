@@ -202,6 +202,26 @@ impl Node {
         }
         let genesis_hash = chain_state.genesis_hash;
 
+        // REQ-SYNC-004: Validate block store genesis against chainspec.
+        // StateDb may have the correct genesis hash (from a reset) but the block
+        // store may still contain blocks from a previous chain. This causes fork
+        // sync to find "mismatches" at every height because the blocks belong to
+        // a different chain entirely — irrecoverable without manual wipe.
+        if let Ok(Some(block_one)) = block_store.get_block_by_height(1) {
+            if block_one.header.prev_hash != genesis_hash {
+                return Err(anyhow::anyhow!(
+                    "Block store genesis mismatch!\n\
+                     Block 1 prev_hash: {}\n\
+                     Chainspec genesis:  {}\n\
+                     The block store contains blocks from a different chain.\n\
+                     Fix: wipe data directory ({}) and restart.",
+                    block_one.header.prev_hash,
+                    genesis_hash,
+                    config.data_dir.display()
+                ));
+            }
+        }
+
         // Verify chain state consistency with block store
         if chain_state.best_height > 0 {
             match block_store.get_block(&chain_state.best_hash) {

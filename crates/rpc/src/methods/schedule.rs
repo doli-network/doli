@@ -210,7 +210,7 @@ impl RpcContext {
     /// and reports per-producer attestation minute counts.
     pub(super) async fn get_attestation_stats(&self) -> Result<Value, RpcError> {
         use doli_core::attestation::{
-            attestation_minute, decode_attestation_bitfield, ATTESTATION_QUALIFICATION_THRESHOLD,
+            attestation_minute, attestation_qualification_threshold, decode_attestation_bitfield,
         };
         use doli_core::consensus::reward_epoch;
 
@@ -285,8 +285,8 @@ impl RpcContext {
                     public_key: hex::encode(pk.as_bytes()),
                     attested_minutes: attested,
                     total_minutes,
-                    threshold: ATTESTATION_QUALIFICATION_THRESHOLD,
-                    qualified: attested >= ATTESTATION_QUALIFICATION_THRESHOLD,
+                    threshold: attestation_qualification_threshold(blocks_per_epoch),
+                    qualified: attested >= attestation_qualification_threshold(blocks_per_epoch),
                     has_bls: *has_bls,
                 }
             })
