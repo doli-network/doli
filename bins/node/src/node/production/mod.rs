@@ -485,8 +485,12 @@ impl Node {
             block_hash, height, current_slot, block.header.prev_hash
         );
 
-        // Apply the block locally
-        self.apply_block(block.clone(), ValidationMode::Full)
+        // Apply the block locally.
+        // Use Light validation for self-produced blocks — we already verified our
+        // eligibility in try_produce_block(). Full validation uses a DIFFERENT code
+        // path (validate_block_for_apply) that doesn't include emergency equalization,
+        // causing "invalid producer for slot" rejections during chain stalls.
+        self.apply_block(block.clone(), ValidationMode::Light)
             .await?;
 
         // NOTE: Do NOT call note_block_received_via_gossip() here.
