@@ -320,7 +320,7 @@ impl Node {
         &self,
         block: &Block,
         height: u64,
-        _mode: ValidationMode,
+        mode: ValidationMode,
     ) -> Result<()> {
         // === Coinbase validation ===
         if block.transactions.is_empty() {
@@ -359,8 +359,11 @@ impl Node {
             && reward_epoch::is_epoch_start_with(height, blocks_per_epoch);
 
         if !epoch_reward_txs.is_empty() {
-            // EpochReward only allowed at epoch boundaries, post-genesis
-            if !is_epoch_boundary {
+            // EpochReward only allowed at epoch boundaries, post-genesis.
+            // Skip this check in Light mode (sync/reorg): the canonical chain may
+            // have been produced by a node at a different fork tip where this height
+            // WAS an epoch boundary. Rejecting during resync prevents recovery.
+            if !is_epoch_boundary && matches!(mode, ValidationMode::Full) {
                 anyhow::bail!(
                     "EpochReward transaction at non-epoch-boundary height {}",
                     height
