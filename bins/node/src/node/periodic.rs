@@ -399,12 +399,18 @@ impl Node {
                 return Ok(());
             }
 
-            // Failure case 2: Bottomed out — genuine deep fork, no common ancestor
-            // within MAX_FORK_SYNC_DEPTH. Clear and let header-first sync try.
+            // Failure case 2: Bottomed out — genuine deep fork, no common ancestor.
+            // The block store has blocks from a different fork. State reset wipes
+            // UTXO/ProducerSet state back to genesis and resyncs the canonical chain.
+            // Previously just cleared and set grace → infinite loop because header-first
+            // sync couldn't chain headers to the poisoned block store.
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: binary search hit floor without finding common ancestor — clearing fork sync, header-first sync will recover");
+                warn!("Fork sync: no common ancestor found — triggering state reset recovery");
                 self.sync_manager.write().await.fork_sync_clear();
-                self.sync_manager.write().await.set_post_recovery_grace();
+                let local_height = self.chain_state.read().await.best_height;
+                if let Err(e) = self.state_reset_recovery(local_height).await {
+                    warn!("State reset recovery failed: {}", e);
+                }
                 return Ok(());
             }
 
