@@ -424,39 +424,11 @@ impl Node {
         height: u64,
         active_with_weights: &[(PublicKey, u64)],
     ) -> Vec<PublicKey> {
-        // REQ-SCALE-002: Liveness-aware epoch scheduler — filter out stale producers
-        // before building the deterministic scheduler. Uses the same liveness data
-        // as bootstrap mode so dead producers don't hold slot capacity.
-        let num_producers = active_with_weights.len();
-        let liveness_window = std::cmp::max(
-            consensus::LIVENESS_WINDOW_MIN,
-            (num_producers as u64).saturating_mul(3),
-        );
-        let cutoff = height.saturating_sub(liveness_window);
-
-        let filtered: Vec<(PublicKey, u64)> = active_with_weights
-            .iter()
-            .filter(|(pk, _)| match self.producer_liveness.get(pk) {
-                Some(&last_h) => last_h >= cutoff,
-                None => true, // New producers get benefit of doubt
-            })
-            .copied()
-            .collect();
-
-        // Deadlock safety: if filtering removed everyone, restore the full list
-        let effective_weights = if filtered.is_empty() {
-            active_with_weights
-        } else {
-            if filtered.len() < num_producers {
-                debug!(
-                    "Epoch liveness filter: {}/{} producers live (window={})",
-                    filtered.len(),
-                    num_producers,
-                    liveness_window,
-                );
-            }
-            &filtered
-        };
+        // REMOVED: Liveness filter from epoch scheduler.
+        // producer_liveness is local state — different on each node at different heights.
+        // Filtering out "stale" producers changes the scheduler input non-deterministically.
+        // The bond-weighted scheduler uses raw on-chain weights only.
+        let effective_weights = active_with_weights;
 
         let current_epoch = self.params.slot_to_epoch(current_slot) as u64;
         let active_count = effective_weights.len();

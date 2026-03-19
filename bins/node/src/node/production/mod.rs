@@ -163,26 +163,16 @@ impl Node {
                 let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                // REQ-SCALE-003: Inactivity leak — decay bond weight for offline producers.
-                // All nodes compute the same decay from chain height + producer_liveness,
-                // so this is consensus-safe (no additional state needed).
-                let effective = match self.producer_liveness.get(&pk) {
-                    Some(&last_h) => {
-                        let missed = height.saturating_sub(last_h);
-                        let inactivity_leak_start = self.config.network.blocks_per_reward_epoch();
-                        if missed > inactivity_leak_start {
-                            let epochs_inactive =
-                                (missed - inactivity_leak_start) / slots_per_epoch;
-                            let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
-                            let eff = raw_bonds * (100 - decay) / 100;
-                            eff.max(consensus::INACTIVITY_LEAK_FLOOR)
-                        } else {
-                            raw_bonds
-                        }
-                    }
-                    None => raw_bonds, // New producer, no liveness data yet
-                };
-                (pk, effective)
+                // REMOVED: Inactivity leak from scheduler.
+                // producer_liveness is LOCAL state — different on each node because they've
+                // applied different blocks. Different heights → different missed counts →
+                // different decay → different weights → different slot→producer mapping.
+                // This was the root cause of scheduling disagreements and forks.
+                //
+                // The bond-weighted scheduler must use RAW on-chain bond counts ONLY —
+                // no local state adjustments. Inactivity is handled by epoch rewards
+                // (non-qualified producers get zero rewards) not by scheduling.
+                (pk, raw_bonds)
             })
             .collect();
         drop(utxo);
@@ -227,7 +217,12 @@ impl Node {
         // Use bootstrap mode if:
         // 1. Still in genesis phase (no bond required), OR
         // 2. No active producers registered (transition block or testnet/devnet)
-        let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
+        let use_bootstrap = in_genesis || active_with_weights.is_empty();
+        let (eligible, our_bootstrap_rank) = if use_bootstrap {
+            info!(
+                "[PROD_DIAG] BOOTSTRAP path: in_genesis={} active_empty={} height={} slot={}",
+                in_genesis, active_with_weights.is_empty(), height, current_slot
+            );
             match self
                 .resolve_bootstrap_eligibility(current_slot, height, our_pubkey, in_genesis)
                 .await
@@ -286,6 +281,18 @@ impl Node {
             // Normal mode: ms-precision sequential eligibility check
             consensus::is_producer_eligible_ms(&our_pubkey, &eligible, slot_offset_ms)
         };
+
+        // DIAGNOSTIC: Log every production decision
+        {
+            let our_rank = eligible.iter().position(|p| p == &our_pubkey);
+            let eligible_rank = consensus::eligible_rank_at_ms(slot_offset_ms);
+            info!(
+                "[PROD_DIAG] slot={} h={} offset={}ms mode={} eligible_len={} our_rank={:?} window_rank={:?} is_eligible={} bootstrap_rank={:?}",
+                current_slot, height, slot_offset_ms,
+                if use_bootstrap { "BOOTSTRAP" } else { "EPOCH" },
+                eligible.len(), our_rank, eligible_rank, is_eligible, our_bootstrap_rank
+            );
+        }
 
         if !is_eligible {
             return Ok(());

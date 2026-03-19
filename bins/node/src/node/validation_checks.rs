@@ -23,8 +23,9 @@ impl Node {
             .collect();
         drop(producers);
 
-        // Step 1: Bond counts + inactivity leak (mirrors production/mod.rs:153-185)
-        let slots_per_epoch = self.params.slots_per_epoch as u64;
+        // Step 1: Bond counts — raw on-chain weights only.
+        // REMOVED: Inactivity leak from scheduler (mirrors production/mod.rs).
+        // producer_liveness is local state — causes scheduling disagreements.
         let utxo = self.utxo_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = active
             .into_iter()
@@ -33,23 +34,7 @@ impl Node {
                 let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                let effective = match self.producer_liveness.get(&pk) {
-                    Some(&last_h) => {
-                        let missed = height.saturating_sub(last_h);
-                        let inactivity_leak_start = self.config.network.blocks_per_reward_epoch();
-                        if missed > inactivity_leak_start {
-                            let epochs_inactive =
-                                (missed - inactivity_leak_start) / slots_per_epoch;
-                            let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
-                            let eff = raw_bonds * (100 - decay) / 100;
-                            eff.max(consensus::INACTIVITY_LEAK_FLOOR)
-                        } else {
-                            raw_bonds
-                        }
-                    }
-                    None => raw_bonds,
-                };
-                (pk, effective)
+                (pk, raw_bonds)
             })
             .collect();
         drop(utxo);
