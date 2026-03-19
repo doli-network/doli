@@ -120,10 +120,8 @@ impl Node {
         }
 
         // NOTE: Do NOT call recompute_tier() here. At startup the on-chain ProducerSet
-        // is incomplete (not synced yet). producer_tier() would default to Tier 3
-        // (header-only), causing reconfigure_topics_for_tier(3) to unsubscribe from
-        // BLOCKS_TOPIC — the node would stop receiving blocks and get stuck.
-        // Tier computation runs safely at epoch boundaries (after sync completes).
+        // is incomplete (not synced yet). Tier computation runs safely at epoch
+        // boundaries (after sync completes).
 
         // Start RPC server if enabled
         if self.config.rpc.enabled {
@@ -468,17 +466,6 @@ impl Node {
                 sync.set_min_peers_for_production(1);
             }
             drop(sync);
-
-            // Reconfigure gossipsub topic subscriptions for the new tier
-            // Tier 2 nodes get a deterministic region assignment
-            let region = if new_tier == 2 {
-                Some(doli_core::consensus::producer_region(&our_pubkey))
-            } else {
-                None
-            };
-            if let Some(ref network) = self.network {
-                let _ = network.reconfigure_tier(new_tier, region).await;
-            }
         }
 
         self.our_tier = new_tier;

@@ -1,196 +1,22 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use libp2p::gossipsub::{
     Behaviour as Gossipsub, ConfigBuilder, IdentTopic, Message, MessageAuthenticity, MessageId,
-    PeerScoreParams, PeerScoreThresholds, TopicHash, TopicScoreParams, ValidationMode,
+    PeerScoreParams, PeerScoreThresholds, TopicScoreParams, ValidationMode,
 };
 use libp2p::identity::Keypair;
-use tracing::debug;
 
 use super::{
-    region_topic, GossipError, MeshConfig, ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC,
-    HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TIER1_BLOCKS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    GossipError, MeshConfig, ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
+    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
-
-/// Safety-critical topics that must NEVER be unsubscribed on a producing node.
-/// Unsubscribing from BLOCKS_TOPIC causes the node to stop receiving blocks
-/// via gossip, leading to permanent desync.
-const PROTECTED_TOPICS: &[&str] = &[BLOCKS_TOPIC, TRANSACTIONS_TOPIC];
 
 /// Maximum mesh_n when scaling dynamically with network size.
 /// Raised from 20 to 50 to support 100+ node networks.
 /// For 106 nodes: mesh_n=11, for 500: mesh_n=23, for 1000: mesh_n=32.
 const MESH_N_CAP: usize = 50;
-
-/// Subscribe to tier-appropriate topics.
-///
-/// - Tier 1: All base topics + TIER1_BLOCKS_TOPIC + ATTESTATION_TOPIC + HEADERS_TOPIC
-/// - Tier 2: All base topics + regional block topic + ATTESTATION_TOPIC + HEADERS_TOPIC
-/// - Tier 3: HEADERS_TOPIC + PRODUCERS_TOPIC + VOTES_TOPIC (no full blocks)
-/// - Tier 0 (default): All base topics (backward compatible)
-pub fn subscribe_to_topics_for_tier(
-    gossipsub: &mut Gossipsub,
-    tier: u8,
-    region: Option<u32>,
-) -> Result<(), GossipError> {
-    // Base topics (all tiers get producers and votes for governance)
-    let producers_topic = IdentTopic::new(PRODUCERS_TOPIC);
-    let votes_topic = IdentTopic::new(VOTES_TOPIC);
-    gossipsub
-        .subscribe(&producers_topic)
-        .map_err(|e| GossipError::Subscribe(format!("producers: {}", e)))?;
-    gossipsub
-        .subscribe(&votes_topic)
-        .map_err(|e| GossipError::Subscribe(format!("votes: {}", e)))?;
-
-    match tier {
-        1 => {
-            // Tier 1: full blocks + tier1 blocks + attestations + headers + heartbeats + txs
-            for (name, topic_str) in [
-                ("blocks", BLOCKS_TOPIC),
-                ("txs", TRANSACTIONS_TOPIC),
-                ("heartbeats", HEARTBEATS_TOPIC),
-                ("t1_blocks", TIER1_BLOCKS_TOPIC),
-                ("attestations", ATTESTATION_TOPIC),
-                ("headers", HEADERS_TOPIC),
-            ] {
-                let topic = IdentTopic::new(topic_str);
-                gossipsub
-                    .subscribe(&topic)
-                    .map_err(|e| GossipError::Subscribe(format!("{}: {}", name, e)))?;
-            }
-        }
-        2 => {
-            // Tier 2: full blocks + regional topic + attestations + headers + heartbeats + txs
-            for (name, topic_str) in [
-                ("blocks", BLOCKS_TOPIC),
-                ("txs", TRANSACTIONS_TOPIC),
-                ("heartbeats", HEARTBEATS_TOPIC),
-                ("attestations", ATTESTATION_TOPIC),
-                ("headers", HEADERS_TOPIC),
-            ] {
-                let topic = IdentTopic::new(topic_str);
-                gossipsub
-                    .subscribe(&topic)
-                    .map_err(|e| GossipError::Subscribe(format!("{}: {}", name, e)))?;
-            }
-            // Subscribe to regional topic
-            if let Some(r) = region {
-                let rtopic = IdentTopic::new(region_topic(r));
-                gossipsub
-                    .subscribe(&rtopic)
-                    .map_err(|e| GossipError::Subscribe(format!("region_{}: {}", r, e)))?;
-            }
-        }
-        3 => {
-            // Tier 3: headers only (no full blocks, no heartbeats)
-            let headers = IdentTopic::new(HEADERS_TOPIC);
-            gossipsub
-                .subscribe(&headers)
-                .map_err(|e| GossipError::Subscribe(format!("headers: {}", e)))?;
-        }
-        _ => {
-            // Default/legacy: subscribe to all base topics
-            subscribe_to_topics(gossipsub)?;
-            return Ok(());
-        }
-    }
-
-    Ok(())
-}
-
-/// Return the set of topic strings appropriate for the given tier.
-///
-/// Single source of truth for tier→topic mapping. Used by
-/// `reconfigure_topics_for_tier()` to compute the subscription delta.
-pub fn topics_for_tier(tier: u8, region: Option<u32>) -> Vec<String> {
-    let mut topics = vec![PRODUCERS_TOPIC.to_string(), VOTES_TOPIC.to_string()];
-    match tier {
-        1 => {
-            topics.extend([
-                BLOCKS_TOPIC.to_string(),
-                TRANSACTIONS_TOPIC.to_string(),
-                HEARTBEATS_TOPIC.to_string(),
-                TIER1_BLOCKS_TOPIC.to_string(),
-                ATTESTATION_TOPIC.to_string(),
-                HEADERS_TOPIC.to_string(),
-            ]);
-        }
-        2 => {
-            topics.extend([
-                BLOCKS_TOPIC.to_string(),
-                TRANSACTIONS_TOPIC.to_string(),
-                HEARTBEATS_TOPIC.to_string(),
-                ATTESTATION_TOPIC.to_string(),
-                HEADERS_TOPIC.to_string(),
-            ]);
-            if let Some(r) = region {
-                topics.push(region_topic(r));
-            }
-        }
-        3 => {
-            topics.push(HEADERS_TOPIC.to_string());
-            topics.push(ATTESTATION_TOPIC.to_string());
-        }
-        _ => {
-            // Tier 0 / legacy — includes attestations so all nodes can track finality
-            topics.extend([
-                BLOCKS_TOPIC.to_string(),
-                TRANSACTIONS_TOPIC.to_string(),
-                HEARTBEATS_TOPIC.to_string(),
-                HEADERS_TOPIC.to_string(),
-                ATTESTATION_TOPIC.to_string(),
-            ]);
-        }
-    }
-    topics
-}
-
-/// Reconfigure gossipsub subscriptions for a tier change.
-///
-/// Performs a delta operation:
-/// 1. Computes desired topic set for the new tier
-/// 2. Unsubscribes from topics not in the desired set (except protected topics)
-/// 3. Subscribes to new topics via `subscribe_to_topics_for_tier()`
-///
-/// SAFETY: BLOCKS_TOPIC and TRANSACTIONS_TOPIC are never unsubscribed regardless
-/// of tier. A node without blocks is a dead node. Tier 3 header-only mode is only
-/// safe for non-producing light clients (not yet supported).
-///
-/// Safe to call multiple times with the same tier (idempotent).
-pub fn reconfigure_topics_for_tier(
-    gossipsub: &mut Gossipsub,
-    tier: u8,
-    region: Option<u32>,
-) -> Result<(), GossipError> {
-    // Build desired topic hashes
-    let desired: HashSet<TopicHash> = topics_for_tier(tier, region)
-        .iter()
-        .map(|s| IdentTopic::new(s).hash())
-        .collect();
-
-    // Build protected set
-    let protected: HashSet<TopicHash> = PROTECTED_TOPICS
-        .iter()
-        .map(|s| IdentTopic::new(*s).hash())
-        .collect();
-
-    // Unsubscribe from topics not in the desired set, but NEVER unsubscribe protected topics
-    let current: Vec<TopicHash> = gossipsub.topics().cloned().collect();
-    for topic_hash in &current {
-        if !desired.contains(topic_hash) && !protected.contains(topic_hash) {
-            debug!("Unsubscribing from topic: {}", topic_hash);
-            let topic = IdentTopic::new(topic_hash.as_str());
-            let _ = gossipsub.unsubscribe(&topic);
-        }
-    }
-
-    // Subscribe to desired topics (idempotent — already-subscribed is a no-op)
-    subscribe_to_topics_for_tier(gossipsub, tier, region)
-}
 
 /// Compute gossipsub mesh parameters dynamically based on total network peers.
 ///

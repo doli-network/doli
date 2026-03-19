@@ -192,12 +192,5 @@ pub(super) async fn handle_command(
             }
         }
 
-        NetworkCommand::ReconfigureTier { tier, region } => {
-            info!("Reconfiguring gossipsub topics for tier {}", tier);
-            let gs = &mut swarm.behaviour_mut().gossipsub;
-            if let Err(e) = crate::gossip::reconfigure_topics_for_tier(gs, tier, region) {
-                warn!("Failed to reconfigure tier topics: {}", e);
-            }
-        }
     }
 }

@@ -43,11 +43,7 @@ pub fn producer_region(pubkey: &crypto::PublicKey) -> u32 {
 /// - Tier 1: In the tier1_set (top validators by weight)
 /// - Tier 2: Not in tier1, but within tier2_count (attestors)
 /// - Tier 3: Beyond tier2 threshold (header-only validation)
-/// - Tier 0: Producer not found in on-chain set (safe default — keeps all topics)
-///
-/// Returns 0 (not 3) when the producer is unknown. Tier 3 would cause
-/// `reconfigure_topics_for_tier(3)` to unsubscribe from BLOCKS_TOPIC,
-/// starving the node of blocks. Tier 0 keeps all topics subscribed.
+/// - Tier 0: Producer not found in on-chain set (safe default)
 pub fn producer_tier(
     pubkey: &crypto::PublicKey,
     tier1_set: &[crypto::PublicKey],

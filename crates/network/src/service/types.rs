@@ -129,8 +129,6 @@ pub enum NetworkCommand {
     BroadcastHeartbeat(Vec<u8>),
     /// Broadcast an attestation (finality gadget)
     BroadcastAttestation(Vec<u8>),
-    /// Reconfigure gossipsub topic subscriptions for a new tier
-    ReconfigureTier { tier: u8, region: Option<u32> },
 }
 
 /// Network errors

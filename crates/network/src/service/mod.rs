@@ -456,19 +456,6 @@ impl NetworkService {
         Ok(())
     }
 
-    /// Reconfigure gossipsub topic subscriptions for a new tier
-    pub async fn reconfigure_tier(
-        &self,
-        tier: u8,
-        region: Option<u32>,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::ReconfigureTier { tier, region })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
     /// Get connected peer count
     pub async fn peer_count(&self) -> usize {
         self.peers.read().await.len()
