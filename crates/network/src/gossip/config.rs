@@ -25,47 +25,6 @@ const PROTECTED_TOPICS: &[&str] = &[BLOCKS_TOPIC, TRANSACTIONS_TOPIC];
 /// For 106 nodes: mesh_n=11, for 500: mesh_n=23, for 1000: mesh_n=32.
 const MESH_N_CAP: usize = 50;
 
-/// Create a new GossipSub behaviour with tier-appropriate mesh parameters.
-///
-/// - Tier 1: mesh_n=20 (dense mesh for instant block propagation among 500 validators)
-/// - Tier 2: mesh_n=8 (moderate mesh within regional shards)
-/// - Tier 3: mesh_n=4 (light mesh for header-only validation)
-/// - Tier 0 (default/legacy): mesh_n=6 (backward compatible)
-pub fn new_gossipsub_for_tier(keypair: &Keypair, tier: u8) -> Result<Gossipsub, GossipError> {
-    let message_id_fn = |message: &Message| {
-        let mut hasher = DefaultHasher::new();
-        message.data.hash(&mut hasher);
-        MessageId::from(hasher.finish().to_be_bytes().to_vec())
-    };
-
-    let (mesh_n, mesh_n_low, mesh_n_high, mesh_outbound_min) = match tier {
-        1 => (20, 15, 30, 5), // Tier 1: dense mesh
-        2 => (8, 5, 15, 3),   // Tier 2: moderate mesh
-        3 => (4, 2, 8, 1),    // Tier 3: light mesh
-        _ => (6, 4, 12, 2),   // Default/legacy
-    };
-
-    let config = ConfigBuilder::default()
-        .heartbeat_interval(Duration::from_secs(1))
-        .validation_mode(ValidationMode::Strict)
-        .message_id_fn(message_id_fn)
-        .mesh_n(mesh_n)
-        .mesh_n_low(mesh_n_low)
-        .mesh_n_high(mesh_n_high)
-        .mesh_outbound_min(mesh_outbound_min)
-        .gossip_lazy(6)
-        .gossip_factor(0.25)
-        .history_length(5)
-        .history_gossip(3)
-        .max_transmit_size(1024 * 1024)
-        .duplicate_cache_time(Duration::from_secs(60))
-        .build()
-        .map_err(|e| GossipError::Config(e.to_string()))?;
-
-    Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
-        .map_err(|e| GossipError::Init(e.to_string()))
-}
-
 /// Subscribe to tier-appropriate topics.
 ///
 /// - Tier 1: All base topics + TIER1_BLOCKS_TOPIC + ATTESTATION_TOPIC + HEADERS_TOPIC

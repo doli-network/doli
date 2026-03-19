@@ -104,10 +104,8 @@ impl NetworkService {
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
         // Build gossipsub with mesh params from NetworkParams.
-        // All topics are subscribed to ensure full connectivity at startup.
-        // Tier-aware mesh parameters (new_gossipsub_for_tier / subscribe_to_topics_for_tier)
-        // are available for future hot-reconfiguration when the node's tier is computed
-        // at the first epoch boundary after block sync.
+        // All topics are subscribed at startup. Topic subscriptions are
+        // reconfigured at epoch boundaries when the node's tier is computed.
         let mesh = crate::gossip::MeshConfig {
             mesh_n: config.mesh_n,
             mesh_n_low: config.mesh_n_low,

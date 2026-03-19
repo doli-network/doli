@@ -19,33 +19,6 @@ fn test_region_topic_format() {
     assert_eq!(region_topic(42), "/doli/r42/blocks/1");
 }
 
-#[test]
-fn test_tier1_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 1);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_tier2_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 2);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_tier3_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 3);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_default_tier_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 0);
-    assert!(gs.is_ok());
-}
 
 #[test]
 fn test_mesh_config_default() {
@@ -140,7 +113,8 @@ fn test_topics_for_tier3_headers_only() {
 #[test]
 fn test_reconfigure_tier_unsubscribes() {
     let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
+    let mesh = MeshConfig { mesh_n: 6, mesh_n_low: 4, mesh_n_high: 12, gossip_lazy: 6 };
+    let mut gs = new_gossipsub(&keypair, &mesh).unwrap();
 
     // Start with Tier 0 (legacy) subscriptions
     subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
@@ -158,7 +132,8 @@ fn test_reconfigure_tier_unsubscribes() {
 #[test]
 fn test_protected_topics_never_unsubscribed() {
     let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
+    let mesh = MeshConfig { mesh_n: 6, mesh_n_low: 4, mesh_n_high: 12, gossip_lazy: 6 };
+    let mut gs = new_gossipsub(&keypair, &mesh).unwrap();
 
     // Subscribe to all Tier 0 topics
     subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
