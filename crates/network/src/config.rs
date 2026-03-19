@@ -76,7 +76,7 @@ impl NetworkConfig {
             gossip_lazy: 6,
             nat_config: NatConfig::default(),
             external_address: None,
-            tx_announce_enabled: true,
+            tx_announce_enabled: false,
         }
     }
 

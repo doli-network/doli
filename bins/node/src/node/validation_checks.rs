@@ -409,7 +409,16 @@ impl Node {
         Ok(())
     }
 
-    /// Handle a new transaction from the network
+    /// Handle a new transaction received from the network (gossip or txfetch).
+    ///
+    /// NOTE: This does NOT re-broadcast the tx. GossipSub already handles
+    /// multi-hop forwarding through the mesh (eager push to mesh peers,
+    /// IHAVE/IWANT to non-mesh peers). Application-level re-broadcast would
+    /// create new gossipsub messages with different batch compositions,
+    /// bypassing gossipsub's dedup and causing amplification at scale.
+    ///
+    /// RPC-submitted txs are broadcast separately via the `broadcast_tx`
+    /// callback wired in startup.rs, which sends directly to gossipsub.
     pub(super) async fn handle_new_transaction(&self, tx: Transaction) -> Result<()> {
         let tx_hash = tx.hash();
 
@@ -443,10 +452,7 @@ impl Node {
                         fee: 0,
                     });
                 }
-                // Broadcast to network
-                if let Some(ref network) = self.network {
-                    let _ = network.broadcast_transaction(tx).await;
-                }
+                // No network re-broadcast — gossipsub handles forwarding.
             }
             Err(e) => {
                 debug!("Failed to add transaction {} to mempool: {}", tx_hash, e);
