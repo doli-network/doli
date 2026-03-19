@@ -386,9 +386,8 @@ pub const FAST_THRESHOLD_MS: u64 = 0;
 pub const FAST_THRESHOLD: u64 = 0;
 
 /// Maximum number of fallback producers per slot.
-/// With 2 ranks: rank 0 (primary) produces at 0s, rank 1 (fallback) at 2s.
-/// Rank 1 only produces if rank 0's block hasn't arrived via gossip.
-pub const MAX_FALLBACK_PRODUCERS: usize = 2;
+/// Single proposer: exactly 1 producer per slot.
+pub const MAX_FALLBACK_PRODUCERS: usize = 1;
 
 /// Sequential fallback timeout in milliseconds.
 /// Rank 0 (primary proposer): produces at 0ms.
@@ -397,10 +396,15 @@ pub const MAX_FALLBACK_PRODUCERS: usize = 2;
 pub const FALLBACK_TIMEOUT_MS: u64 = 2_000;
 
 /// Maximum fallback ranks: 2 (rank 0 = primary, rank 1 = single fallback).
-/// Previous value was 5, causing up to 5 competing blocks per slot and network
-/// fragmentation at >22 nodes. With 2 ranks, rank 1 waits 2s for gossip
-/// confirmation before producing — zero fork risk.
-pub const MAX_FALLBACK_RANKS: usize = 2;
+/// Single proposer per slot (Ethereum model). If the scheduled producer
+/// misses their slot, the slot is empty. No fallback = no competing blocks
+/// = no forks from propagation races. The bond-weighted scheduler guarantees
+/// fair rotation. Empty slots are rare (producer must be offline) and
+/// self-healing (next slot picks a different producer).
+///
+/// Previous values: 5 (fragmentation at 22+ nodes), 2 (forks at 35+ nodes
+/// due to gossip latency exceeding the 2s fallback window).
+pub const MAX_FALLBACK_RANKS: usize = 1;
 
 /// Maximum clock drift in milliseconds for fine-grained NTP validation.
 /// Nodes with drift > 200ms should enable NTP synchronization.

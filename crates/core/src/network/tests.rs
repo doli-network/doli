@@ -235,13 +235,13 @@ fn test_registration_fees_scale_by_network() {
 
 #[test]
 fn test_vdf_register_iterations_fixed() {
-    // All networks use same fixed registration VDF (~7ms)
+    // All networks use same fixed registration VDF (1000 iterations ~= 0.07ms)
     assert_eq!(
         Network::Mainnet.vdf_register_iterations(),
         Network::Testnet.vdf_register_iterations()
     );
-    // 100K iterations ~= 7ms — fast enough for block throughput
-    assert_eq!(Network::Mainnet.vdf_register_iterations(), 100_000);
+    // 1000 iterations — bond is the real Sybil protection
+    assert_eq!(Network::Mainnet.vdf_register_iterations(), 1_000);
     assert!(Network::Devnet.vdf_register_iterations() <= 1_000_000);
 }
 

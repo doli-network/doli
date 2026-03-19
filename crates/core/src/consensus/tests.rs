@@ -157,49 +157,45 @@ fn test_max_block_size_params_method() {
 
 #[test]
 fn test_allowed_producer_rank() {
-    // Sequential 2s windows (seconds precision), MAX_FALLBACK_RANKS=2:
+    // Sequential 2s windows (seconds precision), MAX_FALLBACK_RANKS=1:
     // 0s = 0ms -> rank 0, 1s = 1000ms -> rank 0
-    // 2s = 2000ms -> rank 1, 3s = 3000ms -> rank 1
-    // 4s+ = past slot end, clamped to max rank (1)
+    // 2s+ = past slot end, clamped to max rank (0)
     assert_eq!(allowed_producer_rank(0), 0);
     assert_eq!(allowed_producer_rank(1), 0); // 1000ms still in rank 0 window
-    assert_eq!(allowed_producer_rank(2), 1); // 2000ms in rank 1 window (2000-3999)
-    assert_eq!(allowed_producer_rank(3), 1); // 3000ms still in rank 1 window
-    assert_eq!(allowed_producer_rank(4), 1); // 4000ms past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(5), 1); // past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(6), 1); // past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(7), 1); // past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(8), 1); // past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(9), 1); // past slot end, clamped to 1
-    assert_eq!(allowed_producer_rank(10), 1); // past slot end, clamped to 1
+    assert_eq!(allowed_producer_rank(2), 0); // 2000ms past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(3), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(4), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(5), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(6), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(7), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(8), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(9), 0); // past slot end, clamped to 0
+    assert_eq!(allowed_producer_rank(10), 0); // past slot end, clamped to 0
 }
 
 #[test]
 fn test_allowed_producer_rank_ms() {
-    // Sequential 2s exclusive windows with millisecond precision, MAX_FALLBACK_RANKS=2
+    // Sequential 2s exclusive windows with millisecond precision, MAX_FALLBACK_RANKS=1
     //
     // Windows:
     // - 0-1999ms: rank 0 (primary)
-    // - 2000-3999ms: rank 1
-    // - 4000+ms: past slot end (clamped to max rank = 1)
+    // - 2000+ms: past slot end (clamped to max rank = 0)
 
     // Rank 0 window: 0-1999ms
     assert_eq!(allowed_producer_rank_ms(0), 0);
     assert_eq!(allowed_producer_rank_ms(1000), 0);
     assert_eq!(allowed_producer_rank_ms(1999), 0);
 
-    // Rank 1 window: 2000-3999ms
-    assert_eq!(allowed_producer_rank_ms(2000), 1);
-    assert_eq!(allowed_producer_rank_ms(3000), 1);
-    assert_eq!(allowed_producer_rank_ms(3999), 1);
-
-    // Past slot end: 4000+ms (clamped to max rank = 1)
-    assert_eq!(allowed_producer_rank_ms(4000), 1);
-    assert_eq!(allowed_producer_rank_ms(5999), 1);
-    assert_eq!(allowed_producer_rank_ms(8000), 1);
-    assert_eq!(allowed_producer_rank_ms(9999), 1);
-    assert_eq!(allowed_producer_rank_ms(10000), 1);
-    assert_eq!(allowed_producer_rank_ms(15000), 1);
+    // Past slot end: 2000+ms (clamped to max rank = 0)
+    assert_eq!(allowed_producer_rank_ms(2000), 0);
+    assert_eq!(allowed_producer_rank_ms(3000), 0);
+    assert_eq!(allowed_producer_rank_ms(3999), 0);
+    assert_eq!(allowed_producer_rank_ms(4000), 0);
+    assert_eq!(allowed_producer_rank_ms(5999), 0);
+    assert_eq!(allowed_producer_rank_ms(8000), 0);
+    assert_eq!(allowed_producer_rank_ms(9999), 0);
+    assert_eq!(allowed_producer_rank_ms(10000), 0);
+    assert_eq!(allowed_producer_rank_ms(15000), 0);
 }
 
 #[test]
@@ -212,14 +208,14 @@ fn test_is_producer_eligible() {
         })
         .collect();
 
-    // Sequential exclusive windows (2s each), MAX_FALLBACK_RANKS=2:
+    // Single proposer per slot, MAX_FALLBACK_RANKS=1:
     // At second 0 (0ms): only rank 0 is eligible
     assert!(is_producer_eligible(&producers[0], &producers, 0));
     assert!(!is_producer_eligible(&producers[1], &producers, 0));
 
-    // At second 2 (2000ms): only rank 1 is eligible (exclusive, not cumulative)
+    // At second 2 (2000ms): past slot end, no one eligible
     assert!(!is_producer_eligible(&producers[0], &producers, 2));
-    assert!(is_producer_eligible(&producers[1], &producers, 2));
+    assert!(!is_producer_eligible(&producers[1], &producers, 2));
 
     // At second 4 (4000ms): past slot end, no one eligible
     assert!(!is_producer_eligible(&producers[0], &producers, 4));
@@ -248,15 +244,15 @@ fn test_sequential_windows() {
 
 #[test]
 fn test_eligible_rank_boundaries() {
-    // Test exact boundaries between windows, MAX_FALLBACK_RANKS=2
+    // Test exact boundaries between windows, MAX_FALLBACK_RANKS=1
     // 0ms: rank 0
     assert_eq!(eligible_rank_at_ms(0), Some(0));
     // 1999ms: still rank 0
     assert_eq!(eligible_rank_at_ms(1999), Some(0));
-    // 2000ms: rank 1
-    assert_eq!(eligible_rank_at_ms(2000), Some(1));
-    // 3999ms: still rank 1
-    assert_eq!(eligible_rank_at_ms(3999), Some(1));
+    // 2000ms: past slot end (None) — only 1 rank with 2s window
+    assert_eq!(eligible_rank_at_ms(2000), None);
+    // 3999ms: past slot end (None)
+    assert_eq!(eligible_rank_at_ms(3999), None);
     // 4000ms: past slot end (None)
     assert_eq!(eligible_rank_at_ms(4000), None);
     // 9999ms: past slot end (None)
@@ -279,9 +275,9 @@ fn test_is_producer_eligible_ms() {
     assert!(is_producer_eligible_ms(&producers[0], &producers, 0));
     assert!(!is_producer_eligible_ms(&producers[1], &producers, 0));
 
-    // At 2000ms: only rank 1 eligible (exclusive)
+    // At 2000ms: past slot end (MAX_FALLBACK_RANKS=1), no one eligible
     assert!(!is_producer_eligible_ms(&producers[0], &producers, 2000));
-    assert!(is_producer_eligible_ms(&producers[1], &producers, 2000));
+    assert!(!is_producer_eligible_ms(&producers[1], &producers, 2000));
     assert!(!is_producer_eligible_ms(&producers[2], &producers, 2000));
 
     // At 10000ms (past slot end): no one eligible
@@ -1206,10 +1202,10 @@ fn test_constants_match_whitepaper() {
     // VDF iterations: 800K per block (~55ms)
     assert_eq!(T_BLOCK, 800_000);
 
-    // Sequential fallback: rank 0 (primary) + rank 1 (single fallback at 2s)
+    // Single proposer per slot (no fallback): only rank 0
     assert_eq!(FALLBACK_TIMEOUT_MS, 2_000);
-    assert_eq!(MAX_FALLBACK_RANKS, 2);
-    assert_eq!(MAX_FALLBACK_PRODUCERS, 2);
+    assert_eq!(MAX_FALLBACK_RANKS, 1);
+    assert_eq!(MAX_FALLBACK_PRODUCERS, 1);
 
     // Unbonding period: 7 days = 60,480 slots
     assert_eq!(UNBONDING_PERIOD, 60_480);
@@ -1269,14 +1265,12 @@ fn test_selection_uses_evenly_distributed_offsets() {
     assert_eq!(select_producer_for_slot(5, &producers)[0], producer_c);
     assert_eq!(select_producer_for_slot(6, &producers)[0], producer_a); // wraps
 
-    // Evenly-distributed fallbacks for slot 4 (base ticket = 4):
-    // With MAX_FALLBACK_RANKS=2, MAX_FALLBACK_PRODUCERS=2:
+    // Single proposer per slot (MAX_FALLBACK_RANKS=1, MAX_FALLBACK_PRODUCERS=1):
     // rank 0: ticket 4 -> producer_b
-    // rank 1: offset (6*1)/2=3, ticket (4+3)%6=1 -> producer_a
+    // No fallback ranks.
     let sel4 = select_producer_for_slot(4, &producers);
-    assert_eq!(sel4.len(), 2); // 2 producers (capped at MAX_FALLBACK_PRODUCERS)
+    assert_eq!(sel4.len(), 1); // 1 producer (single proposer)
     assert_eq!(sel4[0], producer_b);
-    assert_eq!(sel4[1], producer_a);
 
     // With enough producers and bonds, fallbacks spread across the set
     // Verify determinism
@@ -1287,15 +1281,15 @@ fn test_selection_uses_evenly_distributed_offsets() {
 }
 
 /// Test: fallback_windows
-/// Verify sequential 2s fallback window timing
+/// Verify single-proposer slot timing (no fallback)
 #[test]
 fn test_fallback_windows() {
-    // Verify sequential window constants: 2 ranks (primary + single fallback)
+    // Verify single-proposer constants: 1 rank (primary only, no fallback)
     assert_eq!(FALLBACK_TIMEOUT_MS, 2_000);
-    assert_eq!(MAX_FALLBACK_RANKS, 2);
-    assert_eq!(MAX_FALLBACK_PRODUCERS, 2);
+    assert_eq!(MAX_FALLBACK_RANKS, 1);
+    assert_eq!(MAX_FALLBACK_PRODUCERS, 1);
 
-    // Create 2 producers for sequential window testing
+    // Create 2 producers for window testing
     let producers: Vec<crypto::PublicKey> = (0..2)
         .map(|i| {
             let mut bytes = [0u8; 32];
@@ -1309,14 +1303,16 @@ fn test_fallback_windows() {
     assert!(is_producer_eligible_ms(&producers[0], &producers, 1999));
     assert!(!is_producer_eligible_ms(&producers[0], &producers, 2000));
 
-    // Rank 1 (fallback) is eligible in 2000-3999ms window
+    // No fallback rank exists — rank 1 producer is never eligible
+    assert!(!is_producer_eligible_ms(&producers[1], &producers, 0));
     assert!(!is_producer_eligible_ms(&producers[1], &producers, 1999));
-    assert!(is_producer_eligible_ms(&producers[1], &producers, 2000));
-    assert!(is_producer_eligible_ms(&producers[1], &producers, 3999));
+    assert!(!is_producer_eligible_ms(&producers[1], &producers, 2000));
+    assert!(!is_producer_eligible_ms(&producers[1], &producers, 3999));
     assert!(!is_producer_eligible_ms(&producers[1], &producers, 4000));
 
-    // Past rank 1 window (4000ms+): no one eligible
+    // Past rank 0 window (2000ms+): no one eligible
     for producer in &producers {
+        assert!(!is_producer_eligible_ms(producer, &producers, 2000));
         assert!(!is_producer_eligible_ms(producer, &producers, 4000));
         assert!(!is_producer_eligible_ms(producer, &producers, 10000));
     }
@@ -1324,10 +1320,10 @@ fn test_fallback_windows() {
     // Test ms precision at boundaries
     assert_eq!(allowed_producer_rank_ms(0), 0);
     assert_eq!(allowed_producer_rank_ms(1999), 0);
-    assert_eq!(allowed_producer_rank_ms(2000), 1);
-    assert_eq!(allowed_producer_rank_ms(3999), 1);
-    assert_eq!(allowed_producer_rank_ms(4000), 1); // past slot, clamped to max rank (1)
-    assert_eq!(allowed_producer_rank_ms(10000), 1); // past slot, clamped to max rank (1)
+    assert_eq!(allowed_producer_rank_ms(2000), 0); // past slot, clamped to max rank (0)
+    assert_eq!(allowed_producer_rank_ms(3999), 0); // past slot, clamped to max rank (0)
+    assert_eq!(allowed_producer_rank_ms(4000), 0); // past slot, clamped to max rank (0)
+    assert_eq!(allowed_producer_rank_ms(10000), 0); // past slot, clamped to max rank (0)
 }
 
 /// Test: seniority_uses_years
