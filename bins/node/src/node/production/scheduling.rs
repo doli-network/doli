@@ -37,11 +37,30 @@ impl Node {
                 if let Some(last_change) = *self.last_producer_list_change.read().await {
                     let elapsed = last_change.elapsed();
                     if elapsed.as_secs() < producer_list_stability_secs {
+                        // INC-001: Debounce — cap total waiting at 2x the stability window.
+                        // Without this cap, 50 sequential discoveries (each resetting the timer)
+                        // create a minutes-long production blackout. The deadline tracks when we
+                        // first started waiting; after 2x, we proceed even if list is still changing.
+                        let deadline = self
+                            .producer_stability_deadline
+                            .get_or_insert_with(Instant::now);
+                        let total_waiting = deadline.elapsed().as_secs();
+                        if total_waiting < producer_list_stability_secs * 2 {
+                            debug!(
+                                "Producer list changed {:?} ago, waiting for stability ({} secs required, total_wait={}s)...",
+                                elapsed, producer_list_stability_secs, total_waiting
+                            );
+                            return None;
+                        }
+                        // Cap exceeded — proceed despite instability
                         debug!(
-                            "Producer list changed {:?} ago, waiting for stability ({} secs required)...",
-                            elapsed, producer_list_stability_secs
+                            "Producer list stability cap exceeded ({}s > {}s) — proceeding",
+                            total_waiting,
+                            producer_list_stability_secs * 2
                         );
-                        return None;
+                    } else {
+                        // List is stable — reset the deadline for next time
+                        self.producer_stability_deadline = None;
                     }
                 }
 
@@ -87,10 +106,12 @@ impl Node {
                     // - The network is genuinely starting fresh (no blocks to receive)
                     // - Or this node happens to be the designated producer for early slots
 
+                    // INC-001: Reduced from 90s to 30s. 90s wastes 9 slots per joining
+                    // producer during bootstrap. 30s (3 slots) is enough for initial sync.
                     let bootstrap_sync_grace_secs: u64 = if self.config.network == Network::Devnet {
                         15 // ~15 slots at 1s/slot for faster devnet testing
                     } else {
-                        90 // ~9 slots at 10s/slot for testnet/mainnet
+                        30 // ~3 slots at 10s/slot for testnet/mainnet
                     };
 
                     let within_bootstrap_grace =
@@ -254,7 +275,52 @@ impl Node {
                 // Prefer on-chain ProducerSet (deterministic). Fall back to GSet
                 // when the on-chain set is empty (always the case during genesis
                 // blocks 1-360, since producers aren't registered until height 361).
-                let mut known_producers: Vec<PublicKey> = {
+                // INC-001 RC-5A: During genesis, use HARDCODED genesis producers for scheduling.
+                // The on-chain ProducerSet may be empty (cleared by rollback to h=0) and the
+                // GSet has DIFFERENT contents on different nodes (anti-entropy hasn't converged).
+                // Both cause divergent schedulers → competing blocks → 5 forks.
+                // The hardcoded genesis producers are IDENTICAL on all nodes — guaranteed
+                // deterministic scheduling from slot 1.
+                let mut known_producers: Vec<PublicKey> = if in_genesis {
+                    // Hardcoded genesis producers — identical on all nodes
+                    let genesis_producers = match self.config.network {
+                        Network::Testnet => doli_core::genesis::testnet_genesis_producers()
+                            .into_iter()
+                            .map(|(pk, _)| pk)
+                            .collect::<Vec<_>>(),
+                        Network::Mainnet => doli_core::genesis::mainnet_genesis_producers()
+                            .into_iter()
+                            .map(|(pk, _)| pk)
+                            .collect::<Vec<_>>(),
+                        Network::Devnet => {
+                            // Devnet: try on-chain first, then GSet
+                            Vec::new()
+                        }
+                    };
+                    if !genesis_producers.is_empty() {
+                        info!(
+                            "[SCHED] Genesis mode: using {} hardcoded producers (deterministic)",
+                            genesis_producers.len()
+                        );
+                        genesis_producers
+                    } else {
+                        // Devnet fallback: use on-chain or GSet
+                        let producers = self.producer_set.read().await;
+                        let on_chain: Vec<PublicKey> = producers
+                            .active_producers_at_height(height)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                        if !on_chain.is_empty() {
+                            on_chain
+                        } else {
+                            drop(producers);
+                            let known = self.known_producers.read().await;
+                            known.clone()
+                        }
+                    }
+                } else {
+                    // Post-genesis: use on-chain ProducerSet (populated by VDF registrations)
                     let producers = self.producer_set.read().await;
                     let on_chain: Vec<PublicKey> = producers
                         .active_producers_at_height(height)
@@ -264,8 +330,7 @@ impl Node {
                     if !on_chain.is_empty() {
                         on_chain
                     } else {
-                        // On-chain set empty (genesis phase). Use GSet as fallback.
-                        drop(producers); // release lock before acquiring gset lock
+                        drop(producers);
                         let gset_producers = {
                             let gset = self.producer_gset.read().await;
                             gset.active_producers(7200)
@@ -376,12 +441,22 @@ impl Node {
                     return None;
                 }
 
-                debug!(
-                    "Bootstrap fallback: slot={}, {} producers, eligible={}",
-                    current_slot,
-                    num_producers,
-                    eligible.len()
-                );
+                // INC-001: Diagnostic logging — trace slot assignment for debugging fork divergence
+                {
+                    let our_rank = eligible.iter().position(|p| p == &our_pubkey);
+                    let primary = eligible
+                        .first()
+                        .map(|p| {
+                            let b = p.as_bytes();
+                            format!("{:02x}{:02x}{:02x}{:02x}", b[0], b[1], b[2], b[3])
+                        })
+                        .unwrap_or_default();
+                    info!(
+                        "[SCHED] slot={} h={} producers={} eligible={} primary={} our_rank={:?} source={}",
+                        current_slot, height, num_producers, eligible.len(), primary, our_rank,
+                        if in_genesis { "hardcoded" } else { "on-chain/gset" }
+                    );
+                }
 
                 // Pass eligible list to the standard time-window check below.
                 // our_bootstrap_rank = None means it uses is_producer_eligible_ms

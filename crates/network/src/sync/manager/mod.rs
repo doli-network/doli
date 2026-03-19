@@ -513,6 +513,16 @@ pub struct SyncManager {
     last_fork_sync_rejection: Instant,
     fork_sync_cooldown_secs: u64,
 
+    // INC-001 fix: Fork sync loop circuit breaker
+    /// Count of fork syncs within the breaker window.
+    consecutive_fork_syncs: u32,
+    /// Timestamp of last fork sync (for breaker window expiry).
+    last_fork_sync_at: Option<Instant>,
+    /// Recently-held tip hashes to prevent equal-weight ping-pong.
+    /// Capacity: 10. If a remedial reorg would switch to a tip we recently held,
+    /// reject it to break the oscillation.
+    recently_held_tips: Vec<(Hash, Instant)>,
+
     // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
     // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
     /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
@@ -575,7 +585,7 @@ impl SyncManager {
             max_heights_ahead: 5,         // Fork detection: if >5 blocks ahead, suspicious
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
-            max_solo_production_secs: 86400, // Disabled for local dev (was 50s)
+            max_solo_production_secs: 50, // INC-001: 5 slots (50s) — prevents long solo forks
             consecutive_sync_failures: 0,
             max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
             min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers
@@ -617,6 +627,9 @@ impl SyncManager {
             fork_mismatch_detected: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
+            consecutive_fork_syncs: 0,
+            last_fork_sync_at: None,
+            recently_held_tips: Vec::new(),
             behind_since: None,
             stable_gap_since: None,
             // PGD fix defaults

@@ -493,9 +493,12 @@ impl Node {
                 let state = chain_state.read().await;
                 config.network.is_in_genesis(state.best_height + 1)
             };
+            // INC-001: Require 2 peers during genesis for testnet/mainnet.
+            // 1 peer was too permissive — a single connection to a new joining
+            // node (at h=0) allowed solo fork creation.
             let min_peers = match config.network {
                 Network::Devnet => 1,
-                _ if in_genesis_at_start => 1,
+                _ if in_genesis_at_start => 2,
                 Network::Testnet | Network::Mainnet => 2,
             };
             sm.set_min_peers_for_production(min_peers);
@@ -606,6 +609,7 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_resync_time: None,
             last_producer_list_change: Arc::new(RwLock::new(None)),
+            producer_stability_deadline: None,
             producer_gset,
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),

@@ -271,12 +271,15 @@ impl SyncManager {
             .peers_lost_at
             .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
             .unwrap_or(false);
+        // INC-001: The `local_height > 0` bypass allowed ALL nodes at genesis to produce
+        // with just 1 peer, creating 5 competing blocks for slot 1. Only bypass the peer
+        // check at height 0 if min_peers is 1 (devnet). For testnet/mainnet (min_peers=2),
+        // enforce the peer requirement even at height 0.
+        let genesis_bypass = self.local_height == 0 && self.min_peers_for_production <= 1;
         if self.peers.len() < self.min_peers_for_production
-            && self.local_height > 0
+            && !genesis_bypass
             && !past_peer_loss_timeout
         {
-            // Only apply this check if we're past genesis (height > 0)
-            // At genesis (height 0), we may legitimately be the first producer
             // Skip if peer loss timeout expired — solo production is preferable to chain halt
             warn!(
                 "FORK PREVENTION: Only {} peers (need {}) - blocking production to prevent echo chamber",
@@ -360,8 +363,8 @@ impl SyncManager {
         if !self.peers.is_empty() && best_peer_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
 
-            if height_lag > 3 {
-                // Large lag: unconditionally block. No timeout escape.
+            if height_lag > 5 {
+                // Very large lag (>5): unconditionally block. No timeout escape.
                 // The node must sync to tip before producing.
                 info!(
                     "[CAN_PRODUCE] Layer6.5: BLOCKED — lag={} (local_h={}, peer_h={}). \
@@ -374,6 +377,30 @@ impl SyncManager {
                     peer_height: best_peer_height,
                     height_diff: height_lag,
                 };
+            } else if height_lag > 3 {
+                // INC-001: Graduated timeout for lag 4-5. During mass node join,
+                // gossip propagation delays cause brief 4-5 block lags that are
+                // NOT forks. Allow production after 60s to avoid starving slots.
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+                if behind_secs <= 60 {
+                    info!(
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — lag={} (local_h={}, peer_h={}) behind_for={}s/60s",
+                        height_lag, self.local_height, best_peer_height, behind_secs
+                    );
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: height_lag,
+                    };
+                }
+                info!(
+                    "[CAN_PRODUCE] Layer6.5: lag={} but timeout elapsed ({}s>60s) — allowing",
+                    height_lag, behind_secs
+                );
             } else if height_lag >= 2 {
                 // Small lag (2-3 blocks): allow after brief timeout.
                 // Node is likely on the correct chain, just behind gossip propagation.
@@ -578,14 +605,20 @@ impl SyncManager {
             let silence_secs = last_gossip.elapsed().as_secs();
 
             if silence_secs > self.max_solo_production_secs {
-                // PGD-003: Check for network stall — all peers at our exact height.
-                let all_peers_at_our_height = !self.peers.is_empty()
-                    && self
-                        .peers
-                        .values()
-                        .all(|p| p.best_height == self.local_height);
+                // PGD-003 + INC-001: Check for network stall.
+                // Changed from ALL to MAJORITY: during bootstrap, some nodes may still
+                // be syncing (lower height). Requiring ALL causes a deadlock where
+                // syncing nodes prevent tip nodes from producing, which prevents
+                // syncing nodes from catching up.
+                let peers_at_our_height = self
+                    .peers
+                    .values()
+                    .filter(|p| p.best_height == self.local_height)
+                    .count();
+                let majority_at_our_height =
+                    !self.peers.is_empty() && peers_at_our_height > self.peers.len() / 2;
 
-                if all_peers_at_our_height {
+                if majority_at_our_height {
                     // Network stall: everyone stuck at the same height, nobody producing.
                     // Allow production. The gossip timer was already reset by
                     // update_production_state() (called before can_produce).

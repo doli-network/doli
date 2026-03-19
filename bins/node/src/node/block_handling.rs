@@ -582,6 +582,33 @@ impl Node {
         // rejecting it traps the node in an infinite loop (fork_sync → reject → retry).
         // This differs from gossip reorgs where equal weight means "no reason to switch."
         if weight_delta == 0 {
+            // INC-001 fix: Prevent equal-weight ping-pong. If the new chain's tip is
+            // a tip we recently held, we'd just oscillate back. Reject it instead.
+            let new_tip_hash = result
+                .canonical_blocks
+                .last()
+                .map(|b| b.hash())
+                .unwrap_or(crypto::Hash::ZERO);
+            {
+                let sync = self.sync_manager.read().await;
+                if sync.is_recently_held_tip(&new_tip_hash) {
+                    warn!(
+                        "Fork sync: equal weight but new tip {} was recently held — \
+                         rejecting to prevent ping-pong",
+                        &new_tip_hash.to_string()[..16]
+                    );
+                    let mut sync = self.sync_manager.write().await;
+                    sync.mark_fork_sync_rejected();
+                    sync.reset_sync_for_rollback();
+                    return Ok(());
+                }
+            }
+            // Record our current tip before switching away from it
+            {
+                let current_hash = self.chain_state.read().await.best_hash;
+                let mut sync = self.sync_manager.write().await;
+                sync.record_held_tip(current_hash);
+            }
             info!(
                 "Fork sync: equal weight (new={}, old={}) — accepting canonical chain (remedial reorg)",
                 new_chain_weight, old_chain_weight
@@ -613,11 +640,13 @@ impl Node {
         // infinite fork sync retry loops.
         match self.execute_reorg(reorg_result, trigger_block).await {
             Ok(()) => {
-                // Reset sync state so normal sync can resume from the new tip.
-                // Also reset consecutive_empty_headers — the fork is resolved.
+                // INC-001 fix: Use success-specific reset that sets recovery_phase = Normal.
+                // After a successful reorg, our tip IS on the canonical chain — peers will
+                // recognize our tip hash, so header-first sync works. PostRollback was wrong
+                // here and caused an infinite fork sync loop.
                 {
                     let mut sync = self.sync_manager.write().await;
-                    sync.reset_sync_for_rollback();
+                    sync.reset_sync_after_successful_reorg();
                     sync.reset_empty_headers();
                     let (height, hash, slot) = {
                         let state = self.chain_state.read().await;

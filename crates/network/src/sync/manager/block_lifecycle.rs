@@ -493,6 +493,47 @@ impl SyncManager {
         self.last_fork_sync_rejection = Instant::now();
     }
 
+    /// Record the current tip hash before a remedial reorg.
+    /// Prevents equal-weight ping-pong: if a fork sync wants to switch
+    /// back to a tip we recently held, we reject it.
+    pub fn record_held_tip(&mut self, tip_hash: Hash) {
+        let now = Instant::now();
+        // Evict expired entries (TTL: 5 minutes)
+        self.recently_held_tips
+            .retain(|(_, ts)| now.duration_since(*ts) < Duration::from_secs(300));
+        // Capacity: 10
+        if self.recently_held_tips.len() >= 10 {
+            self.recently_held_tips.remove(0);
+        }
+        self.recently_held_tips.push((tip_hash, now));
+    }
+
+    /// Check if a tip hash was recently held (within 5-minute TTL).
+    pub fn is_recently_held_tip(&self, tip_hash: &Hash) -> bool {
+        let now = Instant::now();
+        self.recently_held_tips
+            .iter()
+            .any(|(h, ts)| h == tip_hash && now.duration_since(*ts) < Duration::from_secs(300))
+    }
+
+    /// Check if the fork sync circuit breaker is tripped.
+    /// Returns true if 3+ fork syncs happened within 5 minutes.
+    pub fn is_fork_sync_breaker_tripped(&self) -> bool {
+        if self.consecutive_fork_syncs < 3 {
+            return false;
+        }
+        match self.last_fork_sync_at {
+            Some(ts) => ts.elapsed() < Duration::from_secs(300),
+            None => false,
+        }
+    }
+
+    /// Reset the fork sync circuit breaker (called on successful header-first sync).
+    pub fn reset_fork_sync_breaker(&mut self) {
+        self.consecutive_fork_syncs = 0;
+        self.last_fork_sync_at = None;
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         // NOTE: consecutive_empty_headers is NOT reset here. It must keep climbing
         // toward the escalation threshold (10) that triggers genesis resync via
@@ -512,6 +553,36 @@ impl SyncManager {
         // Clear stale weight history to prevent minority fork weights from
         // contaminating future fork choice decisions after a resync.
         self.reorg_handler.clear();
+        self.reset_sync_buffers();
+    }
+
+    /// Reset sync state after a SUCCESSFUL fork sync reorg.
+    ///
+    /// Unlike `reset_sync_for_rollback()`, this sets `recovery_phase = Normal`
+    /// because after a successful reorg, our tip IS on the canonical chain —
+    /// peers WILL recognize our tip hash, so header-first sync works normally.
+    ///
+    /// INC-001 fix: Using `PostRollback` on the success path caused an infinite
+    /// fork sync loop: success → PostRollback → start_fork_sync → success → repeat.
+    pub fn reset_sync_after_successful_reorg(&mut self) {
+        self.consecutive_sync_failures = 0;
+        self.fork_sync = None;
+        self.state = SyncState::Idle;
+        // SUCCESS path: tip is now on the canonical chain. Header-first sync
+        // will work because peers recognize our tip hash. Do NOT set PostRollback.
+        self.recovery_phase = super::RecoveryPhase::Normal;
+        // Preserve reorg_handler weights — successful reorg weights are valid
+        // context for future fork choice decisions. Only clear on rejection.
+        self.reset_sync_buffers();
+        // Update cooldown to prevent immediate re-trigger of fork sync
+        self.last_fork_sync_rejection = Instant::now();
+        // Track consecutive fork syncs for circuit breaker
+        self.consecutive_fork_syncs += 1;
+        self.last_fork_sync_at = Some(Instant::now());
+    }
+
+    /// Reset sync buffers (shared between rollback and success paths).
+    fn reset_sync_buffers(&mut self) {
         self.pending_headers.clear();
         self.pending_blocks.clear();
         self.headers_needing_bodies.clear();

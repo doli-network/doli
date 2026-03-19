@@ -203,14 +203,29 @@ impl SyncManager {
                 // snap sync via needs_genesis_resync.
                 self.recovery_phase = super::RecoveryPhase::Normal;
 
+                // INC-001 fix: Circuit breaker — if 3+ fork syncs within 5 minutes,
+                // stop trying fork sync and use header-first only.
+                if self.is_fork_sync_breaker_tripped() {
+                    warn!(
+                        "Post-rollback: fork sync circuit breaker tripped ({} fork syncs) — \
+                         forcing header-first sync",
+                        self.consecutive_fork_syncs
+                    );
+                    self.state = SyncState::DownloadingHeaders {
+                        target_slot,
+                        peer,
+                        headers_count: 0,
+                    };
                 // Reorg cooldown: if we just rejected a fork sync (delta=0),
                 // don't start another one immediately. This breaks the infinite
                 // reorg loop when 50+ peers offer equal-weight competing chains.
-                let cooldown_elapsed = self.last_fork_sync_rejection.elapsed().as_secs();
-                if cooldown_elapsed < self.fork_sync_cooldown_secs {
+                } else if self.last_fork_sync_rejection.elapsed().as_secs()
+                    < self.fork_sync_cooldown_secs
+                {
                     info!(
                         "Post-rollback: fork sync in cooldown ({}s/{}) — using header-first",
-                        cooldown_elapsed, self.fork_sync_cooldown_secs
+                        self.last_fork_sync_rejection.elapsed().as_secs(),
+                        self.fork_sync_cooldown_secs
                     );
                     self.state = SyncState::DownloadingHeaders {
                         target_slot,
@@ -758,6 +773,8 @@ impl SyncManager {
             self.consecutive_empty_headers = 0;
             self.consecutive_sync_failures = 0;
             self.last_sync_activity = Instant::now();
+            // INC-001: Reset fork sync circuit breaker on successful header-first sync
+            self.reset_fork_sync_breaker();
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -902,6 +919,28 @@ impl SyncManager {
                 // Don't have the body yet
                 break;
             }
+        }
+
+        // INC-001 RC-6: PROCESSING STALL FIX
+        // If we're in Processing state but extracted ZERO blocks, nothing will call
+        // block_applied_with_weight() to transition us out. The 30s stuck timeout in
+        // cleanup is too slow — 3 slots are wasted per stall. Reset to Idle immediately
+        // so the node can resume production and process gossip blocks.
+        if blocks.is_empty() && matches!(self.state, SyncState::Processing { .. }) {
+            warn!(
+                "[PROCESSING_STALL] No blocks extractable in Processing state \
+                 (pending_headers={}, pending_blocks={}, local_h={}, local_hash={:.12}) \
+                 — resetting to Idle immediately",
+                self.pending_headers.len(),
+                self.pending_blocks.len(),
+                self.local_height,
+                self.local_hash,
+            );
+            self.pending_headers.clear();
+            self.pending_blocks.clear();
+            self.state = SyncState::Idle;
+            // Don't start a new sync here — let cleanup() handle it on the next tick
+            // to avoid recursive lock issues.
         }
 
         blocks

@@ -461,9 +461,14 @@ impl Node {
             );
             let mut sync = self.sync_manager.write().await;
             sync.set_tier(new_tier, producers_with_weights.len());
-            // During genesis, keep min_peers=1 to allow bootstrapping with fewer nodes
+            // INC-001: During genesis, keep min_peers=2 for testnet/mainnet to prevent
+            // solo forks. Only devnet allows 1 peer for single-node testing.
             if self.config.network.is_in_genesis(height) {
-                sync.set_min_peers_for_production(1);
+                let genesis_min = match self.config.network {
+                    doli_core::Network::Devnet => 1,
+                    _ => 2,
+                };
+                sync.set_min_peers_for_production(genesis_min);
             }
             drop(sync);
         }

@@ -1294,3 +1294,164 @@ fn test_update_production_state_sets_fork_flag() {
         "update_production_state() must set fork_mismatch_detected when in minority"
     );
 }
+
+// =========================================================================
+// INC-001: Sync State Explosion — Rollback Loop Prevention Tests
+// REQ-SYNC-001 through REQ-SYNC-006
+// =========================================================================
+
+/// REQ-SYNC-001: reset_sync_after_successful_reorg sets Normal, not PostRollback.
+#[test]
+fn test_inc001_successful_reorg_sets_normal_recovery_phase() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Simulate a successful fork sync reorg
+    manager.reset_sync_after_successful_reorg();
+
+    assert!(
+        matches!(manager.recovery_phase, RecoveryPhase::Normal),
+        "After successful reorg, recovery_phase must be Normal, got: {:?}",
+        manager.recovery_phase
+    );
+}
+
+/// REQ-SYNC-001: reset_sync_for_rollback still sets PostRollback (rejection path unchanged).
+#[test]
+fn test_inc001_rollback_still_sets_post_rollback() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Simulate a rejected fork sync rollback
+    manager.reset_sync_for_rollback();
+
+    assert!(
+        matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+        "After rejected rollback, recovery_phase must be PostRollback, got: {:?}",
+        manager.recovery_phase
+    );
+}
+
+/// REQ-SYNC-002: Successful reorg updates cooldown timestamp.
+#[test]
+fn test_inc001_successful_reorg_updates_cooldown() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Initial cooldown is set to 300s ago (expired)
+    assert!(manager.last_fork_sync_rejection.elapsed().as_secs() >= 299);
+
+    // After successful reorg, cooldown should be fresh
+    manager.reset_sync_after_successful_reorg();
+
+    assert!(
+        manager.last_fork_sync_rejection.elapsed().as_secs() < 2,
+        "Successful reorg must update cooldown timestamp"
+    );
+}
+
+/// REQ-SYNC-004: Recently-held tips prevent ping-pong.
+#[test]
+fn test_inc001_recently_held_tip_detection() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    let tip_a = Hash::from_bytes([1u8; 32]);
+    let tip_b = Hash::from_bytes([2u8; 32]);
+
+    // Record tip A as recently held
+    manager.record_held_tip(tip_a);
+
+    // tip A should be detected as recently held
+    assert!(manager.is_recently_held_tip(&tip_a));
+    // tip B should NOT be detected
+    assert!(!manager.is_recently_held_tip(&tip_b));
+}
+
+/// REQ-SYNC-004: Recently-held tips capacity is capped at 10.
+#[test]
+fn test_inc001_recently_held_tips_capacity() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Record 12 tips — first 2 should be evicted
+    for i in 0..12u8 {
+        let mut bytes = [0u8; 32];
+        bytes[0] = i;
+        manager.record_held_tip(Hash::from_bytes(bytes));
+    }
+
+    // Capacity is 10 — only tips 2..12 should remain
+    assert_eq!(manager.recently_held_tips.len(), 10);
+
+    // Tip 0 should be evicted
+    let mut bytes = [0u8; 32];
+    bytes[0] = 0;
+    assert!(!manager.is_recently_held_tip(&Hash::from_bytes(bytes)));
+
+    // Tip 11 should still be present
+    bytes[0] = 11;
+    assert!(manager.is_recently_held_tip(&Hash::from_bytes(bytes)));
+}
+
+/// REQ-SYNC-005: Fork sync circuit breaker trips at 3 consecutive fork syncs.
+#[test]
+fn test_inc001_fork_sync_circuit_breaker() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Initially not tripped
+    assert!(!manager.is_fork_sync_breaker_tripped());
+
+    // Simulate 3 consecutive fork syncs (each successful reorg increments counter)
+    manager.reset_sync_after_successful_reorg();
+    assert!(!manager.is_fork_sync_breaker_tripped()); // 1 — not yet
+
+    manager.reset_sync_after_successful_reorg();
+    assert!(!manager.is_fork_sync_breaker_tripped()); // 2 — not yet
+
+    manager.reset_sync_after_successful_reorg();
+    assert!(
+        manager.is_fork_sync_breaker_tripped(),
+        "Circuit breaker must trip at 3 consecutive fork syncs"
+    );
+}
+
+/// REQ-SYNC-005: Circuit breaker resets on successful header-first sync.
+#[test]
+fn test_inc001_circuit_breaker_resets_on_header_sync() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Trip the breaker
+    for _ in 0..3 {
+        manager.reset_sync_after_successful_reorg();
+    }
+    assert!(manager.is_fork_sync_breaker_tripped());
+
+    // Successful header-first sync resets it
+    manager.reset_fork_sync_breaker();
+    assert!(
+        !manager.is_fork_sync_breaker_tripped(),
+        "Successful header-first sync must reset the circuit breaker"
+    );
+}
+
+/// REQ-SYNC-006: After successful reorg, start_sync uses header-first (not fork_sync).
+#[test]
+fn test_inc001_successful_reorg_enables_header_first_sync() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 10, peer at height 50
+    manager.local_height = 10;
+    manager.local_hash = Hash::from_bytes([1u8; 32]);
+    manager.local_slot = 10;
+    let peer = PeerId::random();
+    manager.add_peer(peer, 50, Hash::from_bytes([2u8; 32]), 50);
+
+    // After successful reorg, recovery_phase is Normal
+    manager.reset_sync_after_successful_reorg();
+
+    // start_sync should NOT enter PostRollback → fork_sync path
+    manager.start_sync();
+
+    // Should be in DownloadingHeaders (header-first), NOT fork_sync
+    assert!(
+        matches!(manager.state(), SyncState::DownloadingHeaders { .. }),
+        "After successful reorg with Normal phase, sync should use header-first, got: {:?}",
+        manager.state()
+    );
+}
