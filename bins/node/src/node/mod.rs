@@ -14,6 +14,7 @@ mod production;
 mod rewards;
 mod rollback;
 mod startup;
+mod tx_announcements;
 mod validation_checks;
 
 use std::collections::{HashMap, HashSet};
@@ -186,6 +187,9 @@ pub struct Node {
     /// Sync requests served since last production check (global rate limit).
     /// Prevents thundering herd from 100+ syncing nodes starving production.
     pub(super) sync_requests_this_interval: u32,
+    /// Pending tx announcements tracker (announce-request pattern).
+    /// Tracks tx hashes received via announcements that we need to fetch.
+    pub(super) pending_tx_announcements: tx_announcements::PendingTxAnnouncements,
 }
 
 impl Node {

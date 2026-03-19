@@ -14,6 +14,7 @@ use libp2p::{PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::warn;
 
+use crypto::Hash;
 use doli_core::Transaction;
 
 use crate::behaviour::DoliBehaviour;
@@ -64,8 +65,11 @@ pub(super) async fn run_swarm(
     // multiple old peer IDs for the same address after a chain reset.
     let mut mismatch_redial_cooldown: HashMap<String, Instant> = HashMap::new();
 
-    // TX batching: buffer outbound transactions and flush every 100ms
+    // TX batching: buffer outbound transactions and flush every 100ms.
+    // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
     let mut tx_batch: Vec<Transaction> = Vec::new();
+    let mut tx_announce_batch: Vec<Hash> = Vec::new();
+    let tx_announce_enabled = config.tx_announce_enabled;
     let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
     tx_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -79,13 +83,27 @@ pub(super) async fn run_swarm(
             // Handle commands — intercept BroadcastTransaction for batching
             Some(command) = command_rx.recv() => {
                 if let NetworkCommand::BroadcastTransaction(tx) = command {
-                    tx_batch.push(tx);
-                    if tx_batch.len() >= 50 {
-                        let batch = std::mem::take(&mut tx_batch);
-                        let data = crate::gossip::encode_tx_batch(&batch);
-                        let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                            warn!("Failed to flush tx batch: {}", e);
+                    if tx_announce_enabled {
+                        // Announce mode: batch hashes, not full txs
+                        tx_announce_batch.push(tx.hash());
+                        if tx_announce_batch.len() >= 50 {
+                            let hashes = std::mem::take(&mut tx_announce_batch);
+                            let data = crate::gossip::encode_tx_announce(&hashes);
+                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                warn!("Failed to flush tx announce batch: {}", e);
+                            }
+                        }
+                    } else {
+                        // Legacy mode: batch full txs
+                        tx_batch.push(tx);
+                        if tx_batch.len() >= 50 {
+                            let batch = std::mem::take(&mut tx_batch);
+                            let data = crate::gossip::encode_tx_batch(&batch);
+                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                warn!("Failed to flush tx batch: {}", e);
+                            }
                         }
                     }
                 } else {
@@ -95,7 +113,16 @@ pub(super) async fn run_swarm(
 
             // Flush buffered transactions every 100ms
             _ = tx_flush.tick() => {
-                if !tx_batch.is_empty() {
+                if tx_announce_enabled {
+                    if !tx_announce_batch.is_empty() {
+                        let hashes = std::mem::take(&mut tx_announce_batch);
+                        let data = crate::gossip::encode_tx_announce(&hashes);
+                        let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                            warn!("Failed to flush tx announce batch: {}", e);
+                        }
+                    }
+                } else if !tx_batch.is_empty() {
                     let batch = std::mem::take(&mut tx_batch);
                     let data = crate::gossip::encode_tx_batch(&batch);
                     let topic = IdentTopic::new(TRANSACTIONS_TOPIC);

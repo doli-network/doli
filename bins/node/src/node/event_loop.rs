@@ -737,6 +737,77 @@ impl Node {
                     }
                 }
             }
+
+            // ── TX ANNOUNCE-REQUEST PROTOCOL ────────────────────────────
+            // EIP-4938 style: peers announce tx hashes, we fetch missing ones.
+            NetworkEvent::TxAnnouncement { peer_id, hashes } => {
+                let mempool = self.mempool.read().await;
+                let mut new_count = 0;
+                for hash in &hashes {
+                    if !mempool.contains(hash)
+                        && self.pending_tx_announcements.record(*hash, peer_id)
+                    {
+                        new_count += 1;
+                    }
+                }
+                drop(mempool);
+
+                if new_count > 0 {
+                    // Fetch missing txs from announcing peers
+                    let batches = self.pending_tx_announcements.take_batch();
+                    if let Some(ref network) = self.network {
+                        for (peer, fetch_hashes) in batches {
+                            debug!(
+                                "Requesting {} txs from peer {} (announce-request)",
+                                fetch_hashes.len(),
+                                peer
+                            );
+                            let _ = network.request_tx_fetch(peer, fetch_hashes).await;
+                        }
+                    }
+                }
+            }
+
+            NetworkEvent::TxFetchRequest {
+                peer_id,
+                hashes,
+                channel,
+            } => {
+                debug!(
+                    "TxFetch request from {} for {} hashes",
+                    peer_id,
+                    hashes.len()
+                );
+                let mempool = self.mempool.read().await;
+                let mut txs = Vec::new();
+                for hash in &hashes {
+                    if let Some(entry) = mempool.get(hash) {
+                        txs.push(entry.tx.clone());
+                    }
+                }
+                drop(mempool);
+
+                if let Some(ref network) = self.network {
+                    let response = network::protocols::TxFetchResponse { transactions: txs };
+                    let _ = network.send_tx_fetch_response(channel, response).await;
+                }
+            }
+
+            NetworkEvent::TxFetchResponse {
+                peer_id,
+                transactions,
+            } => {
+                debug!(
+                    "TxFetch response from {} with {} txs",
+                    peer_id,
+                    transactions.len()
+                );
+                for tx in transactions {
+                    let tx_hash = tx.hash();
+                    self.pending_tx_announcements.complete(&tx_hash);
+                    self.handle_new_transaction(tx).await?;
+                }
+            }
         }
 
         Ok(())

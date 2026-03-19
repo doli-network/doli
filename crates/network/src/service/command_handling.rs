@@ -192,5 +192,20 @@ pub(super) async fn handle_command(
             }
         }
 
+        NetworkCommand::RequestTxFetch { peer_id, hashes } => {
+            debug!("Requesting {} txs from peer {}", hashes.len(), peer_id);
+            let request = crate::protocols::TxFetchRequest { hashes };
+            swarm
+                .behaviour_mut()
+                .txfetch
+                .send_request(&peer_id, request);
+        }
+
+        NetworkCommand::SendTxFetchResponse { channel, response } => {
+            let _ = swarm
+                .behaviour_mut()
+                .txfetch
+                .send_response(channel, response);
+        }
     }
 }

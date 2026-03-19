@@ -39,7 +39,7 @@ use crate::discovery::new_kademlia;
 use crate::gossip::{new_gossipsub, subscribe_to_topics};
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
-use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
+use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 use crate::transport::build_transport;
 use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
@@ -430,6 +430,32 @@ impl NetworkService {
     ) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::SendSyncResponse { channel, response })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Request transactions from a peer by hash (announce-request pattern)
+    pub async fn request_tx_fetch(
+        &self,
+        peer_id: PeerId,
+        hashes: Vec<crypto::Hash>,
+    ) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::RequestTxFetch { peer_id, hashes })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Send transaction fetch response (announce-request pattern)
+    pub async fn send_tx_fetch_response(
+        &self,
+        channel: ResponseChannel<TxFetchResponse>,
+        response: TxFetchResponse,
+    ) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::SendTxFetchResponse { channel, response })
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())

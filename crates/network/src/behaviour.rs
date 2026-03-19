@@ -14,7 +14,7 @@ use libp2p::{
 };
 use std::time::Duration;
 
-use crate::protocols::{StatusCodec, SyncCodec};
+use crate::protocols::{StatusCodec, SyncCodec, TxFetchCodec};
 
 /// Protocol version string
 pub const PROTOCOL_VERSION: &str = "doli/1.0.0";
@@ -42,6 +42,9 @@ pub struct DoliBehaviour {
 
     /// Request-response for sync protocol
     pub sync: RequestResponse<SyncCodec>,
+
+    /// Request-response for transaction fetching (announce-request pattern)
+    pub txfetch: RequestResponse<TxFetchCodec>,
 
     /// Relay client — use relays for NAT traversal
     pub relay_client: relay::client::Behaviour,
@@ -93,6 +96,15 @@ impl DoliBehaviour {
             request_response::Config::default().with_request_timeout(Duration::from_secs(120)),
         );
 
+        // TxFetch request-response configuration (5s timeout — txs are small)
+        let txfetch = RequestResponse::new(
+            [(
+                StreamProtocol::new(crate::protocols::txfetch::TXFETCH_PROTOCOL),
+                ProtocolSupport::Full,
+            )],
+            request_response::Config::default().with_request_timeout(Duration::from_secs(5)),
+        );
+
         Self {
             connection_limits,
             gossipsub,
@@ -100,6 +112,7 @@ impl DoliBehaviour {
             identify,
             status,
             sync,
+            txfetch,
             relay_client,
             relay_server,
             dcutr,

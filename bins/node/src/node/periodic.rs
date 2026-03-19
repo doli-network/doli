@@ -151,6 +151,10 @@ impl Node {
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();
 
+        // Expire stale pending tx announcements (30s timeout)
+        self.pending_tx_announcements
+            .expire_old(Duration::from_secs(30));
+
         // Poll fork recovery: check if parent chain reached our block_store
         {
             let parent_hash = self

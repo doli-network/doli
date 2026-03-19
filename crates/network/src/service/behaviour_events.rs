@@ -79,15 +79,26 @@ pub(super) async fn handle_behaviour_event(
                         return;
                     }
                     rate_limiter.record_transaction(&propagation_source, msg_size);
-                    if let Some(txs) = crate::gossip::decode_tx_message(&message.data) {
-                        for tx in txs {
-                            let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                    match crate::gossip::decode_tx_gossip(&message.data) {
+                        Some(crate::gossip::TxGossipMessage::FullBatch(txs)) => {
+                            for tx in txs {
+                                let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                            }
                         }
-                    } else {
-                        warn!(
-                            "Failed to deserialize transaction from {}",
-                            propagation_source
-                        );
+                        Some(crate::gossip::TxGossipMessage::Announce(hashes)) => {
+                            let _ = event_tx
+                                .send(NetworkEvent::TxAnnouncement {
+                                    peer_id: propagation_source,
+                                    hashes,
+                                })
+                                .await;
+                        }
+                        None => {
+                            warn!(
+                                "Failed to deserialize transaction from {}",
+                                propagation_source
+                            );
+                        }
                     }
                 }
                 PRODUCERS_TOPIC => {
@@ -430,6 +441,58 @@ pub(super) async fn handle_behaviour_event(
                 }
             }
         }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::Message { peer, message }) => {
+            match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    debug!(
+                        "Received tx fetch request from {} ({} hashes)",
+                        peer,
+                        request.hashes.len()
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::TxFetchRequest {
+                            peer_id: peer,
+                            hashes: request.hashes,
+                            channel,
+                        })
+                        .await;
+                }
+                request_response::Message::Response { response, .. } => {
+                    debug!(
+                        "Received tx fetch response from {} ({} txs)",
+                        peer,
+                        response.transactions.len()
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::TxFetchResponse {
+                            peer_id: peer,
+                            transactions: response.transactions,
+                        })
+                        .await;
+                }
+            }
+        }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::OutboundFailure {
+            peer,
+            error,
+            ..
+        }) => {
+            debug!("TxFetch outbound failure to {}: {:?}", peer, error);
+        }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::InboundFailure {
+            peer,
+            error,
+            ..
+        }) => {
+            debug!("TxFetch inbound failure from {}: {:?}", peer, error);
+        }
+
+        DoliBehaviourEvent::Txfetch(_) => {}
 
         DoliBehaviourEvent::RelayClient(event) => {
             info!("[RELAY] Client: {:?}", event);

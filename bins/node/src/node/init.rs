@@ -635,6 +635,7 @@ impl Node {
             minute_tracker: MinuteAttestationTracker::new(),
             consecutive_forced_recoveries: 0,
             sync_requests_this_interval: 0,
+            pending_tx_announcements: tx_announcements::PendingTxAnnouncements::new(),
         })
     }
 }

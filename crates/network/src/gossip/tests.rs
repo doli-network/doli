@@ -19,7 +19,6 @@ fn test_region_topic_format() {
     assert_eq!(region_topic(42), "/doli/r42/blocks/1");
 }
 
-
 #[test]
 fn test_mesh_config_default() {
     let config = MeshConfig {
@@ -72,7 +71,6 @@ fn test_tx_batch_empty_returns_none() {
     data.extend_from_slice(&0u32.to_le_bytes());
     assert!(decode_tx_message(&data).is_none());
 }
-
 
 #[test]
 fn test_dynamic_mesh_fallback_for_zero_producers() {
