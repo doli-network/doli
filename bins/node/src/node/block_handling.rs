@@ -144,11 +144,15 @@ impl Node {
         }
         drop(state);
 
-        // Validate producer eligibility before applying
-        if let Err(e) = self.check_producer_eligibility(&block).await {
-            warn!("Rejected gossip block at slot {}: {}", block.header.slot, e);
-            return Ok(());
-        }
+        // REMOVED: Pre-apply gossip eligibility check.
+        // This check used LOCAL chain state to validate gossip blocks. When the
+        // receiving node was on a micro-fork (different tip), it computed different
+        // eligibility and rejected valid canonical blocks — causing nodes to fall
+        // behind and need expensive sync recovery.
+        //
+        // Full validation happens in apply_block() below, which correctly validates
+        // against the chain state the block actually builds on. Letting apply_block
+        // handle validation is both correct and sufficient.
 
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
