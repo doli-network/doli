@@ -77,6 +77,25 @@ impl Node {
             return Ok(());
         }
 
+        // HEIGHT CHECK: skip if a gossip block already advanced beyond our height.
+        // This prevents consecutive producers from building on the same parent.
+        // Producer A at slot N produces height H. If producer B at slot N+1 hasn't
+        // applied A's block yet but has SEEN it via gossip (net_tip advanced),
+        // B should wait for sync instead of producing a competing height H block.
+        {
+            let local_h = self.chain_state.read().await.best_height;
+            let sync = self.sync_manager.read().await;
+            let net_tip_h = sync.network_tip_height();
+            drop(sync);
+            if net_tip_h > local_h + 1 {
+                debug!(
+                    "Network tip {} > local height {} + 1 — gossip block in flight, skipping production",
+                    net_tip_h, local_h
+                );
+                return Ok(());
+            }
+        }
+
         // Get chain state
         let state = self.chain_state.read().await;
         let prev_hash = state.best_hash;
