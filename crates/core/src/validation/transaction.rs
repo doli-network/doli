@@ -3,12 +3,13 @@ use crate::transaction::{Output, OutputType, Transaction, TxType, MAX_EXTRA_DATA
 use crate::types::Amount;
 use crypto::Hash;
 
-use super::registration::validate_registration_data;
+use super::registration::{validate_registration_data, validate_registration_data_skip_vdf};
 use super::tx_types::{
     validate_add_bond_data, validate_burn_asset, validate_claim_bond_data, validate_claim_data,
     validate_delegate_bond_data, validate_epoch_reward_data, validate_exit_data,
     validate_maintainer_change_data, validate_mint_asset, validate_protocol_activation_data,
-    validate_revoke_delegation_data, validate_slash_data, validate_withdrawal_request_data,
+    validate_revoke_delegation_data, validate_slash_data, validate_slash_data_skip_vdf,
+    validate_withdrawal_request_data,
 };
 use super::{ValidationContext, ValidationError};
 
@@ -157,6 +158,38 @@ pub fn validate_transaction(
     }
 
     Ok(())
+}
+
+/// Same as validate_transaction but skips VDF verification for Registration and SlashProducer.
+/// Used when VDFs have already been verified in parallel (block.rs Phase 1).
+pub fn validate_transaction_skip_registration_vdf(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    match tx.tx_type {
+        TxType::Registration => {
+            if tx.version != 1 {
+                return Err(ValidationError::InvalidVersion(tx.version));
+            }
+            let total_output = validate_outputs(&tx.outputs, ctx)?;
+            if total_output > TOTAL_SUPPLY {
+                return Err(ValidationError::AmountExceedsSupply {
+                    amount: total_output,
+                    max: TOTAL_SUPPLY,
+                });
+            }
+            validate_registration_data_skip_vdf(tx, ctx)?;
+            Ok(())
+        }
+        TxType::SlashProducer => {
+            if tx.version != 1 {
+                return Err(ValidationError::InvalidVersion(tx.version));
+            }
+            validate_slash_data_skip_vdf(tx, ctx)?;
+            Ok(())
+        }
+        _ => validate_transaction(tx, ctx),
+    }
 }
 
 /// Validate transaction outputs and compute safe total.
