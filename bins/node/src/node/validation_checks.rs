@@ -1,20 +1,21 @@
 use super::*;
 
 impl Node {
-    /// Check producer eligibility for a received block.
+    /// Check producer eligibility for a received gossip block.
     ///
-    /// Builds a lightweight ValidationContext and calls validate_producer_eligibility.
-    /// During bootstrap, validates using fallback rank windows from the GSet producer list.
+    /// LIGHTWEIGHT CHECK: only verifies the producer is in the known set and
+    /// the time window is valid for the block's slot. Does NOT validate against
+    /// local chain state (which may be on a micro-fork).
+    ///
+    /// Full validation happens in apply_block() where the block is checked
+    /// against the actual chain state it builds on.
     pub(super) async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
-        let state = self.chain_state.read().await;
-        let height = state.best_height + 1;
-        let prev_slot = state.best_slot;
-        drop(state);
+        // Use the BLOCK's slot for eligibility, not our local chain state.
+        // Our local tip may be on a different micro-fork, causing us to
+        // reject valid blocks from the canonical chain.
+        let height = block.header.slot as u64; // Approximate — exact height unknown for gossip blocks
 
-        // Build weighted producer list with inactivity leak + emergency equalization.
-        // CRITICAL: Must match production side exactly (production/mod.rs:153-284).
-        // Without this, production selects one producer but validation expects another,
-        // causing all blocks to be rejected during chain stalls.
+        // Check: is the producer in the known set?
         let producers = self.producer_set.read().await;
         let active: Vec<PublicKey> = producers
             .active_producers_at_height(height)
@@ -23,25 +24,31 @@ impl Node {
             .collect();
         drop(producers);
 
-        // Step 1: Bond counts — raw on-chain weights only.
-        // REMOVED: Inactivity leak from scheduler (mirrors production/mod.rs).
-        // producer_liveness is local state — causes scheduling disagreements.
+        // If no active producers (pre-genesis), check GSet
+        if !active.is_empty() && !active.contains(&block.header.producer) {
+            // Producer not in active set — check if they're in GSet (bootstrap)
+            let gset = self.producer_gset.read().await;
+            let gset_producers = gset.active_producers(7200);
+            drop(gset);
+            if !gset_producers.contains(&block.header.producer) {
+                anyhow::bail!("unknown producer — not in active set or GSet");
+            }
+        }
+
+        // Bond-weighted eligibility: verify producer is scheduled for this slot
         let utxo = self.utxo_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = active
-            .into_iter()
+            .iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                 let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                (pk, raw_bonds)
+                (*pk, raw_bonds)
             })
             .collect();
         drop(utxo);
 
-        // REMOVED: Emergency equalization — was the #1 source of scheduling
-        // disagreements and forks. Must match production/mod.rs (also removed).
-        // Bond-weighted scheduler is always deterministic from on-chain state.
         let weighted = active_with_weights;
 
         let now = std::time::SystemTime::now()
