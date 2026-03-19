@@ -154,7 +154,7 @@ impl Node {
 
         // Derive bond counts from UTXO set (source of truth for bonds),
         // then apply inactivity leak decay for offline producers.
-        let slots_per_epoch = self.params.slots_per_epoch as u64;
+        let _slots_per_epoch = self.params.slots_per_epoch as u64;
         let utxo = self.utxo_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = active_producers
             .into_iter()
@@ -221,7 +221,10 @@ impl Node {
         let (eligible, our_bootstrap_rank) = if use_bootstrap {
             info!(
                 "[PROD_DIAG] BOOTSTRAP path: in_genesis={} active_empty={} height={} slot={}",
-                in_genesis, active_with_weights.is_empty(), height, current_slot
+                in_genesis,
+                active_with_weights.is_empty(),
+                height,
+                current_slot
             );
             match self
                 .resolve_bootstrap_eligibility(current_slot, height, our_pubkey, in_genesis)

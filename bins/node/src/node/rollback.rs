@@ -330,6 +330,7 @@ impl Node {
     /// then syncs from height 0, replaying blocks from disk + downloading missing
     /// ones from peers. This always works because it doesn't depend on any peer
     /// recognizing our tip hash.
+    #[allow(dead_code)]
     pub(super) async fn state_reset_recovery(&mut self, local_height: u64) -> Result<bool> {
         warn!(
             "State reset recovery: hash-based sync failed after {} attempts. \

@@ -247,7 +247,7 @@ pub(super) fn validate_slash_data(
 /// All structural checks (same producer, same slot, different hashes) still run.
 pub(super) fn validate_slash_data_skip_vdf(
     tx: &Transaction,
-    ctx: &ValidationContext,
+    _ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
     if !tx.inputs.is_empty() {
         return Err(ValidationError::InvalidSlash(

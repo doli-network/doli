@@ -38,10 +38,10 @@ pub fn new_gossipsub_for_tier(keypair: &Keypair, tier: u8) -> Result<Gossipsub, 
 
     // Tier mesh sizes aligned with Ethereum's D=8 as the baseline
     let (mesh_n, mesh_n_low, mesh_n_high, mesh_outbound_min) = match tier {
-        1 => (12, 8, 20, 4),  // Tier 1: dense (Ethereum-like for validators)
-        2 => (8, 6, 12, 3),   // Tier 2: standard (matches Ethereum D=8)
-        3 => (4, 2, 8, 1),    // Tier 3: light mesh
-        _ => (8, 6, 12, 3),   // Default: Ethereum standard D=8
+        1 => (12, 8, 20, 4), // Tier 1: dense (Ethereum-like for validators)
+        2 => (8, 6, 12, 3),  // Tier 2: standard (matches Ethereum D=8)
+        3 => (4, 2, 8, 1),   // Tier 3: light mesh
+        _ => (8, 6, 12, 3),  // Default: Ethereum standard D=8
     };
 
     let config = ConfigBuilder::default()
@@ -348,7 +348,7 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
             // P2: first message deliveries — reward block originators
             first_message_deliveries_weight: 1.0,
             first_message_deliveries_decay: 0.631, // ~12s half-life at 700ms heartbeat
-            first_message_deliveries_cap: 23.0, // Ethereum: 23
+            first_message_deliveries_cap: 23.0,    // Ethereum: 23
             // P3: mesh message deliveries — penalize freeloaders
             mesh_message_deliveries_weight: -0.717, // Ethereum: -0.717
             mesh_message_deliveries_decay: 0.631,
@@ -393,9 +393,14 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
 
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,
-        // IP colocation penalty: penalize many peers from same IP (Sybil defense)
-        ip_colocation_factor_weight: -35.0, // Ethereum: -35.11
-        ip_colocation_factor_threshold: 10.0, // Ethereum: 10
+        // IP colocation penalty: penalize many peers from same IP (Sybil defense).
+        // Threshold raised from 10 to 500: with threshold=10, ALL peers get
+        // graylisted at 33+ nodes on the same IP (devnet/testnet on 127.0.0.1),
+        // killing gossip entirely and causing immediate forks. The bond system
+        // provides Sybil protection — IP colocation is a secondary signal that
+        // should only trigger for extreme cases (datacenter-scale colocation).
+        ip_colocation_factor_weight: -35.0,
+        ip_colocation_factor_threshold: 500.0,
         // Behaviour penalty: punish protocol violations
         behaviour_penalty_weight: -16.0, // Ethereum: -15.92
         behaviour_penalty_threshold: 6.0,
@@ -415,10 +420,10 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
     // - graylist_threshold: below this, all RPCs ignored
     // - accept_px_threshold: must be above this to accept peer exchange
     let thresholds = PeerScoreThresholds {
-        gossip_threshold: -4000.0,   // Ethereum: -4000
-        publish_threshold: -8000.0,  // Ethereum: -8000
-        graylist_threshold: -16000.0, // Ethereum: -16000
-        accept_px_threshold: 100.0,  // Ethereum: 100
+        gossip_threshold: -4000.0,          // Ethereum: -4000
+        publish_threshold: -8000.0,         // Ethereum: -8000
+        graylist_threshold: -16000.0,       // Ethereum: -16000
+        accept_px_threshold: 100.0,         // Ethereum: 100
         opportunistic_graft_threshold: 5.0, // Ethereum: 5
     };
 

@@ -421,7 +421,7 @@ impl Node {
     pub(super) fn resolve_epoch_eligibility(
         &mut self,
         current_slot: u32,
-        height: u64,
+        _height: u64,
         active_with_weights: &[(PublicKey, u64)],
     ) -> Vec<PublicKey> {
         // REMOVED: Liveness filter from epoch scheduler.

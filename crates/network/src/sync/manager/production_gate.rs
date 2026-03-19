@@ -5,10 +5,7 @@
 
 use std::time::Instant;
 
-use libp2p::PeerId;
 use tracing::{debug, info, warn};
-
-use crypto::Hash;
 
 use super::{
     ProductionAuthorization, SyncManager, MIN_PEERS_TIER1, MIN_PEERS_TIER2, MIN_PEERS_TIER3,
@@ -372,9 +369,7 @@ impl SyncManager {
         // were produced to trigger resync completion.
         // Finality (Phase 1) replaces this with a deterministic check.
         if self.fork_mismatch_detected {
-            info!(
-                "[CAN_PRODUCE] Layer8.5: fork_mismatch_detected flag set but IGNORED (disabled)",
-            );
+            info!("[CAN_PRODUCE] Layer8.5: fork_mismatch_detected flag set but IGNORED (disabled)",);
             self.fork_mismatch_detected = false; // Auto-clear
         }
 

@@ -412,8 +412,7 @@ impl Node {
                 actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
                 if expected_sorted != actual_sorted {
-                    let total_distributed: u64 =
-                        actual_sorted.iter().map(|(a, _)| *a).sum();
+                    let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
                     let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
                     anyhow::bail!(
                         "EpochReward distribution mismatch: expected {} outputs totaling {}, \

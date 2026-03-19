@@ -540,11 +540,13 @@ impl Node {
         // rollback depth is catastrophically deep. A peer offering 440 blocks when
         // we need to rollback 437 is NOT a legitimate fork — it's a different chain.
         //
-        // Exception: if the new chain is significantly longer (>20% more blocks),
-        // the deep rollback IS legitimate — we're on a minority fork and need to
-        // switch to the canonical chain. This happens when a node produced a
-        // different Block 1 during bootstrap and needs to resync from genesis.
-        if rollback_depth > 0 && current_height > 10 {
+        // Exception 1: if the new chain is significantly longer (>20% more blocks),
+        // the deep rollback IS legitimate — minority fork switching to canonical.
+        // Exception 2: during initial sync (height < 200), deep rollbacks are
+        // normal — a node may have produced its own Block 1 during bootstrap and
+        // needs to switch to the canonical chain. Blocking this causes nodes to
+        // get stuck at low heights forever.
+        if rollback_depth > 0 && current_height > 200 {
             let rollback_ratio = rollback_depth * 100 / current_height;
             let length_gain = new_chain_height.saturating_sub(current_height);
             let gain_ratio = if current_height > 0 {
@@ -556,7 +558,11 @@ impl Node {
                 warn!(
                     "Fork sync: rollback depth {} is {}% of chain height {} — too deep for a \
                      legitimate fork (ancestor h={}, gain={}%). Rejecting.",
-                    rollback_depth, rollback_ratio, current_height, result.ancestor_height, gain_ratio
+                    rollback_depth,
+                    rollback_ratio,
+                    current_height,
+                    result.ancestor_height,
+                    gain_ratio
                 );
                 let mut sync = self.sync_manager.write().await;
                 sync.mark_fork_sync_rejected();
