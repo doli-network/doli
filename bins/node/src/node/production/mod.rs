@@ -77,9 +77,6 @@ impl Node {
             return Ok(());
         }
 
-        // REMOVED: Network tip height check — was too aggressive, blocked production
-        // when nodes were just 1-2 blocks behind, making the problem worse.
-
         // Get chain state
         let state = self.chain_state.read().await;
         let prev_hash = state.best_hash;
