@@ -38,7 +38,7 @@ pub use error::ValidationError;
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
-pub use transaction::validate_transaction;
+pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };

@@ -77,10 +77,10 @@ pub const T_BLOCK: u64 = 800_000;
 /// No longer scales with producer count. The economic bond (10 DOLI)
 /// provides Sybil protection at scale; this VDF is a lightweight
 /// anti-flash-attack barrier preventing instant mass registration.
-pub const T_REGISTER_BASE: u64 = 5_000_000;
+pub const T_REGISTER_BASE: u64 = 1_000;
 
 /// Maximum VDF parameter for registration — same as base (no escalation).
-pub const T_REGISTER_CAP: u64 = 5_000_000;
+pub const T_REGISTER_CAP: u64 = 1_000;
 
 /// Size of the discriminant in bits.
 ///

@@ -12,6 +12,26 @@ pub(super) fn validate_registration_data(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
+    validate_registration_data_inner(tx, ctx, false)
+}
+
+/// Validate registration transaction data, optionally skipping VDF verification.
+///
+/// When `skip_vdf` is true, the VDF proof is assumed to have been verified
+/// already (e.g., in a parallel pre-verification pass). All other checks
+/// (bond amount, BLS PoP, registration chain, duplicates) still run.
+pub(super) fn validate_registration_data_skip_vdf(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    validate_registration_data_inner(tx, ctx, true)
+}
+
+fn validate_registration_data_inner(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+    skip_vdf: bool,
+) -> Result<(), ValidationError> {
     // During genesis, Registration TXs are VDF proof containers only.
     // No bond required (bond is handled at GENESIS PHASE COMPLETE).
     // No registration chain validation (bootstrap producers can't be Sybil-attacked).
@@ -39,7 +59,9 @@ pub(super) fn validate_registration_data(
         validate_bls_pop(&reg_data)?;
 
         // Validate VDF proof (the only requirement for genesis registrations)
-        validate_registration_vdf(&reg_data, ctx.network)?;
+        if !skip_vdf {
+            validate_registration_vdf(&reg_data, ctx.network)?;
+        }
         return Ok(());
     }
 
@@ -135,7 +157,9 @@ pub(super) fn validate_registration_data(
 
     // Verify VDF proof for registration
     // (The actual VDF verification happens here)
-    validate_registration_vdf(&reg_data, ctx.network)?;
+    if !skip_vdf {
+        validate_registration_vdf(&reg_data, ctx.network)?;
+    }
 
     // Verify registration chain (anti-Sybil: prevents parallel registration)
     validate_registration_chain(&reg_data, ctx)?;
@@ -195,7 +219,9 @@ fn validate_registration_chain(
 /// Hash-chain is fast to compute (~5s for 5M iterations) and self-verifying
 /// (recompute and compare output). No separate proof needed.
 /// For devnet, VDF validation is skipped to allow quick testing.
-fn validate_registration_vdf(
+///
+/// This function is pure (no context needed) and safe to call from parallel threads.
+pub fn validate_registration_vdf(
     reg_data: &RegistrationData,
     network: Network,
 ) -> Result<(), ValidationError> {

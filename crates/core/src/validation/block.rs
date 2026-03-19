@@ -1,9 +1,10 @@
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{max_block_size, MAX_DRIFT, MAX_FUTURE_SLOTS, NETWORK_MARGIN};
+use crate::transaction::{RegistrationData, SlashData, TxType};
 
 use super::producer::{validate_producer_eligibility, validate_vdf};
-use super::registration::validate_bls_aggregate;
-use super::transaction::validate_transaction;
+use super::registration::{validate_bls_aggregate, validate_registration_vdf};
+use super::transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 use super::utxo::check_internal_double_spend;
 use super::{ValidationContext, ValidationError, ValidationMode};
 
@@ -170,8 +171,102 @@ pub fn validate_block_with_mode(
                 return Err(ValidationError::InvalidMerkleRoot);
             }
 
-            for tx in &block.transactions {
-                validate_transaction(tx, ctx)?;
+            // Phase 1: Parallel VDF verification for VDF-heavy TXs.
+            //
+            // Registration VDFs (~400ms each) and SlashProducer evidence VDFs
+            // (~800ms = 2 headers) are CPU-heavy. Sequential verification of N
+            // such TXs takes N*400ms+ — enough to miss slots and cause forks.
+            // Parallel verification keeps total time at ~max(single VDF) regardless
+            // of N, scaling to hundreds of simultaneous operations.
+            let has_heavy_vdf_txs = ctx.network != crate::network::Network::Devnet
+                && block.transactions.iter().any(|tx| {
+                    (tx.tx_type == TxType::Registration || tx.tx_type == TxType::SlashProducer)
+                        && !tx.extra_data.is_empty()
+                });
+
+            if has_heavy_vdf_txs {
+                let network = ctx.network;
+                let vdf_error: std::sync::Mutex<Option<ValidationError>> =
+                    std::sync::Mutex::new(None);
+
+                std::thread::scope(|s| {
+                    for tx in &block.transactions {
+                        if tx.extra_data.is_empty() {
+                            continue;
+                        }
+                        match tx.tx_type {
+                            TxType::Registration => {
+                                let err_ref = &vdf_error;
+                                s.spawn(move || {
+                                    if let Ok(rd) =
+                                        bincode::deserialize::<RegistrationData>(&tx.extra_data)
+                                    {
+                                        if let Err(e) = validate_registration_vdf(&rd, network) {
+                                            let mut guard = err_ref.lock().unwrap();
+                                            if guard.is_none() {
+                                                *guard = Some(e);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            TxType::SlashProducer => {
+                                let err_ref = &vdf_error;
+                                s.spawn(move || {
+                                    if let Ok(slash_data) =
+                                        bincode::deserialize::<SlashData>(&tx.extra_data)
+                                    {
+                                        if let crate::transaction::SlashingEvidence::DoubleProduction {
+                                            ref block_header_1,
+                                            ref block_header_2,
+                                        } = slash_data.evidence
+                                        {
+                                            if let Err(_) = validate_vdf(block_header_1, network) {
+                                                let mut guard = err_ref.lock().unwrap();
+                                                if guard.is_none() {
+                                                    *guard = Some(ValidationError::InvalidSlash(
+                                                        "invalid VDF proof in first block header"
+                                                            .to_string(),
+                                                    ));
+                                                }
+                                                return;
+                                            }
+                                            if let Err(_) = validate_vdf(block_header_2, network) {
+                                                let mut guard = err_ref.lock().unwrap();
+                                                if guard.is_none() {
+                                                    *guard = Some(ValidationError::InvalidSlash(
+                                                        "invalid VDF proof in second block header"
+                                                            .to_string(),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+
+                if let Some(err) = vdf_error.into_inner().unwrap() {
+                    return Err(err);
+                }
+            }
+
+            // Phase 2: Sequential validation of all TXs.
+            // Registration and SlashProducer TXs skip VDF (already verified
+            // in parallel above). All other checks (bond amounts, BLS PoP,
+            // chain linkage, structural slash checks, signatures, UTXO rules)
+            // run sequentially as before.
+            if has_heavy_vdf_txs {
+                for tx in &block.transactions {
+                    validate_transaction_skip_registration_vdf(tx, ctx)?;
+                }
+            } else {
+                for tx in &block.transactions {
+                    validate_transaction(tx, ctx)?;
+                }
             }
 
             check_internal_double_spend(block)?;

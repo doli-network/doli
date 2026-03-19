@@ -435,20 +435,21 @@ impl ForkSync {
 
     /// Returns true when the binary search completed but hit the floor without
     /// finding a common ancestor AND the search was NOT limited by block store range.
-    /// This indicates a genuine deep fork requiring full resync.
     ///
-    /// IMPORTANT: Only returns true AFTER the floor probe has been attempted.
-    /// Without this check, the node clears fork sync before the floor probe
-    /// has a chance to verify the ancestor — causing an infinite loop where
-    /// fork sync finds an ancestor, gets killed, restarts, finds it again...
+    /// IMPORTANT: low <= 1 means the search reached genesis. All nodes on the
+    /// same network share the genesis block, so genesis IS a valid common
+    /// ancestor. A "bottomed out" signal should only fire if the floor is above
+    /// genesis AND not verified — indicating blocks from a truly different chain.
+    /// Previously `self.low > 0` caused false positives when low=1 (genesis),
+    /// triggering catastrophic state_reset_recovery on micro-forks.
     pub fn search_bottomed_out(&self) -> bool {
         matches!(self.phase, ForkSyncPhase::Searching)
             && self.high <= self.low + 1
             && self.pending_height.is_none()
             && !self.low_verified
             && !self.store_limited
-            && self.low > 0
-            && self.floor_probed // Only after floor verification was attempted
+            && self.low > 1 // Genesis (low=1) is always a valid ancestor — never "bottomed out"
+            && self.floor_probed
     }
 
     /// Returns true when the binary search stopped because the block store

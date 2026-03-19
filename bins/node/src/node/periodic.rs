@@ -399,19 +399,28 @@ impl Node {
                 return Ok(());
             }
 
-            // Failure case 2: Bottomed out — genuine deep fork, no common ancestor.
-            // The block store has blocks from a different fork. State reset wipes
-            // UTXO/ProducerSet state back to genesis and resyncs the canonical chain.
-            // Previously just cleared and set grace → infinite loop because header-first
-            // sync couldn't chain headers to the poisoned block store.
+            // Failure case 2: Bottomed out — check ancestor FIRST.
+            // If a common ancestor exists at any height (even genesis), it's not
+            // a "no ancestor" situation — use it for reorg instead of wiping state.
+            // state_reset_recovery is NEVER called automatically — a validated chain
+            // must not be wiped based on peer behavior (Ethereum/Bitcoin principle).
             if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: no common ancestor found — triggering state reset recovery");
-                self.sync_manager.write().await.fork_sync_clear();
-                let local_height = self.chain_state.read().await.best_height;
-                if let Err(e) = self.state_reset_recovery(local_height).await {
-                    warn!("State reset recovery failed: {}", e);
+                let ancestor = self.sync_manager.read().await.fork_sync_ancestor_height();
+                if let Some(h) = ancestor {
+                    warn!(
+                        "Fork sync: search bottomed out but common ancestor found at height {} — using it (NOT resetting)",
+                        h
+                    );
+                    // Let the result path below handle the reorg
+                } else {
+                    warn!(
+                        "Fork sync: no common ancestor found — clearing fork sync and retrying with different peers \
+                         (state reset disabled: a validated chain is never wiped automatically)"
+                    );
+                    self.sync_manager.write().await.fork_sync_clear();
+                    self.sync_manager.write().await.set_post_recovery_grace();
+                    return Ok(());
                 }
-                return Ok(());
             }
 
             // Phase 2/3 complete: take result and execute reorg

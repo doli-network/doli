@@ -631,11 +631,11 @@ impl SyncManager {
             },
         );
 
-        // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims
-        // This is critical for production gating - even if we haven't received the
-        // actual block via gossip yet, knowing that a peer claims a higher height
-        // tells us we shouldn't produce until we're caught up.
-        if height > self.network_tip_height {
+        // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims.
+        // Ignore height-0 peers (syncing from genesis) — they are not evidence of
+        // the network's canonical chain state. Including them could dilute the
+        // network tip and create false fork signals.
+        if height > 0 && height > self.network_tip_height {
             debug!(
                 "Network tip height updated from peer status: {} -> {}",
                 self.network_tip_height, height

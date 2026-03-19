@@ -48,11 +48,12 @@
 
 use crypto::PublicKey;
 
+use crate::consensus::MAX_FALLBACK_RANKS;
 use crate::types::Slot;
 
-/// Maximum fallback rank (0-4 = 5 ranks, matching consensus MAX_FALLBACK_RANKS).
-/// 5 ranks × 2s = 10s — each rank owns an exclusive 2s window.
-pub const MAX_FALLBACK_RANK: usize = 4;
+/// Maximum fallback rank (0-indexed). Must equal MAX_FALLBACK_RANKS - 1.
+/// With MAX_FALLBACK_RANKS=2: ranks 0-1, each with an exclusive 2s window.
+pub const MAX_FALLBACK_RANK: usize = MAX_FALLBACK_RANKS - 1;
 
 /// A producer scheduled for block production
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,10 +160,10 @@ impl DeterministicScheduler {
     /// Select the producer for a given slot at a specific rank.
     ///
     /// - Rank 0: Primary producer (ticket at `slot % total_bonds`)
-    /// - Rank 1-4: Fallback producers with evenly distributed offsets
+    /// - Rank 1: Fallback producer with evenly distributed offset
     ///
-    /// Each rank gets an offset of `total_bonds * rank / (MAX_FALLBACK_RANK + 1)`,
-    /// ensuring fallback producers are spread across the ticket space.
+    /// Each rank gets an offset of `total_bonds * rank / MAX_FALLBACK_RANKS`,
+    /// matching the formula in consensus/selection.rs.
     ///
     /// Returns None if:
     /// - No producers registered
@@ -173,8 +174,8 @@ impl DeterministicScheduler {
         }
 
         // Calculate ticket offset based on rank
-        // Evenly distributed across MAX_FALLBACK_RANK + 1 positions
-        let offset = (self.total_bonds * rank as u64) / (MAX_FALLBACK_RANK as u64 + 1);
+        // Evenly distributed across MAX_FALLBACK_RANKS positions (must match selection.rs)
+        let offset = (self.total_bonds * rank as u64) / MAX_FALLBACK_RANKS as u64;
 
         // Calculate ticket number for this slot
         let ticket = ((slot as u64) + offset) % self.total_bonds;
@@ -395,24 +396,19 @@ mod tests {
         ]);
 
         // Total = 30 tickets
-        // Each rank offset = total_bonds * rank / (MAX_FALLBACK_RANK + 1) = 30 * rank / 5
+        // Each rank offset = total_bonds * rank / MAX_FALLBACK_RANKS = 30 * rank / 2
         // Rank 0: offset = 0
-        // Rank 1: offset = 6 (30*1/5)
-        // Rank 2: offset = 12 (30*2/5)
-        // Rank 3: offset = 18 (30*3/5)
-        // Rank 4: offset = 24 (30*4/5)
+        // Rank 1: offset = 15 (30*1/2)
+        // Rank 2+: None (exceeds MAX_FALLBACK_RANK)
 
         // Slot 0:
         // - Rank 0: ticket 0 -> Alice (tickets 0-9)
-        // - Rank 1: ticket 6 -> Alice (still in 0-9)
-        // - Rank 2: ticket 12 -> Bob (tickets 10-19)
-        // - Rank 3: ticket 18 -> Bob (still in 10-19)
-        // - Rank 4: ticket 24 -> Charlie (tickets 20-29)
+        // - Rank 1: ticket 15 -> Bob (tickets 10-19)
         assert_eq!(scheduler.select_producer(0, 0), Some(&alice));
-        assert_eq!(scheduler.select_producer(0, 1), Some(&alice));
-        assert_eq!(scheduler.select_producer(0, 2), Some(&bob));
-        assert_eq!(scheduler.select_producer(0, 3), Some(&bob));
-        assert_eq!(scheduler.select_producer(0, 4), Some(&charlie));
+        assert_eq!(scheduler.select_producer(0, 1), Some(&bob));
+        assert_eq!(scheduler.select_producer(0, 2), None);
+        assert_eq!(scheduler.select_producer(0, 3), None);
+        assert_eq!(scheduler.select_producer(0, 4), None);
     }
 
     #[test]
@@ -480,17 +476,11 @@ mod tests {
         ]);
 
         // Total = 20 bonds
-        // Offsets: rank * 20 / (MAX_FALLBACK_RANK+1) = rank * 20 / 5
+        // Offsets: rank * 20 / MAX_FALLBACK_RANKS = rank * 20 / 2
         // Slot 0:
         //   Rank 0: ticket 0 -> Alice (tickets 0-9)
-        //   Rank 1: ticket 4 (20*1/5) -> Alice
-        //   Rank 2: ticket 8 (20*2/5) -> Alice
-        //   Rank 3: ticket 12 (20*3/5) -> Bob (tickets 10-19)
-        //   Rank 4: ticket 16 (20*4/5) -> Bob
-        // Alice = rank 0, Bob = rank 3
-        //
-        // With MAX_FALLBACK_RANKS=2 (consensus), only ranks 0-1 have time windows.
-        // Bob at rank 3 is never eligible.
+        //   Rank 1: ticket 10 (20*1/2) -> Bob (tickets 10-19)
+        // Alice = rank 0, Bob = rank 1
 
         // Alice is primary (rank 0), eligible at 0 seconds (0-1999ms window)
         assert!(scheduler.is_producer_eligible(0, &alice, 0));
@@ -498,10 +488,10 @@ mod tests {
         // Alice is NOT eligible at 2 seconds (exclusive: rank 0 window is 0-1999ms)
         assert!(!scheduler.is_producer_eligible(0, &alice, 2));
 
-        // Bob's first rank is 3, which exceeds MAX_FALLBACK_RANKS=2 — never eligible
+        // Bob is rank 1, eligible at 2 seconds (2000-3999ms window)
         assert!(!scheduler.is_producer_eligible(0, &bob, 0));
-        assert!(!scheduler.is_producer_eligible(0, &bob, 2));
-        assert!(!scheduler.is_producer_eligible(0, &bob, 6));
+        assert!(scheduler.is_producer_eligible(0, &bob, 2));
+        assert!(!scheduler.is_producer_eligible(0, &bob, 6)); // past slot end
     }
 
     #[test]

@@ -294,17 +294,20 @@ impl Node {
             return Ok(false);
         }
 
-        // Height-based recovery: when fork sync has repeatedly failed (empty_headers > 20),
-        // bypass the binary search entirely and find the common ancestor by walking back
-        // through heights. This is O(fork_depth) but always works — no state machine,
-        // no floor probe, no grace period deadlocks.
+        // When fork sync has failed repeatedly, retry with different peers instead
+        // of wiping state. A validated chain at height 400+ must NEVER be reset to
+        // genesis based on peer behavior — this is a core safety invariant that
+        // Ethereum and Bitcoin both enforce.
         if empty_headers >= 9 {
-            info!(
-                "Height-based recovery: fork sync failed repeatedly (empty_headers={}). \
-                 Walking back by height to find common ancestor (local_h={}, gap={})",
+            warn!(
+                "Fork sync failed repeatedly (empty_headers={}). \
+                 Clearing and retrying with different peers (local_h={}, gap={}). \
+                 State reset disabled — validated chain is authoritative.",
                 empty_headers, local_height, gap
             );
-            return self.state_reset_recovery(local_height).await;
+            self.sync_manager.write().await.reset_empty_headers();
+            self.sync_manager.write().await.set_post_recovery_grace();
+            return Ok(false);
         }
 
         let started = self.sync_manager.write().await.start_fork_sync();
