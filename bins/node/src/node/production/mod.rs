@@ -298,9 +298,23 @@ impl Node {
             return Ok(());
         }
 
-        // For devnet, add a minimum delay to allow heartbeat collection
-        // Scale delay to 20% of slot duration (capped at 700ms for long slots)
-        // This prevents the delay from consuming too much of short slots
+        // PROPAGATION DELAY: Wait 1 second after becoming eligible before producing.
+        // This gives the previous slot's block time to propagate via gossip.
+        // Without this, consecutive producers build on stale tips → micro-forks →
+        // rollback + sync recovery → nodes fall behind.
+        // Ethereum achieves this with the 4s attestation deadline; we use an explicit delay.
+        {
+            let min_offset_ms = if our_bootstrap_rank.is_some() {
+                500 // Bootstrap: shorter delay (fewer nodes)
+            } else {
+                1000 // Epoch: 1 second propagation buffer
+            };
+            if slot_offset_ms < min_offset_ms {
+                return Ok(());
+            }
+        }
+
+        // For devnet, add additional delay for heartbeat collection
         if self.config.network == Network::Devnet {
             let slot_duration_ms = self.params.slot_duration * 1000;
             let heartbeat_collection_ms = std::cmp::min(slot_duration_ms / 5, 700);
