@@ -205,47 +205,22 @@ in merge_one(), even duplicates that will be rejected by sequence check.
 
 ### SCALE-T2-006: Activate Tiered GossipSub at Runtime (Must)
 
-**Current**: Tiered gossipsub infrastructure exists in `gossip/config.rs` (~340 lines)
-but is never activated. All nodes run Tier 0 (legacy) regardless of role. The code
-includes `new_gossipsub_for_tier()`, `subscribe_to_topics_for_tier()`,
-`reconfigure_topics_for_tier()`, `topics_for_tier()`, `region_topic()`, and
-`compute_dynamic_mesh()` — all tested but dormant.
+**Status**: Tiered gossipsub infrastructure was removed as dead code. The per-tier
+mesh functions (`new_gossipsub_for_tier()`, `subscribe_to_topics_for_tier()`,
+`reconfigure_topics_for_tier()`, `topics_for_tier()`, `compute_dynamic_mesh()`) were
+never called in production and libp2p doesn't support changing mesh params after
+gossipsub creation, making runtime tier reconfiguration architecturally impossible
+without restarting the behaviour.
 
-**Target**: Activate tier computation at epoch boundaries and call `reconfigure_tier()`.
+**Current approach**: Universal mesh config (`mesh_n=12, mesh_n_high=24`) across all
+networks and roles. Networks ≤24 nodes are effectively full-mesh. At 1000+ nodes,
+~3-4 hops (~400ms) is well within 10s slot margin. Peer scoring
+(`first_message_deliveries_weight=10.0` on BLOCKS_TOPIC) naturally keeps producers
+in mesh positions without explicit tier logic.
 
-**Design**:
-1. At each epoch boundary (in `periodic.rs` or `apply_block.rs`), compute node tier:
-   - Tier 1: node is a registered producer with active bond
-   - Tier 2: node is a full node (not producing but validating all blocks)
-   - Tier 3: future — light clients (header-only, not yet supported)
-2. If tier changed from last epoch, call `network.reconfigure_tier(new_tier, region)`
-3. This triggers `reconfigure_topics_for_tier()` which:
-   - Unsubscribes from topics not needed for new tier (except protected: blocks, txs)
-   - Subscribes to tier-specific topics (TIER1_BLOCKS_TOPIC for producers)
-4. Tier 1 producers get mesh_n=20 (dense mesh for instant block propagation)
-5. Tier 2 full nodes get mesh_n=8 (moderate, within regional shards)
-
-**What's already coded** (verified in `gossip/config.rs`):
-- `new_gossipsub_for_tier(tier)` — creates gossipsub with tier-specific mesh params
-- `subscribe_to_topics_for_tier(gs, tier, region)` — subscribes to tier-appropriate topics
-- `reconfigure_topics_for_tier(gs, tier, region)` — live migration with safety guards
-- `topics_for_tier(tier, region)` — single source of truth for tier→topic mapping
-- Peer scoring: producers get `first_message_deliveries_weight=10.0` on BLOCKS_TOPIC
-- Protected topics: BLOCKS and TRANSACTIONS never unsubscribed regardless of tier
-
-**ALREADY ACTIVE AT RUNTIME** (verified during implementation):
-- `recompute_tier()` runs in `apply_block/post_commit.rs` after every block
-- Calls `network.reconfigure_tier()` on epoch boundary when tier changes
-- `our_tier` and `last_tier_epoch` already tracked on Node struct
-- No code changes needed — this was already fully wired up
-
-**Acceptance Criteria**:
-- [ ] Node computes tier at each epoch boundary
-- [ ] Producers get Tier 1 subscriptions (TIER1_BLOCKS_TOPIC, mesh_n=20)
-- [ ] Non-producers get Tier 2 subscriptions (mesh_n=8)
-- [ ] Tier changes are applied via reconfigure_topics_for_tier()
-- [ ] Protected topics (blocks, txs) never unsubscribed
-- [ ] All existing gossip tests pass
+**If tiered mesh is needed in the future**: Requires topic-level separation (producers
+subscribe to `/doli/t1/blocks/1` with a separate gossipsub behaviour instance), not
+runtime mesh param changes on a single instance.
 
 ---
 

@@ -81,9 +81,9 @@ For consensus safety:
 |--------|-----------|-------------|
 | File | `gossip/config.rs` | **CORRECT.** Lines 27-66 and 271-306. |
 | TopicScoreParams | "Add scoring" | **Not present.** No `PeerScoreParams`, no `TopicScoreParams`. |
-| Dynamic mesh | Already exists | `compute_dynamic_mesh()` at lines 242-264 scales mesh_n with producer count (cap at 20). |
+| Dynamic mesh | Already exists | `compute_dynamic_mesh()` removed — replaced with universal static mesh (mesh_n=12, mesh_n_high=24). |
 
-**Verdict:** Plan is correct. Network-layer only, no consensus impact. Natural extension of existing `compute_dynamic_mesh()`.
+**Verdict:** Plan is correct. Network-layer only, no consensus impact. Universal mesh params (12/8/24/12) scale from small to 1000+ node networks without runtime adaptation.
 
 ### Item 5: Auto-Backfill After Snap Sync
 
@@ -139,7 +139,7 @@ For consensus safety:
 ### REQ-NET-002: GossipSub Producer Scoring
 - [ ] TopicScoreParams on BLOCKS_TOPIC with `first_message_deliveries_weight: 10.0`
 - [ ] No consensus behavior change
-- [ ] Works with existing `compute_dynamic_mesh()`
+- [ ] Works with universal mesh config (mesh_n=12)
 
 ### REQ-SYNC-001: Auto-Backfill After Snap Sync
 - [ ] Background task starts after `apply_snap_snapshot()` completes

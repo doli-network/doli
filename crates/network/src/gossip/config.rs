@@ -13,50 +13,6 @@ use super::{
     PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
-/// Maximum mesh_n when scaling dynamically with network size.
-/// Raised from 20 to 50 to support 100+ node networks.
-/// For 106 nodes: mesh_n=11, for 500: mesh_n=23, for 1000: mesh_n=32.
-const MESH_N_CAP: usize = 50;
-
-/// Compute gossipsub mesh parameters dynamically based on total network peers.
-///
-/// For small networks (≤20): mesh_n = total_peers - 1 (full mesh, every node in eager-push).
-/// For large networks (>20): mesh_n = sqrt(total_peers) * 1.5, capped at MESH_N_CAP.
-/// sqrt(N) ensures O(log N) propagation hops even with 1000+ nodes.
-///
-/// Examples: 8 peers → mesh_n=7, 50 peers → mesh_n=11, 106 peers → mesh_n=16, 500 → mesh_n=34.
-pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
-    if total_peers <= 1 {
-        return MeshConfig {
-            mesh_n: 6,
-            mesh_n_low: 4,
-            mesh_n_high: 12,
-            gossip_lazy: 6,
-        };
-    }
-
-    let mesh_n = if total_peers <= 20 {
-        // Small network: full mesh (all peers in eager-push)
-        total_peers - 1
-    } else {
-        // Large network: sqrt scaling for O(log N) propagation
-        let sqrt_n = (total_peers as f64).sqrt();
-        (sqrt_n * 1.5).ceil() as usize
-    }
-    .clamp(6, MESH_N_CAP);
-
-    let mesh_n_low = (mesh_n * 3 / 4).max(4);
-    let mesh_n_high = (mesh_n * 2).min(MESH_N_CAP * 2);
-    let gossip_lazy = mesh_n.max(6);
-
-    MeshConfig {
-        mesh_n,
-        mesh_n_low,
-        mesh_n_high,
-        gossip_lazy,
-    }
-}
-
 /// Create a new GossipSub behaviour with configurable mesh parameters.
 ///
 /// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.

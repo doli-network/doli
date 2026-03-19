@@ -14,7 +14,7 @@ Split two oversized Rust files into cohesive sub-modules where no single file ex
 | Module | Contents | ~Lines |
 |--------|----------|--------|
 | `gossip/mod.rs` | Topic constants, GossipError, MeshConfig, PROTECTED_TOPICS, re-exports | ~60 |
-| `gossip/config.rs` | new_gossipsub*, subscribe_to_topics*, topics_for_tier, reconfigure_topics_for_tier, compute_dynamic_mesh, region_topic | ~310 |
+| `gossip/config.rs` | new_gossipsub, subscribe_to_topics, region_topic | ~80 |
 | `gossip/publish.rs` | All 9 publish functions, encode_tx_batch, decode_tx_message, TX_MSG_BATCH | ~170 |
 | `gossip/tests.rs` | All 13 unit tests | ~264 |
 

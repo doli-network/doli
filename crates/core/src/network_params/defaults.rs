@@ -73,13 +73,14 @@ impl NetworkParams {
                 // Vesting (locked for mainnet — consensus critical)
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
-                // Gossip mesh defaults — overridden at startup by dynamic mesh
-                // computation based on actual producer count. These are fallbacks
-                // only if producer count is unknown (fresh node, no state).
-                mesh_n: 6,
-                mesh_n_low: 4,
-                mesh_n_high: 12,
-                gossip_lazy: 6,
+                // Gossip mesh: universal config for all network sizes.
+                // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
+                // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
+                // Ethereum runs D=8 for 800K validators — 12 is conservative.
+                mesh_n: 12,
+                mesh_n_low: 8,
+                mesh_n_high: 24,
+                gossip_lazy: 12,
             },
 
             Network::Testnet => NetworkParams {
@@ -96,7 +97,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773699243, // Testnet v34 genesis - Full chain reset 2026-03-16
+                genesis_time: 1773760557, // Testnet v35 genesis - Full chain reset 2026-03-17
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
@@ -140,12 +141,11 @@ impl NetworkParams {
                 // Vesting (1-day: 6h quarters — faster than mainnet for testing)
                 vesting_quarter_slots: 2_160,
 
-                // Gossip mesh — full mesh for small networks (<50 producers).
-                // Same rationale as mainnet: D=N-1 for instant propagation.
-                mesh_n: 14,
-                mesh_n_low: 10,
-                mesh_n_high: 28,
-                gossip_lazy: 14,
+                // Gossip mesh: same universal config as mainnet.
+                mesh_n: 12,
+                mesh_n_low: 8,
+                mesh_n_high: 24,
+                gossip_lazy: 12,
             },
 
             Network::Devnet => NetworkParams {
@@ -202,15 +202,12 @@ impl NetworkParams {
                 // Vesting (fast for devnet testing: 10 min per quarter, 40 min full vest)
                 vesting_quarter_slots: 60,
 
-                // Gossip mesh (larger for --no-dht star topology)
-                // With --no-dht, all nodes connect to bootstrap only.
-                // Gossipsub must keep all peers in mesh since pruned
-                // nodes have no alternative peers for discovery.
-                // Sized for ~30 node devnets; override via .env for larger.
-                mesh_n: 15,
-                mesh_n_low: 10,
-                mesh_n_high: 35,
-                gossip_lazy: 15,
+                // Gossip mesh: same universal config as mainnet.
+                // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
+                mesh_n: 12,
+                mesh_n_low: 8,
+                mesh_n_high: 24,
+                gossip_lazy: 12,
             },
         }
     }

@@ -188,11 +188,11 @@ Pub-sub message propagation using GossipSub protocol.
 
 ```
 heartbeat_interval:    1 second
-mesh_n:                6 peers (target)
-mesh_n_low:            4 peers (minimum)
-mesh_n_high:           12 peers (maximum)
-mesh_outbound_min:     2 peers
-gossip_lazy:           6 peers
+mesh_n:                12 peers (target)
+mesh_n_low:            8 peers (minimum)
+mesh_n_high:           24 peers (maximum)
+mesh_outbound_min:     4 peers
+gossip_lazy:           12 peers
 gossip_factor:         0.25
 history_length:        5 messages
 history_gossip:        3 messages

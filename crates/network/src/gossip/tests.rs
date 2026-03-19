@@ -20,15 +20,16 @@ fn test_region_topic_format() {
 }
 
 #[test]
-fn test_mesh_config_default() {
+fn test_mesh_config_invariants() {
     let config = MeshConfig {
-        mesh_n: 6,
-        mesh_n_low: 4,
-        mesh_n_high: 12,
-        gossip_lazy: 6,
+        mesh_n: 12,
+        mesh_n_low: 8,
+        mesh_n_high: 24,
+        gossip_lazy: 12,
     };
     assert!(config.mesh_n >= config.mesh_n_low);
     assert!(config.mesh_n <= config.mesh_n_high);
+    assert!(config.gossip_lazy >= config.mesh_n);
 }
 
 #[test]
@@ -73,85 +74,14 @@ fn test_tx_batch_empty_returns_none() {
 }
 
 #[test]
-fn test_dynamic_mesh_fallback_for_zero_producers() {
-    let m = compute_dynamic_mesh(0);
-    assert_eq!(m.mesh_n, 6);
-    assert_eq!(m.mesh_n_low, 4);
-    assert_eq!(m.mesh_n_high, 12);
-    assert_eq!(m.gossip_lazy, 6);
-}
-
-#[test]
-fn test_dynamic_mesh_fallback_for_one_producer() {
-    let m = compute_dynamic_mesh(1);
-    assert_eq!(m.mesh_n, 6);
-}
-
-#[test]
-fn test_dynamic_mesh_small_network() {
-    // Small networks (≤20): full mesh (total_peers - 1)
-    let m = compute_dynamic_mesh(3);
-    assert_eq!(m.mesh_n, 6); // min 6
-    assert_eq!(m.mesh_n_low, 4);
-
-    let m = compute_dynamic_mesh(5);
-    assert_eq!(m.mesh_n, 6); // min 6
-
-    let m = compute_dynamic_mesh(10);
-    assert_eq!(m.mesh_n, 9);
-
-    let m = compute_dynamic_mesh(15);
-    assert_eq!(m.mesh_n, 14);
-
-    let m = compute_dynamic_mesh(20);
-    assert_eq!(m.mesh_n, 19);
-}
-
-#[test]
-fn test_dynamic_mesh_large_network_sqrt_scaling() {
-    // Large networks (>20): sqrt(N) * 1.5
-    // 50 peers: sqrt(50)*1.5 = 10.6 → 11
-    let m = compute_dynamic_mesh(50);
-    assert_eq!(m.mesh_n, 11);
-
-    // 106 peers: sqrt(106)*1.5 = 15.4 → 16
-    let m = compute_dynamic_mesh(106);
-    assert_eq!(m.mesh_n, 16);
-
-    // 200 peers: sqrt(200)*1.5 = 21.2 → 22
-    let m = compute_dynamic_mesh(200);
-    assert_eq!(m.mesh_n, 22);
-
-    // 1000 peers: sqrt(1000)*1.5 = 47.4 → 48
-    let m = compute_dynamic_mesh(1000);
-    assert_eq!(m.mesh_n, 48);
-
-    // 2000 peers: capped at 50
-    let m = compute_dynamic_mesh(2000);
-    assert_eq!(m.mesh_n, 50);
-}
-
-#[test]
-fn test_dynamic_mesh_invariants() {
-    for n in 0..=2000 {
-        let m = compute_dynamic_mesh(n);
-        assert!(m.mesh_n_low >= 1, "mesh_n_low must be >= 1 for n={}", n);
-        assert!(m.mesh_n_low <= m.mesh_n, "mesh_n_low <= mesh_n for n={}", n);
-        assert!(
-            m.mesh_n <= m.mesh_n_high,
-            "mesh_n <= mesh_n_high for n={}",
-            n
-        );
-        assert!(m.gossip_lazy >= 6, "gossip_lazy >= 6 for n={}", n);
-    }
-}
-
-#[test]
-fn test_dynamic_mesh_gossipsub_creation() {
+fn test_gossipsub_creation_with_universal_mesh() {
     let keypair = libp2p::identity::Keypair::generate_ed25519();
-    for n in [0, 1, 3, 5, 10, 15, 21, 50, 100] {
-        let mesh = compute_dynamic_mesh(n);
-        let gs = new_gossipsub(&keypair, &mesh);
-        assert!(gs.is_ok(), "gossipsub creation must succeed for n={}", n);
-    }
+    let mesh = MeshConfig {
+        mesh_n: 12,
+        mesh_n_low: 8,
+        mesh_n_high: 24,
+        gossip_lazy: 12,
+    };
+    let gs = new_gossipsub(&keypair, &mesh);
+    assert!(gs.is_ok(), "gossipsub creation must succeed");
 }

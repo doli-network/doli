@@ -69,11 +69,11 @@ impl NetworkConfig {
             genesis_hash,
             no_dht: false,
             peer_cache_path: None,
-            // Standard gossipsub defaults (overridden from NetworkParams in node.rs)
-            mesh_n: 6,
-            mesh_n_low: 4,
-            mesh_n_high: 12,
-            gossip_lazy: 6,
+            // Universal gossipsub mesh (same for all networks)
+            mesh_n: 12,
+            mesh_n_low: 8,
+            mesh_n_high: 24,
+            gossip_lazy: 12,
             nat_config: NatConfig::default(),
             external_address: None,
             tx_announce_enabled: false,
