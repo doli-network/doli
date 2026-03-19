@@ -373,18 +373,19 @@ pub const FAST_THRESHOLD_MS: u64 = 0;
 pub const FAST_THRESHOLD: u64 = 0;
 
 /// Maximum number of fallback producers per slot.
-/// With sequential 2s windows: 5 ranks (0-4) each get exclusive 2s,
-/// filling the entire 10s slot with no emergency window.
-pub const MAX_FALLBACK_PRODUCERS: usize = 5;
+/// Primary + single fallback: 2 producers per slot maximum.
+pub const MAX_FALLBACK_PRODUCERS: usize = 2;
 
 /// Sequential fallback timeout in milliseconds.
-/// Each rank gets an exclusive 2s window before the next rank takes over.
-/// 55ms VDF + ~600ms propagation = 655ms, leaving 1345ms margin per window.
+/// Rank 0 (primary proposer): produces at 0-1999ms.
+/// Rank 1 (single fallback): produces at 2000-3999ms ONLY if rank 0's block
+/// hasn't arrived via gossip. With IP colocation fix, gossip propagates in
+/// <100ms on localhost — rank 1 will always see rank 0's block in time.
 pub const FALLBACK_TIMEOUT_MS: u64 = 2_000;
 
-/// Maximum fallback ranks (0-4 = 5 ranks, each with exclusive 2s window).
-/// 5 ranks × 2000ms = 10000ms = full slot. No emergency window.
-pub const MAX_FALLBACK_RANKS: usize = 5;
+/// Maximum fallback ranks: 2 (rank 0 = primary, rank 1 = single fallback).
+/// Rank 1 only produces if rank 0 misses (no block seen via gossip after 2s).
+pub const MAX_FALLBACK_RANKS: usize = 2;
 
 /// Maximum clock drift in milliseconds for fine-grained NTP validation.
 /// Nodes with drift > 200ms should enable NTP synchronization.

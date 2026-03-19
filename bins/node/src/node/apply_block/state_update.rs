@@ -72,7 +72,7 @@ impl Node {
         }
 
         // Check pending protocol activation at epoch boundaries
-        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+        if doli_core::EpochSnapshot::is_epoch_boundary_with(height, self.params.slots_per_reward_epoch as u64) {
             if let Some((version, activation_epoch)) = state.pending_protocol_activation {
                 let current_epoch = height / SLOTS_PER_EPOCH as u64;
                 if current_epoch >= activation_epoch {
@@ -165,8 +165,8 @@ impl Node {
         // After epoch 0, apply only at epoch boundaries (height % 360 == 0).
         let mut needs_full_producer_write = false;
         {
-            let is_epoch_0 = height < SLOTS_PER_EPOCH as u64;
-            let is_boundary = doli_core::EpochSnapshot::is_epoch_boundary(height);
+            let is_epoch_0 = height < self.params.slots_per_reward_epoch as u64;
+            let is_boundary = doli_core::EpochSnapshot::is_epoch_boundary_with(height, self.params.slots_per_reward_epoch as u64);
             if is_epoch_0 || is_boundary {
                 let mut producers = self.producer_set.write().await;
                 if producers.has_pending_updates() {
