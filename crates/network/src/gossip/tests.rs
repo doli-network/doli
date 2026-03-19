@@ -180,8 +180,8 @@ fn test_protected_topics_never_unsubscribed() {
 #[test]
 fn test_dynamic_mesh_fallback_for_zero_producers() {
     let m = compute_dynamic_mesh(0);
-    assert_eq!(m.mesh_n, 6);
-    assert_eq!(m.mesh_n_low, 4);
+    assert_eq!(m.mesh_n, 8); // Ethereum baseline D=8
+    assert_eq!(m.mesh_n_low, 6);
     assert_eq!(m.mesh_n_high, 12);
     assert_eq!(m.gossip_lazy, 6);
 }
@@ -189,18 +189,18 @@ fn test_dynamic_mesh_fallback_for_zero_producers() {
 #[test]
 fn test_dynamic_mesh_fallback_for_one_producer() {
     let m = compute_dynamic_mesh(1);
-    assert_eq!(m.mesh_n, 6);
+    assert_eq!(m.mesh_n, 8); // Ethereum baseline D=8
 }
 
 #[test]
 fn test_dynamic_mesh_small_network() {
     // Small networks (≤20): full mesh (total_peers - 1)
     let m = compute_dynamic_mesh(3);
-    assert_eq!(m.mesh_n, 6); // min 6
-    assert_eq!(m.mesh_n_low, 4);
+    assert_eq!(m.mesh_n, 8); // min 8 (Ethereum baseline)
+    assert_eq!(m.mesh_n_low, 6);
 
     let m = compute_dynamic_mesh(5);
-    assert_eq!(m.mesh_n, 6); // min 6
+    assert_eq!(m.mesh_n, 8); // min 8
 
     let m = compute_dynamic_mesh(10);
     assert_eq!(m.mesh_n, 9);

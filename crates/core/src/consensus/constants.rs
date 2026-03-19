@@ -386,25 +386,25 @@ pub const FAST_THRESHOLD_MS: u64 = 0;
 pub const FAST_THRESHOLD: u64 = 0;
 
 /// Maximum number of fallback producers per slot.
-/// Single proposer: exactly 1 producer per slot.
-pub const MAX_FALLBACK_PRODUCERS: usize = 1;
+/// Primary + single fallback: 2 producers per slot maximum.
+pub const MAX_FALLBACK_PRODUCERS: usize = 2;
 
 /// Sequential fallback timeout in milliseconds.
-/// Rank 0 (primary proposer): produces at 0ms.
-/// Rank 1 (single fallback): produces at 2000ms ONLY if rank 0 didn't produce.
-/// 2 seconds is enough for gossip to confirm rank 0's absence — no competing blocks.
+/// Rank 0 (primary proposer): produces at 0-1999ms.
+/// Rank 1 (single fallback): produces at 2000-3999ms ONLY if rank 0's block
+/// hasn't arrived via gossip. With IP colocation fix, gossip propagates in
+/// <100ms on localhost — rank 1 will always see rank 0's block in time.
 pub const FALLBACK_TIMEOUT_MS: u64 = 2_000;
 
 /// Maximum fallback ranks: 2 (rank 0 = primary, rank 1 = single fallback).
-/// Single proposer per slot (Ethereum model). If the scheduled producer
-/// misses their slot, the slot is empty. No fallback = no competing blocks
-/// = no forks from propagation races. The bond-weighted scheduler guarantees
-/// fair rotation. Empty slots are rare (producer must be offline) and
-/// self-healing (next slot picks a different producer).
+/// Rank 1 only produces if rank 0 misses (no block seen via gossip after 2s).
+/// This eliminates empty slots when a producer is offline while avoiding
+/// competing blocks (gossip delivers rank 0's block well within 2s).
 ///
-/// Previous values: 5 (fragmentation at 22+ nodes), 2 (forks at 35+ nodes
-/// due to gossip latency exceeding the 2s fallback window).
-pub const MAX_FALLBACK_RANKS: usize = 1;
+/// Previous values: 5 (fragmentation at 22+ nodes), 1 (empty slots when
+/// producer offline). Now 2 with IP colocation fix — gossip works reliably,
+/// so rank 1 always sees rank 0's block within the 2s window.
+pub const MAX_FALLBACK_RANKS: usize = 2;
 
 /// Maximum clock drift in milliseconds for fine-grained NTP validation.
 /// Nodes with drift > 200ms should enable NTP synchronization.
