@@ -1455,3 +1455,165 @@ fn test_inc001_successful_reorg_enables_header_first_sync() {
         manager.state()
     );
 }
+
+// =========================================================================
+// INC-001 RC-9: Sync-Production Deadlock Prevention Tests
+// REQ-SYNC-007 through REQ-SYNC-009
+// =========================================================================
+
+/// REQ-SYNC-007: Layer 6.5 allows production at lag=2 immediately (no 30s timeout).
+///
+/// Root cause RC-9: The old 30s timeout for lag 2-3 blocks created a fatal
+/// deadlock. The node would miss its slot, fall further behind, trigger sync,
+/// and sync would cascade into fork_sync → ancestor at h=0 → full reset.
+/// The node NEVER produced because the 30s timeout was interrupted by sync.
+#[test]
+fn test_inc001_rc9_small_lag_allows_production_immediately() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 20, slot near peers (slot-based, not height-based).
+    // One peer agrees at our height (so Layer 9 hash check doesn't block),
+    // another peer is 2 blocks ahead (the lag we're testing).
+    let local_hash = crypto::hash::hash(b"block20");
+    manager.local_height = 20;
+    manager.local_slot = 100; // Slot is time-based, close to peers
+    manager.local_hash = local_hash;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer_agree = PeerId::random();
+    let peer_ahead = PeerId::random();
+    let ahead_hash = crypto::hash::hash(b"block22");
+    // Peer 1: same height, same hash (Layer 9 agrees)
+    manager.add_peer(peer_agree, 20, local_hash, 100);
+    // Peer 2: 2 blocks ahead (Layer 6.5 lag=2)
+    manager.add_peer(peer_ahead, 22, ahead_hash, 102);
+
+    // Sync may have started from add_peer — force Idle for gate check
+    manager.state = SyncState::Idle;
+
+    let result = manager.can_produce(101);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "RC-9: Node 2 blocks behind must be allowed to produce immediately (no 30s timeout). Got: {:?}",
+        result
+    );
+}
+
+/// REQ-SYNC-008: Layer 6.5 allows production at lag=3 immediately.
+#[test]
+fn test_inc001_rc9_lag3_allows_production_immediately() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 20, 3 blocks behind one peer.
+    // Slot is close (Layer 6 slot check won't trigger).
+    // Peer 3 blocks ahead is outside Layer 9's ±2 window, so no hash mismatch.
+    let local_hash = crypto::hash::hash(b"block20");
+    manager.local_height = 20;
+    manager.local_slot = 101; // Close to peer slot — 1 slot behind
+    manager.local_hash = local_hash;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer_agree = PeerId::random();
+    let peer_ahead = PeerId::random();
+    // Peer 1: same height (Layer 9 agrees)
+    manager.add_peer(peer_agree, 20, local_hash, 101);
+    // Peer 2: 3 blocks ahead, outside ±2 window for Layer 9 hash check
+    manager.add_peer(peer_ahead, 23, crypto::hash::hash(b"block23"), 103);
+
+    manager.state = SyncState::Idle;
+
+    let result = manager.can_produce(102);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "RC-9: Node 3 blocks behind must be allowed to produce immediately. Got: {:?}",
+        result
+    );
+}
+
+/// REQ-SYNC-009: Layer 6.5 still blocks production at lag=4 (graduated gate).
+#[test]
+fn test_inc001_rc9_lag4_blocks_production_with_timeout() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Setup: node at height 20, 4 blocks behind.
+    // Slot close enough that Layer 6 doesn't trigger (slot is time-based).
+    let local_hash = crypto::hash::hash(b"block20");
+    manager.local_height = 20;
+    manager.local_slot = 101;
+    manager.local_hash = local_hash;
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer_agree = PeerId::random();
+    let peer_ahead = PeerId::random();
+    manager.add_peer(peer_agree, 20, local_hash, 101);
+    manager.add_peer(peer_ahead, 24, crypto::hash::hash(b"block24"), 104);
+
+    manager.state = SyncState::Idle;
+
+    let result = manager.can_produce(102);
+    assert!(
+        matches!(
+            result,
+            ProductionAuthorization::BlockedBehindPeers { height_diff: 4, .. }
+        ),
+        "RC-9: Node 4 blocks behind should be blocked (graduated gate). Got: {:?}",
+        result
+    );
+}
+
+/// REQ-SYNC-010: Active sync state blocks production (Layer 3 before Layer 6.5).
+/// Verifies that Layer 3 (sync state) takes precedence over Layer 6.5 (height lag).
+#[test]
+fn test_inc001_rc9_active_sync_blocks_production() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 20;
+    manager.local_slot = 100;
+    manager.local_hash = crypto::hash::hash(b"block20");
+    manager.has_connected_to_peer = true;
+    manager.first_peer_status_received = Some(Instant::now());
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 22, crypto::hash::hash(b"block22"), 102);
+    manager.add_peer(peer2, 22, crypto::hash::hash(b"block22"), 102);
+
+    // Force sync active — Layer 3 blocks before Layer 6.5 is reached
+    manager.state = SyncState::DownloadingHeaders {
+        target_slot: 102,
+        peer: peer1,
+        headers_count: 0,
+    };
+
+    let result = manager.can_produce(101);
+    assert!(
+        matches!(result, ProductionAuthorization::BlockedSyncing),
+        "RC-9: Active sync must block production (Layer 3). Got: {:?}",
+        result
+    );
+}
+
+/// REQ-SYNC-011: Processing stall resets to Idle immediately (RC-6).
+/// Prevents the 30s stuck timeout from wasting 3 slots per stall.
+#[test]
+fn test_inc001_rc6_processing_stall_immediate_recovery() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 20;
+    manager.local_hash = crypto::hash::hash(b"block20");
+    manager.state = SyncState::Processing { height: 21 };
+
+    // No pending headers/blocks → should reset to Idle
+    let blocks = manager.get_blocks_to_apply();
+    assert!(blocks.is_empty());
+    assert!(
+        matches!(manager.state(), SyncState::Idle),
+        "RC-6: Processing with no extractable blocks must reset to Idle immediately. Got: {:?}",
+        manager.state()
+    );
+}

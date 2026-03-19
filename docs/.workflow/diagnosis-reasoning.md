@@ -316,3 +316,50 @@ The minimum intervention that breaks the cycle is:
 3. Global sync admission control (Mechanism B -- prevents thundering herd)
 
 These three changes total ~200-300 lines and do not require a full rewrite.
+
+---
+
+# Addendum: INC-001 RC-1 through RC-9 Completeness Assessment (2026-03-19)
+
+## Explorer Round 1: Hypotheses
+
+- **H1**: RC-9 fix is correct and sufficient. The 30s timeout was fatal because it caused sync to trigger and fail (fork hash mismatch). Without the timeout, production happens before sync starts (same-tick ordering: try_produce_block first, run_periodic_tasks second).
+- **H2**: should_sync() starts sync for 2-block gaps via add_peer()/update_peer() BEFORE production timer fires (biased select). Creates a timing race where sync always wins.
+- **H3**: The open findings (DIAG-SYNC-002/003/004) describe recovery bugs that only matter if forks occur. If RC-5A/RC-7 prevent forks, these are dormant.
+- **H4**: All 9 fixes form a complete defense chain. Each layer protects against the failure of the one above it. No gaps.
+- **H5**: RC-9 may be unnecessary (sync for same-chain gaps succeeds quickly). But it provides useful defense-in-depth.
+- **H6**: New interaction between RC-9 and should_sync -- stale sync epochs after production advances height.
+
+## Skeptic Round 1: Elimination
+
+- H1: SURVIVES -- code trace confirms production fires before cleanup in same tick. And even Path B (sync first) resolves because same-chain sync succeeds.
+- H2: WEAKENED -- timing race exists but is NOT a deadlock. Sync for same-chain 2-block gap completes in 2-3 ticks.
+- H3: SURVIVES -- open findings target fork recovery, not fork prevention.
+- H4: SURVIVES with caveat (2s fallback window must actually hold).
+- H5: WEAKENED -- RC-9 is still beneficial as optimization even if not strictly needed.
+- H6: ELIMINATED -- sync epoch mechanism discards stale responses from old cycles.
+
+## Explorer Round 2: Refined Sub-Hypotheses
+
+- **H4a**: The 2s fallback window holds on localhost (700ms propagation, 1300ms margin). Needs live validation.
+- **H4b**: The 2s fallback window could fail under load (event loop starvation delays gossip processing, extending effective propagation time beyond 2s). This is the intersection of Mechanism A and Mechanism B from the previous diagnosis.
+
+## Skeptic Round 2
+
+- H4a: SURVIVES -- math checks out. VDF(85ms) + apply(270ms) + broadcast + peer_apply(270ms) = ~700ms. 1300ms margin is ample on localhost.
+- H4b: SURVIVES as residual risk -- if the event loop starvation problem (Mechanism B) from the 2026-03-17 diagnosis is NOT fixed yet, gossip block processing could be delayed beyond 2s, causing fallback production. However, this should only happen at high node counts (100+), not with 5 producers.
+
+## Analogist: Industry Parallels
+
+The design matches Eth2's approach: validators are assigned slots with a primary proposer and fallback attestors. The key principle is "don't sync for gaps smaller than the attestation horizon." Doli's RC-9 implements this: don't block production for a 2-3 block gossip delay. This is a well-established pattern in PoS consensus systems.
+
+## Diagnostic Tests (for live validation)
+
+1. **Test: No competing blocks after 100 slots** -- proves RC-5A/RC-7/RC-6/RC-8 prevent genesis forks.
+2. **Test: No node enters fork_sync** -- proves sync succeeds for same-chain gaps (no empty headers).
+3. **Test: Slot/height ratio > 90%** -- proves no production starvation from sync-production interaction.
+4. **Test: grep for "Layer6.5: BLOCKED" after RC-9** -- should see ZERO instances for lag=2-3.
+
+## Conclusion
+
+The 9 fixes are collectively sufficient. The RC-9 fix is correct (allows production at lag 2-3 instead of blocking for 30s). No new deadlock after RC-9. The one residual risk is the 2s fallback window timing, which should be validated on a live testnet but is mathematically sound on localhost.

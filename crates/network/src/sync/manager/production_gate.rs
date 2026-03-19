@@ -402,30 +402,21 @@ impl SyncManager {
                     height_lag, behind_secs
                 );
             } else if height_lag >= 2 {
-                // Small lag (2-3 blocks): allow after brief timeout.
-                // Node is likely on the correct chain, just behind gossip propagation.
-                let behind_secs = self
-                    .behind_since
-                    .get_or_insert_with(Instant::now)
-                    .elapsed()
-                    .as_secs();
-
-                if behind_secs <= 30 {
-                    info!(
-                        "[CAN_PRODUCE] Layer6.5: BLOCKED — local_h={} peer_h={} lag={} behind_for={}s (catching up)",
-                        self.local_height, best_peer_height, height_lag, behind_secs
-                    );
-                    return ProductionAuthorization::BlockedBehindPeers {
-                        local_height: self.local_height,
-                        peer_height: best_peer_height,
-                        height_diff: height_lag,
-                    };
-                }
-                // Small lag timeout expired — allow production
-                warn!(
-                    "[CAN_PRODUCE] Layer6.5: ALLOWING — small lag={} behind for {}s \
-                     (local_h={}, peer_h={}). Producing on same chain lineage.",
-                    height_lag, behind_secs, self.local_height, best_peer_height
+                // Small lag (2-3 blocks): allow immediately.
+                //
+                // INC-001: A 2-3 block lag is NORMAL on a 5-producer network with 10s
+                // slots. It means gossip blocks haven't been applied yet, NOT a fork.
+                // The node-level check in try_produce_block() already prevents production
+                // when >3 blocks behind (early chain) or >5 blocks behind (normal).
+                //
+                // Previously this had a 30s timeout which was fatal: the node would
+                // miss its slot, fall further behind, trigger sync, and sync would
+                // cascade into fork_sync → ancestor at h=0 → full reset. The node
+                // NEVER produced because the 30s timeout kept being interrupted by sync.
+                debug!(
+                    "[CAN_PRODUCE] Layer6.5: small lag={} (local_h={}, peer_h={}) — \
+                     allowing (gossip will catch up)",
+                    height_lag, self.local_height, best_peer_height
                 );
             } else {
                 // Gap closed — reset tracker

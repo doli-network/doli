@@ -36,16 +36,41 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Build bootstrap producer list from GSet (same source as production side).
-        // Must be sorted by pubkey for deterministic fallback rank order.
-        let mut bootstrap_producers = {
+        // Build bootstrap producer list for validation.
+        // INC-001 RC-10: During genesis, use HARDCODED genesis producers — identical
+        // to the production side (scheduling.rs RC-5A). The GSet hasn't converged
+        // during genesis and returns 1 producer instead of 5, causing "invalid
+        // producer for slot" rejections for 4 out of 5 valid producers.
+        let mut bootstrap_producers = if self.config.network.is_in_genesis(height) {
+            match self.config.network {
+                Network::Testnet => doli_core::genesis::testnet_genesis_producers()
+                    .into_iter()
+                    .map(|(pk, _)| pk)
+                    .collect::<Vec<_>>(),
+                Network::Mainnet => doli_core::genesis::mainnet_genesis_producers()
+                    .into_iter()
+                    .map(|(pk, _)| pk)
+                    .collect::<Vec<_>>(),
+                Network::Devnet => {
+                    // Devnet: no hardcoded list, use GSet
+                    let gset = self.producer_gset.read().await;
+                    let mut bp = gset.active_producers(7200);
+                    if bp.is_empty() {
+                        let known = self.known_producers.read().await;
+                        bp = known.clone();
+                    }
+                    bp
+                }
+            }
+        } else {
             let gset = self.producer_gset.read().await;
-            gset.active_producers(7200) // 2h liveness window, same as production
+            let mut bp = gset.active_producers(7200);
+            if bp.is_empty() {
+                let known = self.known_producers.read().await;
+                bp = known.clone();
+            }
+            bp
         };
-        if bootstrap_producers.is_empty() {
-            let known = self.known_producers.read().await;
-            bootstrap_producers = known.clone();
-        }
         bootstrap_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
         // Build liveness split for bootstrap validation (must match production side).
@@ -152,14 +177,37 @@ impl Node {
         let (bootstrap_producers, live_bp, stale_bp) = if mode == ValidationMode::Light {
             (Vec::new(), Vec::new(), Vec::new())
         } else {
-            let mut bp = {
+            // INC-001 RC-10: During genesis, use hardcoded genesis producers (same as
+            // production/scheduling.rs and check_producer_eligibility above).
+            let mut bp = if self.config.network.is_in_genesis(height) {
+                match self.config.network {
+                    Network::Testnet => doli_core::genesis::testnet_genesis_producers()
+                        .into_iter()
+                        .map(|(pk, _)| pk)
+                        .collect::<Vec<_>>(),
+                    Network::Mainnet => doli_core::genesis::mainnet_genesis_producers()
+                        .into_iter()
+                        .map(|(pk, _)| pk)
+                        .collect::<Vec<_>>(),
+                    Network::Devnet => {
+                        let gset = self.producer_gset.read().await;
+                        let mut gp = gset.active_producers(7200);
+                        if gp.is_empty() {
+                            let known = self.known_producers.read().await;
+                            gp = known.clone();
+                        }
+                        gp
+                    }
+                }
+            } else {
                 let gset = self.producer_gset.read().await;
-                gset.active_producers(7200)
+                let mut gp = gset.active_producers(7200);
+                if gp.is_empty() {
+                    let known = self.known_producers.read().await;
+                    gp = known.clone();
+                }
+                gp
             };
-            if bp.is_empty() {
-                let known = self.known_producers.read().await;
-                bp = known.clone();
-            }
 
             // ACTIVATION_DELAY filter: mirror the production code's filtering
             // (node.rs try_produce_block lines 4993-5014). Without this, the
