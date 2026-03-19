@@ -25,7 +25,7 @@ impl NetworkParams {
                     "/dns4/seed2.doli.network/tcp/30300".to_string(),
                     "/dns4/seeds.doli.network/tcp/30300".to_string(),
                 ],
-                max_peers: 50, // Mainnet: conservative, tiered architecture handles scale
+                max_peers: 100, // Unified with testnet
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
@@ -73,13 +73,12 @@ impl NetworkParams {
                 // Vesting (locked for mainnet — consensus critical)
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
-                // Gossip mesh defaults — overridden at startup by dynamic mesh
-                // computation based on actual producer count. These are fallbacks
-                // only if producer count is unknown (fresh node, no state).
-                mesh_n: 6,
-                mesh_n_low: 4,
-                mesh_n_high: 12,
-                gossip_lazy: 6,
+                // Gossip mesh — unified with testnet.
+                // Denser than Ethereum (D=8) for faster propagation in smaller network.
+                mesh_n: 14,
+                mesh_n_low: 10,
+                mesh_n_high: 28,
+                gossip_lazy: 14,
             },
 
             Network::Testnet => NetworkParams {
