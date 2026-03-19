@@ -71,6 +71,12 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
     );
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,
+        // Default ip_colocation_factor_threshold is 1, which means at 33+ nodes
+        // on the same IP (e.g., local testnet on 127.0.0.1), the penalty reaches
+        // -35 × (33-1)² = -35,840, exceeding the graylist threshold of -16,000.
+        // ALL gossip RPCs are silently dropped → blocks never propagate → forks.
+        // Set to 500 to allow large local testnets without penalty.
+        ip_colocation_factor_threshold: 500.0,
         ..Default::default()
     };
     gossipsub
