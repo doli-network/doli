@@ -566,6 +566,7 @@ proptest! {
 
     /// Fallback producer selection is deterministic (anti-grinding: no prev_hash dependency)
     #[test]
+    #[allow(deprecated)]
     fn prop_fallback_deterministic(slot: u32, num_producers in 1usize..20) {
         let producers: Vec<(crypto::PublicKey, u64)> = (0..num_producers)
             .map(|i| {
@@ -584,6 +585,7 @@ proptest! {
 
     /// Fallback producer selection returns at most MAX_FALLBACK_PRODUCERS
     #[test]
+    #[allow(deprecated)]
     fn prop_fallback_max_producers(slot: u32, num_producers in 1usize..20) {
         let producers: Vec<(crypto::PublicKey, u64)> = (0..num_producers)
             .map(|i| {
@@ -1167,6 +1169,7 @@ fn test_constants_match_whitepaper() {
 /// Test: selection_independent_of_prev_hash
 /// Producer selection must NOT depend on prev_hash (anti-grinding)
 #[test]
+#[allow(deprecated)]
 fn test_selection_independent_of_prev_hash() {
     // Create producers with different bond counts
     let producer_a = crypto::PublicKey::from_bytes([1u8; 32]);
@@ -1199,6 +1202,7 @@ fn test_selection_independent_of_prev_hash() {
 /// Selection uses evenly-distributed offsets across ticket space for fallbacks.
 /// offset = (total_tickets * rank) / MAX_FALLBACK_RANKS
 #[test]
+#[allow(deprecated)]
 fn test_selection_uses_evenly_distributed_offsets() {
     let producer_a = crypto::PublicKey::from_bytes([1u8; 32]);
     let producer_b = crypto::PublicKey::from_bytes([2u8; 32]);
@@ -1336,6 +1340,7 @@ fn test_supply_converges() {
 /// Test: presence_not_in_consensus
 /// Presence score must NOT affect validity or selection
 #[test]
+#[allow(deprecated)]
 fn test_presence_not_in_consensus() {
     // Producer selection function signature doesn't include presence score
     // This is enforced by the type system
