@@ -57,6 +57,15 @@ impl Node {
                 height,
             );
             validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo).map_err(|e| {
+                warn!(
+                    "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",
+                    height,
+                    tx.hash(),
+                    tx.tx_type,
+                    tx.inputs.len(),
+                    tx.outputs.len(),
+                    e,
+                );
                 anyhow::anyhow!("UTXO validation failed for tx {}: {}", tx.hash(), e)
             })?;
         }

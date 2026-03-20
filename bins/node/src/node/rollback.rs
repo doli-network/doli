@@ -208,7 +208,7 @@ impl Node {
         self.cumulative_rollback_depth += 1;
 
         info!(
-            "Fork recovery rollback complete: now at height {} (hash {:.8}, cumulative_rollback={})",
+            "[FORK] ROLLBACK_DONE h={} hash={:.8} cumulative_depth={}",
             target_height, parent_hash, self.cumulative_rollback_depth
         );
 
@@ -258,8 +258,7 @@ impl Node {
         // a cascade (snap → no block 1 → future rollback fails → re-snap).
         if gap <= 50 && self.shallow_rollback_count < 50 {
             info!(
-                "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
-                 from h={} to find common ancestor (rollback #{})",
+                "[FORK] ROLLBACK gap={} empties={} h={} rollback_count={} — rolling back 1 block",
                 gap,
                 empty_headers,
                 local_height,
@@ -300,9 +299,7 @@ impl Node {
         // Ethereum and Bitcoin both enforce.
         if empty_headers >= 9 {
             warn!(
-                "Fork sync failed repeatedly (empty_headers={}). \
-                 Clearing and retrying with different peers (local_h={}, gap={}). \
-                 State reset disabled — validated chain is authoritative.",
+                "[FORK] RETRY empties={} local_h={} gap={} — retrying with different peers",
                 empty_headers, local_height, gap
             );
             self.sync_manager.write().await.reset_empty_headers();
@@ -313,8 +310,7 @@ impl Node {
         let started = self.sync_manager.write().await.start_fork_sync();
         if started {
             info!(
-                "Fork sync: binary search for common ancestor initiated \
-                 (empty_headers={}, local_height={}, gap={})",
+                "[FORK] BINARY_SEARCH empties={} local_h={} gap={} — searching for common ancestor",
                 empty_headers, local_height, gap
             );
             return Ok(true);

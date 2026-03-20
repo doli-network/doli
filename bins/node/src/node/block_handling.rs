@@ -157,10 +157,15 @@ impl Node {
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
         let height = self.chain_state.read().await.best_height + 1;
+        let block_slot = block.header.slot;
+        let block_producer = block.header.producer;
         if let Err(e) = self.apply_block(block, ValidationMode::Full).await {
             warn!(
-                "Gossip block failed apply at height {}: {} — skipping, sync will catch up",
-                height, e
+                "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
+                block_slot,
+                height,
+                hex::encode(&block_producer.as_bytes()[..4]),
+                e,
             );
             return Ok(());
         }

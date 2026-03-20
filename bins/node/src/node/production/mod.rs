@@ -233,6 +233,26 @@ impl Node {
             return Ok(());
         }
 
+        // Scheduler fingerprint: compare across nodes to detect divergence.
+        {
+            let total_bonds: u64 = active_with_weights.iter().map(|(_, b)| *b).sum();
+            let r0 = eligible
+                .first()
+                .map(|p| &p.as_bytes()[..4])
+                .unwrap_or(&[0; 4]);
+            let r1 = eligible
+                .get(1)
+                .map(|p| &p.as_bytes()[..4])
+                .unwrap_or(&[0; 4]);
+            debug!(
+                "[SCHED] PRODUCE slot={} h={} producers={} total_bonds={} r0={} r1={} mode={} snap_epoch={}",
+                current_slot, height, active_with_weights.len(), total_bonds,
+                hex::encode(r0), hex::encode(r1),
+                if use_bootstrap { "BOOT" } else { "EPOCH" },
+                self.epoch_bond_snapshot_epoch,
+            );
+        }
+
         // Calculate slot offset in milliseconds for eligibility window
         let slot_start = self.params.slot_to_timestamp(current_slot);
         let now_ms = std::time::SystemTime::now()

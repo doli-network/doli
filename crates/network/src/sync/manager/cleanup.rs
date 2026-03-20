@@ -251,7 +251,7 @@ impl SyncManager {
                 if was_processing {
                     self.consecutive_empty_headers += 1;
                     info!(
-                        "Stuck Processing counted as fork signal (consecutive_empty_headers={})",
+                        "[SYNC] STUCK_PROCESSING empties={} — counted as fork signal",
                         self.consecutive_empty_headers
                     );
                 }

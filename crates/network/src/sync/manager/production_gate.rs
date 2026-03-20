@@ -354,8 +354,8 @@ impl SyncManager {
         );
         if self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection {
             warn!(
-                "FORK DETECTION: {} consecutive sync failures - blocking production",
-                self.consecutive_sync_failures
+                "[SYNC] FORK_GATE sync_failures={} threshold={} — blocking production",
+                self.consecutive_sync_failures, self.max_sync_failures_before_fork_detection
             );
             return ProductionAuthorization::BlockedSyncFailures {
                 failure_count: self.consecutive_sync_failures,

@@ -155,7 +155,7 @@ impl Node {
                     .await
                     .start_fork_recovery(orphan, peer);
                 if started {
-                    info!("Fork recovery triggered from production gate");
+                    info!("[FORK] RECOVERY_START triggered from production gate");
                 }
             }
         }
@@ -193,8 +193,10 @@ impl Node {
                     // Validate producer eligibility
                     if let Err(e) = self.check_producer_eligibility(&block).await {
                         warn!(
-                            "Cached chain rejected block at slot {}: {}",
-                            block.header.slot, e
+                            "[FORK] CACHE_REJECT slot={} producer={} error={}",
+                            block.header.slot,
+                            hex::encode(&block.header.producer.as_bytes()[..4]),
+                            e,
                         );
                         anyhow::bail!("Cached chain contains invalid producer: {}", e);
                     }
@@ -342,12 +344,12 @@ impl Node {
         // All networks: try 1-block rollback first (lightweight).
         // If rollback fails, log error — do not wipe state.
         warn!(
-            "FORK RECOVERY: {} consecutive fork-blocked slots — rolling back 1 block",
+            "[FORK] AUTO_ROLLBACK consecutive_blocked={} — rolling back 1 block",
             self.consecutive_fork_blocks
         );
         match self.rollback_one_block().await {
             Ok(true) => {
-                info!("Fork recovery: 1-block rollback succeeded");
+                info!("[FORK] AUTO_ROLLBACK succeeded");
             }
             Ok(false) => {
                 warn!("Fork recovery: rollback not possible — waiting for sync to recover");

@@ -251,9 +251,8 @@ impl SyncManager {
                     // Rollback is O(1) per block and preserves full chain history.
                     if gap <= 50 && self.local_height > 0 {
                         warn!(
-                            "Small fork (gap={}, empties={}): redirecting to fork_sync \
-                             instead of resync — rollback can handle this",
-                            gap, self.consecutive_empty_headers
+                            "[SYNC] ESCALATE type=small_fork gap={} empties={} local_h={} — redirecting to rollback",
+                            gap, self.consecutive_empty_headers, self.local_height
                         );
                         self.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
                         self.state = SyncState::Idle;
@@ -261,8 +260,8 @@ impl SyncManager {
                     }
                     // Large gap: try fork_sync or log error for manual intervention
                     warn!(
-                        "Deep fork: {} consecutive empty headers (gap={}) — resetting to Idle for fork_sync",
-                        self.consecutive_empty_headers, gap
+                        "[SYNC] ESCALATE type=deep_fork gap={} empties={} local_h={} — resetting for fork_sync",
+                        gap, self.consecutive_empty_headers, self.local_height
                     );
                     self.consecutive_empty_headers = 3; // Trigger fork_sync
                     self.state = SyncState::Idle;
@@ -551,9 +550,8 @@ impl SyncManager {
                     // changing local_hash to the parent. After 1-3 rollbacks,
                     // GetHeaders succeeds and sync resumes normally.
                     warn!(
-                        "Empty headers from {} (gap={}, consecutive={}) — minor fork. \
-                         Signaling rollback to find common ancestor.",
-                        peer, gap, self.consecutive_empty_headers
+                        "[SYNC] EMPTY_HEADERS peer={} gap={} empties={} local_h={} — minor fork, signaling rollback",
+                        peer, gap, self.consecutive_empty_headers, self.local_height
                     );
                     // Set to 3 immediately to trigger resolve_shallow_fork
                     // on the next periodic tick (no waiting for 3 separate responses)
@@ -564,8 +562,7 @@ impl SyncManager {
 
                 self.header_blacklisted_peers.insert(peer, Instant::now());
                 warn!(
-                    "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                     fork evidence (consecutive={}). Blacklisted peer, resetting to Idle.",
+                    "[SYNC] EMPTY_HEADERS peer={} peer_h={} local_h={} gap={} empties={} — deep fork, blacklisted peer",
                     peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
                 );
                 self.state = SyncState::Idle;
@@ -617,9 +614,8 @@ impl SyncManager {
             self.consecutive_empty_headers += 1;
             self.consecutive_sync_failures += 1;
             warn!(
-                "No valid headers from peer {} - header chain broken (consecutive={}). \
-                 Peer has different chain at our tip.",
-                peer, self.consecutive_empty_headers
+                "[SYNC] CHAIN_BREAK peer={} local_h={} empties={} sync_failures={} — peer has different chain",
+                peer, self.local_height, self.consecutive_empty_headers, self.consecutive_sync_failures
             );
         }
     }
@@ -696,8 +692,7 @@ impl SyncManager {
         if let Some(header) = self.pending_headers.front() {
             if header.prev_hash != current_hash && in_processing {
                 warn!(
-                    "Sync chain mismatch: first pending header (slot {}, prev={}) doesn't \
-                     build on local tip (hash={}). Clearing {} useless synced blocks.",
+                    "[SYNC] CHAIN_MISMATCH slot={} prev={} local_tip={} pending={} — clearing stale headers",
                     header.slot,
                     &header.prev_hash.to_string()[..16],
                     &current_hash.to_string()[..16],

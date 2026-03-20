@@ -83,6 +83,19 @@ impl Node {
             (live_bp, stale_bp)
         };
 
+        // Scheduler fingerprint: compare across nodes to detect divergence.
+        {
+            let total_bonds: u64 = weighted.iter().map(|(_, b)| *b).sum();
+            debug!(
+                "[SCHED] VALIDATE slot={} producer={} producers={} total_bonds={} snap_epoch={}",
+                block.header.slot,
+                hex::encode(&block.header.producer.as_bytes()[..4]),
+                weighted.len(),
+                total_bonds,
+                self.epoch_bond_snapshot_epoch,
+            );
+        }
+
         let mut ctx = validation::ValidationContext::new(
             ConsensusParams::for_network(self.config.network),
             self.config.network,

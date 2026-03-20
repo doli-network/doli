@@ -438,7 +438,7 @@ impl Node {
         {
             let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
             if is_deep_fork {
-                warn!("Deep fork detected: peers consistently reject our chain tip. Fork sync will attempt recovery.");
+                warn!("[FORK] DEEP_FORK peers consistently reject our chain tip — fork sync will attempt recovery");
             }
         }
 
