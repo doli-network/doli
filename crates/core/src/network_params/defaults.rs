@@ -97,7 +97,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773968401, // Testnet v50 genesis - segregated testnet params 2026-03-19
+                genesis_time: 1773971108, // Testnet v52 genesis - INC-001 fixes restored 2026-03-19
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
