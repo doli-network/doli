@@ -256,7 +256,7 @@ impl Node {
         // Range expanded from 10→12 to prevent small forks from
         // escalating to snap sync, which loses block history and creates
         // a cascade (snap → no block 1 → future rollback fails → re-snap).
-        if gap <= 12 && self.shallow_rollback_count < 12 {
+        if gap <= 50 && self.shallow_rollback_count < 50 {
             info!(
                 "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
                  from h={} to find common ancestor (rollback #{})",

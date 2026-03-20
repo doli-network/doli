@@ -249,7 +249,7 @@ impl SyncManager {
                     let gap = best_height.saturating_sub(self.local_height);
                     // Small gaps: redirect to fork_sync/rollback.
                     // Rollback is O(1) per block and preserves full chain history.
-                    if gap <= 12 && self.local_height > 0 {
+                    if gap <= 50 && self.local_height > 0 {
                         warn!(
                             "Small fork (gap={}, empties={}): redirecting to fork_sync \
                              instead of resync — rollback can handle this",
@@ -540,9 +540,10 @@ impl SyncManager {
                 // 2. Large gap (>50): too deep for rollback. Accumulate fork
                 //    evidence for snap sync escalation.
                 self.consecutive_empty_headers += 1;
-                // Activate Layer 8 (sync failure fork detection) — peers
-                // don't recognize our tip hash, which is fork evidence.
-                self.consecutive_sync_failures += 1;
+                // Empty headers are fork evidence, NOT sync failures.
+                // Don't inflate consecutive_sync_failures — that triggers
+                // false "Deep fork detected" from unreachable/flaky peers.
+                // Only count actual block validation failures as sync failures.
 
                 if gap <= 50 && self.local_height > 0 {
                     // Small fork: signal rollback. The node's periodic task
