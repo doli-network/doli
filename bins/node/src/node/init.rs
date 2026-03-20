@@ -562,12 +562,18 @@ impl Node {
             info!("Block production enabled");
         }
 
-        // Build initial epoch bond snapshot from current UTXO set.
-        // Without this, nodes that restart mid-epoch fall back to live UTXO
-        // counting → scheduler changes with every add-bond TX → divergence.
+        // Build initial epoch bond snapshot from ProducerSet.bond_count.
+        //
+        // CRITICAL: Must NOT use utxo.count_bonds() here. UTXO set includes
+        // add-bond TXs that arrived AFTER the last epoch boundary. If nodes
+        // restart at different times, they see different UTXOs → different
+        // snapshots → different schedulers → fork.
+        //
+        // ProducerSet.bond_count only changes at epoch boundaries (via
+        // apply_pending_updates), so it's identical for all nodes in the
+        // same epoch regardless of when they restart.
         let (initial_bond_snapshot, initial_bond_epoch) = {
             let ps = producer_set.read().await;
-            let us = utxo_set.read().await;
             let cs = chain_state.read().await;
             let h = cs.best_height;
             let bpe = config.network.blocks_per_reward_epoch();
@@ -576,13 +582,13 @@ impl Node {
             for p in &active {
                 let pkh =
                     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
-                let count = us.count_bonds(&pkh, config.network.bond_unit()).max(1) as u64;
+                let count = p.bond_count.max(1) as u64;
                 snap.insert(pkh, count);
             }
             let total: u64 = snap.values().sum();
             let epoch = if bpe > 0 { h / bpe } else { 0 };
             info!(
-                "Initial epoch bond snapshot: {} producers, total_bonds={}, epoch={}",
+                "Initial epoch bond snapshot (from ProducerSet): {} producers, total_bonds={}, epoch={}",
                 snap.len(),
                 total,
                 epoch
