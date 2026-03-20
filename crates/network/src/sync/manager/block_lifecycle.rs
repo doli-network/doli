@@ -45,12 +45,14 @@ impl SyncManager {
 
         // Applying a block means the chain is advancing — reset fork counters.
         self.consecutive_empty_headers = 0;
+        if matches!(self.recovery_phase, super::RecoveryPhase::StuckForkDetected) {
+            self.recovery_phase = super::RecoveryPhase::Normal;
+        }
 
         // PGD-001: Track stable blocks after resync completion.
-        // After 5 consecutive block applications with no active resync,
-        // reset the exponential backoff counter. This prevents the counter
-        // from ratcheting up indefinitely (the root cause of the 2026-03-15 halt).
-        if !self.resync_in_progress && self.consecutive_resync_count > 0 {
+        if !matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
+            && self.consecutive_resync_count > 0
+        {
             self.blocks_since_resync_completed += 1;
             if self.blocks_since_resync_completed >= 5 {
                 info!(
@@ -64,15 +66,18 @@ impl SyncManager {
         }
 
         // Post-recovery grace: clear after 10 blocks applied since recovery.
-        if self.post_recovery_grace {
-            self.blocks_applied_since_recovery += 1;
-            if self.blocks_applied_since_recovery >= 10 {
+        if let super::RecoveryPhase::PostRecoveryGrace {
+            ref mut blocks_applied,
+            ..
+        } = self.recovery_phase
+        {
+            *blocks_applied += 1;
+            if *blocks_applied >= 10 {
                 info!(
                     "Post-recovery grace cleared: {} blocks applied since recovery.",
-                    self.blocks_applied_since_recovery
+                    blocks_applied
                 );
-                self.post_recovery_grace = false;
-                self.blocks_applied_since_recovery = 0;
+                self.recovery_phase = super::RecoveryPhase::Normal;
             }
         }
         // Also clear grace by timeout (handled in cleanup(), not here — this
@@ -112,10 +117,11 @@ impl SyncManager {
                 height, slot, self.network_tip_height, self.network_tip_slot
             );
             self.state = SyncState::Synchronized;
+            self.snap_sync_attempts = 0;
             self.header_blacklisted_peers.clear();
 
             // If we were in a resync, complete it now
-            if self.resync_in_progress {
+            if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
                 self.complete_resync();
                 info!(
                     "Resync complete at height {} - grace period started ({}s)",
@@ -167,17 +173,28 @@ impl SyncManager {
 
         if self.consecutive_apply_failures >= 3 {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
-            // Repeated apply failures = fork. Activate fork_sync (binary search
-            // for common ancestor) which will find the divergence point, rollback,
-            // and re-sync correctly.
-            warn!(
-                "3+ consecutive apply failures with gap={} — \
-                 activating fork_sync (binary search for common ancestor)",
-                gap
-            );
-            self.consecutive_apply_failures = 0;
-            self.consecutive_empty_headers = self.consecutive_empty_headers.max(3);
-            self.state = SyncState::Idle;
+            if gap <= 50 {
+                // Small gap + repeated apply failures = fork, not transient issue.
+                // Gossip can't resolve this — the node is on a different chain and
+                // keeps trying to apply canonical blocks at the wrong height.
+                // Activate fork_sync (binary search for common ancestor) which will
+                // find the divergence point, rollback, and re-sync correctly.
+                warn!(
+                    "3+ consecutive apply failures with gap={} — \
+                     activating fork_sync (binary search for common ancestor)",
+                    gap
+                );
+                self.consecutive_apply_failures = 0;
+                // Signal fork recovery via RecoveryPhase (replaces old stuck_fork_signal boolean).
+                self.signal_stuck_fork();
+                self.state = SyncState::Idle;
+            } else {
+                warn!(
+                    "3+ consecutive apply failures with gap={} — triggering genesis resync",
+                    gap
+                );
+                self.needs_genesis_resync = true;
+            }
         }
     }
 
@@ -223,11 +240,16 @@ impl SyncManager {
 
         // Reset deep fork detection
         self.consecutive_empty_headers = 0;
+        // Note: recovery_phase is already ResyncInProgress (set by start_resync above)
+        self.needs_genesis_resync = false;
         self.body_stall_retries = 0;
         self.consecutive_apply_failures = 0;
 
         // Clear fork mismatch flag (resync will re-establish correct chain)
         self.fork_mismatch_detected = false;
+
+        // Reset snap sync attempt counter so recovery gets fresh tries.
+        self.snap_sync_attempts = 0;
 
         // Reset stale chain timers
         self.last_block_seen = Instant::now();
@@ -322,23 +344,20 @@ impl SyncManager {
         self.fork_recovery.take_exceeded_max_depth()
     }
 
-    /// Drain any cancelled fork-recovery peer into the fork_sync_blacklist.
-    /// Called from cleanup() so the blacklist is populated promptly after cancellation.
-    pub fn drain_cancelled_recovery_peer(&mut self) {
-        if let Some(peer) = self.fork_recovery.take_last_cancelled_peer() {
-            info!(
-                "Fork recovery peer {} cancelled — blacklisting for fork sync (5 min)",
-                peer
-            );
-            self.fork_sync_blacklist.insert(peer, Instant::now());
-        }
-    }
-
     /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
     /// Used during fork recovery to populate weights before plan_reorg.
     pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {
         self.reorg_handler
             .record_fork_block(hash, prev_hash, weight);
+    }
+
+    /// Seed the reorg handler with the snap sync tip so fork detection works immediately.
+    /// Called once after snap sync completes — the snap tip becomes the root of recent_blocks.
+    pub fn record_block_applied_after_snap(&mut self, hash: Hash, height: u64) {
+        self.reorg_handler
+            .record_block_with_weight(hash, Hash::ZERO, 1);
+        self.local_height = height;
+        self.local_hash = hash;
     }
 
     /// Get read-only access to the reorg handler (for plan_reorg from Node).
@@ -349,6 +368,13 @@ impl SyncManager {
     // =========================================================================
     // FORK SYNC (binary search for common ancestor)
     // =========================================================================
+
+    /// Set the lowest block height available in the local block store.
+    /// Called by the node after startup or snap sync to inform fork sync
+    /// where the block store coverage begins.
+    pub fn disable_snap_sync(&mut self) {
+        self.snap_sync_threshold = u64::MAX;
+    }
 
     pub fn set_store_floor(&mut self, floor: u64) {
         self.store_floor = floor;
@@ -467,8 +493,54 @@ impl SyncManager {
         self.last_fork_sync_rejection = Instant::now();
     }
 
+    /// Record the current tip hash before a remedial reorg.
+    /// Prevents equal-weight ping-pong: if a fork sync wants to switch
+    /// back to a tip we recently held, we reject it.
+    pub fn record_held_tip(&mut self, tip_hash: Hash) {
+        let now = Instant::now();
+        // Evict expired entries (TTL: 5 minutes)
+        self.recently_held_tips
+            .retain(|(_, ts)| now.duration_since(*ts) < Duration::from_secs(300));
+        // Capacity: 10
+        if self.recently_held_tips.len() >= 10 {
+            self.recently_held_tips.remove(0);
+        }
+        self.recently_held_tips.push((tip_hash, now));
+    }
+
+    /// Check if a tip hash was recently held (within 5-minute TTL).
+    pub fn is_recently_held_tip(&self, tip_hash: &Hash) -> bool {
+        let now = Instant::now();
+        self.recently_held_tips
+            .iter()
+            .any(|(h, ts)| h == tip_hash && now.duration_since(*ts) < Duration::from_secs(300))
+    }
+
+    /// Check if the fork sync circuit breaker is tripped.
+    /// Returns true if 3+ fork syncs happened within 5 minutes.
+    pub fn is_fork_sync_breaker_tripped(&self) -> bool {
+        if self.consecutive_fork_syncs < 3 {
+            return false;
+        }
+        match self.last_fork_sync_at {
+            Some(ts) => ts.elapsed() < Duration::from_secs(300),
+            None => false,
+        }
+    }
+
+    /// Reset the fork sync circuit breaker (called on successful header-first sync).
+    pub fn reset_fork_sync_breaker(&mut self) {
+        self.consecutive_fork_syncs = 0;
+        self.last_fork_sync_at = None;
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
-        self.consecutive_empty_headers = 0;
+        // NOTE: consecutive_empty_headers is NOT reset here. It must keep climbing
+        // toward the escalation threshold (10) that triggers genesis resync via
+        // is_deep_fork_detected(). Resetting after rejected reorgs prevents
+        // escalation (counter oscillates 0→3→0 instead of reaching 10).
+        // The counter is reset explicitly on SUCCESSFUL reorgs by the caller.
+        //
         // needs_genesis_resync intentionally preserved — rollbacks must not
         // suppress the genesis resync signal set by the sync manager.
         self.consecutive_sync_failures = 0;
@@ -477,10 +549,40 @@ impl SyncManager {
         // NT10 fix: Signal that the next start_sync() should skip header-first sync.
         // After a fork rollback, our tip is still on the fork — header-first will
         // always get 0 headers because peers don't recognize our (rolled-back) tip.
-        self.post_rollback = true;
+        self.recovery_phase = super::RecoveryPhase::PostRollback;
         // Clear stale weight history to prevent minority fork weights from
         // contaminating future fork choice decisions after a resync.
         self.reorg_handler.clear();
+        self.reset_sync_buffers();
+    }
+
+    /// Reset sync state after a SUCCESSFUL fork sync reorg.
+    ///
+    /// Unlike `reset_sync_for_rollback()`, this sets `recovery_phase = Normal`
+    /// because after a successful reorg, our tip IS on the canonical chain —
+    /// peers WILL recognize our tip hash, so header-first sync works normally.
+    ///
+    /// INC-001 fix: Using `PostRollback` on the success path caused an infinite
+    /// fork sync loop: success → PostRollback → start_fork_sync → success → repeat.
+    pub fn reset_sync_after_successful_reorg(&mut self) {
+        self.consecutive_sync_failures = 0;
+        self.fork_sync = None;
+        self.state = SyncState::Idle;
+        // SUCCESS path: tip is now on the canonical chain. Header-first sync
+        // will work because peers recognize our tip hash. Do NOT set PostRollback.
+        self.recovery_phase = super::RecoveryPhase::Normal;
+        // Preserve reorg_handler weights — successful reorg weights are valid
+        // context for future fork choice decisions. Only clear on rejection.
+        self.reset_sync_buffers();
+        // Update cooldown to prevent immediate re-trigger of fork sync
+        self.last_fork_sync_rejection = Instant::now();
+        // Track consecutive fork syncs for circuit breaker
+        self.consecutive_fork_syncs += 1;
+        self.last_fork_sync_at = Some(Instant::now());
+    }
+
+    /// Reset sync buffers (shared between rollback and success paths).
+    fn reset_sync_buffers(&mut self) {
         self.pending_headers.clear();
         self.pending_blocks.clear();
         self.headers_needing_bodies.clear();

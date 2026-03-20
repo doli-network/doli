@@ -34,7 +34,7 @@ impl Node {
                 } else {
                     15 // Production-like for testnet
                 };
-                if let Some(last_change) = self.last_producer_list_change {
+                if let Some(last_change) = *self.last_producer_list_change.read().await {
                     let elapsed = last_change.elapsed();
                     if elapsed.as_secs() < producer_list_stability_secs {
                         debug!(

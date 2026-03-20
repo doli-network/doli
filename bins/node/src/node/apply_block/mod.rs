@@ -195,10 +195,6 @@ impl Node {
             block.header.prev_hash,
         );
 
-        // Reset cumulative rollback depth — a successful block application means
-        // the chain is advancing, so any prior rollback sequence is resolved.
-        self.cumulative_rollback_depth = 0;
-
         // Store the block AFTER all transaction validation has passed.
         // This prevents block store poisoning: if UTXO validation fails, the block
         // is NOT in the store, so sync can retry it cleanly on the next attempt.

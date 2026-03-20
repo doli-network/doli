@@ -62,14 +62,12 @@ impl Node {
             );
         }
 
-        // EARLY BLOCK EXISTENCE CHECK — gossip-aware
-        // Check BOTH block_store (disk) AND seen_blocks_for_slot (gossip).
-        // The gossip set catches blocks that arrived via gossip but haven't been
-        // applied to disk yet — critical for rank 1 to avoid producing a competing
-        // block when rank 0 already produced.
-        if self.block_store.has_block_for_slot(current_slot as u64)
-            || self.seen_blocks_for_slot.contains(&current_slot)
-        {
+        // EARLY BLOCK EXISTENCE CHECK (optimization)
+        // Check if a block already exists for this slot before spending time on eligibility
+        // checks and VDF computation. This is safe because:
+        // 1. If we see a block, another producer already succeeded
+        // 2. We'll check again after VDF to catch blocks that appeared during computation
+        if self.block_store.has_block_for_slot(current_slot as u64) {
             debug!(
                 "Block already exists for slot {} - skipping production",
                 current_slot
@@ -154,7 +152,7 @@ impl Node {
 
         // Derive bond counts from UTXO set (source of truth for bonds),
         // then apply inactivity leak decay for offline producers.
-        let _slots_per_epoch = self.params.slots_per_epoch as u64;
+        let slots_per_epoch = self.params.slots_per_epoch as u64;
         let utxo = self.utxo_set.read().await;
         let active_with_weights: Vec<(PublicKey, u64)> = active_producers
             .into_iter()
@@ -163,16 +161,25 @@ impl Node {
                 let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                // REMOVED: Inactivity leak from scheduler.
-                // producer_liveness is LOCAL state — different on each node because they've
-                // applied different blocks. Different heights → different missed counts →
-                // different decay → different weights → different slot→producer mapping.
-                // This was the root cause of scheduling disagreements and forks.
-                //
-                // The bond-weighted scheduler must use RAW on-chain bond counts ONLY —
-                // no local state adjustments. Inactivity is handled by epoch rewards
-                // (non-qualified producers get zero rewards) not by scheduling.
-                (pk, raw_bonds)
+                // REQ-SCALE-003: Inactivity leak — decay bond weight for offline producers.
+                // All nodes compute the same decay from chain height + producer_liveness,
+                // so this is consensus-safe (no additional state needed).
+                let effective = match self.producer_liveness.get(&pk) {
+                    Some(&last_h) => {
+                        let missed = height.saturating_sub(last_h);
+                        if missed > consensus::INACTIVITY_LEAK_START {
+                            let epochs_inactive =
+                                (missed - consensus::INACTIVITY_LEAK_START) / slots_per_epoch;
+                            let decay = (consensus::INACTIVITY_LEAK_RATE * epochs_inactive).min(99);
+                            let eff = raw_bonds * (100 - decay) / 100;
+                            eff.max(consensus::INACTIVITY_LEAK_FLOOR)
+                        } else {
+                            raw_bonds
+                        }
+                    }
+                    None => raw_bonds, // New producer, no liveness data yet
+                };
+                (pk, effective)
             })
             .collect();
         drop(utxo);
@@ -217,15 +224,7 @@ impl Node {
         // Use bootstrap mode if:
         // 1. Still in genesis phase (no bond required), OR
         // 2. No active producers registered (transition block or testnet/devnet)
-        let use_bootstrap = in_genesis || active_with_weights.is_empty();
-        let (eligible, our_bootstrap_rank) = if use_bootstrap {
-            info!(
-                "[PROD_DIAG] BOOTSTRAP path: in_genesis={} active_empty={} height={} slot={}",
-                in_genesis,
-                active_with_weights.is_empty(),
-                height,
-                current_slot
-            );
+        let (eligible, our_bootstrap_rank) = if in_genesis || active_with_weights.is_empty() {
             match self
                 .resolve_bootstrap_eligibility(current_slot, height, our_pubkey, in_genesis)
                 .await
@@ -234,20 +233,48 @@ impl Node {
                 None => return Ok(()),
             }
         } else {
-            // REMOVED: Emergency equalization was the #1 source of forks.
-            //
-            // When nodes see different slot_gap values (due to propagation delay
-            // or backup restore), equalization changes the producer weights from
-            // bond-weighted to all-equal, causing different slot→producer mappings
-            // across nodes → "invalid producer for slot" → forks.
-            //
-            // Ethereum doesn't have emergency equalization. If a producer misses
-            // their slot, the slot is empty. The next slot's producer takes their
-            // turn via the normal deterministic scheduler.
-            //
-            // The bond-weighted scheduler is ALWAYS deterministic — all nodes
-            // compute the same producer for each slot from on-chain state.
-            let weights_for_scheduler = active_with_weights.clone();
+            // REQ-SCALE-003b: Emergency chain stall detection.
+            // If >3 consecutive slots are empty, apply instant weight equalization:
+            // only producers that produced in the last 10 blocks get tickets.
+            let slot_gap = (current_slot as u64).saturating_sub(prev_slot as u64);
+            let weights_for_scheduler = if slot_gap > 3 {
+                let emergency: Vec<(PublicKey, u64)> = active_with_weights
+                    .iter()
+                    .filter_map(|(pk, _)| {
+                        let live = self
+                            .producer_liveness
+                            .get(pk)
+                            .map(|&h| height.saturating_sub(h) < 10)
+                            .unwrap_or(false);
+                        if live {
+                            Some((*pk, 1u64))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if emergency.is_empty() {
+                    // Deadlock safety: if nobody produced recently, use everyone at weight=1
+                    warn!(
+                        "Chain stall (gap={}) and no live producers — equalizing all weights",
+                        slot_gap
+                    );
+                    active_with_weights
+                        .iter()
+                        .map(|(pk, _)| (*pk, 1u64))
+                        .collect()
+                } else {
+                    warn!(
+                        "Chain stall (gap={}): emergency equalization — {}/{} live producers",
+                        slot_gap,
+                        emergency.len(),
+                        active_with_weights.len()
+                    );
+                    emergency
+                }
+            } else {
+                active_with_weights.clone()
+            };
             let eligible =
                 self.resolve_epoch_eligibility(current_slot, height, &weights_for_scheduler);
             (eligible, None)
@@ -285,39 +312,13 @@ impl Node {
             consensus::is_producer_eligible_ms(&our_pubkey, &eligible, slot_offset_ms)
         };
 
-        // DIAGNOSTIC: Log every production decision
-        {
-            let our_rank = eligible.iter().position(|p| p == &our_pubkey);
-            let eligible_rank = consensus::eligible_rank_at_ms(slot_offset_ms);
-            info!(
-                "[PROD_DIAG] slot={} h={} offset={}ms mode={} eligible_len={} our_rank={:?} window_rank={:?} is_eligible={} bootstrap_rank={:?}",
-                current_slot, height, slot_offset_ms,
-                if use_bootstrap { "BOOTSTRAP" } else { "EPOCH" },
-                eligible.len(), our_rank, eligible_rank, is_eligible, our_bootstrap_rank
-            );
-        }
-
         if !is_eligible {
             return Ok(());
         }
 
-        // PROPAGATION DELAY: Wait 1 second after becoming eligible before producing.
-        // This gives the previous slot's block time to propagate via gossip.
-        // Without this, consecutive producers build on stale tips → micro-forks →
-        // rollback + sync recovery → nodes fall behind.
-        // Ethereum achieves this with the 4s attestation deadline; we use an explicit delay.
-        {
-            let min_offset_ms = if our_bootstrap_rank.is_some() {
-                500 // Bootstrap: shorter delay (fewer nodes)
-            } else {
-                1000 // Epoch: 1 second propagation buffer
-            };
-            if slot_offset_ms < min_offset_ms {
-                return Ok(());
-            }
-        }
-
-        // For devnet, add additional delay for heartbeat collection
+        // For devnet, add a minimum delay to allow heartbeat collection
+        // Scale delay to 20% of slot duration (capped at 700ms for long slots)
+        // This prevents the delay from consuming too much of short slots
         if self.config.network == Network::Devnet {
             let slot_duration_ms = self.params.slot_duration * 1000;
             let heartbeat_collection_ms = std::cmp::min(slot_duration_ms / 5, 700);
@@ -474,12 +475,8 @@ impl Node {
             block_hash, height, current_slot, block.header.prev_hash
         );
 
-        // Apply the block locally.
-        // Use Light validation for self-produced blocks — we already verified our
-        // eligibility in try_produce_block(). Full validation uses a DIFFERENT code
-        // path (validate_block_for_apply) that doesn't include emergency equalization,
-        // causing "invalid producer for slot" rejections during chain stalls.
-        self.apply_block(block.clone(), ValidationMode::Light)
+        // Apply the block locally
+        self.apply_block(block.clone(), ValidationMode::Full)
             .await?;
 
         // NOTE: Do NOT call note_block_received_via_gossip() here.

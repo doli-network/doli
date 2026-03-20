@@ -1,5 +1,6 @@
 //! Sync engine — orchestrates header-first sync, body download, and request/response handling
 
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use libp2p::PeerId;
@@ -35,6 +36,41 @@ impl SyncManager {
         peer_ahead || network_ahead
     }
 
+    /// Get the best_hash that the MAJORITY of eligible peers agree on.
+    ///
+    /// This prevents a partitioned minority from steering snap sync to a
+    /// forked chain. Returns None if no hash has strict majority (>50%).
+    fn consensus_target_hash(&self) -> Option<Hash> {
+        // Group eligible peers by height, then pick the hash at the most common
+        // height. During normal operation peers are at slightly different heights
+        // (tip race), so requiring >50% on the same best_hash always fails.
+        // Instead: find the height with the most peers, use any peer's hash at
+        // that height. This is safe because all honest peers at the same height
+        // MUST have the same hash (deterministic consensus).
+        let mut height_counts: HashMap<u64, (usize, Hash)> = HashMap::new();
+        for status in self.peers.values() {
+            if status.best_height > self.local_height {
+                let entry = height_counts
+                    .entry(status.best_height)
+                    .or_insert((0, status.best_hash));
+                entry.0 += 1;
+            }
+        }
+        if height_counts.is_empty() {
+            return None;
+        }
+        // Pick the height with the most peers (break ties by highest height)
+        let (_best_height, (count, hash)) = height_counts
+            .into_iter()
+            .max_by_key(|(h, (c, _))| (*c, *h))?;
+        // Require at least 2 peers to agree (prevents single-peer poisoning)
+        if count >= 2 {
+            Some(hash)
+        } else {
+            None
+        }
+    }
+
     /// Get the best peer to sync from
     pub(super) fn best_peer(&self) -> Option<PeerId> {
         // CRITICAL: Only consider peers with MORE BLOCKS (higher height).
@@ -53,6 +89,10 @@ impl SyncManager {
     /// Start the sync process
     pub(super) fn start_sync(&mut self) {
         if let Some(peer) = self.best_peer() {
+            let best_height = match self.peers.get(&peer) {
+                Some(status) => status.best_height,
+                None => return,
+            };
             let target_slot = match self.peers.get(&peer) {
                 Some(status) => status.best_slot,
                 None => return,
@@ -75,32 +115,117 @@ impl SyncManager {
                 s.pending_request = None;
             }
 
-            if self.post_rollback {
+            // Snap sync decision: use snap sync when far behind and enough peers
+            let gap = best_height.saturating_sub(self.local_height);
+            let enough_peers = self.peers.len() >= 3;
+            let snap_allowed = self.snap_sync_threshold < u64::MAX;
+            let should_snap = enough_peers
+                && self.snap_sync_attempts < 3
+                && snap_allowed
+                && (self.local_height == 0 || gap > self.snap_sync_threshold);
+
+            // Fresh node optimization: don't start slow header-first sync.
+            // Wait for 5 peers so snap sync can activate — it downloads state
+            // in seconds instead of replaying 60K+ blocks over hours.
+            // BUT: timeout after 60s to avoid deadlock when <5 peers are discoverable.
+            if self.local_height == 0
+                && !enough_peers
+                && self.snap_sync_attempts < 3
+                && snap_allowed
+                && gap > self.snap_sync_threshold
+            {
+                let wait_start = self.fresh_node_wait_start.get_or_insert(Instant::now());
+                let waited = wait_start.elapsed();
+                if waited.as_secs() < 60 {
+                    info!(
+                        "[SNAP_SYNC] Fresh node: waiting for {} more peer(s) for snap sync ({}/3, gap={}, waited={}s)",
+                        3 - self.peers.len(), self.peers.len(), gap, waited.as_secs()
+                    );
+                    return;
+                }
+                warn!(
+                    "[SNAP_SYNC] Fresh node waited {}s for 5 peers but only have {} — falling back to header-first sync",
+                    waited.as_secs(), self.peers.len()
+                );
+                self.fresh_node_wait_start = None;
+            }
+
+            if should_snap {
+                // FIX: Use the hash that the MAJORITY of eligible peers agree on,
+                // not a single peer's hash. This prevents a partitioned minority
+                // (e.g. 3 forked nodes on one server) from steering snap sync
+                // to the wrong chain. If no majority exists, fall back to
+                // header-first sync — the network is too fragmented for snap sync.
+                let target_hash = match self.consensus_target_hash() {
+                    Some(hash) => hash,
+                    None => {
+                        warn!(
+                            "[SNAP_SYNC] No majority best_hash among {} peers — network too fragmented for snap sync, falling back to header-first",
+                            self.peers.len()
+                        );
+                        // Fall through to header-first sync below
+                        let target_slot = match self.peers.get(&peer) {
+                            Some(status) => status.best_slot,
+                            None => return,
+                        };
+                        info!(
+                            "Starting sync epoch {} with peer {} (target_slot={})",
+                            self.sync_epoch, peer, target_slot
+                        );
+                        self.header_downloader.clear();
+                        self.state = SyncState::DownloadingHeaders {
+                            target_slot,
+                            peer,
+                            headers_count: 0,
+                        };
+                        return;
+                    }
+                };
+
+                info!(
+                    "[SNAP_SYNC] Starting snap sync epoch {} — gap={}, target_height={}, target_hash={:.16} (majority-preferred)",
+                    self.sync_epoch, gap, best_height, target_hash
+                );
+
+                self.state = SyncState::SnapCollectingRoots {
+                    target_hash,
+                    target_height: best_height,
+                    votes: Vec::new(),
+                    asked: HashSet::new(),
+                    started_at: Instant::now(),
+                };
+            } else if matches!(self.recovery_phase, super::RecoveryPhase::PostRollback) {
                 // NT10 fix: After a fork rollback, our tip is still on the fork
                 // (just 1 block shorter). Header-first sync will always get 0
                 // headers because peers don't recognize our rolled-back fork tip.
                 // Instead, try fork_sync (binary search for common ancestor).
                 // If fork_sync can't start (e.g., no recovery peer), escalate to
                 // snap sync via needs_genesis_resync.
-                self.post_rollback = false;
+                self.recovery_phase = super::RecoveryPhase::Normal;
 
-                // Reorg cooldown: if we just rejected a fork sync (delta=0),
-                // don't start another one immediately. This breaks the infinite
-                // reorg loop when 50+ peers offer equal-weight competing chains.
-                let cooldown_elapsed = self.last_fork_sync_rejection.elapsed().as_secs();
-                if cooldown_elapsed < self.fork_sync_cooldown_secs {
-                    info!(
-                        "Post-rollback: fork sync in cooldown ({}s/{}) — using header-first",
-                        cooldown_elapsed, self.fork_sync_cooldown_secs
+                // INC-001 fix: Circuit breaker — if 3+ fork syncs within 5 minutes,
+                // stop trying fork sync and use header-first only.
+                if self.is_fork_sync_breaker_tripped() {
+                    warn!(
+                        "Post-rollback: fork sync circuit breaker tripped ({} fork syncs) — \
+                         forcing header-first sync",
+                        self.consecutive_fork_syncs
                     );
                     self.state = SyncState::DownloadingHeaders {
                         target_slot,
                         peer,
                         headers_count: 0,
                     };
-                } else if self.post_recovery_grace {
+                // Reorg cooldown: if we just rejected a fork sync (delta=0),
+                // don't start another one immediately. This breaks the infinite
+                // reorg loop when 50+ peers offer equal-weight competing chains.
+                } else if self.last_fork_sync_rejection.elapsed().as_secs()
+                    < self.fork_sync_cooldown_secs
+                {
                     info!(
-                        "Post-rollback: skipping fork_sync — post_recovery_grace active, using header-first",
+                        "Post-rollback: fork sync in cooldown ({}s/{}) — using header-first",
+                        self.last_fork_sync_rejection.elapsed().as_secs(),
+                        self.fork_sync_cooldown_secs
                     );
                     self.state = SyncState::DownloadingHeaders {
                         target_slot,
@@ -111,17 +236,20 @@ impl SyncManager {
                     info!(
                         "Post-rollback: started fork_sync (binary search) instead of header-first",
                     );
-                } else {
-                    // Fall through to header-first as a last resort (it may fail, but cleanup() will retry).
-                    let gap = self
-                        .peers
-                        .values()
-                        .map(|p| p.best_height)
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_sub(self.local_height);
+                } else if enough_peers && snap_allowed && self.snap_sync_attempts < 3 {
                     warn!(
-                        "Post-rollback: fork_sync failed — falling back to header-first (gap={}, peers={})",
+                        "Post-rollback: fork_sync failed to start, escalating to snap sync \
+                         (gap={}, peers={})",
+                        gap,
+                        self.peers.len()
+                    );
+                    self.needs_genesis_resync = true;
+                } else {
+                    // Not enough peers for snap sync — fall through to header-first
+                    // as a last resort (it may fail, but cleanup() will retry).
+                    warn!(
+                        "Post-rollback: fork_sync failed, not enough peers for snap sync — \
+                         falling back to header-first (gap={}, peers={})",
                         gap,
                         self.peers.len()
                     );
@@ -131,30 +259,6 @@ impl SyncManager {
                         headers_count: 0,
                     };
                 }
-            } else if self.local_height == 0
-                && self.checkpoint_height > 0
-                && self.checkpoint_state_root != crypto::Hash::ZERO
-            {
-                // Checkpoint-anchored state sync: new node at height 0 with a
-                // checkpoint that includes a state root. Download state instead
-                // of replaying the full chain from genesis.
-                info!(
-                    "Starting checkpoint state sync epoch {} with peer {} (checkpoint_h={})",
-                    self.sync_epoch, peer, self.checkpoint_height
-                );
-
-                let request = SyncRequest::GetStateAtCheckpoint {
-                    height: self.checkpoint_height,
-                };
-                let id = self.register_request(peer, request.clone());
-                if let Some(status) = self.peers.get_mut(&peer) {
-                    status.pending_request = Some(id);
-                }
-
-                self.state = SyncState::CheckpointDownloading {
-                    peer,
-                    started_at: Instant::now(),
-                };
             } else {
                 info!(
                     "Starting sync epoch {} with peer {} (target_slot={})",
@@ -180,13 +284,7 @@ impl SyncManager {
         // Fork sync takes priority when active (runs in Idle state)
         if let Some(ref mut fs) = self.fork_sync {
             if fs.is_timed_out() {
-                let timed_out_peer = fs.peer();
-                warn!(
-                    "Fork sync timed out — blacklisting peer {} for fork sync (5 min)",
-                    timed_out_peer
-                );
-                self.fork_sync_blacklist
-                    .insert(timed_out_peer, Instant::now());
+                warn!("Fork sync timed out — cancelling");
                 self.fork_sync = None;
             } else {
                 let peer = fs.peer();
@@ -247,24 +345,40 @@ impl SyncManager {
                         .max()
                         .unwrap_or(0);
                     let gap = best_height.saturating_sub(self.local_height);
-                    // Small gaps: redirect to fork_sync/rollback.
-                    // Rollback is O(1) per block and preserves full chain history.
+                    let enough_peers = self.peers.len() >= 3;
+                    if enough_peers && gap > self.snap_sync_threshold {
+                        info!(
+                            "[SNAP_SYNC] Deep fork with {} consecutive empty headers — \
+                             attempting snap sync before genesis resync (gap={})",
+                            self.consecutive_empty_headers, gap
+                        );
+                        self.snap_sync_attempts = 0;
+                        self.consecutive_empty_headers = 0;
+                        self.state = SyncState::Idle;
+                        self.start_sync();
+                        return None;
+                    }
+                    // Small gaps (≤12): redirect to fork_sync/rollback instead of
+                    // genesis resync. Snap sync for small gaps loses block history
+                    // and creates a cascade (snap → no block 1 → future rollback
+                    // fails → re-snap). Rollback is O(1) per block and preserves
+                    // full chain history.
                     if gap <= 12 && self.local_height > 0 {
                         warn!(
                             "Small fork (gap={}, empties={}): redirecting to fork_sync \
-                             instead of resync — rollback can handle this",
+                             instead of genesis resync — rollback can handle this",
                             gap, self.consecutive_empty_headers
                         );
                         self.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
                         self.state = SyncState::Idle;
                         return None;
                     }
-                    // Large gap: try fork_sync or log error for manual intervention
-                    warn!(
-                        "Deep fork: {} consecutive empty headers (gap={}) — resetting to Idle for fork_sync",
-                        self.consecutive_empty_headers, gap
+                    // Large gap with not enough peers — fall back to genesis resync
+                    info!(
+                        "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
+                        self.consecutive_empty_headers
                     );
-                    self.consecutive_empty_headers = 3; // Trigger fork_sync
+                    self.needs_genesis_resync = true;
                     self.state = SyncState::Idle;
                     return None;
                 }
@@ -324,9 +438,84 @@ impl SyncManager {
             }
 
             SyncState::Processing { .. } => None,
-            SyncState::CheckpointDownloading { .. } => None, // Request already sent
-            SyncState::CheckpointReady { .. } => None,       // Waiting for node to consume
+
+            // Snap sync root collection is batched via next_snap_requests().
+            // Returning None here ensures the normal 1-per-tick path doesn't
+            // interfere with the batch approach.
+            SyncState::SnapCollectingRoots { .. } => None,
+
+            SyncState::SnapDownloading {
+                target_hash, peer, ..
+            } => {
+                let target_hash = *target_hash;
+                let peer = *peer;
+                // Guard: don't send if peer already has a pending request
+                if let Some(status) = self.peers.get(&peer) {
+                    if status.pending_request.is_some() {
+                        return None;
+                    }
+                }
+                let request = SyncRequest::get_state_snapshot(target_hash);
+                let id = self.register_request(peer, request.clone());
+                if let Some(status) = self.peers.get_mut(&peer) {
+                    status.pending_request = Some(id);
+                }
+                Some((peer, request))
+            }
+
+            SyncState::SnapReady { .. } => None,
         }
+    }
+
+    /// Return GetStateRoot requests for ALL un-asked peers at once.
+    ///
+    /// On an active chain, blocks arrive every 10 seconds. If we send
+    /// GetStateRoot one-peer-per-tick, responses spread over ~12 seconds and
+    /// peers advance between votes — state roots diverge and quorum is never
+    /// reached. Batching all requests in one tick keeps responses within
+    /// ~1-2 seconds so most peers respond at the same height.
+    pub fn next_snap_requests(&mut self) -> Vec<(PeerId, SyncRequest)> {
+        let (target_hash, already_asked) = match &self.state {
+            SyncState::SnapCollectingRoots {
+                target_hash, asked, ..
+            } => (*target_hash, asked.clone()),
+            _ => return vec![],
+        };
+
+        let candidates: Vec<PeerId> = self
+            .peers
+            .iter()
+            .filter(|(pid, _)| {
+                !already_asked.contains(pid) && !self.snap_blacklisted_peers.contains(pid)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        if candidates.is_empty() {
+            return vec![];
+        }
+
+        let mut batch = Vec::with_capacity(candidates.len());
+        for pid in candidates {
+            if let SyncState::SnapCollectingRoots { asked, .. } = &mut self.state {
+                asked.insert(pid);
+            }
+            let request = SyncRequest::get_state_root(target_hash);
+            let id = self.register_request(pid, request.clone());
+            if let Some(status) = self.peers.get_mut(&pid) {
+                status.pending_request = Some(id);
+            }
+            batch.push((pid, request));
+        }
+
+        if !batch.is_empty() {
+            info!(
+                "[SNAP_SYNC] Batch-sending GetStateRoot to {} peers simultaneously",
+                batch.len()
+            );
+        }
+
+        batch
     }
 
     /// Register a pending request
@@ -431,8 +620,7 @@ impl SyncManager {
                 }
                 self.handle_bodies_response(peer, bodies)
             }
-            SyncResponse::Block(boxed_block) => {
-                let maybe_block = *boxed_block;
+            SyncResponse::Block(maybe_block) => {
                 info!(
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
@@ -457,7 +645,12 @@ impl SyncManager {
                     vec![]
                 }
             }
-            SyncResponse::StateAtCheckpoint {
+            SyncResponse::Error(err) => {
+                warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
+                self.handle_snap_download_error(peer);
+                vec![]
+            }
+            SyncResponse::StateSnapshot {
                 block_hash,
                 block_height,
                 chain_state,
@@ -466,53 +659,31 @@ impl SyncManager {
                 state_root,
             } => {
                 info!(
-                    "[CHECKPOINT] Received state at height={} from peer={}, size={}KB, root={}",
-                    block_height,
-                    peer,
-                    (chain_state.len() + utxo_set.len() + producer_set.len()) / 1024,
-                    &state_root.to_string()[..16]
+                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}, size={}KB",
+                    peer, block_hash, block_height, state_root,
+                    (chain_state.len() + utxo_set.len() + producer_set.len()) / 1024
                 );
-
-                // Verify height matches our checkpoint
-                if block_height != self.checkpoint_height {
-                    warn!(
-                        "[CHECKPOINT] Height mismatch: got {} expected {} — rejecting",
-                        block_height, self.checkpoint_height
-                    );
-                    self.state = SyncState::Idle;
-                    return vec![];
-                }
-
-                // Verify block hash matches checkpoint (if non-zero)
-                if self.checkpoint_hash != Hash::ZERO && block_hash != self.checkpoint_hash {
-                    warn!(
-                        "[CHECKPOINT] Block hash mismatch: got {} expected {} — rejecting",
-                        &block_hash.to_string()[..16],
-                        &self.checkpoint_hash.to_string()[..16]
-                    );
-                    self.state = SyncState::Idle;
-                    return vec![];
-                }
-
-                // Store as CheckpointReady — the node will verify state_root
-                // against the hardcoded CHECKPOINT_STATE_ROOT constant.
-                self.state = SyncState::CheckpointReady {
+                self.handle_snap_snapshot(
+                    peer,
                     block_hash,
                     block_height,
                     chain_state,
                     utxo_set,
                     producer_set,
                     state_root,
-                };
-                info!(
-                    "[CHECKPOINT] State stored as CheckpointReady at height={}",
-                    block_height
                 );
-
                 vec![]
             }
-            SyncResponse::Error(err) => {
-                warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
+            SyncResponse::StateRoot {
+                block_hash,
+                block_height,
+                state_root,
+            } => {
+                info!(
+                    "[SNAP_SYNC] Received state root from peer {}: hash={}, height={}, root={}",
+                    peer, block_hash, block_height, state_root
+                );
+                self.handle_snap_state_root(peer, block_hash, block_height, state_root);
                 vec![]
             }
         }
@@ -561,12 +732,26 @@ impl SyncManager {
                     return;
                 }
 
-                self.header_blacklisted_peers.insert(peer, Instant::now());
-                warn!(
-                    "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                     fork evidence (consecutive={}). Blacklisted peer, resetting to Idle.",
-                    peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
-                );
+                if self.consecutive_empty_headers >= 3 {
+                    // 3+ consecutive empties from different peers = WE are on a fork.
+                    // Stop blacklisting — removing canonical peers prevents recovery.
+                    // Clear any existing blacklist and signal fork recovery.
+                    warn!(
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}, consecutive={}) — \
+                         node is on a fork (3+ peers reject our chain). Clearing blacklist.",
+                        peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
+                    );
+                    self.header_blacklisted_peers.clear();
+                    self.signal_stuck_fork();
+                } else {
+                    // First 1-2 empties: could be a peer-specific issue. Blacklist this peer.
+                    self.header_blacklisted_peers.insert(peer, Instant::now());
+                    warn!(
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
+                         fork evidence (consecutive={}). Blacklisted peer.",
+                        peer, peer_height, self.local_height, gap, self.consecutive_empty_headers
+                    );
+                }
                 self.state = SyncState::Idle;
             } else {
                 self.state = SyncState::Synchronized;
@@ -588,6 +773,8 @@ impl SyncManager {
             self.consecutive_empty_headers = 0;
             self.consecutive_sync_failures = 0;
             self.last_sync_activity = Instant::now();
+            // INC-001: Reset fork sync circuit breaker on successful header-first sync
+            self.reset_fork_sync_breaker();
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -732,6 +919,28 @@ impl SyncManager {
                 // Don't have the body yet
                 break;
             }
+        }
+
+        // INC-001 RC-6: PROCESSING STALL FIX
+        // If we're in Processing state but extracted ZERO blocks, nothing will call
+        // block_applied_with_weight() to transition us out. The 30s stuck timeout in
+        // cleanup is too slow — 3 slots are wasted per stall. Reset to Idle immediately
+        // so the node can resume production and process gossip blocks.
+        if blocks.is_empty() && matches!(self.state, SyncState::Processing { .. }) {
+            warn!(
+                "[PROCESSING_STALL] No blocks extractable in Processing state \
+                 (pending_headers={}, pending_blocks={}, local_h={}, local_hash={:.12}) \
+                 — resetting to Idle immediately",
+                self.pending_headers.len(),
+                self.pending_blocks.len(),
+                self.local_height,
+                self.local_hash,
+            );
+            self.pending_headers.clear();
+            self.pending_blocks.clear();
+            self.state = SyncState::Idle;
+            // Don't start a new sync here — let cleanup() handle it on the next tick
+            // to avoid recursive lock issues.
         }
 
         blocks

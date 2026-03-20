@@ -57,6 +57,12 @@ pub struct NodeConfig {
     /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
     #[serde(skip)]
     pub external_address: Option<String>,
+
+    /// Disable snap sync entirely. The node will only use header-first sync.
+    /// Defaults to true on mainnet (full sync from genesis).
+    /// Use --snap-sync to explicitly enable for faster initial sync.
+    #[serde(default)]
+    pub no_snap_sync: bool,
 }
 
 impl Default for NodeConfig {
@@ -87,6 +93,10 @@ impl NodeConfig {
             chainspec: None,
             slot_duration_override: None,
             external_address: None,
+            // REQ-SYNC-002: Mainnet defaults to full sync (no snap sync).
+            // Snap sync skips block_store, making producer_liveness empty and
+            // consensus-critical scheduling divergent between full and snap-synced nodes.
+            no_snap_sync: network == Network::Mainnet,
         }
     }
 }

@@ -87,13 +87,6 @@ impl Node {
 
     /// Run periodic tasks
     pub(super) async fn run_periodic_tasks(&mut self) -> Result<()> {
-        // Clean stale entries from seen_blocks_for_slot (keep last 10 slots)
-        {
-            let current_slot = self.chain_state.read().await.best_slot;
-            self.seen_blocks_for_slot
-                .retain(|&s| (s as u64) + 10 > current_slot as u64);
-        }
-
         // Apply pending sync blocks in correct order BEFORE cleanup.
         //
         // The body downloader fetches blocks in parallel, so they arrive out of order.
@@ -113,43 +106,6 @@ impl Node {
                         warn!("Failed to apply pending sync block: {}", e);
                         self.sync_manager.write().await.block_apply_failed();
                         break;
-                    }
-                }
-            }
-        }
-
-        // Check for ready checkpoint state (downloaded from peer, waiting to be applied)
-        {
-            let checkpoint_data = self.sync_manager.write().await.take_checkpoint_state();
-            if let Some((block_hash, block_height, cs_bytes, utxo_bytes, ps_bytes, state_root)) =
-                checkpoint_data
-            {
-                info!(
-                    "[CHECKPOINT] Consuming checkpoint state at height={}",
-                    block_height
-                );
-                match self
-                    .apply_checkpoint_state(
-                        block_hash,
-                        block_height,
-                        cs_bytes,
-                        utxo_bytes,
-                        ps_bytes,
-                        state_root,
-                    )
-                    .await
-                {
-                    Ok(()) => {
-                        info!(
-                            "[CHECKPOINT] Successfully applied checkpoint state at height={}",
-                            block_height
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            "[CHECKPOINT] Failed to apply checkpoint state: {} — falling back to header-first sync",
-                            e
-                        );
                     }
                 }
             }
@@ -195,6 +151,10 @@ impl Node {
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();
 
+        // Expire stale pending tx announcements (30s timeout)
+        self.pending_tx_announcements
+            .expire_old(Duration::from_secs(30));
+
         // Poll fork recovery: check if parent chain reached our block_store
         {
             let parent_hash = self
@@ -219,8 +179,8 @@ impl Node {
             }
         }
 
-        // SAFETY NET: If fork recovery exceeded max depth, log warning.
-        // The fork is too deep for reorg — sync will recover via header-first download.
+        // SAFETY NET: If fork recovery exceeded max depth, the fork is too deep
+        // for reorg. Recover from peers (snap sync).
         {
             let exceeded = self
                 .sync_manager
@@ -228,9 +188,8 @@ impl Node {
                 .await
                 .take_fork_exceeded_max_depth();
             if exceeded {
-                warn!(
-                    "Fork recovery exceeded max depth — waiting for header-first sync to recover"
-                );
+                warn!("Fork recovery exceeded max depth — recovering from peers");
+                self.force_recover_from_peers().await?;
             }
         }
 
@@ -282,20 +241,6 @@ impl Node {
 
             if is_stale && !is_syncing {
                 if peer_count == 0 {
-                    // FIX #5: Infected node auto-recovery.
-                    // If we're stuck near genesis (height < 10) with 0 peers, we were
-                    // likely wiped by a bad snap sync. The DHT cache is full of dead/infected
-                    // peers. Reset bootstrap backoff so we reconnect immediately to
-                    // hardcoded seeds instead of waiting 256s between retries.
-                    let local_height = self.chain_state.read().await.best_height;
-                    if local_height < 10 {
-                        warn!(
-                            "INFECTED NODE RECOVERY: height={} with 0 peers — resetting bootstrap backoff for immediate reconnection",
-                            local_height
-                        );
-                        self.bootstrap_backoff.clear();
-                    }
-
                     // No peers — redial bootstrap nodes and re-bootstrap DHT
                     info!("Stale chain detected (no blocks for 3 slots) with 0 peers — redialing bootstrap nodes");
                     if let Some(ref network) = self.network {
@@ -367,10 +312,38 @@ impl Node {
 
             // Transition: search complete — provide ancestor hash from our block_store.
             //
-            // IMPORTANT: Check ancestor_height (happy path) FIRST, before failure cases.
-            // The binary search may find the ancestor at the exact floor height. If we
-            // check bottomed_out() first, it can race with the final probe response and
-            // incorrectly declare "no ancestor found" when one was actually found.
+            // Store-limited: search stopped because block store doesn't cover the range
+            // (snap sync gap). This is NOT a deep fork — the node just doesn't have
+            // the historical blocks. Re-snap to get back to tip and resume producing.
+            if self.sync_manager.read().await.fork_sync_store_limited() {
+                let floor = self.sync_manager.read().await.store_floor();
+                warn!(
+                    "Fork sync: search limited by block store floor (height {}). \
+                     Skipping — NOT a deep fork. Header-first sync will recover.",
+                    floor
+                );
+                self.sync_manager.write().await.fork_sync_clear();
+                // Do NOT snap sync. Clear fork state and let header-first sync handle it.
+                self.sync_manager.write().await.set_post_recovery_grace();
+                return Ok(());
+            }
+
+            // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
+            // and the block store covers the full range. Full resync required.
+            // BYPASS cooldown: fork_sync binary search is conclusive evidence.
+            // Repeating with cooldown gives the same result — skip directly to recovery.
+            if self.sync_manager.read().await.fork_sync_bottomed_out() {
+                warn!("Fork sync: binary search hit floor without finding common ancestor — forcing recovery (bypassing cooldown)");
+                self.sync_manager.write().await.fork_sync_clear();
+                // Bypass cooldown: call recover_from_peers_inner directly.
+                // fork_sync already proved we're on a different chain — waiting
+                // 60s to repeat the same search is pointless.
+                self.recover_from_peers_inner(true).await?;
+                // Set grace period so fork_sync doesn't reactivate immediately
+                // while the node is syncing back up.
+                self.sync_manager.write().await.set_post_recovery_grace();
+                return Ok(());
+            }
             let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
             if let Some(height) = ancestor_height {
                 let ancestor_hash = self
@@ -385,44 +358,6 @@ impl Node {
                     .fork_sync_set_ancestor(height, ancestor_hash);
             }
 
-            // Failure case 1: Store-limited — block store doesn't cover the search range.
-            // NOT a deep fork, just a snap sync gap. Header-first sync will recover.
-            if self.sync_manager.read().await.fork_sync_store_limited() {
-                let floor = self.sync_manager.read().await.store_floor();
-                warn!(
-                    "Fork sync: search limited by block store floor (height {}). \
-                     Skipping — NOT a deep fork. Header-first sync will recover.",
-                    floor
-                );
-                self.sync_manager.write().await.fork_sync_clear();
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
-
-            // Failure case 2: Bottomed out — check ancestor FIRST.
-            // If a common ancestor exists at any height (even genesis), it's not
-            // a "no ancestor" situation — use it for reorg instead of wiping state.
-            // state_reset_recovery is NEVER called automatically — a validated chain
-            // must not be wiped based on peer behavior (Ethereum/Bitcoin principle).
-            if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                let ancestor = self.sync_manager.read().await.fork_sync_ancestor_height();
-                if let Some(h) = ancestor {
-                    warn!(
-                        "Fork sync: search bottomed out but common ancestor found at height {} — using it (NOT resetting)",
-                        h
-                    );
-                    // Let the result path below handle the reorg
-                } else {
-                    warn!(
-                        "Fork sync: no common ancestor found — clearing fork sync and retrying with different peers \
-                         (state reset disabled: a validated chain is never wiped automatically)"
-                    );
-                    self.sync_manager.write().await.fork_sync_clear();
-                    self.sync_manager.write().await.set_post_recovery_grace();
-                    return Ok(());
-                }
-            }
-
             // Phase 2/3 complete: take result and execute reorg
             let result = self.sync_manager.write().await.fork_sync_take_result();
             if let Some(result) = result {
@@ -433,18 +368,42 @@ impl Node {
             }
         }
 
-        // DEEP FORK DETECTION: If peers consistently reject our chain tip (10+ empty
-        // header responses), log warning. Fork sync handles recovery via binary search.
+        // GENESIS RESYNC: sync manager detected persistent chain rejection.
+        // Peers don't recognize our tip and the gap is too large for shallow fork recovery.
+        {
+            let needs_resync = self.sync_manager.read().await.needs_genesis_resync();
+            if needs_resync {
+                warn!("Persistent chain rejection: peers reject our tip. Recovering from peers.");
+                self.force_recover_from_peers().await?;
+                return Ok(());
+            }
+        }
+
+        // DEEP FORK ESCALATION: If peers consistently reject our chain tip (10+ empty
+        // header responses), normal sync and fork recovery can't bridge the gap.
         {
             let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
             if is_deep_fork {
-                warn!("Deep fork detected: peers consistently reject our chain tip. Fork sync will attempt recovery.");
+                warn!("Deep fork detected: peers consistently reject our chain tip. Recovering from peers.");
+                self.force_recover_from_peers().await?;
+                return Ok(());
             }
         }
 
         // Check if we need to request sync
         {
             let mut sm = self.sync_manager.write().await;
+            // Snap sync: batch-send GetStateRoot to ALL peers simultaneously.
+            // Responses cluster in ~1-2s so peers report the same height/root.
+            let snap_batch = sm.next_snap_requests();
+            if !snap_batch.is_empty() {
+                if let Some(ref network) = self.network {
+                    for (peer_id, request) in snap_batch {
+                        let _ = network.request_sync(peer_id, request).await;
+                    }
+                }
+            }
+            // Normal sync: one request per tick
             if let Some((peer_id, request)) = sm.next_request() {
                 if let Some(ref network) = self.network {
                     let _ = network.request_sync(peer_id, request).await;

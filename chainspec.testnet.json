@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773968401,
-    "message": "DOLI Testnet v50 Genesis - segregated testnet params 2026-03-19",
+    "timestamp": 1773970510,
+    "message": "DOLI Testnet v51 Genesis - RC-5A fix 2026-03-19",
     "initial_reward": 100000000
   },
   "consensus": {

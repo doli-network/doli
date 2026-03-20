@@ -22,6 +22,10 @@ impl Node {
     pub(super) async fn handle_production_authorization(&mut self, current_slot: u32) -> bool {
         let auth_result = {
             let mut sync_state = self.sync_manager.write().await;
+            // Update fork detection and gossip state BEFORE querying production auth.
+            // This was previously done inside can_produce() as side effects, which
+            // violated the principle of least surprise (a "query" that mutates state).
+            sync_state.update_production_state();
             let result = sync_state.can_produce(current_slot);
             info!(
                 "[NODE_PRODUCE] slot={} can_produce result: {:?}",
@@ -34,7 +38,7 @@ impl Node {
             ProductionAuthorization::Authorized => {
                 self.consecutive_fork_blocks = 0;
                 self.shallow_rollback_count = 0;
-                self.cumulative_rollback_depth = 0;
+                self.consecutive_forced_recoveries = 0;
                 info!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot
@@ -156,6 +160,13 @@ impl Node {
                 warn!(
                     "[NODE_PRODUCE] slot={} BLOCKED: Chain conflicts with finalized block at height {}",
                     current_slot, local_finalized_height
+                );
+                false
+            }
+            ProductionAuthorization::BlockedAwaitingCanonicalBlock => {
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Awaiting first canonical gossip block after snap sync",
+                    current_slot
                 );
                 false
             }

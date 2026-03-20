@@ -13,6 +13,11 @@ impl Node {
         };
         let mut production_timer = tokio::time::interval(production_interval);
 
+        // Track when production last ran, to guarantee scheduling under event flooding.
+        // Without this, biased select! starves production when 100+ peers generate
+        // continuous gossip/sync events (the event channel is never empty).
+        let mut last_production_check = Instant::now();
+
         // Gossip our producer identity using adaptive intervals
         // This ensures nodes that aren't directly connected (e.g., Node 2 -> Node 1 -> Node 3)
         // learn about each other through the GossipSub mesh relay
@@ -36,6 +41,12 @@ impl Node {
             //
             // With biased select, we always process pending network events first,
             // ensuring the chain tip is up-to-date before attempting production.
+            //
+            // PRODUCTION ESCAPE HATCH: After each network event, we check if
+            // production is overdue (elapsed > production_interval). If so, we
+            // force a production check regardless of pending events. This prevents
+            // event flooding from permanently starving block production — the root
+            // cause of chain stalls at 100+ peers (see diagnosis-report.md).
             tokio::select! {
                 biased;
 
@@ -53,6 +64,22 @@ impl Node {
                             warn!("Error handling network event: {}", e);
                         }
                     }
+
+                    // PRODUCTION ESCAPE HATCH: If production hasn't run for a full
+                    // interval, force it now. This guarantees production runs at least
+                    // once per interval even under infinite event load.
+                    if last_production_check.elapsed() >= production_interval {
+                        if self.producer_key.is_some() {
+                            if let Err(e) = self.try_produce_block().await {
+                                warn!("Block production error: {}", e);
+                            }
+                        }
+                        if let Err(e) = self.run_periodic_tasks().await {
+                            warn!("Periodic task error: {}", e);
+                        }
+                        last_production_check = Instant::now();
+                        self.sync_requests_this_interval = 0;
+                    }
                 }
 
                 // Production timer tick
@@ -61,22 +88,6 @@ impl Node {
                     if self.producer_key.is_some() {
                         if let Err(e) = self.try_produce_block().await {
                             warn!("Block production error: {}", e);
-                            // If block failed due to a bad mempool TX (e.g., duplicate
-                            // registration), purge registration TXs from mempool to
-                            // prevent infinite retry loops that halt the chain.
-                            let err_msg = e.to_string();
-                            if err_msg.contains("registration") || err_msg.contains("already") {
-                                let mut mempool = self.mempool.write().await;
-                                let before = mempool.len();
-                                mempool.remove_registration_txs();
-                                let after = mempool.len();
-                                if before != after {
-                                    warn!(
-                                        "Purged {} registration TXs from mempool after production error",
-                                        before - after
-                                    );
-                                }
-                            }
                         }
                     }
 
@@ -84,6 +95,8 @@ impl Node {
                     if let Err(e) = self.run_periodic_tasks().await {
                         warn!("Periodic task error: {}", e);
                     }
+                    last_production_check = Instant::now();
+                    self.sync_requests_this_interval = 0;
                 }
 
                 // Gossip timer tick - ANTI-ENTROPY: broadcast producer view
@@ -122,16 +135,20 @@ impl Node {
                                 *self.our_announcement.write().await = Some(announcement);
                             }
 
-                            // Get adaptive gossip settings and producer count
-                            let (use_delta, producer_count) = {
-                                let adaptive = self.adaptive_gossip.read().await;
+                            // SCALE-T2-002: Always use delta gossip (bloom filter).
+                            // Full-state broadcast is O(N * mesh_n * announcements) per round,
+                            // which creates ~650K messages at 5000 nodes. Delta gossip sends
+                            // a single bloom filter (~64 bytes) and only missing announcements
+                            // come back — ~10x reduction in gossip traffic.
+                            //
+                            // Fallback to full sync only during first 30s after startup when
+                            // the GSet is empty (bloom filter would be meaningless).
+                            let producer_count = {
                                 let gset = self.producer_gset.read().await;
-                                (adaptive.use_delta_sync(), gset.len())
+                                gset.len()
                             };
 
-                            // Phase 2: Choose sync strategy based on network size
-                            // Delta sync is more efficient for larger networks (>50 producers)
-                            if use_delta && producer_count > 50 {
+                            if producer_count > 0 {
                                 // DELTA SYNC: Send bloom filter, peers respond with missing announcements
                                 let bloom = {
                                     let gset = self.producer_gset.read().await;
@@ -144,7 +161,8 @@ impl Node {
                                 );
                                 let _ = network.broadcast_producer_digest(bloom).await;
                             } else {
-                                // FULL SYNC: Send all announcements (better for small networks)
+                                // FULL SYNC FALLBACK: Only when GSet is empty (fresh node startup).
+                                // Once any producer is known, delta sync takes over.
                                 let announcements = {
                                     let gset = self.producer_gset.read().await;
                                     gset.export()
@@ -152,7 +170,7 @@ impl Node {
 
                                 if !announcements.is_empty() {
                                     debug!(
-                                        "Full sync: broadcasting {} producer announcements",
+                                        "Full sync (startup fallback): broadcasting {} producer announcements",
                                         announcements.len()
                                     );
                                     let _ = network.broadcast_producer_announcements(announcements).await;
@@ -273,6 +291,13 @@ impl Node {
             }
 
             NetworkEvent::NewBlock(block, source_peer) => {
+                // Skip gossip blocks during snap sync — they cause spurious fork
+                // recovery that corrupts state mid-download.
+                if self.sync_manager.read().await.state().is_snap_syncing() {
+                    debug!("Ignoring gossip block {} during snap sync", block.hash());
+                    return Ok(());
+                }
+
                 debug!("Received new block: {} from {}", block.hash(), source_peer);
 
                 // DEFENSE: Slot sanity — reject gossip blocks with wildly wrong slots.
@@ -317,12 +342,6 @@ impl Node {
                     sync.update_network_tip_slot(block.header.slot);
                     sync.note_block_received_via_gossip();
                 }
-                // Track that we've seen a block for this slot via gossip.
-                // Rank 1 checks this before producing — if rank 0's block arrived
-                // via gossip but hasn't been applied to block_store yet, rank 1
-                // must NOT produce a competing block.
-                self.seen_blocks_for_slot.insert(block.header.slot);
-
                 self.handle_new_block(block, source_peer).await?;
             }
 
@@ -385,7 +404,7 @@ impl Node {
                             );
                             drop(known);
                             // Reset stability timer - new producer discovered
-                            self.last_producer_list_change = Some(Instant::now());
+                            *self.last_producer_list_change.write().await = Some(Instant::now());
                         }
                     }
                 }
@@ -419,7 +438,7 @@ impl Node {
                                   known.len());
                             drop(known);
                             // Reset stability timer - new producer discovered
-                            self.last_producer_list_change = Some(Instant::now());
+                            *self.last_producer_list_change.write().await = Some(Instant::now());
                         }
                     }
                 }
@@ -457,31 +476,21 @@ impl Node {
                 request,
                 channel,
             } => {
-                debug!("Sync request from {}: {:?}", peer_id, request);
-                // Spawn sync request handling in background to avoid blocking
-                // the event loop. Without this, sync requests from 40+ peers
-                // starve the production timer via the biased select!, causing
-                // producers to miss their rank 0 window and create forks.
-                let block_store = self.block_store.clone();
-                let chain_state = self.chain_state.clone();
-                let utxo_set = self.utxo_set.clone();
-                let producer_set = self.producer_set.clone();
-                let network_cmd_tx = self.network.as_ref().map(|n| n.command_sender());
-                tokio::spawn(async move {
-                    if let Err(e) = handle_sync_request_bg(
-                        block_store,
-                        chain_state,
-                        utxo_set,
-                        producer_set,
-                        network_cmd_tx,
-                        request,
-                        channel,
-                    )
-                    .await
-                    {
-                        warn!("Background sync request error: {}", e);
-                    }
-                });
+                // GLOBAL SYNC SERVING RATE LIMIT: Cap aggregate sync responses per
+                // production interval. Without this, 100+ syncing peers each sending
+                // 20 req/sec (per-peer limit) create 2000+ req/sec aggregate, saturating
+                // the event loop with block_store I/O and starving production.
+                const MAX_SYNC_REQUESTS_PER_INTERVAL: u32 = 8;
+                if self.sync_requests_this_interval >= MAX_SYNC_REQUESTS_PER_INTERVAL {
+                    debug!(
+                        "Sync request from {} deferred — serving limit reached ({}/{})",
+                        peer_id, self.sync_requests_this_interval, MAX_SYNC_REQUESTS_PER_INTERVAL
+                    );
+                } else {
+                    debug!("Sync request from {}: {:?}", peer_id, request);
+                    self.sync_requests_this_interval += 1;
+                    self.handle_sync_request(request, channel).await?;
+                }
             }
 
             NetworkEvent::SyncResponse { peer_id, response } => {
@@ -499,13 +508,17 @@ impl Node {
                     .await
                     .handle_response(peer_id, response);
                 for block in blocks {
-                    // Track block seen for gossip-aware fallback production
-                    self.seen_blocks_for_slot.insert(block.header.slot);
                     // Route through handle_new_block for orphan/fork detection.
                     // For normal sync blocks that build on tip, this falls through
                     // to apply_block unchanged. For orphan blocks (e.g., peer's tip
                     // when we're on a fork), they get cached and trigger fork recovery.
                     self.handle_new_block(block, peer_id).await?;
+                }
+
+                // Check if snap sync produced a ready snapshot
+                let snap = self.sync_manager.write().await.take_snap_snapshot();
+                if let Some(snapshot) = snap {
+                    self.apply_snap_snapshot(snapshot).await?;
                 }
             }
 
@@ -529,120 +542,139 @@ impl Node {
                 self.sync_manager.write().await.remove_peer(&peer_id);
             }
 
+            // ── GOSSIP PIPELINE (spawned to dedicated tasks) ────────────
+            // These events involve CPU-intensive signature verification and
+            // CRDT merges. Processing them inline blocks the event loop at
+            // 100+ peers. Spawning to their own tasks lets block processing
+            // and production continue uninterrupted.
+            //
+            // All shared state accessed via Arc<RwLock<>> clones.
             NetworkEvent::ProducersAnnounced(remote_list) => {
-                // LEGACY ANTI-ENTROPY GOSSIP: Merge remote producer list with our local list
-                // This is STATE-BASED (not event-based) - we receive the sender's full view
-                // and merge using CRDT union semantics: Union(Local, Remote)
-                // This guarantees convergence even with packet loss or network partitions.
-                let genesis_active = {
-                    let state = self.chain_state.read().await;
-                    self.config.network.is_in_genesis(state.best_height + 1)
-                };
-                if self.config.network == Network::Testnet
-                    || self.config.network == Network::Devnet
-                    || genesis_active
-                {
-                    let changed = {
-                        let mut known = self.known_producers.write().await;
-                        let mut changed = false;
+                let chain_state = self.chain_state.clone();
+                let network_type = self.config.network;
+                let known_producers = self.known_producers.clone();
+                let last_change = self.last_producer_list_change.clone();
 
-                        // CRDT MERGE: Add any producers we don't already know about
-                        for producer in &remote_list {
-                            if !known.contains(producer) {
-                                known.push(*producer);
-                                changed = true;
-                                let pubkey_hash = crypto_hash(producer.as_bytes());
+                tokio::spawn(async move {
+                    let genesis_active = {
+                        let state = chain_state.read().await;
+                        network_type.is_in_genesis(state.best_height + 1)
+                    };
+                    if network_type == Network::Testnet
+                        || network_type == Network::Devnet
+                        || genesis_active
+                    {
+                        let changed = {
+                            let mut known = known_producers.write().await;
+                            let mut changed = false;
+
+                            for producer in &remote_list {
+                                if !known.contains(producer) {
+                                    known.push(*producer);
+                                    changed = true;
+                                    let pubkey_hash = crypto_hash(producer.as_bytes());
+                                    info!(
+                                        "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
+                                        &pubkey_hash.to_hex()[..16],
+                                        known.len()
+                                    );
+                                }
+                            }
+
+                            if changed {
+                                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                                 info!(
-                                    "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
-                                    &pubkey_hash.to_hex()[..16],
+                                    "Producer set updated via anti-entropy: {} total known producers",
                                     known.len()
                                 );
                             }
-                        }
+                            changed
+                        };
 
-                        // Keep sorted for deterministic round-robin ordering
                         if changed {
-                            known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                            info!(
-                                "Producer set updated via anti-entropy: {} total known producers",
-                                known.len()
-                            );
+                            *last_change.write().await = Some(Instant::now());
                         }
-                        changed
-                    };
-
-                    // Mark stability timer reset (outside the lock)
-                    if changed {
-                        self.last_producer_list_change = Some(Instant::now());
                     }
-                }
+                });
             }
 
             NetworkEvent::ProducerAnnouncementsReceived(announcements) => {
-                // NEW PRODUCER DISCOVERY: Merge signed announcements into the GSet CRDT
-                // Each announcement is cryptographically verified before merging
-                let merge_result = {
-                    let mut gset = self.producer_gset.write().await;
-                    gset.merge(announcements)
-                };
+                // GSet CRDT merge: CPU-intensive (ed25519 sig verify per announcement).
+                // Spawned to prevent blocking block processing at 5000+ nodes.
+                let gset = self.producer_gset.clone();
+                let adaptive = self.adaptive_gossip.clone();
+                let sync_mgr = self.sync_manager.clone();
+                let known_producers = self.known_producers.clone();
+                let last_change = self.last_producer_list_change.clone();
 
-                // Update adaptive gossip controller with merge result
-                let peer_count = self.sync_manager.read().await.peer_count();
-                {
-                    let mut gossip = self.adaptive_gossip.write().await;
-                    gossip.on_gossip_result(&merge_result, peer_count);
-                }
+                tokio::spawn(async move {
+                    let merge_result = {
+                        let mut g = gset.write().await;
+                        g.merge(announcements)
+                    };
 
-                // Log significant changes
-                if merge_result.added > 0 {
-                    info!(
-                        "Producer announcements: added={}, new_producers={}, rejected={}, duplicates={}",
-                        merge_result.added, merge_result.new_producers, merge_result.rejected, merge_result.duplicates
-                    );
-                    // Only reset stability timer when truly NEW producers are discovered
-                    // Sequence updates (liveness proofs) should not reset stability
-                    if merge_result.new_producers > 0 {
-                        self.last_producer_list_change = Some(Instant::now());
+                    let peer_count = sync_mgr.read().await.peer_count();
+                    {
+                        let mut gossip = adaptive.write().await;
+                        gossip.on_gossip_result(&merge_result, peer_count);
                     }
 
-                    // Also sync to legacy known_producers for compatibility
-                    let gset = self.producer_gset.read().await;
-                    let producers = gset.sorted_producers();
-                    let mut known = self.known_producers.write().await;
-                    for pubkey in producers {
-                        if !known.contains(&pubkey) {
-                            known.push(pubkey);
+                    if merge_result.added > 0 {
+                        info!(
+                            "Producer announcements: added={}, new_producers={}, rejected={}, duplicates={}",
+                            merge_result.added, merge_result.new_producers, merge_result.rejected, merge_result.duplicates
+                        );
+                        if merge_result.new_producers > 0 {
+                            *last_change.write().await = Some(Instant::now());
                         }
+
+                        let g = gset.read().await;
+                        let producers = g.sorted_producers();
+                        let mut known = known_producers.write().await;
+                        for pubkey in producers {
+                            if !known.contains(&pubkey) {
+                                known.push(pubkey);
+                            }
+                        }
+                        known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    } else if merge_result.rejected > 0 {
+                        debug!(
+                            "Producer announcements rejected: {} (invalid signature, stale, or wrong network)",
+                            merge_result.rejected
+                        );
                     }
-                    known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                } else if merge_result.rejected > 0 {
-                    debug!(
-                        "Producer announcements rejected: {} (invalid signature, stale, or wrong network)",
-                        merge_result.rejected
-                    );
-                }
+                });
             }
 
             NetworkEvent::ProducerDigestReceived { peer_id, digest } => {
-                // Peer sent us their bloom filter - compute delta and send missing announcements
-                debug!(
-                    "Received producer digest from {} ({} elements)",
-                    peer_id,
-                    digest.element_count()
-                );
+                // Bloom filter delta: spawned to avoid blocking event loop
+                let gset = self.producer_gset.clone();
+                let cmd_tx = self.network.as_ref().map(|n| n.command_sender());
 
-                // Get delta announcements (producers we know that peer doesn't)
-                let delta = {
-                    let gset = self.producer_gset.read().await;
-                    gset.delta_for_peer(&digest)
-                };
+                tokio::spawn(async move {
+                    debug!(
+                        "Received producer digest from {} ({} elements)",
+                        peer_id,
+                        digest.element_count()
+                    );
 
-                if !delta.is_empty() {
-                    debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
-                    if let Some(ref network) = self.network {
-                        let _ = network.send_producer_delta(peer_id, delta).await;
+                    let delta = {
+                        let g = gset.read().await;
+                        g.delta_for_peer(&digest)
+                    };
+
+                    if !delta.is_empty() {
+                        debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
+                        if let Some(tx) = cmd_tx {
+                            let _ = tx
+                                .send(NetworkCommand::SendProducerDelta {
+                                    peer_id,
+                                    announcements: delta,
+                                })
+                                .await;
+                        }
                     }
-                }
+                });
             }
 
             NetworkEvent::NewVote(vote_data) => {
@@ -708,13 +740,32 @@ impl Node {
 
             // ── TX ANNOUNCE-REQUEST PROTOCOL ────────────────────────────
             // EIP-4938 style: peers announce tx hashes, we fetch missing ones.
-            // Currently a no-op until full announce-request integration.
             NetworkEvent::TxAnnouncement { peer_id, hashes } => {
-                debug!(
-                    "TxAnnouncement from {} with {} hashes (not yet handled)",
-                    peer_id,
-                    hashes.len()
-                );
+                let mempool = self.mempool.read().await;
+                let mut new_count = 0;
+                for hash in &hashes {
+                    if !mempool.contains(hash)
+                        && self.pending_tx_announcements.record(*hash, peer_id)
+                    {
+                        new_count += 1;
+                    }
+                }
+                drop(mempool);
+
+                if new_count > 0 {
+                    // Fetch missing txs from announcing peers
+                    let batches = self.pending_tx_announcements.take_batch();
+                    if let Some(ref network) = self.network {
+                        for (peer, fetch_hashes) in batches {
+                            debug!(
+                                "Requesting {} txs from peer {} (announce-request)",
+                                fetch_hashes.len(),
+                                peer
+                            );
+                            let _ = network.request_tx_fetch(peer, fetch_hashes).await;
+                        }
+                    }
+                }
             }
 
             NetworkEvent::TxFetchRequest {
@@ -752,6 +803,8 @@ impl Node {
                     transactions.len()
                 );
                 for tx in transactions {
+                    let tx_hash = tx.hash();
+                    self.pending_tx_announcements.complete(&tx_hash);
                     self.handle_new_transaction(tx).await?;
                 }
             }
@@ -759,148 +812,4 @@ impl Node {
 
         Ok(())
     }
-}
-
-/// Handle sync requests in a background task, outside the main event loop.
-///
-/// This prevents sync request I/O (reading headers/bodies from RocksDB) from
-/// blocking block production. With 40+ peers syncing, the biased select! in the
-/// event loop would process sync requests indefinitely, starving the production
-/// timer and causing producers to miss their rank 0 window.
-async fn handle_sync_request_bg(
-    block_store: Arc<storage::BlockStore>,
-    chain_state: Arc<tokio::sync::RwLock<storage::ChainState>>,
-    utxo_set: Arc<tokio::sync::RwLock<storage::UtxoSet>>,
-    producer_set: Arc<tokio::sync::RwLock<storage::ProducerSet>>,
-    network_cmd_tx: Option<tokio::sync::mpsc::Sender<network::service::NetworkCommand>>,
-    request: network::protocols::SyncRequest,
-    channel: network::ResponseChannel<network::protocols::SyncResponse>,
-) -> Result<()> {
-    use network::protocols::{SyncRequest, SyncResponse};
-
-    let response = match request {
-        SyncRequest::GetHeaders {
-            start_hash,
-            max_count,
-        } => {
-            let mut headers = Vec::new();
-            let state = chain_state.read().await;
-            let genesis_hash = state.genesis_hash;
-            let best_height = state.best_height;
-            drop(state);
-
-            let start_height = if start_hash == genesis_hash {
-                0
-            } else {
-                match block_store.get_height_by_hash(&start_hash).ok().flatten() {
-                    Some(h) => h,
-                    None => {
-                        if let Some(tx) = network_cmd_tx {
-                            let _ = tx
-                                .send(network::service::NetworkCommand::SendSyncResponse {
-                                    channel,
-                                    response: SyncResponse::Headers(vec![]),
-                                })
-                                .await;
-                        }
-                        return Ok(());
-                    }
-                }
-            };
-
-            let end_height = (start_height + max_count as u64).min(best_height);
-            for height in (start_height + 1)..=end_height {
-                if let Ok(Some(hash)) = block_store.get_hash_by_height(height) {
-                    if let Ok(Some(header)) = block_store.get_header(&hash) {
-                        headers.push(header);
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            SyncResponse::Headers(headers)
-        }
-
-        SyncRequest::GetBodies { hashes } => {
-            let mut bodies = Vec::new();
-            for hash in hashes {
-                if let Ok(Some(block)) = block_store.get_block(&hash) {
-                    bodies.push(block);
-                }
-            }
-            SyncResponse::Bodies(bodies)
-        }
-
-        SyncRequest::GetBlockByHeight { height } => match block_store.get_block_by_height(height) {
-            Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
-            _ => SyncResponse::Block(Box::new(None)),
-        },
-
-        SyncRequest::GetBlockByHash { hash } => match block_store.get_block(&hash) {
-            Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
-            _ => SyncResponse::Block(Box::new(None)),
-        },
-
-        SyncRequest::GetStateAtCheckpoint { height } => {
-            let best_height = chain_state.read().await.best_height;
-            if best_height < height || best_height < 10 {
-                if let Some(tx) = network_cmd_tx {
-                    let _ = tx
-                        .send(network::service::NetworkCommand::SendSyncResponse {
-                            channel,
-                            response: SyncResponse::Error(format!(
-                                "Cannot serve checkpoint: local_h={}, requested_h={}",
-                                best_height, height
-                            )),
-                        })
-                        .await;
-                }
-                return Ok(());
-            }
-
-            let cs = chain_state.read().await;
-            let utxo = utxo_set.read().await;
-            let ps = producer_set.read().await;
-
-            match storage::StateSnapshot::create(&cs, &utxo, &ps) {
-                Ok(snap) => SyncResponse::StateAtCheckpoint {
-                    block_hash: snap.block_hash,
-                    block_height: snap.block_height,
-                    chain_state: snap.chain_state_bytes,
-                    utxo_set: snap.utxo_set_bytes,
-                    producer_set: snap.producer_set_bytes,
-                    state_root: snap.state_root,
-                },
-                Err(e) => SyncResponse::Error(format!("Checkpoint state error: {}", e)),
-            }
-        }
-
-        SyncRequest::GetBlocksByHeightRange {
-            start_height,
-            count,
-        } => {
-            let mut blocks = Vec::new();
-            let end_height = start_height.saturating_add(count as u64).saturating_sub(1);
-            let best_height = chain_state.read().await.best_height;
-            let actual_end = end_height.min(best_height);
-            for h in start_height..=actual_end {
-                if let Ok(Some(block)) = block_store.get_block_by_height(h) {
-                    blocks.push(block);
-                } else {
-                    break;
-                }
-            }
-            SyncResponse::Bodies(blocks)
-        }
-    };
-
-    if let Some(tx) = network_cmd_tx {
-        let _ = tx
-            .send(network::service::NetworkCommand::SendSyncResponse { channel, response })
-            .await;
-    }
-
-    Ok(())
 }

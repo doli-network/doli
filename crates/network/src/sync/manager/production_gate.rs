@@ -5,7 +5,10 @@
 
 use std::time::Instant;
 
+use libp2p::PeerId;
 use tracing::{debug, info, warn};
+
+use crypto::Hash;
 
 use super::{
     ProductionAuthorization, SyncManager, MIN_PEERS_TIER1, MIN_PEERS_TIER2, MIN_PEERS_TIER3,
@@ -15,6 +18,71 @@ impl SyncManager {
     // =========================================================================
     // PRODUCTION GATE - Single source of truth for block production authorization
     // =========================================================================
+
+    /// Update fork detection and gossip state. Call BEFORE can_produce().
+    ///
+    /// Side effects extracted from can_produce() to make it a pure query.
+    /// This fixes a class of race-like bugs where a "read" operation (can_produce)
+    /// mutated state, causing the system to behave differently depending on how
+    /// often production was checked.
+    pub fn update_production_state(&mut self) {
+        // Layer 9 side effect: detect minority fork and set persistent flag.
+        // Previously embedded in can_produce() where it was called every slot.
+        let mut agree = 1u32;
+        let mut disagree = 0u32;
+        for status in self.peers.values() {
+            if status.best_height == self.local_height {
+                if status.best_hash == self.local_hash {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                }
+            } else if status.best_height > self.local_height
+                && status.best_height <= self.local_height + 2
+            {
+                if status.best_hash == Hash::ZERO {
+                    continue;
+                }
+                disagree += 1;
+            }
+        }
+        if disagree > 0 && agree < disagree && !self.fork_mismatch_detected {
+            warn!(
+                "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
+                self.local_height, agree, disagree
+            );
+            self.fork_mismatch_detected = true;
+        }
+
+        // Layer 10.5 side effect: reset gossip timer on network stall bypass.
+        // Previously embedded in can_produce() at the circuit breaker.
+        let best_peer_height = self.best_peer_height();
+        if self.local_height > 1 && self.local_height >= best_peer_height {
+            let last_gossip = self
+                .last_block_received_via_gossip
+                .unwrap_or(Instant::now());
+            let silence_secs = last_gossip.elapsed().as_secs();
+
+            if silence_secs > self.max_solo_production_secs {
+                let all_peers_at_our_height = !self.peers.is_empty()
+                    && self
+                        .peers
+                        .values()
+                        .all(|p| p.best_height == self.local_height);
+
+                if all_peers_at_our_height {
+                    info!(
+                        "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
+                         network stall detected, resetting gossip timer (silence={}s)",
+                        self.peers.len(),
+                        self.local_height,
+                        silence_secs
+                    );
+                    self.last_block_received_via_gossip = Some(Instant::now());
+                }
+            }
+        }
+    }
 
     /// Check if block production is authorized - THE SINGLE SOURCE OF TRUTH
     ///
@@ -26,6 +94,9 @@ impl SyncManager {
     /// 5. Peer synchronization check (within N slots/heights)
     ///
     /// ALL checks must pass for production to be authorized.
+    ///
+    /// NOTE: This method is now side-effect-free. Call update_production_state()
+    /// before this to handle fork detection and gossip timer mutations.
     pub fn can_produce(&mut self, current_slot: u32) -> ProductionAuthorization {
         // === CHECKPOINT: Entry point with all key values ===
         let best_peer_h = self.best_peer_height();
@@ -52,10 +123,22 @@ impl SyncManager {
         }
 
         // Layer 2: Resync in progress
-        if self.resync_in_progress {
+        if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
             return ProductionAuthorization::BlockedResync {
                 grace_remaining_secs: self.resync_grace_period_secs,
             };
+        }
+
+        // Layer 2.5: Post-snap-sync canonical block gate
+        // After snap sync, the block store is empty — producing immediately would create
+        // a fork because there's no real parent block to build on. Wait until at least
+        // one canonical gossip block has been received and applied, proving we're on the
+        // canonical chain and giving the block store a real parent.
+        if matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        ) {
+            return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
         }
 
         // Layer 3: Active sync in progress
@@ -188,12 +271,15 @@ impl SyncManager {
             .peers_lost_at
             .map(|t| t.elapsed().as_secs() >= self.peer_loss_timeout_secs)
             .unwrap_or(false);
+        // INC-001: The `local_height > 0` bypass allowed ALL nodes at genesis to produce
+        // with just 1 peer, creating 5 competing blocks for slot 1. Only bypass the peer
+        // check at height 0 if min_peers is 1 (devnet). For testnet/mainnet (min_peers=2),
+        // enforce the peer requirement even at height 0.
+        let genesis_bypass = self.local_height == 0 && self.min_peers_for_production <= 1;
         if self.peers.len() < self.min_peers_for_production
-            && self.local_height > 0
+            && !genesis_bypass
             && !past_peer_loss_timeout
         {
-            // Only apply this check if we're past genesis (height > 0)
-            // At genesis (height 0), we may legitimately be the first producer
             // Skip if peer loss timeout expired — solo production is preferable to chain halt
             warn!(
                 "FORK PREVENTION: Only {} peers (need {}) - blocking production to prevent echo chamber",
@@ -277,8 +363,8 @@ impl SyncManager {
         if !self.peers.is_empty() && best_peer_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
 
-            if height_lag > 3 {
-                // Large lag: unconditionally block. No timeout escape.
+            if height_lag > 5 {
+                // Very large lag (>5): unconditionally block. No timeout escape.
                 // The node must sync to tip before producing.
                 info!(
                     "[CAN_PRODUCE] Layer6.5: BLOCKED — lag={} (local_h={}, peer_h={}). \
@@ -291,6 +377,30 @@ impl SyncManager {
                     peer_height: best_peer_height,
                     height_diff: height_lag,
                 };
+            } else if height_lag > 3 {
+                // INC-001: Graduated timeout for lag 4-5. During mass node join,
+                // gossip propagation delays cause brief 4-5 block lags that are
+                // NOT forks. Allow production after 60s to avoid starving slots.
+                let behind_secs = self
+                    .behind_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs();
+                if behind_secs <= 60 {
+                    info!(
+                        "[CAN_PRODUCE] Layer6.5: BLOCKED — lag={} (local_h={}, peer_h={}) behind_for={}s/60s",
+                        height_lag, self.local_height, best_peer_height, behind_secs
+                    );
+                    return ProductionAuthorization::BlockedBehindPeers {
+                        local_height: self.local_height,
+                        peer_height: best_peer_height,
+                        height_diff: height_lag,
+                    };
+                }
+                info!(
+                    "[CAN_PRODUCE] Layer6.5: lag={} but timeout elapsed ({}s>60s) — allowing",
+                    height_lag, behind_secs
+                );
             } else if height_lag >= 2 {
                 // Small lag (2-3 blocks): allow immediately.
                 //
@@ -353,22 +463,85 @@ impl SyncManager {
             };
         }
 
-        // Layer 8.5: DISABLED — persistent fork flag caused chain halt.
-        // When a newly-joining peer reports hash=0000 (not yet synced), Layer 9
-        // counted it as "disagree", set fork_mismatch_detected=true, and blocked
-        // ALL production permanently. The flag never cleared because no blocks
-        // were produced to trigger resync completion.
-        // Finality (Phase 1) replaces this with a deterministic check.
+        // Layer 8.5: Persistent fork mismatch flag.
+        //
+        // If a prior Layer 9 check detected we're in the minority, keep blocking
+        // until a successful resync clears the flag. Without this, Layer 9 oscillates:
+        // detects fork → blocks → peers advance beyond ±2 window → Layer 9 forgets
+        // → node resumes producing on orphan chain → repeat.
         if self.fork_mismatch_detected {
-            info!("[CAN_PRODUCE] Layer8.5: fork_mismatch_detected flag set but IGNORED (disabled)",);
-            self.fork_mismatch_detected = false; // Auto-clear
+            warn!(
+                "[CAN_PRODUCE] Layer8.5: BLOCKED — fork_mismatch_detected flag set, awaiting resync (local_h={})",
+                self.local_height
+            );
+            return ProductionAuthorization::BlockedChainMismatch {
+                peer_id: self
+                    .peers
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or_else(PeerId::random),
+                local_hash: self.local_hash,
+                peer_hash: Hash::default(),
+                local_height: self.local_height,
+            };
         }
 
-        // Layer 9: DISABLED — chain hash verification caused production halts.
-        // Peers at different heights (propagation lag, syncing) were counted as
-        // "disagree", setting fork_mismatch_detected and blocking production.
-        // The deterministic bond-weighted scheduler ensures only one valid block
-        // per slot. Forks resolve via heaviest-chain reorg, not production blocking.
+        // Layer 9: Chain Hash Verification (P0 #1)
+        //
+        // Count peers at same height that agree (same hash) vs disagree (different hash).
+        // Only block production if we're in the clear minority — the majority keeps
+        // producing so the heaviest chain rule resolves the fork naturally.
+        let mut agree = 1u32; // Count ourselves — we agree with our own chain
+        let mut disagree = 0u32;
+        let mut first_mismatch_peer = None;
+        let mut first_mismatch_hash = self.local_hash;
+        for (peer_id, status) in &self.peers {
+            if status.best_height == self.local_height {
+                // Same height: compare hashes directly
+                if status.best_hash == self.local_hash {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                    if first_mismatch_peer.is_none() {
+                        first_mismatch_peer = Some(*peer_id);
+                        first_mismatch_hash = status.best_hash;
+                    }
+                }
+            } else if status.best_height > self.local_height
+                && status.best_height <= self.local_height + 2
+            {
+                // Peer is 1-2 blocks ahead.
+                // Hash::ZERO means peer has a snap sync gap — no block store
+                // for this height. This is NOT a fork — skip silently.
+                if status.best_hash == Hash::ZERO {
+                    continue;
+                }
+                // Different non-zero hash = genuine divergence.
+                disagree += 1;
+                if first_mismatch_peer.is_none() {
+                    first_mismatch_peer = Some(*peer_id);
+                    first_mismatch_hash = status.best_hash;
+                }
+            }
+        }
+        // Only block if we're in the minority — majority keeps producing.
+        // NOTE: fork_mismatch_detected is now set by update_production_state(),
+        // not here. can_produce() is side-effect-free.
+        if disagree > 0 && agree < disagree {
+            if let Some(peer_id) = first_mismatch_peer {
+                warn!(
+                    "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree)",
+                    self.local_height, agree, disagree
+                );
+                return ProductionAuthorization::BlockedChainMismatch {
+                    peer_id,
+                    local_hash: self.local_hash,
+                    peer_hash: first_mismatch_hash,
+                    local_height: self.local_height,
+                };
+            }
+        }
 
         // Layer 10: Gossip Activity Watchdog (P0 #3)
         //
@@ -423,19 +596,23 @@ impl SyncManager {
             let silence_secs = last_gossip.elapsed().as_secs();
 
             if silence_secs > self.max_solo_production_secs {
-                // PGD-003: Check for network stall — all peers at our exact height.
-                let all_peers_at_our_height = !self.peers.is_empty()
-                    && self
-                        .peers
-                        .values()
-                        .all(|p| p.best_height == self.local_height);
+                // PGD-003 + INC-001: Check for network stall.
+                // Changed from ALL to MAJORITY: during bootstrap, some nodes may still
+                // be syncing (lower height). Requiring ALL causes a deadlock where
+                // syncing nodes prevent tip nodes from producing, which prevents
+                // syncing nodes from catching up.
+                let peers_at_our_height = self
+                    .peers
+                    .values()
+                    .filter(|p| p.best_height == self.local_height)
+                    .count();
+                let majority_at_our_height =
+                    !self.peers.is_empty() && peers_at_our_height > self.peers.len() / 2;
 
-                if all_peers_at_our_height {
+                if majority_at_our_height {
                     // Network stall: everyone stuck at the same height, nobody producing.
-                    // Allow production and reset gossip timer. If the block propagates,
-                    // peers advance, gossip resumes, and the circuit breaker stays clear.
-                    // If it doesn't propagate, silence grows back to 50s and we retry —
-                    // limiting orphan growth to 1 block per 50s.
+                    // Allow production. The gossip timer was already reset by
+                    // update_production_state() (called before can_produce).
                     info!(
                         "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
                          network stall detected, allowing production (silence={}s)",
@@ -443,7 +620,6 @@ impl SyncManager {
                         self.local_height,
                         silence_secs
                     );
-                    self.last_block_received_via_gossip = Some(Instant::now());
                     // Fall through to Authorized
                 } else {
                     // Not all peers at our height — genuine isolation or mixed state.
@@ -511,7 +687,7 @@ impl SyncManager {
     /// This blocks production until the resync completes and grace period expires.
     pub fn start_resync(&mut self) {
         info!("Resync started - production blocked");
-        self.resync_in_progress = true;
+        self.recovery_phase = super::RecoveryPhase::ResyncInProgress;
         self.consecutive_resync_count += 1;
         self.blocks_since_resync_completed = 0; // PGD-001: reset stable block counter
 
@@ -532,16 +708,33 @@ impl SyncManager {
     /// Starts the grace period timer before production can resume.
     pub fn complete_resync(&mut self) {
         info!("Resync completed - starting grace period");
-        self.resync_in_progress = false;
+        self.recovery_phase = super::RecoveryPhase::Normal;
         self.last_resync_completed = Some(Instant::now());
     }
 
-    /// Clear the fork mismatch flag after a canonical block is applied.
+    /// Clear the post-snap-sync production gate.
+    /// Called when a canonical gossip block has been successfully applied,
+    /// proving we're on the canonical chain.
     pub fn clear_awaiting_canonical_block(&mut self) {
+        if matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        ) {
+            info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
+            self.recovery_phase = super::RecoveryPhase::Normal;
+        }
         if self.fork_mismatch_detected {
             info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
             self.fork_mismatch_detected = false;
         }
+    }
+
+    /// Check if we're waiting for a canonical block after snap sync.
+    pub fn is_awaiting_canonical_block(&self) -> bool {
+        matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::AwaitingCanonicalBlock
+        )
     }
 
     /// Reset consecutive resync counter (call after stable operation)
@@ -557,7 +750,7 @@ impl SyncManager {
 
     /// Check if a resync is currently in progress
     pub fn is_resync_in_progress(&self) -> bool {
-        self.resync_in_progress
+        matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
     }
 
     /// Get the current consecutive resync count
@@ -803,23 +996,73 @@ impl SyncManager {
     /// During grace, fork_sync should not be activated — the node needs time
     /// to sync via header-first / gossip before fork detection is meaningful.
     pub fn post_recovery_grace_active(&self) -> bool {
-        self.post_recovery_grace
+        matches!(
+            self.recovery_phase,
+            super::RecoveryPhase::PostRecoveryGrace { .. }
+        )
+    }
+
+    /// Check if a stuck-fork signal was raised by cleanup or apply-failure detection.
+    /// Reads and clears the signal (transitions from StuckForkDetected → Normal).
+    pub fn take_stuck_fork_signal(&mut self) -> bool {
+        if matches!(self.recovery_phase, super::RecoveryPhase::StuckForkDetected) {
+            self.recovery_phase = super::RecoveryPhase::Normal;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Signal a stuck fork. Only transitions to StuckForkDetected from Normal
+    /// or PostRollback phases — other phases have higher priority.
+    pub fn signal_stuck_fork(&mut self) {
+        match self.recovery_phase {
+            super::RecoveryPhase::Normal | super::RecoveryPhase::PostRollback => {
+                self.recovery_phase = super::RecoveryPhase::StuckForkDetected;
+            }
+            _ => {
+                // Don't override active resync, post-recovery grace, or snap sync
+                debug!(
+                    "Stuck fork signal ignored — recovery phase {:?} has priority",
+                    self.recovery_phase
+                );
+            }
+        }
     }
 
     /// Activate post-recovery grace period. Called after snap sync / forced recovery.
     pub fn set_post_recovery_grace(&mut self) {
-        self.post_recovery_grace = true;
-        self.post_recovery_grace_started = Instant::now();
-        self.blocks_applied_since_recovery = 0;
+        self.recovery_phase = super::RecoveryPhase::PostRecoveryGrace {
+            started: Instant::now(),
+            blocks_applied: 0,
+        };
         self.consecutive_empty_headers = 0;
         self.consecutive_apply_failures = 0;
         info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");
     }
 
     /// Check if sync manager has signaled that a full genesis resync is needed.
-    /// Snap sync has been removed — this always returns false.
+    /// Returns false if snap sync is disabled (--no-snap-sync), regardless of
+    /// how many internal paths set the flag. This is the SINGLE gate that
+    /// prevents snap sync from firing when the operator has forbidden it.
     pub fn needs_genesis_resync(&self) -> bool {
-        false
+        if self.snap_sync_threshold == u64::MAX {
+            // --no-snap-sync: allow the genesis resync signal through.
+            // The recovery path (reset_state_only) preserves block data — it only
+            // resets UTXO, ProducerSet, and ChainState to genesis, then header-first
+            // sync rebuilds state from preserved blocks. No snap sync is needed.
+            // Previously this hardcoded false, creating a permanent deadlock for
+            // forked --no-snap-sync nodes with no recovery path.
+            if self.needs_genesis_resync {
+                tracing::warn!(
+                    "--no-snap-sync: genesis resync signal active (local_h={}, gap={}). \
+                     Recovery will use header-first full resync (block data preserved).",
+                    self.local_height,
+                    self.best_peer_height().saturating_sub(self.local_height)
+                );
+            }
+        }
+        self.needs_genesis_resync
     }
 
     /// Returns true if peers consistently reject our chain tip (deep fork).
@@ -852,6 +1095,13 @@ impl SyncManager {
         // snap → no block 1 → next fork → rollback impossible → re-snap.
         let gap = best_peer_height.saturating_sub(self.local_height);
         if gap <= 12 {
+            return false;
+        }
+        // If snap sync can handle this gap, don't escalate to deep fork.
+        // next_request() will attempt snap sync first.
+        let gap = best_peer_height.saturating_sub(self.local_height);
+        let enough_peers = self.peers.len() >= 3;
+        if enough_peers && gap > self.snap_sync_threshold {
             return false;
         }
         // Require at least one peer whose height is close to ours (within 100 blocks).

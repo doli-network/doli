@@ -31,9 +31,6 @@ impl SyncManager {
         // This moves timed-out hashes back to the failed queue for retry
         self.body_downloader.cleanup_timeouts();
 
-        // Drain cancelled fork recovery peers into fork_sync_blacklist
-        self.drain_cancelled_recovery_peer();
-
         // Remove timed out requests
         let timed_out: Vec<super::SyncRequestId> = self
             .pending_requests
@@ -72,18 +69,61 @@ impl SyncManager {
             self.remove_peer(&peer);
         }
 
-        // Checkpoint download timeout: if downloading checkpoint state for >30s, try another peer
-        if let SyncState::CheckpointDownloading { peer, started_at } = &self.state {
-            if started_at.elapsed() > Duration::from_secs(30) {
-                warn!(
-                    "[CHECKPOINT] Download from peer {} timed out after 30s — resetting to Idle",
-                    peer
-                );
-                self.state = SyncState::Idle;
-                if self.should_sync() {
-                    self.start_sync();
+        // Snap sync timeouts
+        match &self.state {
+            SyncState::SnapCollectingRoots { started_at, .. } => {
+                if started_at.elapsed() > self.snap_root_timeout {
+                    // Quorum wasn't reached in time. Instead of falling back to
+                    // header-first (which always fails for nodes at h=0 or on a
+                    // fork), pick the largest vote group with >= 2 peers.
+                    // Safety: the node independently verifies the snapshot via
+                    // compute_state_root_from_bytes() after download — quorum
+                    // only selects WHICH chain to download, not trust.
+                    if let Some((best_root, best_peers)) = self.pick_best_snap_group() {
+                        let (download_peer, download_hash, best_height) = best_peers
+                            .iter()
+                            .max_by_key(|(_, _, h)| *h)
+                            .copied()
+                            .unwrap();
+                        let alternate_peers: Vec<(PeerId, crypto::Hash, u64)> = best_peers
+                            .iter()
+                            .filter(|(pid, _, _)| *pid != download_peer)
+                            .copied()
+                            .collect();
+                        warn!(
+                            "[SNAP_SYNC] No quorum after {:?} — using best group: {} peers agree on root={:.16}, downloading from {} (height={})",
+                            self.snap_root_timeout, best_peers.len(), best_root, download_peer, best_height
+                        );
+                        self.state = SyncState::SnapDownloading {
+                            target_hash: download_hash,
+                            target_height: best_height,
+                            quorum_root: best_root,
+                            peer: download_peer,
+                            alternate_peers,
+                            started_at: Instant::now(),
+                        };
+                    } else {
+                        warn!(
+                            "[SNAP_SYNC] State root collection timed out after {:?} — no group with >= 2 peers, falling back",
+                            self.snap_root_timeout
+                        );
+                        self.snap_fallback_to_normal();
+                    }
                 }
             }
+            SyncState::SnapDownloading {
+                started_at, peer, ..
+            } => {
+                if started_at.elapsed() > self.snap_download_timeout {
+                    let peer = *peer;
+                    warn!(
+                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
+                        peer, self.snap_download_timeout
+                    );
+                    self.handle_snap_download_error(peer);
+                }
+            }
+            _ => {}
         }
 
         // Stall recovery: if "Synchronized" but significantly behind in slots,
@@ -263,13 +303,6 @@ impl SyncManager {
         self.header_blacklisted_peers
             .retain(|_, added| added.elapsed() < Duration::from_secs(30));
 
-        // Expire fork sync blacklist entries (5-minute TTL).
-        // These peers were temporarily excluded from fork recovery peer selection
-        // because they were syncing or missing blocks. After 5 minutes they may
-        // have caught up and become useful again.
-        self.fork_sync_blacklist
-            .retain(|_, added| added.elapsed() < Duration::from_secs(300));
-
         // NT8 fix: When ALL peers are blacklisted and we've been stuck for >120s
         // total, clear the blacklist entirely to retry with a fresh slate.
         // Without this, the node cycles Idle↔DownloadingHeaders forever because
@@ -283,15 +316,35 @@ impl SyncManager {
             if stuck_duration > Duration::from_secs(120) {
                 if self.consecutive_empty_headers >= 20 {
                     // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
-                    // Redirect to fork_sync/rollback to find common ancestor.
+                    // Escalate to snap sync if enough peers AND gap is large enough.
+                    // For small gaps (≤12), redirect to rollback/fork_sync to preserve
+                    // block history and avoid snap sync cascade.
+                    let enough_peers = self.peers.len() >= 3;
                     let gap = self.network_tip_height.saturating_sub(self.local_height);
-                    warn!(
-                        "All peers blacklisted for >120s with {} consecutive empty headers (gap={}) \
-                         — clearing blacklist and triggering fork_sync",
-                        self.consecutive_empty_headers, gap
-                    );
-                    self.header_blacklisted_peers.clear();
-                    self.consecutive_empty_headers = 3; // Trigger fork_sync
+                    if enough_peers && gap > 12 {
+                        warn!(
+                            "All peers blacklisted for >120s with {} consecutive empty headers — \
+                             escalating to snap sync (gap={})",
+                            self.consecutive_empty_headers, gap
+                        );
+                        self.header_blacklisted_peers.clear();
+                        self.needs_genesis_resync = true;
+                    } else if enough_peers && gap <= 12 {
+                        warn!(
+                            "All peers blacklisted for >120s (gap={}) — clearing blacklist \
+                             and signaling fork recovery (small gap, preserving block history)",
+                            gap
+                        );
+                        self.header_blacklisted_peers.clear();
+                        self.signal_stuck_fork(); // Signal fork recovery without forcing counter
+                    } else {
+                        warn!(
+                            "All peers blacklisted for >120s with {} consecutive empty headers \
+                             but only {} peers (need 3 for snap sync) — clearing blacklist to retry",
+                            self.consecutive_empty_headers, self.peers.len()
+                        );
+                        self.header_blacklisted_peers.clear();
+                    }
                 } else {
                     // Temporary gossip hiccup — clear blacklist and retry normally.
                     warn!(
@@ -350,33 +403,102 @@ impl SyncManager {
         // and grace hasn't cleared (10 blocks not applied), force-clear it.
         // This prevents grace from permanently blocking fork_sync when the node
         // landed on a fork after snap sync (can't apply blocks → grace never clears).
-        if self.post_recovery_grace && self.post_recovery_grace_started.elapsed().as_secs() > 120 {
-            warn!(
-                "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
-                 Force-clearing to allow fork recovery.",
-                self.blocks_applied_since_recovery
-            );
-            self.post_recovery_grace = false;
-            self.blocks_applied_since_recovery = 0;
+        if let super::RecoveryPhase::PostRecoveryGrace {
+            started,
+            blocks_applied,
+        } = self.recovery_phase
+        {
+            if started.elapsed().as_secs() > 120 {
+                warn!(
+                    "Post-recovery grace timeout: 120s elapsed with only {} blocks applied. \
+                     Force-clearing to allow fork recovery.",
+                    blocks_applied
+                );
+                self.recovery_phase = super::RecoveryPhase::Normal;
+            }
         }
 
         // Stuck-sync detection: if height hasn't advanced for >120s and we're
-        // behind peers, the node is stuck. Escalate to fork_sync.
+        // behind peers, the node is stuck. The correct escalation depends on gap:
+        //
+        // - gap <= 1000: likely on a fork with small gap. Escalate to fork_sync
+        //   via consecutive_empty_headers = 3 (triggers resolve_shallow_fork).
+        // - gap > 1000: too far behind for fork_sync (binary search only covers
+        //   1000 blocks). Force snap sync via needs_genesis_resync.
+        //
+        // 120s gives gossip/header-first plenty of time before escalating.
+        // Note: post_recovery_grace is intentionally NOT checked here. If the
+        // node did snap sync but landed on a fork, it will be stuck forever
+        // because grace requires 10 applied blocks to clear — but no blocks
+        // can be applied on a fork. The 120s timeout is sufficient protection.
         if !self.is_fork_sync_active() && self.should_sync() {
             let gap = self.network_tip_height.saturating_sub(self.local_height);
             let stuck_secs = self.last_block_applied.elapsed().as_secs();
-            if gap > 0
-                && stuck_secs > 120
-                && self.consecutive_empty_headers < 3
-                && self.local_height > 0
-            {
-                warn!(
-                    "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
-                     (local_h={}, network_tip={}). Escalating to fork_sync.",
-                    stuck_secs, gap, self.local_height, self.network_tip_height
-                );
-                self.consecutive_empty_headers = 3;
+            if gap > 0 && stuck_secs > 120 {
+                if gap > 1000 {
+                    // Large gap: fork_sync can't help (only searches 1000 blocks).
+                    // Force snap sync to jump to tip.
+                    if self.snap_sync_attempts < 3 && self.peers.len() >= 3 {
+                        warn!(
+                            "Stuck-sync detected: no block applied for {}s, behind by {} blocks \
+                             (local_h={}, network_tip={}). Gap too large for fork_sync — forcing snap sync.",
+                            stuck_secs, gap, self.local_height, self.network_tip_height
+                        );
+                        self.needs_genesis_resync = true;
+                    }
+                } else if self.consecutive_empty_headers < 3 && self.local_height > 0 {
+                    // Small gap with non-zero height: likely on a fork.
+                    // Signal fork recovery via dedicated flag (not counter force-set).
+                    warn!(
+                        "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
+                         (local_h={}, network_tip={}). Signaling fork recovery.",
+                        stuck_secs, gap, self.local_height, self.network_tip_height
+                    );
+                    self.signal_stuck_fork();
+                }
             }
+        }
+
+        // Height offset detection: if blocks ARE being applied (last_block_applied
+        // is recent) but the gap to peers stays constant, the node has a corrupted
+        // height counter from a bad reorg. Normal "behind" means blocks aren't being
+        // applied; height offset means blocks ARE applied but gap never closes because
+        // each block increments both our height and the canonical height equally.
+        //
+        // Fix: force snap sync to reset chain_state to correct height.
+        if self.should_sync() && self.local_height > 0 {
+            let gap = self.network_tip_height.saturating_sub(self.local_height);
+            let blocks_recent = self.last_block_applied.elapsed().as_secs() < 30;
+
+            if gap >= 2 && blocks_recent {
+                match self.stable_gap_since {
+                    Some((prev_gap, since)) => {
+                        // Gap is stable (within ±1 of what we first saw)
+                        if gap.abs_diff(prev_gap) <= 1 && since.elapsed().as_secs() > 120 {
+                            warn!(
+                                "Height offset detected: gap={} has been stable for {}s while \
+                                 blocks are being applied. This indicates a corrupted height \
+                                 counter from a bad reorg. Forcing snap sync to correct.",
+                                gap,
+                                since.elapsed().as_secs()
+                            );
+                            self.needs_genesis_resync = true;
+                            self.stable_gap_since = None;
+                        } else if gap.abs_diff(prev_gap) > 1 {
+                            // Gap changed significantly — reset tracker
+                            self.stable_gap_since = Some((gap, Instant::now()));
+                        }
+                    }
+                    None => {
+                        self.stable_gap_since = Some((gap, Instant::now()));
+                    }
+                }
+            } else {
+                // Gap closed or blocks not being applied — reset
+                self.stable_gap_since = None;
+            }
+        } else {
+            self.stable_gap_since = None;
         }
     }
 }

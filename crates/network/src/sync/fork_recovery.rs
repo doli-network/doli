@@ -54,9 +54,6 @@ pub struct ForkRecoveryTracker {
     /// Set when recovery is cancelled because the fork exceeds MAX_RECOVERY_DEPTH.
     /// The node should escalate to force_resync_from_genesis().
     exceeded_max_depth: bool,
-    /// Peer from the last cancelled recovery (for fork sync blacklisting).
-    /// Consumed by `take_last_cancelled_peer()`.
-    last_cancelled_peer: Option<PeerId>,
 }
 
 impl ForkRecoveryTracker {
@@ -65,7 +62,6 @@ impl ForkRecoveryTracker {
             active: None,
             cooldown_until: None,
             exceeded_max_depth: false,
-            last_cancelled_peer: None,
         }
     }
 
@@ -198,10 +194,8 @@ impl ForkRecoveryTracker {
 
     /// Cancel recovery with reason, start cooldown
     pub fn cancel(&mut self, reason: &str) {
-        if let Some(recovery) = self.active.take() {
+        if self.active.is_some() {
             warn!("Fork recovery cancelled: {}", reason);
-            // Record the peer so SyncManager can blacklist it for fork sync
-            self.last_cancelled_peer = Some(recovery.peer);
             if reason == "exceeded max depth" {
                 self.exceeded_max_depth = true;
                 warn!(
@@ -209,14 +203,9 @@ impl ForkRecoveryTracker {
                     MAX_RECOVERY_DEPTH
                 );
             }
+            self.active = None;
             self.cooldown_until = Some(Instant::now() + RECOVERY_COOLDOWN);
         }
-    }
-
-    /// Take the peer from the last cancelled recovery (consumed once).
-    /// Used by SyncManager to blacklist the peer for fork sync.
-    pub fn take_last_cancelled_peer(&mut self) -> Option<PeerId> {
-        self.last_cancelled_peer.take()
     }
 
     /// Check and consume the exceeded-max-depth flag.

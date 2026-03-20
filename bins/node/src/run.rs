@@ -32,8 +32,8 @@ pub(crate) async fn run_node(
     yes: bool,
     chainspec_path: Option<PathBuf>,
     archive_to: Option<PathBuf>,
-    checkpoint_height: Option<u64>,
-    checkpoint_hash: Option<String>,
+    no_snap_sync: bool,
+    snap_sync: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -129,6 +129,15 @@ pub(crate) async fn run_node(
         // Clear default bootstrap nodes - only use explicitly provided ones
         config.bootstrap_nodes.clear();
         info!("DHT discovery disabled - cleared default bootstrap nodes, only connecting to explicit bootstrap addresses");
+    }
+    if no_snap_sync {
+        config.no_snap_sync = true;
+        info!("Snap sync disabled — node will only use header-first sync");
+    }
+    // REQ-SYNC-002: --snap-sync explicitly enables snap sync (overrides mainnet default)
+    if snap_sync {
+        config.no_snap_sync = false;
+        info!("Snap sync explicitly enabled via --snap-sync");
     }
     if relay_server {
         config.relay_server = true;
@@ -428,34 +437,6 @@ pub(crate) async fn run_node(
         Some(shutdown_flag_for_node),
     )
     .await?;
-
-    // Set checkpoint: CLI override takes priority, otherwise use compiled-in constants
-    if let (Some(cp_height), Some(cp_hash_str)) = (checkpoint_height, checkpoint_hash.as_deref()) {
-        let cp_hash = crypto::Hash::from_hex(cp_hash_str)
-            .ok_or_else(|| anyhow!("Invalid --checkpoint-hash: {}", cp_hash_str))?;
-        node.set_checkpoint(cp_height, cp_hash).await;
-        info!(
-            "Checkpoint sync configured (CLI): height={}, hash={}",
-            cp_height, cp_hash_str
-        );
-    } else {
-        // Use compiled-in checkpoint constants (updated with each release)
-        use doli_core::consensus::{CHECKPOINT_HASH, CHECKPOINT_HEIGHT, CHECKPOINT_STATE_ROOT};
-        #[allow(clippy::absurd_extreme_comparisons)]
-        if CHECKPOINT_HEIGHT > 0 {
-            let cp_hash = crypto::Hash::from_hex(CHECKPOINT_HASH).unwrap_or(crypto::Hash::ZERO);
-            let cp_state_root =
-                crypto::Hash::from_hex(CHECKPOINT_STATE_ROOT).unwrap_or(crypto::Hash::ZERO);
-            node.set_checkpoint_with_state_root(CHECKPOINT_HEIGHT, cp_hash, cp_state_root)
-                .await;
-            info!(
-                "Checkpoint sync configured (built-in): height={}, hash={}..., state_root={}...",
-                CHECKPOINT_HEIGHT,
-                &CHECKPOINT_HASH[..16],
-                &CHECKPOINT_STATE_ROOT[..16]
-            );
-        }
-    }
 
     // Connect vote forwarding: gossip votes → UpdateService
     node.set_vote_tx(vote_tx);

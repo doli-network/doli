@@ -9,16 +9,17 @@
 mod block_lifecycle;
 mod cleanup;
 mod production_gate;
+mod snap_sync;
 mod sync_engine;
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crypto::Hash;
 use doli_core::{Block, BlockHeader};
@@ -96,30 +97,61 @@ pub enum SyncState {
         /// Current height being processed
         height: u64,
     },
-    /// Checkpoint sync: downloading state from a peer at the checkpoint height
-    CheckpointDownloading {
-        /// Peer serving the checkpoint state
-        peer: PeerId,
-        /// When the download started
-        started_at: Instant,
-    },
-    /// Checkpoint sync: state ready for node to consume
-    CheckpointReady {
-        /// Block hash at the checkpoint
-        block_hash: Hash,
-        /// Block height
-        block_height: u64,
-        /// Serialized ChainState
-        chain_state: Vec<u8>,
-        /// Serialized UtxoSet
-        utxo_set: Vec<u8>,
-        /// Serialized ProducerSet
-        producer_set: Vec<u8>,
-        /// State root
-        state_root: Hash,
-    },
     /// Fully synchronized
     Synchronized,
+    /// Snap sync: collecting state root votes from peers
+    SnapCollectingRoots {
+        /// Target block hash to snapshot at (initial estimate, may differ from quorum)
+        target_hash: Hash,
+        /// Target block height (initial estimate)
+        target_height: u64,
+        /// Collected (peer, block_hash, block_height, state_root) votes
+        votes: Vec<(PeerId, Hash, u64, Hash)>,
+        /// Peers already asked
+        asked: HashSet<PeerId>,
+        /// When this phase started
+        started_at: Instant,
+    },
+    /// Snap sync: downloading full snapshot from a peer
+    SnapDownloading {
+        /// Target block hash
+        target_hash: Hash,
+        /// Target block height
+        target_height: u64,
+        /// Quorum-agreed state root
+        quorum_root: Hash,
+        /// Peer serving the snapshot
+        peer: PeerId,
+        /// Alternate peers that agreed on the same quorum root (fallback on error)
+        alternate_peers: Vec<(PeerId, Hash, u64)>,
+        /// When download started
+        started_at: Instant,
+    },
+    /// Snap sync: snapshot ready for node to consume
+    SnapReady {
+        /// The verified snapshot
+        snapshot: VerifiedSnapshot,
+    },
+}
+
+/// A verified state snapshot ready for application by the node.
+///
+/// SyncManager collects this from the network; the Node verifies
+/// the state root and applies it.
+#[derive(Clone, Debug)]
+pub struct VerifiedSnapshot {
+    /// Block hash this snapshot is valid at
+    pub block_hash: Hash,
+    /// Block height
+    pub block_height: u64,
+    /// Serialized ChainState (bincode)
+    pub chain_state: Vec<u8>,
+    /// Serialized UtxoSet (bincode)
+    pub utxo_set: Vec<u8>,
+    /// Serialized ProducerSet (bincode)
+    pub producer_set: Vec<u8>,
+    /// Quorum-agreed state root (node re-verifies)
+    pub state_root: Hash,
 }
 
 /// Production authorization result - the single source of truth for whether block production is safe
@@ -193,14 +225,23 @@ pub enum ProductionAuthorization {
         /// Height of the last finalized block.
         local_finalized_height: u64,
     },
+    /// Production is blocked after snap sync until a canonical gossip block is received.
+    /// Prevents producing on an empty block store before the node proves it's on the
+    /// canonical chain.
+    BlockedAwaitingCanonicalBlock,
 }
 
 impl SyncState {
     /// Check if we're actively syncing
     pub fn is_syncing(&self) -> bool {
-        !matches!(
+        !matches!(self, SyncState::Idle | SyncState::Synchronized)
+    }
+
+    /// Check if snap sync is in progress (collecting roots or downloading snapshot)
+    pub fn is_snap_syncing(&self) -> bool {
+        matches!(
             self,
-            SyncState::Idle | SyncState::Synchronized | SyncState::CheckpointReady { .. }
+            SyncState::SnapCollectingRoots { .. } | SyncState::SnapDownloading { .. }
         )
     }
 }
@@ -240,6 +281,41 @@ struct PendingRequest {
     sent_at: Instant,
     /// Sync epoch when this request was created. Responses from old epochs are discarded.
     epoch: u64,
+}
+
+/// Recovery phase of the sync manager.
+///
+/// Replaces 5 independent booleans (`resync_in_progress`, `post_rollback`,
+/// `post_recovery_grace`, `awaiting_canonical_block`, `stuck_fork_signal`) with
+/// a single enum. Illegal states (e.g., resync AND post_recovery_grace simultaneously)
+/// become unrepresentable. State space drops from 2^5=32 to 6 variants.
+///
+/// Lifecycle:
+///   Normal → StuckForkDetected → (fork_sync/rollback) → PostRollback → (sync) → Normal
+///   Normal → ResyncInProgress → PostRecoveryGrace → Normal
+///   Normal → (snap sync) → AwaitingCanonicalBlock → Normal
+#[derive(Clone, Debug)]
+pub enum RecoveryPhase {
+    /// No recovery in progress. Normal operation.
+    Normal,
+    /// Stuck fork detected by cleanup or sync engine.
+    /// Waiting for fork_sync (binary search) to resolve.
+    StuckForkDetected,
+    /// Fork sync completed with rollback. Next start_sync() should
+    /// NOT use header-first sync (our tip is still on the fork).
+    PostRollback,
+    /// Forced resync from genesis/snap is in progress.
+    ResyncInProgress,
+    /// Resync/recovery completed. Grace period suppresses fork_sync reactivation.
+    PostRecoveryGrace {
+        /// When grace started.
+        started: Instant,
+        /// Blocks applied since recovery (cleared at 10).
+        blocks_applied: u32,
+    },
+    /// Snap sync completed. Waiting for first canonical gossip block
+    /// before allowing production.
+    AwaitingCanonicalBlock,
 }
 
 /// Sync manager
@@ -282,8 +358,9 @@ pub struct SyncManager {
     production_blocked: bool,
     /// Reason for explicit production block
     production_block_reason: Option<String>,
-    /// True when a forced resync is in progress
-    resync_in_progress: bool,
+    /// Current recovery phase (replaces 5 independent booleans).
+    /// See `RecoveryPhase` enum docs for lifecycle.
+    pub(crate) recovery_phase: RecoveryPhase,
     /// Timestamp when last resync completed (for grace period)
     last_resync_completed: Option<Instant>,
     /// Number of consecutive resyncs (for exponential backoff)
@@ -363,6 +440,10 @@ pub struct SyncManager {
     /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
     consecutive_empty_headers: u32,
 
+    /// Flag set when genesis fallback confirms peers reject our chain —
+    /// node must call force_resync_from_genesis().
+    needs_genesis_resync: bool,
+
     /// Monotonic epoch counter incremented on every new sync cycle (start_sync).
     /// Requests are tagged with the epoch they belong to; responses from old
     /// epochs are discarded to prevent stale data from corrupting the current cycle.
@@ -384,8 +465,25 @@ pub struct SyncManager {
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
 
+    // === SNAP SYNC FIELDS ===
+    /// Height gap threshold to trigger snap sync instead of header-first
+    snap_sync_threshold: u64,
+    /// Number of peers that must agree on the same state root
+    snap_sync_quorum: usize,
+    /// Timeout for collecting state root votes
+    snap_root_timeout: Duration,
+    /// Timeout for downloading snapshot from a peer
+    snap_download_timeout: Duration,
+    /// Peers that served bad snapshots (blacklisted for this session)
+    snap_blacklisted_peers: HashSet<PeerId>,
     /// Peers that returned empty headers (blacklisted with cooldown)
     header_blacklisted_peers: HashMap<PeerId, Instant>,
+    /// Number of consecutive snap sync failures. After 3 failures, falls back
+    /// to header-first sync. Reset on successful sync or state reset.
+    snap_sync_attempts: u8,
+    /// When a fresh node first started waiting for 5 peers (for snap sync timeout)
+    fresh_node_wait_start: Option<Instant>,
+    // `awaiting_canonical_block` moved to RecoveryPhase::AwaitingCanonicalBlock
     /// Lowest block height available in the local block store.
     /// Set by the node after startup / snap sync. Used by fork sync to
     /// avoid binary-searching below available block data.
@@ -407,19 +505,7 @@ pub struct SyncManager {
     /// that oscillation by remembering "we saw a fork, don't produce until resolved."
     fork_mismatch_detected: bool,
 
-    /// NT10 fix: Set by `reset_sync_for_rollback()` to signal that the next
-    /// `start_sync()` call should NOT use header-first sync. After a fork rollback,
-    /// our tip is still on the fork (just 1 block shorter), so header-first will
-    /// always get 0 headers. Instead, attempt fork_sync or escalate to snap sync.
-    post_rollback: bool,
-
-    /// Checkpoint height for fast initial sync (skip genesis replay)
-    checkpoint_height: u64,
-    /// Checkpoint block hash (must match checkpoint_height)
-    checkpoint_hash: Hash,
-    /// Checkpoint state root (for verifying downloaded state)
-    checkpoint_state_root: Hash,
-
+    // `post_rollback` moved to RecoveryPhase::PostRollback
     /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
     /// suppress further fork syncs for this duration. Prevents infinite reorg loops
     /// when multiple peers offer equal-weight competing chains (e.g., 50 nodes
@@ -427,21 +513,18 @@ pub struct SyncManager {
     last_fork_sync_rejection: Instant,
     fork_sync_cooldown_secs: u64,
 
-    /// Fork sync blacklist: peers temporarily excluded from fork sync peer selection.
-    /// Unlike a full P2P ban, blacklisted peers remain connected and can gossip/sync
-    /// normally — they're just not chosen for fork recovery. A syncing peer isn't
-    /// malicious, it just doesn't have the blocks yet.
-    /// TTL: 5 minutes (cleared in cleanup()).
-    fork_sync_blacklist: HashMap<PeerId, Instant>,
+    // INC-001 fix: Fork sync loop circuit breaker
+    /// Count of fork syncs within the breaker window.
+    consecutive_fork_syncs: u32,
+    /// Timestamp of last fork sync (for breaker window expiry).
+    last_fork_sync_at: Option<Instant>,
+    /// Recently-held tip hashes to prevent equal-weight ping-pong.
+    /// Capacity: 10. If a remedial reorg would switch to a tip we recently held,
+    /// reject it to break the oscillation.
+    recently_held_tips: Vec<(Hash, Instant)>,
 
-    /// Set after snap sync / force_recover to suppress fork_sync reactivation.
-    /// The node needs time to sync via header-first / gossip before fork detection
-    /// makes sense. Cleared after 10+ blocks are applied post-recovery.
-    post_recovery_grace: bool,
-    /// When post_recovery_grace was activated (for timeout-based clearing)
-    post_recovery_grace_started: Instant,
-    /// Blocks applied since last recovery — used to clear post_recovery_grace.
-    blocks_applied_since_recovery: u32,
+    // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
+    // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
     /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
     /// Reset when gap closes to < 2.
     behind_since: Option<Instant>,
@@ -455,6 +538,12 @@ pub struct SyncManager {
     /// When this reaches 5, `reset_resync_counter()` is called to clear the
     /// exponential backoff. Only incremented when `resync_in_progress` is false.
     blocks_since_resync_completed: u32,
+    /// Height offset detection: tracks (gap, timestamp) when we first observed
+    /// a stable gap while blocks are still being applied. If the gap stays
+    /// constant for >120s despite blocks being applied, the node has a corrupted
+    /// height counter (from a bad reorg) and needs snap sync to correct it.
+    stable_gap_since: Option<(u64, Instant)>,
+    // `stuck_fork_signal` moved to RecoveryPhase::StuckForkDetected
 }
 
 impl SyncManager {
@@ -487,7 +576,7 @@ impl SyncManager {
             // Production gate defaults
             production_blocked: false,
             production_block_reason: None,
-            resync_in_progress: false,
+            recovery_phase: RecoveryPhase::Normal,
             last_resync_completed: None,
             consecutive_resync_count: 0,
             resync_grace_period_secs: 30, // Default 30 seconds after resync
@@ -496,7 +585,7 @@ impl SyncManager {
             max_heights_ahead: 5,         // Fork detection: if >5 blocks ahead, suspicious
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
-            max_solo_production_secs: 86400, // Disabled for local dev (was 50s)
+            max_solo_production_secs: 50, // INC-001: 5 slots (50s) — prevents long solo forks
             consecutive_sync_failures: 0,
             max_sync_failures_before_fork_detection: 3, // Block after 3 failed syncs
             min_peers_for_production: 2, // Need at least 2 peers to avoid echo chambers
@@ -516,26 +605,33 @@ impl SyncManager {
             last_block_applied: Instant::now(),
             last_sync_activity: Instant::now(),
             consecutive_empty_headers: 0,
+            needs_genesis_resync: false,
             sync_epoch: 0,
             body_stall_retries: 0,
             consecutive_apply_failures: 0,
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
+            // Snap sync defaults
+            snap_sync_threshold: 1000,
+            snap_sync_quorum: 5, // Minimum 5 peers for partition safety
+            snap_root_timeout: Duration::from_secs(10),
+            snap_download_timeout: Duration::from_secs(60),
+            snap_blacklisted_peers: HashSet::new(),
             header_blacklisted_peers: HashMap::new(),
+            snap_sync_attempts: 0,
+            fresh_node_wait_start: None,
+            // `awaiting_canonical_block`, `post_rollback`, `post_recovery_grace`,
+            // `stuck_fork_signal` all replaced by `recovery_phase` (see above)
             store_floor: 1, // Default: full-sync node has block 1
             idle_behind_retries: 0,
             fork_mismatch_detected: false,
-            checkpoint_height: 0,
-            checkpoint_hash: Hash::ZERO,
-            checkpoint_state_root: Hash::ZERO,
-            post_rollback: false,
             last_fork_sync_rejection: Instant::now() - std::time::Duration::from_secs(300),
             fork_sync_cooldown_secs: 30,
-            fork_sync_blacklist: HashMap::new(),
-            post_recovery_grace: false,
-            post_recovery_grace_started: Instant::now(),
-            blocks_applied_since_recovery: 0,
+            consecutive_fork_syncs: 0,
+            last_fork_sync_at: None,
+            recently_held_tips: Vec::new(),
             behind_since: None,
+            stable_gap_since: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
@@ -585,7 +681,7 @@ impl SyncManager {
                     info!("Chain synchronized at height {}", height);
 
                     // If we were in a resync, complete it now
-                    if self.resync_in_progress {
+                    if matches!(self.recovery_phase, RecoveryPhase::ResyncInProgress) {
                         self.complete_resync();
                         info!(
                             "Resync complete at height {} - grace period started ({}s)",
@@ -631,11 +727,11 @@ impl SyncManager {
             },
         );
 
-        // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims.
-        // Ignore height-0 peers (syncing from genesis) — they are not evidence of
-        // the network's canonical chain state. Including them could dilute the
-        // network tip and create false fork signals.
-        if height > 0 && height > self.network_tip_height {
+        // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims
+        // This is critical for production gating - even if we haven't received the
+        // actual block via gossip yet, knowing that a peer claims a higher height
+        // tells us we shouldn't produce until we're caught up.
+        if height > self.network_tip_height {
             debug!(
                 "Network tip height updated from peer status: {} -> {}",
                 self.network_tip_height, height
@@ -701,6 +797,20 @@ impl SyncManager {
     pub fn remove_peer(&mut self, peer: &PeerId) {
         self.peers.remove(peer);
 
+        // FIX: Recompute network_tip_height from remaining peers + local height.
+        // Without this, a peer that briefly reported an inflated height (e.g.,
+        // during a fork) permanently inflates network_tip_height, creating a
+        // phantom gap that triggers unnecessary sync/snap sync (Path E cascade).
+        let peer_max_height = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        let peer_max_slot = self.peers.values().map(|p| p.best_slot).max().unwrap_or(0);
+        self.network_tip_height = peer_max_height.max(self.local_height);
+        self.network_tip_slot = peer_max_slot.max(self.local_slot);
+
         // Track when we lost all peers (for peer loss timeout)
         if self.peers.is_empty() && self.peers_lost_at.is_none() {
             info!(
@@ -728,6 +838,20 @@ impl SyncManager {
                 if self.should_sync() {
                     self.start_sync();
                 }
+            }
+        }
+
+        // If snap downloading from this peer, try alternate or fall back
+        if let SyncState::SnapDownloading {
+            peer: snap_peer, ..
+        } = &self.state
+        {
+            if snap_peer == peer {
+                warn!(
+                    "[SNAP_SYNC] Download peer {} disconnected — trying alternate",
+                    peer
+                );
+                self.handle_snap_download_error(*peer);
             }
         }
     }
@@ -839,17 +963,17 @@ impl SyncManager {
             SyncState::DownloadingHeaders { .. } => "DownloadingHeaders",
             SyncState::DownloadingBodies { .. } => "DownloadingBodies",
             SyncState::Processing { .. } => "Processing",
-            SyncState::CheckpointDownloading { .. } => "CheckpointDownloading",
-            SyncState::CheckpointReady { .. } => "CheckpointReady",
             SyncState::Synchronized => "Synchronized",
+            SyncState::SnapCollectingRoots { .. } => "SnapCollectingRoots",
+            SyncState::SnapDownloading { .. } => "SnapDownloading",
+            SyncState::SnapReady { .. } => "SnapReady",
         }
     }
 
     /// Get sync progress as a percentage
     pub fn progress(&self) -> Option<f64> {
         match &self.state {
-            SyncState::Idle | SyncState::Synchronized | SyncState::CheckpointReady { .. } => None,
-            SyncState::CheckpointDownloading { .. } => Some(50.0),
+            SyncState::Idle | SyncState::Synchronized => None,
             SyncState::DownloadingHeaders { target_slot, .. } => {
                 if *target_slot > 0 {
                     Some(self.local_slot as f64 / *target_slot as f64 * 100.0)
@@ -875,103 +999,30 @@ impl SyncManager {
                     None
                 }
             }
+            SyncState::SnapCollectingRoots { .. } => Some(5.0),
+            SyncState::SnapDownloading { .. } => Some(50.0),
+            SyncState::SnapReady { .. } => Some(95.0),
         }
     }
 
-    /// Set checkpoint for fast initial sync.
-    pub fn set_checkpoint(&mut self, height: u64, hash: Hash) {
-        self.checkpoint_height = height;
-        self.checkpoint_hash = hash;
-    }
-
-    /// Set checkpoint with state root for checkpoint-anchored state sync.
-    pub fn set_checkpoint_with_state_root(&mut self, height: u64, hash: Hash, state_root: Hash) {
-        self.checkpoint_height = height;
-        self.checkpoint_hash = hash;
-        self.checkpoint_state_root = state_root;
-    }
-
-    /// Take checkpoint state data if ready. Returns the data and transitions to Synchronized.
-    /// Returns None if not in CheckpointReady state.
-    #[allow(clippy::type_complexity)]
-    pub fn take_checkpoint_state(
-        &mut self,
-    ) -> Option<(Hash, u64, Vec<u8>, Vec<u8>, Vec<u8>, Hash)> {
-        if matches!(self.state, SyncState::CheckpointReady { .. }) {
-            let old_state = std::mem::replace(&mut self.state, SyncState::Synchronized);
-            if let SyncState::CheckpointReady {
-                block_hash,
-                block_height,
-                chain_state,
-                utxo_set,
-                producer_set,
-                state_root,
-            } = old_state
-            {
-                info!(
-                    "Checkpoint state taken: height={}, hash={}",
-                    block_height,
-                    &block_hash.to_string()[..16]
-                );
-                Some((
-                    block_hash,
-                    block_height,
-                    chain_state,
-                    utxo_set,
-                    producer_set,
-                    state_root,
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Get checkpoint state root
-    pub fn checkpoint_state_root(&self) -> Hash {
-        self.checkpoint_state_root
-    }
-
-    /// Pick the best peer for fork recovery (highest height, excluding unsuitable peers).
-    ///
-    /// Filters out:
-    /// - Peers at height 0 (still at genesis, can't serve fork data)
-    /// - Peers significantly behind network tip (still syncing — they don't have
-    ///   the blocks we need for fork resolution)
-    /// - Peers in the fork_sync_blacklist (recently failed to serve fork data;
-    ///   temporary 5-min exclusion, NOT a full P2P ban)
+    /// Pick the best peer for fork recovery.
+    /// Prefers peers near the network tip to avoid syncing from other stuck/low nodes.
+    /// Falls back to max-height peer if no near-tip peers are available.
     pub fn best_peer_for_recovery(&self) -> Option<PeerId> {
-        let network_tip = self.network_tip_height;
-        // Use the higher of network_tip and local_height as reference.
-        // This prevents selecting peers far behind US even if network_tip is stale.
-        // A node at h=437 should never fork-sync with a peer at h=3.
-        let reference_height = network_tip.max(self.local_height);
-        let min_useful_height = if reference_height > 10 {
-            reference_height - 10
-        } else {
-            1 // At minimum, peer must be past genesis
-        };
-
-        self.peers
+        let min_acceptable = self.network_tip_height.saturating_sub(10);
+        // First: try peers near the network tip
+        let near_tip = self
+            .peers
             .iter()
-            .filter(|(pid, status)| {
-                status.best_height >= min_useful_height
-                    && !self.fork_sync_blacklist.contains_key(pid)
-            })
+            .filter(|(_, status)| status.best_height >= min_acceptable)
             .max_by_key(|(_, status)| status.best_height)
-            .map(|(peer, _)| *peer)
-    }
-
-    /// Temporarily blacklist a peer for fork sync (5 minutes).
-    /// The peer remains connected for gossip and normal sync — this only
-    /// excludes it from `best_peer_for_recovery()` selection.
-    pub fn blacklist_peer_for_fork_sync(&mut self, peer: PeerId) {
-        info!(
-            "Fork sync: blacklisting peer {} for 5 minutes (still syncing or missing blocks)",
-            peer
-        );
-        self.fork_sync_blacklist.insert(peer, Instant::now());
+            .map(|(peer, _)| *peer);
+        // Fallback: best available (preserves current behavior when no good peers exist)
+        near_tip.or_else(|| {
+            self.peers
+                .iter()
+                .max_by_key(|(_, status)| status.best_height)
+                .map(|(peer, _)| *peer)
+        })
     }
 }

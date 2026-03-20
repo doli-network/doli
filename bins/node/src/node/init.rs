@@ -138,7 +138,7 @@ impl Node {
                      StateDb has:    {}\n\
                      Chainspec has:  {}\n\
                      The state database belongs to a different chain (stale data from a prior reset or wrong network).\n\
-                     Fix: wipe data directory ({}) and restart to re-sync from peers.",
+                     Fix: wipe data directory ({}) and restart, or pass --snap-sync to re-sync from peers.",
                     cs.genesis_hash,
                     canonical_genesis_hash,
                     config.data_dir.display()
@@ -201,26 +201,6 @@ impl Node {
             );
         }
         let genesis_hash = chain_state.genesis_hash;
-
-        // REQ-SYNC-004: Validate block store genesis against chainspec.
-        // StateDb may have the correct genesis hash (from a reset) but the block
-        // store may still contain blocks from a previous chain. This causes fork
-        // sync to find "mismatches" at every height because the blocks belong to
-        // a different chain entirely — irrecoverable without manual wipe.
-        if let Ok(Some(block_one)) = block_store.get_block_by_height(1) {
-            if block_one.header.prev_hash != genesis_hash {
-                return Err(anyhow::anyhow!(
-                    "Block store genesis mismatch!\n\
-                     Block 1 prev_hash: {}\n\
-                     Chainspec genesis:  {}\n\
-                     The block store contains blocks from a different chain.\n\
-                     Fix: wipe data directory ({}) and restart.",
-                    block_one.header.prev_hash,
-                    genesis_hash,
-                    config.data_dir.display()
-                ));
-            }
-        }
 
         // Verify chain state consistency with block store
         if chain_state.best_height > 0 {
@@ -500,6 +480,9 @@ impl Node {
         // This is the wait time at genesis before allowing production (chain evidence collection)
         {
             let mut sm = sync_manager.write().await;
+            if config.no_snap_sync {
+                sm.disable_snap_sync();
+            }
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
             // Configure min peers for production based on network and genesis phase.
@@ -510,9 +493,12 @@ impl Node {
                 let state = chain_state.read().await;
                 config.network.is_in_genesis(state.best_height + 1)
             };
+            // INC-001: Require 2 peers during genesis for testnet/mainnet.
+            // 1 peer was too permissive — a single connection to a new joining
+            // node (at h=0) allowed solo fork creation.
             let min_peers = match config.network {
                 Network::Devnet => 1,
-                _ if in_genesis_at_start => 1,
+                _ if in_genesis_at_start => 2,
                 Network::Testnet | Network::Mainnet => 2,
             };
             sm.set_min_peers_for_production(min_peers);
@@ -622,7 +608,8 @@ impl Node {
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_resync_time: None,
-            last_producer_list_change: None,
+            last_producer_list_change: Arc::new(RwLock::new(None)),
+            producer_stability_deadline: None,
             producer_gset,
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),
@@ -630,8 +617,6 @@ impl Node {
             signed_slots_db,
             consecutive_fork_blocks: 0,
             shallow_rollback_count: 0,
-            cumulative_rollback_depth: 0,
-            seen_blocks_for_slot: std::collections::HashSet::new(),
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,
@@ -640,6 +625,7 @@ impl Node {
             last_peer_redial: None,
             bootstrap_backoff: HashMap::new(),
             producer_liveness,
+            snap_sync_height: None,
             genesis_vdf_output: None,
             cached_state_root: Arc::new(RwLock::new(None)),
             cached_genesis_producers: std::sync::OnceLock::new(),
@@ -651,6 +637,9 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            consecutive_forced_recoveries: 0,
+            sync_requests_this_interval: 0,
+            pending_tx_announcements: tx_announcements::PendingTxAnnouncements::new(),
         })
     }
 }
