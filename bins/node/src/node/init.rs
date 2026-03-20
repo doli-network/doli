@@ -566,9 +566,9 @@ impl Node {
         // Without this, nodes that restart mid-epoch fall back to live UTXO
         // counting → scheduler changes with every add-bond TX → divergence.
         let (initial_bond_snapshot, initial_bond_epoch) = {
-            let ps = producer_set.blocking_read();
-            let us = utxo_set.blocking_read();
-            let cs = chain_state.blocking_read();
+            let ps = producer_set.read().await;
+            let us = utxo_set.read().await;
+            let cs = chain_state.read().await;
             let h = cs.best_height;
             let bpe = config.network.blocks_per_reward_epoch();
             let active = ps.active_producers_at_height(h);
