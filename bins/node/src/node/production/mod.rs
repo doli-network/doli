@@ -307,6 +307,42 @@ impl Node {
             return Ok(());
         }
 
+        // RANK 1 GUARD: Only produce as fallback if rank 0 is demonstrably offline.
+        //
+        // Problem: Rank 1 produces at T+2000ms if no gossip block seen. But gossip
+        // can be delayed 100-200ms. If rank 0 produced at T+1800ms, rank 1 won't
+        // see it by T+2000ms → competing block → fork → rollback → node falls behind.
+        //
+        // Fix: If we're rank 1, check if rank 0 produced recently (last 3 slots).
+        // If rank 0 is active, they'll produce for this slot too — wait for gossip
+        // instead of creating a competing block. Only produce if rank 0 has been
+        // offline (missed 3+ consecutive slots).
+        if !use_bootstrap {
+            let our_rank = eligible.iter().position(|p| p == &our_pubkey);
+            if let Some(rank) = our_rank {
+                if rank > 0 {
+                    // We're a fallback. Check if rank 0 is active.
+                    let rank0_pubkey = &eligible[0];
+                    let rank0_last_height = self.producer_liveness.get(rank0_pubkey).copied().unwrap_or(0);
+                    let slots_since_rank0 = height.saturating_sub(rank0_last_height);
+                    if slots_since_rank0 <= 3 {
+                        // Rank 0 produced within last 3 blocks — they're online.
+                        // Don't produce as fallback; their block will arrive via gossip.
+                        debug!(
+                            "Rank {} skipping: rank 0 ({}) produced {} blocks ago — waiting for gossip",
+                            rank, &rank0_pubkey.as_bytes()[..4].iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                            slots_since_rank0
+                        );
+                        return Ok(());
+                    }
+                    info!(
+                        "Rank {} producing: rank 0 last produced {} blocks ago (offline threshold=3)",
+                        rank, slots_since_rank0
+                    );
+                }
+            }
+        }
+
         // PROPAGATION DELAY: Wait 1 second after becoming eligible before producing.
         // This gives the previous slot's block time to propagate via gossip.
         // Without this, consecutive producers build on stale tips → micro-forks →
