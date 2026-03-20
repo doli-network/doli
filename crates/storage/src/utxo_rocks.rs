@@ -34,6 +34,11 @@ impl RocksDbUtxoStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        // WAL cleanup: force memtable flush when total WAL exceeds 64 MB
+        opts.set_max_total_wal_size(64 * 1024 * 1024);
+        // Info log rotation
+        opts.set_keep_log_file_num(3);
+        opts.set_max_log_file_size(10 * 1024 * 1024);
 
         let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY];
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;

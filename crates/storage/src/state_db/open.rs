@@ -18,6 +18,13 @@ impl StateDb {
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         // WAL for crash recovery
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
+        // WAL cleanup: force memtable flush when total WAL exceeds 64 MB.
+        // Without this, multi-CF databases accumulate WAL files indefinitely
+        // because a WAL can only be deleted when ALL CFs have flushed past it.
+        opts.set_max_total_wal_size(64 * 1024 * 1024);
+        // Info log rotation: keep 3 files, max 10 MB each
+        opts.set_keep_log_file_num(3);
+        opts.set_max_log_file_size(10 * 1024 * 1024);
 
         let cfs = vec![
             CF_UTXO,
