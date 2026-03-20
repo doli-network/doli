@@ -152,30 +152,36 @@ impl Node {
         let total_producers = producers.total_count();
         drop(producers);
 
-        // Derive bond counts from UTXO set (source of truth for bonds),
-        // then apply inactivity leak decay for offline producers.
+        // Derive bond counts from epoch-locked snapshot (deterministic).
+        // Snapshot is computed once at epoch boundary and stays constant.
+        // This prevents mid-epoch add-bond from changing total_bonds.
         let _slots_per_epoch = self.params.slots_per_epoch as u64;
-        let utxo = self.utxo_set.read().await;
-        let active_with_weights: Vec<(PublicKey, u64)> = active_producers
-            .into_iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let raw_bonds = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                // REMOVED: Inactivity leak from scheduler.
-                // producer_liveness is LOCAL state — different on each node because they've
-                // applied different blocks. Different heights → different missed counts →
-                // different decay → different weights → different slot→producer mapping.
-                // This was the root cause of scheduling disagreements and forks.
-                //
-                // The bond-weighted scheduler must use RAW on-chain bond counts ONLY —
-                // no local state adjustments. Inactivity is handled by epoch rewards
-                // (non-qualified producers get zero rewards) not by scheduling.
-                (pk, raw_bonds)
-            })
-            .collect();
-        drop(utxo);
+        let active_with_weights: Vec<(PublicKey, u64)> = if self.epoch_bond_snapshot.is_empty() {
+            // No snapshot yet — fall back to UTXO (first epoch)
+            let utxo = self.utxo_set.read().await;
+            let w: Vec<_> = active_producers
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let raw_bonds = utxo
+                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                        .max(1) as u64;
+                    (pk, raw_bonds)
+                })
+                .collect();
+            drop(utxo);
+            w
+        } else {
+            // Use epoch snapshot — deterministic across all nodes
+            active_producers
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let count = self.epoch_bond_snapshot.get(&pubkey_hash).copied().unwrap_or(1);
+                    (pk, count)
+                })
+                .collect()
+        };
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);

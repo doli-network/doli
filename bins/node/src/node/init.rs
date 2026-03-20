@@ -632,6 +632,8 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
+            epoch_bond_snapshot: HashMap::new(),
+            epoch_bond_snapshot_epoch: u64::MAX, // Force rebuild on first use
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,

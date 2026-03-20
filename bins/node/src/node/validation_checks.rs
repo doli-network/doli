@@ -132,7 +132,10 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Build weighted producer list (bond counts from UTXO set)
+        // Build weighted producer list using epoch-locked bond snapshot.
+        // The snapshot is computed once at each epoch boundary and stays
+        // constant for the entire epoch. This prevents mid-epoch add-bond
+        // TXs from changing total_bonds and causing scheduler divergence.
         let producers = self.producer_set.read().await;
         let active: Vec<PublicKey> = producers
             .active_producers_at_height(height)
@@ -142,18 +145,30 @@ impl Node {
         let pending_keys = producers.pending_registration_keys();
         drop(producers);
 
-        let utxo = self.utxo_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = active
-            .into_iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                (pk, count)
-            })
-            .collect();
-        drop(utxo);
+        let weighted: Vec<(PublicKey, u64)> = if self.epoch_bond_snapshot.is_empty() {
+            // No snapshot yet (first epoch or fresh start) — fall back to UTXO
+            let utxo = self.utxo_set.read().await;
+            active
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let count = utxo
+                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                        .max(1) as u64;
+                    (pk, count)
+                })
+                .collect()
+        } else {
+            // Use epoch snapshot — deterministic across all nodes
+            active
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let count = self.epoch_bond_snapshot.get(&pubkey_hash).copied().unwrap_or(1);
+                    (pk, count)
+                })
+                .collect()
+        };
 
         // Build bootstrap producer list for validation.
         //

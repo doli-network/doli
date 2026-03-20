@@ -135,6 +135,13 @@ pub struct Node {
     /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
     pub(super) seen_blocks_for_slot: std::collections::HashSet<u32>,
+    /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
+    /// Computed once at each epoch boundary from the UTXO set.
+    /// Used by scheduler (validation + production) for the entire epoch.
+    /// Prevents mid-epoch add-bond from changing total_bonds and diverging schedulers.
+    pub(super) epoch_bond_snapshot: HashMap<Hash, u64>,
+    /// The epoch number for which the bond snapshot was taken.
+    pub(super) epoch_bond_snapshot_epoch: u64,
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
     pub(super) cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,

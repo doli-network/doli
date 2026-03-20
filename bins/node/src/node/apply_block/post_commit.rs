@@ -33,6 +33,31 @@ impl Node {
                 epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
             );
 
+            // Rebuild epoch bond snapshot from UTXO set.
+            // This snapshot is used by the scheduler for the ENTIRE next epoch.
+            // All nodes compute this at the same height → deterministic scheduling.
+            {
+                let utxo = self.utxo_set.read().await;
+                let producers = self.producer_set.read().await;
+                let active = producers.active_producers_at_height(height);
+                let mut snapshot = HashMap::new();
+                for p in &active {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
+                    let count = utxo
+                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                        .max(1) as u64;
+                    snapshot.insert(pubkey_hash, count);
+                }
+                let total: u64 = snapshot.values().sum();
+                info!(
+                    "Epoch bond snapshot rebuilt: epoch={}, producers={}, total_bonds={}",
+                    epoch, snapshot.len(), total
+                );
+                self.epoch_bond_snapshot = snapshot;
+                self.epoch_bond_snapshot_epoch = epoch;
+                self.cached_scheduler = None; // Force scheduler rebuild with new bonds
+            }
+
             // Reset minute tracker for the new epoch
             self.minute_tracker.reset();
         }
