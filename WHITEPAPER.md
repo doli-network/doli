@@ -341,9 +341,9 @@ DOLI uses an **iterated hash chain** (BLAKE3), not an algebraic VDF over groups 
 | Quantum resistance | Uncertain | Hash-based (conservative) |
 | Implementation | Complex (GMP/big integers) | Simple (~10 lines) |
 
-Algebraic VDFs offer *O(log T)* verification, which is critical when the delay parameter *T* is large (minutes to hours). DOLI's block delay proof requires only *T* = 800,000 iterations (~55ms), making *O(T)* verification acceptable — every node recomputes the chain in the same ~55ms.
+Algebraic VDFs offer *O(log T)* verification, which is critical when the delay parameter *T* is large (minutes to hours). DOLI's block delay proof requires only *T* = 1,000 iterations (negligible computation time), making *O(T)* verification trivially fast — every node recomputes the chain in microseconds.
 
-The tradeoff is deliberate: DOLI gains simplicity, auditability, and no trusted setup at the cost of linear verification. For a heartbeat proof where *T* is small, this is the correct engineering choice.
+The tradeoff is deliberate: DOLI gains simplicity, auditability, and no trusted setup at the cost of linear verification. For a lightweight anti-grinding barrier where *T* is small, this is the correct engineering choice. The bond requirement (10 DOLI per producer) is the primary Sybil defense; the delay proof serves as a protocol-level heartbeat and anti-flash barrier, not a time-intensive proof of work.
 
 ```
 Input: prev_hash ∥ slot ∥ producer_key
@@ -353,7 +353,7 @@ Input: prev_hash ∥ slot ∥ producer_key
     │ BLAKE3  │ ◄──┐
     └────┬────┘    │
          │         │
-         └─────────┘  × T iterations (T = 800,000)
+         └─────────┘  × T iterations (T = 1,000)
          │
          ▼
       Output: h_T = H^T(input)
@@ -361,12 +361,14 @@ Input: prev_hash ∥ slot ∥ producer_key
 
 **Verification:** A verifier recomputes *h_T = H^T(input)* and checks *h_T == claimed_output*. The sequential dependency *h_{i+1} = H(h_i)* prevents parallelization. No shortcut for computing *H^T* faster than *T* sequential evaluations is known for BLAKE3 or any cryptographic hash function — this is a standard assumption in hash-based cryptography, not a proven lower bound. The security of the delay proof rests on this assumption, which we share with all iterated hash constructions including Solana's Proof of History [4].
 
+**Parallel verification of multiple proofs:** When a block contains multiple transactions requiring VDF verification (e.g., several producer registrations), the node verifies each proof in a separate thread using `thread::scope`. Each individual proof remains sequential, but independent proofs are verified concurrently. This ensures that blocks with many registrations do not create a verification bottleneck.
+
 ### 5.2. Time Structure
 
 The network defines time as follows:
 
 ```
-GENESIS_TIME = 2026-03-10T23:54:33Z (UTC)
+GENESIS_TIME = 2026-03-19T22:31:20Z (UTC)
 ```
 
 A slot is 10 seconds. A slot number derives deterministically from the timestamp:
@@ -386,15 +388,15 @@ An epoch is 360 slots (1 hour). At epoch boundaries, the active producer set upd
 
 ### 5.3. Iteration Parameters
 
-Each network defines a fixed iteration count calibrated for ~55ms on modern CPUs:
+Each network defines a fixed iteration count:
 
 ```
-T_BLOCK = 800,000 iterations (~55ms)
+T_BLOCK = 1,000 iterations (negligible computation time)
 ```
 
-With 10-second slots, the delay proof takes ~55ms, leaving the remainder for block construction and propagation. The fixed iteration count ensures all nodes compute identical proofs — no per-node calibration or dynamic adjustment is needed.
+With 10-second slots, the delay proof completes in microseconds, leaving the remainder for block construction and propagation. The fixed iteration count ensures all nodes compute identical proofs — no per-node calibration or dynamic adjustment is needed.
 
-Every consensus system enforces a scarce resource. In DOLI, that resource is sequential time.
+The delay proof is deliberately lightweight. The bond requirement (Section 7.2) is the primary cost of participation; the VDF serves as an anti-grinding measure that prevents a producer from trivially precomputing blocks without knowledge of the previous block hash. Every consensus system enforces a scarce resource. In DOLI, that resource is bonded capital anchored by sequential time.
 
 ---
 
@@ -465,11 +467,11 @@ DOLI does not compete on raw throughput. It competes on accessibility:
 
 In an open network, anyone can create identities at no cost. Allowing unlimited and free identity creation would expose the network to Sybil attacks where an attacker floods the system with fake nodes.
 
-To prevent this, registration requires completing a sequential delay proof whose difficulty enforces a minimum wall-clock time per identity.
+To prevent this, registration requires both a sequential delay proof and an activation bond (Section 7.2). The bond is the primary Sybil deterrent; the delay proof adds a lightweight anti-grinding barrier.
 
 ```
 input  = HASH(prefix || public_key || epoch)
-output = HASH^T(input)    where T = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
+output = HASH^T(input)    where T = T_REGISTER_BASE = 1,000 iterations
 ```
 
 A registration is valid if:
@@ -484,10 +486,10 @@ A registration is valid if:
 The registration difficulty is fixed:
 
 ```
-T_registration = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
+T_registration = T_REGISTER_BASE = 1,000 iterations (negligible computation time)
 ```
 
-This is deliberately constant. The capital cost of the activation bond (10 DOLI) is the primary Sybil deterrent; the delay proof adds a time floor that prevents instant mass-registration regardless of capital. An attacker with *M* machines can register *M* identities in parallel, but each still requires ~30 seconds of sequential computation plus the bond capital.
+This is deliberately lightweight. The capital cost of the activation bond (10 DOLI) is the primary Sybil deterrent. The delay proof serves as an anti-grinding measure — it binds the registration to a specific epoch and public key, preventing precomputation of registration proofs. An attacker with *M* machines can register *M* identities, but each requires *BOND_UNIT* capital, making the cost of a Sybil attack *O(M)* in bonded capital.
 
 ### 7.2. Activation Bond
 
@@ -564,9 +566,11 @@ T_commitment = 12,614,400 blocks (~4 years)
 
 Each bond tracks its own creation time. Withdrawal uses FIFO order (oldest bonds first), with penalty calculated individually per bond based on its age.
 
-**Withdrawal payout is instant** — funds are returned in the same block. No 7-day delay. No separate claim step. Bond removal from the active set takes effect at the next epoch boundary.
+**Withdrawal uses a two-step process with a 7-day unbonding period** (60,480 blocks). A producer submits a `RequestWithdrawal` transaction, which begins the unbonding countdown. After 60,480 blocks (~7 days), the producer submits a `ClaimWithdrawal` transaction to receive the funds. Bond removal from the active set takes effect at the next epoch boundary after the request.
 
-Early withdrawal incurs a tiered penalty based on individual bond age:
+The unbonding period prevents short-range attacks where a producer withdraws immediately after misbehaving, and ensures the network retains slashing capability during the dispute window.
+
+Early withdrawal incurs a tiered FIFO vesting penalty based on individual bond age:
 
 | Bond Age  | Penalty | Returned |
 |-----------|---------|----------|
@@ -593,17 +597,14 @@ The function is pure: `producer(s) = f(s, ActiveSet(epoch(s)))`. It depends on n
 
 ### 8.1. Fallback Mechanism
 
-To avoid empty slots when the primary producer is offline, 5 fallback ranks activate in sequential 2-second windows:
+To avoid empty slots when the primary producer is offline, 2 fallback ranks activate in sequential 2-second windows:
 
 | Time in slot | Eligible producer |
 |--------------|-------------------|
-| 0s - 2s      | rank 0 only       |
-| 2s - 4s      | rank 1 only       |
-| 4s - 6s      | rank 2 only       |
-| 6s - 8s      | rank 3 only       |
-| 8s - 10s     | rank 4 only       |
+| 0ms - 1999ms | rank 0 only (primary) |
+| 2000ms - 3999ms | rank 1 only (fallback) |
 
-Each rank has an exclusive 2-second window. A block from rank *N* is valid only if `timestamp >= slot_start + N × 2s`. If multiple valid blocks arrive for the same slot, the one with lower rank wins.
+Each rank has an exclusive 2-second window. A block from rank *N* is valid only if `timestamp >= slot_start + N × 2000ms`. If multiple valid blocks arrive for the same slot, the one with lower rank wins. The remaining slot time (4s–10s) is unused — if neither the primary nor the single fallback produces, the slot is skipped.
 
 ### 8.2. Comparison with Existing Systems
 
@@ -617,6 +618,8 @@ Pools exist in PoW and PoS because rewards are probabilistic — variance forces
 | DOLI PoT     | Deterministic round-robin | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
 
 Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a pure function of `(slot, ActiveSet(epoch))`. No hardware advantage exists.
+
+**Tiered scaling path.** The protocol defines a two-tier architecture for future growth: up to 500 Tier 1 validators (block producers with full consensus participation) and up to 15,000 Tier 2 attestors (liveness attestation without block production). Delegation enables Tier 3 participants to stake without running infrastructure, with rewards split 10% to the delegate (Tier 1/2 node operator) and 90% to the staker. This tiered model preserves the accessibility of the base protocol while scaling consensus participation beyond the active producer set.
 
 ---
 
@@ -700,7 +703,12 @@ The block hash proves the producer is not just alive but actively following and 
 
 The aggregate BLS signature compresses all individual attestation signatures into a single verification. A fake bit — claiming a producer attested when they didn't — causes aggregate signature verification to fail. The block is rejected.
 
-At epoch boundary, every node scans the bitfields committed in the epoch's blocks and counts per-producer attestation minutes. Each epoch spans 60 attestation minutes (one per 6 slots). The threshold is 90%: a producer must attest in at least 54 of 60 minutes to qualify for rewards. Deterministic: every node reads the same chain, computes the same counts, agrees on the same qualification.
+At epoch boundary, every node scans the bitfields committed in the epoch's blocks and counts per-producer attestation minutes. Each epoch spans 60 attestation minutes (one per 6 slots). Two distinct thresholds apply:
+
+1. **Epoch reward qualification (90%):** A producer must attest in at least 54 of 60 minutes to qualify for that epoch's reward distribution. Non-qualifiers receive nothing; their share is redistributed to qualified producers.
+2. **Active set retention (50%):** A producer must maintain a presence rate of at least 50% to remain in the active producer set. Producers falling below this threshold are removed from the set and must re-register to rejoin.
+
+Both thresholds are deterministic: every node reads the same chain, computes the same counts, agrees on the same qualification and retention decisions.
 
 ### 10.4. Dual-Key Design
 
@@ -863,27 +871,26 @@ The deficit is monotonically non-decreasing. Adding parallel hardware allows com
 
 The only attack vector is controlling >50% of bond-weighted slots, which requires:
 
-1. *T_registration* sequential time per identity (cannot be parallelized per identity)
-2. *BOND_UNIT* capital per identity
+1. *BOND_UNIT* capital locked per identity (linear cost, subject to slashing)
+2. *T_registration* delay proof per identity (anti-grinding, epoch-bound)
 3. 100% bond loss risk if detected double-producing
 
-### 12.3. The CPU Accumulation Objection
+### 12.3. The Capital Accumulation Objection
 
-A natural objection: "Time cannot be accumulated, but the capacity to compute delay proofs can — more CPUs enable more parallel identities."
+A natural objection: "If registration requires only 1,000 hash iterations (negligible time), what prevents an attacker from flooding the network with identities?"
 
-This is correct and by design. An attacker with *M* machines can register *M* identities in parallel, each completing *T_registration* independently. However, each identity still requires:
+The answer is **bonded capital**. Each identity requires *BOND_UNIT* (10 DOLI) locked as an activation bond. An attacker registering *M* identities must lock *M × BOND_UNIT* capital — the cost is *O(M)*, identical to Proof of Stake. DOLI does not escape the fundamental economics of Sybil resistance: preventing identity flooding requires a scarce resource that scales linearly with the number of identities.
 
-1. **Sequential time:** *T_registration* wall-clock seconds (cannot be reduced by adding cores)
-2. **Capital:** *BOND_UNIT* locked per identity (linear cost in *M*)
-3. **Ongoing presence:** One delay proof heartbeat per slot per identity (linear operational cost in *M*)
+What DOLI adds beyond pure PoS:
 
-The capital cost is *O(M)* — identical to Proof of Stake. DOLI does not escape this. A well-resourced attacker who can afford *M* bonds faces the same linear capital cost as in any PoS system.
+1. **Capital at risk:** *BOND_UNIT* locked per identity, with 100% slashing for double production and vesting penalties for early withdrawal.
+2. **Anti-grinding:** The registration VDF (1,000 iterations) binds the proof to a specific epoch and public key, preventing precomputation of registration proofs across future epochs.
+3. **Ongoing operational cost:** Each identity requires continuous liveness attestation (90% uptime per epoch). Maintaining *M* identities at this threshold has compounding operational cost — one machine per identity, indefinitely.
+4. **Seniority disadvantage:** New identities receive weight 1.0; established producers accumulate up to 4.0. An attacker starting from zero needs ~3 years before seniority weight matches honest incumbents.
 
-What DOLI adds is a **time floor** that PoS lacks: even with unlimited capital, registering *M* identities takes at least *T_registration* wall-clock time per identity. The registration requires a fixed *T_REGISTER_BASE* (~30 seconds) of sequential computation per identity plus *BOND_UNIT* capital. A PoS-style "buy 51% of stake overnight" attack requires both time and capital — neither alone suffices.
+Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity capital lockup. In DOLI, each identity requires locked capital that can be destroyed upon misbehavior.
 
-Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity time delay. In DOLI, the same *M* machines yield *M* identities, but the registration pipeline enforces a sequential bottleneck per identity and the capital requirement scales linearly.
-
-The system does not claim immunity from wealthy adversaries — no system can. It claims two things: (1) capital alone cannot bypass the time floor, and (2) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense.
+The system does not claim immunity from wealthy adversaries — no system can. It claims that (1) identity creation has linear capital cost with slashing risk, (2) the anti-grinding VDF prevents precomputation attacks, and (3) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense.
 
 ### 12.4. Safety Theorem
 
@@ -1021,24 +1028,22 @@ The choice is simple: participate in consensus with current software, or do not 
 
 DOLI is not a proposal. The network described in this paper is operational.
 
-As of March 2026, the mainnet is in its **bootstrap phase** — operational and producing blocks, but with a small producer set operated primarily by the founding team across geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers have begun joining.
+As of March 2026, the mainnet is in its **bootstrap phase** — operational and producing blocks, but with a small producer set operated primarily by the founding team across geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers have begun joining. The chain has undergone multiple genesis resets during bootstrap; metrics below reflect the current chain (genesis: 2026-03-19).
 
 | Metric | Value |
 |--------|-------|
 | Block time | 10 seconds |
-| Delay proof computation | ~55ms per block |
+| Delay proof computation | Negligible (~1,000 iterations) |
 | Block propagation | < 500ms |
-| Forks since genesis | 0 |
-| Missed slot rate | < 10% (fallback mechanism) |
 | Node hardware | Standard VPS, any CPU |
 | Minimum bond | 10 DOLI |
-| Active producers | 14 (bootstrap phase) |
-| External producers | Onboarding in progress |
+| Fallback ranks | 2 (primary + 1 fallback) |
+| Unbonding period | 7 days (60,480 blocks) |
 
 The current producer count reflects the bootstrap phase described in Section 16.2. The protocol's security properties strengthen as independent producers join — each additional operator increases the cost of a >50% bond-weighted attack and reduces reliance on the founding set. The target is a producer set large enough that no single entity controls a meaningful fraction of bond-weighted slots.
 
 ```
-Genesis:    March 2026
+Genesis:    2026-03-19 (current chain)
 Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin)
 Status:     Live
 Source:     https://github.com/e-weil/doli
@@ -1075,7 +1080,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v3.4.1**
+**DOLI v3.4.2**
 
 *"Time is the only fair currency."*
 
