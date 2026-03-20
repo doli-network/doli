@@ -177,7 +177,11 @@ impl Node {
                 .into_iter()
                 .map(|pk| {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let count = self.epoch_bond_snapshot.get(&pubkey_hash).copied().unwrap_or(1);
+                    let count = self
+                        .epoch_bond_snapshot
+                        .get(&pubkey_hash)
+                        .copied()
+                        .unwrap_or(1);
                     (pk, count)
                 })
                 .collect()
@@ -323,7 +327,11 @@ impl Node {
                 if rank > 0 {
                     // We're a fallback. Check if rank 0 is active.
                     let rank0_pubkey = &eligible[0];
-                    let rank0_last_height = self.producer_liveness.get(rank0_pubkey).copied().unwrap_or(0);
+                    let rank0_last_height = self
+                        .producer_liveness
+                        .get(rank0_pubkey)
+                        .copied()
+                        .unwrap_or(0);
                     let slots_since_rank0 = height.saturating_sub(rank0_last_height);
                     if slots_since_rank0 <= 3 {
                         // Rank 0 produced within last 3 blocks — they're online.

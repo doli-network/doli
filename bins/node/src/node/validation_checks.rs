@@ -164,7 +164,11 @@ impl Node {
                 .into_iter()
                 .map(|pk| {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let count = self.epoch_bond_snapshot.get(&pubkey_hash).copied().unwrap_or(1);
+                    let count = self
+                        .epoch_bond_snapshot
+                        .get(&pubkey_hash)
+                        .copied()
+                        .unwrap_or(1);
                     (pk, count)
                 })
                 .collect()

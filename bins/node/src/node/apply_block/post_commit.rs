@@ -51,7 +51,9 @@ impl Node {
                 let total: u64 = snapshot.values().sum();
                 info!(
                     "Epoch bond snapshot rebuilt: epoch={}, producers={}, total_bonds={}",
-                    epoch, snapshot.len(), total
+                    epoch,
+                    snapshot.len(),
+                    total
                 );
                 self.epoch_bond_snapshot = snapshot;
                 self.epoch_bond_snapshot_epoch = epoch;

@@ -574,13 +574,19 @@ impl Node {
             let active = ps.active_producers_at_height(h);
             let mut snap = HashMap::new();
             for p in &active {
-                let pkh = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
+                let pkh =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
                 let count = us.count_bonds(&pkh, config.network.bond_unit()).max(1) as u64;
                 snap.insert(pkh, count);
             }
             let total: u64 = snap.values().sum();
             let epoch = if bpe > 0 { h / bpe } else { 0 };
-            info!("Initial epoch bond snapshot: {} producers, total_bonds={}, epoch={}", snap.len(), total, epoch);
+            info!(
+                "Initial epoch bond snapshot: {} producers, total_bonds={}, epoch={}",
+                snap.len(),
+                total,
+                epoch
+            );
             (snap, epoch)
         };
 
