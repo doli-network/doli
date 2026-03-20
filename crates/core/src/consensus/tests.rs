@@ -731,47 +731,6 @@ fn test_consensus_for_stress_test() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn test_scaled_fallback_windows_example_3s() {
-    let (primary, secondary, tertiary) = scaled_fallback_windows(3);
-    assert_eq!(primary, 1);
-    assert_eq!(secondary, 2);
-    assert_eq!(tertiary, 3);
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_scaled_fallback_windows_longer() {
-    let (primary, secondary, tertiary) = scaled_fallback_windows(10);
-    assert_eq!(primary, 5);
-    assert_eq!(secondary, 7);
-    assert_eq!(tertiary, 10);
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_scaled_fallback_windows_stress() {
-    let (primary, secondary, tertiary) = scaled_fallback_windows(1);
-    assert!(primary >= 1);
-    assert!(secondary >= 1);
-    assert_eq!(tertiary, 1);
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_allowed_producer_rank_scaled() {
-    assert_eq!(allowed_producer_rank_scaled(0, 3), 0);
-    assert_eq!(allowed_producer_rank_scaled(1, 3), 1);
-    assert_eq!(allowed_producer_rank_scaled(2, 3), 2);
-    assert_eq!(allowed_producer_rank_scaled(3, 3), 2);
-    assert_eq!(allowed_producer_rank_scaled(0, 10), 0);
-    assert_eq!(allowed_producer_rank_scaled(5, 10), 1);
-    assert_eq!(allowed_producer_rank_scaled(7, 10), 2);
-    assert_eq!(allowed_producer_rank_scaled(0, 1), 0);
-    assert_eq!(allowed_producer_rank_scaled(1, 1), 2);
-}
-
-#[test]
 fn test_stress_summary_format() {
     let stress = StressTestParams::extreme_600();
     let summary = stress.summary();
@@ -1085,16 +1044,6 @@ fn test_registration_queue_prune_expired() {
 }
 
 proptest! {
-    /// Scaled windows maintain correct ordering
-    #[test]
-    #[allow(deprecated)]
-    fn prop_scaled_windows_ordering(slot_duration in 1u64..120) {
-        let (primary, secondary, tertiary) = scaled_fallback_windows(slot_duration);
-        prop_assert!(primary <= secondary);
-        prop_assert!(secondary <= tertiary);
-        prop_assert_eq!(tertiary, slot_duration);
-    }
-
     /// Stress test params are internally consistent
     #[test]
     fn prop_stress_params_consistent(count in 1u32..1000) {

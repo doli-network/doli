@@ -89,9 +89,8 @@ pub use registration::{
 };
 #[allow(deprecated)]
 pub use selection::{
-    allowed_producer_rank, allowed_producer_rank_ms, allowed_producer_rank_scaled,
-    eligible_rank_at_ms, get_producer_rank, is_producer_eligible, is_producer_eligible_ms,
-    is_rank_eligible_at_ms, is_rank_eligible_at_offset, scaled_fallback_windows,
+    allowed_producer_rank, allowed_producer_rank_ms, eligible_rank_at_ms, get_producer_rank,
+    is_producer_eligible, is_producer_eligible_ms, is_rank_eligible_at_ms,
     select_producer_for_slot,
 };
 pub use stress::StressTestParams;

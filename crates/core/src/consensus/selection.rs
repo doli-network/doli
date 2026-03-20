@@ -21,6 +21,7 @@ use super::constants::{FALLBACK_TIMEOUT_MS, MAX_FALLBACK_PRODUCERS, MAX_FALLBACK
 ///
 /// # Returns
 /// Vector of up to MAX_FALLBACK_PRODUCERS public keys ordered by priority
+#[deprecated(note = "Use DeterministicScheduler::select_producer() for consensus-critical code")]
 pub fn select_producer_for_slot(
     slot: Slot,
     producers_with_bonds: &[(crypto::PublicKey, u64)],
@@ -153,14 +154,6 @@ pub fn allowed_producer_rank_ms(slot_offset_ms: u64) -> usize {
     }
 }
 
-/// Check if a producer rank is eligible at a given time offset.
-///
-/// # Sequential Fallback Windows (exclusive)
-/// Each rank gets an exclusive 2s window. 5 ranks x 2s = 10s (full slot).
-pub fn is_rank_eligible_at_offset(rank: usize, offset_ms: u64) -> bool {
-    is_rank_eligible_at_ms(rank, offset_ms)
-}
-
 /// Check if a producer is eligible for a slot at the given time.
 ///
 /// Uses sequential 2s exclusive windows via is_producer_eligible_ms().
@@ -181,30 +174,4 @@ pub fn get_producer_rank(
     eligible_producers: &[crypto::PublicKey],
 ) -> Option<usize> {
     eligible_producers.iter().position(|p| p == producer)
-}
-
-/// Calculate scaled fallback windows for non-mainnet slot durations - DEPRECATED.
-/// Use sequential 2s windows (FALLBACK_TIMEOUT_MS) instead.
-#[deprecated(note = "Use FALLBACK_TIMEOUT_MS for sequential 2s windows")]
-pub fn scaled_fallback_windows(slot_duration_secs: u64) -> (u64, u64, u64) {
-    let primary = slot_duration_secs / 2;
-    let secondary = (slot_duration_secs * 3) / 4;
-    let tertiary = slot_duration_secs;
-    (primary.max(1), secondary.max(1), tertiary)
-}
-
-/// Determine allowed producer rank for non-mainnet networks - DEPRECATED.
-/// Use eligible_rank_at_ms() instead.
-#[deprecated(note = "Use eligible_rank_at_ms() for sequential 2s windows")]
-pub fn allowed_producer_rank_scaled(slot_offset_secs: u64, slot_duration_secs: u64) -> usize {
-    #[allow(deprecated)]
-    let (primary, secondary, _) = scaled_fallback_windows(slot_duration_secs);
-
-    if slot_offset_secs < primary {
-        0
-    } else if slot_offset_secs < secondary {
-        1
-    } else {
-        2
-    }
 }

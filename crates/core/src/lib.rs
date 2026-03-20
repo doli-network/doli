@@ -239,11 +239,7 @@ pub use rewards::{
 };
 
 // Deterministic slot scheduler (replaces heartbeat/presence system)
-pub use scheduler::{
-    allowed_producer_rank as scheduler_allowed_rank,
-    allowed_producer_rank_ms as scheduler_allowed_rank_ms, DeterministicScheduler,
-    ScheduledProducer, SchedulerStats, MAX_FALLBACK_RANK,
-};
+pub use scheduler::{DeterministicScheduler, ScheduledProducer, SchedulerStats, MAX_FALLBACK_RANK};
 
 // Heartbeat VDF and witness system for presence proofs (consensus-affecting)
 // Note: Use `heartbeat::` prefix to access these types to avoid conflict with tpop telemetry

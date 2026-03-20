@@ -64,6 +64,7 @@ impl RpcContext {
         let mut slots = Vec::with_capacity(count as usize);
         for i in 0..count {
             let slot = from_slot.saturating_add(i);
+            #[allow(deprecated)]
             let ranked =
                 doli_core::consensus::select_producer_for_slot(slot, &producers_with_bonds);
             if let Some(pk) = ranked.first() {
@@ -130,6 +131,7 @@ impl RpcContext {
         let mut slots_this_epoch = Vec::new();
         for slot in epoch_start_slot..epoch_end_slot {
             let slot32 = slot as u32;
+            #[allow(deprecated)]
             let ranked =
                 doli_core::consensus::select_producer_for_slot(slot32, &producers_with_bonds);
             if ranked.first() == Some(&target_pubkey) {

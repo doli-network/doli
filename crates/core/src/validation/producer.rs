@@ -1,6 +1,7 @@
 use crate::block::BlockHeader;
-use crate::consensus::{is_producer_eligible_ms, select_producer_for_slot};
+use crate::consensus::is_producer_eligible_ms;
 use crate::network::Network;
+use crate::scheduler::{DeterministicScheduler, ScheduledProducer};
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
 
 use super::{ValidationContext, ValidationError};
@@ -208,11 +209,27 @@ pub fn validate_producer_eligibility(
         return validate_bootstrap_producer(header, ctx);
     }
 
-    // Post-genesis: use bond-weighted scheduler if producer data available.
-    // This is the normal path once GENESIS PHASE COMPLETE has populated the
-    // producer set with bond-weighted entries.
+    // Post-genesis: use bond-weighted DeterministicScheduler (same as production).
+    // Using the same scheduler implementation prevents divergence between
+    // production and validation — the #1 historical source of forks.
     if !ctx.active_producers_weighted.is_empty() {
-        let eligible = select_producer_for_slot(header.slot, &ctx.active_producers_weighted);
+        let producers: Vec<ScheduledProducer> = ctx
+            .active_producers_weighted
+            .iter()
+            .map(|(pk, bonds)| ScheduledProducer::new(*pk, *bonds as u32))
+            .collect();
+        let scheduler = DeterministicScheduler::new(producers);
+
+        // Build eligible list (same logic as resolve_epoch_eligibility in production)
+        let max_ranks = crate::consensus::MAX_FALLBACK_RANKS;
+        let mut eligible = Vec::with_capacity(max_ranks);
+        for rank in 0..max_ranks {
+            if let Some(pk) = scheduler.select_producer(header.slot, rank).cloned() {
+                if !eligible.contains(&pk) {
+                    eligible.push(pk);
+                }
+            }
+        }
 
         if eligible.is_empty() {
             return Err(ValidationError::InvalidProducer);
@@ -240,12 +257,6 @@ pub fn validate_producer_eligibility(
     // if still within bootstrap window (allows catching up without producer data)
     if ctx.params.is_bootstrap(ctx.current_height) {
         return validate_bootstrap_producer(header, ctx);
-    }
-
-    // No weighted producers and not in bootstrap -- skip if no producers at all
-    // (backward compatibility during testing)
-    if ctx.active_producers.is_empty() {
-        return Ok(());
     }
 
     Err(ValidationError::InvalidProducer)

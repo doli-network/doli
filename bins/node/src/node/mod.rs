@@ -223,6 +223,46 @@ impl Node {
         self.chain_state.read().await.best_height
     }
 
+    /// Compute bond weights for scheduling from epoch snapshot (or UTXO fallback for epoch 0).
+    ///
+    /// Single source of truth for bond weights used by the scheduler.
+    /// Called by production, validation, and gossip eligibility checks.
+    /// Using the epoch-locked snapshot prevents mid-epoch add-bond TXs from
+    /// changing total_bonds and causing scheduler divergence across nodes.
+    pub(super) async fn bond_weights_for_scheduling(
+        &self,
+        active_producers: Vec<PublicKey>,
+    ) -> Vec<(PublicKey, u64)> {
+        if self.epoch_bond_snapshot.is_empty() {
+            // No snapshot yet (first epoch) — fall back to UTXO
+            let utxo = self.utxo_set.read().await;
+            active_producers
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let count = utxo
+                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                        .max(1) as u64;
+                    (pk, count)
+                })
+                .collect()
+        } else {
+            // Use epoch snapshot — deterministic across all nodes
+            active_producers
+                .into_iter()
+                .map(|pk| {
+                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let count = self
+                        .epoch_bond_snapshot
+                        .get(&pubkey_hash)
+                        .copied()
+                        .unwrap_or(1);
+                    (pk, count)
+                })
+                .collect()
+        }
+    }
+
     /// Set checkpoint for fast initial sync (delegates to SyncManager).
     pub async fn set_checkpoint(&self, height: u64, hash: Hash) {
         self.sync_manager.write().await.set_checkpoint(height, hash);

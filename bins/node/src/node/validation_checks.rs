@@ -35,21 +35,8 @@ impl Node {
             }
         }
 
-        // Bond-weighted eligibility: verify producer is scheduled for this slot
-        let utxo = self.utxo_set.read().await;
-        let active_with_weights: Vec<(PublicKey, u64)> = active
-            .iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let raw_bonds = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                (*pk, raw_bonds)
-            })
-            .collect();
-        drop(utxo);
-
-        let weighted = active_with_weights;
+        // Bond weights from epoch-locked snapshot (single source of truth).
+        let weighted = self.bond_weights_for_scheduling(active).await;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -145,34 +132,8 @@ impl Node {
         let pending_keys = producers.pending_registration_keys();
         drop(producers);
 
-        let weighted: Vec<(PublicKey, u64)> = if self.epoch_bond_snapshot.is_empty() {
-            // No snapshot yet (first epoch or fresh start) — fall back to UTXO
-            let utxo = self.utxo_set.read().await;
-            active
-                .into_iter()
-                .map(|pk| {
-                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let count = utxo
-                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                        .max(1) as u64;
-                    (pk, count)
-                })
-                .collect()
-        } else {
-            // Use epoch snapshot — deterministic across all nodes
-            active
-                .into_iter()
-                .map(|pk| {
-                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let count = self
-                        .epoch_bond_snapshot
-                        .get(&pubkey_hash)
-                        .copied()
-                        .unwrap_or(1);
-                    (pk, count)
-                })
-                .collect()
-        };
+        // Bond weights from epoch-locked snapshot (single source of truth).
+        let weighted = self.bond_weights_for_scheduling(active).await;
 
         // Build bootstrap producer list for validation.
         //

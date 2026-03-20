@@ -253,7 +253,7 @@ impl Node {
         // we find a hash peers recognize and sync resumes.
         // No binary search needed, no grace check — immediate recovery.
         //
-        // Range expanded from 10→12 to prevent small forks from
+        // Range expanded to 50 to prevent small-to-medium forks from
         // escalating to snap sync, which loses block history and creates
         // a cascade (snap → no block 1 → future rollback fails → re-snap).
         if gap <= 50 && self.shallow_rollback_count < 50 {

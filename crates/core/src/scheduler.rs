@@ -311,20 +311,6 @@ pub struct SchedulerStats {
     pub avg_bonds: f64,
 }
 
-/// Determine the exclusively eligible rank based on elapsed time within a slot.
-///
-/// Sequential 2s exclusive windows — delegates to consensus::eligible_rank_at_ms().
-pub fn allowed_producer_rank(elapsed_secs: u64) -> usize {
-    crate::consensus::allowed_producer_rank(elapsed_secs)
-}
-
-/// Determine the exclusively eligible rank based on elapsed time (milliseconds).
-///
-/// Sequential 2s exclusive windows — delegates to consensus::allowed_producer_rank_ms().
-pub fn allowed_producer_rank_ms(elapsed_ms: u64) -> usize {
-    crate::consensus::allowed_producer_rank_ms(elapsed_ms)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +503,7 @@ mod tests {
 
     #[test]
     fn test_allowed_producer_rank() {
+        use crate::consensus::allowed_producer_rank;
         // Sequential 2s windows (seconds precision), MAX_FALLBACK_RANKS=2
         assert_eq!(allowed_producer_rank(0), 0); // 0ms → rank 0
         assert_eq!(allowed_producer_rank(1), 0); // 1000ms → rank 0 (0-1999ms)
@@ -530,6 +517,7 @@ mod tests {
 
     #[test]
     fn test_allowed_producer_rank_ms() {
+        use crate::consensus::allowed_producer_rank_ms;
         // Sequential 2s exclusive windows (ms precision), MAX_FALLBACK_RANKS=2
         assert_eq!(allowed_producer_rank_ms(0), 0);
         assert_eq!(allowed_producer_rank_ms(1999), 0);

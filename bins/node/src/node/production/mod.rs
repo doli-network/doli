@@ -152,45 +152,11 @@ impl Node {
         let total_producers = producers.total_count();
         drop(producers);
 
-        // Derive bond counts from epoch-locked snapshot (deterministic).
-        // Snapshot is computed once at epoch boundary and stays constant.
-        // This prevents mid-epoch add-bond from changing total_bonds.
-        let _slots_per_epoch = self.params.slots_per_epoch as u64;
-        let active_with_weights: Vec<(PublicKey, u64)> = if self.epoch_bond_snapshot.is_empty() {
-            // No snapshot yet — fall back to UTXO (first epoch)
-            let utxo = self.utxo_set.read().await;
-            let w: Vec<_> = active_producers
-                .into_iter()
-                .map(|pk| {
-                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let raw_bonds = utxo
-                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                        .max(1) as u64;
-                    (pk, raw_bonds)
-                })
-                .collect();
-            drop(utxo);
-            w
-        } else {
-            // Use epoch snapshot — deterministic across all nodes
-            active_producers
-                .into_iter()
-                .map(|pk| {
-                    let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                    let count = self
-                        .epoch_bond_snapshot
-                        .get(&pubkey_hash)
-                        .copied()
-                        .unwrap_or(1);
-                    (pk, count)
-                })
-                .collect()
-        };
+        // Bond weights from epoch-locked snapshot (single source of truth).
+        let active_with_weights = self.bond_weights_for_scheduling(active_producers).await;
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);
-
-        let _we_are_active = active_with_weights.iter().any(|(pk, _)| pk == &our_pubkey);
 
         // =========================================================================
         // INVARIANT CHECK: Detect inconsistent state after resync
