@@ -32,7 +32,7 @@ impl Node {
 
             // Trigger stability check so round-robin waits for convergence
             if added_any {
-                *self.last_producer_list_change.write().await = Some(std::time::Instant::now());
+                self.last_producer_list_change = Some(std::time::Instant::now());
             }
         }
     }
@@ -55,8 +55,9 @@ impl Node {
         state.clear_snap_sync();
 
         // Apply deferred protocol activation (verified during tx processing)
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         if let Some((version, activation_epoch)) = pending_protocol_activation_data {
-            let current_epoch = height / SLOTS_PER_EPOCH as u64;
+            let current_epoch = height / blocks_per_epoch;
             if activation_epoch > current_epoch && version > state.active_protocol_version {
                 state.pending_protocol_activation = Some((version, activation_epoch));
                 info!(
@@ -72,9 +73,9 @@ impl Node {
         }
 
         // Check pending protocol activation at epoch boundaries
-        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
+        if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             if let Some((version, activation_epoch)) = state.pending_protocol_activation {
-                let current_epoch = height / SLOTS_PER_EPOCH as u64;
+                let current_epoch = height / blocks_per_epoch;
                 if current_epoch >= activation_epoch {
                     state.active_protocol_version = version;
                     state.pending_protocol_activation = None;
@@ -161,12 +162,14 @@ impl Node {
         }
 
         // Apply deferred producer updates at epoch boundaries.
-        // During epoch 0 (blocks 1-359), apply every block so genesis producers work immediately.
-        // After epoch 0, apply only at epoch boundaries (height % 360 == 0).
+        // During epoch 0, apply every block so genesis producers work immediately.
+        // After epoch 0, apply only at epoch boundaries.
         let mut needs_full_producer_write = false;
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         {
-            let is_epoch_0 = height < SLOTS_PER_EPOCH as u64;
-            let is_boundary = doli_core::EpochSnapshot::is_epoch_boundary(height);
+            let is_epoch_0 = height < blocks_per_epoch;
+            let is_boundary =
+                doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch);
             if is_epoch_0 || is_boundary {
                 let mut producers = self.producer_set.write().await;
                 if producers.has_pending_updates() {

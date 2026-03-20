@@ -44,10 +44,10 @@ impl NetworkParams {
                 automatic_genesis_bond: consensus::BOND_UNIT,
                 genesis_blocks: 360, // 1 hour (open registration period)
 
-                // VDF (800K iterations ~= 55ms for 2s sequential fallback windows)
-                vdf_iterations: 800_000,
-                heartbeat_vdf_iterations: 800_000,
-                vdf_register_iterations: 5_000_000, // Fixed ~30s, no escalation
+                // VDF (1000 iterations ~= 0.07ms — bond is the real Sybil protection)
+                vdf_iterations: 1_000,
+                heartbeat_vdf_iterations: 1_000,
+                vdf_register_iterations: 1_000,
 
                 // Time structure
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
@@ -101,7 +101,7 @@ impl NetworkParams {
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: 720, // 2 epochs (2 × 360 blocks) — fast withdrawal for testing
+                unbonding_period: 72, // 2 epochs (2 × 36 blocks) — fast withdrawal for testing
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (lower bond for testnet)
@@ -110,18 +110,18 @@ impl NetworkParams {
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
                 automatic_genesis_bond: 1_000_000, // 0.01 DOLI (matches testnet bond_unit)
-                genesis_blocks: 360,               // 1 hour
+                genesis_blocks: 36, // 1 epoch (~6 min) — matches blocks_per_reward_epoch
 
-                // VDF (800K iterations ~= 55ms, same as mainnet)
-                vdf_iterations: 800_000,
-                heartbeat_vdf_iterations: 800_000,
-                vdf_register_iterations: 5_000_000, // Fixed ~30s, same as mainnet
+                // VDF (1000 iterations — same as mainnet)
+                vdf_iterations: 1_000,
+                heartbeat_vdf_iterations: 1_000,
+                vdf_register_iterations: 1_000,
 
-                // Time structure (same as mainnet)
+                // Time structure (shorter epochs for faster testing)
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
-                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
+                blocks_per_reward_epoch: 36, // ~6 min per epoch (10x faster than mainnet)
                 coinbase_maturity: consensus::COINBASE_MATURITY,
-                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH, // 1 hour for faster testing
+                slots_per_reward_epoch: 36, // ~6 min per epoch
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system
@@ -174,9 +174,9 @@ impl NetworkParams {
                 genesis_blocks: 40,
 
                 // VDF (fast for development)
-                vdf_iterations: 1,                  // Single iteration
-                heartbeat_vdf_iterations: 800_000,  // 800K ~= 55ms
-                vdf_register_iterations: 5_000_000, // ~5 seconds
+                vdf_iterations: 1,
+                heartbeat_vdf_iterations: 1_000,
+                vdf_register_iterations: 1_000,
 
                 // Time structure (accelerated)
                 blocks_per_year: 144,       // ~24 minutes

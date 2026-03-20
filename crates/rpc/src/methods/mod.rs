@@ -24,6 +24,7 @@ mod history;
 mod network;
 mod producer;
 mod schedule;
+mod snapshot;
 mod stats;
 mod transaction;
 

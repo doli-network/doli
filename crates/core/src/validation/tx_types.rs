@@ -241,6 +241,62 @@ pub(super) fn validate_slash_data(
     Ok(())
 }
 
+/// Same as `validate_slash_data` but skips VDF verification for evidence headers.
+/// Used when slash VDFs have already been verified in parallel (block.rs Phase 1).
+pub(super) fn validate_slash_data_skip_vdf(
+    tx: &Transaction,
+    _ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidSlash(
+            "slash transaction must have no inputs".to_string(),
+        ));
+    }
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidSlash(
+            "slash transaction must have no outputs".to_string(),
+        ));
+    }
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidSlash(
+            "missing slash data".to_string(),
+        ));
+    }
+    let slash_data: SlashData = bincode::deserialize(&tx.extra_data)
+        .map_err(|e| ValidationError::InvalidSlash(format!("invalid slash data: {}", e)))?;
+
+    match &slash_data.evidence {
+        crate::transaction::SlashingEvidence::DoubleProduction {
+            block_header_1,
+            block_header_2,
+        } => {
+            if block_header_1.producer != block_header_2.producer {
+                return Err(ValidationError::InvalidSlash(
+                    "double production evidence must have same producer in both headers"
+                        .to_string(),
+                ));
+            }
+            if block_header_1.slot != block_header_2.slot {
+                return Err(ValidationError::InvalidSlash(
+                    "double production evidence must have same slot in both headers".to_string(),
+                ));
+            }
+            if block_header_1.hash() == block_header_2.hash() {
+                return Err(ValidationError::InvalidSlash(
+                    "double production evidence must have different block hashes".to_string(),
+                ));
+            }
+            if block_header_1.producer != slash_data.producer_pubkey {
+                return Err(ValidationError::InvalidSlash(
+                    "evidence producer does not match slash target".to_string(),
+                ));
+            }
+            // VDF verification skipped — already verified in parallel pre-pass
+        }
+    }
+    Ok(())
+}
+
 // ==================== Bond Transaction Validation ====================
 
 /// Validate add bond transaction data.

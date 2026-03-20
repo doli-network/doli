@@ -144,11 +144,15 @@ impl Node {
         }
         drop(state);
 
-        // Validate producer eligibility before applying
-        if let Err(e) = self.check_producer_eligibility(&block).await {
-            warn!("Rejected gossip block at slot {}: {}", block.header.slot, e);
-            return Ok(());
-        }
+        // REMOVED: Pre-apply gossip eligibility check.
+        // This check used LOCAL chain state to validate gossip blocks. When the
+        // receiving node was on a micro-fork (different tip), it computed different
+        // eligibility and rejected valid canonical blocks — causing nodes to fall
+        // behind and need expensive sync recovery.
+        //
+        // Full validation happens in apply_block() below, which correctly validates
+        // against the chain state the block actually builds on. Letting apply_block
+        // handle validation is both correct and sufficient.
 
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
@@ -414,12 +418,35 @@ impl Node {
         // validated when originally produced, and re-validating against rolled-back
         // state uses the wrong producer set (common ancestor, not fork chain).
         info!("Applying {} new blocks from fork", new_blocks.len());
-        for block in new_blocks {
+        let pre_reorg_height = current_height;
+        for (i, block) in new_blocks.into_iter().enumerate() {
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
+                let post_height = self.chain_state.read().await.best_height;
                 error!(
-                    "Reorg apply_block failed: {} — state is at common ancestor + applied blocks, sync will catch up",
-                    e
+                    "Reorg apply_block failed at block {}: {} — rolled back from {} to {}, \
+                     only applied {}/{} blocks. State is at height {}.",
+                    i + 1,
+                    e,
+                    pre_reorg_height,
+                    target_height,
+                    i,
+                    new_block_count,
+                    post_height
                 );
+                // CRITICAL: If we rolled back significantly but applied very few blocks,
+                // this was a bad reorg (peer had a different/invalid chain). Log the
+                // damage so the operator knows what happened. Header-first sync will
+                // recover from post_height, but the height loss is real.
+                if pre_reorg_height > post_height + 10 {
+                    error!(
+                        "CATASTROPHIC REORG: lost {} blocks ({} → {}). \
+                         The fork sync peer had an incompatible chain. \
+                         Header-first sync will recover but this should not happen.",
+                        pre_reorg_height - post_height,
+                        pre_reorg_height,
+                        post_height
+                    );
+                }
                 // State is consistent (common ancestor + whatever blocks succeeded).
                 // Don't propagate error — let normal sync fill the gap.
                 return Ok(());
@@ -509,6 +536,50 @@ impl Node {
             return Ok(());
         }
 
+        // Guard: reject reorgs where the new chain is marginally longer but the
+        // rollback depth is catastrophically deep. A peer offering 440 blocks when
+        // we need to rollback 437 is NOT a legitimate fork — it's a different chain.
+        //
+        // Exception 1: if the new chain is significantly longer (>20% more blocks),
+        // the deep rollback IS legitimate — minority fork switching to canonical.
+        // Exception 2: during initial sync (height < 200), deep rollbacks are
+        // normal — a node may have produced its own Block 1 during bootstrap and
+        // needs to switch to the canonical chain. Blocking this causes nodes to
+        // get stuck at low heights forever.
+        if rollback_depth > 0 && current_height > 200 {
+            let rollback_ratio = rollback_depth * 100 / current_height;
+            let length_gain = new_chain_height.saturating_sub(current_height);
+            let gain_ratio = if current_height > 0 {
+                length_gain * 100 / current_height
+            } else {
+                100
+            };
+            if rollback_ratio > 50 && gain_ratio < 20 {
+                warn!(
+                    "Fork sync: rollback depth {} is {}% of chain height {} — too deep for a \
+                     legitimate fork (ancestor h={}, gain={}%). Rejecting.",
+                    rollback_depth,
+                    rollback_ratio,
+                    current_height,
+                    result.ancestor_height,
+                    gain_ratio
+                );
+                let mut sync = self.sync_manager.write().await;
+                sync.mark_fork_sync_rejected();
+                if let Some(peer) = sync.best_peer_for_recovery() {
+                    sync.blacklist_peer_for_fork_sync(peer);
+                }
+                sync.reset_sync_for_rollback();
+                return Ok(());
+            }
+            if rollback_ratio > 50 {
+                info!(
+                    "Fork sync: allowing deep rollback ({}% of h={}) because new chain is {}% longer ({} vs {})",
+                    rollback_ratio, current_height, gain_ratio, new_chain_height, current_height
+                );
+            }
+        }
+
         // Pre-check: verify rollback stays within blocks that have undo data.
         // Snap-synced nodes don't have blocks before the snap anchor, but DO have
         // undo data for blocks applied after snap sync. Allow reorg if the rollback
@@ -565,9 +636,9 @@ impl Node {
         };
         let weight_delta = new_chain_weight - old_chain_weight;
 
-        if weight_delta < 0 {
+        if weight_delta <= 0 {
             info!(
-                "Fork sync: new chain strictly lighter (delta={}, new={}, old={}) — keeping current",
+                "Fork sync: new chain not heavier (delta={}, new={}, old={}) — keeping current",
                 weight_delta, new_chain_weight, old_chain_weight
             );
             let mut sync = self.sync_manager.write().await;
@@ -576,43 +647,6 @@ impl Node {
             sync.mark_fork_sync_rejected();
             sync.reset_sync_for_rollback();
             return Ok(());
-        }
-        // Fork sync is REMEDIAL: the node entered this path because it knows it is
-        // on a minority fork. At equal weight (delta=0), accept the canonical chain —
-        // rejecting it traps the node in an infinite loop (fork_sync → reject → retry).
-        // This differs from gossip reorgs where equal weight means "no reason to switch."
-        if weight_delta == 0 {
-            // INC-001 fix: Prevent equal-weight ping-pong. If the new chain's tip is
-            // a tip we recently held, we'd just oscillate back. Reject it instead.
-            let new_tip_hash = result
-                .canonical_blocks
-                .last()
-                .map(|b| b.hash())
-                .unwrap_or(crypto::Hash::ZERO);
-            {
-                let sync = self.sync_manager.read().await;
-                if sync.is_recently_held_tip(&new_tip_hash) {
-                    warn!(
-                        "Fork sync: equal weight but new tip {} was recently held — \
-                         rejecting to prevent ping-pong",
-                        &new_tip_hash.to_string()[..16]
-                    );
-                    let mut sync = self.sync_manager.write().await;
-                    sync.mark_fork_sync_rejected();
-                    sync.reset_sync_for_rollback();
-                    return Ok(());
-                }
-            }
-            // Record our current tip before switching away from it
-            {
-                let current_hash = self.chain_state.read().await.best_hash;
-                let mut sync = self.sync_manager.write().await;
-                sync.record_held_tip(current_hash);
-            }
-            info!(
-                "Fork sync: equal weight (new={}, old={}) — accepting canonical chain (remedial reorg)",
-                new_chain_weight, old_chain_weight
-            );
         }
 
         // Insert canonical blocks into fork_block_cache so execute_reorg can find them
@@ -640,14 +674,10 @@ impl Node {
         // infinite fork sync retry loops.
         match self.execute_reorg(reorg_result, trigger_block).await {
             Ok(()) => {
-                // INC-001 fix: Use success-specific reset that sets recovery_phase = Normal.
-                // After a successful reorg, our tip IS on the canonical chain — peers will
-                // recognize our tip hash, so header-first sync works. PostRollback was wrong
-                // here and caused an infinite fork sync loop.
+                // Reset sync state so normal sync can resume from the new tip
                 {
                     let mut sync = self.sync_manager.write().await;
-                    sync.reset_sync_after_successful_reorg();
-                    sync.reset_empty_headers();
+                    sync.reset_sync_for_rollback();
                     let (height, hash, slot) = {
                         let state = self.chain_state.read().await;
                         (state.best_height, state.best_hash, state.best_slot)
@@ -657,6 +687,7 @@ impl Node {
 
                 self.shallow_rollback_count = 0;
                 self.consecutive_fork_blocks = 0;
+                self.cumulative_rollback_depth = 0;
 
                 info!(
                     "Fork sync reorg complete: now at height {}",
@@ -682,11 +713,11 @@ impl Node {
                         );
                         // Do NOT snap sync. Let header-first sync catch up.
                     } else {
-                        warn!(
-                            "Reorg failed with block store intact — possible corruption: {}",
+                        error!(
+                            "Reorg failed with block store intact — possible corruption: {}. \
+                             Sync will attempt recovery via header-first download.",
                             e
                         );
-                        self.force_recover_from_peers().await?;
                     }
                     return Ok(());
                 }

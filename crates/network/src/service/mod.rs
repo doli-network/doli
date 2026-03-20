@@ -482,6 +482,16 @@ impl NetworkService {
         Ok(())
     }
 
+    /// Reconfigure tier (gossip mesh optimization for tiered architecture).
+    /// Currently a no-op stub — tier-based mesh partitioning is not yet implemented.
+    pub async fn reconfigure_tier(
+        &self,
+        _tier: u8,
+        _region: Option<u32>,
+    ) -> Result<(), NetworkError> {
+        Ok(())
+    }
+
     /// Get connected peer count
     pub async fn peer_count(&self) -> usize {
         self.peers.read().await.len()

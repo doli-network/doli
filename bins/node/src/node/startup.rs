@@ -69,7 +69,7 @@ impl Node {
                         &pubkey_hash.to_hex()[..16],
                         known.len()
                     );
-                    *self.last_producer_list_change.write().await = Some(Instant::now());
+                    self.last_producer_list_change = Some(Instant::now());
                 }
                 drop(known);
 
@@ -120,8 +120,10 @@ impl Node {
         }
 
         // NOTE: Do NOT call recompute_tier() here. At startup the on-chain ProducerSet
-        // is incomplete (not synced yet). Tier computation runs safely at epoch
-        // boundaries (after sync completes).
+        // is incomplete (not synced yet). producer_tier() would default to Tier 3
+        // (header-only), causing reconfigure_topics_for_tier(3) to unsubscribe from
+        // BLOCKS_TOPIC — the node would stop receiving blocks and get stuck.
+        // Tier computation runs safely at epoch boundaries (after sync completes).
 
         // Start RPC server if enabled
         if self.config.rpc.enabled {
@@ -170,19 +172,26 @@ impl Node {
         network_config.node_key_path = Some(node_key_dir.join("node_key"));
         network_config.peer_cache_path = Some(self.config.data_dir.join("peers.cache"));
 
-        // Gossip mesh uses network defaults from defaults.rs (e.g., testnet: mesh_n=14).
-        // recompute_tier() overrides with tier-specific values (Tier 1: mesh_n=20,
-        // Tier 2: mesh_n=8) after the first block is applied (~10s).
+        // Dynamic gossip mesh: scale with expected peer count.
+        // Use max_peers as the expected network size — the mesh must handle
+        // the maximum number of peers that will connect, not just the producers
+        // known at startup. Non-producing nodes (stress test, relays) also
+        // participate in gossip and need adequate mesh coverage.
+        let active_producers = self.producer_set.read().await.active_count();
+        let seed_count = network_config.bootstrap_nodes.len();
+        let known_peers = active_producers + seed_count;
+        let expected_peers = network_config.max_peers.max(known_peers);
+        let mesh = network::gossip::compute_dynamic_mesh(expected_peers);
         info!(
-            "Gossip mesh (initial): mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={}",
-            network_config.mesh_n,
-            network_config.mesh_n_low,
-            network_config.mesh_n_high,
-            network_config.gossip_lazy
+            "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (producers={}, seeds={}, max_peers={}, expected={})",
+            mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers, seed_count, network_config.max_peers, expected_peers
         );
+        network_config.mesh_n = mesh.mesh_n;
+        network_config.mesh_n_low = mesh.mesh_n_low;
+        network_config.mesh_n_high = mesh.mesh_n_high;
+        network_config.gossip_lazy = mesh.gossip_lazy;
 
         // REQ-OPS-001: Warn when --no-dht used with many producers
-        let active_producers = self.producer_set.read().await.active_count();
         if network_config.no_dht && active_producers > 5 {
             warn!("════════════════════════════════════════════════════════════════");
             warn!(
@@ -418,9 +427,9 @@ impl Node {
     }
 
     /// Recompute our tier classification from the active producer set.
-    /// Called once per epoch boundary (when `height / SLOTS_PER_EPOCH` changes).
+    /// Called once per epoch boundary (when `height / blocks_per_epoch` changes).
     pub(super) async fn recompute_tier(&mut self, height: u64) {
-        let current_epoch = height / SLOTS_PER_EPOCH as u64;
+        let current_epoch = height / self.config.network.blocks_per_reward_epoch();
         if self.last_tier_epoch == Some(current_epoch) {
             return; // Already computed for this epoch
         }
@@ -461,16 +470,22 @@ impl Node {
             );
             let mut sync = self.sync_manager.write().await;
             sync.set_tier(new_tier, producers_with_weights.len());
-            // INC-001: During genesis, keep min_peers=2 for testnet/mainnet to prevent
-            // solo forks. Only devnet allows 1 peer for single-node testing.
+            // During genesis, keep min_peers=1 to allow bootstrapping with fewer nodes
             if self.config.network.is_in_genesis(height) {
-                let genesis_min = match self.config.network {
-                    doli_core::Network::Devnet => 1,
-                    _ => 2,
-                };
-                sync.set_min_peers_for_production(genesis_min);
+                sync.set_min_peers_for_production(1);
             }
             drop(sync);
+
+            // Reconfigure gossipsub topic subscriptions for the new tier
+            // Tier 2 nodes get a deterministic region assignment
+            let region = if new_tier == 2 {
+                Some(doli_core::consensus::producer_region(&our_pubkey))
+            } else {
+                None
+            };
+            if let Some(ref network) = self.network {
+                let _ = network.reconfigure_tier(new_tier, region).await;
+            }
         }
 
         self.our_tier = new_tier;

@@ -235,14 +235,14 @@ fn test_registration_fees_scale_by_network() {
 
 #[test]
 fn test_vdf_register_iterations_fixed() {
-    // All networks use same fixed registration VDF (~30s)
+    // All networks use same fixed registration VDF (1000 iterations ~= 0.07ms)
     assert_eq!(
         Network::Mainnet.vdf_register_iterations(),
         Network::Testnet.vdf_register_iterations()
     );
-    // All should be fast (5M iterations)
-    assert!(Network::Mainnet.vdf_register_iterations() <= 10_000_000);
-    assert!(Network::Devnet.vdf_register_iterations() <= 10_000_000);
+    // 1000 iterations — bond is the real Sybil protection
+    assert_eq!(Network::Mainnet.vdf_register_iterations(), 1_000);
+    assert!(Network::Devnet.vdf_register_iterations() <= 1_000_000);
 }
 
 #[test]
@@ -310,11 +310,11 @@ fn test_genesis_blocks_mainnet_testnet() {
     assert!(Network::Mainnet.is_in_genesis(360));
     assert!(!Network::Mainnet.is_in_genesis(361));
 
-    // Testnet has 1-hour genesis phase (same as mainnet)
-    assert_eq!(Network::Testnet.genesis_blocks(), 360);
+    // Testnet has 1-epoch genesis phase (36 blocks = ~6 min)
+    assert_eq!(Network::Testnet.genesis_blocks(), 36);
     assert!(Network::Testnet.is_in_genesis(1));
-    assert!(Network::Testnet.is_in_genesis(360));
-    assert!(!Network::Testnet.is_in_genesis(361));
+    assert!(Network::Testnet.is_in_genesis(36));
+    assert!(!Network::Testnet.is_in_genesis(37));
 }
 
 #[test]

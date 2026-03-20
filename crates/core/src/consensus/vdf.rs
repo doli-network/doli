@@ -69,7 +69,7 @@ pub fn construct_vdf_input(
 /// Fixed value — does NOT scale with producer count.
 /// At scale, the bond (10 DOLI) provides Sybil protection via economic dilution.
 /// The VDF is a lightweight anti-flash-attack barrier, not the primary defense.
-pub const T_REGISTER_BASE: u64 = 5_000_000;
+pub const T_REGISTER_BASE: u64 = 1_000;
 
 /// Target registrations per epoch (used for fee calculation)
 pub const R_TARGET: u32 = 10;

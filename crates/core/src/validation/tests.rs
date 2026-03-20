@@ -1083,8 +1083,8 @@ fn test_vdf_validation_uses_network_specific_parameters() {
         Network::Testnet.vdf_discriminant_bits()
     );
 
-    // Mainnet and Testnet use production-grade parameters
-    assert_eq!(Network::Mainnet.vdf_iterations(), 800_000);
+    // Mainnet and Testnet use lightweight VDF (bond is the real Sybil protection)
+    assert_eq!(Network::Mainnet.vdf_iterations(), 1_000);
     assert_eq!(Network::Mainnet.vdf_discriminant_bits(), 2048);
 
     // Devnet has minimal parameters (uses hash-chain VDF)

@@ -452,6 +452,22 @@ impl Mempool {
         selected
     }
 
+    /// Remove all Registration-type transactions from the mempool.
+    ///
+    /// Called when block production fails due to a stale/duplicate registration TX.
+    /// Prevents infinite retry loops where invalid registrations poison every block.
+    pub fn remove_registration_txs(&mut self) {
+        let reg_hashes: Vec<Hash> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.tx.tx_type == doli_core::TxType::Registration)
+            .map(|(hash, _)| *hash)
+            .collect();
+        for hash in reg_hashes {
+            self.remove_transaction(&hash);
+        }
+    }
+
     /// Iterate all mempool entries
     pub fn iter(&self) -> impl Iterator<Item = (&Hash, &MempoolEntry)> {
         self.entries.iter()

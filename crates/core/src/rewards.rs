@@ -217,7 +217,7 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
         Self {
             block_source,
             params,
-            blocks_per_epoch: reward_epoch::blocks_per_epoch(),
+            blocks_per_epoch: reward_epoch::blocks_per_epoch(), // mainnet default
         }
     }
 
@@ -362,26 +362,61 @@ impl<'a, B: BlockSource> WeightedRewardCalculator<'a, B> {
 // =============================================================================
 
 /// Calculate the number of complete epochs at a given block height.
+/// Uses mainnet default (360 blocks/epoch).
 #[inline]
 pub fn complete_epochs_at_height(height: BlockHeight) -> u64 {
     reward_epoch::complete_epochs(height)
 }
 
+/// Calculate the number of complete epochs at a given block height (network-aware).
+#[inline]
+pub fn complete_epochs_at_height_with(height: BlockHeight, blocks_per_epoch: u64) -> u64 {
+    reward_epoch::complete_epochs_with(height, blocks_per_epoch)
+}
+
 /// Get the epoch boundaries for a given epoch number.
+/// Uses mainnet default (360 blocks/epoch).
 #[inline]
 pub fn epoch_boundaries(epoch: u64) -> (BlockHeight, BlockHeight) {
     reward_epoch::boundaries(epoch)
 }
 
+/// Get the epoch boundaries for a given epoch number (network-aware).
+#[inline]
+pub fn epoch_boundaries_with(epoch: u64, blocks_per_epoch: u64) -> (BlockHeight, BlockHeight) {
+    reward_epoch::boundaries_with(epoch, blocks_per_epoch)
+}
+
 /// Check if an epoch is complete at the given height.
+/// Uses mainnet default (360 blocks/epoch).
 #[inline]
 pub fn is_epoch_complete(epoch: u64, current_height: BlockHeight) -> bool {
     reward_epoch::is_complete(epoch, current_height)
 }
 
+/// Check if an epoch is complete at the given height (network-aware).
+#[inline]
+pub fn is_epoch_complete_with(
+    epoch: u64,
+    current_height: BlockHeight,
+    blocks_per_epoch: u64,
+) -> bool {
+    reward_epoch::is_complete_with(epoch, current_height, blocks_per_epoch)
+}
+
 /// Get all complete epochs up to (but not including) the current epoch.
+/// Uses mainnet default (360 blocks/epoch).
 pub fn complete_epoch_range(current_height: BlockHeight) -> std::ops::Range<u64> {
     let current_epoch = reward_epoch::from_height(current_height);
+    0..current_epoch
+}
+
+/// Get all complete epochs up to (but not including) the current epoch (network-aware).
+pub fn complete_epoch_range_with(
+    current_height: BlockHeight,
+    blocks_per_epoch: u64,
+) -> std::ops::Range<u64> {
+    let current_epoch = reward_epoch::from_height_with(current_height, blocks_per_epoch);
     0..current_epoch
 }
 

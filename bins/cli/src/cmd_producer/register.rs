@@ -121,7 +121,7 @@ pub(super) async fn handle_register(
     let lock_until = chain_info.best_height + blocks_per_era + 1000;
 
     // Compute hash-chain VDF proof for registration (~5 seconds)
-    let current_epoch = (chain_info.best_slot / 360) as u32;
+    let current_epoch = (chain_info.best_slot / network_params.blocks_per_reward_epoch) as u32;
     let vdf_input = vdf::registration_input(&producer_pubkey, current_epoch);
     let vdf_iterations = vdf::T_REGISTER_BASE;
     println!(

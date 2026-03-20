@@ -12,8 +12,9 @@ impl Node {
         // Recompute our tier at epoch boundaries and build EpochSnapshot
         // (moved after batch commit to avoid borrow conflict with BlockBatch)
         self.recompute_tier(height).await;
-        if doli_core::EpochSnapshot::is_epoch_boundary(height) {
-            let epoch = doli_core::EpochSnapshot::epoch_from_height(height);
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
+            let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);
             let producers = self.producer_set.read().await;
             let active = producers.active_producers_at_height(height);
             let pws: Vec<(PublicKey, u64)> = active

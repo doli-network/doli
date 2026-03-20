@@ -21,6 +21,33 @@ impl Node {
 
         let target_height = local_height - 1;
 
+        // Fix 3: Never rollback to genesis from an established chain.
+        // Rolling back to height 0 destroys all chain state and is never the right
+        // recovery action for a running node. If we're at height 1, the chain is
+        // effectively at genesis — there's nothing useful to rollback to.
+        if target_height == 0 && local_height > 1 {
+            warn!(
+                "Refusing rollback to genesis from height {} — would destroy chain state. \
+                 Manual intervention required (recover --yes).",
+                local_height
+            );
+            return Ok(false);
+        }
+
+        // Fix 4: Cap cumulative rollback depth at 50 blocks.
+        // Prevents cascading rollbacks from gradually eroding the chain back to genesis.
+        // After 50 rollbacks without a successful block application, the fork is too
+        // deep for rollback-based recovery — manual intervention or sync is needed.
+        const MAX_CUMULATIVE_ROLLBACK: u32 = 50;
+        if self.cumulative_rollback_depth >= MAX_CUMULATIVE_ROLLBACK {
+            warn!(
+                "Refusing rollback: cumulative depth {} reached limit {} — \
+                 too deep for rollback recovery. Waiting for sync or manual intervention.",
+                self.cumulative_rollback_depth, MAX_CUMULATIVE_ROLLBACK
+            );
+            return Ok(false);
+        }
+
         // Invalidate genesis producer cache if rollback crosses genesis boundary
         let genesis_blocks = self.config.network.genesis_blocks();
         if genesis_blocks > 0 && target_height <= genesis_blocks {
@@ -177,9 +204,12 @@ impl Node {
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
         }
 
+        // Track cumulative rollback depth (Fix 4)
+        self.cumulative_rollback_depth += 1;
+
         info!(
-            "Fork recovery rollback complete: now at height {} (hash {:.8})",
-            target_height, parent_hash
+            "Fork recovery rollback complete: now at height {} (hash {:.8}, cumulative_rollback={})",
+            target_height, parent_hash, self.cumulative_rollback_depth
         );
 
         Ok(true)
@@ -196,16 +226,14 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub(super) async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, fork_sync_active, gap, stuck_signal) = {
-            let mut sync = self.sync_manager.write().await;
+        let (empty_headers, local_height, fork_sync_active, gap) = {
+            let sync = self.sync_manager.read().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
-            let stuck = sync.take_stuck_fork_signal();
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
                 sync.is_fork_sync_active(),
                 gap,
-                stuck,
             )
         };
 
@@ -214,11 +242,8 @@ impl Node {
             return Ok(false);
         }
 
-        // Need at least 3 fork evidence signals OR a stuck_fork_signal before activating.
-        // The stuck_fork_signal is set by cleanup() and block_apply_failed() as a
-        // dedicated signal that doesn't interfere with the counter's natural progression.
-        let has_fork_evidence = empty_headers >= 3 || stuck_signal;
-        if !has_fork_evidence || local_height == 0 {
+        // Need at least 3 fork evidence signals before activating
+        if empty_headers < 3 || local_height == 0 {
             return Ok(false);
         }
 
@@ -250,7 +275,41 @@ impl Node {
             }
         }
 
-        // Deep fork or rollback limit reached: use binary search
+        // Deep fork or rollback limit reached: use binary search.
+        // BUT: if post_recovery_grace is active, fork sync JUST failed and cleared.
+        // Re-triggering immediately creates a Sisyphean loop:
+        //   fork_sync → bottoms out → grace → 1 header → empty → fork_sync again
+        // Let header-first sync make progress during grace instead.
+        let grace_active = self.sync_manager.read().await.post_recovery_grace_active();
+        if grace_active {
+            debug!(
+                "resolve_shallow_fork: skipping fork sync escalation — \
+                 post_recovery_grace active (gap={}, empty_headers={})",
+                gap, empty_headers
+            );
+            // Do NOT reset empty_headers here — that creates a deadlock where
+            // grace prevents fork sync AND resets the counter that would
+            // eventually trigger it. Let the counter accumulate so fork sync
+            // can activate once grace expires.
+            return Ok(false);
+        }
+
+        // When fork sync has failed repeatedly, retry with different peers instead
+        // of wiping state. A validated chain at height 400+ must NEVER be reset to
+        // genesis based on peer behavior — this is a core safety invariant that
+        // Ethereum and Bitcoin both enforce.
+        if empty_headers >= 9 {
+            warn!(
+                "Fork sync failed repeatedly (empty_headers={}). \
+                 Clearing and retrying with different peers (local_h={}, gap={}). \
+                 State reset disabled — validated chain is authoritative.",
+                empty_headers, local_height, gap
+            );
+            self.sync_manager.write().await.reset_empty_headers();
+            self.sync_manager.write().await.set_post_recovery_grace();
+            return Ok(false);
+        }
+
         let started = self.sync_manager.write().await.start_fork_sync();
         if started {
             info!(
@@ -261,5 +320,54 @@ impl Node {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// State reset recovery: when hash-based sync and fork sync both fail repeatedly,
+    /// reset chain state to genesis and let header-first sync rebuild from peers.
+    ///
+    /// This preserves the block store (blocks are still on disk) but resets the
+    /// in-memory state (UTXO set, producer set, chain tip) to genesis. The node
+    /// then syncs from height 0, replaying blocks from disk + downloading missing
+    /// ones from peers. This always works because it doesn't depend on any peer
+    /// recognizing our tip hash.
+    #[allow(dead_code)]
+    pub(super) async fn state_reset_recovery(&mut self, local_height: u64) -> Result<bool> {
+        warn!(
+            "State reset recovery: hash-based sync failed after {} attempts. \
+             Resetting to genesis for full resync (current h={}).",
+            9, local_height
+        );
+
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+
+        // Reset chain state to genesis
+        {
+            let mut state = self.chain_state.write().await;
+            state.best_height = 0;
+            state.best_hash = genesis_hash;
+            state.best_slot = 0;
+        }
+        {
+            let state = self.chain_state.read().await;
+            self.state_db.clear_and_write_genesis(&state);
+        }
+
+        // Clear in-memory state — will be rebuilt from blocks during resync
+        *self.utxo_set.write().await = storage::UtxoSet::new();
+        *self.producer_set.write().await = storage::ProducerSet::new();
+
+        // Reset sync manager
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(0, genesis_hash, 0);
+            sync.reset_empty_headers();
+            sync.reset_sync_for_rollback();
+        }
+
+        self.shallow_rollback_count = 0;
+        self.cumulative_rollback_depth = 0;
+
+        info!("State reset complete. Header-first sync will rebuild from genesis.");
+        Ok(true)
     }
 }

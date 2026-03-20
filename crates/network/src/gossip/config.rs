@@ -13,6 +13,43 @@ use super::{
     PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
+/// Maximum mesh_n value. Prevents over-meshing in very large networks.
+const MESH_N_CAP: usize = 50;
+
+/// Compute dynamic gossipsub mesh parameters based on expected peer count.
+///
+/// Small networks (<=20): near-full mesh for reliability.
+/// Large networks (>20): sqrt scaling for O(log N) propagation.
+pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
+    if total_peers <= 1 {
+        return MeshConfig {
+            mesh_n: 8,
+            mesh_n_low: 6,
+            mesh_n_high: 12,
+            gossip_lazy: 6,
+        };
+    }
+
+    let mesh_n = if total_peers <= 20 {
+        total_peers - 1
+    } else {
+        let sqrt_n = (total_peers as f64).sqrt();
+        (sqrt_n * 1.5).ceil() as usize
+    }
+    .clamp(8, MESH_N_CAP);
+
+    let mesh_n_low = (mesh_n * 3 / 4).max(6);
+    let mesh_n_high = (mesh_n * 3 / 2).min(MESH_N_CAP * 2);
+    let gossip_lazy = mesh_n.max(6);
+
+    MeshConfig {
+        mesh_n,
+        mesh_n_low,
+        mesh_n_high,
+        gossip_lazy,
+    }
+}
+
 /// Create a new GossipSub behaviour with configurable mesh parameters.
 ///
 /// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.

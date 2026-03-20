@@ -251,6 +251,59 @@ impl UtxoSet {
         }
     }
 
+    /// Deserialize a UtxoSet from canonical bytes (inverse of `serialize_canonical`).
+    ///
+    /// Always produces an InMemory backend (sufficient for state root verification).
+    /// Format: `[8-byte LE count] [36-byte outpoint][entry_bytes] ...`
+    pub fn deserialize_canonical(bytes: &[u8]) -> Result<Self, StorageError> {
+        if bytes.len() < 8 {
+            return Err(StorageError::Serialization(
+                "UTXO canonical bytes too short".to_string(),
+            ));
+        }
+        let count = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+        let mut store = InMemoryUtxoStore::new();
+        let mut pos = 8;
+
+        for _ in 0..count {
+            // Read 36-byte outpoint
+            if pos + 36 > bytes.len() {
+                return Err(StorageError::Serialization(
+                    "UTXO canonical bytes truncated (outpoint)".to_string(),
+                ));
+            }
+            let outpoint = Outpoint::from_bytes(&bytes[pos..pos + 36]).ok_or_else(|| {
+                StorageError::Serialization("Invalid outpoint in canonical bytes".to_string())
+            })?;
+            pos += 36;
+
+            // Read entry (variable length: min 61 bytes)
+            if pos + 61 > bytes.len() {
+                return Err(StorageError::Serialization(
+                    "UTXO canonical bytes truncated (entry)".to_string(),
+                ));
+            }
+            // Peek at extra_data length to determine total entry size
+            let extra_len =
+                u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap()) as usize;
+            let entry_size = 61 + extra_len;
+            if pos + entry_size > bytes.len() {
+                return Err(StorageError::Serialization(
+                    "UTXO canonical bytes truncated (extra_data)".to_string(),
+                ));
+            }
+            let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + entry_size])
+                .ok_or_else(|| {
+                    StorageError::Serialization("Invalid UTXO entry in canonical bytes".to_string())
+                })?;
+            pos += entry_size;
+
+            store.insert(outpoint, entry);
+        }
+
+        Ok(UtxoSet::InMemory(store))
+    }
+
     /// Check if this is the RocksDB backend
     pub fn is_rocksdb(&self) -> bool {
         matches!(self, UtxoSet::RocksDb(_))

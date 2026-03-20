@@ -228,11 +228,26 @@ impl RegionAggregate {
 /// Slots per attestation minute (6 slots × 10s = 60s).
 pub const SLOTS_PER_ATTESTATION_MINUTE: u32 = 6;
 
-/// Attestation minutes per epoch (360 slots / 6 = 60 minutes).
+/// Attestation minutes per epoch (360 slots / 6 = 60 minutes) — mainnet default.
 pub const ATTESTATION_MINUTES_PER_EPOCH: u32 = 60;
 
-/// Attestation qualification threshold: 90% of 60 = 54 minutes.
+/// Attestation qualification threshold: 90% of 60 = 54 minutes — mainnet default.
 pub const ATTESTATION_QUALIFICATION_THRESHOLD: u32 = 54;
+
+/// Compute attestation minutes per epoch from blocks_per_epoch.
+/// For mainnet (360): 360/6 = 60. For testnet (36): 36/6 = 6.
+#[inline]
+pub fn attestation_minutes_per_epoch(blocks_per_epoch: u64) -> u32 {
+    (blocks_per_epoch as u32) / SLOTS_PER_ATTESTATION_MINUTE
+}
+
+/// Compute attestation qualification threshold (90%) from blocks_per_epoch.
+/// For mainnet (360): 90% of 60 = 54. For testnet (36): 90% of 6 = 5.
+#[inline]
+pub fn attestation_qualification_threshold(blocks_per_epoch: u64) -> u32 {
+    let minutes = attestation_minutes_per_epoch(blocks_per_epoch);
+    (minutes * 90) / 100
+}
 
 /// Compute the attestation minute from a slot number.
 ///
