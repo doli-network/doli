@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773951036,
-    "message": "DOLI Testnet v48 Genesis - Full chain reset 2026-03-19",
+    "timestamp": 1773966895,
+    "message": "DOLI Testnet v49 Genesis - sync-state-explosion fixes 2026-03-19",
     "initial_reward": 100000000
   },
   "consensus": {
