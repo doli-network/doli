@@ -132,24 +132,28 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Build weighted producer list from ProducerSet (epoch-stable bond counts).
-        //
-        // CRITICAL: Previously used utxo.count_bonds() which reads the UTXO set
-        // in real-time. If a node is even 1 block behind (hasn't applied the latest
-        // add-bond TX), its total_bonds differs → ticket = slot % total_bonds gives
-        // a different producer → "invalid producer for slot" → permanent divergence.
-        //
-        // ProducerSet.bond_count is updated only via apply_block(), making it
-        // deterministic across all nodes at the same height.
+        // Build weighted producer list (bond counts from UTXO set)
         let producers = self.producer_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = producers
+        let active: Vec<PublicKey> = producers
             .active_producers_at_height(height)
             .iter()
-            .map(|p| (p.public_key, p.bond_count.max(1) as u64))
+            .map(|p| p.public_key)
             .collect();
-        let active: Vec<PublicKey> = weighted.iter().map(|(pk, _)| *pk).collect();
         let pending_keys = producers.pending_registration_keys();
         drop(producers);
+
+        let utxo = self.utxo_set.read().await;
+        let weighted: Vec<(PublicKey, u64)> = active
+            .into_iter()
+            .map(|pk| {
+                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                let count = utxo
+                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                    .max(1) as u64;
+                (pk, count)
+            })
+            .collect();
+        drop(utxo);
 
         // Build bootstrap producer list for validation.
         //
