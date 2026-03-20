@@ -362,6 +362,49 @@ impl RpcClient {
             .ok_or_else(|| anyhow!("No result in response"))
     }
 
+    /// Make an RPC call returning raw JSON Value (for dynamic/large responses).
+    #[allow(dead_code)]
+    pub async fn call_raw<P: Serialize>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<serde_json::Value> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1
+        });
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Failed to connect to node: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "RPC request failed with status: {}",
+                response.status()
+            ));
+        }
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
+
+        if let Some(error) = body.get("error") {
+            return Err(anyhow!("RPC error: {}", error));
+        }
+
+        body.get("result")
+            .cloned()
+            .ok_or_else(|| anyhow!("No result in response"))
+    }
+
     /// Get balance for an address
     pub async fn get_balance(&self, address: &str) -> Result<Balance> {
         #[derive(Serialize)]

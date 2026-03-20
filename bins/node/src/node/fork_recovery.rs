@@ -340,8 +340,7 @@ impl Node {
         }
 
         // All networks: try 1-block rollback first (lightweight).
-        // Only escalate to full snap sync if rollback fails.
-        // This prevents micro-forks from triggering expensive state wipes.
+        // If rollback fails, log error — do not wipe state.
         warn!(
             "FORK RECOVERY: {} consecutive fork-blocked slots — rolling back 1 block",
             self.consecutive_fork_blocks
@@ -351,256 +350,136 @@ impl Node {
                 info!("Fork recovery: 1-block rollback succeeded");
             }
             Ok(false) => {
-                warn!("Fork recovery: rollback not possible, recovering from peers");
-                if let Err(e) = self.force_recover_from_peers().await {
-                    error!("Fork recovery failed: {}", e);
-                }
+                warn!("Fork recovery: rollback not possible — waiting for sync to recover");
             }
             Err(e) => {
-                error!("Fork recovery rollback failed: {}", e);
-                if let Err(e2) = self.force_recover_from_peers().await {
-                    error!("Fork recovery fallback also failed: {}", e2);
-                }
+                error!(
+                    "Fork recovery rollback failed: {} — waiting for sync to recover",
+                    e
+                );
             }
         }
         self.consecutive_fork_blocks = 0;
         self.last_resync_time = Some(Instant::now());
     }
 
-    /// Apply a snap sync snapshot: verify state root, replace local state, save to disk.
-    pub(super) async fn apply_snap_snapshot(
+    /// Apply checkpoint state downloaded from a peer.
+    ///
+    /// This replaces local state (chain_state, utxo_set, producer_set) with the
+    /// received checkpoint data after verifying the state root matches the hardcoded
+    /// CHECKPOINT_STATE_ROOT constant compiled into the binary.
+    ///
+    /// Only called for new nodes (height=0) during initial sync.
+    pub(super) async fn apply_checkpoint_state(
         &mut self,
-        snapshot: network::VerifiedSnapshot,
+        block_hash: Hash,
+        block_height: u64,
+        chain_state_bytes: Vec<u8>,
+        utxo_set_bytes: Vec<u8>,
+        producer_set_bytes: Vec<u8>,
+        received_state_root: Hash,
     ) -> Result<()> {
-        info!(
-            "[SNAP_SYNC] Applying snapshot: height={}, hash={:.16}, root={:.16}",
-            snapshot.block_height, snapshot.block_hash, snapshot.state_root
-        );
-
-        // Step 1: Verify state root (node-side, since network crate has no storage dep)
+        // 1. Recompute state root from received bytes
         let computed_root = storage::compute_state_root_from_bytes(
-            &snapshot.chain_state,
-            &snapshot.utxo_set,
-            &snapshot.producer_set,
+            &chain_state_bytes,
+            &utxo_set_bytes,
+            &producer_set_bytes,
         );
-        if computed_root != snapshot.state_root {
-            error!(
-                "[SNAP_SYNC] State root mismatch! computed={}, expected={} — blacklisting peer",
-                computed_root, snapshot.state_root
+        if computed_root == Hash::ZERO {
+            anyhow::bail!("Checkpoint state deserialization failed (computed root = ZERO)");
+        }
+        if computed_root != received_state_root {
+            anyhow::bail!(
+                "Checkpoint state root mismatch: computed={} received={}",
+                &computed_root.to_string()[..16],
+                &received_state_root.to_string()[..16]
             );
-            // Can't easily get the peer here, but snap_fallback handles it
-            self.sync_manager.write().await.snap_fallback_to_normal();
-            return Ok(());
         }
 
-        // Step 2: Deserialize via storage::StateSnapshot (avoids bincode dep in node)
-        let snap = storage::StateSnapshot {
-            block_hash: snapshot.block_hash,
-            block_height: snapshot.block_height,
-            chain_state_bytes: snapshot.chain_state,
-            utxo_set_bytes: snapshot.utxo_set,
-            producer_set_bytes: snapshot.producer_set,
-            state_root: snapshot.state_root,
-        };
-        let (new_chain_state, new_utxo_set, new_producer_set) = snap
-            .deserialize()
-            .map_err(|e| anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize snapshot: {}", e))?;
+        // 2. Verify against hardcoded checkpoint state root
+        let expected_root_str = doli_core::consensus::CHECKPOINT_STATE_ROOT;
+        let expected_root = Hash::from_hex(expected_root_str).unwrap_or(Hash::ZERO);
+        if expected_root == Hash::ZERO {
+            // Checkpoint state root not configured (all zeros) — skip verification
+            // This is normal for the initial release before any checkpoint is set
+            info!(
+                "[CHECKPOINT] State root verification skipped (CHECKPOINT_STATE_ROOT not configured)"
+            );
+        } else if computed_root != expected_root {
+            anyhow::bail!(
+                "Checkpoint state root doesn't match hardcoded constant: computed={} expected={}",
+                &computed_root.to_string()[..16],
+                &expected_root.to_string()[..16]
+            );
+        } else {
+            info!(
+                "[CHECKPOINT] State root verified: {}",
+                &computed_root.to_string()[..16]
+            );
+        }
+
+        // 3. Deserialize components
+        let new_cs: ChainState = bincode::deserialize(&chain_state_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint ChainState deserialize failed: {}", e))?;
+        let new_ps: storage::ProducerSet = bincode::deserialize(&producer_set_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint ProducerSet deserialize failed: {}", e))?;
+        // UtxoSet uses canonical format
+        let new_utxo = storage::UtxoSet::deserialize_canonical(&utxo_set_bytes)
+            .map_err(|e| anyhow::anyhow!("Checkpoint UtxoSet deserialize failed: {}", e))?;
 
         info!(
-            "[SNAP_SYNC] Deserialized: chain_state(height={}, hash={:.16})",
-            new_chain_state.best_height, new_chain_state.best_hash,
+            "[CHECKPOINT] Applying state: height={}, hash={}, utxos={}",
+            block_height,
+            &block_hash.to_string()[..16],
+            new_utxo.len()
         );
 
-        // C3 defense: envelope must match deserialized state
-        if new_chain_state.best_hash != snapshot.block_hash
-            || new_chain_state.best_height != snapshot.block_height
-        {
-            error!(
-                "[SNAP_SYNC] Envelope/state mismatch: envelope=({}, {:.16}) vs deserialized=({}, {:.16})",
-                snapshot.block_height, snapshot.block_hash,
-                new_chain_state.best_height, new_chain_state.best_hash,
-            );
-            self.sync_manager.write().await.snap_fallback_to_normal();
-            return Ok(());
-        }
-
-        // Step 3: Replace local state (preserve genesis_hash from our chain)
-        let genesis_hash = self.chain_state.read().await.genesis_hash;
+        // 4. Replace local state
         {
             let mut cs = self.chain_state.write().await;
-            *cs = new_chain_state;
-            cs.genesis_hash = genesis_hash; // Preserve our genesis identity
-            cs.mark_snap_synced(snapshot.block_height); // Survives restart: block store empty by design
-
-            // Replace in-memory UTXO set (snap sync always deserializes to InMemory)
+            *cs = new_cs;
+        }
+        {
             let mut utxo = self.utxo_set.write().await;
-            *utxo = new_utxo_set;
-
+            *utxo = new_utxo;
+        }
+        {
             let mut ps = self.producer_set.write().await;
-            *ps = new_producer_set;
-
-            // Cache state root atomically while all three write locks are held.
-            // No TOCTOU race window possible.
-            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
-                let mut cache = self.cached_state_root.write().await;
-                *cache = Some((root, cs.best_hash, cs.best_height));
-            }
-
-            // Atomically persist to StateDb (single WriteBatch — crash-safe)
-            let utxo_pairs: Vec<_> = match &*utxo {
-                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
-            };
-            if let Err(e) = self
-                .state_db
-                .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
-            {
-                error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
-            }
-
-            // Update sync manager local tip while chain_state is still locked
-            let mut sync = self.sync_manager.write().await;
-            sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
+            *ps = new_ps;
         }
 
-        // Step 6: Seed the canonical index so the first post-snap-sync block can
-        // call set_canonical_chain without walking into an empty block store.
-        self.block_store
-            .seed_canonical_index(snapshot.block_hash, snapshot.block_height)?;
-
-        // Step 7: Track snap sync height in-memory for validation mode selection
-        self.snap_sync_height = Some(snapshot.block_height);
-
-        // Step 7b: Inform sync manager of block store floor so fork sync
-        // won't binary-search below available block data.
+        // 5. Update sync manager
         {
             let mut sync = self.sync_manager.write().await;
-            sync.set_store_floor(snapshot.block_height);
-        }
-
-        // Step 8: Seed reorg handler so fork detection works immediately after snap sync
-        {
-            let mut sync = self.sync_manager.write().await;
-            sync.record_block_applied_after_snap(snapshot.block_hash, snapshot.block_height);
+            sync.update_local_tip(block_height, block_hash, 0);
         }
 
         info!(
-            "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
-            snapshot.block_height, snapshot.block_hash
+            "[CHECKPOINT] State applied successfully at height={} — resuming normal sync",
+            block_height
         );
 
         Ok(())
     }
 
-    /// - known_producers: cleared
-    /// - fork_block_cache: cleared
-    /// - equivocation_detector: cleared
-    /// - producer_gset: cleared
-    /// - Production timing state: reset
+    /// Nuclear reset: wipe ALL state INCLUDING block data.
     ///
-    /// Automatic recovery: reset state and let snap sync restore from peers.
-    ///
-    /// Guard: skips recovery if the node is already at >90% of the network tip,
-    /// since a near-tip node should wait for reorg rather than wipe state.
-    ///
-    /// Calls `reset_state_only()` (layers 1-9 + index clear) then lets the sync
-    /// manager pick up snap sync on the next tick (h=0 + gap > threshold + peers >= 3).
-    ///
-    /// Block data (headers/bodies) is preserved — only indexes are cleared.
-    /// This is the ONLY automatic recovery path; `force_resync_from_genesis()`
-    /// (which also wipes block data) is reserved for manual `recover --yes`.
-    ///
-    /// Force recovery bypassing the 90% guard — used when fork sync or deep
-    /// fork detection has already proven the node is on a different chain.
-    ///
-    /// Rate-limited: no more than 1 forced recovery per epoch (360 blocks ≈ 1 hour).
-    /// Prevents cascade loops where snap sync → fork → re-snap repeats unbounded.
-    pub(super) async fn force_recover_from_peers(&mut self) -> Result<()> {
-        // Rate limit: exponential backoff between forced recoveries.
-        // 60s → 120s → 300s → 600s → 960s (cap at 4 doublings).
-        // Old behavior was a flat 3600s cooldown which left nodes stuck for an hour.
-        let cooldown_secs = 60u64 * (1u64 << self.consecutive_forced_recoveries.min(4));
-        if let Some(last) = self.last_resync_time {
-            let elapsed = last.elapsed().as_secs();
-            if elapsed < cooldown_secs {
-                warn!(
-                    "Recovery: cooldown active — last forced recovery {}s ago \
-                     (min {}s, attempt #{} between recoveries). Skipping to prevent cascade.",
-                    elapsed, cooldown_secs, self.consecutive_forced_recoveries
-                );
-                return Ok(());
-            }
-        }
-        self.consecutive_forced_recoveries = self.consecutive_forced_recoveries.saturating_add(1);
-        self.last_resync_time = Some(std::time::Instant::now());
-        self.recover_from_peers_inner(true).await?;
-        self.sync_manager.write().await.set_post_recovery_grace();
-        Ok(())
-    }
+    /// This is a complete state reset + full block store clear.
+    /// Reserved for manual CLI `recover --yes` — NEVER called automatically.
+    #[allow(dead_code)]
+    pub(super) async fn force_resync_from_genesis(&mut self) -> Result<()> {
+        warn!("Force resync initiated - performing COMPLETE state reset to genesis (including block data)");
 
-    pub(super) async fn recover_from_peers_inner(&mut self, force: bool) -> Result<()> {
-        let local_height = self.chain_state.read().await.best_height;
-        let best_peer = self.sync_manager.read().await.best_peer_height();
-
-        // Block 1 missing means block store has a gap. Do NOT snap sync for nodes that
-        // were previously synced — it makes the gap worse. BUT allow it for fresh nodes
-        // at height 0 that have never synced (initial sync requires snap sync when
-        // header-first can't bridge a large gap).
-        if self.block_store.get_block_by_height(1)?.is_none() && local_height > 0 {
-            warn!(
-                "Recovery: block 1 missing at h={} — skipping state reset (would deepen gap). \
-                 Header-first sync will recover (peer h={})",
-                local_height, best_peer
-            );
-            return Ok(());
-        }
-
-        // Guard: don't wipe a node that's close to the tip — let reorg handle it.
-        // Bypassed when force=true (fork sync proved we're on a different chain).
-        if !force && best_peer > 0 && local_height > best_peer * 90 / 100 {
-            warn!(
-                "Recovery: at {}% of network tip (h={}/{}), skipping state wipe — waiting for reorg",
-                local_height * 100 / best_peer,
-                local_height,
-                best_peer
-            );
-            return Ok(());
-        }
-
-        warn!(
-            "Recovery{}: resetting state (preserving block data), snap sync will restore (local h={}, peer h={})",
-            if force { " (forced)" } else { "" },
-            local_height, best_peer
-        );
-
-        self.reset_state_only().await?;
-
-        info!(
-            "State reset complete (height 0). Block data preserved. \
-             Production blocked until sync completes + grace period."
-        );
-
-        Ok(())
-    }
-
-    /// Reset all mutable state to genesis WITHOUT wiping block data.
-    ///
-    /// Layers 1-9: sync manager, chain state, UTXO, producers, StateDb, caches.
-    /// Block store: only indexes cleared (height_index, slot_index, hash_to_height).
-    /// Block data (headers, bodies, presence) preserved for future rollbacks.
-    ///
-    /// After this, snap sync activates on next tick: h=0 + gap > threshold + peers >= 3.
-    pub(super) async fn reset_state_only(&mut self) -> Result<()> {
         // Use canonical chainspec genesis hash, not state_db (may be corrupt).
         let genesis_hash = self.canonical_genesis_hash();
 
-        // LAYER 1: Reset sync manager (blocks production via ProductionGate)
+        // Reset sync manager (blocks production via ProductionGate)
         {
             let mut sync = self.sync_manager.write().await;
             sync.reset_local_state(genesis_hash);
         }
 
-        // LAYER 2: Reset chain state to genesis
+        // Reset chain state to genesis
         {
             let mut state = self.chain_state.write().await;
             state.best_height = 0;
@@ -608,74 +487,48 @@ impl Node {
             state.best_slot = 0;
         }
 
-        // LAYER 3: Clear UTXO set (in-memory)
+        // Clear UTXO set
         {
             let mut utxo = self.utxo_set.write().await;
             utxo.clear();
         }
 
-        // LAYER 4: Clear producer set (forces true bootstrap mode)
+        // Clear producer set
         {
             let mut producers = self.producer_set.write().await;
             producers.clear();
         }
 
-        // LAYER 4.5: Atomic clear of StateDb (UTXOs + producers + chain state)
+        // Atomic clear of StateDb
         {
             let genesis_cs = ChainState::new(genesis_hash);
             self.state_db.clear_and_write_genesis(&genesis_cs);
         }
 
-        // LAYER 5: Clear known producers list
+        // Clear caches
         {
             let mut known = self.known_producers.write().await;
             known.clear();
         }
-
-        // LAYER 6: Clear fork block cache
         {
             let mut cache = self.fork_block_cache.write().await;
             cache.clear();
         }
-
-        // LAYER 7: Clear equivocation detector
         {
             let mut detector = self.equivocation_detector.write().await;
             detector.clear();
         }
-
-        // LAYER 8: Clear producer discovery CRDT
         {
             let mut gset = self.producer_gset.write().await;
             gset.clear();
         }
 
-        // LAYER 9: Reset production timing state
+        // Reset production timing state
         self.last_produced_slot = None;
         self.first_peer_connected = None;
-        *self.last_producer_list_change.write().await = None;
+        self.last_producer_list_change = None;
 
-        // LAYER 9.5: Clear block store INDEXES only (not block data).
-        // Stale indexes from fork blocks would pollute get_last_rewarded_epoch()
-        // and other height-based queries. Block data stays for future rollbacks.
-        if let Err(e) = self.block_store.clear_indexes() {
-            error!("Failed to clear block store indexes during recovery: {}", e);
-        }
-
-        Ok(())
-    }
-
-    /// Nuclear reset: wipe ALL state INCLUDING block data.
-    ///
-    /// This is `reset_state_only()` + full block store clear.
-    /// Reserved for manual CLI `recover --yes` — NEVER called automatically.
-    #[allow(dead_code)]
-    pub(super) async fn force_resync_from_genesis(&mut self) -> Result<()> {
-        warn!("Force resync initiated - performing COMPLETE state reset to genesis (including block data)");
-
-        self.reset_state_only().await?;
-
-        // LAYER 10: Clear block store entirely (headers, bodies, indexes)
+        // Clear block store entirely (headers, bodies, indexes)
         if let Err(e) = self.block_store.clear() {
             error!("Failed to clear block store during resync: {}", e);
         }

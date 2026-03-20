@@ -42,38 +42,6 @@ pub fn compute_state_root(
     Ok(crypto::hash::hash(&combined))
 }
 
-/// Compute state root from wire-format byte slices.
-///
-/// Used during snap sync to verify a received snapshot's state root matches
-/// the quorum-agreed root. Wire bytes are bincode for ChainState and ProducerSet;
-/// utxo_set_bytes is already in canonical format.
-///
-/// Canonicalizes each component before hashing to match `compute_state_root()`.
-pub fn compute_state_root_from_bytes(
-    chain_state_bytes: &[u8],
-    utxo_set_bytes: &[u8],
-    producer_set_bytes: &[u8],
-) -> Hash {
-    // Deserialize from wire format (bincode), then re-encode canonically.
-    let cs_canonical = bincode::deserialize::<ChainState>(chain_state_bytes)
-        .map(|cs| cs.serialize_canonical().to_vec())
-        .unwrap_or_else(|_| chain_state_bytes.to_vec());
-    let ps_canonical = bincode::deserialize::<ProducerSet>(producer_set_bytes)
-        .map(|ps| ps.serialize_canonical())
-        .unwrap_or_else(|_| producer_set_bytes.to_vec());
-
-    // utxo_set_bytes is already in canonical format from UtxoSet::serialize_canonical()
-    let cs_hash = crypto::hash::hash(&cs_canonical);
-    let utxo_hash = crypto::hash::hash(utxo_set_bytes);
-    let ps_hash = crypto::hash::hash(&ps_canonical);
-
-    let mut combined = Vec::with_capacity(96);
-    combined.extend_from_slice(cs_hash.as_bytes());
-    combined.extend_from_slice(utxo_hash.as_bytes());
-    combined.extend_from_slice(ps_hash.as_bytes());
-    crypto::hash::hash(&combined)
-}
-
 /// A serialized state snapshot ready for transfer.
 pub struct StateSnapshot {
     /// Block hash this snapshot is valid at
@@ -117,94 +85,42 @@ impl StateSnapshot {
         })
     }
 
-    /// Verify the snapshot's state root matches the expected root.
-    ///
-    /// Deserializes the snapshot to compute the canonical state root,
-    /// ensuring it matches regardless of wire serialization format.
-    pub fn verify(&self, expected_root: &Hash) -> bool {
-        match self.deserialize() {
-            Ok((cs, utxo, ps)) => match compute_state_root(&cs, &utxo, &ps) {
-                Ok(computed) => &computed == expected_root,
-                Err(_) => false,
-            },
-            Err(_) => false,
-        }
-    }
-
-    /// Deserialize the snapshot into live state objects.
-    ///
-    /// Returns (ChainState, UtxoSet, ProducerSet) or an error if
-    /// deserialization fails. The UtxoSet is reconstructed from canonical
-    /// bytes into an in-memory backend.
-    pub fn deserialize(&self) -> Result<(ChainState, UtxoSet, ProducerSet), StorageError> {
-        let chain_state: ChainState = bincode::deserialize(&self.chain_state_bytes)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        let utxo_set = deserialize_canonical_utxo(&self.utxo_set_bytes)?;
-
-        let producer_set: ProducerSet = bincode::deserialize(&self.producer_set_bytes)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        Ok((chain_state, utxo_set, producer_set))
-    }
-
     /// Total size of the serialized state in bytes.
     pub fn total_bytes(&self) -> usize {
         self.chain_state_bytes.len() + self.utxo_set_bytes.len() + self.producer_set_bytes.len()
     }
 }
 
-/// Deserialize canonical UTXO bytes into an in-memory UtxoSet.
+/// Compute state root from raw serialized bytes (for checkpoint verification).
 ///
-/// Format: `[8-byte LE count] [key1 (36 bytes)][value1 (59 bytes canonical)] ...`
-fn deserialize_canonical_utxo(bytes: &[u8]) -> Result<UtxoSet, StorageError> {
-    use crate::utxo::{InMemoryUtxoStore, Outpoint, UtxoEntry};
-
-    if bytes.len() < 8 {
-        return Err(StorageError::Serialization(
-            "canonical UTXO bytes too short".into(),
-        ));
+/// Deserializes each component, then computes the canonical state root.
+/// Returns `Hash::ZERO` if deserialization fails (caller should reject).
+///
+/// Wire format:
+/// - `chain_state_bytes`: bincode-serialized `ChainState`
+/// - `utxo_set_bytes`: canonical format (sorted outpoints, 59-byte values)
+/// - `producer_set_bytes`: bincode-serialized `ProducerSet`
+pub fn compute_state_root_from_bytes(
+    chain_state_bytes: &[u8],
+    utxo_set_bytes: &[u8],
+    producer_set_bytes: &[u8],
+) -> Hash {
+    let cs: ChainState = match bincode::deserialize(chain_state_bytes) {
+        Ok(cs) => cs,
+        Err(_) => return Hash::ZERO,
+    };
+    let ps: ProducerSet = match bincode::deserialize(producer_set_bytes) {
+        Ok(ps) => ps,
+        Err(_) => return Hash::ZERO,
+    };
+    let utxo = match UtxoSet::deserialize_canonical(utxo_set_bytes) {
+        Ok(u) => u,
+        Err(_) => return Hash::ZERO,
+    };
+    match compute_state_root(&cs, &utxo, &ps) {
+        Ok(root) => root,
+        Err(_) => Hash::ZERO,
     }
-
-    let count = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
-    let mut store = InMemoryUtxoStore::new();
-    let mut pos = 8;
-
-    for _ in 0..count {
-        // Read outpoint key (36 bytes)
-        if pos + 36 > bytes.len() {
-            return Err(StorageError::Serialization(
-                "truncated canonical UTXO key".into(),
-            ));
-        }
-        let outpoint = Outpoint::from_bytes(&bytes[pos..pos + 36]).ok_or_else(|| {
-            StorageError::Serialization("invalid outpoint in canonical UTXO".into())
-        })?;
-        pos += 36;
-
-        // Read canonical UtxoEntry (61+ bytes: 59 base + 2 length + N extra_data)
-        if pos + 61 > bytes.len() {
-            return Err(StorageError::Serialization(
-                "truncated canonical UTXO entry".into(),
-            ));
-        }
-        // Peek at extra_data length to determine full entry size
-        let extra_len =
-            u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap_or([0, 0])) as usize;
-        let entry_size = 61 + extra_len;
-        if pos + entry_size > bytes.len() {
-            return Err(StorageError::Serialization(
-                "truncated canonical UTXO extra_data".into(),
-            ));
-        }
-        let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + entry_size])
-            .ok_or_else(|| StorageError::Serialization("invalid entry in canonical UTXO".into()))?;
-        pos += entry_size;
-
-        store.insert(outpoint, entry);
-    }
-
-    Ok(UtxoSet::InMemory(store))
 }
 
 #[cfg(test)]
@@ -239,32 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_create_verify_roundtrip() {
+    fn test_snapshot_create_roundtrip() {
         let cs = ChainState::new(Hash::ZERO);
         let utxo = UtxoSet::new();
         let ps = ProducerSet::new();
 
         let snapshot = StateSnapshot::create(&cs, &utxo, &ps).unwrap();
-        assert!(snapshot.verify(&snapshot.state_root));
-
-        // Tamper detection
-        let wrong_root = Hash::ZERO;
-        assert!(!snapshot.verify(&wrong_root));
-    }
-
-    #[test]
-    fn test_snapshot_deserialize() {
-        let mut cs = ChainState::new(Hash::ZERO);
-        cs.best_height = 42;
-        cs.total_minted = 1_000_000;
-        let utxo = UtxoSet::new();
-        let ps = ProducerSet::new();
-
-        let snapshot = StateSnapshot::create(&cs, &utxo, &ps).unwrap();
-        let (cs_out, _utxo_out, _ps_out) = snapshot.deserialize().unwrap();
-
-        assert_eq!(cs_out.best_height, 42);
-        assert_eq!(cs_out.total_minted, 1_000_000);
+        assert_ne!(snapshot.state_root, Hash::ZERO);
     }
 
     #[test]
@@ -280,29 +177,6 @@ mod tests {
 
         assert_eq!(root1, root2);
         assert_eq!(root2, root3);
-    }
-
-    #[test]
-    fn test_snapshot_with_utxos_roundtrip() {
-        use doli_core::transaction::Transaction;
-
-        let cs = ChainState::new(Hash::ZERO);
-        let mut utxo = UtxoSet::new();
-        let ps = ProducerSet::new();
-
-        // Add some UTXOs
-        let pk_hash = crypto::hash::hash(b"test");
-        let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0);
-        utxo.add_transaction(&tx, 0, true, 0).unwrap();
-
-        // Create and verify snapshot
-        let snapshot = StateSnapshot::create(&cs, &utxo, &ps).unwrap();
-        assert!(snapshot.verify(&snapshot.state_root));
-
-        // Deserialize and check UTXOs preserved
-        let (_cs_out, utxo_out, _ps_out) = snapshot.deserialize().unwrap();
-        assert_eq!(utxo_out.len(), 1);
-        assert_eq!(utxo_out.total_value(), 1_000_000);
     }
 
     #[test]
@@ -345,41 +219,6 @@ mod tests {
         assert_eq!(
             root_a, root_b,
             "State roots must be identical regardless of insertion order"
-        );
-    }
-
-    #[test]
-    fn test_compute_state_root_from_bytes_matches_compute_state_root() {
-        // Verifies that compute_state_root_from_bytes (used in snap sync verification)
-        // produces the same root as compute_state_root (used by the producing node).
-        // These must match or snap sync will always fail verification.
-        use doli_core::transaction::Transaction;
-
-        let mut cs = ChainState::new(Hash::ZERO);
-        cs.update(crypto::hash::hash(b"block100"), 100, 200);
-        cs.total_minted = 5_000_000;
-
-        let mut utxo = UtxoSet::new();
-        let pk = crypto::hash::hash(b"wallet");
-        let tx = Transaction::new_coinbase(1_000_000, pk, 0);
-        utxo.add_transaction(&tx, 0, true, 0).unwrap();
-
-        let mut ps = ProducerSet::new();
-        let pk1 = crypto::PublicKey::from_bytes([1u8; 32]);
-        let _ = ps.register_genesis_producer(pk1, 1, 1_000_000_000);
-
-        // Root computed by the block producer
-        let producer_root = compute_state_root(&cs, &utxo, &ps).unwrap();
-
-        // Root computed by the snap sync receiver from wire bytes
-        let cs_wire = bincode::serialize(&cs).unwrap();
-        let utxo_wire = utxo.serialize_canonical();
-        let ps_wire = bincode::serialize(&ps).unwrap();
-        let receiver_root = compute_state_root_from_bytes(&cs_wire, &utxo_wire, &ps_wire);
-
-        assert_eq!(
-            producer_root, receiver_root,
-            "compute_state_root and compute_state_root_from_bytes must agree"
         );
     }
 

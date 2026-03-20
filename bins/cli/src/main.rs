@@ -15,6 +15,7 @@ mod cmd_channel;
 mod cmd_governance;
 mod cmd_nft;
 mod cmd_producer;
+mod cmd_snap;
 mod cmd_token;
 mod cmd_upgrade;
 mod cmd_wallet;
@@ -269,6 +270,9 @@ async fn main() -> Result<()> {
             yes,
         } => {
             cmd_chain::cmd_wipe(&network, data_dir, yes)?;
+        }
+        Commands::Snap { data_dir } => {
+            cmd_snap::cmd_snap(&cli.network, data_dir).await?;
         }
     }
 

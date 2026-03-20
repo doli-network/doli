@@ -24,6 +24,18 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 /// Guarded by `test_genesis_time_matches_chainspec` test.
 pub const GENESIS_TIME: u64 = 1773694559;
 
+/// Checkpoint height for fast sync (0 = no checkpoint, sync from genesis).
+/// Updated with each release to allow new nodes to skip validation before this height.
+pub const CHECKPOINT_HEIGHT: u64 = 0;
+/// Block hash at CHECKPOINT_HEIGHT (hex-encoded, 64 chars).
+pub const CHECKPOINT_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// State root at CHECKPOINT_HEIGHT for state sync verification.
+/// Updated alongside CHECKPOINT_HEIGHT/CHECKPOINT_HASH in each release.
+pub const CHECKPOINT_STATE_ROOT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Deterministic reward pool address.
 /// All per-block coinbase goes here; distributed to qualified producers at epoch end.
 /// No private key exists for this address — only the consensus engine can move funds.

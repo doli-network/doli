@@ -3,7 +3,10 @@ use crate::transaction::{Input, OutputType, SighashType, Transaction, TxType};
 use crate::types::Amount;
 use crypto::Hash;
 
-use super::{validate_transaction, UtxoInfo, UtxoProvider, ValidationContext, ValidationError};
+use super::{
+    validate_transaction_skip_registration_vdf, UtxoInfo, UtxoProvider, ValidationContext,
+    ValidationError,
+};
 
 /// Validate a transaction with full UTXO context.
 ///
@@ -22,8 +25,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     ctx: &ValidationContext,
     utxo_provider: &U,
 ) -> Result<(), ValidationError> {
-    // First, perform structural validation
-    validate_transaction(tx, ctx)?;
+    // Structural validation — skip registration VDF since it was already
+    // verified in the parallel pre-pass (block.rs). Without this, every
+    // registration VDF is verified TWICE: once in parallel (block validation)
+    // and once here sequentially (UTXO validation). 7 registrations × 400ms
+    // = 2.8s wasted, causing nodes to fall behind and trigger fork recovery.
+    validate_transaction_skip_registration_vdf(tx, ctx)?;
 
     // Coinbase and EpochReward transactions don't need UTXO validation (minted)
     if tx.is_coinbase() || tx.is_epoch_reward() {

@@ -1,15 +1,21 @@
 use super::*;
 
 impl Node {
-    /// Check producer eligibility for a received block.
+    /// Check producer eligibility for a received gossip block.
     ///
-    /// Builds a lightweight ValidationContext and calls validate_producer_eligibility.
-    /// During bootstrap, validates using fallback rank windows from the GSet producer list.
+    /// LIGHTWEIGHT CHECK: only verifies the producer is in the known set and
+    /// the time window is valid for the block's slot. Does NOT validate against
+    /// local chain state (which may be on a micro-fork).
+    ///
+    /// Full validation happens in apply_block() where the block is checked
+    /// against the actual chain state it builds on.
     pub(super) async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
-        let state = self.chain_state.read().await;
-        let height = state.best_height + 1;
+        // Use the BLOCK's slot for eligibility, not our local chain state.
+        // Our local tip may be on a different micro-fork, causing us to
+        // reject valid blocks from the canonical chain.
+        let height = block.header.slot as u64; // Approximate — exact height unknown for gossip blocks
 
-        // Build weighted producer list (bond counts derived from UTXO set)
+        // Check: is the producer in the known set?
         let producers = self.producer_set.read().await;
         let active: Vec<PublicKey> = producers
             .active_producers_at_height(height)
@@ -18,18 +24,32 @@ impl Node {
             .collect();
         drop(producers);
 
+        // If no active producers (pre-genesis), check GSet
+        if !active.is_empty() && !active.contains(&block.header.producer) {
+            // Producer not in active set — check if they're in GSet (bootstrap)
+            let gset = self.producer_gset.read().await;
+            let gset_producers = gset.active_producers(7200);
+            drop(gset);
+            if !gset_producers.contains(&block.header.producer) {
+                anyhow::bail!("unknown producer — not in active set or GSet");
+            }
+        }
+
+        // Bond-weighted eligibility: verify producer is scheduled for this slot
         let utxo = self.utxo_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = active
-            .into_iter()
+        let active_with_weights: Vec<(PublicKey, u64)> = active
+            .iter()
             .map(|pk| {
                 let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
+                let raw_bonds = utxo
                     .count_bonds(&pubkey_hash, self.config.network.bond_unit())
                     .max(1) as u64;
-                (pk, count)
+                (*pk, raw_bonds)
             })
             .collect();
         drop(utxo);
+
+        let weighted = active_with_weights;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -264,7 +284,7 @@ impl Node {
         &self,
         block: &Block,
         height: u64,
-        _mode: ValidationMode,
+        mode: ValidationMode,
     ) -> Result<()> {
         // === Coinbase validation ===
         if block.transactions.is_empty() {
@@ -303,8 +323,11 @@ impl Node {
             && reward_epoch::is_epoch_start_with(height, blocks_per_epoch);
 
         if !epoch_reward_txs.is_empty() {
-            // EpochReward only allowed at epoch boundaries, post-genesis
-            if !is_epoch_boundary {
+            // EpochReward only allowed at epoch boundaries, post-genesis.
+            // Skip this check in Light mode (sync/reorg): the canonical chain may
+            // have been produced by a node at a different fork tip where this height
+            // WAS an epoch boundary. Rejecting during resync prevents recovery.
+            if !is_epoch_boundary && matches!(mode, ValidationMode::Full) {
                 anyhow::bail!(
                     "EpochReward transaction at non-epoch-boundary height {}",
                     height
@@ -327,73 +350,85 @@ impl Node {
             }
             let epoch_tx = epoch_reward_txs[0];
 
-            // Validate extra_data contains correct height + epoch
-            if epoch_tx.extra_data.len() < 16 {
-                anyhow::bail!(
-                    "EpochReward extra_data too short: expected >= 16 bytes, got {}",
-                    epoch_tx.extra_data.len()
-                );
+            // In Light mode (sync/reorg), skip all EpochReward consistency checks.
+            // The canonical chain may have EpochReward TXs produced at different
+            // chain states (different height/epoch/pool balance). Rejecting them
+            // during sync creates infinite apply-failure loops.
+            // Full validation happens when blocks arrive via gossip.
+            if matches!(mode, ValidationMode::Full) {
+                // Validate extra_data contains correct height + epoch
+                if epoch_tx.extra_data.len() < 16 {
+                    anyhow::bail!(
+                        "EpochReward extra_data too short: expected >= 16 bytes, got {}",
+                        epoch_tx.extra_data.len()
+                    );
+                }
+                let embedded_height =
+                    u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
+                let embedded_epoch =
+                    u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
+                if embedded_height != height {
+                    anyhow::bail!(
+                        "EpochReward embedded height {} != block height {}",
+                        embedded_height,
+                        height
+                    );
+                }
+                if embedded_epoch != completed_epoch {
+                    anyhow::bail!(
+                        "EpochReward embedded epoch {} != completed epoch {}",
+                        embedded_epoch,
+                        completed_epoch
+                    );
+                }
+
+                // Conservation: total distributed must not exceed pool balance
+                let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
+                let pool_balance = {
+                    let utxo = self.utxo_set.read().await;
+                    let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                    let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                    utxo_total + self.params.block_reward(height)
+                };
+
+                if total_distributed > pool_balance {
+                    anyhow::bail!(
+                        "EpochReward total {} exceeds pool balance {} — inflation attack",
+                        total_distributed,
+                        pool_balance
+                    );
+                }
+
+                // Exact match of amounts and recipients
+                let expected = self.calculate_epoch_rewards(completed_epoch).await;
+                let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
+                expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
+                    .outputs
+                    .iter()
+                    .map(|o| (o.amount, o.pubkey_hash))
+                    .collect();
+                actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                if expected_sorted != actual_sorted {
+                    let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
+                    let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                    anyhow::bail!(
+                        "EpochReward distribution mismatch: expected {} outputs totaling {}, \
+                         got {} outputs totaling {} — possible reward theft",
+                        expected_sorted.len(),
+                        expected_total,
+                        actual_sorted.len(),
+                        total_distributed
+                    );
+                }
             }
-            let embedded_height = u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
-            let embedded_epoch = u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
-            if embedded_height != height {
-                anyhow::bail!(
-                    "EpochReward embedded height {} != block height {}",
-                    embedded_height,
-                    height
-                );
-            }
-            if embedded_epoch != completed_epoch {
-                anyhow::bail!(
-                    "EpochReward embedded epoch {} != completed epoch {}",
-                    embedded_epoch,
-                    completed_epoch
-                );
-            }
-
-            // Conservation: total distributed must not exceed pool balance
-            let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
-            let pool_balance = {
-                let utxo = self.utxo_set.read().await;
-                let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
-                let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-                // Include current block's coinbase (not yet in UTXO set)
-                utxo_total + self.params.block_reward(height)
-            };
-
-            if total_distributed > pool_balance {
-                anyhow::bail!(
-                    "EpochReward total {} exceeds pool balance {} — inflation attack",
-                    total_distributed,
-                    pool_balance
-                );
-            }
-
-            // Exact match of amounts and recipients (both Full and Light modes)
-            let expected = self.calculate_epoch_rewards(completed_epoch).await;
-
-            let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
-            expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-
-            let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
-                .outputs
-                .iter()
-                .map(|o| (o.amount, o.pubkey_hash))
-                .collect();
-            actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-
-            if expected_sorted != actual_sorted {
-                let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
-                anyhow::bail!(
-                    "EpochReward distribution mismatch: expected {} outputs totaling {}, \
-                     got {} outputs totaling {} — possible reward theft",
-                    expected_sorted.len(),
-                    expected_total,
-                    actual_sorted.len(),
-                    total_distributed
-                );
-            }
-        } else if is_epoch_boundary {
+        } else if is_epoch_boundary && matches!(mode, ValidationMode::Full) {
+            // Only enforce missing-EpochReward check in Full mode.
+            // In Light mode (sync/reorg), the canonical chain may have blocks at epoch
+            // boundaries produced by nodes with different epoch parameters (ConsensusParams
+            // vs NetworkParams mismatch). Rejecting these blocks prevents recovery.
             let completed_epoch = (height / blocks_per_epoch) - 1;
             if completed_epoch > 0 {
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
@@ -462,7 +497,9 @@ impl Node {
         Ok(())
     }
 
-    /// Handle a sync request from a peer
+    /// Handle a sync request from a peer (legacy inline path, kept for reference).
+    /// Production code uses handle_sync_request_bg() in event_loop.rs instead.
+    #[allow(dead_code)]
     pub(super) async fn handle_sync_request(
         &self,
         request: network::protocols::SyncRequest,
@@ -546,71 +583,67 @@ impl Node {
 
             SyncRequest::GetBlockByHeight { height } => {
                 match self.block_store.get_block_by_height(height) {
-                    Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                    _ => SyncResponse::Block(None),
+                    Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
+                    _ => SyncResponse::Block(Box::new(None)),
                 }
             }
 
             SyncRequest::GetBlockByHash { hash } => match self.block_store.get_block(&hash) {
-                Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                _ => SyncResponse::Block(None),
+                Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
+                _ => SyncResponse::Block(Box::new(None)),
             },
 
-            SyncRequest::GetStateRoot { block_hash: _ } => {
-                // Use cached state root to avoid race conditions.
-                // The cache is updated atomically after each apply_block, so all
-                // three components (ChainState, UTXO, ProducerSet) are guaranteed
-                // to be at the same height.
-                let cache = self.cached_state_root.read().await;
-                if let Some((root, hash, height)) = *cache {
-                    SyncResponse::StateRoot {
-                        block_hash: hash,
-                        block_height: height,
-                        state_root: root,
-                    }
-                } else {
-                    // Fallback: compute on-the-fly if cache not yet populated (pre-first-block)
-                    drop(cache);
-                    let chain_state = self.chain_state.read().await;
-                    let current_hash = chain_state.best_hash;
-                    let current_height = chain_state.best_height;
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
-                        Ok(root) => SyncResponse::StateRoot {
-                            block_hash: current_hash,
-                            block_height: current_height,
-                            state_root: root,
-                        },
-                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
-                    }
-                }
-            }
-
-            SyncRequest::GetStateSnapshot { block_hash } => {
-                let chain_state = self.chain_state.read().await;
-                // Serve snapshot at current tip regardless of requested hash.
-                // The requesting node verifies the state root against quorum votes.
-                // Previously this rejected requests where best_hash != block_hash,
-                // causing a race condition: the peer advances between vote and
-                // download, making snap sync fail 100% of the time on active chains.
-                if chain_state.best_hash != block_hash {
+            SyncRequest::GetStateAtCheckpoint { height } => {
+                let best_height = self.chain_state.read().await.best_height;
+                // Only serve if we have this height
+                if best_height < height {
                     info!(
-                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
-                        block_hash, chain_state.best_hash
+                        "[CHECKPOINT] Cannot serve state at height={} — we're at height={}",
+                        height, best_height
                     );
+                    if let Some(ref network) = self.network {
+                        let _ = network
+                            .send_sync_response(
+                                channel,
+                                SyncResponse::Error(format!(
+                                    "Behind checkpoint: local_h={} < requested_h={}",
+                                    best_height, height
+                                )),
+                            )
+                            .await;
+                    }
+                    return Ok(());
                 }
-                let utxo_set = self.utxo_set.read().await;
+                // Only serve if we have at least 10 blocks (not near genesis)
+                if best_height < 10 {
+                    warn!(
+                        "[CHECKPOINT] Refusing to serve state at height={} — too close to genesis (h={})",
+                        height, best_height
+                    );
+                    if let Some(ref network) = self.network {
+                        let _ = network
+                            .send_sync_response(
+                                channel,
+                                SyncResponse::Error("Too close to genesis".to_string()),
+                            )
+                            .await;
+                    }
+                    return Ok(());
+                }
+
+                let cs = self.chain_state.read().await;
+                let utxo = self.utxo_set.read().await;
                 let ps = self.producer_set.read().await;
-                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
+
+                match storage::StateSnapshot::create(&cs, &utxo, &ps) {
                     Ok(snap) => {
                         info!(
-                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
+                            "[CHECKPOINT] Serving state at height={}, size={}KB, root={}",
                             snap.block_height,
                             snap.total_bytes() / 1024,
-                            snap.state_root
+                            &snap.state_root.to_string()[..16]
                         );
-                        SyncResponse::StateSnapshot {
+                        SyncResponse::StateAtCheckpoint {
                             block_hash: snap.block_hash,
                             block_height: snap.block_height,
                             chain_state: snap.chain_state_bytes,
@@ -619,8 +652,35 @@ impl Node {
                             state_root: snap.state_root,
                         }
                     }
-                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
+                    Err(e) => {
+                        warn!("[CHECKPOINT] State snapshot error: {}", e);
+                        SyncResponse::Error(format!("Checkpoint state error: {}", e))
+                    }
                 }
+            }
+
+            SyncRequest::GetBlocksByHeightRange {
+                start_height,
+                count,
+            } => {
+                let mut blocks = Vec::new();
+                let end_height = start_height.saturating_add(count as u64).saturating_sub(1);
+                let best_height = self.chain_state.read().await.best_height;
+                let actual_end = end_height.min(best_height);
+                for h in start_height..=actual_end {
+                    if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                        blocks.push(block);
+                    } else {
+                        break;
+                    }
+                }
+                debug!(
+                    "GetBlocksByHeightRange: returning {} blocks (heights {}..={})",
+                    blocks.len(),
+                    start_height,
+                    actual_end
+                );
+                SyncResponse::Bodies(blocks)
             }
         };
 

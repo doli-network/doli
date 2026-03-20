@@ -133,8 +133,8 @@ async fn main() -> Result<()> {
             yes,
             chainspec,
             archive_to,
-            no_snap_sync,
-            snap_sync,
+            checkpoint_height,
+            checkpoint_hash,
         }) => {
             let update_config = UpdateConfig {
                 enabled: !no_auto_update,
@@ -163,8 +163,8 @@ async fn main() -> Result<()> {
                 yes,
                 chainspec,
                 archive_to,
-                no_snap_sync,
-                snap_sync,
+                checkpoint_height,
+                checkpoint_hash,
             )
             .await?;
         }
@@ -242,6 +242,13 @@ async fn main() -> Result<()> {
         Some(Commands::Upgrade { version, yes }) => {
             commands::handle_upgrade_command(version, yes).await?;
         }
+        Some(Commands::CheckpointInfo) => {
+            use doli_core::consensus::{CHECKPOINT_HASH, CHECKPOINT_HEIGHT, CHECKPOINT_STATE_ROOT};
+            println!("DOLI Checkpoint Info (compiled into binary)");
+            println!("  Height:     {}", CHECKPOINT_HEIGHT);
+            println!("  Hash:       {}", CHECKPOINT_HASH);
+            println!("  State Root: {}", CHECKPOINT_STATE_ROOT);
+        }
         None => {
             // Default: run the node with auto-updates enabled
             run::run_node(
@@ -267,8 +274,8 @@ async fn main() -> Result<()> {
                 false, // yes
                 None,  // chainspec
                 None,  // archive_to
-                false, // no_snap_sync
-                false, // snap_sync
+                None,  // checkpoint_height
+                None,  // checkpoint_hash
             )
             .await?;
         }

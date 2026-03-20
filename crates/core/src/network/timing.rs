@@ -49,6 +49,14 @@ impl Network {
         self.params().blocks_per_reward_epoch
     }
 
+    /// Get the epoch reward pool for this network.
+    ///
+    /// Computed as `blocks_per_reward_epoch * initial_reward`.
+    /// Network-aware: testnet with 36 blocks/epoch gets 36 DOLI/epoch.
+    pub fn epoch_reward_pool(&self) -> u64 {
+        self.params().blocks_per_reward_epoch * self.params().initial_reward
+    }
+
     /// Get default bootstrap nodes for this network
     ///
     /// Configurable via `DOLI_BOOTSTRAP_NODES` environment variable (comma-separated).
