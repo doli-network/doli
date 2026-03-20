@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773971108,
-    "message": "DOLI Testnet v52 Genesis - INC-001 fixes restored 2026-03-19",
+    "timestamp": 1773971778,
+    "message": "DOLI Testnet v53 Genesis - correct keys 2026-03-19",
     "initial_reward": 100000000
   },
   "consensus": {
