@@ -251,10 +251,50 @@ impl Node {
                 // network latency or hash luck.
 
                 // Build sorted list of known producers.
-                // Prefer on-chain ProducerSet (deterministic). Fall back to GSet
-                // when the on-chain set is empty (always the case during genesis
-                // blocks 1-360, since producers aren't registered until height 361).
-                let mut known_producers: Vec<PublicKey> = {
+                // INC-001 RC-5A: During genesis, use HARDCODED genesis producers.
+                // The on-chain ProducerSet may be empty and the GSet has DIFFERENT
+                // contents on different nodes (anti-entropy hasn't converged).
+                // Both cause divergent schedulers → competing blocks → forks.
+                // Hardcoded genesis producers are IDENTICAL on all nodes.
+                let mut known_producers: Vec<PublicKey> = if in_genesis {
+                    let genesis_producers = match self.config.network {
+                        Network::Testnet => doli_core::genesis::testnet_genesis_producers()
+                            .into_iter()
+                            .map(|(pk, _)| pk)
+                            .collect::<Vec<_>>(),
+                        Network::Mainnet => doli_core::genesis::mainnet_genesis_producers()
+                            .into_iter()
+                            .map(|(pk, _)| pk)
+                            .collect::<Vec<_>>(),
+                        Network::Devnet => Vec::new(),
+                    };
+                    if !genesis_producers.is_empty() {
+                        info!(
+                            "[SCHED] Genesis mode: using {} hardcoded producers (deterministic)",
+                            genesis_producers.len()
+                        );
+                        genesis_producers
+                    } else {
+                        // Devnet fallback: use on-chain or GSet
+                        let producers = self.producer_set.read().await;
+                        let on_chain: Vec<PublicKey> = producers
+                            .active_producers_at_height(height)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                        if !on_chain.is_empty() {
+                            on_chain
+                        } else {
+                            drop(producers);
+                            let gset = self.producer_gset.read().await;
+                            let gp = gset.active_producers(7200);
+                            if !gp.is_empty() { gp } else {
+                                let known = self.known_producers.read().await;
+                                known.clone()
+                            }
+                        }
+                    }
+                } else {
                     let producers = self.producer_set.read().await;
                     let on_chain: Vec<PublicKey> = producers
                         .active_producers_at_height(height)
@@ -264,15 +304,10 @@ impl Node {
                     if !on_chain.is_empty() {
                         on_chain
                     } else {
-                        // On-chain set empty (genesis phase). Use GSet as fallback.
-                        drop(producers); // release lock before acquiring gset lock
-                        let gset_producers = {
-                            let gset = self.producer_gset.read().await;
-                            gset.active_producers(7200)
-                        };
-                        if !gset_producers.is_empty() {
-                            gset_producers
-                        } else {
+                        drop(producers);
+                        let gset = self.producer_gset.read().await;
+                        let gp = gset.active_producers(7200);
+                        if !gp.is_empty() { gp } else {
                             let known = self.known_producers.read().await;
                             known.clone()
                         }
