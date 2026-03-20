@@ -157,12 +157,34 @@ impl Node {
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
         let height = self.chain_state.read().await.best_height + 1;
-        if let Err(e) = self.apply_block(block, ValidationMode::Full).await {
-            warn!(
-                "Gossip block failed apply at height {}: {} — skipping, sync will catch up",
-                height, e
-            );
-            return Ok(());
+        if let Err(e) = self.apply_block(block.clone(), ValidationMode::Full).await {
+            // If "invalid producer for slot", retry with Light validation.
+            // This happens when bond counts differ slightly between nodes
+            // (gossip delay on add-bond TXs). Light mode skips eligibility
+            // check but validates everything else (signatures, balances, etc).
+            // This prevents the death spiral: reject gossip → miss TXs →
+            // bond counts diverge more → reject more → permanent split.
+            let err_str = format!("{}", e);
+            if err_str.contains("invalid producer for slot") {
+                info!(
+                    "Gossip block at h={} failed Full validation ({}), retrying with Light mode",
+                    height, e
+                );
+                if let Err(e2) = self.apply_block(block, ValidationMode::Light).await {
+                    warn!(
+                        "Gossip block also failed Light apply at h={}: {} — skipping",
+                        height, e2
+                    );
+                    return Ok(());
+                }
+                info!("Gossip block at h={} accepted via Light validation — scheduler mismatch recovered", height);
+            } else {
+                warn!(
+                    "Gossip block failed apply at height {}: {} — skipping, sync will catch up",
+                    height, e
+                );
+                return Ok(());
+            }
         }
 
         // A canonical gossip block was applied on our tip — clear the post-snap gate.
