@@ -562,6 +562,28 @@ impl Node {
             info!("Block production enabled");
         }
 
+        // Build initial epoch bond snapshot from current UTXO set.
+        // Without this, nodes that restart mid-epoch fall back to live UTXO
+        // counting → scheduler changes with every add-bond TX → divergence.
+        let (initial_bond_snapshot, initial_bond_epoch) = {
+            let ps = producer_set.blocking_read();
+            let us = utxo_set.blocking_read();
+            let cs = chain_state.blocking_read();
+            let h = cs.best_height;
+            let bpe = config.network.blocks_per_reward_epoch();
+            let active = ps.active_producers_at_height(h);
+            let mut snap = HashMap::new();
+            for p in &active {
+                let pkh = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
+                let count = us.count_bonds(&pkh, config.network.bond_unit()).max(1) as u64;
+                snap.insert(pkh, count);
+            }
+            let total: u64 = snap.values().sum();
+            let epoch = if bpe > 0 { h / bpe } else { 0 };
+            info!("Initial epoch bond snapshot: {} producers, total_bonds={}, epoch={}", snap.len(), total, epoch);
+            (snap, epoch)
+        };
+
         // Create equivocation detector
         let equivocation_detector = Arc::new(RwLock::new(EquivocationDetector::new()));
 
@@ -632,8 +654,8 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
-            epoch_bond_snapshot: HashMap::new(),
-            epoch_bond_snapshot_epoch: u64::MAX, // Force rebuild on first use
+            epoch_bond_snapshot: initial_bond_snapshot,
+            epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,
             our_tier: 0, // Computed on first block application
             last_tier_epoch: None,
