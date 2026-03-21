@@ -211,8 +211,9 @@ pub const BOND_UNIT: Amount = 1_000_000_000; // 10 DOLI in base units
 /// Initial bond amount - alias for backward compatibility
 pub const INITIAL_BOND: Amount = BOND_UNIT;
 
-/// Maximum bonds per producer
-/// 3,000 bonds × 10 DOLI = 30,000 DOLI maximum stake per node
+/// Maximum bonds per producer (count, not DOLI amount)
+/// Mainnet: 3,000 bonds × 10 DOLI = 30,000 DOLI max stake
+/// Testnet: 3,000 bonds × 1 DOLI = 3,000 DOLI max stake
 pub const MAX_BONDS_PER_PRODUCER: u32 = 3_000;
 
 /// One year in slots (used for seniority weight calculation — NOT vesting)

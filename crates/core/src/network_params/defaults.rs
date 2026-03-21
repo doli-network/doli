@@ -103,11 +103,11 @@ impl NetworkParams {
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics
-                bond_unit: 1_000_000_000, // 10 DOLI (matches mainnet)
+                bond_unit: 100_000_000, // 1 DOLI
                 initial_reward: consensus::INITIAL_REWARD,
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
-                automatic_genesis_bond: 1_000_000_000, // 10 DOLI (matches testnet bond_unit)
+                automatic_genesis_bond: 100_000_000, // 1 DOLI (matches testnet bond_unit)
                 genesis_blocks: 36, // 1 epoch (~6 min) — matches blocks_per_reward_epoch
 
                 // VDF (1000 iterations — same as mainnet)
