@@ -120,7 +120,7 @@ fn test_testnet_same_as_mainnet() {
     assert_eq!(testnet.blocks_per_year(), mainnet.blocks_per_year());
     assert_eq!(testnet.blocks_per_era(), mainnet.blocks_per_era());
     assert_eq!(testnet.slot_duration(), mainnet.slot_duration());
-    // Note: testnet bond (0.01 DOLI) differs from mainnet (10 DOLI) for accessibility
+    // Note: testnet bond (1 DOLI) differs from mainnet (10 DOLI) for accessibility
     assert_eq!(testnet.initial_reward(), mainnet.initial_reward());
     assert_eq!(
         testnet.vdf_discriminant_bits(),
@@ -320,7 +320,7 @@ fn test_genesis_blocks_mainnet_testnet() {
 #[test]
 fn test_automatic_genesis_bond() {
     assert_eq!(Network::Mainnet.automatic_genesis_bond(), 1_000_000_000); // 10 DOLI
-    assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000); // 0.01 DOLI
+    assert_eq!(Network::Testnet.automatic_genesis_bond(), 100_000_000); // 1 DOLI
     assert_eq!(Network::Devnet.automatic_genesis_bond(), 100_000_000); // 1 DOLI
 }
 

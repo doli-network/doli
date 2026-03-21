@@ -97,7 +97,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1773995238, // Testnet v54 genesis - Full chain reset 2026-03-20
+                genesis_time: 1774116335, // Testnet v59 genesis - Full chain reset 2026-03-21
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
@@ -105,11 +105,11 @@ impl NetworkParams {
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (lower bond for testnet)
-                bond_unit: 1_000_000, // 0.01 DOLI (testnet-friendly)
+                bond_unit: 100_000_000, // 1 DOLI
                 initial_reward: consensus::INITIAL_REWARD,
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
-                automatic_genesis_bond: 1_000_000, // 0.01 DOLI (matches testnet bond_unit)
+                automatic_genesis_bond: 100_000_000, // 1 DOLI (matches testnet bond_unit)
                 genesis_blocks: 36, // 1 epoch (~6 min) — matches blocks_per_reward_epoch
 
                 // VDF (1000 iterations — same as mainnet)

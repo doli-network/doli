@@ -3,14 +3,14 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773995238,
-    "message": "DOLI Testnet v54 Genesis - Full chain reset 2026-03-20",
+    "timestamp": 1774116335,
+    "message": "DOLI Testnet v59 Genesis - Full chain reset 2026-03-21",
     "initial_reward": 100000000
   },
   "consensus": {
     "slot_duration": 10,
     "slots_per_epoch": 360,
-    "bond_amount": 1000000
+    "bond_amount": 100000000
   },
   "genesis_producers": []
 }
