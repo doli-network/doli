@@ -138,7 +138,7 @@ pub(super) async fn handle_request_withdrawal(
         .collect();
     let mut fee_input_total = 0u64;
     let mut fee_inputs: Vec<Input> = Vec::new();
-    let fee_estimate = 1000u64.max((bond_inputs.len() as u64 + 2) * 500);
+    let fee_estimate = 1u64;
     for utxo in &normal_utxos {
         if fee_input_total >= fee_estimate {
             break;
@@ -153,9 +153,8 @@ pub(super) async fn handle_request_withdrawal(
     let mut all_inputs = bond_inputs;
     all_inputs.extend(fee_inputs);
 
-    // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
-    let num_outputs = 2u64; // payout + change
-    let fee = 1000u64.max((all_inputs.len() as u64 + num_outputs) * 500);
+    // Flat fee: 1 satoshi per transaction
+    let fee = 1u64;
     if fee_input_total < fee {
         anyhow::bail!(
             "Insufficient spendable balance for tx fee. Need {}, have {}",

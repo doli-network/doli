@@ -271,8 +271,13 @@ async fn main() -> Result<()> {
         } => {
             cmd_chain::cmd_wipe(&network, data_dir, yes)?;
         }
-        Commands::Snap { data_dir } => {
-            cmd_snap::cmd_snap(&cli.network, data_dir).await?;
+        Commands::Snap {
+            data_dir,
+            seed,
+            no_restart,
+            trust,
+        } => {
+            cmd_snap::cmd_snap(&cli.network, data_dir, seed, no_restart, trust).await?;
         }
     }
 

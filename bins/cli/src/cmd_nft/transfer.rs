@@ -101,7 +101,7 @@ pub(crate) async fn cmd_nft_transfer(
 
     // Get spendable normal UTXOs for fee
     let sender_pubkey_hash = wallet.primary_pubkey_hash();
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let utxos: Vec<_> = rpc
         .get_utxos(&sender_pubkey_hash, true)
         .await?

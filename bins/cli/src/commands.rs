@@ -368,6 +368,19 @@ pub(crate) enum Commands {
         /// Data directory (for multi-node servers with custom paths)
         #[arg(short, long)]
         data_dir: Option<PathBuf>,
+
+        /// Custom seed RPC endpoint(s) to use instead of network defaults.
+        /// Can be specified multiple times: --seed http://127.0.0.1:8500 --seed http://other:8500
+        #[arg(long)]
+        seed: Vec<String>,
+
+        /// Skip service stop/restart (for manual or multi-node local setups)
+        #[arg(long)]
+        no_restart: bool,
+
+        /// Trust a single seed without consensus verification (useful for local/dev)
+        #[arg(long)]
+        trust: bool,
     },
 
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)

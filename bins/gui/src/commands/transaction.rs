@@ -60,7 +60,7 @@ pub async fn send_doli(
     let amount_units = wallet::coins_to_units(&amount)?;
     let fee_units = match fee {
         Some(f) => wallet::coins_to_units(&f)?,
-        None => 1000, // Default fee: 0.00001 DOLI
+        None => 1, // Flat fee: 1 satoshi
     };
 
     // Get wallet info (public key hash for UTXO query)
