@@ -7,14 +7,9 @@ use clap::{Parser, Subcommand};
 #[command(about = "DOLI wallet CLI", long_about = None)]
 #[command(version = env!("DOLI_VERSION_STRING"))]
 pub(crate) struct Cli {
-    /// Wallet file path
-    #[arg(
-        short,
-        long,
-        default_value = "~/.doli/wallet.json",
-        env = "DOLI_WALLET_FILE"
-    )]
-    pub(crate) wallet: String,
+    /// Wallet file path (default: auto-detected from network)
+    #[arg(short, long)]
+    pub(crate) wallet: Option<String>,
 
     /// Node RPC endpoint (auto-detected from --network if not set)
     #[arg(short, long, env = "DOLI_RPC_URL")]
@@ -31,6 +26,17 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
+    /// Initialize a new producer wallet (combines 'new' + 'add-bls')
+    Init {
+        /// Overwrite existing wallet (DANGEROUS: destroys existing keys)
+        #[arg(long)]
+        force: bool,
+
+        /// Skip BLS key generation (non-producer wallet)
+        #[arg(long)]
+        non_producer: bool,
+    },
+
     /// Create a new wallet
     New {
         /// Wallet name
@@ -363,6 +369,10 @@ pub(crate) enum Commands {
         command: ChannelCommands,
     },
 
+    /// Manage the doli-node system service
+    #[command(subcommand)]
+    Service(ServiceCommand),
+
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
     Snap {
         /// Data directory (for multi-node servers with custom paths)
@@ -658,5 +668,85 @@ pub(crate) enum ProtocolCommands {
         /// Path to JSON file containing collected signatures
         #[arg(long)]
         signatures: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ServiceCommand {
+    /// Install and start the node service (requires sudo on Linux)
+    Install {
+        /// Network (mainnet, testnet, devnet)
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// Custom service name (default: doli-{network})
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Data directory (default: /var/lib/doli/{network} on Linux, ~/Library/Application Support/doli/{network} on macOS)
+        #[arg(long)]
+        data_dir: Option<String>,
+
+        /// Path to producer key file
+        #[arg(long)]
+        producer_key: Option<String>,
+
+        /// P2P listen port
+        #[arg(long)]
+        p2p_port: Option<u16>,
+
+        /// RPC listen port
+        #[arg(long)]
+        rpc_port: Option<u16>,
+    },
+
+    /// Remove the node service
+    Uninstall {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Start the node service
+    Start {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Stop the node service
+    Stop {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Restart the node service
+    Restart {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Show node service status
+    Status {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Show node logs
+    Logs {
+        /// Custom service name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Follow log output (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: u32,
     },
 }

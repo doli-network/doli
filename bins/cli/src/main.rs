@@ -13,8 +13,10 @@ mod cmd_bridge;
 mod cmd_chain;
 mod cmd_channel;
 mod cmd_governance;
+mod cmd_init;
 mod cmd_nft;
 mod cmd_producer;
+mod cmd_service;
 mod cmd_snap;
 mod cmd_token;
 mod cmd_upgrade;
@@ -22,6 +24,7 @@ mod cmd_wallet;
 mod commands;
 mod common;
 mod parsers;
+mod paths;
 mod rpc_client;
 mod wallet;
 
@@ -31,7 +34,12 @@ use common::{default_rpc_for_network, expand_tilde, prefix_for_network, ADDRESS_
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let wallet = expand_tilde(&cli.wallet);
+
+    // Resolve wallet path: -w flag > DOLI_WALLET_FILE env > paths::resolve_wallet_path()
+    let wallet = match &cli.wallet {
+        Some(w) => expand_tilde(w),
+        None => paths::resolve_wallet_path(&cli.network, None, None),
+    };
 
     // Set address prefix from network
     let _ = ADDRESS_PREFIX.set(prefix_for_network(&cli.network).to_string());
@@ -42,6 +50,12 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| default_rpc_for_network(&cli.network).to_string());
 
     match cli.command {
+        Commands::Init {
+            force,
+            non_producer,
+        } => {
+            cmd_init::cmd_init(&cli.network, &wallet, force, non_producer)?;
+        }
         Commands::New { name } => {
             cmd_wallet::cmd_new(&wallet, name)?;
         }
@@ -264,6 +278,9 @@ async fn main() -> Result<()> {
         Commands::BridgeRefund { utxo } => {
             cmd_bridge::cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo).await?;
         }
+        Commands::Service(command) => {
+            cmd_service::cmd_service(&cli.network, command)?;
+        }
         Commands::Wipe {
             network,
             data_dir,
@@ -326,7 +343,7 @@ mod tests {
         ]);
         assert!(cli.is_ok());
         let cli = cli.unwrap();
-        assert_eq!(cli.wallet, "/tmp/test_wallet.json");
+        assert_eq!(cli.wallet, Some("/tmp/test_wallet.json".to_string()));
         assert_eq!(cli.rpc, Some("http://localhost:9999".to_string()));
     }
 

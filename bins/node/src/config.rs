@@ -68,10 +68,35 @@ impl Default for NodeConfig {
 impl NodeConfig {
     /// Create default configuration for a specific network
     pub fn for_network(network: Network) -> Self {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        let net_name = network.data_dir_name();
+
+        // Platform-aware default with legacy fallback
+        #[cfg(target_os = "linux")]
+        let platform_default = PathBuf::from("/var/lib/doli").join(net_name);
+        #[cfg(target_os = "macos")]
+        let platform_default = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("Library/Application Support/doli")
+            .join(net_name);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let platform_default = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".doli")
-            .join(network.data_dir_name());
+            .join(net_name);
+
+        let data_dir = if platform_default.exists() {
+            platform_default.clone()
+        } else {
+            let legacy = dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".doli")
+                .join(net_name);
+            if legacy.exists() {
+                legacy
+            } else {
+                platform_default
+            }
+        };
 
         Self {
             network,

@@ -59,17 +59,49 @@ async fn main() -> Result<()> {
     // Skip network logging for devnet subcommands (they manage their own environment)
     let is_devnet_command = matches!(cli.command, Some(Commands::Devnet { .. }));
 
-    // Get data directory (use override or network default)
-    let data_dir = cli
-        .data_dir
-        .as_deref()
-        .map(expand_tilde_path)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
+    // Get data directory: --data-dir flag > DOLI_DATA_DIR env > platform default > legacy fallback
+    let data_dir = if let Some(ref dir) = cli.data_dir {
+        expand_tilde_path(dir)
+    } else if let Ok(dir) = std::env::var("DOLI_DATA_DIR") {
+        PathBuf::from(dir)
+    } else {
+        let net_name = network.data_dir_name();
+
+        // Platform default
+        #[cfg(target_os = "linux")]
+        let platform_default = PathBuf::from("/var/lib/doli").join(net_name);
+        #[cfg(target_os = "macos")]
+        let platform_default = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("Library/Application Support/doli")
+            .join(net_name);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let platform_default = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".doli")
+            .join(net_name);
+
+        if platform_default.exists() {
+            platform_default
+        } else {
+            // Legacy fallback
+            let legacy = dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".doli")
-                .join(network.data_dir_name())
-        });
+                .join(net_name);
+            if legacy.exists() {
+                eprintln!(
+                    "Note: Using legacy data directory {}. Consider moving to {}.",
+                    legacy.display(),
+                    platform_default.display()
+                );
+                legacy
+            } else {
+                // Return platform default (will be created later)
+                platform_default
+            }
+        }
+    };
 
     // Load environment variables from data directory BEFORE using network params
     // This allows overriding network defaults via ~/.doli/{network}/.env

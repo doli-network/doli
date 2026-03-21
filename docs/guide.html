@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>DOLI — Producer Guide</title>
+    <meta name="description" content="Run a DOLI node and earn block rewards. Step-by-step guide for Linux and macOS.">
+
+    <meta property="og:title" content="DOLI — Producer Guide">
+    <meta property="og:description" content="From zero to block producer in four commands.">
+    <meta property="og:url" content="https://doli.network/guide.html">
+    <meta property="og:type" content="website">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --black: #000000;
+            --gray-900: #111111;
+            --gray-700: #374151;
+            --gray-600: #4b5563;
+            --gray-500: #6b7280;
+            --gray-400: #9ca3af;
+            --gray-300: #d1d5db;
+            --gray-200: #e5e7eb;
+            --gray-100: #f3f4f6;
+            --gray-50: #f9fafb;
+            --white: #ffffff;
+            --green: #16a34a;
+            --red: #dc2626;
+            --amber: #d97706;
+            --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
+            --font-mono: 'IBM Plex Mono', monospace;
+        }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: var(--font-sans); background: var(--white);
+            color: var(--black); line-height: 1.7; font-size: 16px;
+            display: flex; flex-direction: column; min-height: 100vh;
+        }
+
+        /* Stats bar */
+        .stats-bar {
+            display: flex; justify-content: center; gap: 3rem;
+            padding: 0.75rem 2rem; border-bottom: 1px solid var(--gray-200);
+            font-size: 0.8rem; color: var(--gray-500);
+        }
+        .stat { display: flex; align-items: center; gap: 0.4rem; }
+        .stat-value { font-family: var(--font-mono); font-weight: 500; color: var(--black); }
+        .stat-link {
+            display: flex; align-items: center; gap: 0.4rem;
+            text-decoration: none; color: inherit; padding: 0.25rem 0.5rem;
+            border-radius: 4px; transition: background 0.15s;
+        }
+        .stat-link:hover { background: var(--gray-100); }
+        .stat-link:hover .stat-value { text-decoration: underline; }
+
+        /* Header */
+        .paper-header {
+            text-align: center; padding: 4rem 2rem 2rem;
+            border-bottom: 1px solid var(--gray-200);
+            max-width: 720px; margin: 0 auto;
+        }
+        .logo {
+            display: inline-flex; align-items: baseline; gap: 0.25rem;
+            margin-bottom: 0.25rem; text-decoration: none;
+        }
+        .logo-text { font-size: 3.92rem; font-weight: 400; letter-spacing: -0.03em; color: var(--black); }
+        .logo-mark {
+            font-family: var(--font-mono); font-size: 2.42rem; color: var(--green);
+            animation: tau-spin 10s linear infinite; display: inline-block;
+        }
+        @keyframes tau-spin { from { transform: rotateY(0deg); } to { transform: rotateY(-360deg); } }
+        .acronym {
+            font-size: 0.75rem; font-family: var(--font-mono);
+            letter-spacing: 0.02em; color: var(--gray-400); margin-bottom: 0.5rem;
+        }
+        .paper-title { font-size: 1.5rem; font-weight: 500; color: var(--black); margin-bottom: 0.25rem; }
+        .paper-subtitle { font-size: 0.9rem; color: var(--gray-500); font-style: italic; }
+
+        /* Main */
+        main {
+            flex: 1; max-width: 720px; margin: 0 auto;
+            padding: 2rem 2rem 5rem; width: 100%;
+        }
+
+        /* Quick start hero */
+        .hero {
+            background: var(--gray-900); color: var(--gray-100);
+            border-radius: 8px; padding: 2rem 2.5rem; margin: 2rem 0 3rem;
+            font-family: var(--font-mono); font-size: 0.85rem; line-height: 2;
+        }
+        .hero .comment { color: var(--gray-500); }
+        .hero .prompt { color: var(--green); user-select: none; }
+        .hero-label {
+            font-family: var(--font-sans); font-size: 0.7rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400);
+            margin-bottom: 1rem; display: block;
+        }
+
+        /* Sections */
+        h2 {
+            font-size: 1.2rem; font-weight: 600; margin-top: 3.5rem;
+            margin-bottom: 0.75rem; padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--gray-200);
+        }
+        h2 .num {
+            font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+            color: var(--gray-400); margin-right: 0.5rem;
+        }
+        h3 { font-size: 1rem; font-weight: 600; margin-top: 1.75rem; margin-bottom: 0.5rem; }
+        p { margin-bottom: 1rem; color: var(--gray-700); }
+        a { color: var(--black); }
+
+        /* Code */
+        pre {
+            background: var(--gray-900); color: var(--gray-100);
+            padding: 1.25rem 1.5rem; border-radius: 6px; overflow-x: auto;
+            font-family: var(--font-mono); font-size: 0.8rem;
+            line-height: 1.9; margin: 1rem 0 1.5rem;
+        }
+        pre .c { color: var(--gray-500); }
+        pre .p { color: var(--green); user-select: none; }
+        code {
+            font-family: var(--font-mono); font-size: 0.85em;
+            background: var(--gray-100); padding: 0.15rem 0.4rem; border-radius: 3px;
+        }
+        pre code { background: none; padding: 0; font-size: 1em; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+        th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--gray-200); }
+        th {
+            font-weight: 600; background: var(--gray-50); font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: 0.06em; color: var(--gray-500);
+        }
+        td { font-family: var(--font-mono); color: var(--gray-700); font-size: 0.82rem; }
+        td:last-child { font-family: var(--font-sans); }
+
+        /* Callouts */
+        .note {
+            background: var(--gray-50); border-left: 3px solid var(--gray-300);
+            padding: 0.9rem 1.15rem; margin: 1.25rem 0; font-size: 0.88rem; color: var(--gray-600);
+        }
+        .note strong { color: var(--gray-700); }
+        .warning {
+            background: #fefce8; border-left: 3px solid var(--amber);
+            padding: 0.9rem 1.15rem; margin: 1.25rem 0; font-size: 0.88rem; color: #78350f;
+        }
+        .warning strong { color: #451a03; }
+        .danger {
+            background: #fef2f2; border-left: 3px solid var(--red);
+            padding: 0.9rem 1.15rem; margin: 1.25rem 0; font-size: 0.88rem; color: #7f1d1d;
+        }
+        .danger strong { color: #450a0a; }
+
+        /* OS tabs */
+        .os { font-family: var(--font-mono); font-size: 0.7rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.06em; color: var(--gray-400);
+            background: var(--gray-50); border: 1px solid var(--gray-200);
+            padding: 0.12rem 0.5rem; border-radius: 3px; margin-right: 0.25rem;
+        }
+
+        /* Lists */
+        ul, ol { margin: 0.75rem 0 1.25rem 1.5rem; color: var(--gray-700); }
+        li { margin-bottom: 0.4rem; }
+
+        /* Separator */
+        hr { border: none; border-top: 1px solid var(--gray-200); margin: 3rem 0; }
+
+        /* Footer */
+        footer {
+            padding: 1.5rem 2rem; border-top: 1px solid var(--gray-200);
+            font-size: 0.8rem; color: var(--gray-400); text-align: center;
+        }
+        footer a { color: var(--gray-500); text-decoration: none; margin: 0 0.5rem; }
+        footer .quote { font-style: italic; margin-bottom: 0.25rem; }
+        footer a:hover { color: var(--black); }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .stats-bar { gap: 1.5rem; font-size: 0.75rem; }
+            .paper-header { padding: 3rem 1.5rem 2rem; }
+            .logo-text { font-size: 3rem; }
+            .logo-mark { font-size: 1.8rem; }
+            main { padding: 1.5rem 1.25rem 3rem; }
+            pre { padding: 1rem; font-size: 0.75rem; }
+            .hero { padding: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="stats-bar">
+        <div class="stat">
+            <span>Consensus</span>
+            <span class="stat-value">Proof of Stake</span>
+        </div>
+        <div class="stat">
+            <span>Bond</span>
+            <span class="stat-value">10 DOLI</span>
+        </div>
+        <a href="https://explorer.doli.network" target="_blank" class="stat-link">
+            <span>Explorer</span>
+            <span class="stat-value">Live &#8599;</span>
+        </a>
+        <a href="https://github.com/doli-network/doli" target="_blank" class="stat-link">
+            <span>Source</span>
+            <span class="stat-value">GitHub &#8599;</span>
+        </a>
+    </div>
+
+    <header class="paper-header">
+        <a href="/" class="logo">
+            <span class="logo-text">DOLI</span>
+            <span class="logo-mark">&tau;</span>
+        </a>
+        <div class="acronym">Deterministic Ordering through Linear Iterations</div>
+        <div class="paper-title">Producer Guide</div>
+        <div class="paper-subtitle">From zero to block producer in four commands</div>
+    </header>
+
+    <main>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- HERO: The whole flow in one glance                     -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <div class="hero">
+            <span class="hero-label">Complete setup</span>
+            <span class="comment"># 1. Install</span><br>
+            <span class="p">$ </span>curl -sSfL https://doli.network/install.sh | sudo sh<br>
+            <br>
+            <span class="comment"># 2. Create wallet + BLS key</span><br>
+            <span class="p">$ </span>doli init<br>
+            <br>
+            <span class="comment"># 3. Register as producer (requires 10 DOLI per bond)</span><br>
+            <span class="p">$ </span>doli producer register --bonds 1<br>
+            <br>
+            <span class="comment"># 4. Install, sync, and start the node</span><br>
+            <span class="p">$ </span>sudo doli service install<br>
+        </div>
+
+        <div class="note">
+            <strong>Permission model.</strong>
+            Wallet commands (<code>doli send</code>, <code>doli balance</code>) never need <code>sudo</code>.
+            System commands (<code>doli service install</code>, <code>doli upgrade</code>) do.
+            Everything else just works.
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 1. REQUIREMENTS                                        -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">01</span> Requirements</h2>
+
+        <table>
+            <tr><th>Component</th><th>Minimum</th></tr>
+            <tr><td>OS</td><td>Ubuntu 22.04+, Debian 12+, macOS 13+</td></tr>
+            <tr><td>CPU</td><td>2 cores</td></tr>
+            <tr><td>RAM</td><td>2 GB</td></tr>
+            <tr><td>Disk</td><td>20 GB SSD</td></tr>
+            <tr><td>Network</td><td>Port <code>30300/tcp</code> open inbound</td></tr>
+            <tr><td>Stake</td><td>10 DOLI per bond</td></tr>
+        </table>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 2. INSTALL                                             -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">02</span> Install</h2>
+
+        <p>One command. Downloads the latest release, installs both binaries to <code>/usr/local/bin/</code>,
+           creates the <code>doli</code> system user and standard directories.</p>
+
+<pre><span class="p">$ </span>curl -sSfL https://doli.network/install.sh | sudo sh</pre>
+
+        <p>After installation, log out and back in so your user picks up the <code>doli</code> group membership.
+           Then verify:</p>
+
+<pre><span class="p">$ </span>doli --version
+<span class="p">$ </span>doli-node --version</pre>
+
+        <table>
+            <tr><th>Binary</th><th>Path</th><th>Purpose</th></tr>
+            <tr><td>doli</td><td>/usr/local/bin/doli</td><td>CLI: wallet, producer ops, snap sync, upgrade</td></tr>
+            <tr><td>doli-node</td><td>/usr/local/bin/doli-node</td><td>Node daemon</td></tr>
+        </table>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 3. INIT                                                -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">03</span> Create wallet</h2>
+
+        <p><code>doli init</code> creates your wallet and BLS attestation key in a single step.
+           No separate <code>add-bls</code> command needed.</p>
+
+<pre><span class="p">$ </span>doli init</pre>
+
+        <div class="danger">
+            <strong>Write down the 24-word seed phrase immediately.</strong>
+            It is shown exactly once. If you lose both the wallet file and these words,
+            your DOLI is gone forever.
+        </div>
+
+        <p>Check your address and balance:</p>
+
+<pre><span class="p">$ </span>doli info
+<span class="p">$ </span>doli balance</pre>
+
+        <p>If you already have a seed phrase, restore instead:</p>
+
+<pre><span class="p">$ </span>doli restore</pre>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 4. REGISTER                                            -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">04</span> Register as producer</h2>
+
+        <p>Send at least 10 DOLI to your address (shown by <code>doli info</code>), then register:</p>
+
+<pre><span class="comment"># Register with 1 bond (10 DOLI)</span>
+<span class="p">$ </span>doli producer register --bonds 1
+
+<span class="comment"># Register with 5 bonds (50 DOLI) for more block slots</span>
+<span class="p">$ </span>doli producer register --bonds 5</pre>
+
+        <p>Registration activates after a 10-block delay (~100 seconds). Check status:</p>
+
+<pre><span class="p">$ </span>doli producer status</pre>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 5. START NODE                                          -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">05</span> Start the node</h2>
+
+        <p>One command installs the system service, syncs from a verified snapshot, and starts producing:</p>
+
+<pre><span class="p">$ </span>sudo doli service install</pre>
+
+        <p>This:</p>
+        <ol>
+            <li>Creates a systemd unit (Linux) or launchd plist (macOS)</li>
+            <li>Enables auto-start on boot</li>
+            <li>Starts the node in producer mode</li>
+        </ol>
+
+        <p>Check that your node is running and synced:</p>
+
+<pre><span class="p">$ </span>doli service status
+<span class="p">$ </span>doli service logs
+<span class="p">$ </span>doli chain</pre>
+
+        <div class="note">
+            <strong>Snap sync.</strong> If your node needs to catch up quickly, run <code>doli snap</code>.
+            It downloads a verified state snapshot from the seed network (2/3 consensus)
+            and puts your node at the current chain tip in seconds.
+        </div>
+
+<pre><span class="p">$ </span>doli snap</pre>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 6. BONDS                                               -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">06</span> Bond stacking</h2>
+
+        <p>More bonds = more block slots = more rewards. Each bond costs 10 DOLI.</p>
+
+<pre><span class="comment"># Add 5 more bonds (50 DOLI)</span>
+<span class="p">$ </span>doli producer add-bond --count 5
+
+<span class="comment"># View bond details</span>
+<span class="p">$ </span>doli producer bonds
+
+<span class="comment"># Preview withdrawal penalties (dry run)</span>
+<span class="p">$ </span>doli producer simulate-withdrawal --count 2
+
+<span class="comment"># Withdraw 2 bonds</span>
+<span class="p">$ </span>doli producer request-withdrawal --count 2</pre>
+
+        <div class="warning">
+            <strong>Vesting.</strong> Bonds vest over 4 years. Early withdrawal incurs a penalty:
+            75% in year 1, 50% in year 2, 25% in year 3, 0% after year 4.
+            Oldest bonds are withdrawn first (FIFO). Withdrawn funds have a 7-day delay.
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 7. FIREWALL                                            -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">07</span> Firewall</h2>
+
+        <h3><span class="os">Linux</span> UFW</h3>
+<pre><span class="p">$ </span>sudo ufw allow 30300/tcp comment 'DOLI P2P'</pre>
+
+        <h3><span class="os">Linux</span> firewalld</h3>
+<pre><span class="p">$ </span>sudo firewall-cmd --permanent --add-port=30300/tcp && sudo firewall-cmd --reload</pre>
+
+        <h3><span class="os">macOS</span></h3>
+        <p>macOS firewall is off by default. If enabled: System Settings &rarr; Network &rarr; Firewall &rarr; Options &rarr; allow <code>doli-node</code>.</p>
+
+        <div class="warning">
+            <strong>Do not expose port 8500 to the internet.</strong> The RPC interface is unauthenticated.
+            Use an SSH tunnel for remote access.
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 8. UPGRADE                                             -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">08</span> Upgrade</h2>
+
+<pre><span class="p">$ </span>sudo doli upgrade</pre>
+
+        <p>Downloads the latest release, replaces both binaries, and restarts the node. Or re-run the install script:</p>
+
+<pre><span class="p">$ </span>curl -sSfL https://doli.network/install.sh | sudo sh</pre>
+
+        <table>
+            <tr><th>Flag</th><th>Description</th></tr>
+            <tr><td>--version &lt;V&gt;</td><td>Target a specific version</td></tr>
+            <tr><td>--yes</td><td>Skip confirmation prompt</td></tr>
+            <tr><td>--service &lt;NAME&gt;</td><td>Restart a specific service (multi-node)</td></tr>
+        </table>
+
+        <hr>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- COMMAND REFERENCE                                      -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">09</span> Command reference</h2>
+
+        <h3>Wallet</h3>
+        <table>
+            <tr><th>Command</th><th>Description</th></tr>
+            <tr><td>doli init</td><td>Create wallet + BLS key</td></tr>
+            <tr><td>doli info</td><td>Address, public key, BLS key</td></tr>
+            <tr><td>doli balance</td><td>Spendable, bonded, total</td></tr>
+            <tr><td>doli send &lt;addr&gt; &lt;amount&gt;</td><td>Send DOLI</td></tr>
+            <tr><td>doli history</td><td>Transaction history</td></tr>
+            <tr><td>doli restore</td><td>Restore from 24-word seed</td></tr>
+        </table>
+
+        <h3>Producer</h3>
+        <table>
+            <tr><th>Command</th><th>Description</th></tr>
+            <tr><td>doli producer register --bonds N</td><td>Register with N bonds (10 DOLI each)</td></tr>
+            <tr><td>doli producer status</td><td>Your registration and bond info</td></tr>
+            <tr><td>doli producer bonds</td><td>Per-bond vesting details</td></tr>
+            <tr><td>doli producer add-bond --count N</td><td>Stake N more bonds</td></tr>
+            <tr><td>doli producer request-withdrawal --count N</td><td>Withdraw N bonds (FIFO)</td></tr>
+            <tr><td>doli producer simulate-withdrawal --count N</td><td>Preview penalties (dry run)</td></tr>
+            <tr><td>doli producer list</td><td>All network producers</td></tr>
+            <tr><td>doli producer exit</td><td>Leave the producer set</td></tr>
+        </table>
+
+        <h3>Node &amp; service</h3>
+        <table>
+            <tr><th>Command</th><th>Description</th></tr>
+            <tr><td>sudo doli service install</td><td>Install, enable, and start the node</td></tr>
+            <tr><td>doli service status</td><td>Service status</td></tr>
+            <tr><td>doli service logs</td><td>Tail node logs</td></tr>
+            <tr><td>doli service restart</td><td>Restart the node</td></tr>
+            <tr><td>doli service stop</td><td>Stop the node</td></tr>
+            <tr><td>doli snap</td><td>Fast-sync from verified snapshot</td></tr>
+            <tr><td>doli chain</td><td>Current height, epoch, hash</td></tr>
+            <tr><td>sudo doli upgrade</td><td>Upgrade to latest release</td></tr>
+        </table>
+
+        <hr>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- SNAP SYNC DETAIL                                       -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">10</span> Snap sync</h2>
+
+        <p><code>doli snap</code> downloads a verified state snapshot from the seed network.
+           It queries multiple seeds, verifies 2/3 consensus on the state root, and applies the snapshot.
+           Your node is at the chain tip in seconds.</p>
+
+<pre><span class="comment"># Standard (queries all mainnet seeds)</span>
+<span class="p">$ </span>doli snap
+
+<span class="comment"># Testnet</span>
+<span class="p">$ </span>doli snap -n testnet
+
+<span class="comment"># Custom seed</span>
+<span class="p">$ </span>doli snap --seed http://192.168.1.50:8500</pre>
+
+        <table>
+            <tr><th>Flag</th><th>Description</th></tr>
+            <tr><td>-n mainnet|testnet</td><td>Network (default: mainnet)</td></tr>
+            <tr><td>--data-dir &lt;PATH&gt;</td><td>Custom data directory</td></tr>
+            <tr><td>--seed &lt;URL&gt;</td><td>Custom seed RPC (repeatable)</td></tr>
+            <tr><td>--no-restart</td><td>Skip service stop/restart</td></tr>
+            <tr><td>--trust</td><td>Trust single seed without consensus</td></tr>
+        </table>
+
+        <div class="note">
+            <strong>Safe by default.</strong>
+            Snap sync preserves your wallet, keys, and configuration.
+            Only chain data is replaced.
+        </div>
+
+        <hr>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- TROUBLESHOOTING                                        -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">11</span> Troubleshooting</h2>
+
+        <h3>Node stuck, forked, or not syncing</h3>
+<pre><span class="p">$ </span>doli snap</pre>
+        <p>This resets your node to the current network state. Works every time.</p>
+
+        <h3>Node won't start</h3>
+<pre><span class="p">$ </span>doli service logs <span class="c"># check error</span>
+<span class="p">$ </span>ls -la /usr/local/bin/doli* <span class="c"># binaries exist?</span>
+<span class="p">$ </span>doli snap <span class="c"># reset state</span>
+<span class="p">$ </span>doli service restart</pre>
+
+        <h3>Version mismatch</h3>
+<pre><span class="p">$ </span>sudo doli upgrade --yes</pre>
+
+        <h3>Nuclear: full reset</h3>
+<pre><span class="p">$ </span>doli service stop
+<span class="p">$ </span>doli wipe --yes
+<span class="p">$ </span>doli snap
+<span class="p">$ </span>doli service start</pre>
+
+        <div class="note">
+            <strong>Wipe preserves your wallet and keys.</strong> Only chain data is deleted.
+            You do not need to re-register after a wipe.
+        </div>
+
+        <hr>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- PATHS                                                  -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">12</span> Directory layout</h2>
+
+        <p>You never need to think about these. The CLI and node find everything automatically.
+           Override any path with <code>--data-dir</code>, <code>-w</code>, or the environment variables below.</p>
+
+        <h3><span class="os">Linux</span></h3>
+        <table>
+            <tr><th>Item</th><th>Path</th></tr>
+            <tr><td>Wallet</td><td>/var/lib/doli/mainnet/wallet.json</td></tr>
+            <tr><td>Chain data</td><td>/var/lib/doli/mainnet/state_db/</td></tr>
+            <tr><td>Logs</td><td>/var/log/doli/mainnet.log</td></tr>
+            <tr><td>Service file</td><td>/etc/systemd/system/doli-mainnet.service</td></tr>
+        </table>
+
+        <h3><span class="os">macOS</span></h3>
+        <table>
+            <tr><th>Item</th><th>Path</th></tr>
+            <tr><td>Wallet</td><td>~/Library/Application Support/doli/mainnet/wallet.json</td></tr>
+            <tr><td>Chain data</td><td>~/Library/Application Support/doli/mainnet/state_db/</td></tr>
+            <tr><td>Logs</td><td>~/Library/Logs/doli/mainnet.log</td></tr>
+            <tr><td>Plist</td><td>~/Library/LaunchAgents/network.doli.mainnet.plist</td></tr>
+        </table>
+
+        <h3>Environment variables</h3>
+        <table>
+            <tr><th>Variable</th><th>Effect</th></tr>
+            <tr><td>DOLI_DATA_DIR</td><td>Override base data directory</td></tr>
+            <tr><td>DOLI_WALLET_FILE</td><td>Override wallet path</td></tr>
+            <tr><td>DOLI_RPC_URL</td><td>Override RPC endpoint</td></tr>
+        </table>
+
+    </main>
+
+    <footer>
+        <p class="quote">"Time is the only fair currency."</p>
+        <p>
+            <a href="/">doli.network</a>
+            <a href="https://github.com/doli-network/doli">GitHub</a>
+            <a href="mailto:weil@doli.network">Contact</a>
+        </p>
+    </footer>
+</body>
+</html>
