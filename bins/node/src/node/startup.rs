@@ -411,6 +411,9 @@ impl Node {
             });
         }
 
+        // Wire up force-produce flag for forceProduceBlock RPC (testnet/devnet only)
+        context = context.with_force_produce(self.force_produce.clone());
+
         // Wire up on-chain maintainer set for getMaintainerSet RPC
         if let Some(ref ms) = self.maintainer_state {
             context.maintainer_state = Some(ms.clone());

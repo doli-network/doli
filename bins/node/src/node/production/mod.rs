@@ -49,6 +49,104 @@ impl Node {
             return Ok(());
         }
 
+        // FORCE PRODUCE: bypass eligibility for testing (testnet/devnet only).
+        // Consume the flag immediately (one-shot) — even if we bail out later,
+        // the caller must re-request via RPC.
+        let forcing = self
+            .force_produce
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        if forcing {
+            // Defense-in-depth: reject on mainnet at the production layer
+            if self.config.network == Network::Mainnet {
+                warn!("forceProduceBlock rejected on mainnet — ignoring");
+                return Ok(());
+            }
+            info!(
+                "[FORCE_PRODUCE] Bypassing eligibility checks for slot {}",
+                current_slot
+            );
+
+            // Get chain state for block building
+            let state = self.chain_state.read().await;
+            let prev_hash = state.best_hash;
+            let prev_slot = state.best_slot;
+            let height = state.best_height + 1;
+            drop(state);
+
+            // Slot must have advanced (can't build on same slot)
+            if current_slot <= prev_slot {
+                warn!(
+                    "[FORCE_PRODUCE] Slot not advanced: current_slot={} <= prev_slot={}",
+                    current_slot, prev_slot
+                );
+                return Ok(());
+            }
+
+            // SIGNED SLOTS PROTECTION: still enforce slashing protection
+            if let Some(ref signed_slots) = self.signed_slots_db {
+                if let Err(e) = signed_slots.check_and_mark(current_slot as u64) {
+                    error!("SLASHING PROTECTION: {}", e);
+                    return Ok(());
+                }
+            }
+
+            // Build block content
+            let (header, transactions) = match self
+                .build_block_content(prev_hash, prev_slot, height, current_slot, our_pubkey)
+                .await?
+            {
+                Some(result) => result,
+                None => return Ok(()),
+            };
+
+            // Compute VDF
+            let (vdf_output, vdf_proof) = self.compute_block_vdf(&prev_hash, &header).await?;
+
+            // Create final block header with VDF
+            let final_header = BlockHeader {
+                version: header.version,
+                prev_hash: header.prev_hash,
+                merkle_root: header.merkle_root,
+                presence_root: header.presence_root,
+                genesis_hash: header.genesis_hash,
+                timestamp: header.timestamp,
+                slot: header.slot,
+                producer: header.producer,
+                vdf_output,
+                vdf_proof,
+            };
+
+            let aggregate_bls_signature = self.aggregate_bls_signatures(current_slot);
+
+            let block = Block {
+                header: final_header,
+                transactions,
+                aggregate_bls_signature,
+            };
+
+            let block_hash = block.hash();
+            info!(
+                "[FORCE_PRODUCE] hash={} height={} slot={} parent={}",
+                block_hash, height, current_slot, block.header.prev_hash
+            );
+
+            // Apply with Light validation (we built it ourselves)
+            self.apply_block(block.clone(), ValidationMode::Light)
+                .await?;
+
+            self.last_produced_slot = Some(current_slot as u64);
+
+            // Broadcast
+            if let Some(ref network) = self.network {
+                let _ = network.broadcast_header(block.header.clone()).await;
+                let _ = network.broadcast_block(block).await;
+            }
+
+            self.flush_finalized_to_archive().await;
+
+            return Ok(());
+        }
+
         // PRODUCTION GATE CHECK
         if !self.handle_production_authorization(current_slot).await {
             return Ok(());
