@@ -112,7 +112,14 @@ pub(crate) async fn cmd_snap(
     // 3. Wipe data directory (preserve keys/, .env, node_key)
     println!("Wiping chain data...");
     if data_dir.exists() {
-        let preserve = ["keys", ".env", "node_key", "wallet.json", "wallet.seed.txt", "config.toml"];
+        let preserve = [
+            "keys",
+            ".env",
+            "node_key",
+            "wallet.json",
+            "wallet.seed.txt",
+            "config.toml",
+        ];
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
