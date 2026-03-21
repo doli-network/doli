@@ -288,7 +288,9 @@ impl Node {
                             drop(producers);
                             let gset = self.producer_gset.read().await;
                             let gp = gset.active_producers(7200);
-                            if !gp.is_empty() { gp } else {
+                            if !gp.is_empty() {
+                                gp
+                            } else {
                                 let known = self.known_producers.read().await;
                                 known.clone()
                             }
@@ -307,7 +309,9 @@ impl Node {
                         drop(producers);
                         let gset = self.producer_gset.read().await;
                         let gp = gset.active_producers(7200);
-                        if !gp.is_empty() { gp } else {
+                        if !gp.is_empty() {
+                            gp
+                        } else {
                             let known = self.known_producers.read().await;
                             known.clone()
                         }

@@ -116,6 +116,7 @@ pub struct Node {
     pub(super) last_producer_list_change: Arc<RwLock<Option<Instant>>>,
     /// INC-001: Deadline for producer list stability debounce.
     /// Set on first discovery; only reset by discoveries AFTER the deadline expires.
+    #[allow(dead_code)]
     pub(super) producer_stability_deadline: Option<Instant>,
     /// Producer discovery CRDT with cryptographic announcements
     pub(super) producer_gset: Arc<RwLock<ProducerGSet>>,
