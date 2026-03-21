@@ -79,7 +79,7 @@ pub(crate) async fn cmd_nft_buy(
         .ok_or_else(|| anyhow::anyhow!("Invalid seller pubkey hash"))?;
 
     // Get buyer's spendable UTXOs for payment + fee
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let required = price_units + fee_units;
     let buyer_utxos: Vec<_> = rpc
         .get_utxos(&buyer_pubkey_hash, true)
@@ -349,7 +349,7 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
     // The partial TX has: input[0] = seller's NFT (signed with AnyoneCanPay), outputs = final
     // We need to add buyer's payment inputs.
 
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let required = price_units + fee_units;
 
     // Get buyer's spendable UTXOs

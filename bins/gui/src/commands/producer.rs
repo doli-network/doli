@@ -87,7 +87,7 @@ pub async fn add_bonds(count: u32, state: State<'_, AppState>) -> Result<TxRespo
             .map_err(|e| e.to_string())?
     };
 
-    let fee = 1000u64;
+    let fee = 1u64;
     let mut builder = wallet::TxBuilder::build_add_bond(&utxos, count, sender_hash, fee)
         .map_err(|e| e.to_string())?;
 

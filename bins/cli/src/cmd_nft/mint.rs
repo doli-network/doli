@@ -85,7 +85,7 @@ pub(crate) async fn cmd_mint(
     };
 
     // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let utxos: Vec<_> = rpc
         .get_utxos(&minter_pubkey_hash, true)
         .await?

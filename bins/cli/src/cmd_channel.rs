@@ -68,7 +68,7 @@ pub(crate) async fn cmd_channel(
             let fee_units = if let Some(f) = &fee {
                 coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
             } else {
-                2000u64 // default funding fee: slightly higher (2-of-2 output)
+                1u64 // Flat fee: 1 satoshi
             };
 
             // Get spendable UTXOs
@@ -285,7 +285,7 @@ pub(crate) async fn cmd_channel(
             let fee_units = if let Some(f) = &fee {
                 coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
             } else {
-                1500u64
+                1u64 // Flat fee: 1 satoshi
             };
 
             let local_hash = Hash::from_bytes(ch.local_pubkey_hash);
