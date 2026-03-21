@@ -160,15 +160,80 @@ impl Node {
         let block_slot = block.header.slot;
         let block_producer = block.header.producer;
         if let Err(e) = self.apply_block(block, ValidationMode::Full).await {
-            warn!(
-                "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
-                block_slot,
-                height,
-                hex::encode(&block_producer.as_bytes()[..4]),
-                e,
-            );
+            let err_str = format!("{}", e);
+            let is_invalid_producer = err_str.contains("invalid producer for slot");
+
+            if is_invalid_producer {
+                self.consecutive_invalid_producer_rejects += 1;
+                warn!(
+                    "[BLOCK] REJECT slot={} h={} producer={} error={} — consecutive={}/5",
+                    block_slot,
+                    height,
+                    hex::encode(&block_producer.as_bytes()[..4]),
+                    e,
+                    self.consecutive_invalid_producer_rejects,
+                );
+
+                // AUTO-RECOVERY: After 5 consecutive "invalid producer" rejections,
+                // our scheduler has diverged from the network. Rollback 10 blocks to
+                // a common ancestor, rebuild the bond snapshot, and let sync recover.
+                //
+                // Why this works: the divergence is caused by different bond counts
+                // in the epoch_bond_snapshot. Rolling back 10 blocks reverts the UTXO
+                // and ProducerSet to a state before the divergence. The snapshot is
+                // then rebuilt from this clean state, matching the canonical chain.
+                if self.consecutive_invalid_producer_rejects >= 5 {
+                    warn!(
+                        "[FORK] AUTO_RECOVERY: {} consecutive invalid producer rejections — \
+                         rolling back 10 blocks to realign scheduler",
+                        self.consecutive_invalid_producer_rejects
+                    );
+                    let rollback_count = 10u64.min(height.saturating_sub(1));
+                    for i in 0..rollback_count {
+                        if !self.rollback_one_block().await? {
+                            warn!("[FORK] AUTO_RECOVERY: rollback stopped at block {} of {}", i, rollback_count);
+                            break;
+                        }
+                    }
+                    // Rebuild epoch bond snapshot from rolled-back state
+                    let new_height = self.chain_state.read().await.best_height;
+                    let producers = self.producer_set.read().await;
+                    let active = producers.active_producers_at_height(new_height);
+                    let mut snap = std::collections::HashMap::new();
+                    for p in &active {
+                        let pkh = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
+                        snap.insert(pkh, p.bond_count.max(1) as u64);
+                    }
+                    let total: u64 = snap.values().sum();
+                    drop(producers);
+                    let bpe = self.config.network.blocks_per_reward_epoch();
+                    let snap_epoch = if bpe > 0 { new_height / bpe } else { 0 };
+                    info!(
+                        "[FORK] AUTO_RECOVERY: snapshot rebuilt at h={} — epoch={} producers={} total_bonds={}",
+                        new_height, snap_epoch, snap.len(), total
+                    );
+                    self.epoch_bond_snapshot = snap;
+                    self.epoch_bond_snapshot_epoch = snap_epoch;
+                    self.cached_scheduler = None;
+                    self.consecutive_invalid_producer_rejects = 0;
+                    // Reset sync state so header-first kicks in immediately
+                    let mut sync = self.sync_manager.write().await;
+                    sync.reset_empty_headers();
+                }
+            } else {
+                warn!(
+                    "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
+                    block_slot,
+                    height,
+                    hex::encode(&block_producer.as_bytes()[..4]),
+                    e,
+                );
+            }
             return Ok(());
         }
+
+        // Gossip block accepted — reset rejection counter
+        self.consecutive_invalid_producer_rejects = 0;
 
         // A canonical gossip block was applied on our tip — clear the post-snap gate.
         // This proves we're on the canonical chain and our block store has a real parent.

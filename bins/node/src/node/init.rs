@@ -663,6 +663,7 @@ impl Node {
             announcement_sequence: Arc::new(AtomicU64::new(0)),
             signed_slots_db,
             consecutive_fork_blocks: 0,
+            consecutive_invalid_producer_rejects: 0,
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),

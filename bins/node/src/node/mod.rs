@@ -124,6 +124,9 @@ pub struct Node {
     /// Consecutive slots where production was blocked due to fork detection
     /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
     pub(super) consecutive_fork_blocks: u32,
+    /// Consecutive gossip blocks rejected as "invalid producer for slot".
+    /// After 5 rejections, triggers auto-recovery rollback to realign scheduler.
+    pub(super) consecutive_invalid_producer_rejects: u32,
     /// Number of shallow fork rollbacks performed since last successful sync.
     /// Capped at MAX_SHALLOW_ROLLBACKS to prevent rolling back the entire chain.
     pub(super) shallow_rollback_count: u32,
