@@ -22,7 +22,7 @@ impl Default for MempoolPolicy {
         Self {
             max_count: 5000,
             max_size: 10 * 1024 * 1024, // 10 MB
-            min_fee_rate: 1,            // 1 sat/byte minimum
+            min_fee_rate: 0,            // flat fee model — any fee > 0 accepted
             max_tx_size: 100 * 1024,    // 100 KB per transaction
             max_ancestors: 25,
             max_age: 14 * 24 * 60 * 60, // 14 days
