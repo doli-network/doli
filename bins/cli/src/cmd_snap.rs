@@ -15,10 +15,9 @@ fn seed_rpcs(network: &str) -> Vec<&'static str> {
     }
 }
 
-/// Default data directory for a network.
+/// Default data directory for a network (uses standard path resolution).
 fn default_data_dir(network: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
-    Ok(home.join(".doli").join(network))
+    Ok(crate::paths::resolve_base_dir(network, None))
 }
 
 pub(crate) async fn cmd_snap(
@@ -113,7 +112,7 @@ pub(crate) async fn cmd_snap(
     // 3. Wipe data directory (preserve keys/, .env, node_key)
     println!("Wiping chain data...");
     if data_dir.exists() {
-        let preserve = ["keys", ".env", "node_key"];
+        let preserve = ["keys", ".env", "node_key", "wallet.json", "wallet.seed.txt", "config.toml"];
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -130,7 +129,7 @@ pub(crate) async fn cmd_snap(
     } else {
         std::fs::create_dir_all(&data_dir)?;
     }
-    println!("  Done (preserved keys/, .env, node_key)");
+    println!("  Done (preserved keys/, wallet.json, .env, node_key)");
 
     // 4. Download snapshot
     println!("Downloading snapshot from {}...", source_rpc);
