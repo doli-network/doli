@@ -3,14 +3,14 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1773858683,
-    "message": "DOLI Testnet v47 Genesis 2026-03-18",
+    "timestamp": 1774082136,
+    "message": "DOLI Testnet v48 Genesis 2026-03-21",
     "initial_reward": 100000000
   },
   "consensus": {
     "slot_duration": 10,
     "slots_per_epoch": 360,
-    "bond_amount": 1000000
+    "bond_amount": 1000000000
   },
   "genesis_producers": []
 }

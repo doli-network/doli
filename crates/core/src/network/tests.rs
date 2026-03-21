@@ -320,7 +320,7 @@ fn test_genesis_blocks_mainnet_testnet() {
 #[test]
 fn test_automatic_genesis_bond() {
     assert_eq!(Network::Mainnet.automatic_genesis_bond(), 1_000_000_000); // 10 DOLI
-    assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000); // 0.01 DOLI
+    assert_eq!(Network::Testnet.automatic_genesis_bond(), 1_000_000_000); // 10 DOLI
     assert_eq!(Network::Devnet.automatic_genesis_bond(), 100_000_000); // 1 DOLI
 }
 
