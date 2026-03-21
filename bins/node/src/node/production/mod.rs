@@ -61,17 +61,27 @@ impl Node {
                 warn!("forceProduceBlock rejected on mainnet — ignoring");
                 return Ok(());
             }
-            info!(
-                "[FORCE_PRODUCE] Bypassing eligibility checks for slot {}",
-                current_slot
-            );
-
-            // Get chain state for block building
+            // Must be synced — can't build on a tip we don't have state for
             let state = self.chain_state.read().await;
+            let local_height = state.best_height;
             let prev_hash = state.best_hash;
             let prev_slot = state.best_slot;
-            let height = state.best_height + 1;
+            let height = local_height + 1;
             drop(state);
+
+            let network_tip = self.sync_manager.read().await.best_peer_height();
+            if network_tip > local_height + 2 {
+                warn!(
+                    "[FORCE_PRODUCE] Rejected: node is behind (local h={}, network h={}). Sync first.",
+                    local_height, network_tip
+                );
+                return Ok(());
+            }
+
+            info!(
+                "[FORCE_PRODUCE] Bypassing eligibility checks for slot {} at height {}",
+                current_slot, height
+            );
 
             // Slot must have advanced (can't build on same slot)
             if current_slot <= prev_slot {
