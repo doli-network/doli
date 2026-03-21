@@ -161,6 +161,8 @@ fn install_systemd(
 Description=DOLI {network} Node
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -169,8 +171,6 @@ Group=doli
 ExecStart={exec_start}
 Restart=always
 RestartSec=10
-StartLimitIntervalSec=600
-StartLimitBurst=5
 StandardOutput=append:/var/log/doli/{network}.log
 StandardError=append:/var/log/doli/{network}.log
 NoNewPrivileges=true

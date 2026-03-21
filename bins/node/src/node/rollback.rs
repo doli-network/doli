@@ -250,7 +250,8 @@ impl Node {
         // Don't rollback if we're making progress. If height advanced since
         // last rollback, sync is working — empty headers are just from peers
         // that haven't caught up yet. Only rollback when truly stuck.
-        static LAST_ROLLBACK_HEIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static LAST_ROLLBACK_HEIGHT: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
         let last_rb_h = LAST_ROLLBACK_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
         if local_height > last_rb_h && last_rb_h > 0 {
             // Height advanced since last rollback — sync is working, skip rollback
@@ -284,7 +285,10 @@ impl Node {
             let rolled_back = self.rollback_one_block().await?;
             if rolled_back {
                 self.shallow_rollback_count += 1;
-                LAST_ROLLBACK_HEIGHT.store(local_height.saturating_sub(1), std::sync::atomic::Ordering::Relaxed);
+                LAST_ROLLBACK_HEIGHT.store(
+                    local_height.saturating_sub(1),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 // Reset empty headers so sync retries with new tip hash
                 let mut sync = self.sync_manager.write().await;
                 sync.reset_empty_headers();

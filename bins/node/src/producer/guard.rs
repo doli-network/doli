@@ -2,8 +2,9 @@
 
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::constants::PRODUCER_LOCK_FILE;
 use super::errors::ProducerStartupError;
@@ -12,6 +13,8 @@ use super::errors::ProducerStartupError;
 ///
 /// This prevents two producer instances from running on the same machine.
 /// The lock is automatically released when the guard is dropped.
+/// If the lock holder is a dead process (crash/SIGKILL), the stale lock
+/// is reclaimed automatically via PID check.
 pub struct ProducerGuard {
     /// The locked file handle
     #[allow(dead_code)] // Kept alive for the lock
@@ -31,6 +34,7 @@ impl ProducerGuard {
 
         // Create/open the lock file
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
@@ -39,22 +43,76 @@ impl ProducerGuard {
         // Try to acquire exclusive lock (non-blocking)
         match file.try_lock_exclusive() {
             Ok(()) => {
+                Self::write_pid(&file);
                 info!("Producer lock acquired: {:?}", lock_path);
-
-                // Write PID to lock file for debugging
-                use std::io::Write;
-                let mut f = &file;
-                let _ = writeln!(f, "{}", std::process::id());
-
                 Ok(Self {
                     lock_file: file,
                     lock_path,
                 })
             }
             Err(_) => {
-                // Lock failed - another instance is running
-                Err(ProducerStartupError::AnotherLocalInstance)
+                // Lock held — check if the holder is still alive
+                if Self::holder_is_dead(&file) {
+                    warn!("Stale producer lock detected (holder process is dead). Reclaiming.");
+                    // Force unlock the stale lock, then re-acquire
+                    let _ = FileExt::unlock(&file);
+                    drop(file);
+
+                    // Re-open and try again
+                    let file = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&lock_path)?;
+
+                    match file.try_lock_exclusive() {
+                        Ok(()) => {
+                            Self::write_pid(&file);
+                            info!("Producer lock reclaimed: {:?}", lock_path);
+                            Ok(Self {
+                                lock_file: file,
+                                lock_path,
+                            })
+                        }
+                        Err(_) => Err(ProducerStartupError::AnotherLocalInstance),
+                    }
+                } else {
+                    Err(ProducerStartupError::AnotherLocalInstance)
+                }
             }
+        }
+    }
+
+    /// Write our PID to the lock file
+    fn write_pid(file: &File) {
+        use std::io::Write;
+        let mut f = file;
+        let _ = f.set_len(0);
+        let _ = writeln!(f, "{}", std::process::id());
+    }
+
+    /// Check if the PID in the lock file is still a running process
+    fn holder_is_dead(file: &File) -> bool {
+        let mut contents = String::new();
+        let mut f = file;
+        if f.read_to_string(&mut contents).is_err() {
+            return false; // Can't read — assume alive to be safe
+        }
+        let pid_str = contents.trim();
+        if pid_str.is_empty() {
+            return true; // Empty lock file — stale
+        }
+        match pid_str.parse::<u32>() {
+            Ok(pid) => {
+                // Check if process exists via kill -0 (no signal sent)
+                !std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            }
+            Err(_) => true, // Garbage in lock file — stale
         }
     }
 }
