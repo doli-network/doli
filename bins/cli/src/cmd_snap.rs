@@ -44,7 +44,15 @@ pub(crate) async fn cmd_snap(
     println!();
     println!("Network:  {}", network);
     println!("Data dir: {}", data_dir.display());
-    println!("Seeds:    {}{}", seeds.len(), if !custom_seeds.is_empty() { " (custom)" } else { "" });
+    println!(
+        "Seeds:    {}{}",
+        seeds.len(),
+        if !custom_seeds.is_empty() {
+            " (custom)"
+        } else {
+            ""
+        }
+    );
     println!();
 
     // 1. Verify state root consensus across seeds

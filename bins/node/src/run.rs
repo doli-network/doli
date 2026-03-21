@@ -48,8 +48,31 @@ pub(crate) async fn run_node(
 
     // Load producer key if production is enabled
     let (producer_key, bls_key, producer_guard, signed_slots_db) = if producer {
-        let key_path = producer_key_path
-            .ok_or_else(|| anyhow!("--producer-key required when --producer is enabled"))?;
+        // Auto-discover producer key: --producer-key flag > DOLI_PRODUCER_KEY env > {data_dir}/wallet.json
+        let key_path = match producer_key_path {
+            Some(p) => p,
+            None => {
+                // Check env var
+                if let Ok(env_path) = std::env::var("DOLI_PRODUCER_KEY") {
+                    PathBuf::from(env_path)
+                } else {
+                    // Auto-discover wallet.json in data directory
+                    let default_path = data_dir.join("wallet.json");
+                    if default_path.exists() {
+                        info!("Auto-discovered producer key at {:?}", default_path);
+                        default_path
+                    } else {
+                        return Err(anyhow!(
+                            "--producer requires a wallet with producer keys.\n\
+                             Expected at: {}\n\
+                             Create one:  doli init\n\
+                             Or specify:  --producer-key /path/to/wallet.json",
+                            default_path.display()
+                        ));
+                    }
+                }
+            }
+        };
 
         info!("Loading producer key from {:?}", key_path);
         let key = load_producer_key(&key_path)?;
