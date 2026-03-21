@@ -83,14 +83,14 @@ impl Node {
                 current_slot, height
             );
 
-            // Slot must have advanced (can't build on same slot)
-            if current_slot <= prev_slot {
-                warn!(
-                    "[FORCE_PRODUCE] Slot not advanced: current_slot={} <= prev_slot={}",
-                    current_slot, prev_slot
-                );
-                return Ok(());
-            }
+            // Force-produce uses next slot if current slot already has a block.
+            // This creates a competing block at height+1 that differs from
+            // what the network will produce — a real 1-block fork.
+            let current_slot = if current_slot <= prev_slot {
+                prev_slot + 1
+            } else {
+                current_slot
+            };
 
             // SIGNED SLOTS PROTECTION: still enforce slashing protection
             if let Some(ref signed_slots) = self.signed_slots_db {
