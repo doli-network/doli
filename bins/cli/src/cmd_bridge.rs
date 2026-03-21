@@ -79,7 +79,7 @@ pub(crate) async fn cmd_bridge_lock(
     .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
 
     // Get spendable normal UTXOs for funding (exclude bonds, conditioned, etc.)
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let required = amount_units + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
@@ -204,7 +204,7 @@ pub(crate) async fn cmd_bridge_claim(
         .get("amount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let fee_units = 1000u64;
+    let fee_units = 1u64;
     if utxo_amount <= fee_units {
         anyhow::bail!(
             "HTLC amount {} is too small to cover fee {}. Would result in zero claim.",
@@ -318,7 +318,7 @@ pub(crate) async fn cmd_bridge_refund(
         .get("amount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let fee_units = 1000u64;
+    let fee_units = 1u64;
     if utxo_amount <= fee_units {
         anyhow::bail!(
             "HTLC amount {} is too small to cover fee {}. Would result in zero refund.",

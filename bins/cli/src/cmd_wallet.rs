@@ -350,7 +350,7 @@ pub(crate) async fn cmd_send(
     }
 
     // Select UTXOs with a preliminary fee estimate, then recalculate
-    let preliminary_fee = explicit_fee.unwrap_or(1000);
+    let preliminary_fee = explicit_fee.unwrap_or(1);
     let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
     let mut selected_utxos = Vec::new();
@@ -363,10 +363,8 @@ pub(crate) async fn cmd_send(
         total_input += utxo.amount;
     }
 
-    // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
-    let num_outputs = 2u64; // recipient + change
-    let fee_units = explicit_fee
-        .unwrap_or_else(|| 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500));
+    // Flat fee: 1 satoshi per transaction
+    let fee_units = explicit_fee.unwrap_or(1);
 
     // Re-select if auto fee increased the requirement
     if explicit_fee.is_none() && total_input < amount_units + fee_units {
@@ -528,7 +526,7 @@ pub(crate) async fn cmd_spend(
     let fee_units = if let Some(f) = &fee {
         coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
     } else {
-        1000 // Default fee for single-input spend
+        1 // Flat fee: 1 satoshi
     };
 
     // Build transaction with single input

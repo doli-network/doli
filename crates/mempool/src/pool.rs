@@ -185,8 +185,13 @@ impl Mempool {
         let fee = total_input - total_output;
         let fee_rate = if tx_size > 0 { fee / tx_size as u64 } else { 0 };
 
-        // Check minimum fee rate
-        if fee_rate < self.policy.min_fee_rate {
+        // Require fee > 0 (flat fee model: any non-zero fee is accepted)
+        if fee == 0 {
+            return Err(MempoolError::FeeTooLow(0, 1));
+        }
+
+        // Check minimum fee rate (if configured)
+        if self.policy.min_fee_rate > 0 && fee_rate < self.policy.min_fee_rate {
             return Err(MempoolError::FeeTooLow(fee_rate, self.policy.min_fee_rate));
         }
 

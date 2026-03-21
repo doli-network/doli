@@ -72,7 +72,7 @@ pub(crate) async fn cmd_issue_token(
     .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
 
     // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
-    let fee_units = 1500u64;
+    let fee_units = 1u64;
     let utxos: Vec<_> = rpc
         .get_utxos(&issuer_pubkey_hash, true)
         .await?

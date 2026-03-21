@@ -21,8 +21,19 @@ fn default_data_dir(network: &str) -> Result<PathBuf> {
     Ok(home.join(".doli").join(network))
 }
 
-pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) -> Result<()> {
-    let seeds = seed_rpcs(network);
+pub(crate) async fn cmd_snap(
+    network: &str,
+    data_dir_override: Option<PathBuf>,
+    custom_seeds: Vec<String>,
+    no_restart: bool,
+    trust: bool,
+) -> Result<()> {
+    let default_seeds = seed_rpcs(network);
+    let seeds: Vec<&str> = if custom_seeds.is_empty() {
+        default_seeds
+    } else {
+        custom_seeds.iter().map(|s| s.as_str()).collect()
+    };
     let data_dir = match data_dir_override {
         Some(d) => d,
         None => default_data_dir(network)?,
@@ -33,7 +44,7 @@ pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) 
     println!();
     println!("Network:  {}", network);
     println!("Data dir: {}", data_dir.display());
-    println!("Seeds:    {}", seeds.len());
+    println!("Seeds:    {}{}", seeds.len(), if !custom_seeds.is_empty() { " (custom)" } else { "" });
     println!();
 
     // 1. Verify state root consensus across seeds
@@ -55,8 +66,8 @@ pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) 
         anyhow::bail!("No seeds reachable. Cannot verify snapshot safety.");
     }
 
-    // Consensus: 2/3 must agree (or trust single seed for testnet/devnet)
-    let (source_rpc, consensus_root) = if state_roots.len() >= 2 {
+    // Consensus: 2/3 must agree, or trust single seed for testnet/devnet/--trust
+    let (source_rpc, consensus_root) = if state_roots.len() >= 2 && !trust {
         let mut counts: std::collections::HashMap<&str, (usize, &str)> =
             std::collections::HashMap::new();
         for (rpc, _, root) in &state_roots {
@@ -73,15 +84,23 @@ pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) 
         println!("  Consensus: {}/{} seeds agree", count, state_roots.len());
         (best_rpc.to_string(), best_root.to_string())
     } else {
-        println!("  Warning: only 1 seed reachable — trusting without consensus");
+        if trust {
+            println!("  Trusting single seed (--trust)");
+        } else {
+            println!("  Warning: only 1 seed reachable — trusting without consensus");
+        }
         (state_roots[0].0.to_string(), state_roots[0].2.clone())
     };
     println!();
 
     // 2. Stop the node service
-    println!("Stopping doli-node...");
-    stop_doli_service();
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    if no_restart {
+        println!("Skipping service stop (--no-restart)");
+    } else {
+        println!("Stopping doli-node...");
+        stop_doli_service();
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
 
     // 3. Wipe data directory (preserve keys/, .env, node_key)
     println!("Wiping chain data...");
@@ -177,8 +196,12 @@ pub(crate) async fn cmd_snap(network: &str, data_dir_override: Option<PathBuf>) 
     );
 
     // 8. Restart
-    println!("Starting doli-node...");
-    crate::cmd_upgrade::restart_doli_service(None);
+    if no_restart {
+        println!("Skipping service restart (--no-restart)");
+    } else {
+        println!("Starting doli-node...");
+        crate::cmd_upgrade::restart_doli_service(None);
+    }
 
     println!();
     println!("Snap sync complete at height {}.", height);

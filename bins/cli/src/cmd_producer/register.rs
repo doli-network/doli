@@ -58,13 +58,10 @@ pub(super) async fn handle_register(
         .collect();
     let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
-    // Output count: bond_count bonds + 1 change
-    let num_outputs = bonds as u64 + 1;
-
     // Initial UTXO selection with minimum fee estimate
     let mut selected_utxos = Vec::new();
     let mut total_input = 0u64;
-    let mut fee = 1000u64.max((utxos.len() as u64 + num_outputs) * 500);
+    let mut fee = 1u64;
     for utxo in &utxos {
         if total_input >= required_amount + fee {
             break;
@@ -73,22 +70,8 @@ pub(super) async fn handle_register(
         total_input += utxo.amount;
     }
 
-    // Auto-calculate fee: max(1000, (inputs + outputs) * 500) — ensures fee_rate >= 1 sat/byte
-    fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
-
-    // Re-select if fee increased the requirement
-    if total_input < required_amount + fee {
-        selected_utxos.clear();
-        total_input = 0;
-        for utxo in &utxos {
-            selected_utxos.push(utxo.clone());
-            total_input += utxo.amount;
-            fee = 1000u64.max((selected_utxos.len() as u64 + num_outputs) * 500);
-            if total_input >= required_amount + fee {
-                break;
-            }
-        }
-    }
+    // Flat fee: 1 satoshi per transaction
+    fee = 1u64;
 
     if total_available < required_amount + fee {
         anyhow::bail!(
