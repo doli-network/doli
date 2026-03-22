@@ -176,9 +176,12 @@ pub struct ProducerInfo {
     /// Re-entry: when a producer's attestation appears in a block's `presence_root`
     /// bitfield, they get `scheduled = true` again.
     ///
-    /// This is ON-CHAIN state (derived from block headers), so all nodes agree.
-    /// Included in canonical serialization for state root and snap sync.
-    #[serde(default = "default_scheduled")]
+    /// IMPORTANT: This field is SKIPPED during bincode serialization to maintain
+    /// backward compatibility with existing RocksDB data. Bincode is positional
+    /// and does NOT support `#[serde(default)]` — adding a field breaks deserialization
+    /// of old data. Instead, `scheduled` defaults to `true` on load and is recomputed
+    /// by the reactive scheduling logic in `apply_block()` from on-chain data.
+    #[serde(skip, default = "default_scheduled")]
     pub scheduled: bool,
 }
 
