@@ -74,7 +74,7 @@ pub(crate) async fn cmd_snap(
     }
 
     // Consensus: 2/3 must agree, or trust single seed for testnet/devnet/--trust
-    let (source_rpc, consensus_root) = if state_roots.len() >= 2 && !trust {
+    let (source_rpc, _consensus_root) = if state_roots.len() >= 2 && !trust {
         let mut counts: std::collections::HashMap<&str, (usize, &str)> =
             std::collections::HashMap::new();
         for (rpc, _, root) in &state_roots {
@@ -138,16 +138,60 @@ pub(crate) async fn cmd_snap(
     }
     println!("  Done (preserved keys/, wallet.json, .env, node_key)");
 
-    // 4. Download snapshot
-    println!("Downloading snapshot from {}...", source_rpc);
-    let snap = download_snapshot(&source_rpc).await?;
+    // 4. Download snapshot (retry up to 3 times if seed advances between check and download)
+    let max_retries = 3;
+    let mut snap = None;
+    let mut snap_root_str = String::new();
+    let mut final_height = 0u64;
 
-    let height = snap["height"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("Missing height"))?;
-    let snap_root = snap["stateRoot"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Missing stateRoot"))?;
+    for attempt in 0..max_retries {
+        if attempt > 0 {
+            println!("  Retrying download (seed advanced during download)...");
+        }
+        println!("Downloading snapshot from {}...", source_rpc);
+        let downloaded = download_snapshot(&source_rpc).await?;
+
+        let height = downloaded["height"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("Missing height"))?;
+        let root = downloaded["stateRoot"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing stateRoot"))?
+            .to_string();
+        let total_kb = downloaded["totalBytes"].as_u64().unwrap_or(0) / 1024;
+
+        println!("  Height: {}, Size: {}KB", height, total_kb);
+
+        // Re-verify: query state root at the CURRENT height from multiple seeds
+        let mut verified = false;
+        let mut verify_count = 0;
+        for seed in &seeds {
+            if let Ok((seed_h, seed_root)) = query_state_root(seed).await {
+                if seed_h == height && seed_root == root {
+                    verify_count += 1;
+                }
+            }
+        }
+
+        if trust || verify_count >= 1 {
+            verified = true;
+        }
+        if !trust && seeds.len() >= 2 && verify_count < 2 {
+            verified = false;
+        }
+
+        if verified {
+            snap_root_str = root;
+            final_height = height;
+            snap = Some(downloaded);
+            break;
+        }
+    }
+
+    let snap = snap.ok_or_else(|| {
+        anyhow!("Snapshot verification failed after {} attempts. Seeds keep advancing — try again.", max_retries)
+    })?;
+
     let cs_hex = snap["chainState"]
         .as_str()
         .ok_or_else(|| anyhow!("Missing chainState"))?;
@@ -157,31 +201,19 @@ pub(crate) async fn cmd_snap(
     let ps_hex = snap["producerSet"]
         .as_str()
         .ok_or_else(|| anyhow!("Missing producerSet"))?;
-    let total_kb = snap["totalBytes"].as_u64().unwrap_or(0) / 1024;
 
-    println!("  Height: {}, Size: {}KB", height, total_kb);
-
-    // 5. Verify against seed consensus
-    if snap_root != consensus_root {
-        anyhow::bail!(
-            "SECURITY: Snapshot root does not match seed consensus!\n\
-             Snapshot: {}\n  Seeds: {}",
-            snap_root,
-            consensus_root
-        );
-    }
-
-    // 6. Verify data integrity (recompute root from bytes)
+    // 5. Verify data integrity (recompute root from bytes)
     let cs_bytes = hex::decode(cs_hex)?;
     let utxo_bytes = hex::decode(utxo_hex)?;
     let ps_bytes = hex::decode(ps_hex)?;
 
     let computed =
         storage::snapshot::compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes);
-    if computed.to_hex() != consensus_root {
+    if computed.to_hex() != snap_root_str {
         anyhow::bail!("INTEGRITY: Recomputed state root does not match. Snapshot corrupted.");
     }
-    println!("  Verified (root matches {} seeds)", state_roots.len());
+    println!("  Verified (root confirmed by seeds at h={})", final_height);
+    let height = final_height;
 
     // 7. Write to StateDb
     println!("Applying snapshot...");
