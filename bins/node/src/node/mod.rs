@@ -41,12 +41,12 @@ use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 use doli_core::validation::ValidationMode;
+use doli_core::DeterministicScheduler;
 use doli_core::{
     attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
     Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
     ProducerGSet, Transaction,
 };
-use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::protocols::{SyncRequest, SyncResponse};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,

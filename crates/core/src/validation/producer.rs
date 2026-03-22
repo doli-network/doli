@@ -1,7 +1,6 @@
 use crate::block::BlockHeader;
 use crate::consensus::is_producer_eligible_ms;
 use crate::network::Network;
-use crate::scheduler::{DeterministicScheduler, ScheduledProducer};
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
 
 use super::{ValidationContext, ValidationError};
@@ -209,44 +208,25 @@ pub fn validate_producer_eligibility(
         return validate_bootstrap_producer(header, ctx);
     }
 
-    // Post-genesis: use bond-weighted DeterministicScheduler (same as production).
-    // Using the same scheduler implementation prevents divergence between
-    // production and validation — the #1 historical source of forks.
+    // Post-genesis: ROUND-ROBIN validation (matches production).
+    // One producer per slot, cycling through sorted active producers.
+    // Bond weighting only affects rewards, not production scheduling.
     if !ctx.active_producers_weighted.is_empty() {
-        let producers: Vec<ScheduledProducer> = ctx
+        let mut sorted: Vec<crypto::PublicKey> = ctx
             .active_producers_weighted
             .iter()
-            .map(|(pk, bonds)| ScheduledProducer::new(*pk, *bonds as u32))
+            .map(|(pk, _)| *pk)
             .collect();
-        let scheduler = DeterministicScheduler::new(producers);
+        sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-        // Build eligible list (same logic as resolve_epoch_eligibility in production)
-        let max_ranks = crate::consensus::MAX_FALLBACK_RANKS;
-        let mut eligible = Vec::with_capacity(max_ranks);
-        for rank in 0..max_ranks {
-            if let Some(pk) = scheduler.select_producer(header.slot, rank).cloned() {
-                if !eligible.contains(&pk) {
-                    eligible.push(pk);
-                }
-            }
-        }
-
-        if eligible.is_empty() {
+        if sorted.is_empty() {
             return Err(ValidationError::InvalidProducer);
         }
 
-        // Calculate time offset within the slot (in ms for sequential 2s windows).
-        // Block timestamps have second precision, but eligibility uses 2s windows.
-        // Check if the producer is eligible at any point within the timestamp's second bucket
-        // [offset_secs * 1000, (offset_secs + 1) * 1000) to avoid false rejections.
-        let slot_start = ctx.params.slot_to_timestamp(header.slot);
-        let slot_offset_secs = header.timestamp.saturating_sub(slot_start);
-        let slot_offset_ms_low = slot_offset_secs * 1000;
-        let slot_offset_ms_high = slot_offset_ms_low + 999;
+        let producer_index = (header.slot as usize) % sorted.len();
+        let expected_producer = sorted[producer_index];
 
-        if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
-            && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
-        {
+        if header.producer != expected_producer {
             return Err(ValidationError::InvalidProducer);
         }
 
