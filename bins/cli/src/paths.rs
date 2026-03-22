@@ -24,8 +24,12 @@ pub fn resolve_base_dir(network: &str, flag_override: Option<&str>) -> PathBuf {
         let legacy = home.join(".doli").join(network);
         if legacy.exists() {
             eprintln!(
-                "Note: Using legacy data directory {}. Run 'doli migrate' to move to {}.",
+                "Note: Using legacy data directory {}. To migrate, run:\n  \
+                 sudo mkdir -p {} && sudo cp -a {}/* {} && sudo chown -R doli:doli {}",
                 legacy.display(),
+                platform_default.display(),
+                legacy.display(),
+                platform_default.display(),
                 platform_default.display()
             );
             return legacy;
