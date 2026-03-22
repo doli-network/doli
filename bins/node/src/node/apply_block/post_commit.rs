@@ -64,6 +64,93 @@ impl Node {
             self.minute_tracker.reset();
         }
 
+        // =====================================================================
+        // LIVE LIVENESS FILTER: exclude/re-include producers on every block.
+        // Deterministic: all nodes process the same blocks.
+        //
+        // EXCLUDE: if slot gap > 1, the producers assigned to skipped slots
+        // missed their turn. Exclude them from round-robin.
+        //
+        // RE-INCLUDE: if an excluded producer appears in this block's
+        // attestation bitfield (presence_root), they're online. Re-include.
+        // =====================================================================
+        {
+            let prev_slot = if height > 1 {
+                // Get previous block's slot to detect gaps
+                if let Ok(Some(prev_block)) = self.block_store.get_block_by_height(height - 1) {
+                    prev_block.header.slot
+                } else {
+                    block.header.slot.saturating_sub(1)
+                }
+            } else {
+                0
+            };
+
+            let slot_gap = block.header.slot.saturating_sub(prev_slot);
+
+            // EXCLUDE: producers who missed skipped slots
+            if slot_gap > 1 && height > 36 {
+                let producers = self.producer_set.read().await;
+                let active: Vec<PublicKey> = producers
+                    .active_producers_at_height(height)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+                drop(producers);
+
+                let mut sorted = active.clone();
+                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                // Filter out already-excluded to get the active round-robin list
+                let rr_list: Vec<&PublicKey> = sorted
+                    .iter()
+                    .filter(|pk| !self.excluded_producers.contains(pk))
+                    .collect();
+                let rr_count = rr_list.len();
+
+                if rr_count > 0 {
+                    for skipped_slot in (prev_slot + 1)..block.header.slot {
+                        let idx = (skipped_slot as usize) % rr_count;
+                        let missed_producer = *rr_list[idx];
+                        if !self.excluded_producers.contains(&missed_producer) {
+                            self.excluded_producers.insert(missed_producer);
+                            info!(
+                                "[LIVENESS] EXCLUDED {} — missed slot {} (gap={})",
+                                hex::encode(&missed_producer.as_bytes()[..4]),
+                                skipped_slot,
+                                slot_gap
+                            );
+                        }
+                    }
+                }
+            }
+
+            // RE-INCLUDE: producers who attested in this block
+            if !self.excluded_producers.is_empty() && !block.header.presence_root.is_zero() {
+                let sorted_pks: Vec<PublicKey> = {
+                    let producers = self.producer_set.read().await;
+                    let active = producers.active_producers_at_height(height);
+                    let mut pks: Vec<PublicKey> = active.iter().map(|p| p.public_key).collect();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                };
+                let producer_count = sorted_pks.len();
+
+                let indices =
+                    decode_attestation_bitfield(&block.header.presence_root, producer_count);
+                for idx in indices {
+                    if let Some(pk) = sorted_pks.get(idx) {
+                        if self.excluded_producers.remove(pk) {
+                            info!(
+                                "[LIVENESS] RE-INCLUDED {} — attested in block at h={}",
+                                hex::encode(&pk.as_bytes()[..4]),
+                                height
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
             .await;

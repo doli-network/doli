@@ -660,6 +660,7 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
+            excluded_producers: HashSet::new(),
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,

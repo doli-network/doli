@@ -430,25 +430,38 @@ impl Node {
         let effective_weights = active_with_weights;
 
         // ROUND-ROBIN PRODUCTION: one producer per slot, cycling through
-        // all active producers in sorted order. Bond weighting only affects
-        // rewards (epoch distribution), not block production scheduling.
-        // This prevents chain freeze when majority-stake producers go offline.
-        let mut sorted: Vec<PublicKey> = effective_weights.iter().map(|(pk, _)| *pk).collect();
+        // active producers in sorted order. Excluded producers (missed their
+        // slot) are skipped. Re-included when they attest.
+        let mut sorted: Vec<PublicKey> = effective_weights
+            .iter()
+            .map(|(pk, _)| *pk)
+            .filter(|pk| !self.excluded_producers.contains(pk))
+            .collect();
         sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
+        // Deadlock safety: if all excluded, fall back to full list
         if sorted.is_empty() {
-            return Vec::new();
+            sorted = effective_weights.iter().map(|(pk, _)| *pk).collect();
+            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            if sorted.is_empty() {
+                return Vec::new();
+            }
+            warn!("[SCHED_RR] All producers excluded! Falling back to full list");
         }
 
+        let excluded_count = self.excluded_producers.len();
         let producer_index = (current_slot as usize) % sorted.len();
         let selected = sorted[producer_index];
-        info!(
-            "[SCHED_RR] slot={} producer={} index={}/{}",
-            current_slot,
-            hex::encode(&selected.as_bytes()[..4]),
-            producer_index,
-            sorted.len()
-        );
+        if excluded_count > 0 {
+            info!(
+                "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
+                current_slot,
+                hex::encode(&selected.as_bytes()[..4]),
+                producer_index,
+                sorted.len(),
+                excluded_count
+            );
+        }
         vec![selected]
     }
 }
