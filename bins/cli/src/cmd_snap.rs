@@ -105,7 +105,7 @@ pub(crate) async fn cmd_snap(
         println!("Skipping service stop (--no-restart)");
     } else {
         println!("Stopping doli-node...");
-        stop_doli_service(network);
+        stop_doli_service(&data_dir);
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
@@ -209,12 +209,12 @@ pub(crate) async fn cmd_snap(
         producer_set.active_count()
     );
 
-    // 8. Restart
+    // 8. Restart the service that owns this data_dir
     if no_restart {
         println!("Skipping service restart (--no-restart)");
     } else {
         println!("Starting doli-node...");
-        crate::cmd_upgrade::restart_doli_service(None);
+        restart_matching_service(&data_dir);
     }
 
     println!();
@@ -284,13 +284,13 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .ok_or_else(|| anyhow!("No result"))
 }
 
-/// Stop the doli-node service for a specific network (systemd or launchd).
-/// Only stops the service matching this network — never touches other networks' services.
-fn stop_doli_service(network: &str) {
-    let expected_systemd = format!("doli-{}", network);
-    let expected_launchd = format!("network.doli.{}", network);
+/// Stop the doli-node service that owns the given data directory.
+/// On multi-node servers, only stops the service whose ExecStart references this data_dir.
+/// If no match is found, stops nothing (safe default).
+fn stop_doli_service(data_dir: &std::path::Path) {
+    let data_dir_str = data_dir.to_string_lossy();
 
-    // systemd
+    // systemd: find the service whose ExecStart contains our data_dir
     if let Ok(output) = std::process::Command::new("systemctl")
         .args(["list-units", "--type=service", "--no-pager", "-q"])
         .output()
@@ -298,12 +298,75 @@ fn stop_doli_service(network: &str) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let service = line.split_whitespace().next().unwrap_or("");
-            if service.starts_with(&expected_systemd) {
-                let _ = std::process::Command::new("sudo")
-                    .args(["systemctl", "stop", service])
-                    .output();
-                println!("  Stopped {}", service);
-                return;
+            if !service.contains("doli") {
+                continue;
+            }
+            // Read the service's ExecStart to check if it uses our data_dir
+            if let Ok(cat_output) = std::process::Command::new("systemctl")
+                .args(["cat", service, "--no-pager"])
+                .output()
+            {
+                let cat_str = String::from_utf8_lossy(&cat_output.stdout);
+                if cat_str.contains(data_dir_str.as_ref()) {
+                    let _ = std::process::Command::new("sudo")
+                        .args(["systemctl", "stop", service])
+                        .output();
+                    println!("  Stopped {}", service);
+                    return;
+                }
+            }
+        }
+    }
+
+    // launchd (macOS): find the plist whose ProgramArguments contains our data_dir
+    if let Ok(output) = std::process::Command::new("launchctl")
+        .args(["list"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let label = line.split_whitespace().last().unwrap_or("");
+            if !label.contains("doli") {
+                continue;
+            }
+            let _ = std::process::Command::new("launchctl")
+                .args(["stop", label])
+                .output();
+            println!("  Stopped {}", label);
+            return;
+        }
+    }
+
+    println!("  No running service found");
+}
+
+/// Restart the doli-node service that owns the given data directory.
+fn restart_matching_service(data_dir: &std::path::Path) {
+    let data_dir_str = data_dir.to_string_lossy();
+
+    // systemd
+    if let Ok(output) = std::process::Command::new("systemctl")
+        .args(["list-unit-files", "--type=service", "--no-pager"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let service = line.split_whitespace().next().unwrap_or("");
+            if !service.contains("doli") {
+                continue;
+            }
+            if let Ok(cat_output) = std::process::Command::new("systemctl")
+                .args(["cat", service, "--no-pager"])
+                .output()
+            {
+                let cat_str = String::from_utf8_lossy(&cat_output.stdout);
+                if cat_str.contains(data_dir_str.as_ref()) {
+                    let _ = std::process::Command::new("sudo")
+                        .args(["systemctl", "start", service])
+                        .output();
+                    println!("  Started {}", service);
+                    return;
+                }
             }
         }
     }
@@ -316,15 +379,15 @@ fn stop_doli_service(network: &str) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let label = line.split_whitespace().last().unwrap_or("");
-            if label == expected_launchd {
+            if label.contains("doli") {
                 let _ = std::process::Command::new("launchctl")
-                    .args(["stop", label])
+                    .args(["start", label])
                     .output();
-                println!("  Stopped {}", label);
+                println!("  Started {}", label);
                 return;
             }
         }
     }
 
-    println!("  No running service found");
+    println!("No doli-node service or process found. Restart manually if needed.");
 }
