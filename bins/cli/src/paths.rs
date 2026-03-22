@@ -1,5 +1,14 @@
 use std::path::PathBuf;
 
+fn whoami() -> String {
+    std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "$(whoami)".to_string())
+}
+
 /// Resolve the base data directory for a given network.
 /// Priority: flag > env > platform default > legacy fallback
 pub fn resolve_base_dir(network: &str, flag_override: Option<&str>) -> PathBuf {
@@ -23,13 +32,19 @@ pub fn resolve_base_dir(network: &str, flag_override: Option<&str>) -> PathBuf {
     if let Some(home) = dirs::home_dir() {
         let legacy = home.join(".doli").join(network);
         if legacy.exists() {
+            let owner = if cfg!(target_os = "macos") {
+                std::env::var("USER").unwrap_or_else(|_| whoami())
+            } else {
+                "doli:doli".to_string()
+            };
             eprintln!(
                 "Note: Using legacy data directory {}. To migrate, run:\n  \
-                 sudo mkdir -p {} && sudo cp -a {}/* {} && sudo chown -R doli:doli {}",
+                 sudo mkdir -p {} && sudo cp -a {}/* {} && sudo chown -R {} {}",
                 legacy.display(),
                 platform_default.display(),
                 legacy.display(),
                 platform_default.display(),
+                owner,
                 platform_default.display()
             );
             return legacy;

@@ -63,7 +63,33 @@ fn check_sudo() -> Result<()> {
     Ok(())
 }
 
+/// Get the real user's UID, even when running under sudo.
+/// On macOS, `sudo doli service install` needs the real user's UID (not 0)
+/// to bootstrap the plist into the correct GUI domain.
 fn get_uid() -> String {
+    // If running under sudo, use SUDO_UID (the real user's UID)
+    if let Ok(uid) = std::env::var("SUDO_UID") {
+        if !uid.is_empty() && uid != "0" {
+            return uid;
+        }
+    }
+    // If SUDO_USER is set, resolve UID via `id -u $SUDO_USER`
+    if let Ok(user) = std::env::var("SUDO_USER") {
+        if !user.is_empty() && user != "root" {
+            if let Ok(output) = std::process::Command::new("id")
+                .args(["-u", &user])
+                .output()
+            {
+                if output.status.success() {
+                    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !uid.is_empty() {
+                        return uid;
+                    }
+                }
+            }
+        }
+    }
+    // Not under sudo — use current UID
     std::process::Command::new("id")
         .arg("-u")
         .output()
@@ -71,6 +97,51 @@ fn get_uid() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "501".to_string())
+}
+
+/// Get the real user's home directory, even when running under sudo.
+fn real_home_dir() -> std::path::PathBuf {
+    // If running under sudo, resolve the real user's home
+    if let Ok(user) = std::env::var("SUDO_USER") {
+        if !user.is_empty() && user != "root" {
+            // macOS: use dscl
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(output) = std::process::Command::new("dscl")
+                    .args([
+                        ".",
+                        "-read",
+                        &format!("/Users/{}", user),
+                        "NFSHomeDirectory",
+                    ])
+                    .output()
+                {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        if let Some(home) = s.split_whitespace().last() {
+                            return std::path::PathBuf::from(home);
+                        }
+                    }
+                }
+                return std::path::PathBuf::from(format!("/Users/{}", user));
+            }
+            // Linux: use getent or /home/$user
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Ok(output) = std::process::Command::new("getent")
+                    .args(["passwd", &user])
+                    .output()
+                {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        if let Some(home) = s.split(':').nth(5) {
+                            return std::path::PathBuf::from(home.trim());
+                        }
+                    }
+                }
+                return std::path::PathBuf::from(format!("/home/{}", user));
+            }
+        }
+    }
+    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// Find the actual path to doli-node binary
@@ -105,7 +176,11 @@ fn which_doli_node() -> String {
 /// Uses 'doli' if the system user exists, otherwise the user who invoked sudo.
 fn detect_service_user() -> (String, String) {
     // Check if 'doli' system user exists
-    if let Ok(output) = std::process::Command::new("id").arg("-u").arg("doli").output() {
+    if let Ok(output) = std::process::Command::new("id")
+        .arg("-u")
+        .arg("doli")
+        .output()
+    {
         if output.status.success() {
             return ("doli".to_string(), "doli".to_string());
         }
@@ -132,7 +207,7 @@ fn launchd_label(network: &str, name: Option<&str>) -> String {
 }
 
 fn launchd_plist_path(label: &str) -> std::path::PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let home = real_home_dir();
     home.join("Library/LaunchAgents")
         .join(format!("{}.plist", label))
 }
@@ -253,10 +328,18 @@ WantedBy=multi-user.target
     let _ = std::fs::create_dir_all("/var/log/doli");
     // chown data dir to the service user
     let _ = std::process::Command::new("chown")
-        .args(["-R", &format!("{}:{}", run_user, run_group), &actual_data_dir])
+        .args([
+            "-R",
+            &format!("{}:{}", run_user, run_group),
+            &actual_data_dir,
+        ])
         .status();
     let _ = std::process::Command::new("chown")
-        .args(["-R", &format!("{}:{}", run_user, run_group), "/var/log/doli"])
+        .args([
+            "-R",
+            &format!("{}:{}", run_user, run_group),
+            "/var/log/doli",
+        ])
         .status();
 
     println!("Writing service file: {}", unit_path);
@@ -293,17 +376,17 @@ fn install_launchd(
 
     let exec_args = build_exec_args(network, &data_dir, &producer_key, p2p_port, rpc_port);
 
+    // Detect actual binary path
+    let doli_node_bin = which_doli_node();
+
     // Build ProgramArguments entries
-    let mut program_args = vec!["    <string>/usr/local/bin/doli-node</string>".to_string()];
+    let mut program_args = vec![format!("    <string>{}</string>", doli_node_bin)];
     for arg in &exec_args {
         program_args.push(format!("    <string>{}</string>", arg));
     }
     let program_args_str = program_args.join("\n");
 
-    let home = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
+    let home = real_home_dir().to_string_lossy().to_string();
 
     let log_dir = format!("{}/Library/Logs/doli", home);
     let _ = std::fs::create_dir_all(&log_dir);

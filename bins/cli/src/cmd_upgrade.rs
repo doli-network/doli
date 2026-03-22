@@ -463,9 +463,29 @@ fn try_restart_process() -> bool {
     any_ok
 }
 
-/// Get current user's UID (for launchctl kickstart)
+/// Get the real user's UID (for launchctl kickstart), even under sudo.
 #[cfg(target_os = "macos")]
 fn get_uid() -> String {
+    if let Ok(uid) = std::env::var("SUDO_UID") {
+        if !uid.is_empty() && uid != "0" {
+            return uid;
+        }
+    }
+    if let Ok(user) = std::env::var("SUDO_USER") {
+        if !user.is_empty() && user != "root" {
+            if let Ok(output) = std::process::Command::new("id")
+                .args(["-u", &user])
+                .output()
+            {
+                if output.status.success() {
+                    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !uid.is_empty() {
+                        return uid;
+                    }
+                }
+            }
+        }
+    }
     std::process::Command::new("id")
         .arg("-u")
         .output()

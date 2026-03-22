@@ -105,7 +105,7 @@ pub(crate) async fn cmd_snap(
         println!("Skipping service stop (--no-restart)");
     } else {
         println!("Stopping doli-node...");
-        stop_doli_service();
+        stop_doli_service(network);
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
@@ -284,8 +284,12 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .ok_or_else(|| anyhow!("No result"))
 }
 
-/// Stop the doli-node service (systemd or launchd).
-fn stop_doli_service() {
+/// Stop the doli-node service for a specific network (systemd or launchd).
+/// Only stops the service matching this network — never touches other networks' services.
+fn stop_doli_service(network: &str) {
+    let expected_systemd = format!("doli-{}", network);
+    let expected_launchd = format!("network.doli.{}", network);
+
     // systemd
     if let Ok(output) = std::process::Command::new("systemctl")
         .args(["list-units", "--type=service", "--no-pager", "-q"])
@@ -293,15 +297,13 @@ fn stop_doli_service() {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("doli") {
-                let service = line.split_whitespace().next().unwrap_or("");
-                if !service.is_empty() {
-                    let _ = std::process::Command::new("sudo")
-                        .args(["systemctl", "stop", service])
-                        .output();
-                    println!("  Stopped {}", service);
-                    return;
-                }
+            let service = line.split_whitespace().next().unwrap_or("");
+            if service.starts_with(&expected_systemd) {
+                let _ = std::process::Command::new("sudo")
+                    .args(["systemctl", "stop", service])
+                    .output();
+                println!("  Stopped {}", service);
+                return;
             }
         }
     }
@@ -313,15 +315,13 @@ fn stop_doli_service() {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("doli") {
-                let label = line.split_whitespace().last().unwrap_or("");
-                if !label.is_empty() {
-                    let _ = std::process::Command::new("launchctl")
-                        .args(["stop", label])
-                        .output();
-                    println!("  Stopped {}", label);
-                    return;
-                }
+            let label = line.split_whitespace().last().unwrap_or("");
+            if label == expected_launchd {
+                let _ = std::process::Command::new("launchctl")
+                    .args(["stop", label])
+                    .output();
+                println!("  Stopped {}", label);
+                return;
             }
         }
     }
