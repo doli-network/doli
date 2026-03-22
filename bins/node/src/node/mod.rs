@@ -19,7 +19,7 @@ mod validation_checks;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -190,9 +190,6 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub(super) minute_tracker: MinuteAttestationTracker,
-    /// Force next production attempt to bypass eligibility checks (testnet/devnet only).
-    /// Set via `forceProduceBlock` RPC, consumed (reset to false) in try_produce_block().
-    pub(super) force_produce: Arc<AtomicBool>,
 }
 
 impl Node {

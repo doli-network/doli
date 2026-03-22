@@ -681,7 +681,6 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
-            force_produce: Arc::new(AtomicBool::new(false)),
         })
     }
 }

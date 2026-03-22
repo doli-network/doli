@@ -1,4 +1,4 @@
-//! Stats and debug handlers: getChainStats, getStateRootDebug, getUtxoDiff, getMempoolTransactions, forceProduceBlock
+//! Stats and debug handlers: getChainStats, getStateRootDebug, getUtxoDiff, getMempoolTransactions
 
 use serde_json::Value;
 
@@ -193,31 +193,5 @@ impl RpcContext {
         txs.sort_by(|a, b| b.fee_rate.cmp(&a.fee_rate));
 
         serde_json::to_value(txs).map_err(|e| RpcError::internal_error(e.to_string()))
-    }
-
-    /// Force the node to produce a block on the next production cycle,
-    /// bypassing eligibility/scheduler checks. Testing only — refuses on mainnet.
-    pub(super) async fn force_produce_block(&self) -> Result<Value, RpcError> {
-        // Defense-in-depth: reject on mainnet at the RPC layer
-        if self.network == "mainnet" {
-            return Err(RpcError::new(
-                -32600,
-                "forceProduceBlock is not available on mainnet",
-            ));
-        }
-
-        match &self.force_produce {
-            Some(flag) => {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                Ok(serde_json::json!({
-                    "status": "queued",
-                    "message": "Next production cycle will force a block"
-                }))
-            }
-            None => Err(RpcError::new(
-                -32600,
-                "Force produce not available (no producer key configured)",
-            )),
-        }
     }
 }

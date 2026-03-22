@@ -78,9 +78,6 @@ pub struct RpcContext {
     pub vesting_quarter_slots: u64,
     /// Shared backfill state for live hot-backfill
     pub backfill_state: Arc<BackfillState>,
-    /// Force-produce flag (testnet/devnet only). When set to true, the next
-    /// production cycle bypasses eligibility checks. Consumed once then reset.
-    pub force_produce: Option<Arc<AtomicBool>>,
 }
 
 impl RpcContext {
@@ -130,7 +127,6 @@ impl RpcContext {
                 total: AtomicU64::new(0),
                 error: RwLock::new(None),
             }),
-            force_produce: None,
         }
     }
 
@@ -184,7 +180,6 @@ impl RpcContext {
                     total: AtomicU64::new(0),
                     error: RwLock::new(None),
                 }),
-                force_produce: None,
             }
         }
     }
@@ -261,12 +256,6 @@ impl RpcContext {
     /// Set update status callback (for getUpdateStatus RPC)
     pub fn with_update_status(mut self, f: impl Fn() -> Value + Send + Sync + 'static) -> Self {
         self.update_status = Arc::new(f);
-        self
-    }
-
-    /// Set force-produce flag (testnet/devnet only)
-    pub fn with_force_produce(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.force_produce = Some(flag);
         self
     }
 
