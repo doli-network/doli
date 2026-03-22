@@ -194,11 +194,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_address_hex() {
+    fn test_decode_address_hex_rejected() {
+        // Raw hex must be rejected — ambiguous (pubkey vs pubkey_hash).
+        // Users must use bech32 addresses (doli1...).
         let hex_addr = "aa".repeat(32);
         let result = decode_address(&hex_addr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_address_bech32() {
+        let hash = crypto::Hash::from_bytes([0x01; 32]);
+        let addr = crypto::address::encode(&hash, "doli").unwrap();
+        let result = decode_address(&addr);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), [0xAAu8; 32]);
+        assert_eq!(result.unwrap(), [0x01u8; 32]);
     }
 
     #[test]

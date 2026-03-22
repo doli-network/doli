@@ -189,7 +189,10 @@ pub(crate) async fn cmd_snap(
     }
 
     let snap = snap.ok_or_else(|| {
-        anyhow!("Snapshot verification failed after {} attempts. Seeds keep advancing — try again.", max_retries)
+        anyhow!(
+            "Snapshot verification failed after {} attempts. Seeds keep advancing — try again.",
+            max_retries
+        )
     })?;
 
     let cs_hex = snap["chainState"]

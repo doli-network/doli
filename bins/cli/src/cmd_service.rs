@@ -252,7 +252,21 @@ fn build_exec_args(
     args.push("--producer".to_string());
     args.push("--yes".to_string());
     args.push("--force-start".to_string());
-    if let Some(ref key) = producer_key {
+
+    // Auto-detect wallet path if --producer-key not provided
+    let effective_key = if producer_key.is_some() {
+        producer_key.clone()
+    } else {
+        let default_data_dir = format!("/var/lib/doli/{}", network);
+        let actual_dir = data_dir.as_deref().unwrap_or(&default_data_dir);
+        let wallet_path = std::path::PathBuf::from(actual_dir).join("wallet.json");
+        if wallet_path.exists() {
+            Some(wallet_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    };
+    if let Some(ref key) = effective_key {
         args.push("--producer-key".to_string());
         args.push(key.clone());
     }
