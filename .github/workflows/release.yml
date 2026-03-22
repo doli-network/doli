@@ -170,6 +170,13 @@ jobs:
         working-directory: bins/gui/src-ui
         run: npm install && npm run build
 
+      - name: Sync tauri.conf.json version from tag
+        run: |
+          VERSION_NUM=${GITHUB_REF#refs/tags/v}
+          cd bins/gui
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION_NUM}\"/" tauri.conf.json
+          echo "Set tauri.conf.json version to ${VERSION_NUM}"
+
       - name: Build GUI
         working-directory: bins/gui
         run: cargo tauri build
@@ -216,6 +223,13 @@ jobs:
       - name: Build frontend
         working-directory: bins/gui/src-ui
         run: npm install && npm run build
+
+      - name: Sync tauri.conf.json version from tag
+        run: |
+          VERSION_NUM=${GITHUB_REF#refs/tags/v}
+          cd bins/gui
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION_NUM}\"/" tauri.conf.json
+          echo "Set tauri.conf.json version to ${VERSION_NUM}"
 
       - name: Build GUI
         working-directory: bins/gui
@@ -265,6 +279,15 @@ jobs:
       - name: Build frontend
         working-directory: bins/gui/src-ui
         run: npm install && npm run build
+
+      - name: Sync tauri.conf.json version from tag
+        run: |
+          $VersionNum = "${{ github.ref_name }}".TrimStart("v")
+          $conf = Get-Content bins/gui/tauri.conf.json -Raw
+          $conf = $conf -replace '"version": ".*?"', "`"version`": `"$VersionNum`""
+          Set-Content bins/gui/tauri.conf.json $conf
+          Write-Host "Set tauri.conf.json version to $VersionNum"
+        shell: pwsh
 
       - name: Build GUI
         working-directory: bins/gui
