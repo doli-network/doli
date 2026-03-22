@@ -64,9 +64,6 @@ impl Node {
             // Must be synced — can't build on a tip we don't have state for
             let state = self.chain_state.read().await;
             let local_height = state.best_height;
-            let prev_hash = state.best_hash;
-            let prev_slot = state.best_slot;
-            let height = local_height + 1;
             drop(state);
 
             let network_tip = self.sync_manager.read().await.best_peer_height();
@@ -78,29 +75,38 @@ impl Node {
                 return Ok(());
             }
 
-            info!(
-                "[FORCE_PRODUCE] Bypassing eligibility checks for slot {} at height {}",
-                current_slot, height
-            );
+            // To create a real fork, we produce at the SAME height as the current tip.
+            // We look up the parent of our current tip and build a competing block
+            // on top of that parent — same height, same parent, different producer.
+            let (prev_hash, prev_slot, height) = {
+                let state = self.chain_state.read().await;
+                let tip_hash = state.best_hash;
+                let tip_height = state.best_height;
+                drop(state);
 
-            // Force-produce uses next slot if current slot already has a block.
-            // This creates a competing block at height+1 that differs from
-            // what the network will produce — a real 1-block fork.
-            let current_slot = if current_slot <= prev_slot {
-                prev_slot + 1
-            } else {
-                current_slot
+                if let Ok(Some(tip_block)) = self.block_store.get_block(&tip_hash) {
+                    // Build on the parent of the current tip → competing block at same height
+                    (
+                        tip_block.header.prev_hash,
+                        tip_block.header.slot.saturating_sub(1),
+                        tip_height,
+                    )
+                } else {
+                    // Fallback: build on current tip (next height)
+                    let state = self.chain_state.read().await;
+                    (state.best_hash, state.best_slot, state.best_height + 1)
+                }
             };
 
-            // SIGNED SLOTS PROTECTION: still enforce slashing protection
-            if let Some(ref signed_slots) = self.signed_slots_db {
-                if let Err(e) = signed_slots.check_and_mark(current_slot as u64) {
-                    error!("SLASHING PROTECTION: {}", e);
-                    return Ok(());
-                }
-            }
+            info!(
+                "[FORCE_PRODUCE] Creating competing block at height {} (fork), slot {}, parent {}",
+                height, current_slot, prev_hash
+            );
 
-            // Build block content
+            // Skip signed slots check for force-produce — we're intentionally
+            // creating a competing block for testing purposes.
+
+            // Build block content using the PARENT of the current tip
             let (header, transactions) = match self
                 .build_block_content(prev_hash, prev_slot, height, current_slot, our_pubkey)
                 .await?
