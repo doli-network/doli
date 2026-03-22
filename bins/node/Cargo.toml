@@ -54,9 +54,11 @@ assets = [
     ["target/release/doli", "usr/bin/", "755"],
 ]
 extended-description = "DOLI blockchain node and wallet CLI for the proof-of-time network."
+maintainer-scripts = "bins/node/"
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/doli-node", dest = "/usr/bin/doli-node", mode = "0755" },
     { source = "target/release/doli", dest = "/usr/bin/doli", mode = "0755" },
 ]
+post_install_script = "bins/node/postinst.sh"
