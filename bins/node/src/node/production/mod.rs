@@ -75,28 +75,27 @@ impl Node {
                 return Ok(());
             }
 
-            // To create a real fork, we produce at the SAME height as the current tip.
-            // We look up the parent of our current tip and build a competing block
-            // on top of that parent — same height, same parent, different producer.
-            let (prev_hash, prev_slot, height) = {
-                let state = self.chain_state.read().await;
-                let tip_hash = state.best_hash;
-                let tip_height = state.best_height;
-                drop(state);
+            // To create a real fork:
+            // 1. Rollback the tip (undo 1 block) — now we're at height H-1
+            // 2. Produce a competing block at height H for current_slot
+            // 3. apply_block succeeds because current_slot > prev_slot (parent's slot)
+            // 4. Network has block A at height H, we have block B = FORK
+            info!(
+                "[FORCE_PRODUCE] Rolling back tip at h={} to create fork...",
+                local_height
+            );
+            let rolled_back = self.rollback_one_block().await?;
+            if !rolled_back {
+                warn!("[FORCE_PRODUCE] Rollback failed (at genesis?). Cannot create fork.");
+                return Ok(());
+            }
 
-                if let Ok(Some(tip_block)) = self.block_store.get_block(&tip_hash) {
-                    // Build on the parent of the current tip → competing block at same height
-                    (
-                        tip_block.header.prev_hash,
-                        tip_block.header.slot.saturating_sub(1),
-                        tip_height,
-                    )
-                } else {
-                    // Fallback: build on current tip (next height)
-                    let state = self.chain_state.read().await;
-                    (state.best_hash, state.best_slot, state.best_height + 1)
-                }
-            };
+            // After rollback, read the new chain state (now at H-1)
+            let state = self.chain_state.read().await;
+            let prev_hash = state.best_hash;
+            let prev_slot = state.best_slot;
+            let height = state.best_height + 1;
+            drop(state);
 
             info!(
                 "[FORCE_PRODUCE] Creating competing block at height {} (fork), slot {}, parent {}",
@@ -106,7 +105,7 @@ impl Node {
             // Skip signed slots check for force-produce — we're intentionally
             // creating a competing block for testing purposes.
 
-            // Build block content using the PARENT of the current tip
+            // Build block content — now valid because current_slot > prev_slot
             let (header, transactions) = match self
                 .build_block_content(prev_hash, prev_slot, height, current_slot, our_pubkey)
                 .await?
