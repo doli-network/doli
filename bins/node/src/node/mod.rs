@@ -41,12 +41,12 @@ use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 use doli_core::validation::ValidationMode;
+use doli_core::DeterministicScheduler;
 use doli_core::{
     attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
     Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
     ProducerGSet, Transaction,
 };
-use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::protocols::{SyncRequest, SyncResponse};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
@@ -135,6 +135,9 @@ pub struct Node {
     /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
     pub(super) seen_blocks_for_slot: std::collections::HashSet<u32>,
+    /// Producers excluded from round-robin for inactivity (0 blocks + 0 attestations
+    /// in completed epoch). Re-included when they produce or attest again.
+    pub(super) excluded_producers: HashSet<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.

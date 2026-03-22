@@ -34,8 +34,8 @@ impl Node {
             );
 
             // Rebuild epoch bond snapshot from UTXO set.
-            // This snapshot is used by the scheduler for the ENTIRE next epoch.
-            // All nodes compute this at the same height → deterministic scheduling.
+            // This snapshot is used for REWARDS (bond-weighted distribution).
+            // Round-robin production uses active_producers directly.
             {
                 let utxo = self.utxo_set.read().await;
                 let producers = self.producer_set.read().await;
@@ -57,7 +57,75 @@ impl Node {
                 );
                 self.epoch_bond_snapshot = snapshot;
                 self.epoch_bond_snapshot_epoch = epoch;
-                self.cached_scheduler = None; // Force scheduler rebuild with new bonds
+                self.cached_scheduler = None;
+            }
+
+            // LIVENESS FILTER: scan completed epoch, find who produced blocks.
+            // Producers who produced 0 blocks are excluded from round-robin
+            // in the next epoch. Re-included when they produce or attest again.
+            // Deterministic: all nodes read the same blocks on-chain.
+            if epoch > 1 {
+                let epoch_start = (epoch - 1) * blocks_per_epoch;
+                let epoch_end = epoch * blocks_per_epoch;
+                let mut producers_who_produced: HashSet<PublicKey> = HashSet::new();
+
+                for h in epoch_start..epoch_end {
+                    if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                        producers_who_produced.insert(blk.header.producer);
+                    }
+                }
+
+                // Also count attestations (presence_root bitfield)
+                let producers_read = self.producer_set.read().await;
+                let active = producers_read.active_producers_at_height(height);
+                let mut sorted_active: Vec<&storage::producer::ProducerInfo> = active.to_vec();
+                sorted_active.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+                let producer_count = sorted_active.len();
+
+                let mut attested_pks: HashSet<PublicKey> = HashSet::new();
+                for h in epoch_start..epoch_end {
+                    if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                        if !blk.header.presence_root.is_zero() {
+                            let indices = decode_attestation_bitfield(
+                                &blk.header.presence_root,
+                                producer_count,
+                            );
+                            for idx in indices {
+                                if let Some(p) = sorted_active.get(idx) {
+                                    attested_pks.insert(p.public_key);
+                                }
+                            }
+                        }
+                    }
+                }
+                drop(producers_read);
+
+                // Build excluded set
+                let mut excluded: Vec<PublicKey> = Vec::new();
+                let producers_read = self.producer_set.read().await;
+                let active = producers_read.active_producers_at_height(height);
+                for p in &active {
+                    let produced = producers_who_produced.contains(&p.public_key);
+                    let attested = attested_pks.contains(&p.public_key);
+                    if !produced && !attested {
+                        excluded.push(p.public_key);
+                        info!(
+                            "[LIVENESS] EXCLUDED {} from epoch {} round-robin (0 blocks, 0 attestations)",
+                            hex::encode(&p.public_key.as_bytes()[..4]),
+                            epoch
+                        );
+                    }
+                }
+                drop(producers_read);
+
+                if !excluded.is_empty() {
+                    warn!(
+                        "[LIVENESS] {} producer(s) excluded from epoch {} for inactivity",
+                        excluded.len(),
+                        epoch
+                    );
+                }
+                self.excluded_producers = excluded.into_iter().collect();
             }
 
             // Reset minute tracker for the new epoch

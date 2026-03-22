@@ -427,49 +427,44 @@ impl Node {
         // REMOVED: Liveness filter from epoch scheduler.
         // producer_liveness is local state — different on each node at different heights.
         // Filtering out "stale" producers changes the scheduler input non-deterministically.
-        // The bond-weighted scheduler uses raw on-chain weights only.
         let effective_weights = active_with_weights;
 
-        let current_epoch = self.params.slot_to_epoch(current_slot) as u64;
-        let active_count = effective_weights.len();
-        let total_bonds: u64 = effective_weights.iter().map(|(_, b)| *b).sum();
-        let scheduler = match &self.cached_scheduler {
-            Some((epoch, count, bonds, sched))
-                if *epoch == current_epoch && *count == active_count && *bonds == total_bonds =>
-            {
-                sched
+        // ROUND-ROBIN PRODUCTION: one producer per slot, cycling through
+        // active producers in sorted order. Producers excluded by liveness
+        // filter (0 blocks + 0 attestations in previous epoch) are skipped.
+        let mut sorted: Vec<PublicKey> = effective_weights
+            .iter()
+            .map(|(pk, _)| *pk)
+            .filter(|pk| !self.excluded_producers.contains(pk))
+            .collect();
+        sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        if sorted.is_empty() {
+            // All producers excluded — fall back to full list (deadlock safety)
+            sorted = effective_weights.iter().map(|(pk, _)| *pk).collect();
+            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            if sorted.is_empty() {
+                return Vec::new();
             }
-            _ => {
-                // Build new scheduler (epoch changed or active producer set changed)
-                info!(
-                    "Rebuilding scheduler: epoch={}, producers={}, total_bonds={}",
-                    current_epoch, active_count, total_bonds
-                );
-                let producers: Vec<ScheduledProducer> = effective_weights
-                    .iter()
-                    .map(|(pk, bonds)| ScheduledProducer::new(*pk, *bonds as u32))
-                    .collect();
-                self.cached_scheduler = Some((
-                    current_epoch,
-                    active_count,
-                    total_bonds,
-                    DeterministicScheduler::new(producers),
-                ));
-                &self.cached_scheduler.as_ref().unwrap().3
-            }
-        };
-        // Dedup: a producer may appear at multiple ranks (small producer sets).
-        // Without dedup, position() returns the first occurrence, masking later ranks.
-        // This matches the dedup in select_producer_for_slot() (consensus.rs).
-        let mut eligible: Vec<PublicKey> =
-            Vec::with_capacity(self.config.network.params().max_fallback_ranks);
-        for rank in 0..self.config.network.params().max_fallback_ranks {
-            if let Some(pk) = scheduler.select_producer(current_slot, rank).cloned() {
-                if !eligible.contains(&pk) {
-                    eligible.push(pk);
-                }
-            }
+            warn!(
+                "[SCHED_RR] All producers excluded! Falling back to full list ({})",
+                sorted.len()
+            );
         }
-        eligible
+
+        let excluded_count = self.excluded_producers.len();
+        let producer_index = (current_slot as usize) % sorted.len();
+        let selected = sorted[producer_index];
+        if excluded_count > 0 {
+            info!(
+                "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
+                current_slot,
+                hex::encode(&selected.as_bytes()[..4]),
+                producer_index,
+                sorted.len(),
+                excluded_count
+            );
+        }
+        vec![selected]
     }
 }
