@@ -73,6 +73,59 @@ fn get_uid() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
+/// Find the actual path to doli-node binary
+fn which_doli_node() -> String {
+    // Check `which doli-node` first
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("doli-node")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+    // Check common paths
+    for path in &[
+        "/usr/local/bin/doli-node",
+        "/usr/bin/doli-node",
+        "/mainnet/bin/doli-node",
+    ] {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    // Default
+    "/usr/local/bin/doli-node".to_string()
+}
+
+/// Detect the user/group for the systemd service.
+/// Uses 'doli' if the system user exists, otherwise the user who invoked sudo.
+fn detect_service_user() -> (String, String) {
+    // Check if 'doli' system user exists
+    if let Ok(output) = std::process::Command::new("id").arg("-u").arg("doli").output() {
+        if output.status.success() {
+            return ("doli".to_string(), "doli".to_string());
+        }
+    }
+    // Fall back to SUDO_USER (the user who ran sudo)
+    if let Ok(user) = std::env::var("SUDO_USER") {
+        if !user.is_empty() && user != "root" {
+            return (user.clone(), user);
+        }
+    }
+    // Last resort: current user
+    if let Ok(output) = std::process::Command::new("whoami").output() {
+        let user = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !user.is_empty() {
+            return (user.clone(), user);
+        }
+    }
+    ("root".to_string(), "root".to_string())
+}
+
 fn launchd_label(network: &str, name: Option<&str>) -> String {
     name.map(|n| n.to_string())
         .unwrap_or_else(|| format!("network.doli.{}", network))
@@ -153,8 +206,14 @@ fn install_systemd(
     let default_data_dir = format!("/var/lib/doli/{}", network);
     let actual_data_dir = data_dir.clone().unwrap_or_else(|| default_data_dir.clone());
 
+    // Detect the actual doli-node binary path
+    let doli_node_bin = which_doli_node();
+
+    // Detect user/group: use 'doli' if the system user exists, otherwise the invoking user
+    let (run_user, run_group) = detect_service_user();
+
     let exec_args = build_exec_args(network, &data_dir, &producer_key, p2p_port, rpc_port);
-    let exec_start = format!("/usr/local/bin/doli-node {}", exec_args.join(" \\\n  "));
+    let exec_start = format!("{} {}", doli_node_bin, exec_args.join(" \\\n  "));
 
     let unit = format!(
         r#"[Unit]
@@ -166,16 +225,15 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=doli
-Group=doli
+User={user}
+Group={group}
 ExecStart={exec_start}
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/doli/{network}.log
 StandardError=append:/var/log/doli/{network}.log
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
+ProtectSystem=full
 ReadWritePaths={data_dir} /var/log/doli
 PrivateTmp=true
 LimitNOFILE=65535
@@ -186,10 +244,20 @@ WantedBy=multi-user.target
         network = network,
         exec_start = exec_start,
         data_dir = actual_data_dir,
+        user = run_user,
+        group = run_group,
     );
 
-    // Ensure log directory exists
+    // Ensure data and log directories exist with correct ownership
+    let _ = std::fs::create_dir_all(&actual_data_dir);
     let _ = std::fs::create_dir_all("/var/log/doli");
+    // chown data dir to the service user
+    let _ = std::process::Command::new("chown")
+        .args(["-R", &format!("{}:{}", run_user, run_group), &actual_data_dir])
+        .status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", &format!("{}:{}", run_user, run_group), "/var/log/doli"])
+        .status();
 
     println!("Writing service file: {}", unit_path);
     std::fs::write(&unit_path, &unit)?;

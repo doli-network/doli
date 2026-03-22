@@ -236,17 +236,20 @@
             <span class="comment"># 2. Create wallet + BLS key</span><br>
             <span class="p">$ </span>doli init<br>
             <br>
-            <span class="comment"># 3. Register as producer (requires 10 DOLI per bond)</span><br>
-            <span class="p">$ </span>doli producer register --bonds 1<br>
+            <span class="comment"># 3. Sync with the network</span><br>
+            <span class="p">$ </span>sudo doli snap<br>
             <br>
-            <span class="comment"># 4. Install, sync, and start the node</span><br>
+            <span class="comment"># 4. Start the node</span><br>
             <span class="p">$ </span>sudo doli service install<br>
+            <br>
+            <span class="comment"># 5. Register as producer (requires 10 DOLI per bond)</span><br>
+            <span class="p">$ </span>doli producer register --bonds 1<br>
         </div>
 
         <div class="note">
             <strong>Permission model.</strong>
             Wallet commands (<code>doli send</code>, <code>doli balance</code>) never need <code>sudo</code>.
-            System commands (<code>doli service install</code>, <code>doli upgrade</code>) do.
+            System commands (<code>doli service install</code>, <code>doli upgrade</code>, <code>doli snap</code>) do.
             Everything else just works.
         </div>
 
@@ -313,11 +316,56 @@
 <pre><span class="p">$ </span>doli restore</pre>
 
         <!-- ═══════════════════════════════════════════════════════ -->
-        <!-- 4. REGISTER                                            -->
+        <!-- 4. SNAP SYNC                                           -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">04</span> Register as producer</h2>
+        <h2><span class="num">04</span> Sync with the network</h2>
 
-        <p>Send at least 10 DOLI to your address (shown by <code>doli info</code>), then register:</p>
+        <p>Before starting your node, sync with the network. <code>doli snap</code> downloads
+           a verified state snapshot so your node starts at the current chain tip
+           instead of replaying every block from genesis.</p>
+
+<pre><span class="p">$ </span>sudo doli snap</pre>
+
+        <div class="note">
+            <strong>How it works.</strong> <code>doli snap</code> queries multiple seed nodes, verifies
+            that at least 2/3 agree on the same state root, downloads the snapshot from a
+            trusted source, and writes it to your data directory. Your wallet and keys
+            are preserved.
+        </div>
+
+        <p>Alternatively, you can sync block-by-block from genesis (slower, but verifies every block):</p>
+
+<pre><span class="comment"># Full sync from genesis (optional — takes longer)</span>
+<span class="p">$ </span>doli-node run --yes</pre>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 5. START NODE                                          -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">05</span> Start the node</h2>
+
+        <p>Install the system service so the node runs persistently and starts on boot:</p>
+
+<pre><span class="p">$ </span>sudo doli service install</pre>
+
+        <p>This:</p>
+        <ol>
+            <li>Creates a systemd unit (Linux) or launchd plist (macOS)</li>
+            <li>Enables auto-start on boot</li>
+            <li>Starts the node</li>
+        </ol>
+
+        <p>Check that your node is running:</p>
+
+<pre><span class="p">$ </span>doli service status
+<span class="p">$ </span>doli service logs
+<span class="p">$ </span>doli chain</pre>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- 6. REGISTER                                            -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <h2><span class="num">06</span> Register as producer</h2>
+
+        <p>Once your node is synced, send at least 10 DOLI to your address (shown by <code>doli info</code>), then register:</p>
 
 <pre><span class="comment"># Register with 1 bond (10 DOLI)</span>
 <span class="p">$ </span>doli producer register --bonds 1
@@ -330,39 +378,9 @@
 <pre><span class="p">$ </span>doli producer status</pre>
 
         <!-- ═══════════════════════════════════════════════════════ -->
-        <!-- 5. START NODE                                          -->
-        <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">05</span> Start the node</h2>
-
-        <p>One command installs the system service, syncs from a verified snapshot, and starts producing:</p>
-
-<pre><span class="p">$ </span>sudo doli service install</pre>
-
-        <p>This:</p>
-        <ol>
-            <li>Creates a systemd unit (Linux) or launchd plist (macOS)</li>
-            <li>Enables auto-start on boot</li>
-            <li>Starts the node in producer mode</li>
-        </ol>
-
-        <p>Check that your node is running and synced:</p>
-
-<pre><span class="p">$ </span>doli service status
-<span class="p">$ </span>doli service logs
-<span class="p">$ </span>doli chain</pre>
-
-        <div class="note">
-            <strong>Snap sync.</strong> If your node needs to catch up quickly, run <code>doli snap</code>.
-            It downloads a verified state snapshot from the seed network (2/3 consensus)
-            and puts your node at the current chain tip in seconds.
-        </div>
-
-<pre><span class="p">$ </span>doli snap</pre>
-
-        <!-- ═══════════════════════════════════════════════════════ -->
         <!-- 6. BONDS                                               -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">06</span> Bond stacking</h2>
+        <h2><span class="num">07</span> Bond stacking</h2>
 
         <p>More bonds = more block slots = more rewards. Each bond costs 10 DOLI.</p>
 
@@ -387,7 +405,7 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- 7. FIREWALL                                            -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">07</span> Firewall</h2>
+        <h2><span class="num">08</span> Firewall</h2>
 
         <h3><span class="os">Linux</span> UFW</h3>
 <pre><span class="p">$ </span>sudo ufw allow 30300/tcp comment 'DOLI P2P'</pre>
@@ -406,7 +424,7 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- 8. UPGRADE                                             -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">08</span> Upgrade</h2>
+        <h2><span class="num">09</span> Upgrade</h2>
 
 <pre><span class="p">$ </span>sudo doli upgrade</pre>
 
@@ -426,7 +444,7 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- COMMAND REFERENCE                                      -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">09</span> Command reference</h2>
+        <h2><span class="num">10</span> Command reference</h2>
 
         <h3>Wallet</h3>
         <table>
@@ -460,7 +478,7 @@
             <tr><td>doli service logs</td><td>Tail node logs</td></tr>
             <tr><td>doli service restart</td><td>Restart the node</td></tr>
             <tr><td>doli service stop</td><td>Stop the node</td></tr>
-            <tr><td>doli snap</td><td>Fast-sync from verified snapshot</td></tr>
+            <tr><td>sudo doli snap</td><td>Fast-sync from verified snapshot</td></tr>
             <tr><td>doli chain</td><td>Current height, epoch, hash</td></tr>
             <tr><td>sudo doli upgrade</td><td>Upgrade to latest release</td></tr>
         </table>
@@ -470,20 +488,20 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- SNAP SYNC DETAIL                                       -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">10</span> Snap sync</h2>
+        <h2><span class="num">11</span> Snap sync reference</h2>
 
         <p><code>doli snap</code> downloads a verified state snapshot from the seed network.
            It queries multiple seeds, verifies 2/3 consensus on the state root, and applies the snapshot.
            Your node is at the chain tip in seconds.</p>
 
 <pre><span class="comment"># Standard (queries all mainnet seeds)</span>
-<span class="p">$ </span>doli snap
+<span class="p">$ </span>sudo doli snap
 
 <span class="comment"># Testnet</span>
-<span class="p">$ </span>doli snap -n testnet
+<span class="p">$ </span>sudo doli snap -n testnet
 
 <span class="comment"># Custom seed</span>
-<span class="p">$ </span>doli snap --seed http://192.168.1.50:8500</pre>
+<span class="p">$ </span>sudo doli snap --seed http://192.168.1.50:8500</pre>
 
         <table>
             <tr><th>Flag</th><th>Description</th></tr>
@@ -505,26 +523,26 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- TROUBLESHOOTING                                        -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">11</span> Troubleshooting</h2>
+        <h2><span class="num">12</span> Troubleshooting</h2>
 
         <h3>Node stuck, forked, or not syncing</h3>
-<pre><span class="p">$ </span>doli snap</pre>
+<pre><span class="p">$ </span>sudo doli snap</pre>
         <p>This resets your node to the current network state. Works every time.</p>
 
         <h3>Node won't start</h3>
 <pre><span class="p">$ </span>doli service logs <span class="c"># check error</span>
 <span class="p">$ </span>ls -la /usr/local/bin/doli* <span class="c"># binaries exist?</span>
-<span class="p">$ </span>doli snap <span class="c"># reset state</span>
+<span class="p">$ </span>sudo doli snap <span class="c"># reset state</span>
 <span class="p">$ </span>doli service restart</pre>
 
         <h3>Version mismatch</h3>
 <pre><span class="p">$ </span>sudo doli upgrade --yes</pre>
 
         <h3>Nuclear: full reset</h3>
-<pre><span class="p">$ </span>doli service stop
-<span class="p">$ </span>doli wipe --yes
-<span class="p">$ </span>doli snap
-<span class="p">$ </span>doli service start</pre>
+<pre><span class="p">$ </span>sudo doli service stop
+<span class="p">$ </span>sudo doli wipe --yes
+<span class="p">$ </span>sudo doli snap
+<span class="p">$ </span>sudo doli service start</pre>
 
         <div class="note">
             <strong>Wipe preserves your wallet and keys.</strong> Only chain data is deleted.
@@ -536,7 +554,7 @@
         <!-- ═══════════════════════════════════════════════════════ -->
         <!-- PATHS                                                  -->
         <!-- ═══════════════════════════════════════════════════════ -->
-        <h2><span class="num">12</span> Directory layout</h2>
+        <h2><span class="num">13</span> Directory layout</h2>
 
         <p>You never need to think about these. The CLI and node find everything automatically.
            Override any path with <code>--data-dir</code>, <code>-w</code>, or the environment variables below.</p>
