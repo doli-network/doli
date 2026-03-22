@@ -166,7 +166,153 @@ impl Node {
                 &mut undo_created_utxos,
             )
             .await?;
-        let needs_full_producer_write = needs_full_producer_write || genesis_needs_full_write;
+        let mut needs_full_producer_write = needs_full_producer_write || genesis_needs_full_write;
+
+        // =====================================================================
+        // REACTIVE ROUND-ROBIN SCHEDULING
+        //
+        // Update the `scheduled` flag on producers based on on-chain evidence:
+        // 1. Detect missed slots → unschedule rank 0 producers who didn't produce
+        // 2. Block producer → schedule (proved alive by producing this block)
+        // 3. Attestation bitfield → schedule attesters (proved alive by attesting)
+        //
+        // All data is from block headers (on-chain), so every node computes the
+        // same result. This is NOT local gossip state — it's deterministic.
+        // =====================================================================
+        {
+            let prev_slot = {
+                let state = self.chain_state.read().await;
+                // best_slot is already updated to this block's slot by update_chain_state_for_block,
+                // so we need the PREVIOUS slot. Get it from the previous block.
+                if height <= 1 {
+                    0u32 // Genesis: no previous block
+                } else {
+                    // Get previous block's slot from block store
+                    self.block_store
+                        .get_block_by_height(height - 1)
+                        .ok()
+                        .flatten()
+                        .map(|b| b.header.slot)
+                        .unwrap_or(state.best_slot.saturating_sub(1))
+                }
+            };
+
+            let current_slot = block.header.slot;
+
+            // Build the scheduler as it was BEFORE this block (same state that
+            // validated this block). Used to determine who was rank 0 for missed slots.
+            let missed_slot_scheduler = {
+                let producers = self.producer_set.read().await;
+                let scheduled: Vec<(PublicKey, u64)> = producers
+                    .scheduled_producers_at_height(height)
+                    .iter()
+                    .map(|p| (p.public_key, 1u64))
+                    .collect();
+                if scheduled.is_empty() {
+                    None
+                } else {
+                    Some(doli_core::consensus::select_producer_for_slot(
+                        current_slot,
+                        &scheduled,
+                    ))
+                }
+            };
+
+            let mut producers = self.producer_set.write().await;
+            let mut scheduling_changed = false;
+
+            // 1. Detect missed slots: if current_slot > prev_slot + 1, slots were skipped
+            if current_slot > prev_slot + 1 && height > 1 {
+                let scheduled_list: Vec<(PublicKey, u64)> = producers
+                    .scheduled_producers_at_height(height)
+                    .iter()
+                    .map(|p| (p.public_key, 1u64))
+                    .collect();
+
+                if !scheduled_list.is_empty() {
+                    for missed_slot in (prev_slot + 1)..current_slot {
+                        let eligible = doli_core::consensus::select_producer_for_slot(
+                            missed_slot,
+                            &scheduled_list,
+                        );
+                        if let Some(rank0) = eligible.first() {
+                            let is_scheduled = producers
+                                .get_by_pubkey(rank0)
+                                .map(|p| p.scheduled)
+                                .unwrap_or(false);
+                            if is_scheduled {
+                                info!(
+                                    "Reactive scheduling: unscheduling {} (missed slot {})",
+                                    rank0, missed_slot
+                                );
+                                producers.unschedule_producer(rank0);
+                                scheduling_changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. If this block was produced by a fallback (not rank 0), rank 0 missed
+            if let Some(ref eligible) = missed_slot_scheduler {
+                if let Some(expected_rank0) = eligible.first() {
+                    if *expected_rank0 != block.header.producer {
+                        let is_scheduled = producers
+                            .get_by_pubkey(expected_rank0)
+                            .map(|p| p.scheduled)
+                            .unwrap_or(false);
+                        if is_scheduled {
+                            info!(
+                                "Reactive scheduling: unscheduling {} (fallback produced slot {})",
+                                expected_rank0, current_slot
+                            );
+                            producers.unschedule_producer(expected_rank0);
+                            scheduling_changed = true;
+                        }
+                    }
+                }
+            }
+
+            // 3. Block producer proved alive → schedule them
+            producers.schedule_producer(&block.header.producer);
+
+            // 4. Decode presence_root attestation bitfield → re-enter attesters
+            if !block.header.presence_root.is_zero() {
+                let mut sorted_producers: Vec<PublicKey> = producers
+                    .active_producers_at_height(height)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+                sorted_producers.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                let attested_indices = doli_core::attestation::decode_attestation_bitfield(
+                    &block.header.presence_root,
+                    sorted_producers.len(),
+                );
+
+                for idx in attested_indices {
+                    if idx < sorted_producers.len() {
+                        let attester = sorted_producers[idx];
+                        let needs_reschedule = producers
+                            .get_by_pubkey(&attester)
+                            .map(|p| !p.scheduled)
+                            .unwrap_or(false);
+                        if needs_reschedule {
+                            info!(
+                                "Reactive scheduling: re-scheduling {} (attested in slot {})",
+                                attester, current_slot
+                            );
+                        }
+                        producers.schedule_producer(&attester);
+                    }
+                }
+            }
+
+            if scheduling_changed {
+                needs_full_producer_write = true;
+            }
+            drop(producers);
+        }
 
         // Remove transactions from mempool and prune any with now-spent inputs
         {

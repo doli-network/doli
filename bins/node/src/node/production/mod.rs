@@ -137,36 +137,22 @@ impl Node {
             }
         }
 
-        // Get active producers with bond counts derived from UTXO set.
-        // Per WHITEPAPER Section 7: each bond unit = one ticket in the rotation.
-        // Use active_producers_at_height to ensure all nodes have the same view -
-        // new producers must wait ACTIVATION_DELAY blocks before entering the scheduler.
+        // Get SCHEDULED active producers for round-robin scheduling.
+        //
+        // Reactive Round-Robin: each producer gets exactly 1 scheduling ticket.
+        // Producers who missed their slot (scheduled=false) are excluded.
+        // Bond weight determines REWARDS, not scheduling.
+        //
+        // This is deterministic: `scheduled` flag is on-chain state derived from
+        // block headers (missed slots + attestation re-entry), identical on all nodes.
         let producers = self.producer_set.read().await;
-        let active_producers: Vec<PublicKey> = producers
-            .active_producers_at_height(height)
+        let active_with_weights: Vec<(PublicKey, u64)> = producers
+            .scheduled_producers_at_height(height)
             .iter()
-            .map(|p| p.public_key)
+            .map(|p| (p.public_key, 1u64)) // Equal weight: 1 ticket per producer
             .collect();
         let total_producers = producers.total_count();
         drop(producers);
-
-        // Derive bond counts from UTXO set (source of truth for bonds).
-        // CRITICAL: Use raw bond counts only — must match validation path exactly.
-        // INC-003/INC-005: inactivity_leak used LOCAL producer_liveness state that
-        // diverged between nodes, causing production/validation scheduler mismatch
-        // and cascade forks after ~6 hours. Removed permanently.
-        let utxo = self.utxo_set.read().await;
-        let active_with_weights: Vec<(PublicKey, u64)> = active_producers
-            .into_iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let raw_bonds = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                (pk, raw_bonds)
-            })
-            .collect();
-        drop(utxo);
 
         // Check if we're in genesis phase (bond-free production)
         let in_genesis = self.config.network.is_in_genesis(height);

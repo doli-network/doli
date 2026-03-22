@@ -185,6 +185,7 @@ impl ProducerSet {
             bond_entries,
             withdrawal_pending_count: 0,
             bls_pubkey: Vec::new(),
+            scheduled: true,
         };
 
         self.producers.insert(key, info);

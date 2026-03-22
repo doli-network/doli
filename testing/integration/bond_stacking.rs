@@ -482,6 +482,7 @@ fn test_bond_entries_migration() {
         bond_entries: Vec::new(), // Empty — needs migration
         withdrawal_pending_count: 0,
         bls_pubkey: Vec::new(),
+        scheduled: true,
     };
 
     // Should be empty before migration

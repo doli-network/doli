@@ -1130,3 +1130,213 @@ fn test_duplicate_register_preserves_existing_producer() {
     let producer = ps.get_by_pubkey(kp.public_key()).unwrap();
     assert_eq!(producer.registered_at, 100); // Original, not 200
 }
+
+// ==================== Reactive Round-Robin Scheduling Tests ====================
+
+/// Test: Producers start scheduled by default
+#[test]
+fn test_reactive_producers_start_scheduled() {
+    let info = make_producer(100);
+    assert!(info.scheduled, "New producers must be scheduled by default");
+}
+
+/// Test: scheduled_producers_at_height returns only scheduled producers
+#[test]
+fn test_reactive_scheduled_producers_filter() {
+    let mut ps = ProducerSet::new();
+    let kp1 = KeyPair::generate();
+    let kp2 = KeyPair::generate();
+    let kp3 = KeyPair::generate();
+
+    // Register 3 genesis producers (registered_at=0 bypasses activation delay)
+    for kp in [&kp1, &kp2, &kp3] {
+        let info = ProducerInfo::new(
+            *kp.public_key(),
+            0, // genesis
+            100_000_000_000,
+            (Hash::ZERO, 0),
+            0,
+            BOND_UNIT,
+        );
+        ps.register(info, 0).unwrap();
+    }
+
+    // All 3 should be scheduled
+    assert_eq!(ps.scheduled_producers_at_height(100).len(), 3);
+    assert_eq!(ps.scheduled_count_at_height(100), 3);
+
+    // Unschedule one producer
+    ps.unschedule_producer(kp2.public_key());
+
+    // Now only 2 should be scheduled
+    assert_eq!(ps.scheduled_producers_at_height(100).len(), 2);
+    assert_eq!(ps.scheduled_count_at_height(100), 2);
+
+    // The unscheduled one should still be active (just not scheduled)
+    let info = ps.get_by_pubkey(kp2.public_key()).unwrap();
+    assert!(info.is_active());
+    assert!(!info.scheduled);
+}
+
+/// Test: unschedule and reschedule round-trip
+#[test]
+fn test_reactive_unschedule_reschedule() {
+    let mut ps = ProducerSet::new();
+    let kp = KeyPair::generate();
+    let info = ProducerInfo::new(
+        *kp.public_key(),
+        0,
+        100_000_000_000,
+        (Hash::ZERO, 0),
+        0,
+        BOND_UNIT,
+    );
+    ps.register(info, 0).unwrap();
+
+    // Initially scheduled
+    assert!(ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
+
+    // Unschedule
+    ps.unschedule_producer(kp.public_key());
+    assert!(!ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
+
+    // Reschedule
+    ps.schedule_producer(kp.public_key());
+    assert!(ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
+}
+
+/// Test: Equal-weight round-robin scheduler behavior
+#[test]
+fn test_reactive_equal_weight_round_robin() {
+    use doli_core::scheduler::{DeterministicScheduler, ScheduledProducer};
+
+    let mut producers = Vec::new();
+    let mut pubkeys = Vec::new();
+    for i in 0..5u8 {
+        let mut bytes = [0u8; 32];
+        bytes[0] = i;
+        let pk = crypto::PublicKey::from_bytes(bytes);
+        pubkeys.push(pk);
+        // Each producer gets exactly 1 ticket (equal weight)
+        producers.push(ScheduledProducer::new(pk, 1));
+    }
+
+    let scheduler = DeterministicScheduler::new(producers);
+
+    // With 5 producers and 1 ticket each, total = 5
+    assert_eq!(scheduler.total_bonds(), 5);
+
+    // Pure round-robin: each producer gets exactly 1 slot per cycle
+    let mut slot_counts = [0u32; 5];
+    for slot in 0..50 {
+        if let Some(pk) = scheduler.select_producer(slot, 0) {
+            for (i, ref_pk) in pubkeys.iter().enumerate() {
+                if pk == ref_pk {
+                    slot_counts[i] += 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Each producer should get exactly 10 slots out of 50 (50/5 = 10 each)
+    for (i, count) in slot_counts.iter().enumerate() {
+        assert_eq!(
+            *count, 10,
+            "Producer {} got {} slots, expected 10 (equal distribution)",
+            i, count
+        );
+    }
+}
+
+/// Test: Schedule shrinks when producers are removed, expands when they return
+#[test]
+fn test_reactive_schedule_shrinks_and_expands() {
+    use doli_core::scheduler::{DeterministicScheduler, ScheduledProducer};
+
+    let mut pubkeys = Vec::new();
+    for i in 0..5u8 {
+        let mut bytes = [0u8; 32];
+        bytes[0] = i;
+        pubkeys.push(crypto::PublicKey::from_bytes(bytes));
+    }
+
+    // Full schedule: 5 producers, 1 ticket each
+    let scheduler_full = DeterministicScheduler::new(
+        pubkeys
+            .iter()
+            .map(|pk| ScheduledProducer::new(*pk, 1))
+            .collect(),
+    );
+    assert_eq!(scheduler_full.producer_count(), 5);
+
+    // Simulate: producer 0 and 1 go offline → rebuild with 3 producers
+    let scheduler_reduced = DeterministicScheduler::new(
+        pubkeys[2..]
+            .iter()
+            .map(|pk| ScheduledProducer::new(*pk, 1))
+            .collect(),
+    );
+    assert_eq!(scheduler_reduced.producer_count(), 3);
+
+    // With only 3 producers, cycle is 3 slots — 100% coverage if all online
+    let mut produced = 0u32;
+    for slot in 0..30 {
+        if scheduler_reduced.select_producer(slot, 0).is_some() {
+            produced += 1;
+        }
+    }
+    assert_eq!(
+        produced, 30,
+        "All 30 slots should be filled with 3 producers"
+    );
+
+    // Producer 0 comes back → rebuild with 4 producers
+    let scheduler_partial = DeterministicScheduler::new(
+        [pubkeys[0]]
+            .iter()
+            .chain(pubkeys[2..].iter())
+            .map(|pk| ScheduledProducer::new(*pk, 1))
+            .collect(),
+    );
+    assert_eq!(scheduler_partial.producer_count(), 4);
+}
+
+/// Test: Bond weight does NOT affect scheduling (only rewards)
+#[test]
+fn test_reactive_bond_weight_irrelevant_for_scheduling() {
+    use doli_core::scheduler::{DeterministicScheduler, ScheduledProducer};
+
+    let mut bytes_whale = [0u8; 32];
+    bytes_whale[0] = 1;
+    let whale = crypto::PublicKey::from_bytes(bytes_whale);
+
+    let mut bytes_small = [0u8; 32];
+    bytes_small[0] = 2;
+    let small = crypto::PublicKey::from_bytes(bytes_small);
+
+    // Both get 1 ticket regardless of actual bond amount
+    let scheduler = DeterministicScheduler::new(vec![
+        ScheduledProducer::new(whale, 1), // whale with 885 bonds → 1 ticket
+        ScheduledProducer::new(small, 1), // small with 7 bonds → 1 ticket
+    ]);
+
+    // Each gets exactly 50% of slots
+    let mut whale_slots = 0u32;
+    let mut small_slots = 0u32;
+    for slot in 0..100 {
+        if let Some(pk) = scheduler.select_producer(slot, 0) {
+            if *pk == whale {
+                whale_slots += 1;
+            } else if *pk == small {
+                small_slots += 1;
+            }
+        }
+    }
+
+    assert_eq!(whale_slots, 50, "Whale should get exactly 50% of slots");
+    assert_eq!(
+        small_slots, 50,
+        "Small producer should get exactly 50% of slots"
+    );
+}

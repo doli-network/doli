@@ -98,6 +98,7 @@ impl ProducerInfo {
             bond_entries,
             withdrawal_pending_count: 0,
             bls_pubkey: Vec::new(),
+            scheduled: true,
         }
     }
 
@@ -146,6 +147,7 @@ impl ProducerInfo {
             bond_entries,
             withdrawal_pending_count: 0,
             bls_pubkey: Vec::new(),
+            scheduled: true,
         }
     }
 
@@ -197,6 +199,7 @@ impl ProducerInfo {
             bond_entries,
             withdrawal_pending_count: 0,
             bls_pubkey: Vec::new(),
+            scheduled: true,
         }
     }
 

@@ -314,4 +314,56 @@ impl ProducerSet {
     pub fn total_count(&self) -> usize {
         self.producers.len()
     }
+
+    // ==================== Reactive Round-Robin Scheduling ====================
+
+    /// Get active producers that are BOTH eligible at this height AND currently scheduled.
+    ///
+    /// This is the primary method for building the round-robin scheduler.
+    /// Producers with `scheduled == false` (missed their slot) are excluded
+    /// until they re-enter via attestation.
+    pub fn scheduled_producers_at_height(&self, current_height: u64) -> Vec<&ProducerInfo> {
+        self.producers
+            .values()
+            .filter(|p| {
+                p.is_active()
+                    && p.scheduled
+                    && (p.registered_at == 0
+                        || current_height >= p.registered_at.saturating_add(ACTIVATION_DELAY))
+            })
+            .collect()
+    }
+
+    /// Mark a producer as unscheduled (missed their assigned slot).
+    ///
+    /// Called in apply_block() when we detect that rank 0 for a slot didn't produce.
+    /// The producer is temporarily excluded from the round-robin until they attest.
+    pub fn unschedule_producer(&mut self, pubkey: &PublicKey) {
+        let key = crypto_hash(pubkey.as_bytes());
+        if let Some(info) = self.producers.get_mut(&key) {
+            if info.scheduled {
+                info.scheduled = false;
+                self.active_cache = None; // Invalidate cache
+            }
+        }
+    }
+
+    /// Mark a producer as scheduled (re-entry via attestation or block production).
+    ///
+    /// Called in apply_block() when a producer's attestation appears in presence_root
+    /// or when a producer successfully produces a block.
+    pub fn schedule_producer(&mut self, pubkey: &PublicKey) {
+        let key = crypto_hash(pubkey.as_bytes());
+        if let Some(info) = self.producers.get_mut(&key) {
+            if !info.scheduled && info.is_active() {
+                info.scheduled = true;
+                self.active_cache = None; // Invalidate cache
+            }
+        }
+    }
+
+    /// Get the count of currently scheduled active producers at a given height.
+    pub fn scheduled_count_at_height(&self, current_height: u64) -> usize {
+        self.scheduled_producers_at_height(current_height).len()
+    }
 }

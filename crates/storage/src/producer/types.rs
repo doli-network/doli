@@ -164,6 +164,27 @@ pub struct ProducerInfo {
     /// Used to verify aggregate attestation signatures in block validation.
     #[serde(default)]
     pub bls_pubkey: Vec<u8>,
+    /// Whether this producer is currently in the active round-robin schedule.
+    ///
+    /// Reactive Round-Robin Scheduling:
+    /// - `true` (default): producer is in the round-robin and gets assigned slots
+    /// - `false`: producer missed their slot and is temporarily excluded
+    ///
+    /// Removal: when a block is applied, any producer who was rank 0 for a missed
+    /// slot (or who was rank 0 but a fallback produced instead) gets `scheduled = false`.
+    ///
+    /// Re-entry: when a producer's attestation appears in a block's `presence_root`
+    /// bitfield, they get `scheduled = true` again.
+    ///
+    /// This is ON-CHAIN state (derived from block headers), so all nodes agree.
+    /// Included in canonical serialization for state root and snap sync.
+    #[serde(default = "default_scheduled")]
+    pub scheduled: bool,
+}
+
+/// Default scheduled status for backwards compatibility (all producers start scheduled)
+pub(crate) fn default_scheduled() -> bool {
+    true
 }
 
 /// Default bond count for backwards compatibility

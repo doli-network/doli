@@ -9,27 +9,15 @@ impl Node {
         let state = self.chain_state.read().await;
         let height = state.best_height + 1;
 
-        // Build weighted producer list (bond counts derived from UTXO set)
+        // Build weighted producer list using Reactive Round-Robin:
+        // equal weight (1 ticket each), filtered by scheduled flag.
         let producers = self.producer_set.read().await;
-        let active: Vec<PublicKey> = producers
-            .active_producers_at_height(height)
+        let weighted: Vec<(PublicKey, u64)> = producers
+            .scheduled_producers_at_height(height)
             .iter()
-            .map(|p| p.public_key)
+            .map(|p| (p.public_key, 1u64)) // Equal weight: 1 ticket per producer
             .collect();
         drop(producers);
-
-        let utxo = self.utxo_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = active
-            .into_iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                (pk, count)
-            })
-            .collect();
-        drop(utxo);
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -137,28 +125,16 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Build weighted producer list (bond counts from UTXO set)
+        // Build weighted producer list using Reactive Round-Robin:
+        // equal weight (1 ticket each), filtered by scheduled flag.
         let producers = self.producer_set.read().await;
-        let active: Vec<PublicKey> = producers
-            .active_producers_at_height(height)
+        let weighted: Vec<(PublicKey, u64)> = producers
+            .scheduled_producers_at_height(height)
             .iter()
-            .map(|p| p.public_key)
+            .map(|p| (p.public_key, 1u64)) // Equal weight: 1 ticket per producer
             .collect();
         let pending_keys = producers.pending_registration_keys();
         drop(producers);
-
-        let utxo = self.utxo_set.read().await;
-        let weighted: Vec<(PublicKey, u64)> = active
-            .into_iter()
-            .map(|pk| {
-                let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
-                let count = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                (pk, count)
-            })
-            .collect();
-        drop(utxo);
 
         // Build bootstrap producer list for validation.
         //
