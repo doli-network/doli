@@ -139,6 +139,8 @@ pub struct ValidationContext {
     /// Empty Vec at index N means that producer has no BLS key (pre-BLS registration).
     #[allow(dead_code)]
     pub producer_bls_keys: Vec<Vec<u8>>,
+    /// Producers excluded from round-robin (missed slot, not yet re-attested).
+    pub excluded_producers: std::collections::HashSet<crypto::PublicKey>,
 }
 
 impl ValidationContext {
@@ -166,7 +168,18 @@ impl ValidationContext {
             registration_chain: RegistrationChainState::default(),
             pending_producer_keys: Vec::new(),
             producer_bls_keys: Vec::new(),
+            excluded_producers: std::collections::HashSet::new(),
         }
+    }
+
+    /// Set excluded producers.
+    #[must_use]
+    pub fn with_excluded_producers(
+        mut self,
+        excluded: std::collections::HashSet<crypto::PublicKey>,
+    ) -> Self {
+        self.excluded_producers = excluded;
+        self
     }
 
     /// Set previous block info.

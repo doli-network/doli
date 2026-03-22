@@ -64,6 +64,80 @@ impl Node {
             self.minute_tracker.reset();
         }
 
+        // LIVE LIVENESS FILTER: exclude on missed slot, re-include on attestation.
+        {
+            let prev_slot = if height > 1 {
+                if let Ok(Some(prev_block)) = self.block_store.get_block_by_height(height - 1) {
+                    prev_block.header.slot
+                } else {
+                    block.header.slot.saturating_sub(1)
+                }
+            } else {
+                0
+            };
+
+            let slot_gap = block.header.slot.saturating_sub(prev_slot);
+
+            // EXCLUDE: producers who missed skipped slots
+            if slot_gap > 1 && height > 36 {
+                let producers = self.producer_set.read().await;
+                let active: Vec<PublicKey> = producers
+                    .active_producers_at_height(height)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+                drop(producers);
+
+                let mut sorted = active;
+                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                let rr_list: Vec<&PublicKey> = sorted
+                    .iter()
+                    .filter(|pk| !self.excluded_producers.contains(pk))
+                    .collect();
+                let rr_count = rr_list.len();
+
+                if rr_count > 0 {
+                    for skipped_slot in (prev_slot + 1)..block.header.slot {
+                        let idx = (skipped_slot as usize) % rr_count;
+                        let missed = *rr_list[idx];
+                        if !self.excluded_producers.contains(&missed) {
+                            self.excluded_producers.insert(missed);
+                            info!(
+                                "[LIVENESS] EXCLUDED {} — missed slot {}",
+                                hex::encode(&missed.as_bytes()[..4]),
+                                skipped_slot
+                            );
+                        }
+                    }
+                }
+            }
+
+            // RE-INCLUDE: producers who attested in this block
+            if !self.excluded_producers.is_empty() && !block.header.presence_root.is_zero() {
+                let sorted_pks: Vec<PublicKey> = {
+                    let producers = self.producer_set.read().await;
+                    let active = producers.active_producers_at_height(height);
+                    let mut pks: Vec<PublicKey> = active.iter().map(|p| p.public_key).collect();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                };
+
+                let indices =
+                    decode_attestation_bitfield(&block.header.presence_root, sorted_pks.len());
+                for idx in indices {
+                    if let Some(pk) = sorted_pks.get(idx) {
+                        if self.excluded_producers.remove(pk) {
+                            info!(
+                                "[LIVENESS] RE-INCLUDED {} — attested at h={}",
+                                hex::encode(&pk.as_bytes()[..4]),
+                                height
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
             .await;
