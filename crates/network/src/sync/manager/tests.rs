@@ -55,7 +55,6 @@ fn test_production_allowed_when_ahead_of_peers() {
     manager.add_peer(peer1, 910, Hash::ZERO, 910);
     manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     let result = manager.can_produce(993);
@@ -79,7 +78,6 @@ fn test_production_allowed_when_within_range_of_peers() {
     manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
     // Need to clear bootstrap phase requirements
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     // Verify: Should be authorized (2 blocks ahead is within default threshold of 5)
@@ -90,8 +88,8 @@ fn test_production_allowed_when_within_range_of_peers() {
 #[test]
 fn test_max_heights_ahead_no_longer_blocks() {
     // Layer 7 removed: configurable threshold no longer blocks production.
+    // max_heights_ahead field also removed (dead field).
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
-    manager.set_max_heights_ahead(2);
     manager.local_height = 915;
     manager.local_slot = 915;
 
@@ -100,7 +98,6 @@ fn test_max_heights_ahead_no_longer_blocks() {
     manager.add_peer(peer1, 910, Hash::ZERO, 910);
     manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     // Even 5 blocks ahead should be authorized now
@@ -126,7 +123,6 @@ fn test_forked_node_scenario_produces_on_best_chain() {
     manager.add_peer(peer1, 910, Hash::ZERO, 910);
     manager.add_peer(peer2, 910, Hash::ZERO, 910);
 
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     let result = manager.can_produce(993);
@@ -155,7 +151,6 @@ fn test_insufficient_peers_blocks_production() {
     // Only 1 peer - insufficient for safe production
     let peer = PeerId::random();
     manager.add_peer(peer, 100, Hash::ZERO, 100);
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     let result = manager.can_produce(101);
@@ -185,7 +180,6 @@ fn test_sufficient_peers_allows_production() {
     let peer2 = PeerId::random();
     manager.add_peer(peer1, 100, Hash::ZERO, 100);
     manager.add_peer(peer2, 100, Hash::ZERO, 100);
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     let result = manager.can_produce(101);
@@ -206,7 +200,6 @@ fn test_insufficient_peers_check_skipped_at_genesis() {
     // Only 1 peer at genesis
     let peer = PeerId::random();
     manager.add_peer(peer, 0, Hash::ZERO, 0);
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     let result = manager.can_produce(0);
@@ -230,11 +223,11 @@ fn test_ahead_of_network_tip_still_produces() {
     manager.local_slot = 136;
 
     assert!(manager.peers.is_empty());
-    manager.network_tip_height = 93;
-    manager.network_tip_slot = 93;
+    manager.network.network_tip_height = 93;
+    manager.network.network_tip_slot = 93;
 
     manager.set_min_peers_for_production(0);
-    manager.has_connected_to_peer = false;
+    // first_peer_status_received is None by default (no peers connected)
 
     let result = manager.can_produce(140);
     // With Layer 7 removed, this should be authorized
@@ -273,7 +266,6 @@ fn test_echo_chamber_check_disabled_allows_production_when_peer_behind() {
     manager.add_peer(synced_peer, 136, Hash::ZERO, 136);
 
     // Mark bootstrap checks as passed
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(std::time::Instant::now());
 
     // Verify preconditions
@@ -468,8 +460,8 @@ fn test_processing_stuck_recovery_on_block_applied() {
 
     // Simulate: downloaded blocks 1-58, now in Processing state
     manager.state = SyncState::Processing { height: 1 };
-    manager.network_tip_height = 59; // Gossip bumped this during processing
-    manager.network_tip_slot = 64;
+    manager.network.network_tip_height = 59; // Gossip bumped this during processing
+    manager.network.network_tip_slot = 64;
 
     let peer = PeerId::random();
     manager.peers.insert(
@@ -485,8 +477,8 @@ fn test_processing_stuck_recovery_on_block_applied() {
     );
 
     // pending_headers and pending_blocks are empty (all applied)
-    assert!(manager.pending_headers.is_empty());
-    assert!(manager.pending_blocks.is_empty());
+    assert!(manager.pipeline.pending_headers.is_empty());
+    assert!(manager.pipeline.pending_blocks.is_empty());
 
     // Apply the last block (h=58) — completion check fails: 58 < 59
     let hash = crypto::hash::hash(b"block58");
@@ -509,11 +501,11 @@ fn test_processing_stuck_recovery_via_cleanup() {
     manager.state = SyncState::Processing { height: 1 };
     manager.local_height = 58;
     manager.local_slot = 60;
-    manager.network_tip_height = 65;
-    manager.network_tip_slot = 70;
+    manager.network.network_tip_height = 65;
+    manager.network.network_tip_slot = 70;
     // Simulate stuck state: no sync activity for >30s
-    manager.last_block_applied = Instant::now() - Duration::from_secs(60);
-    manager.last_sync_activity = Instant::now() - Duration::from_secs(60);
+    manager.network.last_block_applied = Instant::now() - Duration::from_secs(60);
+    manager.network.last_sync_activity = Instant::now() - Duration::from_secs(60);
 
     let peer = PeerId::random();
     manager.peers.insert(
@@ -529,8 +521,8 @@ fn test_processing_stuck_recovery_via_cleanup() {
     );
 
     // No pending work
-    assert!(manager.pending_headers.is_empty());
-    assert!(manager.pending_blocks.is_empty());
+    assert!(manager.pipeline.pending_headers.is_empty());
+    assert!(manager.pipeline.pending_blocks.is_empty());
 
     manager.cleanup();
 
@@ -643,10 +635,10 @@ fn test_chain_break_preserves_state_on_stale_response() {
         manager.state
     );
     // Chain break correctly incremented as fork evidence
-    assert_eq!(manager.consecutive_empty_headers, 1);
+    assert_eq!(manager.fork.consecutive_empty_headers, 1);
     // Verify: expected_prev_hash PRESERVED (not cleared)
     assert_eq!(
-        manager.header_downloader.expected_prev_hash(),
+        manager.pipeline.header_downloader.expected_prev_hash(),
         Some(expected_hash),
         "expected_prev_hash must be preserved after stale response"
     );
@@ -663,16 +655,26 @@ fn test_start_sync_clears_header_downloader() {
 
     // Poison the header downloader with a stale expected_prev_hash
     let chain = build_header_chain(genesis, 5);
-    manager.header_downloader.process_headers(&chain, genesis);
+    manager
+        .pipeline
+        .header_downloader
+        .process_headers(&chain, genesis);
     assert!(
-        manager.header_downloader.expected_prev_hash().is_some(),
+        manager
+            .pipeline
+            .header_downloader
+            .expected_prev_hash()
+            .is_some(),
         "Setup: expected_prev_hash should be set after processing headers"
     );
+
+    // Reset to Idle so start_sync() will actually fire (guard clause skips if already syncing)
+    manager.state = SyncState::Idle;
 
     // start_sync must clear it
     manager.start_sync();
     assert_eq!(
-        manager.header_downloader.expected_prev_hash(),
+        manager.pipeline.header_downloader.expected_prev_hash(),
         None,
         "start_sync() must clear expected_prev_hash for a clean slate"
     );
@@ -699,7 +701,7 @@ fn test_stale_response_discarded_when_no_pending_request() {
 
     // The stale response reached the handler but its headers don't chain to our tip.
     // This correctly counts as fork evidence (chain break path).
-    assert_eq!(manager.consecutive_empty_headers, 1);
+    assert_eq!(manager.fork.consecutive_empty_headers, 1);
 }
 
 // =========================================================================
@@ -725,7 +727,6 @@ fn test_pgd001_resync_counter_resets_after_stable_blocks() {
     );
 
     // Now simulate stable operation: apply 5 canonical blocks
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
@@ -783,7 +784,6 @@ fn test_pgd002_grace_period_capped() {
     manager.local_hash = local_hash;
 
     // Set up bootstrap + peers at SAME height (no sync trigger)
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
@@ -824,7 +824,6 @@ fn test_pgd003_circuit_breaker_bypassed_when_peers_agree() {
     // Setup: node at height 100, 2 peers at height 100, all agree
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer1 = PeerId::random();
@@ -855,7 +854,6 @@ fn test_pgd003_circuit_breaker_fires_when_peers_at_different_heights() {
     // Setup: node at height 100, peers at different heights (99 and 100)
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
     manager.max_solo_production_secs = 50; // Override default (86400) to test circuit breaker
 
@@ -888,7 +886,6 @@ fn test_pgd003_circuit_breaker_stays_locked_when_behind() {
     // Setup: node at height 100, peers at height 105
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer1 = PeerId::random();
@@ -916,7 +913,6 @@ fn test_pgd_circuit_breaker_deadlock_demonstrated() {
 
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer1 = PeerId::random();
@@ -952,7 +948,6 @@ fn test_pgd_circuit_breaker_deadlock_demonstrated() {
 fn test_pgd008_cross_layer_deadlock_scenario() {
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
     manager.local_height = 37406;
     manager.local_slot = 38874;
@@ -1031,7 +1026,7 @@ fn test_full_concurrent_scenario_no_corruption() {
     }
 
     // Verify: no empty headers (no fork detection triggered)
-    assert_eq!(manager.consecutive_empty_headers, 0);
+    assert_eq!(manager.fork.consecutive_empty_headers, 0);
 }
 
 // =========================================================================
@@ -1051,12 +1046,12 @@ fn test_network_tip_decays_on_peer_removal() {
     // Peer A at height 200
     let peer_a = PeerId::random();
     manager.add_peer(peer_a, 200, Hash::ZERO, 200);
-    assert_eq!(manager.network_tip_height, 200);
+    assert_eq!(manager.network.network_tip_height, 200);
 
     // Peer B at height 150
     let peer_b = PeerId::random();
     manager.add_peer(peer_b, 150, Hash::ZERO, 150);
-    assert_eq!(manager.network_tip_height, 200);
+    assert_eq!(manager.network.network_tip_height, 200);
 
     // Remove peer A (the one with highest height)
     manager.remove_peer(&peer_a);
@@ -1064,7 +1059,7 @@ fn test_network_tip_decays_on_peer_removal() {
     // AFTER FIX: network_tip_height should drop to max(remaining peers, local)
     // = max(150, 100) = 150. NOT stay at 200.
     assert_eq!(
-        manager.network_tip_height, 150,
+        manager.network.network_tip_height, 150,
         "network_tip_height must decay to max of remaining peers after peer removal (not stay inflated at 200)"
     );
 }
@@ -1076,13 +1071,12 @@ fn test_phantom_gap_does_not_block_production() {
 
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     // Add peer that briefly claims height 40000 (e.g., during a fork)
     let forked_peer = PeerId::random();
     manager.add_peer(forked_peer, 40000, Hash::ZERO, 40000);
-    assert_eq!(manager.network_tip_height, 40000);
+    assert_eq!(manager.network.network_tip_height, 40000);
 
     // Peer disconnects
     manager.remove_peer(&forked_peer);
@@ -1152,10 +1146,10 @@ fn test_no_forced_counter_oscillation() {
     manager.add_peer(peer, 105, Hash::ZERO, 105);
 
     // Simulate stuck-on-fork: no block applied for >120s
-    manager.last_block_applied = Instant::now() - Duration::from_secs(130);
+    manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
 
     // Counter starts at 0
-    assert_eq!(manager.consecutive_empty_headers, 0);
+    assert_eq!(manager.fork.consecutive_empty_headers, 0);
 
     // Run cleanup — stuck-on-fork detection should signal fork, not force counter
     manager.cleanup();
@@ -1196,25 +1190,28 @@ fn test_blacklist_escalation_uses_signal_not_counter() {
             },
         );
     }
-    manager.network_tip_height = 105;
+    manager.network.network_tip_height = 105;
 
     // Set counter to 20+ for blacklist escalation
-    manager.consecutive_empty_headers = 25;
+    manager.fork.consecutive_empty_headers = 25;
 
     // Blacklist all peers so best_peer() returns None.
     // Use recent timestamps (within 30s) so they survive cleanup's stale blacklist expiry.
     manager
+        .fork
         .header_blacklisted_peers
         .insert(peer1, Instant::now());
     manager
+        .fork
         .header_blacklisted_peers
         .insert(peer2, Instant::now());
     manager
+        .fork
         .header_blacklisted_peers
         .insert(peer3, Instant::now());
 
     // Stuck for >120s
-    manager.last_block_applied = Instant::now() - Duration::from_secs(130);
+    manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
 
     manager.cleanup();
 
@@ -1241,7 +1238,6 @@ fn test_can_produce_no_side_effects() {
 
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     // Setup minority fork: 1 agree, 2 disagree
@@ -1256,11 +1252,11 @@ fn test_can_produce_no_side_effects() {
     manager.add_peer(peer3, 100, local_hash, 100); // Agrees with us
 
     // can_produce should detect the fork but NOT set fork_mismatch_detected
-    let fork_mismatch_before = manager.fork_mismatch_detected;
+    let fork_mismatch_before = manager.fork.fork_mismatch_detected;
     let _result = manager.can_produce(101);
 
     assert_eq!(
-        manager.fork_mismatch_detected, fork_mismatch_before,
+        manager.fork.fork_mismatch_detected, fork_mismatch_before,
         "can_produce() must NOT mutate fork_mismatch_detected (side-effect-free query)"
     );
 }
@@ -1272,7 +1268,6 @@ fn test_update_production_state_sets_fork_flag() {
 
     manager.local_height = 100;
     manager.local_slot = 100;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     // Setup minority fork
@@ -1284,13 +1279,13 @@ fn test_update_production_state_sets_fork_flag() {
     manager.add_peer(peer1, 100, canonical_hash, 100);
     manager.add_peer(peer2, 100, canonical_hash, 100);
 
-    assert!(!manager.fork_mismatch_detected);
+    assert!(!manager.fork.fork_mismatch_detected);
 
     // update_production_state IS the designated mutation point
     manager.update_production_state();
 
     assert!(
-        manager.fork_mismatch_detected,
+        manager.fork.fork_mismatch_detected,
         "update_production_state() must set fork_mismatch_detected when in minority"
     );
 }
@@ -1336,13 +1331,13 @@ fn test_inc001_successful_reorg_updates_cooldown() {
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
     // Initial cooldown is set to 300s ago (expired)
-    assert!(manager.last_fork_sync_rejection.elapsed().as_secs() >= 299);
+    assert!(manager.fork.last_fork_sync_rejection.elapsed().as_secs() >= 299);
 
     // After successful reorg, cooldown should be fresh
     manager.reset_sync_after_successful_reorg();
 
     assert!(
-        manager.last_fork_sync_rejection.elapsed().as_secs() < 2,
+        manager.fork.last_fork_sync_rejection.elapsed().as_secs() < 2,
         "Successful reorg must update cooldown timestamp"
     );
 }
@@ -1377,7 +1372,7 @@ fn test_inc001_recently_held_tips_capacity() {
     }
 
     // Capacity is 10 — only tips 2..12 should remain
-    assert_eq!(manager.recently_held_tips.len(), 10);
+    assert_eq!(manager.fork.recently_held_tips.len(), 10);
 
     // Tip 0 should be evicted
     let mut bytes = [0u8; 32];
@@ -1478,7 +1473,6 @@ fn test_inc001_rc9_small_lag_allows_production_immediately() {
     manager.local_height = 20;
     manager.local_slot = 100; // Slot is time-based, close to peers
     manager.local_hash = local_hash;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer_agree = PeerId::random();
@@ -1513,7 +1507,6 @@ fn test_inc001_rc9_lag3_allows_production_immediately() {
     manager.local_height = 20;
     manager.local_slot = 101; // Close to peer slot — 1 slot behind
     manager.local_hash = local_hash;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer_agree = PeerId::random();
@@ -1545,7 +1538,6 @@ fn test_inc001_rc9_lag4_blocks_production_with_timeout() {
     manager.local_height = 20;
     manager.local_slot = 101;
     manager.local_hash = local_hash;
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer_agree = PeerId::random();
@@ -1575,7 +1567,6 @@ fn test_inc001_rc9_active_sync_blocks_production() {
     manager.local_height = 20;
     manager.local_slot = 100;
     manager.local_hash = crypto::hash::hash(b"block20");
-    manager.has_connected_to_peer = true;
     manager.first_peer_status_received = Some(Instant::now());
 
     let peer1 = PeerId::random();

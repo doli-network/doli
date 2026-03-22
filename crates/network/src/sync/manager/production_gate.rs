@@ -46,12 +46,12 @@ impl SyncManager {
                 disagree += 1;
             }
         }
-        if disagree > 0 && agree < disagree && !self.fork_mismatch_detected {
+        if disagree > 0 && agree < disagree && !self.fork.fork_mismatch_detected {
             warn!(
                 "FORK DETECTION: We are in minority at height {} ({} agree, {} disagree) — setting persistent fork flag",
                 self.local_height, agree, disagree
             );
-            self.fork_mismatch_detected = true;
+            self.fork.fork_mismatch_detected = true;
         }
 
         // Layer 10.5 side effect: reset gossip timer on network stall bypass.
@@ -113,12 +113,9 @@ impl SyncManager {
         );
 
         // Layer 1: Explicit production block
-        if self.production_blocked {
+        if let Some(ref reason) = self.production_blocked {
             return ProductionAuthorization::BlockedExplicit {
-                reason: self
-                    .production_block_reason
-                    .clone()
-                    .unwrap_or_else(|| "Unknown reason".to_string()),
+                reason: reason.clone(),
             };
         }
 
@@ -162,7 +159,7 @@ impl SyncManager {
         // - Or we ARE at height 0 and can legitimately produce the first block
         //
         // This prevents the scenario where late nodes produce competing genesis chains.
-        if self.is_in_bootstrap_phase() && self.has_connected_to_peer {
+        if self.is_in_bootstrap_phase() && self.first_peer_status_received.is_some() {
             // Bootstrap phase detected (derived from state):
             // - height == 0: We're at genesis, need to verify network state
             // - peers empty after connecting: Lost all peers, need to re-establish
@@ -196,8 +193,8 @@ impl SyncManager {
             }
 
             // Check 3: Have we seen any chain activity? (block via gossip OR peer with height > 0)
-            let has_chain_activity = self.network_tip_slot > 0
-                || self.network_tip_height > 0
+            let has_chain_activity = self.network.network_tip_slot > 0
+                || self.network.network_tip_height > 0
                 || self.best_peer_height() > 0
                 || self.best_peer_slot() > 0;
 
@@ -346,7 +343,7 @@ impl SyncManager {
         // likely on the same chain lineage, just slightly behind gossip propagation.
 
         // Gate 1: Active sync state — never produce while downloading/processing/fork-resolving
-        if self.state.is_syncing() || self.fork_sync.is_some() {
+        if self.state.is_syncing() || self.fork.fork_sync.is_some() {
             info!(
                 "[CAN_PRODUCE] Layer6.5: BLOCKED — active sync state={}, cannot produce",
                 self.sync_state_name()
@@ -451,15 +448,16 @@ impl SyncManager {
         // This catches forks where height comparison is inconclusive.
         info!(
             "[CAN_PRODUCE] Layer8: sync_failures={} max_failures={}",
-            self.consecutive_sync_failures, self.max_sync_failures_before_fork_detection
+            self.fork.consecutive_sync_failures, self.fork.max_sync_failures_before_fork_detection
         );
-        if self.consecutive_sync_failures >= self.max_sync_failures_before_fork_detection {
+        if self.fork.consecutive_sync_failures >= self.fork.max_sync_failures_before_fork_detection
+        {
             warn!(
                 "FORK DETECTION: {} consecutive sync failures - blocking production",
-                self.consecutive_sync_failures
+                self.fork.consecutive_sync_failures
             );
             return ProductionAuthorization::BlockedSyncFailures {
-                failure_count: self.consecutive_sync_failures,
+                failure_count: self.fork.consecutive_sync_failures,
             };
         }
 
@@ -469,7 +467,7 @@ impl SyncManager {
         // until a successful resync clears the flag. Without this, Layer 9 oscillates:
         // detects fork → blocks → peers advance beyond ±2 window → Layer 9 forgets
         // → node resumes producing on orphan chain → repeat.
-        if self.fork_mismatch_detected {
+        if self.fork.fork_mismatch_detected {
             warn!(
                 "[CAN_PRODUCE] Layer8.5: BLOCKED — fork_mismatch_detected flag set, awaiting resync (local_h={})",
                 self.local_height
@@ -669,16 +667,14 @@ impl SyncManager {
     /// Explicitly block production (e.g., due to invariant violation)
     pub fn block_production(&mut self, reason: &str) {
         warn!("Production blocked: {}", reason);
-        self.production_blocked = true;
-        self.production_block_reason = Some(reason.to_string());
+        self.production_blocked = Some(reason.to_string());
     }
 
     /// Clear explicit production block
     pub fn unblock_production(&mut self) {
-        if self.production_blocked {
+        if self.production_blocked.is_some() {
             info!("Production unblocked");
-            self.production_blocked = false;
-            self.production_block_reason = None;
+            self.production_blocked = None;
         }
     }
 
@@ -723,9 +719,9 @@ impl SyncManager {
             info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
             self.recovery_phase = super::RecoveryPhase::Normal;
         }
-        if self.fork_mismatch_detected {
+        if self.fork.fork_mismatch_detected {
             info!("[FORK_RECOVERY] Canonical gossip block applied — fork mismatch flag cleared");
-            self.fork_mismatch_detected = false;
+            self.fork.fork_mismatch_detected = false;
         }
     }
 
@@ -760,17 +756,17 @@ impl SyncManager {
 
     /// Get blocks applied since last reset (indicates active sync progress)
     pub fn blocks_applied(&self) -> u64 {
-        self.blocks_applied
+        self.network.blocks_applied
     }
 
     /// Signal that we have connected to at least one peer
     ///
-    /// This enables the bootstrap gate - production will be blocked until
-    /// we receive at least one peer status response.
+    /// Bootstrap gate is now driven by `first_peer_status_received` (set via
+    /// `note_peer_status_received()`). This method is kept for callers that
+    /// signal peer connection before status exchange completes.
     pub fn set_peer_connected(&mut self) {
-        if !self.has_connected_to_peer {
-            debug!("First peer connection - enabling bootstrap gate");
-            self.has_connected_to_peer = true;
+        if self.first_peer_status_received.is_none() {
+            debug!("First peer connection noted - awaiting peer status for bootstrap gate");
         }
     }
 
@@ -790,12 +786,13 @@ impl SyncManager {
 
     /// Check if bootstrap gate is satisfied (have peer status or grace period expired)
     pub fn is_bootstrap_ready(&self) -> bool {
-        if !self.has_connected_to_peer {
-            // No peers connected yet - standalone mode, OK to produce
-            return true;
-        }
-        // Need at least one peer status
-        self.first_peer_status_received.is_some()
+        // first_peer_status_received tracks both connection and status in one field:
+        // None = no peer has sent status yet (standalone mode, OK to produce)
+        // Some(_) = at least one peer status received (bootstrap can proceed)
+        //
+        // When None and peers.is_empty(), we're standalone — safe to produce.
+        // When None and peers exist, we're waiting for status — handled by bootstrap gate.
+        self.first_peer_status_received.is_some() || self.peers.is_empty()
     }
 
     /// Check if we're in bootstrap phase - DERIVED FROM STATE, NOT STORED
@@ -813,9 +810,9 @@ impl SyncManager {
             return true;
         }
 
-        // Secondary: connected to peers but lost them all
+        // Secondary: had peer status but lost all peers
         // This could indicate network partition or need to resync
-        if self.has_connected_to_peer && self.peers.is_empty() {
+        if self.first_peer_status_received.is_some() && self.peers.is_empty() {
             return true;
         }
 
@@ -823,15 +820,9 @@ impl SyncManager {
     }
 
     /// Configure the production gate settings
-    pub fn configure_production_gate(
-        &mut self,
-        grace_period_secs: u64,
-        max_slots_behind: u32,
-        max_heights_behind: u64,
-    ) {
+    pub fn configure_production_gate(&mut self, grace_period_secs: u64, max_slots_behind: u32) {
         self.resync_grace_period_secs = grace_period_secs;
         self.max_slots_behind = max_slots_behind;
-        self.max_heights_behind = max_heights_behind;
     }
 
     /// Set the bootstrap grace period (wait time at genesis for chain evidence)
@@ -842,11 +833,6 @@ impl SyncManager {
     /// - Network partition (we're isolated, dangerous to produce)
     pub fn set_bootstrap_grace_period_secs(&mut self, secs: u64) {
         self.bootstrap_grace_period_secs = secs;
-    }
-
-    /// Set the maximum heights ahead threshold for fork detection (P0 #2)
-    pub fn set_max_heights_ahead(&mut self, heights: u64) {
-        self.max_heights_ahead = heights;
     }
 
     /// Set the minimum peers required for production (P0 #5 echo chamber prevention)
@@ -968,28 +954,28 @@ impl SyncManager {
 
     /// Network tip height (best seen via gossip or peer status)
     pub fn network_tip_height(&self) -> u64 {
-        self.network_tip_height
+        self.network.network_tip_height
     }
 
     /// Network tip slot (best seen via gossip or peer status)
     pub fn network_tip_slot(&self) -> u32 {
-        self.network_tip_slot
+        self.network.network_tip_slot
     }
 
     /// Get consecutive sync failure count (for health diagnostics)
     pub fn consecutive_sync_failure_count(&self) -> u32 {
-        self.consecutive_sync_failures
+        self.fork.consecutive_sync_failures
     }
 
     /// Get consecutive empty header response count (for shallow fork detection)
     pub fn consecutive_empty_headers(&self) -> u32 {
-        self.consecutive_empty_headers
+        self.fork.consecutive_empty_headers
     }
 
     /// Reset empty headers counter after a rollback changes the local tip.
     /// The next sync attempt will use the new tip hash.
     pub fn reset_empty_headers(&mut self) {
-        self.consecutive_empty_headers = 0;
+        self.fork.consecutive_empty_headers = 0;
     }
 
     /// Check if post-recovery grace period is active.
@@ -1036,8 +1022,8 @@ impl SyncManager {
             started: Instant::now(),
             blocks_applied: 0,
         };
-        self.consecutive_empty_headers = 0;
-        self.consecutive_apply_failures = 0;
+        self.fork.consecutive_empty_headers = 0;
+        self.fork.consecutive_apply_failures = 0;
         info!("Post-recovery grace activated: fork_sync suppressed until 10 blocks applied or 120s timeout.");
     }
 
@@ -1046,14 +1032,14 @@ impl SyncManager {
     /// how many internal paths set the flag. This is the SINGLE gate that
     /// prevents snap sync from firing when the operator has forbidden it.
     pub fn needs_genesis_resync(&self) -> bool {
-        if self.snap_sync_threshold == u64::MAX {
+        if self.snap.threshold == u64::MAX {
             // --no-snap-sync: allow the genesis resync signal through.
             // The recovery path (reset_state_only) preserves block data — it only
             // resets UTXO, ProducerSet, and ChainState to genesis, then header-first
             // sync rebuilds state from preserved blocks. No snap sync is needed.
             // Previously this hardcoded false, creating a permanent deadlock for
             // forked --no-snap-sync nodes with no recovery path.
-            if self.needs_genesis_resync {
+            if self.fork.needs_genesis_resync {
                 tracing::warn!(
                     "--no-snap-sync: genesis resync signal active (local_h={}, gap={}). \
                      Recovery will use header-first full resync (block data preserved).",
@@ -1062,7 +1048,7 @@ impl SyncManager {
                 );
             }
         }
-        self.needs_genesis_resync
+        self.fork.needs_genesis_resync
     }
 
     /// Returns true if peers consistently reject our chain tip (deep fork).
@@ -1076,7 +1062,7 @@ impl SyncManager {
     /// Short forks (1-2 blocks) are normal and resolve naturally via heaviest chain.
     /// Only trigger genesis resync for genuine deep forks where we're stuck.
     pub fn is_deep_fork_detected(&self) -> bool {
-        if self.consecutive_empty_headers < 10 {
+        if self.fork.consecutive_empty_headers < 10 {
             return false;
         }
         // Must be significantly behind peers to qualify as deep fork
@@ -1101,7 +1087,7 @@ impl SyncManager {
         // next_request() will attempt snap sync first.
         let gap = best_peer_height.saturating_sub(self.local_height);
         let enough_peers = self.peers.len() >= 3;
-        if enough_peers && gap > self.snap_sync_threshold {
+        if enough_peers && gap > self.snap.threshold {
             return false;
         }
         // Require at least one peer whose height is close to ours (within 100 blocks).

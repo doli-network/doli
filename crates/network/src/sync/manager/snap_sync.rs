@@ -65,7 +65,7 @@ impl SyncManager {
         // Example: 12 connected peers → quorum = max(3, 12/2+1) = 7.
         // A partition of 3 nodes can never reach 7, even if they all agree.
         let total_peers = self.peers.len();
-        let quorum = std::cmp::max(self.snap_sync_quorum, total_peers / 2 + 1);
+        let quorum = std::cmp::max(self.snap.quorum, total_peers / 2 + 1);
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
@@ -104,14 +104,17 @@ impl SyncManager {
                 peers_with_info.len(), quorum_root, best_height, download_peer, alternate_peers.len()
             );
             let quorum_root = *quorum_root;
-            self.state = SyncState::SnapDownloading {
-                target_hash: download_hash,
-                target_height: best_height,
-                quorum_root,
-                peer: download_peer,
-                alternate_peers,
-                started_at: Instant::now(),
-            };
+            self.set_state(
+                SyncState::SnapDownloading {
+                    target_hash: download_hash,
+                    target_height: best_height,
+                    quorum_root,
+                    peer: download_peer,
+                    alternate_peers,
+                    started_at: Instant::now(),
+                },
+                "snap_quorum_reached",
+            );
         }
     }
 
@@ -166,16 +169,19 @@ impl SyncManager {
                 "[SNAP_SYNC] Snapshot received from {} — height={}, storing as SnapReady (node will verify root)",
                 peer, block_height
             );
-            self.state = SyncState::SnapReady {
-                snapshot: VerifiedSnapshot {
-                    block_hash,
-                    block_height,
-                    chain_state,
-                    utxo_set,
-                    producer_set,
-                    state_root: response_root,
+            self.set_state(
+                SyncState::SnapReady {
+                    snapshot: VerifiedSnapshot {
+                        block_hash,
+                        block_height,
+                        chain_state,
+                        utxo_set,
+                        producer_set,
+                        state_root: response_root,
+                    },
                 },
-            };
+                "snap_snapshot_received",
+            );
         } else {
             warn!(
                 "[SNAP_SYNC] Unexpected snapshot from {} — not in SnapDownloading state, ignoring",
@@ -195,7 +201,7 @@ impl SyncManager {
         if !matches!(self.state, SyncState::SnapDownloading { .. }) {
             return;
         }
-        self.snap_blacklisted_peers.insert(peer);
+        self.snap.blacklisted_peers.insert(peer);
         // Take the state so we can decompose it without borrow issues
         let old = std::mem::replace(&mut self.state, SyncState::Idle);
         if let SyncState::SnapDownloading {
@@ -209,20 +215,23 @@ impl SyncManager {
                     "[SNAP_SYNC] Peer {} failed, retrying with alternate peer {} at height={} ({} remaining)",
                     peer, next_peer, next_height, alternate_peers.len()
                 );
-                self.state = SyncState::SnapDownloading {
-                    target_hash: next_hash,
-                    target_height: next_height,
-                    quorum_root,
-                    peer: next_peer,
-                    alternate_peers,
-                    started_at: Instant::now(),
-                };
+                self.set_state(
+                    SyncState::SnapDownloading {
+                        target_hash: next_hash,
+                        target_height: next_height,
+                        quorum_root,
+                        peer: next_peer,
+                        alternate_peers,
+                        started_at: Instant::now(),
+                    },
+                    "snap_download_error_retry_alternate",
+                );
             } else {
                 warn!(
                     "[SNAP_SYNC] No alternate peers left after {} failed — restarting snap sync",
                     peer
                 );
-                self.state = SyncState::Idle; // restore before fallback
+                self.set_state(SyncState::Idle, "snap_download_error_no_alternates");
                 self.snap_fallback_to_normal();
             }
         }
@@ -231,8 +240,9 @@ impl SyncManager {
     /// Take the ready snapshot for node application. Transitions to Synchronized.
     pub fn take_snap_snapshot(&mut self) -> Option<VerifiedSnapshot> {
         if matches!(self.state, SyncState::SnapReady { .. }) {
-            let old = std::mem::replace(&mut self.state, SyncState::Synchronized);
-            self.header_blacklisted_peers.clear();
+            let old = std::mem::replace(&mut self.state, SyncState::Idle);
+            self.set_state(SyncState::Synchronized, "snap_snapshot_applied");
+            self.fork.header_blacklisted_peers.clear();
             // Snap sync bypasses the normal sync pipeline, so complete_resync()
             // is never reached via handle_applied_block(). Clear it here so
             // production resumes after the grace period.
@@ -285,17 +295,17 @@ impl SyncManager {
     /// Fall back from snap sync to normal header-first sync.
     /// Increments the snap attempt counter; after 3 failures, snap sync is skipped.
     pub fn snap_fallback_to_normal(&mut self) {
-        self.snap_sync_attempts += 1;
+        self.snap.attempts += 1;
         warn!(
             "[SNAP_SYNC] Attempt {}/3 failed, {}",
-            self.snap_sync_attempts,
-            if self.snap_sync_attempts >= 3 {
+            self.snap.attempts,
+            if self.snap.attempts >= 3 {
                 "falling back to header-first sync"
             } else {
                 "will retry with different peer"
             }
         );
-        self.state = SyncState::Idle;
+        self.set_state(SyncState::Idle, "snap_fallback_to_normal");
         if self.should_sync() {
             self.start_sync();
         }
@@ -304,6 +314,6 @@ impl SyncManager {
     /// Blacklist a peer for snap sync (bad snapshot).
     pub fn snap_blacklist_peer(&mut self, peer: PeerId) {
         warn!("[SNAP_SYNC] Blacklisting peer {} for bad snapshot", peer);
-        self.snap_blacklisted_peers.insert(peer);
+        self.snap.blacklisted_peers.insert(peer);
     }
 }

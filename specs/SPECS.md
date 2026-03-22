@@ -17,6 +17,7 @@ Master index for all DOLI protocol specifications.
 
 | File | Description |
 |------|-------------|
+| [syncmanager-architecture.md](./syncmanager-architecture.md) | Sync Manager redesign - subtraction-first restructuring of 55-field SyncManager into 5 typed sub-structs, fork recovery coordination, production gate simplification |
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
 
@@ -37,6 +38,7 @@ specs/
 ├── protocol.md                       # Full protocol specification
 ├── architecture.md                   # Comprehensive architecture
 ├── security_model.md                 # Complete security model
+├── syncmanager-architecture.md        # Sync Manager redesign architecture
 ├── single-proposer-architecture.md   # Single-proposer migration architecture
 ├── single-proposer-requirements.md   # Single-proposer migration requirements
 ├── gui-architecture.md               # GUI Desktop Application architecture
