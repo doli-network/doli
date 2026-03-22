@@ -140,6 +140,19 @@ impl Node {
         // Update known producers for bootstrap round-robin
         self.update_known_producers(new_registrations, height).await;
 
+        // Capture previous slot BEFORE update_chain_state_for_block changes best_slot.
+        // Used by reactive scheduling to detect missed slots.
+        let prev_slot = if height <= 1 {
+            0u32
+        } else {
+            self.block_store
+                .get_block_by_height(height - 1)
+                .ok()
+                .flatten()
+                .map(|b| b.header.slot)
+                .unwrap_or(0u32) // If block store fails, assume no gap (safe: disables removal, not enables it)
+        };
+
         // Update chain state (height, hash, slot, protocol activation, genesis time, state root)
         self.update_chain_state_for_block(
             &block,
@@ -180,27 +193,10 @@ impl Node {
         // same result. This is NOT local gossip state — it's deterministic.
         // =====================================================================
         {
-            let prev_slot = {
-                let state = self.chain_state.read().await;
-                // best_slot is already updated to this block's slot by update_chain_state_for_block,
-                // so we need the PREVIOUS slot. Get it from the previous block.
-                if height <= 1 {
-                    0u32 // Genesis: no previous block
-                } else {
-                    // Get previous block's slot from block store
-                    self.block_store
-                        .get_block_by_height(height - 1)
-                        .ok()
-                        .flatten()
-                        .map(|b| b.header.slot)
-                        .unwrap_or(state.best_slot.saturating_sub(1))
-                }
-            };
-
             let current_slot = block.header.slot;
 
             // Build the scheduler as it was BEFORE this block (same state that
-            // validated this block). Used to determine who was rank 0 for missed slots.
+            // validated this block). Used to determine who was rank 0 for this slot.
             let missed_slot_scheduler = {
                 let producers = self.producer_set.read().await;
                 let scheduled: Vec<(PublicKey, u64)> = producers
@@ -221,7 +217,9 @@ impl Node {
             let mut producers = self.producer_set.write().await;
             let mut scheduling_changed = false;
 
-            // 1. Detect missed slots: if current_slot > prev_slot + 1, slots were skipped
+            // 1. Detect missed slots: if current_slot > prev_slot + 1, slots were skipped.
+            //    Cap at 100 iterations to prevent DoS from large slot gaps (e.g., after
+            //    extended downtime). Beyond 100, mass-unscheduling is wrong anyway.
             if current_slot > prev_slot + 1 && height > 1 {
                 let scheduled_list: Vec<(PublicKey, u64)> = producers
                     .scheduled_producers_at_height(height)
@@ -230,22 +228,20 @@ impl Node {
                     .collect();
 
                 if !scheduled_list.is_empty() {
-                    for missed_slot in (prev_slot + 1)..current_slot {
+                    let gap = (current_slot - prev_slot - 1) as usize;
+                    let max_missed = gap.min(100);
+                    for i in 0..max_missed {
+                        let missed_slot = prev_slot + 1 + i as u32;
                         let eligible = doli_core::consensus::select_producer_for_slot(
                             missed_slot,
                             &scheduled_list,
                         );
                         if let Some(rank0) = eligible.first() {
-                            let is_scheduled = producers
-                                .get_by_pubkey(rank0)
-                                .map(|p| p.scheduled)
-                                .unwrap_or(false);
-                            if is_scheduled {
+                            if producers.unschedule_producer(rank0) {
                                 info!(
                                     "Reactive scheduling: unscheduling {} (missed slot {})",
                                     rank0, missed_slot
                                 );
-                                producers.unschedule_producer(rank0);
                                 scheduling_changed = true;
                             }
                         }
@@ -256,25 +252,22 @@ impl Node {
             // 2. If this block was produced by a fallback (not rank 0), rank 0 missed
             if let Some(ref eligible) = missed_slot_scheduler {
                 if let Some(expected_rank0) = eligible.first() {
-                    if *expected_rank0 != block.header.producer {
-                        let is_scheduled = producers
-                            .get_by_pubkey(expected_rank0)
-                            .map(|p| p.scheduled)
-                            .unwrap_or(false);
-                        if is_scheduled {
-                            info!(
-                                "Reactive scheduling: unscheduling {} (fallback produced slot {})",
-                                expected_rank0, current_slot
-                            );
-                            producers.unschedule_producer(expected_rank0);
-                            scheduling_changed = true;
-                        }
+                    if *expected_rank0 != block.header.producer
+                        && producers.unschedule_producer(expected_rank0)
+                    {
+                        info!(
+                            "Reactive scheduling: unscheduling {} (fallback produced slot {})",
+                            expected_rank0, current_slot
+                        );
+                        scheduling_changed = true;
                     }
                 }
             }
 
             // 3. Block producer proved alive → schedule them
-            producers.schedule_producer(&block.header.producer);
+            if producers.schedule_producer(&block.header.producer) {
+                scheduling_changed = true;
+            }
 
             // 4. Decode presence_root attestation bitfield → re-enter attesters
             if !block.header.presence_root.is_zero() {
@@ -293,17 +286,13 @@ impl Node {
                 for idx in attested_indices {
                     if idx < sorted_producers.len() {
                         let attester = sorted_producers[idx];
-                        let needs_reschedule = producers
-                            .get_by_pubkey(&attester)
-                            .map(|p| !p.scheduled)
-                            .unwrap_or(false);
-                        if needs_reschedule {
+                        if producers.schedule_producer(&attester) {
                             info!(
                                 "Reactive scheduling: re-scheduling {} (attested in slot {})",
                                 attester, current_slot
                             );
+                            scheduling_changed = true;
                         }
-                        producers.schedule_producer(&attester);
                     }
                 }
             }
@@ -312,6 +301,20 @@ impl Node {
                 needs_full_producer_write = true;
             }
             drop(producers);
+        }
+
+        // FIX C1: Recompute state root AFTER reactive scheduling mutations.
+        // The initial state root (computed in update_chain_state_for_block) was cached
+        // BEFORE scheduling flags changed. We must recompute so snap sync nodes get
+        // a root that matches the persisted ProducerSet (which includes scheduled flags).
+        if needs_full_producer_write {
+            let state = self.chain_state.read().await;
+            let utxo = self.utxo_set.read().await;
+            let ps = self.producer_set.read().await;
+            if let Ok(root) = storage::compute_state_root(&state, &utxo, &ps) {
+                let mut cache = self.cached_state_root.write().await;
+                *cache = Some((root, state.best_hash, state.best_height));
+            }
         }
 
         // Remove transactions from mempool and prune any with now-spent inputs

@@ -1196,13 +1196,19 @@ fn test_reactive_unschedule_reschedule() {
     // Initially scheduled
     assert!(ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
 
-    // Unschedule
-    ps.unschedule_producer(kp.public_key());
+    // Unschedule — returns true (state changed)
+    assert!(ps.unschedule_producer(kp.public_key()));
     assert!(!ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
 
-    // Reschedule
-    ps.schedule_producer(kp.public_key());
+    // Unschedule again — returns false (already unscheduled)
+    assert!(!ps.unschedule_producer(kp.public_key()));
+
+    // Reschedule — returns true (state changed)
+    assert!(ps.schedule_producer(kp.public_key()));
     assert!(ps.get_by_pubkey(kp.public_key()).unwrap().scheduled);
+
+    // Reschedule again — returns false (already scheduled)
+    assert!(!ps.schedule_producer(kp.public_key()));
 }
 
 /// Test: Equal-weight round-robin scheduler behavior

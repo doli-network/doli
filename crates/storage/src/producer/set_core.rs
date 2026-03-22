@@ -338,28 +338,34 @@ impl ProducerSet {
     ///
     /// Called in apply_block() when we detect that rank 0 for a slot didn't produce.
     /// The producer is temporarily excluded from the round-robin until they attest.
-    pub fn unschedule_producer(&mut self, pubkey: &PublicKey) {
+    /// Returns `true` if the producer's state actually changed.
+    pub fn unschedule_producer(&mut self, pubkey: &PublicKey) -> bool {
         let key = crypto_hash(pubkey.as_bytes());
         if let Some(info) = self.producers.get_mut(&key) {
             if info.scheduled {
                 info.scheduled = false;
-                self.active_cache = None; // Invalidate cache
+                self.active_cache = None;
+                return true;
             }
         }
+        false
     }
 
     /// Mark a producer as scheduled (re-entry via attestation or block production).
     ///
     /// Called in apply_block() when a producer's attestation appears in presence_root
     /// or when a producer successfully produces a block.
-    pub fn schedule_producer(&mut self, pubkey: &PublicKey) {
+    /// Returns `true` if the producer's state actually changed.
+    pub fn schedule_producer(&mut self, pubkey: &PublicKey) -> bool {
         let key = crypto_hash(pubkey.as_bytes());
         if let Some(info) = self.producers.get_mut(&key) {
             if !info.scheduled && info.is_active() {
                 info.scheduled = true;
-                self.active_cache = None; // Invalidate cache
+                self.active_cache = None;
+                return true;
             }
         }
+        false
     }
 
     /// Get the count of currently scheduled active producers at a given height.
