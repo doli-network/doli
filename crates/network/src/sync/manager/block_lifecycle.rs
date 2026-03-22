@@ -188,6 +188,21 @@ impl SyncManager {
                 // Signal fork recovery via RecoveryPhase (replaces old stuck_fork_signal boolean).
                 self.signal_stuck_fork();
                 self.state = SyncState::Idle;
+            } else if self.snap_sync_threshold < u64::MAX && self.snap_sync_attempts < 3 {
+                // INC-I-004 Fix: Try snap sync before genesis resync. After snap sync
+                // with stale scheduling state, blocks fail "invalid producer for slot"
+                // because the `scheduled` flags are wrong. A fresh snap sync from a
+                // peer at the current tip will include correct scheduling state.
+                // This is O(1) vs genesis resync's O(chain_height).
+                warn!(
+                    "3+ consecutive apply failures with gap={} — retrying snap sync \
+                     (attempt {}/3) before genesis resync",
+                    gap,
+                    self.snap_sync_attempts + 1
+                );
+                self.consecutive_apply_failures = 0;
+                self.state = SyncState::Idle;
+                self.start_sync();
             } else {
                 warn!(
                     "3+ consecutive apply failures with gap={} — triggering genesis resync",

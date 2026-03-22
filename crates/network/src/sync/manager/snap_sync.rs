@@ -134,7 +134,28 @@ impl SyncManager {
         producer_set: Vec<u8>,
         response_root: Hash,
     ) {
-        if let SyncState::SnapDownloading { quorum_root, .. } = &self.state {
+        if let SyncState::SnapDownloading {
+            target_height,
+            quorum_root,
+            ..
+        } = &self.state
+        {
+            // INC-I-004 Fix: Reject snapshots whose height is too far below the
+            // quorum target. Without this check, a peer that was in the quorum
+            // at height 2788 could send a stale snapshot at height 2481, which
+            // the node would accept — leaving it 300+ blocks behind with wrong
+            // scheduling state, unable to apply any subsequent blocks.
+            let min_acceptable = target_height.saturating_sub(100);
+            if block_height < min_acceptable {
+                warn!(
+                    "[SNAP_SYNC] Rejecting stale snapshot from {} at height={} \
+                     (target={}, min_acceptable={}) — trying alternate peer",
+                    peer, block_height, target_height, min_acceptable
+                );
+                self.handle_snap_download_error(peer);
+                return;
+            }
+
             if response_root != *quorum_root {
                 info!(
                     "[SNAP_SYNC] Peer {} advanced since vote: response_root={:.16} != quorum_root={:.16} (height={}). Accepting — node verifies independently.",
