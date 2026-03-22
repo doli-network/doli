@@ -210,25 +210,14 @@ pub fn validate_producer_eligibility(
 
     // Post-genesis: ROUND-ROBIN validation (matches production).
     // One producer per slot, cycling through sorted active producers.
-    // Excluded producers (liveness filter) are skipped.
+    // Bond weighting only affects rewards, not production scheduling.
     if !ctx.active_producers_weighted.is_empty() {
         let mut sorted: Vec<crypto::PublicKey> = ctx
             .active_producers_weighted
             .iter()
             .map(|(pk, _)| *pk)
-            .filter(|pk| !ctx.excluded_producers.contains(pk))
             .collect();
         sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-        // Deadlock safety: if all excluded, fall back to full list
-        if sorted.is_empty() {
-            sorted = ctx
-                .active_producers_weighted
-                .iter()
-                .map(|(pk, _)| *pk)
-                .collect();
-            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-        }
 
         if sorted.is_empty() {
             return Err(ValidationError::InvalidProducer);
