@@ -135,10 +135,6 @@ pub struct Node {
     /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
     pub(super) seen_blocks_for_slot: std::collections::HashSet<u32>,
-    /// Producers excluded from round-robin for missing their assigned slot.
-    /// Re-included when they appear in an attestation bitfield (presence_root).
-    /// Updated on every block — deterministic (all nodes see same blocks).
-    pub(super) excluded_producers: HashSet<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.
