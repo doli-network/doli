@@ -145,16 +145,23 @@ pub fn resolve(input: &str, expected_prefix: Option<&str>) -> Result<Hash, Addre
         return Ok(hash);
     }
 
-    // 2. 64-char hex (32-byte pubkey_hash)
-    if trimmed.len() == 64 {
-        if let Some(hash) = Hash::from_hex(trimmed) {
-            return Ok(hash);
-        }
+    // 2. 64-char hex — REJECTED.
+    // A 64-char hex string is ambiguous: it could be a raw public key OR a
+    // pubkey_hash. Using it as a pubkey_hash (which is what we'd do here)
+    // sends funds to an address that no wallet controls if the user actually
+    // meant the public key. This has burned 32+ DOLI irrecoverably.
+    // Force users to use bech32 addresses (`doli1...`) which are unambiguous.
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AddressError::InvalidFormat(
+            "raw hex is not accepted — use a bech32 address (doli1...) instead. \
+             Get it with: doli info"
+                .to_string(),
+        ));
     }
 
     // 3. Nothing matched
     Err(AddressError::InvalidFormat(format!(
-        "unrecognized address format: expected 'doli1...' or 64-char hex pubkey_hash, got '{}'",
+        "unrecognized address format: use a bech32 address (doli1...), got '{}'",
         if trimmed.len() > 20 {
             format!("{}...", &trimmed[..20])
         } else {
@@ -227,12 +234,14 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_hex() {
+    fn test_resolve_hex_rejected() {
+        // Raw 64-char hex must be REJECTED — it's ambiguous (pubkey vs pubkey_hash)
+        // and has caused irrecoverable fund loss (32+ DOLI burned).
         let hash = Hash::from_bytes([0xDE; 32]);
         let hex_str = hash.to_hex();
 
-        let resolved = resolve(&hex_str, None).unwrap();
-        assert_eq!(resolved, hash);
+        let err = resolve(&hex_str, None).unwrap_err();
+        assert!(err.to_string().contains("raw hex is not accepted"));
     }
 
     #[test]
