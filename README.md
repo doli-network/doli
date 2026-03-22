@@ -244,3 +244,13 @@ MIT License - see [LICENSE](LICENSE) for details.
 ---
 
 *"Time is the most democratic resource. DOLI turns it into money."*
+
+---
+
+<p align="center">
+  <img src="https://flagcdn.com/w80/ve.png" width="80" alt="Venezuelan Flag">
+  <br><br>
+  <strong>DOLI</strong> was created by <strong><a href="https://www.linkedin.com/in/ivlozada/">Ivan Lozada</a></strong> and <strong><a href="https://www.linkedin.com/in/ajlozada/">Antonio Lozada</a></strong><br>
+  two Venezuelans in exile 🇻🇪<br><br>
+  <a href="https://x.com/isudoajl">𝕏 @isudoajl</a>
+</p>
