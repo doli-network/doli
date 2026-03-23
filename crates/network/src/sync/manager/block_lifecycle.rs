@@ -498,4 +498,11 @@ impl SyncManager {
         self.last_block_applied = Instant::now();
         self.last_sync_activity = Instant::now();
     }
+
+    /// Clear the post_rollback flag after a successful fork recovery reorg.
+    /// The tip is already canonical — signaling post_rollback would trigger
+    /// an unnecessary fork_sync loop (N5 incident 2026-03-23).
+    pub fn set_post_rollback(&mut self, value: bool) {
+        self.post_rollback = value;
+    }
 }

@@ -12,9 +12,9 @@
 
 We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
 
-Block production follows deterministic rotation: a participant with one bond knows exactly when their next block will be produced. The protocol distributes rewards every epoch through a built-in pool — no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
+Block production follows pure round-robin: every active producer receives equal block assignments regardless of stake. The protocol distributes rewards every epoch through a built-in pool — proportional to bonds, no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
-A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through on-chain liveness attestations — producers who are online and following the chain qualify for their share. No lottery. No variance. No pools. Just time.
+A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through on-chain liveness attestations — producers who are online and following the chain qualify for their share. A dynamic liveness filter excludes offline producers from the rotation and re-includes them upon attestation. No lottery. No variance. No pools. Just time.
 
 Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
@@ -421,7 +421,7 @@ A block *B* is valid if:
 2. `B.timestamp <= network_time + DRIFT`
 3. `B.slot` derives correctly from `B.timestamp`
 4. `B.slot > prev_block.slot`
-5. `B.producer` has valid rank for `B.slot` (after bootstrap period)
+5. `B.producer` is the correct round-robin selection for `B.slot` given the active set and liveness filter
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. All transactions in the block are valid
 
@@ -519,23 +519,23 @@ MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
 MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
-Selection uses deterministic round-robin, not probabilistic lottery. Each bond unit grants one ticket in the rotation:
+Block production uses pure round-robin — every active producer receives equal block assignments regardless of bond count. A producer with 1 bond produces the same number of blocks as a producer with 250 bonds. Bonds affect only epoch reward distribution (Section 10.2), not production frequency.
 
-**Example (3 producers, 10 total bond units):**
+**Example (3 producers):**
 
 ```
-Alice: 1 bond unit  (10 DOLI)   → 1 block every 10 slots
-Bob:   5 bond units (50 DOLI)   → 5 blocks every 10 slots
-Carol: 4 bond units (40 DOLI)   → 4 blocks every 10 slots
+Alice: 1 bond unit  (10 DOLI)   → 1 block every 3 slots
+Bob:   5 bond units (50 DOLI)   → 1 block every 3 slots
+Carol: 4 bond units (40 DOLI)   → 1 block every 3 slots
 ```
 
-At 1 DOLI reward per block:
+All three produce at equal frequency. At epoch boundary, the reward pool distributes proportionally to bonds:
 
-- Alice earns 1 DOLI per 10 slots (10% ROI per cycle)
-- Bob earns 5 DOLI per 10 slots (10% ROI per cycle)
-- Carol earns 4 DOLI per 10 slots (10% ROI per cycle)
+- Alice earns 10% of epoch rewards (1/10 bonds)
+- Bob earns 50% of epoch rewards (5/10 bonds)
+- Carol earns 40% of epoch rewards (4/10 bonds)
 
-**All producers earn identical ROI percentage regardless of stake size.**
+**All producers earn identical ROI percentage regardless of stake size** — because reward share scales linearly with bonds, and each DOLI bonded generates the same return.
 
 | Parameter             | Value                    |
 |-----------------------|--------------------------|
@@ -543,18 +543,20 @@ At 1 DOLI reward per block:
 | Min stake             | 10 DOLI (1 bond)         |
 | Max stake             | 30,000 DOLI (3,000 bonds) |
 | Block reward (Era 1)  | 1 DOLI                   |
+| Production frequency  | Equal per producer (round-robin) |
+| Reward distribution   | Proportional to bonds (epoch pool) |
 
 #### Accessibility at Scale
 
-At network maturity (18,000 total bonds across all producers):
+At network maturity (500 producers, 18,000 total bonds):
 
 | Your Stake | Bonds | Blocks/Week | Income/Week | Hardware |
 |-----------|-------|-------------|-------------|----------|
-| 10 DOLI   | 1     | ~3          | ~3 DOLI     | Any CPU  |
-| 100 DOLI  | 10    | ~34         | ~34 DOLI    | Any CPU  |
-| 1,000 DOLI| 100   | ~336        | ~336 DOLI   | Any CPU  |
+| 10 DOLI   | 1     | ~121        | ~3 DOLI     | Any CPU  |
+| 100 DOLI  | 10    | ~121        | ~34 DOLI    | Any CPU  |
+| 1,000 DOLI| 100   | ~121        | ~336 DOLI   | Any CPU  |
 
-No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
+Every producer receives the same number of block assignments. Income differs only through bond-weighted epoch rewards. No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
 
 ### 7.4. Bond Lifecycle
 
@@ -587,28 +589,37 @@ All penalties are burned permanently, removing coins from circulation.
 
 ## 8. Producer Selection
 
-For each slot, a deterministic function selects the block producer. Let *P* = {*p₁*, ..., *p_n*} be the active set sorted by public key, and *b(p_i)* the bond count of producer *p_i*. Define *B* = Σ *b(p_i)*.
+For each slot, a deterministic function selects the block producer. Let *P* = {*p₁*, ..., *p_n*} be the active set sorted by public key, and *L* ⊂ *P* be the set of producers currently excluded by the liveness filter (Section 8.1). Define the effective set *E* = *P* \ *L*, sorted lexicographically by public key bytes.
 
 ```
-producer(s) = p_j  where j = min{j : Σ_{i=1}^{j} b(p_i) > s mod B}
+producer(s) = E[s mod |E|]
 ```
 
-The function is pure: `producer(s) = f(s, ActiveSet(epoch(s)))`. It depends on no value the current producer can influence — not `prev_hash`, not transaction ordering, not timestamps within the drift window. **Grinding is impossible because the schedule is a function of time alone, fixed at epoch start.**
+The function is pure round-robin: `producer(s) = f(s, ActiveSet(epoch(s)), LivenessFilter(s))`. It depends on no value the current producer can influence — not `prev_hash`, not transaction ordering, not timestamps within the drift window, not bond count. **Grinding is impossible because the schedule is a function of time alone.**
 
-### 8.1. Fallback Mechanism
+Bond count does not influence production frequency. A producer with 1 bond and a producer with 250 bonds produce at equal frequency. Bonds affect only epoch reward distribution (Section 10.2). This separation ensures that block production capacity cannot be purchased — only presence and time determine who produces.
 
-To avoid empty slots when the primary producer is offline, 2 fallback ranks activate in sequential 2-second windows:
+### 8.1. Liveness Filter
 
-| Time in slot | Eligible producer |
-|--------------|-------------------|
-| 0ms - 1999ms | rank 0 only (primary) |
-| 2000ms - 3999ms | rank 1 only (fallback) |
+The protocol maintains a dynamic liveness filter that temporarily excludes producers who are demonstrably offline, preventing wasted slots in the round-robin rotation.
 
-Each rank has an exclusive 2-second window. A block from rank *N* is valid only if `timestamp >= slot_start + N × 2000ms`. If multiple valid blocks arrive for the same slot, the one with lower rank wins. The remaining slot time (4s–10s) is unused — if neither the primary nor the single fallback produces, the slot is skipped.
+**Exclusion.** When a block is committed, the protocol checks whether the slot gap between consecutive blocks exceeds 1. If a producer was scheduled for a skipped slot and did not produce, they are added to the excluded set.
+
+**Re-inclusion.** The presence bitfield committed in each block header (`presence_root`, Section 10.3) records which producers attested during that block's attestation window. A producer in the excluded set who appears in a block's presence bitfield is immediately re-included in the effective set.
+
+**Reconstruction.** The excluded set is not persisted — it is reconstructed at node startup by scanning the last epoch of blocks (360 blocks) from the block store. This ensures that nodes joining via any sync method compute an identical excluded set from the same chain data.
+
+| Event | Effect |
+|-------|--------|
+| Producer misses assigned slot | Added to excluded set |
+| Producer appears in presence bitfield | Removed from excluded set |
+| Node startup | Excluded set rebuilt from last 360 blocks |
+
+The liveness filter is deterministic: every node reading the same chain computes the same excluded set and therefore the same producer for each slot. No randomness, no voting, no subjectivity.
 
 ### 8.2. Comparison with Existing Systems
 
-Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic round-robin eliminates variance entirely (see Section 7.3), and the built-in epoch reward pool (Section 10.5) distributes rewards directly on-chain to all qualified producers. External pools cannot offer a better deal.
+Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's pure round-robin eliminates production variance entirely — every producer gets equal block assignments. The built-in epoch reward pool (Section 10.5) distributes rewards bond-weighted to all qualified producers. External pools cannot offer a better deal.
 
 | System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
 |--------------|---------------------------|----------|-------|---------------|-----------------|
@@ -617,7 +628,7 @@ Pools exist in PoW and PoS because rewards are probabilistic — variance forces
 | Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | $10,000+ server  |
 | DOLI PoT     | Deterministic round-robin | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
 
-Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a pure function of `(slot, ActiveSet(epoch))`. No hardware advantage exists.
+Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a pure round-robin function of `(slot, ActiveSet(epoch), LivenessFilter)`. No hardware advantage exists. No stake advantage exists for production — only for rewards.
 
 **Tiered scaling path.** The protocol defines a two-tier architecture for future growth: up to 500 Tier 1 validators (block producers with full consensus participation) and up to 15,000 Tier 2 attestors (liveness attestation without block production). Delegation enables Tier 3 participants to stake without running infrastructure, with rewards split 10% to the delegate (Tier 1/2 node operator) and 90% to the staker. This tiered model preserves the accessibility of the base protocol while scaling consensus participation beyond the active producer set.
 
@@ -869,7 +880,7 @@ The deficit is monotonically non-decreasing. Adding parallel hardware allows com
 
 **Contrast with Proof of Work:** In PoW, an attacker with >50% hashpower reduces the deficit probabilistically because hash attempts are parallelizable. In Proof of Time, the sequential dependency *h_{i+1} = H(h_i)* makes each chain inherently serial. The attacker's deficit is bounded below by its initial value, regardless of budget.
 
-The only attack vector is controlling >50% of bond-weighted slots, which requires:
+The only attack vector is controlling >50% of producers in the active set, which requires:
 
 1. *BOND_UNIT* capital locked per identity (linear cost, subject to slashing)
 2. *T_registration* delay proof per identity (anti-grinding, epoch-bound)
@@ -894,15 +905,15 @@ The system does not claim immunity from wealthy adversaries — no system can. I
 
 ### 12.4. Safety Theorem
 
-**Theorem.** Let *n* = total bond-weighted slots per epoch. An attacker controlling *f* < *n/2* bond-weighted slots cannot produce a heavier chain than the honest network over any interval of *k* ≥ 1 epochs.
+**Theorem.** Let *n* = total producers in the active set. An attacker controlling *f* < *n/2* producers cannot produce a heavier chain than the honest network over any interval of *k* ≥ 1 epochs.
 
 **Proof.** Define per epoch *e*:
 
-- *S_h(e)* = set of slots assigned to honest producers
-- *S_a(e)* = set of slots assigned to attacker producers
+- *S_h(e)* = set of slots assigned to honest producers (round-robin)
+- *S_a(e)* = set of slots assigned to attacker producers (round-robin)
 - *w(p)* = seniority weight of producer *p* ∈ [1.0, 4.0]
 
-The schedule is a pure function of `(slot, ActiveSet(epoch))` — no block content influences it.
+The schedule is a pure function of `(slot, ActiveSet(epoch), LivenessFilter)` — no block content influences it. Under round-robin, each producer receives equal slot assignments: *|S_h(e)| + |S_a(e)| = total slots*, distributed uniformly.
 
 The accumulated chain weight over *k* epochs:
 
@@ -911,7 +922,7 @@ W_h(k) = Σ_{e=1}^{k} Σ_{s ∈ S_h(e)} w(producer(s))
 W_a(k) = Σ_{e=1}^{k} Σ_{s ∈ S_a(e)} w(producer(s))
 ```
 
-Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e*. Additionally, seniority weighting (Section 9.1) penalizes new identities: *w(new) = 1* while *w(established) ≤ 4*. Therefore *W_h(k) > W_a(k)* for all *k* ≥ 1.
+Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e* (honest producers outnumber attackers, so they receive more round-robin assignments). Additionally, seniority weighting (Section 9.1) penalizes new identities: *w(new) = 1* while *w(established) ≤ 4*. Therefore *W_h(k) > W_a(k)* for all *k* ≥ 1.
 
 By the Sequential Deficit theorem (12.2), the attacker cannot compensate by computing faster — the hash chain's sequential dependency prevents parallel acceleration. ∎
 
@@ -976,6 +987,8 @@ The result: the founding producers paid for their own bonds with real block prod
 
 **The founders received no privilege — they paid the bootstrap cost with work.**
 
+**Phase 4 — Open participation.** At block 26,979 (~3 days after genesis), the founding producers funded a public faucet from their own earned rewards — 250 DOLI each, 1,500 DOLI total. The faucet distributes 10.01 DOLI (1 bond unit + transaction fees) to any new participant who requests it. The barrier to entry is zero capital — only a $5/month VPS and the willingness to run a node. All faucet transactions are on-chain and verifiable.
+
 ---
 
 ## 17. Immutability
@@ -1037,16 +1050,16 @@ As of March 2026, the mainnet is in its **bootstrap phase** — operational and 
 | Block propagation | < 500ms |
 | Node hardware | Standard VPS, any CPU |
 | Minimum bond | 10 DOLI |
-| Fallback ranks | 2 (primary + 1 fallback) |
+| Liveness filter | Dynamic exclusion/re-inclusion |
 | Unbonding period | 7 days (60,480 blocks) |
 
-The current producer count reflects the bootstrap phase described in Section 16.2. The protocol's security properties strengthen as independent producers join — each additional operator increases the cost of a >50% bond-weighted attack and reduces reliance on the founding set. The target is a producer set large enough that no single entity controls a meaningful fraction of bond-weighted slots.
+The current producer count reflects the bootstrap phase described in Section 16.2. The protocol's security properties strengthen as independent producers join — each additional operator increases the cost of a >50% producer-count attack and reduces reliance on the founding set. The target is a producer set large enough that no single entity controls a meaningful fraction of the active producer set.
 
 ```
 Genesis:    2026-03-19 (current chain)
 Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin)
 Status:     Live
-Source:     https://github.com/e-weil/doli
+Source:     https://github.com/doli-network/doli
 Explorer:   https://doli.network
 ```
 
@@ -1070,7 +1083,7 @@ We started with the usual framework of coins made from digital signatures, which
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
-**Rewards are deterministic, not probabilistic.** A participant knows exactly when their next block will be produced. The protocol acts as a built-in pool, distributing epoch rewards on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. The smallest participant receives the same percentage return as the largest.
+**Rewards are deterministic, not probabilistic.** Every producer receives equal block assignments through pure round-robin. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. The smallest participant receives the same percentage return as the largest.
 
 The network is robust in its simplicity. Nodes work with little coordination. They do not need to be identified, since messages are not routed to any particular place and only need to be delivered on a best effort basis. Nodes can leave and rejoin the network at will, accepting the heaviest chain as proof of what happened while they were gone.
 
@@ -1080,7 +1093,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v3.4.2**
+**DOLI v4.4.9**
 
 *"Time is the only fair currency."*
 

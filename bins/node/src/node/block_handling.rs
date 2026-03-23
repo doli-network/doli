@@ -679,10 +679,13 @@ impl Node {
         // infinite fork sync retry loops.
         match self.execute_reorg(reorg_result, trigger_block).await {
             Ok(()) => {
-                // Reset sync state so normal sync can resume from the new tip
+                // Reset sync state so normal sync can resume from the new tip.
                 {
                     let mut sync = self.sync_manager.write().await;
                     sync.reset_sync_for_rollback();
+                    // Recovery was successful — tip is now canonical. Clear post_rollback
+                    // to prevent unnecessary fork_sync loop (N5 incident 2026-03-23).
+                    sync.set_post_rollback(false);
                     let (height, hash, slot) = {
                         let state = self.chain_state.read().await;
                         (state.best_height, state.best_hash, state.best_slot)
