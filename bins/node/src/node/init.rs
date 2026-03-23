@@ -705,7 +705,9 @@ impl Node {
         // stale announcements after restart. +1 so the next announcement is fresh.
         let initial_seq = {
             let gset = producer_gset.read().await;
-            producer_key.as_ref().map_or(0, |k| gset.sequence_for(&k.public_key()) + 1)
+            producer_key
+                .as_ref()
+                .map_or(0, |k| gset.sequence_for(k.public_key()) + 1)
         };
 
         Ok(Self {
