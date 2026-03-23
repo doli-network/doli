@@ -594,6 +594,28 @@ impl Node {
         // Use canonical chainspec genesis hash, not state_db (may be corrupt).
         let genesis_hash = self.canonical_genesis_hash();
 
+        // INC-I-005 Fix C: Check confirmed height floor BEFORE destroying state.
+        // If the sync manager refuses the reset (node was previously healthy),
+        // we must NOT proceed with layers 2-9 (chain state, UTXO, producer set).
+        // Otherwise the node state is destroyed but the sync manager thinks
+        // it's still at the floor height — causing a permanent desync.
+        {
+            let sync = self.sync_manager.read().await;
+            let floor = sync.confirmed_height_floor();
+            if floor > 0 {
+                drop(sync); // Release read lock before write lock
+                warn!(
+                    "reset_state_only ABORTED: confirmed_height_floor={}. \
+                     Node was previously healthy — will not destroy state. \
+                     Clearing sync pipeline only (INC-I-005 Fix C).",
+                    floor
+                );
+                let mut sync = self.sync_manager.write().await;
+                sync.reset_local_state(genesis_hash);
+                return Ok(());
+            }
+        }
+
         // LAYER 1: Reset sync manager (blocks production via ProductionGate)
         {
             let mut sync = self.sync_manager.write().await;
