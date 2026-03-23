@@ -266,12 +266,12 @@ impl SyncManager {
                     );
                 } else if enough_peers && snap_allowed && self.snap.attempts < 3 {
                     warn!(
-                        "Post-rollback: fork_sync failed to start, escalating to snap sync \
+                        "Post-rollback: fork_sync failed to start, requesting snap sync \
                          (gap={}, peers={})",
                         gap,
                         self.peers.len()
                     );
-                    self.fork.needs_genesis_resync = true;
+                    self.request_genesis_resync(super::RecoveryReason::PostRollbackSnapEscalation);
                 } else {
                     // Not enough peers for snap sync — fall through to header-first
                     // as a last resort (it may fail, but cleanup() will retry).
@@ -409,10 +409,10 @@ impl SyncManager {
                     }
                     // Large gap with not enough peers — fall back to genesis resync
                     info!(
-                        "Genesis fallback: {} consecutive empty headers — signaling node for full resync",
+                        "Genesis fallback: {} consecutive empty headers — requesting full resync",
                         self.fork.consecutive_empty_headers
                     );
-                    self.fork.needs_genesis_resync = true;
+                    self.request_genesis_resync(super::RecoveryReason::GenesisFallbackEmptyHeaders);
                     self.set_state(SyncState::Idle, "genesis_resync_fallback");
                     return None;
                 }
@@ -764,8 +764,8 @@ impl SyncManager {
                     );
                     // Don't blacklist — the peer is correct, our hash is wrong
                     // Don't increment consecutive_empty_headers — not fork evidence
-                    self.fork.needs_genesis_resync = true;
                     self.snap.attempts = 0; // Fresh snap sync attempts
+                    self.request_genesis_resync(super::RecoveryReason::BodyDownloadPeerError);
                     self.set_state(SyncState::Idle, "post_snap_hash_mismatch");
                     return;
                 }

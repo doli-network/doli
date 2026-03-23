@@ -209,27 +209,21 @@ impl SyncManager {
                 // Signal fork recovery via RecoveryPhase (replaces old stuck_fork_signal boolean).
                 self.signal_stuck_fork();
                 self.set_state(SyncState::Idle, "apply_failures_fork_detected");
-            } else if self.snap.threshold < u64::MAX && self.snap.attempts < 3 {
-                // INC-I-005 Fix: Force snap sync via needs_genesis_resync instead of
-                // calling start_sync(). start_sync() only triggers snap sync when
-                // gap > snap_threshold (1000), but apply failures prove the local state
-                // is wrong regardless of gap size. Without forcing, a node with gap=76
-                // loops forever: header-first → apply fail → "retry snap sync" → but
-                // start_sync sees gap<1000 → header-first again → same apply fail.
+            } else {
+                // INC-I-005 Fix: Force snap sync via request_genesis_resync() instead of
+                // direct flag write. The gated method enforces monotonic floor, concurrent
+                // recovery check, rate limiting, and snap availability.
+                // Original split: snap available → force snap; else → raw resync.
+                // After M2: both paths use the same gated method with ApplyFailuresSnapThreshold.
                 warn!(
-                    "3+ consecutive apply failures with gap={} — forcing snap sync \
-                     (attempt {}/3, state divergence confirmed)",
-                    gap,
-                    self.snap.attempts + 1
+                    "3+ consecutive apply failures with gap={} — requesting genesis resync \
+                     (snap_threshold={}, snap_attempts={}, state divergence confirmed)",
+                    gap, self.snap.threshold, self.snap.attempts
                 );
                 self.fork.consecutive_apply_failures = 0;
-                self.fork.needs_genesis_resync = true;
-            } else {
-                warn!(
-                    "3+ consecutive apply failures with gap={} — triggering genesis resync",
-                    gap
-                );
-                self.fork.needs_genesis_resync = true;
+                self.request_genesis_resync(super::RecoveryReason::ApplyFailuresSnapThreshold {
+                    gap,
+                });
             }
         }
     }
@@ -630,6 +624,15 @@ impl SyncManager {
     }
 
     pub fn reset_sync_for_rollback(&mut self) {
+        // Gate: monotonic progress floor (REQ-SYNC-102)
+        if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
+            warn!(
+                "[RECOVERY] reset_sync_for_rollback REFUSED: height {} at or below floor {}",
+                self.local_height, self.confirmed_height_floor
+            );
+            return;
+        }
+
         // NOTE: consecutive_empty_headers is NOT reset here. It must keep climbing
         // toward the escalation threshold (10) that triggers genesis resync via
         // is_deep_fork_detected(). Resetting after rejected reorgs prevents

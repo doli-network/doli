@@ -337,11 +337,13 @@ impl SyncManager {
                     if enough_peers && gap > 12 {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers — \
-                             escalating to snap sync (gap={})",
+                             requesting snap sync (gap={})",
                             self.fork.consecutive_empty_headers, gap
                         );
                         self.fork.header_blacklisted_peers.clear();
-                        self.fork.needs_genesis_resync = true;
+                        self.request_genesis_resync(
+                            super::RecoveryReason::AllPeersBlacklistedDeepFork,
+                        );
                     } else if enough_peers && gap <= 12 {
                         warn!(
                             "All peers blacklisted for >120s (gap={}) — clearing blacklist \
@@ -477,10 +479,12 @@ impl SyncManager {
                     if self.snap.attempts < 3 && self.peers.len() >= 3 {
                         warn!(
                             "Stuck-sync detected: no block applied for {}s, behind by {} blocks \
-                             (local_h={}, network_tip={}). Gap too large for fork_sync — forcing snap sync.",
+                             (local_h={}, network_tip={}). Gap too large for fork_sync — requesting snap sync.",
                             stuck_secs, gap, self.local_height, self.network.network_tip_height
                         );
-                        self.fork.needs_genesis_resync = true;
+                        self.request_genesis_resync(super::RecoveryReason::StuckSyncLargeGap {
+                            gap,
+                        });
                     }
                 } else if self.fork.consecutive_empty_headers < 3 && self.local_height > 0 {
                     // Small gap with non-zero height: likely on a fork.
@@ -517,11 +521,13 @@ impl SyncManager {
                             warn!(
                                 "Height offset detected: gap={} has been stable for {}s while \
                                  blocks are being applied. This indicates a corrupted height \
-                                 counter from a bad reorg. Forcing snap sync to correct.",
+                                 counter from a bad reorg. Requesting snap sync to correct.",
                                 gap,
                                 since.elapsed().as_secs()
                             );
-                            self.fork.needs_genesis_resync = true;
+                            self.request_genesis_resync(
+                                super::RecoveryReason::HeightOffsetDetected { gap },
+                            );
                             self.fork.stable_gap_since = None;
                         } else if gap.abs_diff(prev_gap) > 1 {
                             // Gap changed significantly — reset tracker
