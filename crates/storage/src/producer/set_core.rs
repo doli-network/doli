@@ -372,4 +372,16 @@ impl ProducerSet {
     pub fn scheduled_count_at_height(&self, current_height: u64) -> usize {
         self.scheduled_producers_at_height(current_height).len()
     }
+
+    /// Reset all producers to `scheduled = true`.
+    ///
+    /// Called before `rebuild_scheduled_from_blocks` to ensure a clean slate.
+    /// The rebuild then replays reactive scheduling from on-chain data to
+    /// deterministically compute the correct scheduled flags.
+    pub fn reset_scheduled_flags(&mut self) {
+        for info in self.producers.values_mut() {
+            info.scheduled = true;
+        }
+        self.active_cache = None;
+    }
 }

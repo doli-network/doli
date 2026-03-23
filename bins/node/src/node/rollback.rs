@@ -146,6 +146,12 @@ impl Node {
         // converge on the same liveness view.
         self.rebuild_producer_liveness(target_height);
 
+        // Rebuild reactive scheduling flags from canonical block_store (INC-I-006)
+        {
+            let mut producers = self.producer_set.write().await;
+            self.rebuild_scheduled_from_blocks(&mut producers, target_height);
+        }
+
         // Update chain state to parent
         {
             let mut state = self.chain_state.write().await;

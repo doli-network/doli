@@ -17,6 +17,18 @@ impl Node {
             warn!("Using placeholder maintainer keys - this is OK for testnet/devnet");
         }
 
+        // Rebuild reactive scheduling flags from block store on startup.
+        // INC-I-006: Disk-persisted ProducerSet may have stale `scheduled` flags
+        // from a prior session's fork. Replaying reactive scheduling from canonical
+        // block store ensures this node's scheduling state matches the network.
+        {
+            let tip = self.chain_state.read().await.best_height;
+            if tip > 0 {
+                let mut producers = self.producer_set.write().await;
+                self.rebuild_scheduled_from_blocks(&mut producers, tip);
+            }
+        }
+
         // Start network service
         self.start_network().await?;
 

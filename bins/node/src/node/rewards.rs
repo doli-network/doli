@@ -363,6 +363,128 @@ impl Node {
         );
     }
 
+    /// Rebuild `scheduled` flags from block store by replaying reactive scheduling.
+    ///
+    /// After rollback or restart, the ProducerSet's `scheduled` flags may not match
+    /// the canonical chain's state. This function replays the reactive scheduling
+    /// logic (missed-slot detection, fallback detection, block production, attestation)
+    /// over the last LIVENESS_WINDOW_MIN blocks to deterministically recompute the
+    /// correct flags. All nodes running this function on the same block store will
+    /// converge to the same `scheduled` state.
+    ///
+    /// INC-I-006: Without this rebuild, nodes that restart with stale disk state or
+    /// undergo multiple reorgs accumulate scheduling divergence, causing permanent
+    /// "invalid producer for slot" rejections.
+    pub(super) fn rebuild_scheduled_from_blocks(
+        &self,
+        producers: &mut storage::ProducerSet,
+        tip_height: u64,
+    ) {
+        let window = consensus::LIVENESS_WINDOW_MIN;
+        let start = tip_height.saturating_sub(window).max(1);
+
+        // Reset to default (all scheduled) then replay
+        producers.reset_scheduled_flags();
+
+        // Get prev_slot for the block before our window
+        let mut prev_slot: u32 = if start > 1 {
+            self.block_store
+                .get_block_by_height(start - 1)
+                .ok()
+                .flatten()
+                .map(|b| b.header.slot)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let mut changes = 0u32;
+        for h in start..=tip_height {
+            if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
+                let current_slot = block.header.slot;
+
+                // 1. Missed slots → unschedule rank 0
+                if current_slot > prev_slot + 1 && h > 1 {
+                    let scheduled_list: Vec<(crypto::PublicKey, u64)> = producers
+                        .scheduled_producers_at_height(h)
+                        .iter()
+                        .map(|p| (p.public_key, 1u64))
+                        .collect();
+                    if !scheduled_list.is_empty() {
+                        let gap = (current_slot - prev_slot - 1) as usize;
+                        let max_missed = gap.min(100);
+                        for i in 0..max_missed {
+                            let missed_slot = prev_slot + 1 + i as u32;
+                            let eligible = doli_core::consensus::select_producer_for_slot(
+                                missed_slot,
+                                &scheduled_list,
+                            );
+                            if let Some(rank0) = eligible.first() {
+                                if producers.unschedule_producer(rank0) {
+                                    changes += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Fallback detection → unschedule expected rank 0
+                {
+                    let scheduled_list: Vec<(crypto::PublicKey, u64)> = producers
+                        .scheduled_producers_at_height(h)
+                        .iter()
+                        .map(|p| (p.public_key, 1u64))
+                        .collect();
+                    if !scheduled_list.is_empty() {
+                        let eligible = doli_core::consensus::select_producer_for_slot(
+                            current_slot,
+                            &scheduled_list,
+                        );
+                        if let Some(expected_rank0) = eligible.first() {
+                            if *expected_rank0 != block.header.producer
+                                && producers.unschedule_producer(expected_rank0)
+                            {
+                                changes += 1;
+                            }
+                        }
+                    }
+                }
+
+                // 3. Block producer proved alive → schedule
+                if producers.schedule_producer(&block.header.producer) {
+                    changes += 1;
+                }
+
+                // 4. Attestation bitfield → re-schedule attesters
+                if !block.header.presence_root.is_zero() {
+                    let mut sorted: Vec<crypto::PublicKey> = producers
+                        .active_producers_at_height(h)
+                        .iter()
+                        .map(|p| p.public_key)
+                        .collect();
+                    sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                    let attested = doli_core::attestation::decode_attestation_bitfield(
+                        &block.header.presence_root,
+                        sorted.len(),
+                    );
+                    for idx in attested {
+                        if idx < sorted.len() && producers.schedule_producer(&sorted[idx]) {
+                            changes += 1;
+                        }
+                    }
+                }
+
+                prev_slot = current_slot;
+            }
+        }
+
+        info!(
+            "Rebuilt scheduled flags from blocks {}-{}: {} scheduling changes replayed",
+            start, tip_height, changes
+        );
+    }
+
     pub(super) fn rebuild_producer_set_from_blocks(
         &self,
         producers: &mut ProducerSet,

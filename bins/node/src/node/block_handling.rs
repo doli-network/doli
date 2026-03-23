@@ -410,6 +410,16 @@ impl Node {
             // converge on the same liveness view.
             self.rebuild_producer_liveness(target_height);
 
+            // Rebuild reactive scheduling flags from canonical block_store.
+            // INC-I-006: The `scheduled` flags in the undo snapshot may not match
+            // the canonical chain's state if the node restarted with stale disk data
+            // or underwent multiple reorgs. Replaying reactive scheduling from the
+            // block store ensures all nodes converge on the same scheduled set.
+            {
+                let mut producers = self.producer_set.write().await;
+                self.rebuild_scheduled_from_blocks(&mut producers, target_height);
+            }
+
             // Atomically persist common ancestor state to StateDb
             {
                 let state = self.chain_state.read().await;
