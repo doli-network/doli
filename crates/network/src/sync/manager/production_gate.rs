@@ -145,7 +145,7 @@ impl SyncManager {
         // canonical chain and giving the block store a real parent.
         if matches!(
             self.recovery_phase,
-            super::RecoveryPhase::AwaitingCanonicalBlock
+            super::RecoveryPhase::AwaitingCanonicalBlock { .. }
         ) {
             return ProductionAuthorization::BlockedAwaitingCanonicalBlock;
         }
@@ -743,7 +743,7 @@ impl SyncManager {
     pub fn clear_awaiting_canonical_block(&mut self) {
         if matches!(
             self.recovery_phase,
-            super::RecoveryPhase::AwaitingCanonicalBlock
+            super::RecoveryPhase::AwaitingCanonicalBlock { .. }
         ) {
             info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
             self.recovery_phase = super::RecoveryPhase::Normal;
@@ -758,7 +758,7 @@ impl SyncManager {
     pub fn is_awaiting_canonical_block(&self) -> bool {
         matches!(
             self.recovery_phase,
-            super::RecoveryPhase::AwaitingCanonicalBlock
+            super::RecoveryPhase::AwaitingCanonicalBlock { .. }
         )
     }
 

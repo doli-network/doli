@@ -363,8 +363,12 @@ pub enum RecoveryPhase {
         blocks_applied: u32,
     },
     /// Snap sync completed. Waiting for first canonical gossip block
-    /// before allowing production.
-    AwaitingCanonicalBlock,
+    /// before allowing production. Carries a timestamp so cleanup() can
+    /// enforce a 60s timeout (INC-I-005 Fix A).
+    AwaitingCanonicalBlock {
+        /// When this phase started (for timeout enforcement).
+        started: Instant,
+    },
 }
 
 /// Network tip tracking, gossip timing, block application counters.
@@ -700,6 +704,12 @@ pub struct SyncManager {
     /// exponential backoff. Only incremented when `resync_in_progress` is false.
     blocks_since_resync_completed: u32,
     // `stuck_fork_signal` moved to RecoveryPhase::StuckForkDetected
+
+    // === INC-I-005 FIX C: MONOTONIC PROGRESS FLOOR ===
+    /// Highest height at which the node was Synchronized and applied 10+
+    /// blocks. Once set, `reset_local_state()` refuses to go below this
+    /// floor — preventing the infinite snap sync death spiral.
+    confirmed_height_floor: u64,
 }
 
 impl SyncManager {
@@ -743,6 +753,8 @@ impl SyncManager {
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
+            // INC-I-005 Fix C: monotonic progress floor
+            confirmed_height_floor: 0,
         }
     }
 
@@ -767,6 +779,13 @@ impl SyncManager {
     /// Get local chain tip
     pub fn local_tip(&self) -> (u64, Hash, u32) {
         (self.local_height, self.local_hash, self.local_slot)
+    }
+
+    /// Get the confirmed height floor (INC-I-005 Fix C).
+    /// Once a node has been Synchronized and applied 10+ blocks at height H,
+    /// this returns H. `reset_local_state()` refuses to go below this floor.
+    pub fn confirmed_height_floor(&self) -> u64 {
+        self.confirmed_height_floor
     }
 
     /// Update local chain tip

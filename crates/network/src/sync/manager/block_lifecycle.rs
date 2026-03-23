@@ -54,6 +54,19 @@ impl SyncManager {
             self.recovery_phase = super::RecoveryPhase::Normal;
         }
 
+        // INC-I-005 Fix C: Update confirmed height floor.
+        // Once a node is Synchronized and has applied 10+ blocks, set the floor.
+        // This prevents reset_local_state() from going below this height,
+        // breaking the infinite snap sync death spiral.
+        if matches!(self.state, SyncState::Synchronized) && height > self.confirmed_height_floor {
+            // We're Synchronized and at a new high. After the PGD-001 block
+            // (5 blocks after resync counter reset) we're confident the node is
+            // healthy. Use the same threshold (resync counter cleared) as proxy.
+            if self.consecutive_resync_count == 0 {
+                self.confirmed_height_floor = height;
+            }
+        }
+
         // PGD-001: Track stable blocks after resync completion.
         if !matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
             && self.consecutive_resync_count > 0
@@ -232,6 +245,51 @@ impl SyncManager {
     /// - Sync completes (complete_resync() is called)
     /// - Grace period expires (configurable, default 30s)
     pub fn reset_local_state(&mut self, genesis_hash: Hash) {
+        // INC-I-005 Fix C: Refuse to reset below confirmed height floor.
+        // If the node was previously healthy (Synchronized + applied blocks),
+        // resetting to 0 creates an infinite snap sync death spiral.
+        // Instead, log the refusal and let the node try header-first sync
+        // from its current position. Manual intervention required for deeper issues.
+        if self.confirmed_height_floor > 0 {
+            warn!(
+                "reset_local_state REFUSED: confirmed_height_floor={}, will not reset below. \
+                 Node was previously healthy at this height. Manual intervention required \
+                 for recovery below this point (INC-I-005 Fix C).",
+                self.confirmed_height_floor
+            );
+            // Still block production and clear stale state, but don't reset height
+            self.start_resync();
+            self.pipeline.pending_headers.clear();
+            self.pipeline.pending_blocks.clear();
+            self.pipeline.headers_needing_bodies.clear();
+            self.pipeline.pending_requests.clear();
+            self.fork.fork_recovery = super::super::fork_recovery::ForkRecoveryTracker::new();
+            self.fork.consecutive_empty_headers = 0;
+            self.fork.needs_genesis_resync = false;
+            self.fork.fork_mismatch_detected = false;
+            self.pipeline.body_stall_retries = 0;
+            self.fork.consecutive_apply_failures = 0;
+            self.snap.attempts = 0;
+            self.network.last_block_seen = Instant::now();
+            self.network.last_block_applied = Instant::now();
+            self.network.last_sync_activity = Instant::now();
+            self.last_block_received_via_gossip = Some(Instant::now());
+            self.pipeline.header_downloader = super::super::headers::HeaderDownloader::new(
+                self.config.max_headers_per_request,
+                self.config.request_timeout,
+            );
+            self.pipeline.body_downloader = super::super::bodies::BodyDownloader::new(
+                self.config.max_bodies_per_request,
+                self.config.max_concurrent_body_requests,
+                self.config.request_timeout,
+            );
+            self.set_state(SyncState::Idle, "reset_refused_height_floor");
+            if self.should_sync() {
+                self.start_sync();
+            }
+            return;
+        }
+
         // CRITICAL: Block production FIRST via the production gate
         self.start_resync();
 

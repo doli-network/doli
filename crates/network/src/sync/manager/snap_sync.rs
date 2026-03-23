@@ -258,7 +258,9 @@ impl SyncManager {
             // Block production until a canonical gossip block arrives.
             // Snap sync restores state but leaves the block store empty —
             // producing now would create a fork with no real parent.
-            self.recovery_phase = super::RecoveryPhase::AwaitingCanonicalBlock;
+            self.recovery_phase = super::RecoveryPhase::AwaitingCanonicalBlock {
+                started: std::time::Instant::now(),
+            };
             info!("[SNAP_SYNC] Production gated: awaiting first canonical gossip block");
             if let SyncState::SnapReady { snapshot } = old {
                 Some(snapshot)

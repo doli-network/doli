@@ -747,6 +747,29 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
+                // INC-I-005 Fix B: Post-snap-sync empty headers intercept.
+                // If we just finished snap sync (AwaitingCanonicalBlock) and get empty
+                // headers, it means the snap source gave us a hash no peer recognizes.
+                // The responding peer is CANONICAL — don't blacklist it. Instead, retry
+                // snap sync from a different peer to get a recognized hash.
+                if matches!(
+                    self.recovery_phase,
+                    super::RecoveryPhase::AwaitingCanonicalBlock { .. }
+                ) && self.snap.threshold < u64::MAX
+                {
+                    warn!(
+                        "Post-snap empty headers from {} (gap={}) — snap hash not recognized. \
+                         Retrying snap sync from different peer (INC-I-005 Fix B).",
+                        peer, gap
+                    );
+                    // Don't blacklist — the peer is correct, our hash is wrong
+                    // Don't increment consecutive_empty_headers — not fork evidence
+                    self.fork.needs_genesis_resync = true;
+                    self.snap.attempts = 0; // Fresh snap sync attempts
+                    self.set_state(SyncState::Idle, "post_snap_hash_mismatch");
+                    return;
+                }
+
                 // Empty headers = peer doesn't recognize our tip hash.
                 // Two cases:
                 // 1. Small gap (<=50): we're on a minor fork. Signal immediate

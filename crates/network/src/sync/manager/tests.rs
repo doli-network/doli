@@ -1608,3 +1608,167 @@ fn test_inc001_rc6_processing_stall_immediate_recovery() {
         manager.state()
     );
 }
+
+// =========================================================================
+// INC-I-005: Sync cascade feedback loop fixes
+// Root cause: multi-entry-point feedback loop where each recovery mechanism
+// produces imperfect state that triggers a DIFFERENT cascade entry point.
+// =========================================================================
+
+/// Fix A: AwaitingCanonicalBlock must have a timeout.
+/// Without a timeout, nodes that snap sync to a height no peer recognizes
+/// are permanently stuck (production blocked, no automatic recovery).
+/// PostRecoveryGrace has a 120s timeout — AwaitingCanonicalBlock needs one too.
+#[test]
+fn test_awaiting_canonical_block_has_timeout() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Simulate snap sync completing: sets AwaitingCanonicalBlock
+    manager.recovery_phase = RecoveryPhase::AwaitingCanonicalBlock {
+        started: Instant::now() - Duration::from_secs(61),
+    };
+
+    // Production should be blocked initially
+    manager.local_height = 600;
+    manager.local_slot = 600;
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 600, Hash::ZERO, 600);
+    manager.add_peer(peer2, 600, Hash::ZERO, 600);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Run cleanup — should clear AwaitingCanonicalBlock after 60s
+    manager.cleanup();
+
+    // After timeout, recovery_phase should be Normal
+    assert!(
+        matches!(manager.recovery_phase, RecoveryPhase::Normal),
+        "Fix A: AwaitingCanonicalBlock must clear after 60s timeout. Got: {:?}",
+        manager.recovery_phase
+    );
+}
+
+/// Fix A (negative): AwaitingCanonicalBlock should NOT timeout before 60s.
+#[test]
+fn test_awaiting_canonical_block_no_premature_timeout() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Only 30s elapsed — should NOT timeout
+    manager.recovery_phase = RecoveryPhase::AwaitingCanonicalBlock {
+        started: Instant::now() - Duration::from_secs(30),
+    };
+
+    manager.cleanup();
+
+    assert!(
+        matches!(
+            manager.recovery_phase,
+            RecoveryPhase::AwaitingCanonicalBlock { .. }
+        ),
+        "Fix A: AwaitingCanonicalBlock must NOT clear before 60s. Got: {:?}",
+        manager.recovery_phase
+    );
+}
+
+/// Fix B: Post-snap empty headers should retry snap from different peer,
+/// not blacklist the responding peer. When a node just finished snap sync
+/// and gets empty headers, the problem is the snap source (gave a hash
+/// no peer recognizes), not the header peer.
+#[test]
+fn test_post_snap_empty_headers_triggers_snap_retry() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Node just completed snap sync (30s ago)
+    manager.recovery_phase = RecoveryPhase::AwaitingCanonicalBlock {
+        started: Instant::now() - Duration::from_secs(5),
+    };
+    manager.local_height = 598;
+    manager.local_hash = crypto::hash::hash(b"snap_hash_598");
+    manager.local_slot = 598;
+    manager.snap.threshold = 1000; // Re-enable snap sync for this test
+
+    // Simulate DownloadingHeaders state
+    let peer = PeerId::random();
+    manager.add_peer(peer, 602, crypto::hash::hash(b"peer_hash_602"), 602);
+    manager.state = SyncState::DownloadingHeaders {
+        target_slot: 602,
+        peer,
+        headers_count: 0,
+    };
+
+    // Handle empty headers response (peer doesn't recognize our snap hash)
+    let response = SyncResponse::Headers(vec![]);
+    manager.handle_response(peer, response);
+
+    // Fix B: peer should NOT be blacklisted (it's canonical, our hash is wrong)
+    assert!(
+        !manager.fork.header_blacklisted_peers.contains_key(&peer),
+        "Fix B: Post-snap empty headers must NOT blacklist responding peer"
+    );
+
+    // Fix B: needs_genesis_resync should be set (to retry snap sync)
+    assert!(
+        manager.fork.needs_genesis_resync,
+        "Fix B: Post-snap empty headers must trigger snap sync retry, not fork detection"
+    );
+}
+
+/// Fix C: Monotonic progress floor prevents reset below confirmed height.
+/// Once a node has been Synchronized and applied 10+ blocks at height H,
+/// reset_local_state() must not set height below H.
+#[test]
+fn test_confirmed_height_floor_prevents_reset_to_zero() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Simulate a node that was healthy at height 500 (applied 10+ blocks)
+    manager.local_height = 500;
+    manager.local_hash = crypto::hash::hash(b"block500");
+    manager.local_slot = 500;
+    manager.state = SyncState::Synchronized;
+
+    // Apply 10 blocks in Synchronized state to set the floor
+    for i in 0..10 {
+        manager.block_applied_with_weight(
+            crypto::hash::hash(format!("block{}", 501 + i).as_bytes()),
+            501 + i,
+            (501 + i) as u32,
+            1,
+            crypto::hash::hash(format!("block{}", 500 + i).as_bytes()),
+        );
+    }
+
+    // Verify floor is set
+    assert!(
+        manager.confirmed_height_floor() >= 510,
+        "Fix C: confirmed_height_floor should be >= 510 after 10 blocks in Synchronized. Got: {}",
+        manager.confirmed_height_floor()
+    );
+
+    // Now try to reset to genesis — should be refused
+    manager.reset_local_state(Hash::ZERO);
+
+    // Fix C: height should NOT be 0 — should stay at or above the floor
+    assert!(
+        manager.local_height > 0,
+        "Fix C: reset_local_state must NOT set height to 0 when confirmed_height_floor > 0. Got: {}",
+        manager.local_height
+    );
+}
+
+/// Fix C (positive): Fresh nodes with no confirmed floor CAN reset to zero.
+#[test]
+fn test_fresh_node_can_reset_to_zero() {
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    // Fresh node — no confirmed height floor
+    manager.local_height = 50;
+    manager.local_hash = crypto::hash::hash(b"block50");
+
+    // Reset should work normally (floor is 0)
+    manager.reset_local_state(Hash::ZERO);
+
+    assert_eq!(
+        manager.local_height, 0,
+        "Fresh nodes with no confirmed floor should reset to 0"
+    );
+}

@@ -435,6 +435,22 @@ impl SyncManager {
             }
         }
 
+        // INC-I-005 Fix A: AwaitingCanonicalBlock timeout.
+        // After snap sync, production is gated until a gossip block builds on
+        // our tip. If 60s pass without one (snap hash not recognized by peers,
+        // or connectivity issue), clear the gate to break the cascade loop.
+        // Without this timeout, nodes that snap-synced to an unrecognized hash
+        // are permanently stuck — the only RecoveryPhase without a fallback.
+        if let super::RecoveryPhase::AwaitingCanonicalBlock { started } = self.recovery_phase {
+            if started.elapsed().as_secs() > 60 {
+                warn!(
+                    "AwaitingCanonicalBlock timeout: 60s without canonical gossip block. \
+                     Clearing gate to allow recovery (INC-I-005 Fix A)."
+                );
+                self.recovery_phase = super::RecoveryPhase::Normal;
+            }
+        }
+
         // Stuck-sync detection: if height hasn't advanced for >120s and we're
         // behind peers, the node is stuck. The correct escalation depends on gap:
         //
