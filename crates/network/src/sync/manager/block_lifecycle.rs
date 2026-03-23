@@ -192,20 +192,20 @@ impl SyncManager {
                 self.signal_stuck_fork();
                 self.set_state(SyncState::Idle, "apply_failures_fork_detected");
             } else if self.snap.threshold < u64::MAX && self.snap.attempts < 3 {
-                // INC-I-004 Fix: Try snap sync before genesis resync. After snap sync
-                // with stale scheduling state, blocks fail "invalid producer for slot"
-                // because the `scheduled` flags are wrong. A fresh snap sync from a
-                // peer at the current tip will include correct scheduling state.
-                // This is O(1) vs genesis resync's O(chain_height).
+                // INC-I-005 Fix: Force snap sync via needs_genesis_resync instead of
+                // calling start_sync(). start_sync() only triggers snap sync when
+                // gap > snap_threshold (1000), but apply failures prove the local state
+                // is wrong regardless of gap size. Without forcing, a node with gap=76
+                // loops forever: header-first → apply fail → "retry snap sync" → but
+                // start_sync sees gap<1000 → header-first again → same apply fail.
                 warn!(
-                    "3+ consecutive apply failures with gap={} — retrying snap sync \
-                     (attempt {}/3) before genesis resync",
+                    "3+ consecutive apply failures with gap={} — forcing snap sync \
+                     (attempt {}/3, state divergence confirmed)",
                     gap,
                     self.snap.attempts + 1
                 );
                 self.fork.consecutive_apply_failures = 0;
-                self.set_state(SyncState::Idle, "apply_failures_snap_retry");
-                self.start_sync();
+                self.fork.needs_genesis_resync = true;
             } else {
                 warn!(
                     "3+ consecutive apply failures with gap={} — triggering genesis resync",
