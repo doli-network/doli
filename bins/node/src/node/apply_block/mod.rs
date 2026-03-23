@@ -142,25 +142,17 @@ impl Node {
 
         // Capture previous slot BEFORE update_chain_state_for_block changes best_slot.
         // Used by reactive scheduling to detect missed slots.
+        //
+        // ROOT FIX (INC-I-005): Always use chain_state.best_slot, never the block store.
+        // The block store is NOT cleared during snap sync — old fork blocks persist.
+        // If get_block_by_height returns a fork block (wrong slot), reactive scheduling
+        // diverges, creating cascade forks on the same nodes every time they snap sync.
+        // chain_state.best_slot is always correct: set by update_chain_state_for_block
+        // for every applied block, and correctly transferred during snap sync.
         let prev_slot = if height <= 1 {
             0u32
         } else {
-            match self
-                .block_store
-                .get_block_by_height(height - 1)
-                .ok()
-                .flatten()
-                .map(|b| b.header.slot)
-            {
-                Some(slot) => slot,
-                None => {
-                    // After snap sync, block store is empty but chain_state.best_slot
-                    // holds the correct slot from the snapshot. Defaulting to 0 would
-                    // create a false gap of ~current_slot, triggering mass unscheduling
-                    // of all producers via the missed-slot loop (INC-I-005).
-                    self.chain_state.read().await.best_slot
-                }
-            }
+            self.chain_state.read().await.best_slot
         };
 
         // Update chain state (height, hash, slot, protocol activation, genesis time, state root)
