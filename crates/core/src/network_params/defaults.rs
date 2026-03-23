@@ -25,7 +25,7 @@ impl NetworkParams {
                     "/dns4/seed2.doli.network/tcp/30300".to_string(),
                     "/dns4/seeds.doli.network/tcp/30300".to_string(),
                 ],
-                max_peers: 100, // Unified with testnet
+                max_peers: 50, // Ethereum default (geth); GossipSub mesh handles propagation
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
@@ -91,7 +91,7 @@ impl NetworkParams {
                     "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
-                max_peers: 100, // Testnet: higher for stress testing with 100+ nodes
+                max_peers: 50, // Ethereum default (geth); GossipSub mesh handles propagation
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,

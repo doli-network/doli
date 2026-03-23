@@ -115,16 +115,20 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, max_peers total).
-        // Allow 2 per-peer to survive the simultaneous-dial race condition
-        // (rust-libp2p#752): when both sides dial each other at the same time,
-        // both connections complete the handshake. With limit=1 the second is
-        // denied → rapid connect/disconnect loop on co-located nodes.
-        // Also required for DCUtR hole-punching (relay + direct coexist briefly).
+        // Build connection limits.
+        //
+        // Transport layer allows 2× max_peers so new connections can be
+        // evaluated by the application-layer gossipsub-score eviction
+        // (swarm_events.rs). Without headroom the transport hard-wall
+        // rejects peers before the scoring logic ever runs.
+        //
+        // 2 per-peer survives the simultaneous-dial race (rust-libp2p#752)
+        // and DCUtR hole-punching (relay + direct coexist briefly).
+        let transport_limit = (config.max_peers as u32) * 2;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
-            .with_max_established_incoming(Some(config.max_peers as u32))
-            .with_max_established_outgoing(Some(config.max_peers as u32));
+            .with_max_established_incoming(Some(transport_limit))
+            .with_max_established_outgoing(Some(transport_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits

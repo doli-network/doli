@@ -54,10 +54,10 @@ pub struct NetworkParams {
     pub default_metrics_port: u16,
     /// Bootstrap nodes (multiaddr format)
     pub bootstrap_nodes: Vec<String>,
-    /// Maximum peer connections per node.
-    /// Mainnet: 50 (bandwidth-conservative, tiered architecture handles scale).
-    /// Testnet: 100 (more aggressive for stress testing).
-    /// Devnet: 150 (local testing with 100+ nodes on single machine).
+    /// Maximum peer connections per node (application layer).
+    /// Transport layer allows 2× this for handshake headroom.
+    /// Mainnet/Testnet: 50 (Ethereum default). Devnet: 150.
+    /// Override: DOLI_MAX_PEERS env var.
     pub max_peers: usize,
 
     // === Timing ===
