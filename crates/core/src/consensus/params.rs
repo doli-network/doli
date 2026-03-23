@@ -63,10 +63,10 @@ impl ConsensusParams {
     pub fn testnet() -> Self {
         let spec = crate::chainspec::ChainSpec::testnet();
         Self {
-            genesis_time: 0,                                // Will be set at testnet launch
-            slot_duration: SLOT_DURATION,                   // Same as mainnet (10 seconds)
-            slots_per_epoch: SLOTS_PER_EPOCH,               // Same as mainnet (360)
-            slots_per_reward_epoch: SLOTS_PER_REWARD_EPOCH, // Same as mainnet (INC-I-006)
+            genesis_time: 0,                  // Will be set at testnet launch
+            slot_duration: SLOT_DURATION,     // Same as mainnet (10 seconds)
+            slots_per_epoch: SLOTS_PER_EPOCH, // Same as mainnet (360)
+            slots_per_reward_epoch: 36,       // Testnet: ~6 min per epoch (10x faster)
             attestation_interval: ATTESTATION_INTERVAL,
             min_attestation_rate: MIN_ATTESTATION_RATE,
             blocks_per_era: BLOCKS_PER_ERA, // Same as mainnet (~4 years)

@@ -30,21 +30,17 @@ fn test_defaults_match_network_rs() {
 }
 
 #[test]
-fn test_testnet_epoch_matches_mainnet() {
+fn test_testnet_epoch_length_is_valid() {
     // INC-I-006: rebuild_producer_set_from_blocks used hardcoded SLOTS_PER_EPOCH (360)
-    // while apply_block used network-aware blocks_per_reward_epoch(). On testnet (36),
-    // this caused ProducerSet divergence after rollback at epoch boundaries.
-    // Fix: testnet replicates mainnet epoch values to eliminate the asymmetry.
-    let mainnet = NetworkParams::defaults(Network::Mainnet);
+    // instead of network-aware blocks_per_reward_epoch(). Fixed in rewards.rs/startup.rs.
+    // Testnet is free to use shorter epochs (36) for faster testing — the code fix
+    // ensures rebuild and apply_block use the same network-aware value.
     let testnet = NetworkParams::defaults(Network::Testnet);
-
-    assert_eq!(
-        testnet.blocks_per_reward_epoch, mainnet.blocks_per_reward_epoch,
-        "INC-I-006: testnet blocks_per_reward_epoch must match mainnet"
-    );
-    assert_eq!(
-        testnet.slots_per_reward_epoch, mainnet.slots_per_reward_epoch,
-        "INC-I-006: testnet slots_per_reward_epoch must match mainnet"
+    assert_eq!(testnet.blocks_per_reward_epoch, 36);
+    assert_eq!(testnet.slots_per_reward_epoch, 36);
+    assert!(
+        testnet.blocks_per_reward_epoch > 0,
+        "epoch length must be positive"
     );
 }
 
