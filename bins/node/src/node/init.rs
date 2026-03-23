@@ -701,6 +701,13 @@ impl Node {
             excluded
         };
 
+        // Recover announcement sequence from persisted GSet to avoid creating
+        // stale announcements after restart. +1 so the next announcement is fresh.
+        let initial_seq = {
+            let gset = producer_gset.read().await;
+            producer_key.as_ref().map_or(0, |k| gset.sequence_for(&k.public_key()) + 1)
+        };
+
         Ok(Self {
             config,
             params,
@@ -724,10 +731,13 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_resync_time: None,
             last_producer_list_change: None,
-            producer_gset,
+            producer_gset: producer_gset.clone(),
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),
-            announcement_sequence: Arc::new(AtomicU64::new(0)),
+            // Recover sequence from persisted GSet so we don't create stale
+            // announcements after restart. Sequence is stable (no heartbeat
+            // bumps) — only incremented on actual state changes.
+            announcement_sequence: Arc::new(AtomicU64::new(initial_seq)),
             signed_slots_db,
             consecutive_fork_blocks: 0,
             shallow_rollback_count: 0,

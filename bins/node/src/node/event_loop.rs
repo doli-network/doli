@@ -20,6 +20,12 @@ impl Node {
         let mut current_gossip_interval = self.adaptive_gossip.read().await.interval();
         let mut gossip_timer = tokio::time::interval(current_gossip_interval);
 
+        // Track GSet size at last broadcast to suppress redundant gossip.
+        // GSet is a grow-only CRDT: once all producers are discovered, broadcasts
+        // should stop. Sending identical state floods the network (205K duplicate
+        // merges observed at 151 nodes, saturating the event loop).
+        let mut last_broadcast_gset_len: usize = 0;
+
         loop {
             // Check shutdown flag
             if *self.shutdown.read().await {
@@ -96,9 +102,12 @@ impl Node {
                     };
                     if self.config.network == Network::Testnet || self.config.network == Network::Devnet || genesis_active {
                         if let Some(ref network) = self.network {
-                            // Update our producer announcement if we're a producer
+                            // Ensure our announcement is in the GSet (idempotent).
+                            // Sequence is stable — producers prove liveness by producing
+                            // blocks, not by bumping sequence numbers. The GSet's only
+                            // job is discovery.
                             if let Some(ref key) = self.producer_key {
-                                let seq = self.announcement_sequence.fetch_add(1, Ordering::SeqCst);
+                                let seq = self.announcement_sequence.load(Ordering::SeqCst);
                                 let gh = self.chain_state.read().await.genesis_hash;
                                 let announcement = ProducerAnnouncement::new(key, self.config.network.id(), seq, gh);
 
@@ -122,40 +131,49 @@ impl Node {
                                 *self.our_announcement.write().await = Some(announcement);
                             }
 
-                            // Get adaptive gossip settings and producer count
-                            let (use_delta, producer_count) = {
-                                let adaptive = self.adaptive_gossip.read().await;
+                            // Only broadcast when GSet has new entries to share.
+                            // GSet is a grow-only CRDT: once all producers are discovered,
+                            // the set is converged and broadcasts stop. This prevents
+                            // flooding the network with duplicate state.
+                            let current_gset_len = {
                                 let gset = self.producer_gset.read().await;
-                                (adaptive.use_delta_sync(), gset.len())
+                                gset.len()
                             };
 
-                            // Phase 2: Choose sync strategy based on network size
-                            // Delta sync is more efficient for larger networks (>50 producers)
-                            if use_delta && producer_count > 50 {
-                                // DELTA SYNC: Send bloom filter, peers respond with missing announcements
-                                let bloom = {
-                                    let gset = self.producer_gset.read().await;
-                                    gset.to_bloom_filter()
-                                };
-                                debug!(
-                                    "Delta sync: broadcasting bloom filter ({} bytes) for {} producers",
-                                    bloom.size_bytes(),
-                                    producer_count
-                                );
-                                let _ = network.broadcast_producer_digest(bloom).await;
-                            } else {
-                                // FULL SYNC: Send all announcements (better for small networks)
-                                let announcements = {
-                                    let gset = self.producer_gset.read().await;
-                                    gset.export()
+                            if current_gset_len > last_broadcast_gset_len {
+                                last_broadcast_gset_len = current_gset_len;
+
+                                // Get adaptive gossip settings
+                                let use_delta = {
+                                    let adaptive = self.adaptive_gossip.read().await;
+                                    adaptive.use_delta_sync()
                                 };
 
-                                if !announcements.is_empty() {
+                                // Choose sync strategy based on network size
+                                if use_delta && current_gset_len > 50 {
+                                    let bloom = {
+                                        let gset = self.producer_gset.read().await;
+                                        gset.to_bloom_filter()
+                                    };
                                     debug!(
-                                        "Full sync: broadcasting {} producer announcements",
-                                        announcements.len()
+                                        "Delta sync: broadcasting bloom filter ({} bytes) for {} producers",
+                                        bloom.size_bytes(),
+                                        current_gset_len
                                     );
-                                    let _ = network.broadcast_producer_announcements(announcements).await;
+                                    let _ = network.broadcast_producer_digest(bloom).await;
+                                } else {
+                                    let announcements = {
+                                        let gset = self.producer_gset.read().await;
+                                        gset.export()
+                                    };
+
+                                    if !announcements.is_empty() {
+                                        debug!(
+                                            "Full sync: broadcasting {} producer announcements",
+                                            announcements.len()
+                                        );
+                                        let _ = network.broadcast_producer_announcements(announcements).await;
+                                    }
                                 }
                             }
 
