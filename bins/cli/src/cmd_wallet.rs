@@ -309,7 +309,16 @@ pub(crate) async fn cmd_send(
         anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
     }
 
-    // Parse recipient address (doli1... or 64-char hex pubkey_hash)
+    // SAFETY: Reject raw hex — ambiguous (pubkey vs pubkey_hash). 32 DOLI burned 2026-03-22.
+    let trimmed = to.trim();
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!(
+            "Raw hex is not accepted for send — use a bech32 address (doli1...) instead.\n\
+             Get the recipient address with: doli info"
+        );
+    }
+
+    // Parse recipient address (must be bech32 doli1...)
     let recipient_hash = crypto::address::resolve(to, None)
         .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
 

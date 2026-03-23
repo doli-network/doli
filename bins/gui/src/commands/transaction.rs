@@ -194,12 +194,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_address_hex_rejected() {
-        // Raw hex must be rejected — ambiguous (pubkey vs pubkey_hash).
-        // Users must use bech32 addresses (doli1...).
+    fn test_decode_address_hex() {
         let hex_addr = "aa".repeat(32);
         let result = decode_address(&hex_addr);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), [0xAAu8; 32]);
     }
 
     #[test]
