@@ -1,0 +1,39 @@
+name: Faucet Request
+description: Request 10.01 DOLI to register as a producer
+title: "Faucet: [your doli1... address]"
+labels: ["faucet"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## DOLI Producer Faucet
+
+        This sends you 10.01 DOLI — enough to register as a block producer (10 for the bond + 0.01 for fees).
+
+        **Before requesting:**
+        1. Install DOLI: `curl -sSfL https://doli.network/install.sh | sudo sh`
+        2. Initialize: `doli init`
+        3. Sync: `doli snap`
+        4. Start: `sudo doli service install`
+        5. Get your address: `doli info`
+
+        Full guide: https://doli.network/guide.html
+
+  - type: input
+    id: address
+    attributes:
+      label: Your DOLI address
+      description: "Paste the doli1... address from `doli info`"
+      placeholder: "doli1..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: My node is synced and running
+          required: true
+        - label: I understand this is a one-time send (10.01 DOLI)
+          required: true
