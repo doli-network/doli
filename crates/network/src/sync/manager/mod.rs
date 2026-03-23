@@ -581,7 +581,6 @@ impl ForkState {
 
     /// Recommend a fork recovery action based on current state.
     /// The Node calls this from resolve_shallow_fork() and executes the returned action.
-    #[allow(dead_code)]
     pub fn recommend_action(
         &self,
         gap: u64,
@@ -615,7 +614,6 @@ impl ForkState {
 
 /// Recommended action when a fork is detected.
 /// ForkState decides, Node executes.
-#[allow(dead_code)]
 pub enum ForkAction {
     /// No action needed
     None,
@@ -1111,15 +1109,15 @@ impl SyncManager {
     /// Transition to a new sync state with logging.
     /// All state transitions MUST go through this method for auditability.
     fn set_state(&mut self, new_state: SyncState, trigger: &str) {
-        // Validate transition (warn-only in M1, hard-block in M3)
+        // Validate transition — hard-block invalid transitions (M3 enforcement)
         if !self.is_valid_transition(&new_state) {
             warn!(
-                "[SYNC_STATE] INVALID transition {} -> {} (trigger: {})",
+                "[SYNC_STATE] INVALID transition {} -> {} BLOCKED (trigger: {})",
                 self.state_label(),
                 Self::label_for(&new_state),
                 trigger
             );
-            // In M1: warn only, still execute. M3 will hard-block.
+            return; // Hard block: do NOT execute the transition
         }
 
         let old_label = self.state_label();

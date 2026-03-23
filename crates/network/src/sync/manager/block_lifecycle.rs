@@ -10,7 +10,7 @@ use doli_core::Block;
 
 use super::super::bodies::BodyDownloader;
 use super::super::headers::HeaderDownloader;
-use super::{SyncManager, SyncState};
+use super::{ForkAction, SyncManager, SyncState};
 
 impl SyncManager {
     /// Mark a block as applied (legacy - uses weight 1)
@@ -553,6 +553,20 @@ impl SyncManager {
     /// Is fork sync active?
     pub fn is_fork_sync_active(&self) -> bool {
         self.fork.fork_sync.is_some()
+    }
+
+    /// Recommend a fork recovery action.
+    /// Delegates to ForkState::recommend_action() — centralizes fork decision logic.
+    /// Called by Node::resolve_shallow_fork() to decide the recovery strategy.
+    pub fn recommend_fork_action(
+        &self,
+        gap: u64,
+        consecutive_rollbacks: u32,
+        max_rollback_depth: u32,
+        best_peer: Option<PeerId>,
+    ) -> ForkAction {
+        self.fork
+            .recommend_action(gap, consecutive_rollbacks, max_rollback_depth, best_peer)
     }
 
     /// Cancel fork sync (timeout, state change, etc.)

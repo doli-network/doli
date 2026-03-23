@@ -248,44 +248,64 @@ impl Node {
             return Ok(true);
         }
 
-        // Fast path: small gap (<= 12 blocks) — just rollback 1 block.
-        // This changes local_hash to the parent, and the next sync attempt
-        // will try GetHeaders with the parent hash. After 1-N rollbacks,
-        // we find a hash peers recognize and sync resumes.
-        // No binary search needed, no grace check — immediate recovery.
-        //
-        // Range expanded from 10→12 to prevent small forks from
-        // escalating to snap sync, which loses block history and creates
-        // a cascade (snap → no block 1 → future rollback fails → re-snap).
-        if gap <= 12 && self.shallow_rollback_count < 12 {
-            info!(
-                "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
-                 from h={} to find common ancestor (rollback #{})",
+        // Delegate fork recovery decision to SyncManager's centralized logic.
+        // ForkState::recommend_action() evaluates gap, rollback count, and peer
+        // availability to decide the best recovery strategy.
+        const MAX_ROLLBACK_DEPTH: u32 = 12;
+        let action = {
+            let sync = self.sync_manager.read().await;
+            let best_peer = sync.best_peer_for_recovery();
+            sync.recommend_fork_action(
                 gap,
-                empty_headers,
-                local_height,
-                self.shallow_rollback_count + 1
-            );
-            let rolled_back = self.rollback_one_block().await?;
-            if rolled_back {
-                self.shallow_rollback_count += 1;
-                // Reset empty headers so sync retries with new tip hash
-                let mut sync = self.sync_manager.write().await;
-                sync.reset_empty_headers();
-                return Ok(true);
-            }
-        }
+                self.shallow_rollback_count,
+                MAX_ROLLBACK_DEPTH,
+                best_peer,
+            )
+        };
 
-        // Deep fork or rollback limit reached: use binary search
-        let started = self.sync_manager.write().await.start_fork_sync();
-        if started {
-            info!(
-                "Fork sync: binary search for common ancestor initiated \
-                 (empty_headers={}, local_height={}, gap={})",
-                empty_headers, local_height, gap
-            );
-            return Ok(true);
+        match action {
+            ForkAction::NeedsGenesisResync => {
+                warn!(
+                    "Fork recovery: recommend_action returned NeedsGenesisResync \
+                     (empty_headers={}, gap={}, h={})",
+                    empty_headers, gap, local_height
+                );
+                let mut sync = self.sync_manager.write().await;
+                sync.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);
+                Ok(true)
+            }
+            ForkAction::RollbackOne => {
+                info!(
+                    "Shallow fork (gap={}, empty_headers={}): rolling back 1 block \
+                     from h={} to find common ancestor (rollback #{})",
+                    gap,
+                    empty_headers,
+                    local_height,
+                    self.shallow_rollback_count + 1
+                );
+                let rolled_back = self.rollback_one_block().await?;
+                if rolled_back {
+                    self.shallow_rollback_count += 1;
+                    // Reset empty headers so sync retries with new tip hash
+                    let mut sync = self.sync_manager.write().await;
+                    sync.reset_empty_headers();
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            ForkAction::StartForkSync { .. } => {
+                let started = self.sync_manager.write().await.start_fork_sync();
+                if started {
+                    info!(
+                        "Fork sync: binary search for common ancestor initiated \
+                         (empty_headers={}, local_height={}, gap={})",
+                        empty_headers, local_height, gap
+                    );
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            ForkAction::None => Ok(false),
         }
-        Ok(false)
     }
 }

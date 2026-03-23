@@ -247,6 +247,22 @@ impl Node {
         let current_height = self.chain_state.read().await.best_height;
         let target_height = current_height - rollback_count as u64;
 
+        // Monotonic progress enforcement: refuse reorg if the rollback target
+        // falls below the confirmed height floor. This prevents cascade loops
+        // where reorgs undo confirmed progress (INC-I-005, Step 6b).
+        {
+            let sync = self.sync_manager.read().await;
+            let floor = sync.confirmed_height_floor();
+            if floor > 0 && target_height < floor {
+                warn!(
+                    "Reorg REFUSED: target height {} below confirmed floor {}. \
+                     Rolling back {} blocks would violate monotonic progress.",
+                    target_height, floor, rollback_count
+                );
+                return Ok(());
+            }
+        }
+
         // No-op reorg: rollback_count=0 means we're already at the common ancestor.
         // Skip the rollback path entirely — there's nothing to undo, and calling
         // get_undo(target_height + 1) would panic because that undo doesn't exist.

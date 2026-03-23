@@ -2140,9 +2140,14 @@ mod regression_tests {
         );
 
         // Gated method sets the flag when gates pass
-        let accepted = manager
-            .request_genesis_resync(RecoveryReason::RollbackDeathSpiral { peak: 0, current: 0 });
-        assert!(accepted, "request_genesis_resync must be accepted for fresh node");
+        let accepted = manager.request_genesis_resync(RecoveryReason::RollbackDeathSpiral {
+            peak: 0,
+            current: 0,
+        });
+        assert!(
+            accepted,
+            "request_genesis_resync must be accepted for fresh node"
+        );
         assert!(
             manager.needs_genesis_resync(),
             "needs_genesis_resync must be true after accepted request_genesis_resync()"
@@ -3061,32 +3066,32 @@ mod transition_validation_tests {
         );
     }
 
-    // === Warn-only enforcement (M1 behavior) ===
+    // === Hard enforcement (M3 behavior) ===
 
-    /// T-TV-026: In M1, set_state() with invalid transition WARNS but still executes.
-    /// REQ-SYNC-104: "Invalid transitions are logged but NOT blocked in M1 (warn-only mode)"
+    /// T-TV-026: set_state() with invalid transition BLOCKS the transition (M3 hard enforcement).
+    /// REQ-SYNC-104: Invalid transitions are logged and BLOCKED.
     ///
-    /// This ensures the transition validation doesn't break existing behavior
-    /// during the observation phase. Hard enforcement comes in M3.
+    /// M1 was warn-only (observation phase). M3 hardens: invalid transitions are refused
+    /// and the state remains unchanged.
     #[test]
-    fn test_set_state_warn_only_allows_invalid_transition() {
+    fn test_set_state_hard_blocks_invalid_transition() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
         manager.state = synchronized();
 
         // Synchronized -> DownloadingBodies is INVALID per the matrix
-        // In M1 (warn-only), set_state should still execute the transition
+        // In M3 (hard enforcement), set_state must refuse the transition
         manager.set_state(
             SyncState::DownloadingBodies {
                 pending: 0,
                 total: 10,
             },
-            "test_warn_only_mode",
+            "test_hard_block_mode",
         );
 
-        // In M1 (warn-only), the transition still happens
+        // In M3 (hard enforcement), the state must remain Synchronized
         assert!(
-            matches!(*manager.state(), SyncState::DownloadingBodies { .. }),
-            "T-TV-026: In M1 warn-only mode, invalid transitions must still execute. Got: {:?}",
+            matches!(*manager.state(), SyncState::Synchronized),
+            "T-TV-026: In M3 hard enforcement, invalid transitions must be BLOCKED. Got: {:?}",
             manager.state()
         );
     }
