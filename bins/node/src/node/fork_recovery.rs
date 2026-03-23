@@ -97,7 +97,9 @@ impl Node {
 
         // 5. Execute reorg if fork is heavier, or if tied with lower hash
         match reorg_result {
-            Some(result) if result.weight_delta > 0 || (result.weight_delta == 0 && fork_tip_hash < current_tip) =>
+            Some(result)
+                if result.weight_delta > 0
+                    || (result.weight_delta == 0 && fork_tip_hash < current_tip) =>
             {
                 info!(
                     "Fork recovery: switching to network chain (delta={}, fork_hash={}, our_hash={}) — rollback={}, new={}",
