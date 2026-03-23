@@ -35,6 +35,9 @@ scripts/stress_test_600.sh
 scripts/stress-batch.sh
 scripts/deploy_producers.sh
 
+# Runtime databases
+swap.db
+
 # Binaries (build from source)
 *.backup
 *.bak
