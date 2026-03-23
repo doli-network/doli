@@ -55,7 +55,7 @@ pub struct NetworkParams {
     /// Bootstrap nodes (multiaddr format)
     pub bootstrap_nodes: Vec<String>,
     /// Maximum peer connections per node (application layer).
-    /// Transport layer allows 2× this for handshake headroom.
+    /// Transport layer allows 1.5× this for handshake headroom.
     /// Mainnet/Testnet: 50 (Ethereum default). Devnet: 150.
     /// Override: DOLI_MAX_PEERS env var.
     pub max_peers: usize,

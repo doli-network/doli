@@ -117,14 +117,14 @@ impl NetworkService {
 
         // Build connection limits.
         //
-        // Transport layer allows 2× max_peers so new connections can be
+        // Transport layer allows 1.5× max_peers so new connections can be
         // evaluated by the application-layer gossipsub-score eviction
         // (swarm_events.rs). Without headroom the transport hard-wall
         // rejects peers before the scoring logic ever runs.
         //
         // 2 per-peer survives the simultaneous-dial race (rust-libp2p#752)
         // and DCUtR hole-punching (relay + direct coexist briefly).
-        let transport_limit = (config.max_peers as u32) * 2;
+        let transport_limit = (config.max_peers as u32) * 3 / 2;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(transport_limit))
