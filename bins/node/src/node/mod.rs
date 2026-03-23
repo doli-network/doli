@@ -119,6 +119,9 @@ pub struct Node {
     pub(super) our_announcement: Arc<RwLock<Option<ProducerAnnouncement>>>,
     /// Sequence number for our announcements (monotonically increasing)
     pub(super) announcement_sequence: Arc<AtomicU64>,
+    /// GSet size at last broadcast. Suppresses redundant gossip when unchanged.
+    /// Reset to 0 on new peer connection so late joiners receive the full GSet.
+    pub(super) last_broadcast_gset_len: usize,
     /// Signed slots database (prevents double-signing after restart)
     pub(super) signed_slots_db: Option<SignedSlotsDb>,
     /// Consecutive slots where production was blocked due to fork detection

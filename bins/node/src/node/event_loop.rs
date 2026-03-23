@@ -20,11 +20,8 @@ impl Node {
         let mut current_gossip_interval = self.adaptive_gossip.read().await.interval();
         let mut gossip_timer = tokio::time::interval(current_gossip_interval);
 
-        // Track GSet size at last broadcast to suppress redundant gossip.
-        // GSet is a grow-only CRDT: once all producers are discovered, broadcasts
-        // should stop. Sending identical state floods the network (205K duplicate
-        // merges observed at 151 nodes, saturating the event loop).
-        let mut last_broadcast_gset_len: usize = 0;
+        // Reset GSet broadcast tracker at event loop start.
+        self.last_broadcast_gset_len = 0;
 
         loop {
             // Check shutdown flag
@@ -140,8 +137,8 @@ impl Node {
                                 gset.len()
                             };
 
-                            if current_gset_len > last_broadcast_gset_len {
-                                last_broadcast_gset_len = current_gset_len;
+                            if current_gset_len > self.last_broadcast_gset_len {
+                                self.last_broadcast_gset_len = current_gset_len;
 
                                 // Get adaptive gossip settings
                                 let use_delta = {
@@ -234,6 +231,11 @@ impl Node {
                     self.first_peer_connected = Some(Instant::now());
                     info!("First peer connected - starting discovery grace period");
                 }
+
+                // Re-broadcast GSet to new peer on next gossip tick.
+                // Without this, late-connecting peers never receive the GSet
+                // because broadcasts stop once the set converges.
+                self.last_broadcast_gset_len = 0;
 
                 // Enable bootstrap gate in SyncManager - production will be blocked
                 // until we receive at least one peer status response

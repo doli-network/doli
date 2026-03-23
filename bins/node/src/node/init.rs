@@ -738,6 +738,7 @@ impl Node {
             // announcements after restart. Sequence is stable (no heartbeat
             // bumps) — only incremented on actual state changes.
             announcement_sequence: Arc::new(AtomicU64::new(initial_seq)),
+            last_broadcast_gset_len: 0,
             signed_slots_db,
             consecutive_fork_blocks: 0,
             shallow_rollback_count: 0,
