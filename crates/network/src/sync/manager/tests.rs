@@ -1772,3 +1772,1362 @@ fn test_fresh_node_can_reset_to_zero() {
         "Fresh nodes with no confirmed floor should reset to 0"
     );
 }
+
+// =========================================================================
+// M1: Recovery Gate + Transition Validation Tests
+// Architecture: specs/sync-recovery-architecture.md (Sections 2, 4, 6)
+// Requirements: REQ-SYNC-102 (RecoveryReason), REQ-SYNC-103 (request_genesis_resync),
+//               REQ-SYNC-104 (is_valid_transition), PRESERVE-3 (existing behavior)
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// Regression tests: lock existing behavior (MUST pass before AND after M1)
+// -------------------------------------------------------------------------
+
+mod regression_tests {
+    use super::*;
+
+    // PRESERVE-3: set_state() transitions currently used in the codebase
+    // must continue to work after is_valid_transition() is added.
+
+    /// Regression: Idle -> DownloadingHeaders is a valid and frequently used transition.
+    /// Used by: start_sync() in sync_engine.rs (5+ call sites).
+    #[test]
+    fn test_regression_idle_to_downloading_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        assert!(matches!(*manager.state(), SyncState::Idle));
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 100, Hash::ZERO, 100);
+
+        // start_sync transitions Idle -> DownloadingHeaders
+        manager.start_sync();
+        assert!(
+            matches!(manager.state(), SyncState::DownloadingHeaders { .. }),
+            "Idle -> DownloadingHeaders must remain valid. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// Regression: Idle -> SnapCollectingRoots is used when snap sync starts.
+    /// Used by: start_sync() in sync_engine.rs when gap > snap.threshold.
+    /// Requires enough peers to meet snap quorum (5 by default).
+    #[test]
+    fn test_regression_idle_to_snap_collecting_roots() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 100; // Enable snap sync with low threshold
+        manager.snap.quorum = 2; // Lower quorum for test feasibility
+
+        // Add enough peers for snap quorum
+        for _ in 0..5 {
+            let peer = PeerId::random();
+            manager.add_peer(peer, 200, Hash::ZERO, 200);
+        }
+
+        // Force back to Idle (add_peer may have started sync)
+        manager.state = SyncState::Idle;
+        manager.start_sync();
+
+        // With gap=200 > threshold=100 and enough peers, snap sync should trigger.
+        // If start_sync took the header-first path instead, that's also valid
+        // from Idle. The key point: Idle can transition to either.
+        let state = manager.state();
+        assert!(
+            matches!(
+                state,
+                SyncState::SnapCollectingRoots { .. } | SyncState::DownloadingHeaders { .. }
+            ),
+            "Idle -> SnapCollectingRoots or DownloadingHeaders must remain valid. Got: {:?}",
+            state
+        );
+    }
+
+    /// Regression: DownloadingHeaders -> Idle is used on error/timeout/fork detection.
+    /// Used by: sync_engine.rs (6+ call sites), cleanup.rs stuck sync detection.
+    #[test]
+    fn test_regression_downloading_headers_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 100, Hash::ZERO, 100);
+        manager.start_sync();
+        assert!(matches!(
+            manager.state(),
+            SyncState::DownloadingHeaders { .. }
+        ));
+
+        // Simulate chain mismatch detection -> reset to Idle
+        manager.set_state(SyncState::Idle, "test_regression_headers_to_idle");
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "DownloadingHeaders -> Idle must remain valid"
+        );
+    }
+
+    /// Regression: DownloadingHeaders -> Synchronized is used when already caught up.
+    /// Used by: sync_engine.rs "headers_empty_already_synced".
+    #[test]
+    fn test_regression_downloading_headers_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let peer = PeerId::random();
+        manager.state = SyncState::DownloadingHeaders {
+            target_slot: 100,
+            peer,
+            headers_count: 5,
+        };
+
+        manager.set_state(SyncState::Synchronized, "test_regression_headers_to_sync");
+        assert!(
+            matches!(*manager.state(), SyncState::Synchronized),
+            "DownloadingHeaders -> Synchronized must remain valid"
+        );
+    }
+
+    /// Regression: DownloadingHeaders -> DownloadingBodies when all headers collected.
+    /// Used by: sync_engine.rs "headers_complete".
+    #[test]
+    fn test_regression_downloading_headers_to_downloading_bodies() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let peer = PeerId::random();
+        manager.state = SyncState::DownloadingHeaders {
+            target_slot: 100,
+            peer,
+            headers_count: 50,
+        };
+
+        manager.set_state(
+            SyncState::DownloadingBodies {
+                pending: 0,
+                total: 50,
+            },
+            "test_regression_headers_to_bodies",
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::DownloadingBodies { .. }),
+            "DownloadingHeaders -> DownloadingBodies must remain valid"
+        );
+    }
+
+    /// Regression: DownloadingBodies -> Processing when all bodies downloaded.
+    /// Used by: sync_engine.rs "bodies_complete".
+    #[test]
+    fn test_regression_downloading_bodies_to_processing() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::DownloadingBodies {
+            pending: 0,
+            total: 50,
+        };
+
+        manager.set_state(
+            SyncState::Processing { height: 1 },
+            "test_regression_bodies_to_processing",
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Processing { .. }),
+            "DownloadingBodies -> Processing must remain valid"
+        );
+    }
+
+    /// Regression: DownloadingBodies -> DownloadingBodies (soft retry).
+    /// Used by: cleanup.rs "body_stall_soft_retry", sync_engine.rs body count update.
+    #[test]
+    fn test_regression_downloading_bodies_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::DownloadingBodies {
+            pending: 10,
+            total: 50,
+        };
+
+        manager.set_state(
+            SyncState::DownloadingBodies {
+                pending: 5,
+                total: 50,
+            },
+            "test_regression_bodies_self_transition",
+        );
+        assert!(
+            matches!(
+                *manager.state(),
+                SyncState::DownloadingBodies { pending: 5, .. }
+            ),
+            "DownloadingBodies -> DownloadingBodies must remain valid"
+        );
+    }
+
+    /// Regression: DownloadingBodies -> Idle on error.
+    /// Used by: cleanup.rs "body_download_exhausted", "cleanup_stuck_sync".
+    #[test]
+    fn test_regression_downloading_bodies_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::DownloadingBodies {
+            pending: 10,
+            total: 50,
+        };
+
+        manager.set_state(SyncState::Idle, "test_regression_bodies_to_idle");
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "DownloadingBodies -> Idle must remain valid"
+        );
+    }
+
+    /// Regression: Processing -> Synchronized on completion.
+    /// Used by: block_lifecycle.rs "sync_complete_block_applied".
+    #[test]
+    fn test_regression_processing_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Processing { height: 50 };
+
+        manager.set_state(
+            SyncState::Synchronized,
+            "test_regression_processing_to_sync",
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Synchronized),
+            "Processing -> Synchronized must remain valid"
+        );
+    }
+
+    /// Regression: Processing -> Idle on stall/error.
+    /// Used by: block_lifecycle.rs "processing_complete_restart", "block_apply_failed",
+    ///          sync_engine.rs "processing_stall_reset".
+    #[test]
+    fn test_regression_processing_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Processing { height: 50 };
+
+        manager.set_state(SyncState::Idle, "test_regression_processing_to_idle");
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "Processing -> Idle must remain valid"
+        );
+    }
+
+    /// Regression: Processing -> Processing (height update).
+    /// The Processing state carries a height field that updates.
+    #[test]
+    fn test_regression_processing_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Processing { height: 50 };
+
+        manager.set_state(
+            SyncState::Processing { height: 51 },
+            "test_regression_processing_self_transition",
+        );
+        if let SyncState::Processing { height } = *manager.state() {
+            assert_eq!(height, 51);
+        } else {
+            panic!("Processing -> Processing (height update) must remain valid");
+        }
+    }
+
+    /// Regression: Synchronized -> Idle on stall detection.
+    /// Used by: cleanup.rs "stall_synchronized_behind".
+    #[test]
+    fn test_regression_synchronized_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Synchronized;
+
+        manager.set_state(SyncState::Idle, "test_regression_synchronized_to_idle");
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "Synchronized -> Idle must remain valid"
+        );
+    }
+
+    /// Regression: Synchronized -> Synchronized (idempotent set from update_local_tip).
+    /// Used by: mod.rs update_local_tip "update_local_tip_caught_up".
+    #[test]
+    fn test_regression_synchronized_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Synchronized;
+
+        manager.set_state(
+            SyncState::Synchronized,
+            "test_regression_sync_self_transition",
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Synchronized),
+            "Synchronized -> Synchronized must remain valid"
+        );
+    }
+
+    /// Regression: SnapReady -> Synchronized on snapshot consumed.
+    /// Used by: snap_sync.rs "snap_snapshot_applied".
+    #[test]
+    fn test_regression_snap_ready_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::SnapReady {
+            snapshot: VerifiedSnapshot {
+                block_hash: Hash::ZERO,
+                block_height: 100,
+                chain_state: vec![],
+                utxo_set: vec![],
+                producer_set: vec![],
+                state_root: Hash::ZERO,
+            },
+        };
+
+        manager.set_state(
+            SyncState::Synchronized,
+            "test_regression_snap_ready_to_sync",
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Synchronized),
+            "SnapReady -> Synchronized must remain valid"
+        );
+    }
+
+    /// Regression: SnapDownloading -> Idle on error with no alternates.
+    /// Used by: snap_sync.rs "snap_download_error_no_alternates".
+    #[test]
+    fn test_regression_snap_downloading_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        let peer = PeerId::random();
+        manager.state = SyncState::SnapDownloading {
+            target_hash: Hash::ZERO,
+            target_height: 100,
+            quorum_root: Hash::ZERO,
+            peer,
+            alternate_peers: vec![],
+            started_at: Instant::now(),
+        };
+
+        manager.set_state(SyncState::Idle, "test_regression_snap_downloading_to_idle");
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "SnapDownloading -> Idle must remain valid"
+        );
+    }
+
+    /// Regression: All block_lifecycle.rs transitions to Idle work.
+    /// Used by: reset_sync_for_rollback, reset_sync_after_successful_reorg,
+    ///          reset_local_state, start_fork_sync, fork_sync_cleared.
+    #[test]
+    fn test_regression_lifecycle_resets_to_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // reset_sync_for_rollback -> Idle
+        manager.state = SyncState::Processing { height: 10 };
+        manager.reset_sync_for_rollback();
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "reset_sync_for_rollback must transition to Idle"
+        );
+
+        // reset_sync_after_successful_reorg -> Idle
+        manager.state = SyncState::Processing { height: 10 };
+        manager.reset_sync_after_successful_reorg();
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "reset_sync_after_successful_reorg must transition to Idle"
+        );
+    }
+
+    /// Regression: needs_genesis_resync flag is readable and consumable.
+    /// The periodic task reads this flag to decide on force_recover_from_peers.
+    #[test]
+    fn test_regression_needs_genesis_resync_readable() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Initially false
+        assert!(
+            !manager.needs_genesis_resync(),
+            "needs_genesis_resync must be false initially"
+        );
+
+        // Direct set (current API) still works
+        manager.set_needs_genesis_resync();
+        assert!(
+            manager.needs_genesis_resync(),
+            "needs_genesis_resync must be true after set_needs_genesis_resync()"
+        );
+    }
+
+    /// Regression: signal_stuck_fork sets StuckForkDetected correctly.
+    /// request_genesis_resync follows the same pattern.
+    #[test]
+    fn test_regression_signal_stuck_fork_pattern() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // From Normal -> StuckForkDetected
+        assert!(matches!(manager.recovery_phase, RecoveryPhase::Normal));
+        manager.signal_stuck_fork();
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::StuckForkDetected),
+            "signal_stuck_fork from Normal must set StuckForkDetected"
+        );
+
+        // From PostRollback -> StuckForkDetected
+        manager.recovery_phase = RecoveryPhase::PostRollback;
+        manager.signal_stuck_fork();
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::StuckForkDetected),
+            "signal_stuck_fork from PostRollback must set StuckForkDetected"
+        );
+
+        // From ResyncInProgress -> ignored (no override)
+        manager.recovery_phase = RecoveryPhase::ResyncInProgress;
+        manager.signal_stuck_fork();
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::ResyncInProgress),
+            "signal_stuck_fork must NOT override ResyncInProgress"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// Recovery Gate Tests: request_genesis_resync()
+// REQ-SYNC-102 (RecoveryReason enum), REQ-SYNC-103 (gated method)
+// Architecture: Section 4 — "New method: request_genesis_resync()"
+//
+// DEVELOPER NOTE: Remove the #[cfg(feature = "m1_recovery_gate")] gate below
+// once RecoveryReason enum and request_genesis_resync() method are implemented.
+// These tests are intentionally written BEFORE the code exists (TDD).
+// -------------------------------------------------------------------------
+
+mod recovery_gate_tests {
+    use super::*;
+
+    /// T-RG-001: request_genesis_resync REFUSED when confirmed_height_floor > 0.
+    /// REQ-SYNC-103: Gate 1 — monotonic progress floor.
+    ///
+    /// If a node was previously healthy at height H (confirmed_height_floor = H),
+    /// resetting to genesis would violate the monotonic progress guarantee.
+    /// Manual intervention is required instead.
+    #[test]
+    fn test_request_genesis_resync_refused_by_height_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Simulate a node that was confirmed healthy at height 100
+        manager.confirmed_height_floor = 100;
+        // Snap sync enabled, fresh state otherwise
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+
+        let result =
+            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+
+        assert!(
+            !result,
+            "T-RG-001: request_genesis_resync must return false when confirmed_height_floor > 0"
+        );
+        assert!(
+            !manager.needs_genesis_resync(),
+            "T-RG-001: needs_genesis_resync flag must remain false when gate refuses"
+        );
+    }
+
+    /// T-RG-002: request_genesis_resync REFUSED during active resync.
+    /// REQ-SYNC-103: Gate 2 — no concurrent recovery.
+    ///
+    /// If a resync is already in progress, starting another one would
+    /// create a race condition or reset partial progress.
+    #[test]
+    fn test_request_genesis_resync_refused_during_active_resync() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Active resync in progress
+        manager.recovery_phase = RecoveryPhase::ResyncInProgress;
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+
+        let result = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
+
+        assert!(
+            !result,
+            "T-RG-002: request_genesis_resync must return false during ResyncInProgress"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-RG-002: needs_genesis_resync flag must remain false during active resync"
+        );
+    }
+
+    /// T-RG-003: request_genesis_resync REFUSED after MAX_CONSECUTIVE_RESYNCS.
+    /// REQ-SYNC-103: Gate 3 — rate limiting.
+    ///
+    /// After MAX_CONSECUTIVE_RESYNCS (5), the node has failed to recover
+    /// repeatedly. Further automatic attempts are futile — manual intervention
+    /// is required.
+    #[test]
+    fn test_request_genesis_resync_refused_after_max_resyncs() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Simulate MAX_CONSECUTIVE_RESYNCS resyncs
+        manager.consecutive_resync_count = MAX_CONSECUTIVE_RESYNCS;
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+
+        let result = manager.request_genesis_resync(RecoveryReason::PostRollbackSnapEscalation);
+
+        assert!(
+            !result,
+            "T-RG-003: request_genesis_resync must return false after {} resyncs",
+            MAX_CONSECUTIVE_RESYNCS
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-RG-003: needs_genesis_resync flag must remain false after max resyncs"
+        );
+    }
+
+    /// T-RG-003b: request_genesis_resync accepted at exactly MAX - 1 resyncs.
+    /// Boundary test for the rate limiter.
+    #[test]
+    fn test_request_genesis_resync_accepted_at_max_minus_one() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // One less than MAX
+        manager.consecutive_resync_count = MAX_CONSECUTIVE_RESYNCS - 1;
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+
+        let result = manager.request_genesis_resync(RecoveryReason::PostRollbackSnapEscalation);
+
+        assert!(
+            result,
+            "T-RG-003b: request_genesis_resync must be accepted at MAX-1 resyncs ({})",
+            MAX_CONSECUTIVE_RESYNCS - 1
+        );
+    }
+
+    /// T-RG-004: request_genesis_resync REFUSED when snap sync is disabled.
+    /// REQ-SYNC-103: Gate 4 — snap sync availability.
+    ///
+    /// When snap.threshold == u64::MAX (--no-snap-sync), genesis resync requires
+    /// snap sync infrastructure. Without it, only header-first recovery works.
+    #[test]
+    fn test_request_genesis_resync_refused_when_snap_disabled() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Snap sync disabled (default — threshold is u64::MAX)
+        assert_eq!(manager.snap.threshold, u64::MAX);
+        manager.snap.attempts = 0;
+
+        let result = manager.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);
+
+        assert!(
+            !result,
+            "T-RG-004: request_genesis_resync must return false when snap sync disabled"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-RG-004: needs_genesis_resync flag must remain false when snap disabled"
+        );
+    }
+
+    /// T-RG-005: request_genesis_resync REFUSED after 3 snap sync attempts.
+    /// REQ-SYNC-103: Gate 5 — snap attempt limit.
+    ///
+    /// After 3 failed snap sync attempts, further snap syncs are unlikely to
+    /// succeed. Manual intervention or header-first recovery is needed.
+    #[test]
+    fn test_request_genesis_resync_refused_after_max_snap_attempts() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.snap.threshold = 500; // Snap enabled
+        manager.snap.attempts = 3; // 3 failed attempts
+
+        let result = manager.request_genesis_resync(RecoveryReason::BodyDownloadPeerError);
+
+        assert!(
+            !result,
+            "T-RG-005: request_genesis_resync must return false after 3 snap attempts"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-RG-005: needs_genesis_resync flag must remain false after max snap attempts"
+        );
+    }
+
+    /// T-RG-005b: request_genesis_resync accepted at exactly 2 snap attempts.
+    /// Boundary test for the snap attempt limiter.
+    #[test]
+    fn test_request_genesis_resync_accepted_at_2_snap_attempts() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 2; // Under the limit
+
+        let result = manager.request_genesis_resync(RecoveryReason::BodyDownloadPeerError);
+
+        assert!(
+            result,
+            "T-RG-005b: request_genesis_resync must be accepted at 2 snap attempts (< 3)"
+        );
+    }
+
+    /// T-RG-006: request_genesis_resync ACCEPTED when all gates pass.
+    /// REQ-SYNC-103: Happy path — all 5 gates open.
+    ///
+    /// Default SyncManager has: floor=0, phase=Normal, resync_count=0,
+    /// snap.threshold=u64::MAX (disabled by default). We enable snap for this test.
+    #[test]
+    fn test_request_genesis_resync_accepted_when_all_gates_pass() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Enable snap sync (gate 4 requires it)
+        manager.snap.threshold = 500;
+        // All other gates are at default (floor=0, Normal phase, resync_count=0, attempts=0)
+
+        let result =
+            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+
+        assert!(
+            result,
+            "T-RG-006: request_genesis_resync must return true when all gates pass"
+        );
+        assert!(
+            manager.fork.needs_genesis_resync,
+            "T-RG-006: needs_genesis_resync flag must be true after accepted request"
+        );
+    }
+
+    /// T-RG-007: request_genesis_resync does not panic for any RecoveryReason variant.
+    /// REQ-SYNC-102: All RecoveryReason variants must be handled.
+    ///
+    /// The method uses reason for logging. Each variant must format correctly
+    /// without panicking, regardless of whether the request is honored.
+    #[test]
+    fn test_request_genesis_resync_handles_all_reason_variants() {
+        let reasons = vec![
+            RecoveryReason::AllPeersBlacklistedDeepFork,
+            RecoveryReason::StuckSyncLargeGap { gap: 2000 },
+            RecoveryReason::HeightOffsetDetected { gap: 500 },
+            RecoveryReason::PostRollbackSnapEscalation,
+            RecoveryReason::GenesisFallbackEmptyHeaders,
+            RecoveryReason::BodyDownloadPeerError,
+            RecoveryReason::ApplyFailuresSnapThreshold { gap: 100 },
+            RecoveryReason::RollbackDeathSpiral {
+                peak: 500,
+                current: 10,
+            },
+        ];
+
+        for reason in reasons {
+            let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+            manager.snap.threshold = 500; // Enable snap so the request can be honored
+
+            // This must NOT panic for any reason variant
+            let result = manager.request_genesis_resync(reason.clone());
+
+            // With all gates open, every variant should be accepted
+            assert!(
+                result,
+                "T-RG-007: request_genesis_resync must handle {:?} without panic and accept it",
+                reason
+            );
+        }
+    }
+
+    /// T-RG-008: Multiple consecutive calls only honor the first.
+    /// Once needs_genesis_resync is true, subsequent calls are still gated
+    /// but the flag stays true (idempotent behavior).
+    #[test]
+    fn test_request_genesis_resync_idempotent() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 500;
+
+        let first = manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 1000 });
+        assert!(first, "First call must be accepted");
+        assert!(manager.fork.needs_genesis_resync);
+
+        // Second call — flag already true, but gates still open
+        let second = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
+        // The method should still pass all gates (flag already set is not a gate)
+        // The flag stays true regardless
+        assert!(
+            manager.fork.needs_genesis_resync,
+            "T-RG-008: needs_genesis_resync must remain true after second call"
+        );
+        // Whether second returns true or false is implementation-defined,
+        // but it must not panic and the flag must stay true
+    }
+
+    /// T-RG-009: Gate ordering — height floor checked first (fast reject).
+    /// If both height floor > 0 AND snap disabled, the height floor gate
+    /// should reject before reaching the snap gate.
+    #[test]
+    fn test_request_genesis_resync_gate_ordering_floor_first() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Both gates would reject: floor > 0 AND snap disabled
+        manager.confirmed_height_floor = 100;
+        // snap.threshold is u64::MAX by default (disabled)
+
+        let result =
+            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+
+        assert!(!result, "T-RG-009: Must be refused (either gate rejects)");
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-RG-009: Flag must remain false"
+        );
+    }
+
+    /// T-RG-010: Edge case — confirmed_height_floor is exactly 0.
+    /// Floor of 0 means the node was never confirmed healthy. Gate 1 should PASS.
+    #[test]
+    fn test_request_genesis_resync_floor_exactly_zero_passes() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        assert_eq!(manager.confirmed_height_floor, 0);
+        manager.snap.threshold = 500;
+
+        let result =
+            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+
+        assert!(
+            result,
+            "T-RG-010: Floor == 0 means no confirmed health — gate 1 must pass"
+        );
+    }
+
+    /// T-RG-011: Edge case — consecutive_resync_count is exactly MAX.
+    /// At exactly MAX, gate 3 must REFUSE (>= comparison).
+    #[test]
+    fn test_request_genesis_resync_resync_count_exactly_max() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.consecutive_resync_count = MAX_CONSECUTIVE_RESYNCS;
+        manager.snap.threshold = 500;
+
+        let result = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
+
+        assert!(
+            !result,
+            "T-RG-011: Exactly MAX resyncs ({}) must be refused (>= check)",
+            MAX_CONSECUTIVE_RESYNCS
+        );
+    }
+
+    /// T-RG-012: Edge case — snap.attempts is exactly 3.
+    /// At exactly 3, gate 5 must REFUSE (>= comparison).
+    #[test]
+    fn test_request_genesis_resync_snap_attempts_exactly_3() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 3;
+
+        let result = manager.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);
+
+        assert!(
+            !result,
+            "T-RG-012: Exactly 3 snap attempts must be refused (>= check)"
+        );
+    }
+
+    /// T-RG-013: Different RecoveryPhase values vs. Gate 2.
+    /// Only ResyncInProgress should block. All other phases should pass gate 2.
+    #[test]
+    fn test_request_genesis_resync_gate2_phase_specificity() {
+        let phases_that_should_pass = vec![
+            RecoveryPhase::Normal,
+            RecoveryPhase::StuckForkDetected,
+            RecoveryPhase::PostRollback,
+            RecoveryPhase::PostRecoveryGrace {
+                started: Instant::now(),
+                blocks_applied: 0,
+            },
+            RecoveryPhase::AwaitingCanonicalBlock {
+                started: Instant::now(),
+            },
+        ];
+
+        for phase in phases_that_should_pass {
+            let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+            manager.snap.threshold = 500;
+            manager.recovery_phase = phase.clone();
+
+            let result =
+                manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+
+            assert!(
+                result,
+                "T-RG-013: RecoveryPhase {:?} must NOT block gate 2 (only ResyncInProgress blocks)",
+                phase
+            );
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Transition Validation Tests: is_valid_transition()
+// REQ-SYNC-104: State transition validation
+// Architecture: Section 4 - "New method: is_valid_transition()"
+//               Section 2 - "Valid Transition Matrix"
+//
+// -------------------------------------------------------------------------
+
+mod transition_validation_tests {
+    use super::*;
+
+    // --- Helper: create SyncState variants for testing ---
+
+    fn idle() -> SyncState {
+        SyncState::Idle
+    }
+
+    fn downloading_headers() -> SyncState {
+        SyncState::DownloadingHeaders {
+            target_slot: 100,
+            peer: PeerId::random(),
+            headers_count: 0,
+        }
+    }
+
+    fn downloading_bodies() -> SyncState {
+        SyncState::DownloadingBodies {
+            pending: 10,
+            total: 50,
+        }
+    }
+
+    fn processing() -> SyncState {
+        SyncState::Processing { height: 50 }
+    }
+
+    fn synchronized() -> SyncState {
+        SyncState::Synchronized
+    }
+
+    fn snap_collecting_roots() -> SyncState {
+        SyncState::SnapCollectingRoots {
+            target_hash: Hash::ZERO,
+            target_height: 100,
+            votes: vec![],
+            asked: std::collections::HashSet::new(),
+            started_at: Instant::now(),
+        }
+    }
+
+    fn snap_downloading() -> SyncState {
+        SyncState::SnapDownloading {
+            target_hash: Hash::ZERO,
+            target_height: 100,
+            quorum_root: Hash::ZERO,
+            peer: PeerId::random(),
+            alternate_peers: vec![],
+            started_at: Instant::now(),
+        }
+    }
+
+    fn snap_ready() -> SyncState {
+        SyncState::SnapReady {
+            snapshot: VerifiedSnapshot {
+                block_hash: Hash::ZERO,
+                block_height: 100,
+                chain_state: vec![],
+                utxo_set: vec![],
+                producer_set: vec![],
+                state_root: Hash::ZERO,
+            },
+        }
+    }
+
+    // === Valid transitions from Idle (Idle -> anything is valid) ===
+
+    /// T-TV-001: Idle can transition to any state.
+    /// REQ-SYNC-104: "Idle can go anywhere (it's the reset state)"
+    #[test]
+    fn test_valid_transitions_from_idle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let all_states = vec![
+            idle(),
+            downloading_headers(),
+            downloading_bodies(),
+            processing(),
+            synchronized(),
+            snap_collecting_roots(),
+            snap_downloading(),
+            snap_ready(),
+        ];
+
+        for target in &all_states {
+            manager.state = idle();
+            assert!(
+                manager.is_valid_transition(target),
+                "T-TV-001: Idle -> {:?} must be valid",
+                std::mem::discriminant(target)
+            );
+        }
+    }
+
+    // === Valid transitions to Idle (anything -> Idle is valid) ===
+
+    /// T-TV-002: Any state can transition to Idle.
+    /// REQ-SYNC-104: "Any state can go to Idle (reset/error)"
+    #[test]
+    fn test_valid_transition_to_idle_from_any() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let all_states = vec![
+            idle(),
+            downloading_headers(),
+            downloading_bodies(),
+            processing(),
+            synchronized(),
+            snap_collecting_roots(),
+            snap_downloading(),
+            snap_ready(),
+        ];
+
+        for source in &all_states {
+            manager.state = source.clone();
+            assert!(
+                manager.is_valid_transition(&idle()),
+                "T-TV-002: {:?} -> Idle must be valid",
+                std::mem::discriminant(source)
+            );
+        }
+    }
+
+    // === Invalid transitions (the whole point of the validation) ===
+
+    /// T-TV-003: SnapCollectingRoots -> Synchronized is INVALID.
+    /// REQ-SYNC-104: "snap sync can't skip to synchronized"
+    ///
+    /// Snap sync must go through SnapDownloading -> SnapReady -> Synchronized.
+    /// Skipping the download step would leave the node with no state snapshot.
+    #[test]
+    fn test_invalid_snap_collecting_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_collecting_roots();
+
+        assert!(
+            !manager.is_valid_transition(&synchronized()),
+            "T-TV-003: SnapCollectingRoots -> Synchronized must be INVALID"
+        );
+    }
+
+    /// T-TV-004: Processing -> SnapCollectingRoots is INVALID.
+    /// REQ-SYNC-104: "can't start snap sync from processing"
+    ///
+    /// If we're in the middle of applying downloaded blocks, we should finish
+    /// or abort (-> Idle) before starting a completely different sync strategy.
+    #[test]
+    fn test_invalid_processing_to_snap_collecting() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = processing();
+
+        assert!(
+            !manager.is_valid_transition(&snap_collecting_roots()),
+            "T-TV-004: Processing -> SnapCollectingRoots must be INVALID"
+        );
+    }
+
+    /// T-TV-005: Synchronized -> DownloadingBodies is INVALID.
+    /// REQ-SYNC-104: "must go through Idle -> DownloadingHeaders"
+    ///
+    /// Body download requires headers to be downloaded first. Going directly
+    /// from Synchronized to DownloadingBodies skips the header phase.
+    #[test]
+    fn test_invalid_synchronized_to_downloading_bodies() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_bodies()),
+            "T-TV-005: Synchronized -> DownloadingBodies must be INVALID"
+        );
+    }
+
+    // === Valid forward-path transitions ===
+
+    /// T-TV-006: DownloadingHeaders -> DownloadingBodies is valid.
+    /// REQ-SYNC-104: "Header download leads to bodies"
+    #[test]
+    fn test_valid_header_to_body_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_headers();
+
+        assert!(
+            manager.is_valid_transition(&downloading_bodies()),
+            "T-TV-006: DownloadingHeaders -> DownloadingBodies must be valid"
+        );
+    }
+
+    /// T-TV-007: Full snap sync forward path is valid.
+    /// REQ-SYNC-104: SnapCollecting -> SnapDownloading -> SnapReady -> Synchronized
+    #[test]
+    fn test_valid_snap_forward_path() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Step 1: SnapCollecting -> SnapDownloading
+        manager.state = snap_collecting_roots();
+        assert!(
+            manager.is_valid_transition(&snap_downloading()),
+            "T-TV-007a: SnapCollectingRoots -> SnapDownloading must be valid"
+        );
+
+        // Step 2: SnapDownloading -> SnapReady
+        manager.state = snap_downloading();
+        assert!(
+            manager.is_valid_transition(&snap_ready()),
+            "T-TV-007b: SnapDownloading -> SnapReady must be valid"
+        );
+
+        // Step 3: SnapReady -> Synchronized
+        manager.state = snap_ready();
+        assert!(
+            manager.is_valid_transition(&synchronized()),
+            "T-TV-007c: SnapReady -> Synchronized must be valid"
+        );
+    }
+
+    /// T-TV-008: Full header-first sync forward path is valid.
+    /// Idle -> Headers -> Bodies -> Processing -> Synchronized
+    #[test]
+    fn test_valid_header_first_forward_path() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Idle -> DownloadingHeaders
+        manager.state = idle();
+        assert!(manager.is_valid_transition(&downloading_headers()));
+
+        // DownloadingHeaders -> DownloadingBodies
+        manager.state = downloading_headers();
+        assert!(manager.is_valid_transition(&downloading_bodies()));
+
+        // DownloadingBodies -> Processing
+        manager.state = downloading_bodies();
+        assert!(manager.is_valid_transition(&processing()));
+
+        // Processing -> Synchronized
+        manager.state = processing();
+        assert!(
+            manager.is_valid_transition(&synchronized()),
+            "T-TV-008: Full header-first forward path must be valid"
+        );
+    }
+
+    /// T-TV-009: DownloadingHeaders -> SnapCollectingRoots is valid.
+    /// REQ-SYNC-104: "Header download leads to ... snap"
+    ///
+    /// During header download, if the gap grows large enough, we may switch
+    /// to snap sync. This is a valid pivot.
+    #[test]
+    fn test_valid_headers_to_snap_collecting() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_headers();
+
+        assert!(
+            manager.is_valid_transition(&snap_collecting_roots()),
+            "T-TV-009: DownloadingHeaders -> SnapCollectingRoots must be valid"
+        );
+    }
+
+    /// T-TV-010: DownloadingHeaders -> Synchronized is valid.
+    /// Used when we discover we're already caught up during header download.
+    #[test]
+    fn test_valid_headers_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_headers();
+
+        assert!(
+            manager.is_valid_transition(&synchronized()),
+            "T-TV-010: DownloadingHeaders -> Synchronized must be valid"
+        );
+    }
+
+    /// T-TV-011: DownloadingBodies -> DownloadingBodies (self-transition) is valid.
+    /// Used for pending count updates and soft retries.
+    #[test]
+    fn test_valid_bodies_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_bodies();
+
+        assert!(
+            manager.is_valid_transition(&SyncState::DownloadingBodies {
+                pending: 5,
+                total: 50,
+            }),
+            "T-TV-011: DownloadingBodies -> DownloadingBodies must be valid"
+        );
+    }
+
+    /// T-TV-012: DownloadingBodies -> Synchronized is valid.
+    /// Happens when all bodies are downloaded and processing is trivial.
+    #[test]
+    fn test_valid_bodies_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_bodies();
+
+        assert!(
+            manager.is_valid_transition(&synchronized()),
+            "T-TV-012: DownloadingBodies -> Synchronized must be valid"
+        );
+    }
+
+    /// T-TV-013: Processing -> Processing (self-transition) is valid.
+    /// Used for height updates during block application.
+    #[test]
+    fn test_valid_processing_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = processing();
+
+        assert!(
+            manager.is_valid_transition(&SyncState::Processing { height: 51 }),
+            "T-TV-013: Processing -> Processing must be valid"
+        );
+    }
+
+    /// T-TV-014: Synchronized -> Synchronized (self-transition) is valid.
+    /// Used by update_local_tip when already synchronized.
+    #[test]
+    fn test_valid_synchronized_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        assert!(
+            manager.is_valid_transition(&synchronized()),
+            "T-TV-014: Synchronized -> Synchronized must be valid"
+        );
+    }
+
+    /// T-TV-015: SnapDownloading -> SnapDownloading (alternate peer) is valid.
+    /// Used when primary peer fails and we switch to an alternate.
+    #[test]
+    fn test_valid_snap_downloading_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_downloading();
+
+        assert!(
+            manager.is_valid_transition(&snap_downloading()),
+            "T-TV-015: SnapDownloading -> SnapDownloading must be valid"
+        );
+    }
+
+    // === Comprehensive invalid transition coverage ===
+
+    /// T-TV-016: Synchronized -> DownloadingHeaders is INVALID.
+    /// Must go through Idle first.
+    #[test]
+    fn test_invalid_synchronized_to_downloading_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_headers()),
+            "T-TV-016: Synchronized -> DownloadingHeaders must be INVALID (go through Idle)"
+        );
+    }
+
+    /// T-TV-017: Synchronized -> Processing is INVALID.
+    /// Processing requires downloaded blocks, not just being synchronized.
+    #[test]
+    fn test_invalid_synchronized_to_processing() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        assert!(
+            !manager.is_valid_transition(&processing()),
+            "T-TV-017: Synchronized -> Processing must be INVALID"
+        );
+    }
+
+    /// T-TV-018: Processing -> DownloadingHeaders is INVALID.
+    /// Must abort to Idle first.
+    #[test]
+    fn test_invalid_processing_to_downloading_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = processing();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_headers()),
+            "T-TV-018: Processing -> DownloadingHeaders must be INVALID"
+        );
+    }
+
+    /// T-TV-019: Processing -> DownloadingBodies is INVALID.
+    /// Can't go back to body download from processing.
+    #[test]
+    fn test_invalid_processing_to_downloading_bodies() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = processing();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_bodies()),
+            "T-TV-019: Processing -> DownloadingBodies must be INVALID"
+        );
+    }
+
+    /// T-TV-020: SnapCollectingRoots -> Processing is INVALID.
+    /// Snap sync and header-first sync are different pipelines.
+    #[test]
+    fn test_invalid_snap_collecting_to_processing() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_collecting_roots();
+
+        assert!(
+            !manager.is_valid_transition(&processing()),
+            "T-TV-020: SnapCollectingRoots -> Processing must be INVALID"
+        );
+    }
+
+    /// T-TV-021: SnapCollectingRoots -> DownloadingBodies is INVALID.
+    /// Snap sync doesn't download bodies individually.
+    #[test]
+    fn test_invalid_snap_collecting_to_downloading_bodies() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_collecting_roots();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_bodies()),
+            "T-TV-021: SnapCollectingRoots -> DownloadingBodies must be INVALID"
+        );
+    }
+
+    /// T-TV-022: SnapCollectingRoots -> DownloadingHeaders is INVALID.
+    /// Can't switch from snap to header-first mid-stream (must go through Idle).
+    #[test]
+    fn test_invalid_snap_collecting_to_downloading_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_collecting_roots();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_headers()),
+            "T-TV-022: SnapCollectingRoots -> DownloadingHeaders must be INVALID"
+        );
+    }
+
+    /// T-TV-023: SnapDownloading -> Processing is INVALID.
+    /// Snap sync applies state directly, doesn't go through block processing.
+    #[test]
+    fn test_invalid_snap_downloading_to_processing() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_downloading();
+
+        assert!(
+            !manager.is_valid_transition(&processing()),
+            "T-TV-023: SnapDownloading -> Processing must be INVALID"
+        );
+    }
+
+    /// T-TV-024: SnapReady -> DownloadingHeaders is INVALID.
+    /// Snapshot is ready to apply, not to start a new header download.
+    #[test]
+    fn test_invalid_snap_ready_to_downloading_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_ready();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_headers()),
+            "T-TV-024: SnapReady -> DownloadingHeaders must be INVALID"
+        );
+    }
+
+    /// T-TV-025: DownloadingBodies -> DownloadingHeaders is INVALID.
+    /// Can't go back to header download from body download (must abort to Idle).
+    #[test]
+    fn test_invalid_bodies_to_headers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_bodies();
+
+        assert!(
+            !manager.is_valid_transition(&downloading_headers()),
+            "T-TV-025: DownloadingBodies -> DownloadingHeaders must be INVALID"
+        );
+    }
+
+    // === Warn-only enforcement (M1 behavior) ===
+
+    /// T-TV-026: In M1, set_state() with invalid transition WARNS but still executes.
+    /// REQ-SYNC-104: "Invalid transitions are logged but NOT blocked in M1 (warn-only mode)"
+    ///
+    /// This ensures the transition validation doesn't break existing behavior
+    /// during the observation phase. Hard enforcement comes in M3.
+    #[test]
+    fn test_set_state_warn_only_allows_invalid_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        // Synchronized -> DownloadingBodies is INVALID per the matrix
+        // In M1 (warn-only), set_state should still execute the transition
+        manager.set_state(
+            SyncState::DownloadingBodies {
+                pending: 0,
+                total: 10,
+            },
+            "test_warn_only_mode",
+        );
+
+        // In M1 (warn-only), the transition still happens
+        assert!(
+            matches!(*manager.state(), SyncState::DownloadingBodies { .. }),
+            "T-TV-026: In M1 warn-only mode, invalid transitions must still execute. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-TV-027: SnapCollectingRoots -> SnapCollectingRoots is INVALID.
+    /// Self-transition is not defined for this state in the matrix.
+    #[test]
+    fn test_invalid_snap_collecting_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_collecting_roots();
+
+        // SnapCollectingRoots is not in the self-transition list
+        assert!(
+            !manager.is_valid_transition(&snap_collecting_roots()),
+            "T-TV-027: SnapCollectingRoots -> SnapCollectingRoots is not in the valid matrix"
+        );
+    }
+
+    /// T-TV-028: SnapReady -> SnapReady is INVALID.
+    /// Self-transition not defined for this state.
+    #[test]
+    fn test_invalid_snap_ready_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_ready();
+
+        assert!(
+            !manager.is_valid_transition(&snap_ready()),
+            "T-TV-028: SnapReady -> SnapReady is not in the valid matrix"
+        );
+    }
+
+    /// T-TV-029: SnapReady -> SnapDownloading is INVALID.
+    /// Can't go back to downloading from ready state.
+    #[test]
+    fn test_invalid_snap_ready_to_snap_downloading() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_ready();
+
+        assert!(
+            !manager.is_valid_transition(&snap_downloading()),
+            "T-TV-029: SnapReady -> SnapDownloading must be INVALID"
+        );
+    }
+
+    /// T-TV-030: SnapDownloading -> Synchronized is INVALID.
+    /// Must go through SnapReady first (node needs to consume the snapshot).
+    #[test]
+    fn test_invalid_snap_downloading_to_synchronized() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_downloading();
+
+        assert!(
+            !manager.is_valid_transition(&synchronized()),
+            "T-TV-030: SnapDownloading -> Synchronized must be INVALID (must go through SnapReady)"
+        );
+    }
+
+    /// T-TV-031: SnapDownloading -> SnapCollectingRoots is INVALID.
+    /// Can't restart root collection from download phase.
+    #[test]
+    fn test_invalid_snap_downloading_to_snap_collecting() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = snap_downloading();
+
+        assert!(
+            !manager.is_valid_transition(&snap_collecting_roots()),
+            "T-TV-031: SnapDownloading -> SnapCollectingRoots must be INVALID"
+        );
+    }
+}

@@ -371,6 +371,28 @@ pub enum RecoveryPhase {
     },
 }
 
+/// Why a genesis resync was requested.
+/// Used for logging, diagnostics, and potential future policy differentiation.
+#[derive(Clone, Debug)]
+pub enum RecoveryReason {
+    /// All peers blacklisted with 20+ empty headers (cleanup.rs)
+    AllPeersBlacklistedDeepFork,
+    /// Stuck-sync with gap > 1000 blocks (cleanup.rs)
+    StuckSyncLargeGap { gap: u64 },
+    /// Height offset: stable gap while blocks applied (cleanup.rs)
+    HeightOffsetDetected { gap: u64 },
+    /// Post-rollback snap escalation (sync_engine.rs)
+    PostRollbackSnapEscalation,
+    /// Genesis fallback: 10+ empty headers from peer (sync_engine.rs)
+    GenesisFallbackEmptyHeaders,
+    /// Body download peer error (sync_engine.rs)
+    BodyDownloadPeerError,
+    /// 3+ apply failures with snap threshold (block_lifecycle.rs)
+    ApplyFailuresSnapThreshold { gap: u64 },
+    /// Rollback death spiral exceeded max depth (Node rollback.rs)
+    RollbackDeathSpiral { peak: u64, current: u64 },
+}
+
 /// Network tip tracking, gossip timing, block application counters.
 ///
 /// Groups fields related to network state observation (heights seen via gossip,
@@ -1089,6 +1111,17 @@ impl SyncManager {
     /// Transition to a new sync state with logging.
     /// All state transitions MUST go through this method for auditability.
     fn set_state(&mut self, new_state: SyncState, trigger: &str) {
+        // Validate transition (warn-only in M1, hard-block in M3)
+        if !self.is_valid_transition(&new_state) {
+            warn!(
+                "[SYNC_STATE] INVALID transition {} -> {} (trigger: {})",
+                self.state_label(),
+                Self::label_for(&new_state),
+                trigger
+            );
+            // In M1: warn only, still execute. M3 will hard-block.
+        }
+
         let old_label = self.state_label();
         self.state = new_state;
         let new_label = self.state_label();
@@ -1100,9 +1133,46 @@ impl SyncManager {
         }
     }
 
+    /// Check if a state transition is valid.
+    /// Called by set_state() to prevent illegal transitions.
+    fn is_valid_transition(&self, new_state: &SyncState) -> bool {
+        use SyncState::*;
+        match (&self.state, new_state) {
+            // Idle can go anywhere (it's the reset state)
+            (Idle, _) => true,
+            // Any state can go to Idle (reset/error)
+            (_, Idle) => true,
+            // Header download leads to bodies, snap, or synchronized
+            (DownloadingHeaders { .. }, DownloadingBodies { .. }) => true,
+            (DownloadingHeaders { .. }, SnapCollectingRoots { .. }) => true,
+            (DownloadingHeaders { .. }, Synchronized) => true,
+            // Body download leads to processing, or re-enters itself (soft retry)
+            (DownloadingBodies { .. }, Processing { .. }) => true,
+            (DownloadingBodies { .. }, DownloadingBodies { .. }) => true,
+            (DownloadingBodies { .. }, Synchronized) => true,
+            // Processing leads to synchronized or re-enters (height update)
+            (Processing { .. }, Synchronized) => true,
+            (Processing { .. }, Processing { .. }) => true,
+            // Synchronized can only go back to Idle (stall reset)
+            (Synchronized, Synchronized) => true,
+            // Snap sync forward path
+            (SnapCollectingRoots { .. }, SnapDownloading { .. }) => true,
+            (SnapDownloading { .. }, SnapReady { .. }) => true,
+            (SnapDownloading { .. }, SnapDownloading { .. }) => true, // alternate peer
+            (SnapReady { .. }, Synchronized) => true,
+            // Anything else is invalid
+            _ => false,
+        }
+    }
+
     /// Short label for the current sync state (for logging)
     fn state_label(&self) -> &'static str {
-        match &self.state {
+        Self::label_for(&self.state)
+    }
+
+    /// Short label for any sync state (static version for use before state mutation)
+    fn label_for(state: &SyncState) -> &'static str {
+        match state {
             SyncState::Idle => "Idle",
             SyncState::DownloadingHeaders { .. } => "DownloadingHeaders",
             SyncState::DownloadingBodies { .. } => "DownloadingBodies",

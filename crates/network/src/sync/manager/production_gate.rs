@@ -1087,6 +1087,84 @@ impl SyncManager {
         self.fork.needs_genesis_resync = true;
     }
 
+    /// Central gate for all genesis resync requests.
+    ///
+    /// Replaces 9 scattered `needs_genesis_resync = true` assignments with a single
+    /// decision point that enforces:
+    /// 1. Monotonic progress floor (won't reset below confirmed_height_floor)
+    /// 2. No concurrent recovery (won't trigger if ResyncInProgress)
+    /// 3. Rate limiting (max MAX_CONSECUTIVE_RESYNCS, with cooldown)
+    /// 4. Snap sync availability (won't trigger if snap sync disabled)
+    /// 5. Snap attempt limit (won't trigger after 3 failed snap attempts)
+    ///
+    /// Returns true if the request was honored, false if refused.
+    pub fn request_genesis_resync(&mut self, reason: super::RecoveryReason) -> bool {
+        // Gate 1: Monotonic progress floor
+        if self.confirmed_height_floor > 0 {
+            warn!(
+                "[RECOVERY] Genesis resync REFUSED: confirmed_height_floor={} \
+                 (reason: {:?}). Manual intervention required.",
+                self.confirmed_height_floor, reason
+            );
+            return false;
+        }
+
+        // Gate 2: No concurrent recovery
+        if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
+            info!(
+                "[RECOVERY] Genesis resync REFUSED: resync already in progress \
+                 (reason: {:?})",
+                reason
+            );
+            return false;
+        }
+
+        // Gate 3: Rate limiting
+        if self.consecutive_resync_count >= super::MAX_CONSECUTIVE_RESYNCS {
+            warn!(
+                "[RECOVERY] Genesis resync REFUSED: {} consecutive resyncs (max {}) \
+                 (reason: {:?}). Manual intervention required.",
+                self.consecutive_resync_count,
+                super::MAX_CONSECUTIVE_RESYNCS,
+                reason
+            );
+            return false;
+        }
+
+        // Gate 4: Snap sync must be available
+        if self.snap.threshold == u64::MAX {
+            info!(
+                "[RECOVERY] Genesis resync REFUSED: snap sync disabled \
+                 (reason: {:?}). Header-first recovery only.",
+                reason
+            );
+            return false;
+        }
+
+        // Gate 5: Snap attempt limit
+        if self.snap.attempts >= 3 {
+            info!(
+                "[RECOVERY] Genesis resync REFUSED: snap attempts exhausted ({}/3) \
+                 (reason: {:?})",
+                self.snap.attempts, reason
+            );
+            return false;
+        }
+
+        // All gates passed -- honor the request
+        info!(
+            "[RECOVERY] Genesis resync ACCEPTED: {:?} \
+             (floor={}, resync_count={}, snap_attempts={}, phase={:?})",
+            reason,
+            self.confirmed_height_floor,
+            self.consecutive_resync_count,
+            self.snap.attempts,
+            self.recovery_phase
+        );
+        self.fork.needs_genesis_resync = true;
+        true
+    }
+
     /// Returns true if peers consistently reject our chain tip (deep fork).
     /// Requires ALL conditions:
     /// 1. Many consecutive empty header responses (peers don't recognize our chain)
