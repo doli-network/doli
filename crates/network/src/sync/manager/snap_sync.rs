@@ -65,7 +65,13 @@ impl SyncManager {
         // Example: 12 connected peers → quorum = max(3, 12/2+1) = 7.
         // A partition of 3 nodes can never reach 7, even if they all agree.
         let total_peers = self.peers.len();
-        let quorum = std::cmp::max(self.snap.quorum, total_peers / 2 + 1);
+        // Cap quorum at 15 regardless of peer count. The uncapped formula
+        // (total_peers/2+1) produces 26-31 for 50-60 peers, which is never
+        // reachable within root_timeout (10s) on an active chain where state
+        // roots change every block. 15 tolerates 7 colluding attackers —
+        // the real protection is compute_state_root_from_bytes() verification
+        // after download, not quorum size. Safe for 1K-5K+ node networks.
+        let quorum = std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 15));
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
