@@ -93,15 +93,15 @@ impl NetworkParams {
                     "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
-                max_peers: 100, // Testnet: higher for stress testing with 100+ nodes
+                max_peers: 200, // Testnet: higher for stress testing with 100+ nodes
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774116335, // Testnet v59 genesis - Full chain reset 2026-03-21
+                genesis_time: 1774290394, // Testnet v66 genesis - Full chain reset 2026-03-23
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
-                unbonding_period: 72, // 2 epochs (2 × 36 blocks) — fast withdrawal for testing
+                unbonding_period: 720, // 2 epochs (2 × 360 blocks) — fast withdrawal for testing
                 inactivity_threshold: u64::from(consensus::INACTIVITY_THRESHOLD),
 
                 // Economics (lower bond for testnet)
@@ -110,18 +110,19 @@ impl NetworkParams {
                 registration_base_fee: 100_000,
                 max_registration_fee: 1_000_000_000,
                 automatic_genesis_bond: 100_000_000, // 1 DOLI (matches testnet bond_unit)
-                genesis_blocks: 36, // 1 epoch (~6 min) — matches blocks_per_reward_epoch
+                genesis_blocks: 360, // 1 epoch (~60 min) — matches blocks_per_reward_epoch
 
                 // VDF (1000 iterations — same as mainnet)
                 vdf_iterations: 1_000,
                 heartbeat_vdf_iterations: 1_000,
                 vdf_register_iterations: 1_000,
 
-                // Time structure (shorter epochs for faster testing)
+                // Time structure (matches mainnet — INC-I-006: shorter epochs caused
+                // rebuild_producer_set_from_blocks divergence at epoch boundaries)
                 blocks_per_year: consensus::SLOTS_PER_YEAR as u64,
-                blocks_per_reward_epoch: 36, // ~6 min per epoch (10x faster than mainnet)
+                blocks_per_reward_epoch: consensus::BLOCKS_PER_REWARD_EPOCH,
                 coinbase_maturity: consensus::COINBASE_MATURITY,
-                slots_per_reward_epoch: 36, // ~6 min per epoch
+                slots_per_reward_epoch: consensus::SLOTS_PER_REWARD_EPOCH,
                 bootstrap_blocks: consensus::BOOTSTRAP_BLOCKS,
 
                 // Update system

@@ -33,7 +33,7 @@ use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
-    DELEGATE_REWARD_PCT, SLOTS_PER_EPOCH, UNBONDING_PERIOD,
+    DELEGATE_REWARD_PCT, UNBONDING_PERIOD,
 };
 // WeightedRewardCalculator removed — replaced by attestation-qualified bond-weighted distribution
 use doli_core::tpop::calibration::VdfCalibrator;

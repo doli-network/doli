@@ -371,7 +371,7 @@ impl Node {
         producers.clear();
         let bond_unit = self.config.network.bond_unit();
         let genesis_blocks = self.config.network.genesis_blocks();
-        let epoch_len = SLOTS_PER_EPOCH as u64;
+        let epoch_len = self.config.network.blocks_per_reward_epoch();
 
         for height in 1..=target_height {
             let block = self
