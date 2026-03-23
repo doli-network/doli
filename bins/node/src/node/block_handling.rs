@@ -598,7 +598,10 @@ impl Node {
             );
             let mut sync = self.sync_manager.write().await;
             sync.mark_fork_sync_rejected();
-            sync.set_needs_genesis_resync();
+            sync.request_genesis_resync(RecoveryReason::RollbackDeathSpiral {
+                peak: peak_height,
+                current: result.ancestor_height,
+            });
             return Ok(());
         }
 

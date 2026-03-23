@@ -51,7 +51,8 @@ use doli_core::{DeterministicScheduler, ScheduledProducer};
 use network::protocols::{SyncRequest, SyncResponse};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
-    NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
+    NetworkService, PeerId, ProductionAuthorization, RecoveryReason, ReorgResult, SyncConfig,
+    SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;

@@ -1080,13 +1080,6 @@ impl SyncManager {
         self.fork.needs_genesis_resync
     }
 
-    /// Set the needs_genesis_resync flag.
-    /// Called by rollback death spiral prevention when the node has rolled
-    /// back too far from its peak height and needs a clean resync.
-    pub fn set_needs_genesis_resync(&mut self) {
-        self.fork.needs_genesis_resync = true;
-    }
-
     /// Central gate for all genesis resync requests.
     ///
     /// Replaces 9 scattered `needs_genesis_resync = true` assignments with a single

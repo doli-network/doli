@@ -2131,6 +2131,7 @@ mod regression_tests {
     #[test]
     fn test_regression_needs_genesis_resync_readable() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 500; // Enable snap sync so the gate accepts
 
         // Initially false
         assert!(
@@ -2138,11 +2139,13 @@ mod regression_tests {
             "needs_genesis_resync must be false initially"
         );
 
-        // Direct set (current API) still works
-        manager.set_needs_genesis_resync();
+        // Gated method sets the flag when gates pass
+        let accepted = manager
+            .request_genesis_resync(RecoveryReason::RollbackDeathSpiral { peak: 0, current: 0 });
+        assert!(accepted, "request_genesis_resync must be accepted for fresh node");
         assert!(
             manager.needs_genesis_resync(),
-            "needs_genesis_resync must be true after set_needs_genesis_resync()"
+            "needs_genesis_resync must be true after accepted request_genesis_resync()"
         );
     }
 
@@ -3151,6 +3154,940 @@ mod transition_validation_tests {
         assert!(
             !manager.is_valid_transition(&snap_collecting_roots()),
             "T-TV-031: SnapDownloading -> SnapCollectingRoots must be INVALID"
+        );
+    }
+}
+
+// =========================================================================
+// M2: Site Migration + Monotonic Floor Extension Tests
+// Architecture: specs/sync-recovery-architecture.md (Sections 4, 5)
+// Requirements: REQ-SYNC-102 (monotonic floor), REQ-SYNC-103 (gated method),
+//               REQ-SYNC-105 (recovery reason logging), PRESERVE-5 (existing tests pass)
+//
+// M2 replaces all 9 `needs_genesis_resync = true` direct writes with
+// `request_genesis_resync(RecoveryReason::...)` calls. When gates block,
+// the resync is REFUSED — this is the behavioral change vs. M1.
+//
+// M2 also extends confirmed_height_floor to reset_sync_for_rollback().
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// Site Migration Tests: verify that each migrated write site now routes
+// through request_genesis_resync() and respects the recovery gates.
+//
+// Strategy: For each write site, create the conditions that would trigger
+// the genesis resync code path, but also set a gate condition that should
+// REFUSE the request. Then verify needs_genesis_resync stays false.
+//
+// REQ-SYNC-103 (Must): needs_genesis_resync set from 1 path, not 9
+// -------------------------------------------------------------------------
+
+mod site_migration_tests {
+    use super::*;
+
+    // === Helper: create a SyncManager with the height floor gate active ===
+    // confirmed_height_floor > 0 means the node was previously healthy.
+    // Gate 1 of request_genesis_resync() will refuse all requests.
+
+    fn manager_with_floor_gate() -> SyncManager {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.confirmed_height_floor = 100;
+        // Enable snap sync so it's not the snap-disabled gate that blocks
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+        manager
+    }
+
+    // === Helper: create a SyncManager with the max-resyncs gate active ===
+    fn manager_with_resync_count_gate() -> SyncManager {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.consecutive_resync_count = MAX_CONSECUTIVE_RESYNCS;
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+        manager
+    }
+
+    // === Site #7 (cleanup.rs ~344): All peers blacklisted, deep fork ===
+
+    /// T-M2-001: cleanup site "all peers blacklisted deep fork" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When confirmed_height_floor > 0, the gate REFUSES genesis resync.
+    ///
+    /// Setup: 20+ consecutive empty headers, all peers blacklisted, gap > 12, 3+ peers,
+    ///        stuck > 120s. But confirmed_height_floor > 0 → gate blocks.
+    /// Expected: needs_genesis_resync stays FALSE.
+    #[test]
+    fn test_cleanup_all_blacklisted_uses_recovery_gate() {
+        let mut manager = manager_with_floor_gate();
+
+        // Set conditions that trigger site #7:
+        // - All peers blacklisted (best_peer() returns None)
+        // - should_sync() returns true (network_tip > local)
+        // - state == Idle
+        // - stuck > 120s
+        // - consecutive_empty_headers >= 20
+        // - enough_peers (peers.len() >= 3)
+        // - gap > 12
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 200; // gap = 100 > 12
+        manager.network.network_tip_slot = 200;
+        manager.state = SyncState::Idle;
+
+        // Add 3+ peers (all will be blacklisted)
+        let peers: Vec<PeerId> = (0..3).map(|_| PeerId::random()).collect();
+        for &peer in &peers {
+            manager.add_peer(peer, 200, Hash::ZERO, 200);
+            // Force back to Idle (add_peer may start sync)
+        }
+        manager.state = SyncState::Idle;
+
+        // Blacklist all peers
+        for &peer in &peers {
+            manager
+                .fork
+                .header_blacklisted_peers
+                .insert(peer, Instant::now());
+        }
+
+        // 20+ consecutive empty headers
+        manager.fork.consecutive_empty_headers = 25;
+
+        // Stuck for > 120s
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+
+        // Run cleanup — this triggers the blacklisted-peers escalation path
+        manager.cleanup();
+
+        // With M2: the site calls request_genesis_resync() which is REFUSED by floor gate
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-001: cleanup 'all blacklisted' site must route through recovery gate. \
+             With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.confirmed_height_floor
+        );
+    }
+
+    // === Site #8 (cleanup.rs ~483): Stuck-sync large gap ===
+
+    /// T-M2-002: cleanup site "stuck sync large gap" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When confirmed_height_floor > 0, gate REFUSES.
+    ///
+    /// Setup: gap > 1000, snap.attempts < 3, 3+ peers, stuck > 120s, no fork_sync active.
+    /// Expected: needs_genesis_resync stays FALSE.
+    #[test]
+    fn test_stuck_sync_large_gap_uses_recovery_gate() {
+        let mut manager = manager_with_floor_gate();
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 1200; // gap = 1100 > 1000
+        manager.network.network_tip_slot = 1200;
+        manager.state = SyncState::Idle;
+
+        // Add 3+ peers (not blacklisted)
+        for _ in 0..3 {
+            let peer = PeerId::random();
+            manager.add_peer(peer, 1200, Hash::ZERO, 1200);
+        }
+        manager.state = SyncState::Idle;
+
+        // Stuck for > 120s
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+        // Ensure the "stuck sync" path is reached, not the fork path
+        manager.fork.consecutive_empty_headers = 10; // >= 3, so it won't take the small-gap path
+
+        // Run cleanup
+        manager.cleanup();
+
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-002: cleanup 'stuck sync large gap' site must route through recovery gate. \
+             With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.confirmed_height_floor
+        );
+    }
+
+    // === Site #9 (cleanup.rs ~524): Height offset detection ===
+
+    /// T-M2-003: cleanup site "height offset detected" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When consecutive_resync_count >= MAX, gate REFUSES.
+    ///
+    /// Setup: stable gap for > 120s, blocks recently applied, gap >= 2.
+    /// Expected: needs_genesis_resync stays FALSE.
+    #[test]
+    fn test_height_offset_uses_recovery_gate() {
+        let mut manager = manager_with_resync_count_gate();
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 110; // gap = 10 >= 2
+        manager.network.network_tip_slot = 110;
+        manager.state = SyncState::Synchronized; // not Idle, should_sync() still true due to gap
+
+        // Add a peer so should_sync() returns true
+        let peer = PeerId::random();
+        manager.add_peer(peer, 110, Hash::ZERO, 110);
+        manager.state = SyncState::Synchronized;
+
+        // Blocks recently applied (within 30s)
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(10);
+
+        // Stable gap since > 120s ago
+        manager.fork.stable_gap_since = Some((10, Instant::now() - Duration::from_secs(130)));
+
+        // Run cleanup
+        manager.cleanup();
+
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-003: cleanup 'height offset' site must route through recovery gate. \
+             With consecutive_resync_count={}, needs_genesis_resync must stay false.",
+            manager.consecutive_resync_count
+        );
+    }
+
+    // === Site #4 (sync_engine.rs ~274): Post-rollback snap escalation ===
+
+    /// T-M2-004a: sync_engine "post-rollback snap escalation" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When confirmed_height_floor > 0, gate REFUSES.
+    ///
+    /// This site is hit when: recovery_phase == PostRollback, fork_sync fails to start,
+    /// enough peers exist, and snap is allowed. The start_sync() call drives this path.
+    ///
+    /// Testing strategy: Set up PostRollback + conditions where fork_sync won't start
+    /// (fork_sync_cooldown active) + enough peers for snap. Then call start_sync().
+    ///
+    /// NOTE: This test verifies the GATE behavior, not the exact code path triggering.
+    /// The gate is the contract: any site calling request_genesis_resync() with
+    /// confirmed_height_floor > 0 gets refused.
+    #[test]
+    fn test_post_rollback_snap_escalation_uses_recovery_gate() {
+        let mut manager = manager_with_floor_gate();
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 200;
+        manager.network.network_tip_slot = 200;
+        manager.recovery_phase = RecoveryPhase::PostRollback;
+
+        // Add enough peers for snap sync escalation
+        for _ in 0..5 {
+            let peer = PeerId::random();
+            manager.add_peer(peer, 200, Hash::ZERO, 200);
+        }
+        // Force state back — add_peer may change it
+        manager.state = SyncState::Idle;
+        manager.recovery_phase = RecoveryPhase::PostRollback;
+
+        // Put fork_sync in cooldown so it fails to start, forcing snap escalation
+        manager.fork.last_fork_sync_rejection = Instant::now();
+        manager.fork.fork_sync_cooldown_secs = 300;
+
+        // Call start_sync() which is the entry point for the PostRollback path
+        manager.start_sync();
+
+        // With M2: site calls request_genesis_resync() which is REFUSED by floor gate
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-004a: sync_engine 'post-rollback snap escalation' must route through \
+             recovery gate. With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.confirmed_height_floor
+        );
+    }
+
+    // === Site #6 (block_lifecycle.rs ~226): Apply failures, large gap, snap available ===
+
+    /// T-M2-004b: block_lifecycle "apply failures large gap" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When confirmed_height_floor > 0, gate REFUSES.
+    ///
+    /// Setup: 3+ consecutive apply failures, gap > 50, snap enabled + attempts < 3.
+    /// This is the INC-I-005 fix path that forces snap sync for state divergence.
+    #[test]
+    fn test_apply_failures_large_gap_uses_recovery_gate() {
+        let mut manager = manager_with_floor_gate();
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 200; // gap = 100 > 50
+
+        // Set up 2 prior failures so the 3rd triggers escalation
+        manager.fork.consecutive_apply_failures = 2;
+
+        // Call block_apply_failed() — the 3rd failure triggers the large gap snap path
+        manager.block_apply_failed();
+
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-004b: block_lifecycle 'apply failures large gap' must route through \
+             recovery gate. With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.confirmed_height_floor
+        );
+    }
+
+    // === Site #6b (block_lifecycle.rs ~232): Apply failures, else branch ===
+
+    /// T-M2-004c: block_lifecycle "apply failures else" (snap disabled or attempts >= 3)
+    /// routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When floor > 0 AND snap disabled, both gates block.
+    ///
+    /// Setup: 3+ consecutive apply failures, gap > 50, but snap disabled (threshold = u64::MAX).
+    /// The else branch at line 232 fires. After M2, this calls request_genesis_resync()
+    /// which is refused by floor gate (and also by snap-disabled gate).
+    #[test]
+    fn test_apply_failures_snap_disabled_uses_recovery_gate() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.confirmed_height_floor = 100;
+        // snap.threshold = u64::MAX (default — snap disabled)
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 200; // gap = 100 > 50
+
+        manager.fork.consecutive_apply_failures = 2;
+
+        manager.block_apply_failed();
+
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-004c: block_lifecycle 'apply failures else' must route through recovery gate. \
+             With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.confirmed_height_floor
+        );
+    }
+
+    // === Site #5 (sync_engine.rs ~415): Genesis fallback, empty headers ===
+
+    /// T-M2-005a: sync_engine "genesis fallback empty headers" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When snap sync disabled, gate REFUSES.
+    ///
+    /// This site fires when 10+ consecutive empty headers are received during header download,
+    /// with gap > 12 (large gap path). After M2, this calls request_genesis_resync().
+    ///
+    /// NOTE: This path is complex to trigger through handle_response() because it requires
+    /// the node to be in DownloadingHeaders state with a pending request. We test the gate
+    /// behavior through request_genesis_resync() directly with the appropriate reason.
+    #[test]
+    fn test_genesis_fallback_empty_headers_gate_refuses_snap_disabled() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        // Snap sync disabled (default) — gate 4 blocks
+        assert_eq!(manager.snap.threshold, u64::MAX);
+
+        let result = manager.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);
+
+        assert!(
+            !result,
+            "T-M2-005a: GenesisFallbackEmptyHeaders must be refused when snap sync disabled"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-005a: needs_genesis_resync must stay false"
+        );
+    }
+
+    // === Site #6 (sync_engine.rs ~767): Body download peer error ===
+
+    /// T-M2-005b: sync_engine "body download peer error" routes through recovery gate.
+    /// REQ-SYNC-103 (Must): When snap attempts exhausted, gate REFUSES.
+    #[test]
+    fn test_body_download_peer_error_gate_refuses_snap_exhausted() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 500; // Snap enabled
+        manager.snap.attempts = 3; // Exhausted
+
+        let result = manager.request_genesis_resync(RecoveryReason::BodyDownloadPeerError);
+
+        assert!(
+            !result,
+            "T-M2-005b: BodyDownloadPeerError must be refused when snap attempts exhausted (3/3)"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-005b: needs_genesis_resync must stay false"
+        );
+    }
+
+    // === Site #1 (production_gate.rs ~1087): set_needs_genesis_resync (death spiral) ===
+
+    /// T-M2-006: production_gate set_needs_genesis_resync routes through recovery gate.
+    /// REQ-SYNC-103 (Must): After M2, set_needs_genesis_resync() is replaced by
+    /// request_genesis_resync(RecoveryReason::RollbackDeathSpiral).
+    ///
+    /// Verify that the RollbackDeathSpiral reason is refused when floor > 0.
+    #[test]
+    fn test_set_needs_genesis_resync_replaced_by_gate() {
+        let mut manager = manager_with_floor_gate();
+
+        let result = manager.request_genesis_resync(RecoveryReason::RollbackDeathSpiral {
+            peak: 500,
+            current: 10,
+        });
+
+        assert!(
+            !result,
+            "T-M2-006: RollbackDeathSpiral must be refused when confirmed_height_floor > 0"
+        );
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-006: needs_genesis_resync must stay false after gate refusal"
+        );
+    }
+
+    // === Positive path: sites still work for fresh nodes ===
+
+    /// T-M2-007: apply failures large gap STILL triggers genesis resync for fresh nodes.
+    /// REQ-SYNC-103 + PRESERVE-5: The gate should ACCEPT for fresh nodes (floor=0).
+    ///
+    /// Setup: Fresh node (floor=0), snap enabled, 3+ apply failures, large gap.
+    /// Expected: needs_genesis_resync becomes TRUE (gate accepts).
+    #[test]
+    fn test_apply_failures_still_triggers_for_fresh_nodes() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        // Enable snap sync (floor=0 by default, fresh node)
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+
+        manager.local_height = 10;
+        manager.local_hash = crypto::hash::hash(b"block10");
+        manager.local_slot = 10;
+        manager.network.network_tip_height = 200; // gap = 190 > 50
+
+        // Set up 2 prior failures so the 3rd triggers escalation
+        manager.fork.consecutive_apply_failures = 2;
+
+        manager.block_apply_failed();
+
+        assert!(
+            manager.fork.needs_genesis_resync,
+            "T-M2-007: Apply failures on fresh node (floor=0) must still trigger genesis resync. \
+             needs_genesis_resync should be true."
+        );
+    }
+
+    // === Gate specificity: each gate blocks independently ===
+
+    /// T-M2-008: Recovery gate refuses ApplyFailuresSnapThreshold when ResyncInProgress.
+    /// REQ-SYNC-103: Gate 2 — no concurrent recovery.
+    #[test]
+    fn test_apply_failures_gate_refuses_during_resync() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 500;
+        manager.snap.attempts = 0;
+        manager.recovery_phase = RecoveryPhase::ResyncInProgress;
+
+        let result =
+            manager.request_genesis_resync(RecoveryReason::ApplyFailuresSnapThreshold { gap: 200 });
+
+        assert!(
+            !result,
+            "T-M2-008: ApplyFailuresSnapThreshold must be refused during ResyncInProgress"
+        );
+    }
+
+    // === Comprehensive: verify ALL 8 RecoveryReason variants that M2 uses ===
+
+    /// T-M2-009: All 8 RecoveryReason variants used by M2 are refused when floor is active.
+    /// REQ-SYNC-103 (Must): Gate 1 blocks all reasons uniformly.
+    ///
+    /// This ensures that no site's RecoveryReason gets special treatment that
+    /// bypasses the floor gate.
+    #[test]
+    fn test_all_m2_reasons_refused_by_floor_gate() {
+        let reasons = vec![
+            RecoveryReason::AllPeersBlacklistedDeepFork,
+            RecoveryReason::StuckSyncLargeGap { gap: 2000 },
+            RecoveryReason::HeightOffsetDetected { gap: 500 },
+            RecoveryReason::PostRollbackSnapEscalation,
+            RecoveryReason::GenesisFallbackEmptyHeaders,
+            RecoveryReason::BodyDownloadPeerError,
+            RecoveryReason::ApplyFailuresSnapThreshold { gap: 100 },
+            RecoveryReason::RollbackDeathSpiral {
+                peak: 500,
+                current: 10,
+            },
+        ];
+
+        for reason in reasons {
+            let mut manager = manager_with_floor_gate();
+
+            let result = manager.request_genesis_resync(reason.clone());
+
+            assert!(
+                !result,
+                "T-M2-009: {:?} must be refused when confirmed_height_floor > 0",
+                reason
+            );
+            assert!(
+                !manager.fork.needs_genesis_resync,
+                "T-M2-009: needs_genesis_resync must stay false for {:?}",
+                reason
+            );
+        }
+    }
+
+    /// T-M2-009b: All 8 RecoveryReason variants used by M2 are ACCEPTED for fresh nodes.
+    /// PRESERVE-5: Fresh node recovery must not be broken.
+    #[test]
+    fn test_all_m2_reasons_accepted_for_fresh_nodes() {
+        let reasons = vec![
+            RecoveryReason::AllPeersBlacklistedDeepFork,
+            RecoveryReason::StuckSyncLargeGap { gap: 2000 },
+            RecoveryReason::HeightOffsetDetected { gap: 500 },
+            RecoveryReason::PostRollbackSnapEscalation,
+            RecoveryReason::GenesisFallbackEmptyHeaders,
+            RecoveryReason::BodyDownloadPeerError,
+            RecoveryReason::ApplyFailuresSnapThreshold { gap: 100 },
+            RecoveryReason::RollbackDeathSpiral {
+                peak: 500,
+                current: 10,
+            },
+        ];
+
+        for reason in reasons {
+            let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+            manager.snap.threshold = 500; // Enable snap so gate 4 passes
+
+            let result = manager.request_genesis_resync(reason.clone());
+
+            assert!(
+                result,
+                "T-M2-009b: {:?} must be ACCEPTED for fresh node (floor=0, snap enabled)",
+                reason
+            );
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Floor Extension Tests: confirmed_height_floor in reset_sync_for_rollback()
+//
+// REQ-SYNC-102 (Must): No node resets below floor via any path
+// Architecture Section 4: "Extended checks: confirmed_height_floor in rollback paths"
+//
+// M2 adds a floor check at the top of reset_sync_for_rollback():
+//   if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
+//       warn!("... REFUSED ...");
+//       return;
+//   }
+// -------------------------------------------------------------------------
+
+mod floor_extension_tests {
+    use super::*;
+
+    /// T-M2-010: reset_sync_for_rollback REFUSED when height at floor.
+    /// REQ-SYNC-102 (Must): Monotonic progress floor prevents rollback below confirmed height.
+    ///
+    /// Setup: confirmed_height_floor = 50, local_height = 50 (at floor exactly).
+    /// Expected: Returns early. State unchanged. recovery_phase NOT set to PostRollback.
+    #[test]
+    fn test_reset_sync_for_rollback_refused_at_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 50;
+        manager.local_height = 50;
+        manager.local_hash = crypto::hash::hash(b"block50");
+        manager.local_slot = 50;
+        manager.state = SyncState::Processing { height: 50 };
+        manager.recovery_phase = RecoveryPhase::Normal;
+
+        manager.reset_sync_for_rollback();
+
+        // Should NOT change to PostRollback (the early return skips the phase change)
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::Normal),
+            "T-M2-010: recovery_phase must remain Normal when reset_sync_for_rollback is refused. \
+             Got: {:?}",
+            manager.recovery_phase
+        );
+        // State should NOT have been reset to Idle
+        assert!(
+            matches!(*manager.state(), SyncState::Processing { .. }),
+            "T-M2-010: state must remain Processing when floor blocks rollback. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-010b: reset_sync_for_rollback REFUSED when height below floor.
+    /// REQ-SYNC-102 (Must): Height below floor is also blocked.
+    ///
+    /// Setup: confirmed_height_floor = 100, local_height = 50 (below floor).
+    /// Expected: Returns early. State unchanged.
+    #[test]
+    fn test_reset_sync_for_rollback_refused_below_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 100;
+        manager.local_height = 50;
+        manager.local_hash = crypto::hash::hash(b"block50");
+        manager.local_slot = 50;
+        manager.state = SyncState::Processing { height: 50 };
+        manager.recovery_phase = RecoveryPhase::Normal;
+
+        manager.reset_sync_for_rollback();
+
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::Normal),
+            "T-M2-010b: recovery_phase must remain Normal when height ({}) < floor ({}). Got: {:?}",
+            manager.local_height,
+            manager.confirmed_height_floor,
+            manager.recovery_phase
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Processing { .. }),
+            "T-M2-010b: state must remain Processing. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-011: reset_sync_for_rollback ALLOWED when height above floor.
+    /// REQ-SYNC-102 (Must): Heights above the floor can still rollback normally.
+    ///
+    /// Setup: confirmed_height_floor = 50, local_height = 100 (above floor).
+    /// Expected: Proceeds normally. State set to Idle. recovery_phase set to PostRollback.
+    #[test]
+    fn test_reset_sync_for_rollback_allowed_above_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 50;
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.state = SyncState::Processing { height: 100 };
+        manager.recovery_phase = RecoveryPhase::Normal;
+
+        manager.reset_sync_for_rollback();
+
+        // Should proceed normally
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+            "T-M2-011: recovery_phase must be PostRollback when height ({}) > floor ({}). Got: {:?}",
+            100, 50, manager.recovery_phase
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-011: state must be Idle after allowed rollback. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-012: reset_sync_for_rollback ALLOWED with zero floor (default).
+    /// REQ-SYNC-102 (Must): Floor = 0 means unconstrained — fresh nodes can rollback.
+    ///
+    /// Setup: confirmed_height_floor = 0 (default), local_height = 10.
+    /// Expected: Proceeds normally.
+    #[test]
+    fn test_reset_sync_for_rollback_allowed_with_zero_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Floor is 0 by default
+        assert_eq!(manager.confirmed_height_floor, 0);
+        manager.local_height = 10;
+        manager.local_hash = crypto::hash::hash(b"block10");
+        manager.local_slot = 10;
+        manager.state = SyncState::Processing { height: 10 };
+
+        manager.reset_sync_for_rollback();
+
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+            "T-M2-012: Floor=0 must not constrain rollback. recovery_phase should be PostRollback. \
+             Got: {:?}",
+            manager.recovery_phase
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-012: state must be Idle after allowed rollback. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-012b: reset_sync_for_rollback ALLOWED when local_height is 0.
+    /// Edge case: The condition checks `self.local_height > 0` first, so height=0
+    /// is always allowed regardless of floor value. This prevents blocking at genesis.
+    #[test]
+    fn test_reset_sync_for_rollback_allowed_at_height_zero() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 100; // Floor > 0 but height = 0
+        manager.local_height = 0;
+        manager.local_hash = Hash::ZERO;
+        manager.local_slot = 0;
+        manager.state = SyncState::Processing { height: 0 };
+
+        manager.reset_sync_for_rollback();
+
+        // Height=0 bypasses the floor check (local_height > 0 is false)
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+            "T-M2-012b: Height=0 must bypass floor check. Got: {:?}",
+            manager.recovery_phase
+        );
+    }
+
+    /// T-M2-013: reset_sync_for_rollback floor check is exact boundary.
+    /// Edge case: local_height = floor + 1 should be ALLOWED (just above floor).
+    #[test]
+    fn test_reset_sync_for_rollback_boundary_floor_plus_one() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 50;
+        manager.local_height = 51; // One above floor
+        manager.local_hash = crypto::hash::hash(b"block51");
+        manager.local_slot = 51;
+        manager.state = SyncState::Processing { height: 51 };
+
+        manager.reset_sync_for_rollback();
+
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+            "T-M2-013: Height 51 (floor+1) must be allowed to rollback. Got: {:?}",
+            manager.recovery_phase
+        );
+    }
+
+    /// T-M2-014: reset_sync_for_rollback does NOT affect reset_sync_after_successful_reorg.
+    /// The floor check is ONLY in reset_sync_for_rollback (rejected/unknown reorgs),
+    /// NOT in reset_sync_after_successful_reorg (which is called for accepted reorgs).
+    ///
+    /// Rationale: A successful reorg means we validated the new chain and accepted it.
+    /// The floor should not prevent a successful reorg — the new chain IS canonical.
+    #[test]
+    fn test_successful_reorg_not_blocked_by_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.confirmed_height_floor = 100;
+        manager.local_height = 50; // Below floor
+        manager.local_hash = crypto::hash::hash(b"block50");
+        manager.local_slot = 50;
+        manager.state = SyncState::Processing { height: 50 };
+
+        // Successful reorg should NOT be blocked by the floor
+        manager.reset_sync_after_successful_reorg();
+
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::Normal),
+            "T-M2-014: reset_sync_after_successful_reorg must NOT be blocked by floor. Got: {:?}",
+            manager.recovery_phase
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-014: state must be Idle after successful reorg. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-015: Floor check interacts correctly with existing reset_local_state floor.
+    /// Both reset_local_state() AND reset_sync_for_rollback() should refuse when at floor.
+    /// This ensures the monotonic progress guarantee covers BOTH reset paths.
+    #[test]
+    fn test_both_reset_paths_respect_floor() {
+        // Path 1: reset_local_state
+        let mut manager1 = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager1.confirmed_height_floor = 50;
+        manager1.local_height = 50;
+        manager1.local_hash = crypto::hash::hash(b"block50");
+        manager1.local_slot = 50;
+        manager1.state = SyncState::Synchronized;
+
+        manager1.reset_local_state(Hash::ZERO);
+
+        assert!(
+            manager1.local_height > 0,
+            "T-M2-015a: reset_local_state must not reduce height to 0 when floor=50. Got: {}",
+            manager1.local_height
+        );
+
+        // Path 2: reset_sync_for_rollback
+        let mut manager2 = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager2.confirmed_height_floor = 50;
+        manager2.local_height = 50;
+        manager2.local_hash = crypto::hash::hash(b"block50");
+        manager2.local_slot = 50;
+        manager2.state = SyncState::Processing { height: 50 };
+        manager2.recovery_phase = RecoveryPhase::Normal;
+
+        manager2.reset_sync_for_rollback();
+
+        assert!(
+            matches!(manager2.recovery_phase, RecoveryPhase::Normal),
+            "T-M2-015b: reset_sync_for_rollback must refuse when at floor. Got: {:?}",
+            manager2.recovery_phase
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// M2 Regression Tests: Ensure existing behavior is preserved.
+//
+// PRESERVE-5: All existing tests must pass after M2 changes.
+// -------------------------------------------------------------------------
+
+mod m2_regression_tests {
+    use super::*;
+
+    /// T-M2-020: Fresh nodes (floor=0, no prior sync) can still trigger genesis resync.
+    /// PRESERVE-5: The gate must not break new node onboarding.
+    ///
+    /// Fresh nodes have floor=0, consecutive_resync_count=0, snap enabled.
+    /// All 5 gates should pass, allowing genesis resync.
+    #[test]
+    fn test_genesis_resync_still_works_for_fresh_nodes() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Enable snap sync (fresh node with snap configured)
+        manager.snap.threshold = 500;
+
+        // Verify all gate prerequisites are at fresh-node defaults
+        assert_eq!(
+            manager.confirmed_height_floor, 0,
+            "Fresh node floor must be 0"
+        );
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::Normal),
+            "Fresh node recovery_phase must be Normal"
+        );
+        assert_eq!(
+            manager.consecutive_resync_count, 0,
+            "Fresh node resync_count must be 0"
+        );
+        assert_eq!(
+            manager.snap.attempts, 0,
+            "Fresh node snap attempts must be 0"
+        );
+
+        // Every RecoveryReason that a write site uses must be accepted
+        let result = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
+        assert!(
+            result,
+            "T-M2-020: Fresh node must accept genesis resync. Got refused."
+        );
+        assert!(
+            manager.fork.needs_genesis_resync,
+            "T-M2-020: needs_genesis_resync must be true for fresh node."
+        );
+    }
+
+    /// T-M2-021: reset_sync_for_rollback still sets PostRollback for normal operation.
+    /// PRESERVE-5: The floor extension must not break normal rollback behavior.
+    ///
+    /// Normal operation: floor is set via confirmed_height_floor from Synchronized state.
+    /// If local_height > floor (typical — node advanced past the floor), rollback proceeds.
+    #[test]
+    fn test_rollback_works_normally_above_floor() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Simulate a node that reached Synchronized and set a floor at 100
+        manager.confirmed_height_floor = 100;
+        manager.local_height = 150; // 50 blocks above the floor
+        manager.local_hash = crypto::hash::hash(b"block150");
+        manager.local_slot = 150;
+        manager.state = SyncState::Processing { height: 150 };
+
+        manager.reset_sync_for_rollback();
+
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::PostRollback),
+            "T-M2-021: Normal rollback above floor must set PostRollback. Got: {:?}",
+            manager.recovery_phase
+        );
+        assert!(
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-021: Normal rollback must set state to Idle. Got: {:?}",
+            manager.state()
+        );
+    }
+
+    /// T-M2-022: block_apply_failed still triggers signal_stuck_fork for small gaps.
+    /// PRESERVE-5: The small-gap path (gap <= 50) was NOT migrated — it still calls
+    /// signal_stuck_fork(), not request_genesis_resync(). This is intentional.
+    #[test]
+    fn test_apply_failures_small_gap_still_signals_fork() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 130; // gap = 30 <= 50
+
+        // 2 prior failures, 3rd triggers escalation
+        manager.fork.consecutive_apply_failures = 2;
+
+        manager.block_apply_failed();
+
+        // Small gap path calls signal_stuck_fork(), NOT request_genesis_resync()
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-022: Small gap (<=50) must NOT trigger genesis resync, \
+             should use signal_stuck_fork() instead."
+        );
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::StuckForkDetected),
+            "T-M2-022: Small gap must signal StuckForkDetected. Got: {:?}",
+            manager.recovery_phase
+        );
+    }
+
+    /// T-M2-023: set_needs_genesis_resync() has been removed.
+    /// All callers now use request_genesis_resync(RecoveryReason::RollbackDeathSpiral).
+    /// Verify the gate path works for the death spiral case (fresh node, floor=0).
+    #[test]
+    fn test_death_spiral_uses_gated_recovery() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.snap.threshold = 500; // Enable snap sync so gate 4 passes
+
+        // Fresh node (floor=0): request should be accepted
+        let accepted = manager.request_genesis_resync(RecoveryReason::RollbackDeathSpiral {
+            peak: 100,
+            current: 5,
+        });
+        assert!(
+            accepted,
+            "T-M2-023: RollbackDeathSpiral must be accepted for fresh node (floor=0)"
+        );
+        assert!(
+            manager.fork.needs_genesis_resync,
+            "T-M2-023: flag must be set after accepted request"
+        );
+    }
+
+    /// T-M2-024: cleanup still works for non-genesis-resync paths.
+    /// PRESERVE-5: cleanup() has 13+ timeout actions. Only 3 write sites are migrated.
+    /// All other paths (signal_stuck_fork, blacklist clearing, stall detection) must
+    /// continue working unchanged.
+    #[test]
+    fn test_cleanup_non_resync_paths_unchanged() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.local_height = 100;
+        manager.local_hash = crypto::hash::hash(b"block100");
+        manager.local_slot = 100;
+        manager.network.network_tip_height = 110; // Small gap
+        manager.network.network_tip_slot = 110;
+        manager.state = SyncState::Idle;
+
+        // Add peers (not blacklisted)
+        for _ in 0..3 {
+            let peer = PeerId::random();
+            manager.add_peer(peer, 110, Hash::ZERO, 110);
+        }
+        manager.state = SyncState::Idle;
+
+        // Stuck for > 120s with small gap
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+        manager.fork.consecutive_empty_headers = 0; // < 3, takes the signal_stuck_fork path
+
+        manager.cleanup();
+
+        // Small gap + stuck should trigger signal_stuck_fork, not genesis resync
+        // (This is the existing behavior that must be preserved)
+        assert!(
+            !manager.fork.needs_genesis_resync,
+            "T-M2-024: Small gap stuck-sync must not trigger genesis resync"
         );
     }
 }

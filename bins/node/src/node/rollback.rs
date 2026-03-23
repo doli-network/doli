@@ -241,7 +241,10 @@ impl Node {
                 local_height
             );
             let mut sync = self.sync_manager.write().await;
-            sync.set_needs_genesis_resync();
+            sync.request_genesis_resync(RecoveryReason::RollbackDeathSpiral {
+                peak: peak_height,
+                current: local_height,
+            });
             return Ok(true);
         }
 
