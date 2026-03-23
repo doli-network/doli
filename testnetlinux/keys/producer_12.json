@@ -1,0 +1,14 @@
+{
+  "name": "n12",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "237d319d0366938a3ed3ba1902ff68e5703cdb75",
+      "public_key": "e89c6d480d8b1965a0c5a92da2d8f8b9608f9bc55a3147eab7f73ba12b1736e7",
+      "private_key": "c138b3f9eb90793f09ddcdcbaf9dbf764d3e0e54e487e6024ef16af616602f52",
+      "label": "primary",
+      "bls_private_key": "0f64dd8b7bf9cc0145f9b39f4da73e86556d6884c53e0e78a984bb1042a278b6",
+      "bls_public_key": "87ffe9f3a27a671499f5c3637ea32a34ed41ffd8849cebf06bee818c2b86f7b7846c46684307ae6351c86b8ac556a405"
+    }
+  ]
+}

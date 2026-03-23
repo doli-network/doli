@@ -1,0 +1,14 @@
+{
+  "name": "n7",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "d046f449aa22f888558f02520913ab435d090b09",
+      "public_key": "b5d98316008d266b6dd239572fd5b4505c4755d538fc7c9a03e2d420238e8dca",
+      "private_key": "0aa828846646db9ab0a96e322dc8df1b121941d46d1520c1b119ed95000c7d85",
+      "label": "primary",
+      "bls_private_key": "5e7b702f44c7d9c650d7effad4bb1d0dcf614d9cb0375ff30a45d35035f5ca1a",
+      "bls_public_key": "8e459aa6b52333e5a2d1de4c38c80d3f7619beb20ac8b4411d762514a53c49612ed4b63ad620857e2bf7e070d38c3108"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "n11",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "467c512a3581d540f37b77d92ae0c95761714cf8",
+      "public_key": "b03fe629a0ab911c86574681332515d833fe8edf777cddb9fc9353b535823dc7",
+      "private_key": "f19c97a182f6783a225be8383f7825f9509c33a53b3e6b93feaff51fab1e9c4d",
+      "label": "primary",
+      "bls_private_key": "40b02db4f21b3583e7d21ff10b5f33a9aed7881b79ba5bedf04588166937c8df",
+      "bls_public_key": "b65cb39ad2c5bb0b3d644f817bfae3cf871721af4422413b636892f1b171dc2eb2b7467a288f1e8fa798c5fa5f90d901"
+    }
+  ]
+}

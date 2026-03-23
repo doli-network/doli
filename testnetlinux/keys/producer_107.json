@@ -1,0 +1,14 @@
+{
+  "name": "producer_107",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "aeef9dd07e70ca3bfddb3c698fb1de748f610360",
+      "public_key": "918ecf71979f7be8eb6478579d3d6ba12627ff3f5708d4759da0455a9efd6e4c",
+      "private_key": "77f6a69c4a3b1c7240dd7fb6d171fee0027ebaba018a539219b60dbd696c238e",
+      "label": "primary",
+      "bls_private_key": "457a678991b1989bdc3435d135303c17e684363465c9a03e530c5d25a43d42e2",
+      "bls_public_key": "906244a4bd6287ae24645d0072a64a96d3b948ce81e9e409bd9f6a02a83032d714514a1572e378d40a63cb35f1783c1b"
+    }
+  ]
+}

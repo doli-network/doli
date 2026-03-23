@@ -1,0 +1,14 @@
+{
+  "name": "producer_360",
+  "version": 2,
+  "addresses": [
+    {
+      "address": "bac97dc2eff1b5d259c239afff29107ae2be2d95",
+      "public_key": "8d9226431a60ff275d4aa785ff28a5e3fbcef042b9518c3f2165d2d5f16528a9",
+      "private_key": "7e59d4106ecc439168c7ecf30fccb98fc1c72f02fb790369740c4658c1a04f02",
+      "label": "primary",
+      "bls_private_key": "08b4a019ae4e60d7bde0927ddff12267f7955ed81805172d55b6cba56a5a69d4",
+      "bls_public_key": "83564a8185960cdf69e8644713415ad63bbee11de79c549c0001203dae9f9a4739decb3b2ff7eb4057f8ae91b9a93b0f"
+    }
+  ]
+}

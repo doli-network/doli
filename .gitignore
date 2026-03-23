@@ -16,9 +16,18 @@ Thumbs.db
 # Claude
 .claude/
 
-# Testnet/devnet local data (keys, binaries, logs, node data)
-testnet/
+# Node runtime data — both testnet (macOS) and testnetlinux (Linux)
+testnet*/*/data/
+testnet*/nodes*/*/data/
+testnet*/seed/data/
+testnet*/seed/blocks/
+testnet*/logs/
 devnet/
+
+# Testnet backups and broken snapshots
+testnetlinux-backup*/
+testnetlinux-broken*/
+testnet-backup*/
 
 # Sensitive scripts (contain server IPs, SSH targets)
 scripts/install-nt-services.sh

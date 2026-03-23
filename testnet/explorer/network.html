@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>DOLI — Network Status</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        :root {
+            --black: #000000; --gray-900: #111111; --gray-700: #374151;
+            --gray-600: #4b5563; --gray-500: #6b7280; --gray-400: #9ca3af;
+            --gray-300: #d1d5db; --gray-200: #e5e7eb; --gray-100: #f3f4f6;
+            --gray-50: #f9fafb; --white: #ffffff;
+            --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
+            --font-mono: 'IBM Plex Mono', monospace;
+        }
+        html, body { height: 100%; }
+        body {
+            font-family: var(--font-sans); background: var(--white);
+            color: var(--black); display: flex; flex-direction: column; min-height: 100vh;
+        }
+        .stats-bar {
+            display: flex; justify-content: center; gap: 3rem;
+            padding: 0.75rem 2rem; border-bottom: 1px solid var(--gray-200);
+            font-size: 0.8rem; color: var(--gray-500);
+        }
+        .stat { display: flex; align-items: center; gap: 0.4rem; }
+        .stat-value { font-family: var(--font-mono); font-weight: 400; color: var(--black); }
+        .stat-link {
+            display: flex; align-items: center; gap: 0.4rem;
+            text-decoration: none; color: inherit; padding: 0.25rem 0.5rem;
+            border-radius: 4px; transition: background 0.15s;
+        }
+        .stat-link:hover { background: var(--gray-100); }
+        .stat-link:hover .stat-value { text-decoration: underline; }
+        .main {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; padding: 2rem; padding-top: 10vh;
+        }
+        .logo-section { text-align: center; margin-bottom: 2rem; }
+        .logo {
+            display: flex; align-items: baseline; justify-content: center;
+            gap: 0.25rem; margin-bottom: 0.5rem; user-select: none;
+        }
+        .logo a {
+            display: flex; align-items: baseline; gap: 0.25rem;
+            text-decoration: none; color: inherit;
+        }
+        .logo-text { font-size: 3.92rem; font-weight: 400; letter-spacing: -0.03em; }
+        .logo-mark {
+            font-family: var(--font-mono); font-size: 2.42rem; color: #16a34a;
+            animation: tau-spin 10s linear infinite; display: inline-block;
+        }
+        @keyframes tau-spin { from { transform: rotateY(0deg); } to { transform: rotateY(-360deg); } }
+        .acronym {
+            font-size: 0.75rem; font-family: var(--font-mono);
+            letter-spacing: 0.02em; color: var(--gray-400); margin-bottom: 0.75rem;
+        }
+        .tagline { margin-top: 0; font-size: 0.85rem; color: var(--gray-500); line-height: 1.6; }
+        .tagline strong { color: var(--black); font-weight: 400; }
+        .positioning {
+            margin-top: 0.75rem; font-size: 0.8rem; color: var(--gray-500);
+            font-style: italic; letter-spacing: 0.01em;
+        }
+        .back-link {
+            font-family: var(--font-mono); font-size: 0.7rem; color: var(--gray-300);
+            text-decoration: none; position: absolute; top: 4rem; left: 2rem;
+            transition: color 0.15s;
+        }
+        .back-link:hover { color: var(--gray-500); }
+        .pulse {
+            display: inline-block; width: 6px; height: 6px; background: #16a34a;
+            border-radius: 50%; margin-right: 0.25rem;
+            animation: pulse-anim 10s ease-in-out infinite;
+            vertical-align: middle;
+        }
+        @keyframes pulse-anim {
+            0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px rgba(22,163,74,0.6); }
+            50% { opacity: 0.2; box-shadow: none; }
+        }
+        .network-section {
+            max-width: 900px; width: 100%; margin-bottom: 3rem;
+            border-top: 1px solid var(--gray-200); padding-top: 2rem;
+        }
+        .section-title {
+            font-size: 0.75rem; font-family: var(--font-mono); text-transform: uppercase;
+            letter-spacing: 0.08em; color: var(--gray-400); text-align: center;
+            margin-bottom: 1.5rem;
+        }
+        .network-summary {
+            display: flex; justify-content: center; gap: 3rem;
+            margin-bottom: 2rem; flex-wrap: wrap;
+        }
+        .summary-item { text-align: center; }
+        .summary-label {
+            font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--gray-400); margin-bottom: 0.15rem;
+        }
+        .summary-value {
+            font-family: var(--font-mono); font-size: 0.75rem; color: var(--black);
+        }
+        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .node-table {
+            width: 100%; border-collapse: collapse; font-size: 0.78rem;
+        }
+        .node-table th {
+            font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase;
+            letter-spacing: 0.05em; color: var(--gray-400); font-weight: 400;
+            padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid var(--gray-200);
+        }
+        .node-table td {
+            font-family: var(--font-mono); padding: 0.55rem 0.6rem;
+            border-bottom: 1px solid var(--gray-100); color: var(--black);
+            white-space: nowrap;
+        }
+        .node-table tr:hover td { background: var(--gray-50); }
+        .status-dot {
+            display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+            margin-right: 0.3rem; vertical-align: middle;
+        }
+        .status-ok { background: #22c55e; }
+        .status-behind { background: #f59e0b; }
+        .status-down { background: #ef4444; }
+        .status-text { font-size: 0.7rem; }
+        .hash-cell {
+            color: var(--gray-400); font-size: 0.7rem; max-width: 120px;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .chain-ok { color: #16a34a; font-size: 0.85rem; }
+        .chain-gap { color: #f59e0b; }
+        .chain-err { color: #ef4444; font-size: 0.85rem; }
+        .sub-title {
+            font-size: 0.7rem; font-family: var(--font-mono); text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--gray-400); margin: 1.5rem 0 0.75rem;
+        }
+        .refresh-info {
+            font-size: 0.65rem; color: var(--gray-300); font-family: var(--font-mono);
+            text-align: center; margin-top: 0.5rem;
+        }
+        /* Alert banners for consensus health */
+        .alert-banner {
+            max-width: 900px; width: 100%; padding: 0.75rem 1rem; margin-bottom: 1rem;
+            border-radius: 6px; font-family: var(--font-mono); font-size: 0.75rem;
+            text-align: center;
+        }
+        .alert-critical {
+            background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
+        }
+        .alert-warning {
+            background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+        }
+        .alert-info {
+            background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af;
+        }
+        /* Row highlighting for forked/split nodes */
+        .row-fork td { background: #fef2f2 !important; }
+        .row-genesis-split td { background: #fef2f2 !important; border-left: 3px solid #ef4444; }
+        .row-behind td { background: #fffbeb !important; }
+        footer {
+            padding: 1.5rem 2rem; border-top: 1px solid var(--gray-200);
+            font-size: 0.8rem; color: var(--gray-400); text-align: center;
+        }
+        footer a { color: var(--gray-500); text-decoration: none; margin: 0 0.5rem; }
+        footer .quote { font-style: italic; }
+        footer a:hover { color: var(--black); }
+        @media (max-width: 700px) {
+            .stats-bar { gap: 0.8rem; font-size: 0.65rem; flex-wrap: wrap; padding: 0.5rem 1rem; }
+            .main { padding: 1rem; padding-top: 4vh; }
+            .logo-text { font-size: 3.92rem; }
+            .logo-mark { font-size: 2.42rem; }
+            .acronym { font-size: 0.6rem; }
+            .back-link { top: 3rem; left: 0.75rem; font-size: 0.6rem; }
+            .network-section { margin-bottom: 2rem; padding-top: 1.5rem; }
+            .network-summary { gap: 0.6rem 1.2rem; }
+            .summary-label { font-size: 0.55rem; }
+            .summary-value { font-size: 0.65rem; }
+            .section-title { font-size: 0.65rem; }
+            .sub-title { font-size: 0.6rem; margin: 1rem 0 0.5rem; }
+            .node-table { font-size: 0.6rem; }
+            .node-table th { font-size: 0.5rem; padding: 0.35rem 0.3rem; }
+            .node-table td { padding: 0.4rem 0.3rem; }
+            .hash-cell { display: none; }
+            .node-table th:nth-child(4),
+            .node-table td:nth-child(4) { display: none; }
+            .node-table th:nth-child(6),
+            .node-table td:nth-child(6) { display: none; }
+            .refresh-info { font-size: 0.55rem; }
+            footer { font-size: 0.65rem; padding: 1rem; }
+            .alert-banner { font-size: 0.65rem; padding: 0.5rem 0.75rem; }
+        }
+        @media (max-width: 420px) {
+            .stats-bar { gap: 0.5rem; font-size: 0.6rem; }
+            .logo-text { font-size: 3.92rem; }
+            .logo-mark { font-size: 2.42rem; }
+            .node-table { font-size: 0.55rem; }
+            .node-table th { font-size: 0.45rem; padding: 0.3rem 0.2rem; }
+            .node-table td { padding: 0.35rem 0.2rem; }
+            .node-table th:nth-child(2),
+            .node-table td:nth-child(2) { display: none; }
+            .network-summary { gap: 0.4rem 0.8rem; }
+            .summary-value { font-size: 0.6rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="stats-bar">
+        <div class="stat"><span>Consensus</span> <span class="stat-value">Proof of Time</span></div>
+        <div class="stat"><span>Nodes</span> <span class="stat-value" id="bar-total-nodes">—</span></div>
+        <div class="stat"><span>Synced</span> <span class="stat-value" id="bar-synced">—</span></div>
+        <a href="https://doli.network" target="_blank" class="stat-link">
+            <span>Website</span>
+            <span class="stat-value">doli.network ↗</span>
+        </a>
+        <a href="https://github.com/e-weil/doli" target="_blank" class="stat-link">
+            <span>Source</span> <span class="stat-value">GitHub ↗</span>
+        </a>
+    </div>
+
+    <a href="/" class="back-link">← explorer</a>
+
+    <main class="main">
+        <div class="logo-section">
+            <div class="logo">
+                <a href="/"><span class="logo-text">DOLI</span><span class="logo-mark">τ</span></a>
+            </div>
+            <p class="acronym">Deterministic Ordering through Linear Iterations</p>
+            <p class="tagline"><strong>Network Status</strong></p>
+            <p class="positioning">Real-time monitoring of all DOLI nodes</p>
+        </div>
+
+        <div id="alerts-mainnet"></div>
+        <div id="alerts-testnet"></div>
+
+        <!-- MAINNET -->
+        <div class="network-section">
+            <div class="section-title"><span class="pulse"></span> Mainnet</div>
+            <div class="network-summary" id="mainnet-summary"></div>
+            <div class="sub-title">Seed Nodes</div>
+            <table class="node-table">
+                <thead><tr>
+                    <th>Node</th><th>Server</th><th>Height</th><th>Slot</th>
+                    <th>Hash</th><th>Version</th><th>Block 1</th><th>Integrity</th><th>Status</th>
+                </tr></thead>
+                <tbody id="mainnet-seeds"></tbody>
+            </table>
+            <div class="sub-title">Producer Nodes</div>
+            <table class="node-table">
+                <thead><tr>
+                    <th>Node</th><th>Server</th><th>Height</th><th>Slot</th>
+                    <th>Hash</th><th>Version</th><th>Block 1</th><th>Integrity</th><th>Status</th>
+                </tr></thead>
+                <tbody id="mainnet-producers"></tbody>
+            </table>
+            <div class="sub-title">Producer Bonds &amp; Balances</div>
+            <div class="table-scroll"><table class="node-table">
+                <thead><tr>
+                    <th>Producer</th><th>Bonds</th><th>Staked</th><th>Confirmed</th><th>Immature</th><th>Total</th><th>Reg Height</th><th>Status</th>
+                </tr></thead>
+                <tbody id="mainnet-bonds"></tbody>
+            </table></div>
+            <div class="sub-title">Attestation &amp; Rewards</div>
+            <div class="network-summary" id="mainnet-att-summary"></div>
+            <div class="table-scroll"><table class="node-table">
+                <thead><tr>
+                    <th>Producer</th><th>Attendance</th><th>Qualification</th><th>BLS Key</th>
+                </tr></thead>
+                <tbody id="mainnet-attestation"></tbody>
+            </table></div>
+        </div>
+
+        <!-- TESTNET (hidden — local mainnet only) -->
+        <div class="network-section" style="display:none">
+            <div class="section-title"><span class="pulse"></span> Testnet</div>
+            <div class="network-summary" id="testnet-summary"></div>
+            <div class="sub-title">Seed Nodes</div>
+            <table class="node-table">
+                <thead><tr>
+                    <th>Node</th><th>Server</th><th>Height</th><th>Slot</th>
+                    <th>Hash</th><th>Version</th><th>Block 1</th><th>Integrity</th><th>Status</th>
+                </tr></thead>
+                <tbody id="testnet-seeds"></tbody>
+            </table>
+            <div class="sub-title">Producer Nodes</div>
+            <table class="node-table">
+                <thead><tr>
+                    <th>Node</th><th>Server</th><th>Height</th><th>Slot</th>
+                    <th>Hash</th><th>Version</th><th>Block 1</th><th>Integrity</th><th>Status</th>
+                </tr></thead>
+                <tbody id="testnet-producers"></tbody>
+            </table>
+            <div class="sub-title">Producer Bonds &amp; Balances</div>
+            <div class="table-scroll"><table class="node-table">
+                <thead><tr>
+                    <th>Producer</th><th>Bonds</th><th>Staked</th><th>Confirmed</th><th>Immature</th><th>Total</th><th>Reg Height</th><th>Status</th>
+                </tr></thead>
+                <tbody id="testnet-bonds"></tbody>
+            </table></div>
+            <div class="sub-title">Attestation &amp; Rewards</div>
+            <div class="network-summary" id="testnet-att-summary"></div>
+            <div class="table-scroll"><table class="node-table">
+                <thead><tr>
+                    <th>Producer</th><th>Attendance</th><th>Qualification</th><th>BLS Key</th>
+                </tr></thead>
+                <tbody id="testnet-attestation"></tbody>
+            </table></div>
+        </div>
+
+        <div class="refresh-info" id="refresh-info">auto-refresh every 30s</div>
+    </main>
+
+    <footer>
+        <p>DOLI v1.0.6</p>
+        <p class="quote">"Time is the only fair currency."</p>
+        <p>E. Weil · <a href="mailto:weil@doli.network">weil@doli.network</a></p>
+    </footer>
+
+    <script>
+    (function() {
+        'use strict';
+
+        var SATS = 100000000;
+
+        var PRODUCER_KEYS = {
+            mainnet: [
+                { name: 'N1',  pubkey: '202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df' },
+                { name: 'N2',  pubkey: 'effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b' },
+                { name: 'N3',  pubkey: '54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b' },
+                { name: 'N4',  pubkey: '2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116' },
+                { name: 'N5',  pubkey: '3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602' },
+                { name: 'N6',  pubkey: 'd13ae33891d55930e644935cdfd510922d673ec227425c14a98ca3744a1ec670' },
+                { name: 'N7',  pubkey: 'b5d98316008d266b6dd239572fd5b4505c4755d538fc7c9a03e2d420238e8dca' },
+                { name: 'N8',  pubkey: '37d4daf847cf719966110377ed9c4b35b3e25934e359fd0c7e3344d7fbbd8b58' },
+                { name: 'N9',  pubkey: '2270620450fd025ce092adddf0b0a1383f3a732d577a7a95919b8ef07d21c28b' },
+                { name: 'N10', pubkey: '31f2b010effc6d528bb463ffe1e57e68764812dc13f921dea792fa52d0320157' },
+                { name: 'N11', pubkey: 'b03fe629a0ab911c86574681332515d833fe8edf777cddb9fc9353b535823dc7' },
+                { name: 'N12', pubkey: 'e89c6d480d8b1965a0c5a92da2d8f8b9608f9bc55a3147eab7f73ba12b1736e7' }
+            ]
+        };
+
+        // NODES is populated dynamically via /api/discover on load.
+        // Fallback to seed + N1-N5 if discovery fails.
+        var NODES = {
+            mainnet: {
+                seeds: [
+                    { name: 'Seed', server: 'local', api: '/api/mainnet/seed' }
+                ],
+                producers: [
+                    { name: 'N1', server: 'local', api: '/api/mainnet/n1' },
+                    { name: 'N2', server: 'local', api: '/api/mainnet/n2' },
+                    { name: 'N3', server: 'local', api: '/api/mainnet/n3' },
+                    { name: 'N4', server: 'local', api: '/api/mainnet/n4' },
+                    { name: 'N5', server: 'local', api: '/api/mainnet/n5' },
+                ]
+            }
+        };
+
+        // Auto-discover running nodes on startup
+        (function discoverNodes() {
+            fetch('/api/discover').then(function(r) { return r.json(); }).then(function(nodes) {
+                if (!nodes || nodes.length === 0) return;
+                var seeds = [];
+                var producers = [];
+                nodes.forEach(function(n) {
+                    if (n.name === 'Seed') seeds.push(n);
+                    else producers.push(n);
+                });
+                if (seeds.length > 0 || producers.length > 0) {
+                    NODES.mainnet = {
+                        seeds: seeds.length > 0 ? seeds : NODES.mainnet.seeds,
+                        producers: producers
+                    };
+                    // Update header node count
+                    var total = seeds.length + producers.length;
+                    document.getElementById('bar-total-nodes').textContent = total;
+                }
+            }).catch(function() { /* use fallback */ });
+        })();
+
+        var POOL_HASH = '47be532d191852dec1624a7d804638d71f00589395033e4db20c8efdc0bc5ed4';
+
+        function rpc(apiPath, method, params, timeoutMs) {
+            var controller = new AbortController();
+            var timeout = setTimeout(function() { controller.abort(); }, timeoutMs || 20000);
+            return fetch(apiPath, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params || {} }),
+                signal: controller.signal
+            })
+            .then(function(r) { clearTimeout(timeout); return r.json(); })
+            .then(function(d) {
+                if (d.error) throw new Error(d.error.message || d.error);
+                return d.result;
+            })
+            .catch(function(e) { clearTimeout(timeout); throw e; });
+        }
+
+        function fmtNum(n) { return Number(n).toLocaleString(); }
+
+        function truncHash(h) {
+            if (!h || h.length < 16) return h || '—';
+            return h.substring(0, 8) + '…' + h.substring(h.length - 6);
+        }
+
+        function fmtDoli(sats) {
+            var val = Number(sats) / SATS;
+            return val.toFixed(6) + ' DOLI';
+        }
+
+        // ─── Chain Integrity (spot-check first 100 + last 100 blocks) ───
+        var integrityCache = {};
+        var INTEGRITY_INTERVAL = 30000; // 30 seconds
+
+        // Returns: true = block exists, false = confirmed missing, null = unknown (timeout/error)
+        function hasBlock(api, h) {
+            return rpc(api, 'getBlockByHeight', { height: h }, 15000)
+                .then(function(b) { return !!b; })
+                .catch(function(e) {
+                    // RPC "Block not found" = confirmed missing
+                    if (e && e.message && e.message.indexOf('not found') !== -1) return false;
+                    // Timeout or network error = unknown
+                    return null;
+                });
+        }
+
+        function spotCheckIntegrity(node, tip) {
+            if (!tip || tip < 1) return Promise.resolve();
+            // Single lightweight check: does block 1 exist?
+            return hasBlock(node.api, 1).then(function(has) {
+                if (has === true) {
+                    integrityCache[node.api] = { complete: true, ts: Date.now() };
+                } else if (has === false) {
+                    integrityCache[node.api] = { complete: false, ts: Date.now() };
+                }
+                // null (timeout) — don't touch cache, keep previous state or "..."
+            });
+        }
+
+        function fetchAllIntegrity(allResults, onEachDone) {
+            var online = allResults.filter(function(n) { return n.online; });
+            // Run 3 nodes at a time to avoid overwhelming browser connections
+            var idx = 0;
+            function next() {
+                if (idx >= online.length) return Promise.resolve();
+                var batch = online.slice(idx, idx + 3);
+                idx += 3;
+                return Promise.all(batch.map(function(n) {
+                    return spotCheckIntegrity(n, n.height).then(function() {
+                        if (onEachDone) onEachDone();
+                    });
+                })).then(next);
+            }
+            return next();
+        }
+
+        function getIntegrity(apiPath) {
+            return integrityCache[apiPath] || null;
+        }
+
+        // ─── Full Chain Integrity (verifyChainIntegrity RPC) ───
+        var fullIntegrityCache = {};
+        var FULL_INTEGRITY_INTERVAL = 60000; // 60 seconds (heavier call)
+        var lastFullIntegrityRun = { mainnet: 0, testnet: 0 };
+
+        function fetchFullIntegrity(node) {
+            return rpc(node.api, 'verifyChainIntegrity', {}, 30000)
+                .then(function(r) {
+                    fullIntegrityCache[node.api] = {
+                        complete: r.complete,
+                        tip: r.tip,
+                        scanned: r.scanned,
+                        missingCount: r.missingCount || r.missing_count || 0,
+                        missing: r.missing || [],
+                        chainCommitment: r.chainCommitment || r.chain_commitment || null,
+                        ts: Date.now()
+                    };
+                })
+                .catch(function() {
+                    // Don't overwrite cache on error
+                });
+        }
+
+        function fetchAllFullIntegrity(allResults, onEachDone) {
+            var online = allResults.filter(function(n) { return n.online; });
+            var idx = 0;
+            function next() {
+                if (idx >= online.length) return Promise.resolve();
+                var batch = online.slice(idx, idx + 2);
+                idx += 2;
+                return Promise.all(batch.map(function(n) {
+                    return fetchFullIntegrity(n).then(function() {
+                        if (onEachDone) onEachDone();
+                    });
+                })).then(next);
+            }
+            return next();
+        }
+
+        function getFullIntegrity(apiPath) {
+            return fullIntegrityCache[apiPath] || null;
+        }
+
+        function fetchNodeStatus(node) {
+            var result = { name: node.name, server: node.server, api: node.api };
+            return rpc(node.api, 'getChainInfo', {}, 20000).then(function(info) {
+                result.height = info.bestHeight;
+                result.slot = info.bestSlot;
+                result.hash = info.bestHash;
+                result.version = info.version;
+                result.network = info.network;
+                result.genesisHash = info.genesisHash;
+                result.online = true;
+            }).catch(function() {
+                result.online = false;
+            }).then(function() { return result; });
+        }
+
+        function fetchProducers(apiPath) {
+            return rpc(apiPath, 'getProducers').then(function(p) {
+                var producers = Array.isArray(p) ? p : (p && p.producers ? p.producers : []);
+                var balancePromises = producers.map(function(prod) {
+                    var addr = prod.addressHash || prod.address_hash;
+                    if (!addr) return Promise.resolve(prod);
+                    return rpc(apiPath, 'getBalance', { address: addr }, 15000).then(function(bal) {
+                        prod._confirmed = bal.confirmed || 0;
+                        prod._immature = bal.immature || bal.unconfirmed || 0;
+                        prod._bonded = bal.bonded || 0;
+                        prod._total = bal.total || 0;
+                        return prod;
+                    }).catch(function() { return prod; });
+                });
+                return Promise.all(balancePromises);
+            }).catch(function() { return []; });
+        }
+
+        // ─── Consensus Health Detection ─────────────────────────────
+
+        // Detect genesis hash split: groups online nodes by genesisHash.
+        // Returns { canonical: <majority genesis hash>, groups: { hash: [nodes] }, split: bool }
+        function detectGenesisSplit(onlineNodes) {
+            var groups = {};
+            onlineNodes.forEach(function(n) {
+                var gh = n.genesisHash || 'unknown';
+                if (!groups[gh]) groups[gh] = [];
+                groups[gh].push(n);
+            });
+            // Canonical = genesis hash with most nodes
+            var canonical = null;
+            var maxCount = 0;
+            Object.keys(groups).forEach(function(gh) {
+                if (groups[gh].length > maxCount) {
+                    maxCount = groups[gh].length;
+                    canonical = gh;
+                }
+            });
+            var hashCount = Object.keys(groups).length;
+            return {
+                canonical: canonical,
+                groups: groups,
+                split: hashCount > 1
+            };
+        }
+
+        // Compute reference height + hash from canonical nodes (same genesis) using majority vote.
+        // At max height, pick the hash that most nodes agree on (not just the first).
+        function computeRef(canonicalNodes) {
+            if (!canonicalNodes || canonicalNodes.length === 0) {
+                return { height: 0, hash: null };
+            }
+            var maxH = 0;
+            canonicalNodes.forEach(function(n) {
+                if (n.height > maxH) maxH = n.height;
+            });
+            // Among nodes at max height, vote on hash
+            var hashVotes = {};
+            canonicalNodes.forEach(function(n) {
+                if (n.height === maxH && n.hash) {
+                    hashVotes[n.hash] = (hashVotes[n.hash] || 0) + 1;
+                }
+            });
+            var bestHash = null;
+            var bestVotes = 0;
+            Object.keys(hashVotes).forEach(function(h) {
+                if (hashVotes[h] > bestVotes) {
+                    bestVotes = hashVotes[h];
+                    bestHash = h;
+                }
+            });
+            return { height: maxH, hash: bestHash };
+        }
+
+        // Detect version split: groups nodes by version.
+        // Returns { versions: { ver: count }, split: bool, majority: <most common version> }
+        function detectVersionSplit(onlineNodes) {
+            var versions = {};
+            onlineNodes.forEach(function(n) {
+                var v = n.version || 'unknown';
+                versions[v] = (versions[v] || 0) + 1;
+            });
+            var majority = null;
+            var maxCount = 0;
+            Object.keys(versions).forEach(function(v) {
+                if (versions[v] > maxCount) {
+                    maxCount = versions[v];
+                    majority = v;
+                }
+            });
+            return {
+                versions: versions,
+                split: Object.keys(versions).length > 1,
+                majority: majority
+            };
+        }
+
+        // Classify a single node's chain status relative to consensus.
+        // Returns { label, css, row }
+        function nodeChainStatus(node, genesisInfo, ref) {
+            if (!node.online) {
+                return { label: '—', css: 'chain-err', row: '' };
+            }
+            // 1. Genesis hash mismatch = worst case (consensus-critical split)
+            if (genesisInfo.split && node.genesisHash !== genesisInfo.canonical) {
+                return { label: 'GENESIS SPLIT', css: 'chain-err', row: 'row-genesis-split' };
+            }
+            // 2. Same genesis, check for fork: at same height but different hash
+            if (ref.hash && node.hash && node.height === ref.height && node.hash !== ref.hash) {
+                return { label: 'FORK', css: 'chain-err', row: 'row-fork' };
+            }
+            // 3. Node ahead of canonical tip with different hash = potential fork
+            if (ref.hash && node.hash && node.height > ref.height) {
+                return { label: 'AHEAD +' + (node.height - ref.height), css: 'chain-gap', row: 'row-behind' };
+            }
+            // 4. Node significantly behind (>5 blocks) = stale/syncing
+            if (ref.height && node.height < ref.height - 5) {
+                return { label: 'BEHIND -' + (ref.height - node.height), css: 'chain-gap', row: 'row-behind' };
+            }
+            // 5. Block 1 check — simple present/absent
+            var integrity = getIntegrity(node.api);
+            if (integrity && integrity.complete) {
+                return { label: '\u2713', css: 'chain-ok', row: '' };
+            }
+            if (integrity && !integrity.complete) {
+                return { label: '\u2717', css: 'chain-err', row: '' };
+            }
+            // Not yet loaded
+            return { label: '...', css: 'chain-gap', row: '' };
+        }
+
+        function statusHtml(node, refHeight, genesisInfo) {
+            if (!node.online) {
+                return '<span class="status-dot status-down"></span><span class="status-text">offline</span>';
+            }
+            // Genesis mismatch overrides everything
+            if (genesisInfo && genesisInfo.split && node.genesisHash !== genesisInfo.canonical) {
+                return '<span class="status-dot status-down"></span><span class="status-text">wrong chain</span>';
+            }
+            if (refHeight && Math.abs(node.height - refHeight) > 2) {
+                var diff = refHeight - node.height;
+                var label = diff > 0 ? '-' + diff : '+' + Math.abs(diff);
+                return '<span class="status-dot status-behind"></span><span class="status-text">' + label + '</span>';
+            }
+            return '<span class="status-dot status-ok"></span><span class="status-text">synced</span>';
+        }
+
+
+        // Compute integrity consensus: majority commitment at the max scanned tip.
+        // Two nodes at different tips will have different commitments even if chains match.
+        function computeIntegrityRef(allNodes) {
+            var byTip = {};
+            allNodes.forEach(function(n) {
+                if (!n.online) return;
+                var fi = getFullIntegrity(n.api);
+                if (!fi || !fi.chainCommitment) return;
+                var tip = fi.tip;
+                if (!byTip[tip]) byTip[tip] = {};
+                byTip[tip][fi.chainCommitment] = (byTip[tip][fi.chainCommitment] || 0) + 1;
+            });
+            var maxTip = 0;
+            Object.keys(byTip).forEach(function(t) {
+                if (parseInt(t) > maxTip) maxTip = parseInt(t);
+            });
+            var refCommitment = null;
+            var maxVotes = 0;
+            if (byTip[maxTip]) {
+                Object.keys(byTip[maxTip]).forEach(function(c) {
+                    if (byTip[maxTip][c] > maxVotes) {
+                        maxVotes = byTip[maxTip][c];
+                        refCommitment = c;
+                    }
+                });
+            }
+            return { tip: maxTip, commitment: refCommitment };
+        }
+
+        function nodeRow(node, refHeight, ref, genesisInfo, integrityRef) {
+            var chain = nodeChainStatus(node, genesisInfo, ref);
+            var rowClass = chain.row ? ' class="' + chain.row + '"' : '';
+            if (!node.online) {
+                return '<tr' + rowClass + '>' +
+                    '<td>' + node.name + '</td>' +
+                    '<td style="color:var(--gray-400)">' + node.server + '</td>' +
+                    '<td colspan="4" style="color:var(--gray-400)">unreachable</td>' +
+                    '<td><span class="' + chain.css + '">' + chain.label + '</span></td>' +
+                    '<td><span class="chain-gap">—</span></td>' +
+                    '<td>' + statusHtml(node, refHeight, genesisInfo) + '</td></tr>';
+            }
+            // Full integrity column - compare commitments only at same tip height
+            var fi = getFullIntegrity(node.api);
+            var integrityHtml;
+            if (!fi) {
+                integrityHtml = '<span class="chain-gap">...</span>';
+            } else if (fi.complete && fi.chainCommitment) {
+                var short = fi.chainCommitment.substring(0, 8) + '..';
+                if (integrityRef && integrityRef.commitment) {
+                    if (fi.tip === integrityRef.tip && fi.chainCommitment === integrityRef.commitment) {
+                        integrityHtml = '<span class="chain-ok" title="' + fi.chainCommitment + ' @h=' + fi.tip + '">' + short + '</span>';
+                    } else if (fi.tip !== integrityRef.tip) {
+                        integrityHtml = '<span class="chain-ok" title="Scanned @h=' + fi.tip + ' (ref @h=' + integrityRef.tip + '). Same chain, different scan time.">\u2713</span>';
+                    } else {
+                        integrityHtml = '<span class="chain-err" title="DIVERGENT @h=' + fi.tip + ': ' + fi.chainCommitment + ' vs consensus ' + integrityRef.commitment + '">' + short + ' !!!</span>';
+                    }
+                } else {
+                    integrityHtml = '<span class="chain-ok" title="' + fi.chainCommitment + '">' + short + '</span>';
+                }
+            } else if (fi.complete) {
+                integrityHtml = '<span class="chain-ok">\u2713</span>';
+            } else {
+                integrityHtml = '<span class="chain-err" title="Missing ' + fi.missingCount + ' blocks: ' + fi.missing.join(', ') + '">\u2717 -' + fi.missingCount + '</span>';
+            }
+            // Show genesis hash prefix if there's a split (for diagnosis)
+            var hashDisplay = truncHash(node.hash);
+            if (genesisInfo && genesisInfo.split) {
+                hashDisplay += ' <span style="color:#ef4444;font-size:0.6rem" title="genesis: ' +
+                    (node.genesisHash || '?') + '">G:' + (node.genesisHash || '?').substring(0, 6) + '</span>';
+            }
+            return '<tr' + rowClass + '>' +
+                '<td>' + node.name + '</td>' +
+                '<td style="color:var(--gray-400)">' + node.server + '</td>' +
+                '<td>' + fmtNum(node.height) + '</td>' +
+                '<td style="color:var(--gray-500)">' + fmtNum(node.slot) + '</td>' +
+                '<td class="hash-cell">' + hashDisplay + '</td>' +
+                '<td style="color:var(--gray-500)">' + (node.version || '—') + '</td>' +
+                '<td><span class="' + chain.css + '">' + chain.label + '</span></td>' +
+                '<td>' + integrityHtml + '</td>' +
+                '<td>' + statusHtml(node, refHeight, genesisInfo) + '</td></tr>';
+        }
+
+        function fmtCountdown(seconds) {
+            if (seconds <= 0) return '0s';
+            var h = Math.floor(seconds / 3600);
+            var m = Math.floor((seconds % 3600) / 60);
+            var s = seconds % 60;
+            if (h > 0) return h + 'h ' + m + 'm';
+            if (m > 0) return m + 'm ' + s + 's';
+            return s + 's';
+        }
+
+        function renderSummary(elId, allNodes, ref, genesisInfo, versionInfo, stats, epoch, pool) {
+            var el = document.getElementById(elId);
+            var online = allNodes.filter(function(n) { return n.online; });
+            var maxH = ref.height || 0;
+            var synced = online.filter(function(n) { return Math.abs(n.height - maxH) <= 2; }).length;
+
+            // Chain health: count nodes on canonical genesis AND within 5 blocks of tip
+            var canonical = online.filter(function(n) {
+                if (genesisInfo.split && n.genesisHash !== genesisInfo.canonical) return false;
+                return Math.abs(n.height - maxH) <= 5;
+            }).length;
+
+            var genesisHtml, versionHtml;
+            if (genesisInfo.split) {
+                genesisHtml = '<span class="chain-err">SPLIT (' + Object.keys(genesisInfo.groups).length + ' chains)</span>';
+            } else {
+                genesisHtml = '<span class="chain-ok">unified</span>';
+            }
+            if (versionInfo.split) {
+                var parts = [];
+                Object.keys(versionInfo.versions).forEach(function(v) {
+                    parts.push(v + ':' + versionInfo.versions[v]);
+                });
+                versionHtml = '<span class="chain-gap">' + parts.join(' / ') + '</span>';
+            } else {
+                versionHtml = '<span class="chain-ok">' + (versionInfo.majority || '—') + '</span>';
+            }
+
+            var supplyHtml = '—', stakedHtml = '—', addrHtml = '—', epochHtml = '—';
+            if (stats) {
+                supplyHtml = fmtDoli(stats.totalSupply || 0);
+                stakedHtml = fmtDoli(stats.totalStaked || 0);
+                addrHtml = fmtNum(stats.addressCount || 0);
+            }
+            if (epoch) {
+                var remaining = epoch.blocksRemaining || 0;
+                var secs = remaining * 10;
+                epochHtml = 'E' + epoch.currentEpoch + ' · ' + fmtCountdown(secs);
+            }
+            el.innerHTML =
+                '<div class="summary-item"><div class="summary-label">Nodes</div><div class="summary-value">' + online.length + '/' + allNodes.length + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Height</div><div class="summary-value">' + fmtNum(maxH) + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Synced</div><div class="summary-value">' + synced + '/' + online.length + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Genesis</div><div class="summary-value">' + genesisHtml + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Version</div><div class="summary-value">' + versionHtml + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Total UTXOs</div><div class="summary-value">' + supplyHtml + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Staked</div><div class="summary-value">' + stakedHtml + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Next Epoch</div><div class="summary-value">' + epochHtml + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Reward Pool</div><div class="summary-value">' + (pool && pool.total != null ? fmtDoli(pool.total) : '—') + '</div></div>';
+        }
+
+        function renderBonds(elId, producers, net) {
+            var el = document.getElementById(elId);
+            var allKeys = PRODUCER_KEYS[net] || [];
+            var byPubkey = {};
+            producers.forEach(function(p) {
+                var pk = p.publicKey || p.public_key || '';
+                byPubkey[pk] = p;
+            });
+            var html = '';
+            allKeys.forEach(function(entry) {
+                var p = byPubkey[entry.pubkey];
+                if (p) {
+                    var bonds = p.bondCount || p.bond_count || 0;
+                    var staked = p.bondAmount || p.bond_amount || 0;
+                    var status = p.status || 'active';
+                    var regH = p.registrationHeight || p.registration_height || 0;
+                    var confirmed = p._confirmed || 0;
+                    var immature = p._immature || 0;
+                    var total = p._total || 0;
+                    var statusClass = status === 'active' ? 'chain-ok' : 'chain-err';
+                    var immatureHtml = immature > 0
+                        ? '<span style="color:#f59e0b">' + fmtDoli(immature) + '</span>'
+                        : '<span style="color:var(--gray-300)">—</span>';
+                    html += '<tr>' +
+                        '<td title="' + entry.pubkey + '">' + entry.name + '</td>' +
+                        '<td>' + bonds + '</td>' +
+                        '<td>' + fmtDoli(staked) + '</td>' +
+                        '<td>' + fmtDoli(confirmed) + '</td>' +
+                        '<td>' + immatureHtml + '</td>' +
+                        '<td style="color:var(--gray-500)">' + fmtDoli(total) + '</td>' +
+                        '<td style="color:var(--gray-400)">' + fmtNum(regH) + '</td>' +
+                        '<td><span class="' + statusClass + '">' + status + '</span></td></tr>';
+                    delete byPubkey[entry.pubkey];
+                } else {
+                    html += '<tr>' +
+                        '<td title="' + entry.pubkey + '" style="color:var(--gray-400)">' + entry.name + '</td>' +
+                        '<td colspan="6" style="color:var(--gray-300)">not registered</td>' +
+                        '<td><span class="chain-gap">pending</span></td></tr>';
+                }
+            });
+            Object.keys(byPubkey).forEach(function(pk) {
+                var p = byPubkey[pk];
+                var bonds = p.bondCount || p.bond_count || 0;
+                var staked = p.bondAmount || p.bond_amount || 0;
+                var status = p.status || 'active';
+                var regH = p.registrationHeight || p.registration_height || 0;
+                var confirmed = p._confirmed || 0;
+                var immature = p._immature || 0;
+                var total = p._total || 0;
+                var statusClass = status === 'active' ? 'chain-ok' : 'chain-err';
+                var immatureHtml = immature > 0
+                    ? '<span style="color:#f59e0b">' + fmtDoli(immature) + '</span>'
+                    : '<span style="color:var(--gray-300)">—</span>';
+                html += '<tr>' +
+                    '<td title="' + pk + '">' + (p.name || p.producerName || pk.substring(0, 12) + '…') + '</td>' +
+                    '<td>' + bonds + '</td>' +
+                    '<td>' + fmtDoli(staked) + '</td>' +
+                    '<td>' + fmtDoli(confirmed) + '</td>' +
+                    '<td>' + immatureHtml + '</td>' +
+                    '<td style="color:var(--gray-500)">' + fmtDoli(total) + '</td>' +
+                    '<td style="color:var(--gray-400)">' + fmtNum(regH) + '</td>' +
+                    '<td><span class="' + statusClass + '">' + status + '</span></td></tr>';
+            });
+            el.innerHTML = html;
+        }
+
+        // ─── Alert Banner Rendering ─────────────────────────────────
+
+        function renderAlerts(net, genesisInfo, versionInfo, ref, online) {
+            var alertEl = document.getElementById('alerts-' + net);
+            var alerts = [];
+
+            // CRITICAL: Genesis split
+            if (genesisInfo.split) {
+                var details = [];
+                Object.keys(genesisInfo.groups).forEach(function(gh) {
+                    var names = genesisInfo.groups[gh].map(function(n) { return n.name; });
+                    var prefix = gh.substring(0, 12);
+                    var marker = gh === genesisInfo.canonical ? ' (canonical)' : ' (DIVERGENT)';
+                    details.push(prefix + marker + ': ' + names.join(', '));
+                });
+                alerts.push({
+                    level: 'critical',
+                    text: 'GENESIS SPLIT — Nodes are on different chains! ' + details.join(' | ')
+                });
+            }
+
+            // WARNING: Version mismatch (potential rolling deploy in progress)
+            if (versionInfo.split) {
+                var vParts = [];
+                Object.keys(versionInfo.versions).forEach(function(v) {
+                    vParts.push(v + ' (' + versionInfo.versions[v] + ' nodes)');
+                });
+                alerts.push({
+                    level: 'warning',
+                    text: 'VERSION MISMATCH — ' + vParts.join(' vs ')
+                });
+            }
+
+            // WARNING: Fork detected (same genesis, different hash at same height)
+            var forkedNodes = online.filter(function(n) {
+                return n.height === ref.height && n.hash && ref.hash && n.hash !== ref.hash;
+            });
+            if (forkedNodes.length > 0) {
+                var forkNames = forkedNodes.map(function(n) { return n.name; });
+                alerts.push({
+                    level: 'critical',
+                    text: 'FORK DETECTED — ' + forkNames.join(', ') + ' at height ' + ref.height + ' with different block hash'
+                });
+            }
+
+            // WARNING: Nodes significantly ahead (>5 blocks above canonical)
+            var aheadNodes = online.filter(function(n) {
+                return n.height > ref.height + 5;
+            });
+            if (aheadNodes.length > 0) {
+                var aheadNames = aheadNodes.map(function(n) { return n.name + '(h=' + n.height + ')'; });
+                alerts.push({
+                    level: 'warning',
+                    text: 'NODES AHEAD — ' + aheadNames.join(', ') + ' vs canonical h=' + ref.height + ' (possible fork)'
+                });
+            }
+
+            // Block 1 missing
+            var missingBlock1 = [];
+            online.forEach(function(n) {
+                var integ = getIntegrity(n.api);
+                if (integ && !integ.complete) {
+                    missingBlock1.push(n.name);
+                }
+            });
+            if (missingBlock1.length > 0) {
+                alerts.push({
+                    level: 'critical',
+                    text: 'BLOCK 1 MISSING — ' + missingBlock1.join(', ')
+                });
+            }
+
+            // Chain integrity gaps (full scan)
+            var incompleteNodes = [];
+            online.forEach(function(n) {
+                var fi = getFullIntegrity(n.api);
+                if (fi && !fi.complete) {
+                    incompleteNodes.push(n.name + '(-' + fi.missingCount + ')');
+                }
+            });
+            if (incompleteNodes.length > 0) {
+                alerts.push({
+                    level: 'warning',
+                    text: 'CHAIN INCOMPLETE — ' + incompleteNodes.join(', ')
+                });
+            }
+
+            // Render
+            if (alerts.length === 0) {
+                alertEl.innerHTML = '';
+                return;
+            }
+            var html = '';
+            alerts.forEach(function(a) {
+                var cls = a.level === 'critical' ? 'alert-critical' : (a.level === 'info' ? 'alert-info' : 'alert-warning');
+                html += '<div class="alert-banner ' + cls + '">' + a.text + '</div>';
+            });
+            alertEl.innerHTML = html;
+        }
+
+        function fetchAttestationStats(apiPath, net) {
+            rpc(apiPath, 'getAttestationStats', {}, 15000).then(function(stats) {
+                renderAttestationSummary(net + '-att-summary', stats);
+                renderAttestationTable(net + '-attestation', stats, net);
+            }).catch(function() {
+                var el = document.getElementById(net + '-att-summary');
+                if (el) el.innerHTML = '<div class="summary-item"><div class="summary-label">Status</div><div class="summary-value" style="color:var(--gray-400)">not available (upgrade pending)</div></div>';
+            });
+        }
+
+        function renderAttestationSummary(elId, stats) {
+            var el = document.getElementById(elId);
+            if (!el || !stats) return;
+            var blocksTotal = stats.blocksInEpoch || 0;
+            var blocksAtt = stats.blocksWithAttestations || 0;
+            var blocksBls = stats.blocksWithBls || 0;
+            var attPct = blocksTotal > 0 ? Math.round(100 * blocksAtt / blocksTotal) : 0;
+            var blsPct = blocksTotal > 0 ? Math.round(100 * blocksBls / blocksTotal) : 0;
+            var attClass = attPct >= 80 ? 'chain-ok' : attPct >= 50 ? 'chain-gap' : 'chain-err';
+            var blsClass = blocksBls > 0 ? (blsPct >= 50 ? 'chain-ok' : 'chain-gap') : 'chain-err';
+            var qualified = (stats.producers || []).filter(function(p) { return p.qualified; }).length;
+            var total = (stats.producers || []).length;
+            var hasBls = (stats.producers || []).filter(function(p) { return p.hasBls; }).length;
+
+            el.innerHTML =
+                '<div class="summary-item"><div class="summary-label">Epoch</div><div class="summary-value">E' + (stats.epoch || 0) + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Minute</div><div class="summary-value">' + (stats.currentMinute || 0) + '/60</div></div>' +
+                '<div class="summary-item"><div class="summary-label">Bitfield</div><div class="summary-value"><span class="' + attClass + '">' + attPct + '% (' + blocksAtt + '/' + blocksTotal + ')</span></div></div>' +
+                '<div class="summary-item"><div class="summary-label">BLS Sigs</div><div class="summary-value"><span class="' + blsClass + '">' + (blocksBls > 0 ? blsPct + '% (' + blocksBls + '/' + blocksTotal + ')' : 'none') + '</span></div></div>' +
+                '<div class="summary-item"><div class="summary-label">Qualified</div><div class="summary-value">' + qualified + '/' + total + '</div></div>' +
+                '<div class="summary-item"><div class="summary-label">BLS Keys</div><div class="summary-value">' + hasBls + '/' + total + '</div></div>';
+        }
+
+        function renderAttestationTable(elId, stats, net) {
+            var el = document.getElementById(elId);
+            if (!el || !stats) return;
+            var producers = stats.producers || [];
+            var allKeys = PRODUCER_KEYS[net] || [];
+            var byPubkey = {};
+            producers.forEach(function(p) { byPubkey[p.publicKey] = p; });
+
+            var html = '';
+            // Render known producers first (in order)
+            allKeys.forEach(function(entry) {
+                var p = byPubkey[entry.pubkey];
+                if (p) {
+                    html += attestationRow(entry.name, p);
+                    delete byPubkey[entry.pubkey];
+                } else {
+                    html += '<tr><td>' + entry.name + '</td><td colspan="4" style="color:var(--gray-300)">no data</td></tr>';
+                }
+            });
+            // Any remaining unknown producers
+            Object.keys(byPubkey).forEach(function(pk) {
+                html += attestationRow(pk.substring(0, 12) + '…', byPubkey[pk]);
+            });
+            el.innerHTML = html;
+        }
+
+        function attestationRow(name, p) {
+            var att = p.attestedMinutes || 0;
+            var total = p.totalMinutes || 1;
+            var threshold = p.threshold || 54;
+            var attendPct = total > 0 ? Math.round(100 * att / total) : 0;
+            var qualPct = Math.round(100 * att / threshold);
+            var attendColor = attendPct >= 90 ? '#22c55e' : (attendPct >= 70 ? '#f59e0b' : '#ef4444');
+            var attendHtml = '<span style="color:' + attendColor + '">' + att + '/' + total + ' (' + attendPct + '%)</span>';
+            var qualBarW = Math.min(100, qualPct);
+            var qualColor = p.qualified ? '#22c55e' : (qualPct >= 70 ? '#f59e0b' : '#3b82f6');
+            var qualBar = '<div style="display:flex;align-items:center;gap:0.3rem">' +
+                '<div style="width:60px;height:6px;background:var(--gray-200);border-radius:3px;overflow:hidden">' +
+                '<div style="width:' + qualBarW + '%;height:100%;background:' + qualColor + '"></div></div>' +
+                '<span style="font-size:0.7rem;color:' + qualColor + '">' + qualPct + '% qualified</span></div>';
+            var blsHtml = p.hasBls
+                ? '<span class="chain-ok">registered</span>'
+                : '<span style="color:var(--gray-300)">—</span>';
+            return '<tr><td>' + name + '</td><td>' + attendHtml + '</td><td>' + qualBar + '</td><td>' + blsHtml + '</td></tr>';
+        }
+
+        var totalNodes = 0;
+        var totalSynced = 0;
+        var lastIntegrityRun = { mainnet: 0, testnet: 0 };
+
+        // Render a single network's tables + summary from cached data
+        function renderNetwork(net, results, stats, epoch, pool) {
+            var cfg = NODES[net];
+            var seedResults = results.slice(0, cfg.seeds.length);
+            var prodResults = results.slice(cfg.seeds.length);
+            var online = results.filter(function(n) { return n.online; });
+
+            var genesisInfo = detectGenesisSplit(online);
+            var versionInfo = detectVersionSplit(online);
+
+            var canonicalNodes = online;
+            if (genesisInfo.split && genesisInfo.canonical) {
+                canonicalNodes = genesisInfo.groups[genesisInfo.canonical] || online;
+            }
+            var ref = computeRef(canonicalNodes);
+
+            // Add integrity gaps to alerts
+            renderAlerts(net, genesisInfo, versionInfo, ref, online);
+
+            var integrityRef = computeIntegrityRef(results);
+
+            var seedHtml = '';
+            seedResults.forEach(function(n) { seedHtml += nodeRow(n, ref.height, ref, genesisInfo, integrityRef); });
+            document.getElementById(net + '-seeds').innerHTML = seedHtml;
+
+            var prodHtml = '';
+            prodResults.forEach(function(n) { prodHtml += nodeRow(n, ref.height, ref, genesisInfo, integrityRef); });
+            document.getElementById(net + '-producers').innerHTML = prodHtml;
+
+            renderSummary(net + '-summary', results, ref, genesisInfo, versionInfo, stats, epoch, pool);
+
+            var synced = online.filter(function(n) { return Math.abs(n.height - ref.height) <= 2; }).length;
+            return { total: results.length, synced: synced };
+        }
+
+        // Store last fetch results for re-render after integrity
+        var lastResults = {};
+
+        function fetchAll() {
+            totalNodes = 0;
+            totalSynced = 0;
+
+            ['mainnet', 'testnet'].filter(function(net) { return NODES[net]; }).forEach(function(net) {
+                var cfg = NODES[net];
+                var allDefs = cfg.seeds.concat(cfg.producers);
+                var promises = allDefs.map(fetchNodeStatus);
+
+                // Use first online node for chain queries (seed preferred, fallback to any producer)
+                var seedApi = cfg.seeds[0].api;
+                var allApis = cfg.seeds.concat(cfg.producers).map(function(n) { return n.api; });
+                function rpcWithFallback(method, params, timeoutMs) {
+                    return rpc(seedApi, method, params, timeoutMs).then(function(r) {
+                        if (r === null || r === undefined) throw new Error('null');
+                        return r;
+                    }).catch(function() {
+                        // Seed down — try each producer until one responds
+                        var chain = Promise.reject();
+                        allApis.slice(1).forEach(function(api) {
+                            chain = chain.catch(function() { return rpc(api, method, params, timeoutMs); });
+                        });
+                        return chain.catch(function() { return null; });
+                    });
+                }
+                var statsPromise = rpcWithFallback('getChainStats', {}, 15000);
+                var epochPromise = rpcWithFallback('getEpochInfo', {}, 15000);
+                var poolPromise = rpcWithFallback('getBalance', { address: POOL_HASH }, 15000);
+
+                Promise.all([Promise.all(promises), statsPromise, epochPromise, poolPromise]).then(function(all) {
+                    var results = all[0];
+                    var stats = all[1];
+                    var epoch = all[2];
+                    var poolBal = all[3];
+
+                    lastResults[net] = { results: results, stats: stats, epoch: epoch, pool: poolBal };
+
+                    var counts = renderNetwork(net, results, stats, epoch, poolBal);
+                    totalNodes += counts.total;
+                    totalSynced += counts.synced;
+                    document.getElementById('bar-total-nodes').textContent = totalNodes;
+                    document.getElementById('bar-synced').textContent = totalSynced + '/' + totalNodes;
+
+                    // Run integrity spot-check every 30s per network
+                    var now = Date.now();
+                    if (now - lastIntegrityRun[net] > INTEGRITY_INTERVAL) {
+                        lastIntegrityRun[net] = now;
+                        fetchAllIntegrity(results, function() {
+                            // Re-render progressively as each node completes
+                            renderNetwork(net, results, stats, epoch, (lastResults[net] || {}).pool);
+                        });
+                    }
+
+                    // Run full chain integrity every 60s per network
+                    if (now - lastFullIntegrityRun[net] > FULL_INTEGRITY_INTERVAL) {
+                        lastFullIntegrityRun[net] = now;
+                        fetchAllFullIntegrity(results, function() {
+                            renderNetwork(net, results, stats, epoch, (lastResults[net] || {}).pool);
+                        });
+                    }
+                });
+
+                // fetchProducers with fallback — try seed first, then any online producer
+                (function() {
+                    return fetchProducers(seedApi).then(function(p) {
+                        if (p && p.length > 0) return p;
+                        // Seed returned empty — try producers
+                        var chain = Promise.resolve([]);
+                        cfg.producers.forEach(function(n) {
+                            chain = chain.then(function(prev) {
+                                if (prev.length > 0) return prev;
+                                return fetchProducers(n.api);
+                            });
+                        });
+                        return chain;
+                    });
+                })().then(function(producers) {
+                    renderBonds(net + '-bonds', producers, net);
+                });
+
+                // Attestation stats with fallback
+                (function() {
+                    return rpc(seedApi, 'getAttestationStats', {}, 15000).then(function(r) {
+                        if (r) return seedApi;
+                        for (var j = 0; j < cfg.producers.length; j++) return cfg.producers[j].api;
+                        return seedApi;
+                    }).catch(function() {
+                        return cfg.producers.length > 0 ? cfg.producers[0].api : seedApi;
+                    });
+                })().then(function(api) { fetchAttestationStats(api, net); });
+            });
+        }
+
+        function updateRefreshInfo() {
+            var now = new Date();
+            var h = now.getHours(), m = now.getMinutes(), s = now.getSeconds();
+            var oldestRun = Math.min(lastIntegrityRun.mainnet || 0, lastIntegrityRun.testnet || 0);
+            var integrityAge = oldestRun ? Math.round((Date.now() - oldestRun) / 1000) : 0;
+            var integrityText = oldestRun ? ' · integrity ' + integrityAge + 's ago' : ' · integrity pending';
+            document.getElementById('refresh-info').textContent =
+                'last refresh ' + (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + ' · auto-refresh every 30s' + integrityText;
+        }
+
+        fetchAll();
+        updateRefreshInfo();
+        setInterval(function() { fetchAll(); updateRefreshInfo(); }, 30000);
+    })();
+    </script>
+</body>
+</html>
