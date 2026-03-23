@@ -577,6 +577,31 @@ impl Node {
             sync.reset_sync_for_rollback();
             return Ok(());
         }
+        // INC-I-005 death spiral prevention: if the fork sync proposes rolling back
+        // far below our peak height, the node is in a rollback death spiral.
+        // Reject the reorg and trigger a clean resync instead of accepting
+        // potentially-corrupt fork blocks from a bad peer.
+        const MAX_SAFE_ROLLBACK: u64 = 10;
+        let peak_height = {
+            let sync = self.sync_manager.read().await;
+            sync.peak_height()
+        };
+        if peak_height > 0 && result.ancestor_height < peak_height.saturating_sub(MAX_SAFE_ROLLBACK)
+        {
+            warn!(
+                "Fork sync: rejecting reorg — ancestor h={} is {} blocks below peak h={} \
+                 (max safe rollback={}). Triggering clean resync.",
+                result.ancestor_height,
+                peak_height - result.ancestor_height,
+                peak_height,
+                MAX_SAFE_ROLLBACK
+            );
+            let mut sync = self.sync_manager.write().await;
+            sync.mark_fork_sync_rejected();
+            sync.set_needs_genesis_resync();
+            return Ok(());
+        }
+
         // Fork sync is REMEDIAL: the node entered this path because it knows it is
         // on a minority fork. At equal weight (delta=0), accept the canonical chain —
         // rejecting it traps the node in an infinite loop (fork_sync → reject → retry).

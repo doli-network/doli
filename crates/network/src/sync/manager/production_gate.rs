@@ -28,23 +28,24 @@ impl SyncManager {
     pub fn update_production_state(&mut self) {
         // Layer 9 side effect: detect minority fork and set persistent flag.
         // Previously embedded in can_produce() where it was called every slot.
+        //
+        // IMPORTANT: Only compare hashes at the SAME height. Peers 1-2 blocks
+        // ahead are NOT forked — they simply received the next block before us.
+        // The previous "1-2 ahead = disagree" heuristic caused false fork
+        // detection during normal catching-up: a node finishing sync would see
+        // most peers 1 block ahead (e.g., 3 agree vs 50 "disagree"), triggering
+        // the persistent fork flag and blocking production. (INC-I-005)
         let mut agree = 1u32;
         let mut disagree = 0u32;
         for status in self.peers.values() {
             if status.best_height == self.local_height {
                 if status.best_hash == self.local_hash {
                     agree += 1;
-                } else {
+                } else if status.best_hash != Hash::ZERO {
                     disagree += 1;
                 }
-            } else if status.best_height > self.local_height
-                && status.best_height <= self.local_height + 2
-            {
-                if status.best_hash == Hash::ZERO {
-                    continue;
-                }
-                disagree += 1;
             }
+            // Peers ahead by 1-2 blocks are ignored — being behind is not a fork.
         }
         if disagree > 0 && agree < disagree && !self.fork.fork_mismatch_detected {
             warn!(
@@ -64,19 +65,30 @@ impl SyncManager {
             let silence_secs = last_gossip.elapsed().as_secs();
 
             if silence_secs > self.max_solo_production_secs {
-                let all_peers_at_our_height = !self.peers.is_empty()
-                    && self
-                        .peers
-                        .values()
-                        .all(|p| p.best_height == self.local_height);
+                // INC-I-005: Only consider near-tip peers (within 5 blocks).
+                // Syncing peers far below the tip should not prevent timer reset.
+                let near_tip_peers = self
+                    .peers
+                    .values()
+                    .filter(|p| self.local_height.saturating_sub(p.best_height) <= 5)
+                    .count();
+                let near_tip_at_our_height = self
+                    .peers
+                    .values()
+                    .filter(|p| p.best_height == self.local_height)
+                    .count();
+                let near_tip_majority =
+                    near_tip_peers > 0 && near_tip_at_our_height > near_tip_peers / 2;
 
-                if all_peers_at_our_height {
+                if near_tip_majority {
                     info!(
-                        "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
-                         network stall detected, resetting gossip timer (silence={}s)",
-                        self.peers.len(),
+                        "CIRCUIT BREAKER BYPASS: {}/{} near-tip peers at height {} — \
+                         network stall detected, resetting gossip timer (silence={}s, total_peers={})",
+                        near_tip_at_our_height,
+                        near_tip_peers,
                         self.local_height,
-                        silence_secs
+                        silence_secs,
+                        self.peers.len()
                     );
                     self.last_block_received_via_gossip = Some(Instant::now());
                 }
@@ -217,8 +229,23 @@ impl SyncManager {
                             ),
                         };
                     }
-                    // Grace period expired - if still no chain activity, we're probably first
-                    // Allow production
+
+                    // INC-I-005: Grace period expired but require minimum peer quorum
+                    // before producing at genesis. Two isolated nodes at h=0 shouldn't
+                    // start a fork chain when a canonical chain might already exist.
+                    // During mass deploys, new nodes connect to each other before
+                    // discovering the canonical chain — without this check, they
+                    // produce fork blocks within the first 15s.
+                    let min_genesis_quorum = self.min_peers_for_production.max(5);
+                    if self.peers.len() < min_genesis_quorum {
+                        return ProductionAuthorization::BlockedBootstrap {
+                            reason: format!(
+                                "Genesis quorum not met: {}/{} peers at h=0 (need {} to confirm true genesis)",
+                                self.peers.len(), min_genesis_quorum, min_genesis_quorum
+                            ),
+                        };
+                    }
+                    // Enough peers, all at h=0, grace expired — true genesis
                 }
             }
         }
@@ -273,11 +300,14 @@ impl SyncManager {
         // check at height 0 if min_peers is 1 (devnet). For testnet/mainnet (min_peers=2),
         // enforce the peer requirement even at height 0.
         let genesis_bypass = self.local_height == 0 && self.min_peers_for_production <= 1;
-        if self.peers.len() < self.min_peers_for_production
-            && !genesis_bypass
-            && !past_peer_loss_timeout
+        // INC-I-005: peer_loss_timeout bypass must NOT apply at height 0 (never synced).
+        // The timeout is for nodes that WERE synced and lost peers — solo production
+        // resumes the chain. At height 0, the node has no data and would produce a
+        // solo fork from genesis (N60 produced 424 blocks at height 1 this way).
+        let peer_loss_bypass = past_peer_loss_timeout && self.local_height > 0;
+        if self.peers.len() < self.min_peers_for_production && !genesis_bypass && !peer_loss_bypass
         {
-            // Skip if peer loss timeout expired — solo production is preferable to chain halt
+            // Skip if peer loss timeout expired AND we have data — solo production is preferable to chain halt
             warn!(
                 "FORK PREVENTION: Only {} peers (need {}) - blocking production to prevent echo chamber",
                 self.peers.len(), self.min_peers_for_production
@@ -490,6 +520,11 @@ impl SyncManager {
         // Count peers at same height that agree (same hash) vs disagree (different hash).
         // Only block production if we're in the clear minority — the majority keeps
         // producing so the heaviest chain rule resolves the fork naturally.
+        //
+        // IMPORTANT: Only compare at the SAME height. Peers 1-2 blocks ahead
+        // are simply ahead, not forked. The previous heuristic caused false
+        // fork detection during catching-up (INC-I-005: N36 saw 3 agree vs
+        // 50 "disagree" because 50 peers had the next block).
         let mut agree = 1u32; // Count ourselves — we agree with our own chain
         let mut disagree = 0u32;
         let mut first_mismatch_peer = None;
@@ -499,29 +534,15 @@ impl SyncManager {
                 // Same height: compare hashes directly
                 if status.best_hash == self.local_hash {
                     agree += 1;
-                } else {
+                } else if status.best_hash != Hash::ZERO {
                     disagree += 1;
                     if first_mismatch_peer.is_none() {
                         first_mismatch_peer = Some(*peer_id);
                         first_mismatch_hash = status.best_hash;
                     }
                 }
-            } else if status.best_height > self.local_height
-                && status.best_height <= self.local_height + 2
-            {
-                // Peer is 1-2 blocks ahead.
-                // Hash::ZERO means peer has a snap sync gap — no block store
-                // for this height. This is NOT a fork — skip silently.
-                if status.best_hash == Hash::ZERO {
-                    continue;
-                }
-                // Different non-zero hash = genuine divergence.
-                disagree += 1;
-                if first_mismatch_peer.is_none() {
-                    first_mismatch_peer = Some(*peer_id);
-                    first_mismatch_hash = status.best_hash;
-                }
             }
+            // Peers ahead by 1-2 blocks are ignored — being behind is not a fork.
         }
         // Only block if we're in the minority — majority keeps producing.
         // NOTE: fork_mismatch_detected is now set by update_production_state(),
@@ -594,29 +615,37 @@ impl SyncManager {
             let silence_secs = last_gossip.elapsed().as_secs();
 
             if silence_secs > self.max_solo_production_secs {
-                // PGD-003 + INC-001: Check for network stall.
-                // Changed from ALL to MAJORITY: during bootstrap, some nodes may still
-                // be syncing (lower height). Requiring ALL causes a deadlock where
-                // syncing nodes prevent tip nodes from producing, which prevents
-                // syncing nodes from catching up.
-                let peers_at_our_height = self
+                // PGD-003 + INC-001 + INC-I-005: Check for network stall.
+                // Peers still syncing (far below tip) should not count against
+                // the majority check. Only consider peers "near tip" (within 5
+                // blocks of our height) when deciding if the network is stalled.
+                // Without this, deploying many new nodes that are syncing dilutes
+                // the majority below 50% and permanently halts the chain.
+                let near_tip_peers: Vec<_> = self
                     .peers
                     .values()
+                    .filter(|p| self.local_height.saturating_sub(p.best_height) <= 5)
+                    .collect();
+                let peers_at_our_height = near_tip_peers
+                    .iter()
                     .filter(|p| p.best_height == self.local_height)
                     .count();
+                let near_tip_count = near_tip_peers.len();
                 let majority_at_our_height =
-                    !self.peers.is_empty() && peers_at_our_height > self.peers.len() / 2;
+                    near_tip_count > 0 && peers_at_our_height > near_tip_count / 2;
 
                 if majority_at_our_height {
                     // Network stall: everyone stuck at the same height, nobody producing.
                     // Allow production. The gossip timer was already reset by
                     // update_production_state() (called before can_produce).
                     info!(
-                        "CIRCUIT BREAKER BYPASS: All {} peers at height {} — \
-                         network stall detected, allowing production (silence={}s)",
-                        self.peers.len(),
+                        "CIRCUIT BREAKER BYPASS: {}/{} near-tip peers at height {} — \
+                         network stall detected, allowing production (silence={}s, total_peers={})",
+                        peers_at_our_height,
+                        near_tip_count,
                         self.local_height,
-                        silence_secs
+                        silence_secs,
+                        self.peers.len()
                     );
                     // Fall through to Authorized
                 } else {
@@ -1049,6 +1078,13 @@ impl SyncManager {
             }
         }
         self.fork.needs_genesis_resync
+    }
+
+    /// Set the needs_genesis_resync flag.
+    /// Called by rollback death spiral prevention when the node has rolled
+    /// back too far from its peak height and needs a clean resync.
+    pub fn set_needs_genesis_resync(&mut self) {
+        self.fork.needs_genesis_resync = true;
     }
 
     /// Returns true if peers consistently reject our chain tip (deep fork).

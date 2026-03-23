@@ -222,6 +222,29 @@ impl Node {
             return Ok(false);
         }
 
+        // Death spiral prevention: if we've rolled back more than 10 blocks
+        // from our peak height, stop rolling back. The progressive rollback is
+        // clearly not finding a common ancestor — force a clean resync instead.
+        // Without this cap, the node degrades all the way to genesis, accepting
+        // fork blocks from bad peers along the way (INC-I-005).
+        const MAX_SAFE_ROLLBACK: u64 = 10;
+        let peak_height = {
+            let sync = self.sync_manager.read().await;
+            sync.peak_height()
+        };
+        if peak_height > 0 && peak_height.saturating_sub(local_height) > MAX_SAFE_ROLLBACK {
+            warn!(
+                "Rollback death spiral: rolled back {} blocks from peak h={} to h={}. \
+                 Stopping rollback and triggering clean resync.",
+                peak_height - local_height,
+                peak_height,
+                local_height
+            );
+            let mut sync = self.sync_manager.write().await;
+            sync.set_needs_genesis_resync();
+            return Ok(true);
+        }
+
         // Fast path: small gap (<= 12 blocks) — just rollback 1 block.
         // This changes local_hash to the parent, and the next sync attempt
         // will try GetHeaders with the parent hash. After 1-N rollbacks,

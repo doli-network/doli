@@ -43,6 +43,11 @@ impl SyncManager {
         self.pipeline.body_stall_retries = 0;
         self.fork.consecutive_apply_failures = 0;
 
+        // Track peak height for rollback death spiral prevention.
+        if height > self.fork.peak_height {
+            self.fork.peak_height = height;
+        }
+
         // Applying a block means the chain is advancing — reset fork counters.
         self.fork.consecutive_empty_headers = 0;
         if matches!(self.recovery_phase, super::RecoveryPhase::StuckForkDetected) {
@@ -514,6 +519,13 @@ impl SyncManager {
     /// Activates a cooldown to prevent infinite reorg loops.
     pub fn mark_fork_sync_rejected(&mut self) {
         self.fork.last_fork_sync_rejection = Instant::now();
+    }
+
+    /// Get the peak height ever reached by this node.
+    /// Used by fork_sync reorg validation to prevent accepting reorgs
+    /// that roll back too far from the peak.
+    pub fn peak_height(&self) -> u64 {
+        self.fork.peak_height
     }
 
     /// Record the current tip hash before a remedial reorg.
