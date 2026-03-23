@@ -25,7 +25,15 @@
 | PR6 | ForkState sub-struct (15 fields) + ForkAction enum | COMPLETE |
 | PR7 | State transition logging (40 transitions, unique triggers) | COMPLETE |
 
-## Metrics
+## Recovery Redesign (RUN_ID=54, approved 2026-03-23)
+
+| ID | Name | Status | Completed |
+|----|------|--------|-----------|
+| M1 | Recovery Gate + Transition Validation | COMPLETE | 2026-03-23 |
+| M2 | Site Migration + Monotonic Floor Extension | COMPLETE | 2026-03-23 |
+| M3 | Hard Enforcement + ForkAction Wiring | COMPLETE | 2026-03-23 |
+
+## Metrics (from prior redesign)
 
 | Metric | Before | After | Target |
 |--------|--------|-------|--------|
@@ -34,5 +42,5 @@
 | Sub-structs | 0 | 4 (SyncPipeline, SnapSyncState, NetworkState, ForkState) | 5 (ProductionGate in M3) |
 | State transition logging | 0 | 40 with unique triggers | All |
 | start_sync() idempotent | No (43 calls/sec destructive reset) | Yes (guard clause) | Yes |
-| ForkAction coordination | No (3 systems, no coordinator) | Enum defined, not yet wired | Wired into Node |
-| Tests passing | 146 | 146 | 146 |
+| ForkAction coordination | No (3 systems, no coordinator) | Wired into resolve_shallow_fork() | Wired into Node |
+| Tests passing | 146 | 148 | 148 |
