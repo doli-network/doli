@@ -122,11 +122,11 @@ impl NetworkService {
         // (swarm_events.rs). Without headroom the transport hard-wall
         // rejects peers before the scoring logic ever runs.
         //
-        // 2 per-peer survives the simultaneous-dial race (rust-libp2p#752)
-        // and DCUtR hole-punching (relay + direct coexist briefly).
+        // 1 per-peer: simultaneous-dial race (rust-libp2p#752) is resolved
+        // upstream since 0.52+ via deterministic connection deduplication.
         let transport_limit = (config.max_peers as u32) * 3 / 2;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
-            .with_max_established_per_peer(Some(2))
+            .with_max_established_per_peer(Some(1))
             .with_max_established_incoming(Some(transport_limit))
             .with_max_established_outgoing(Some(transport_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
