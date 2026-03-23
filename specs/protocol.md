@@ -1189,9 +1189,42 @@ DOLI uses **libp2p** for all P2P networking. This provides a robust, modular net
 ### 7.1 Transport Layer
 
 - **Protocol**: libp2p with Noise encryption and Yamux multiplexing
-- **Discovery**: Kademlia DHT for peer discovery
+- **Discovery**: Kademlia DHT (`/doli/kad/1.0.0`) for peer discovery, 60s bootstrap interval
 - **Gossip**: GossipSub for block and transaction propagation
 - **Sync**: Request-response protocol for block synchronization
+- **Identify**: Peer address exchange for DHT population
+
+#### Connection Limits (Two-Tier Model)
+
+Peer management is split into two layers:
+
+| Layer | Limit | Purpose |
+|-------|-------|---------|
+| **Transport** (libp2p ConnectionLimits) | `max_peers * 1.5` in/out | Hard ceiling on TCP connections. Set higher than application limit to allow headroom for new peer evaluation. |
+| **Application** (peers HashMap + gossipsub scoring) | `max_peers` | When full, evicts the peer with the lowest gossipsub score. Producers naturally retain slots (high P2 first-message-delivery score). |
+
+Without transport headroom, `ConnectionLimits` rejects connections at TCP level before the application-layer scoring logic can evaluate them — the eviction code becomes dead code.
+
+| Network | max_peers | Transport limit | Override |
+|---------|-----------|-----------------|----------|
+| Mainnet | 50 | 75 | `DOLI_MAX_PEERS` |
+| Testnet | 50 | 75 | `DOLI_MAX_PEERS` |
+| Devnet | 150 | 225 | `DOLI_MAX_PEERS` |
+
+Per-peer limit: 2 established connections (handles simultaneous-dial race and DCUtR hole-punching).
+
+#### Peer Discovery Flow
+
+```
+1. Node starts, dials bootstrap nodes (explicit)
+2. Bootstrap responds → Identify exchanges addresses
+3. Addresses added to Kademlia DHT routing table
+4. Every 60s: kademlia.bootstrap() refreshes routing table
+5. New peers discovered → dialed directly (not through bootstrap)
+6. Peer cache persisted to disk for fast restart recovery
+```
+
+Bootnodes are introduction points, not permanent hubs. A node needs one successful bootstrap connection to discover the rest of the network via DHT.
 
 ### 7.2 GossipSub Topics
 
@@ -1263,6 +1296,8 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 |-----------|---------|---------|--------|--------------|
 | Genesis Time | 2026-02-01T00:00:00Z | 2026-01-29T22:00:00Z | Dynamic | Devnet only |
 | Slot Duration | 10s | 10s | 10s | Devnet only |
+| Max Peers | 50 | 50 | 150 | All (`DOLI_MAX_PEERS`) |
+| Transport Limit | 75 (1.5×) | 75 (1.5×) | 225 (1.5×) | Derived from max_peers |
 | P2P Port | 30300 | 40300 | 50300 | All |
 | RPC Port | 8500 | 18500 | 28500 | All |
 | Metrics Port | 9000 | 19000 | 29000 | All |
@@ -1289,6 +1324,7 @@ Network parameters can be customized via `.env` files in the data directory:
 
 DOLI_P2P_PORT=51303
 DOLI_RPC_PORT=29545
+DOLI_MAX_PEERS=100              # Application-layer peer limit (transport = 1.5×)
 DOLI_BLOCKS_PER_REWARD_EPOCH=2
 ```
 

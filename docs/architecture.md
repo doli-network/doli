@@ -219,9 +219,16 @@ DOLI uses a strict 3-level configuration hierarchy:
 | `scoring.rs` | Peer reputation |
 
 **Sub-protocols:**
-- GossipSub for block/tx propagation
-- Kademlia for peer discovery
+- GossipSub for block/tx propagation (mesh D=`sqrt(N)*1.5`, capped at 50)
+- Kademlia DHT for peer discovery (60s bootstrap interval)
 - Request-response for sync
+- Identify for peer address exchange
+
+**Connection model (two-tier):**
+- **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
+- **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.
+- **Defaults**: Mainnet/Testnet: 50 peers (Ethereum geth default). Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
+- **Peer discovery flow**: Bootstrap node → Identify → DHT → peer cache. Bootnodes are introduction points, not permanent hubs.
 
 ### 3.7. mempool
 

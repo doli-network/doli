@@ -92,7 +92,7 @@ The adversary **cannot**:
 
 | Attack | Mitigation |
 |--------|------------|
-| Eclipse attack | Multiple peer connections; peer reputation |
+| Eclipse attack | Kademlia DHT discovery; gossipsub peer scoring with eviction; IP diversity tracking (max 3 per /24); transport headroom (1.5× max_peers) ensures scoring runs before rejection |
 | DoS on producers | Producer rotation; multiple active producers |
 | Transaction censorship | Fee market; producer competition |
 
