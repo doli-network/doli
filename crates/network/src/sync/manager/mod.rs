@@ -1142,7 +1142,8 @@ impl SyncManager {
             (Idle, _) => true,
             // Any state can go to Idle (reset/error)
             (_, Idle) => true,
-            // Header download leads to bodies, snap, or synchronized
+            // Header download leads to bodies, snap, synchronized, or self (count update)
+            (DownloadingHeaders { .. }, DownloadingHeaders { .. }) => true,
             (DownloadingHeaders { .. }, DownloadingBodies { .. }) => true,
             (DownloadingHeaders { .. }, SnapCollectingRoots { .. }) => true,
             (DownloadingHeaders { .. }, Synchronized) => true,
@@ -1153,8 +1154,10 @@ impl SyncManager {
             // Processing leads to synchronized or re-enters (height update)
             (Processing { .. }, Synchronized) => true,
             (Processing { .. }, Processing { .. }) => true,
-            // Synchronized can only go back to Idle (stall reset)
+            // Synchronized: self-update, or re-enter sync when peers advance
             (Synchronized, Synchronized) => true,
+            (Synchronized, DownloadingHeaders { .. }) => true,
+            (Synchronized, SnapCollectingRoots { .. }) => true,
             // Snap sync forward path
             (SnapCollectingRoots { .. }, SnapDownloading { .. }) => true,
             (SnapDownloading { .. }, SnapReady { .. }) => true,

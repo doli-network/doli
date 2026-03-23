@@ -2183,9 +2183,6 @@ mod regression_tests {
 // REQ-SYNC-102 (RecoveryReason enum), REQ-SYNC-103 (gated method)
 // Architecture: Section 4 — "New method: request_genesis_resync()"
 //
-// DEVELOPER NOTE: Remove the #[cfg(feature = "m1_recovery_gate")] gate below
-// once RecoveryReason enum and request_genesis_resync() method are implemented.
-// These tests are intentionally written BEFORE the code exists (TDD).
 // -------------------------------------------------------------------------
 
 mod recovery_gate_tests {
@@ -2905,16 +2902,42 @@ mod transition_validation_tests {
 
     // === Comprehensive invalid transition coverage ===
 
-    /// T-TV-016: Synchronized -> DownloadingHeaders is INVALID.
-    /// Must go through Idle first.
+    /// T-TV-016: Synchronized -> DownloadingHeaders is VALID.
+    /// start_sync() is called directly from Synchronized when peers advance.
     #[test]
-    fn test_invalid_synchronized_to_downloading_headers() {
+    fn test_valid_synchronized_to_downloading_headers() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
         manager.state = synchronized();
 
         assert!(
-            !manager.is_valid_transition(&downloading_headers()),
-            "T-TV-016: Synchronized -> DownloadingHeaders must be INVALID (go through Idle)"
+            manager.is_valid_transition(&downloading_headers()),
+            "T-TV-016: Synchronized -> DownloadingHeaders must be VALID (start_sync from Synchronized)"
+        );
+    }
+
+    /// T-TV-016b: Synchronized -> SnapCollectingRoots is VALID.
+    /// start_sync() snap branch from Synchronized state.
+    #[test]
+    fn test_valid_synchronized_to_snap_collecting() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = synchronized();
+
+        assert!(
+            manager.is_valid_transition(&snap_collecting_roots()),
+            "T-TV-016b: Synchronized -> SnapCollectingRoots must be VALID"
+        );
+    }
+
+    /// T-TV-016c: DownloadingHeaders -> DownloadingHeaders is VALID.
+    /// headers_count update via self-transition in handle_headers_response.
+    #[test]
+    fn test_valid_downloading_headers_self_transition() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = downloading_headers();
+
+        assert!(
+            manager.is_valid_transition(&downloading_headers()),
+            "T-TV-016c: DownloadingHeaders self-transition must be VALID (headers_count update)"
         );
     }
 
