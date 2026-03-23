@@ -443,11 +443,11 @@
 
         function fetchAllIntegrity(allResults, onEachDone) {
             var online = allResults.filter(function(n) { return n.online; });
-            // Run 6 nodes at a time (local testnet — all on localhost)
+            // Run 20 nodes at a time (local testnet — all on localhost)
             var idx = 0;
             function next() {
                 if (idx >= online.length) return Promise.resolve();
-                var batch = online.slice(idx, idx + 6);
+                var batch = online.slice(idx, idx + 20);
                 idx += 6;
                 return Promise.all(batch.map(function(n) {
                     return spotCheckIntegrity(n, n.height).then(function() {
@@ -490,8 +490,8 @@
             var idx = 0;
             function next() {
                 if (idx >= online.length) return Promise.resolve();
-                var batch = online.slice(idx, idx + 2);
-                idx += 2;
+                var batch = online.slice(idx, idx + 10);
+                idx += 10;
                 return Promise.all(batch.map(function(n) {
                     return fetchFullIntegrity(n).then(function() {
                         if (onEachDone) onEachDone();
@@ -1198,12 +1198,12 @@
             var integrityAge = oldestRun ? Math.round((Date.now() - oldestRun) / 1000) : 0;
             var integrityText = oldestRun ? ' · integrity ' + integrityAge + 's ago' : ' · integrity pending';
             document.getElementById('refresh-info').textContent =
-                'last refresh ' + (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + ' · auto-refresh every 5s' + integrityText;
+                'last refresh ' + (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + ' · auto-refresh every 15s' + integrityText;
         }
 
         fetchAll();
         updateRefreshInfo();
-        setInterval(function() { fetchAll(); updateRefreshInfo(); }, 5000);
+        setInterval(function() { fetchAll(); updateRefreshInfo(); }, 15000);
     })();
     </script>
 </body>
