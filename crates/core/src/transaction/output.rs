@@ -42,6 +42,8 @@ pub const BRIDGE_CHAIN_ETHEREUM: u8 = 2;
 pub const BRIDGE_CHAIN_MONERO: u8 = 3;
 pub const BRIDGE_CHAIN_LITECOIN: u8 = 4;
 pub const BRIDGE_CHAIN_CARDANO: u8 = 5;
+/// Bridge target chain: Binance Smart Chain (EVM-compatible, keccak256)
+pub const BRIDGE_CHAIN_BSC: u8 = 6;
 /// Bridge HTLC header: 1B version + 1B target_chain + 1B addr_len
 pub const BRIDGE_HTLC_HEADER_SIZE: usize = 3;
 
@@ -489,6 +491,7 @@ impl Output {
             BRIDGE_CHAIN_MONERO => "Monero",
             BRIDGE_CHAIN_LITECOIN => "Litecoin",
             BRIDGE_CHAIN_CARDANO => "Cardano",
+            BRIDGE_CHAIN_BSC => "BSC",
             _ => "Unknown",
         }
     }

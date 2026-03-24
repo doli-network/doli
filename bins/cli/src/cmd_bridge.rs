@@ -10,8 +10,8 @@ use crate::wallet::Wallet;
 /// Resolve target chain name to chain ID.
 fn resolve_chain_id(chain: &str) -> Result<u8> {
     use doli_core::transaction::{
-        BRIDGE_CHAIN_BITCOIN, BRIDGE_CHAIN_CARDANO, BRIDGE_CHAIN_ETHEREUM, BRIDGE_CHAIN_LITECOIN,
-        BRIDGE_CHAIN_MONERO,
+        BRIDGE_CHAIN_BITCOIN, BRIDGE_CHAIN_BSC, BRIDGE_CHAIN_CARDANO, BRIDGE_CHAIN_ETHEREUM,
+        BRIDGE_CHAIN_LITECOIN, BRIDGE_CHAIN_MONERO,
     };
     match chain.to_lowercase().as_str() {
         "bitcoin" | "btc" => Ok(BRIDGE_CHAIN_BITCOIN),
@@ -19,8 +19,9 @@ fn resolve_chain_id(chain: &str) -> Result<u8> {
         "monero" | "xmr" => Ok(BRIDGE_CHAIN_MONERO),
         "litecoin" | "ltc" => Ok(BRIDGE_CHAIN_LITECOIN),
         "cardano" | "ada" => Ok(BRIDGE_CHAIN_CARDANO),
+        "bsc" | "bnb" => Ok(BRIDGE_CHAIN_BSC),
         _ => anyhow::bail!(
-            "Unknown chain: {}. Supported: bitcoin, ethereum, monero, litecoin, cardano",
+            "Unknown chain: {}. Supported: bitcoin, ethereum, monero, litecoin, cardano, bsc",
             chain
         ),
     }
@@ -498,8 +499,9 @@ pub(crate) async fn cmd_bridge_swap(
             // Bitcoin/Litecoin: DOLI expiry must be shorter than BTC expiry
             (doli_height + 3, doli_height + 360)
         }
-        doli_core::transaction::BRIDGE_CHAIN_ETHEREUM => {
-            // Ethereum: DOLI expiry must be shorter than ETH expiry
+        doli_core::transaction::BRIDGE_CHAIN_ETHEREUM
+        | doli_core::transaction::BRIDGE_CHAIN_BSC => {
+            // Ethereum/BSC: DOLI expiry must be shorter than ETH/BSC expiry
             (doli_height + 3, doli_height + 360)
         }
         _ => (doli_height + 3, doli_height + 360),
@@ -792,10 +794,12 @@ pub(crate) async fn cmd_bridge_status(
         }
     }
 
-    if target_chain_id == doli_core::transaction::BRIDGE_CHAIN_ETHEREUM {
+    if target_chain_id == doli_core::transaction::BRIDGE_CHAIN_ETHEREUM
+        || target_chain_id == doli_core::transaction::BRIDGE_CHAIN_BSC
+    {
         if let Some(eth_endpoint) = eth_rpc {
             println!();
-            println!("  Ethereum:");
+            println!("  {}:", target_chain_name);
             let eth = bridge::ethereum::EthereumClient::new(eth_endpoint);
             match eth.get_block_number().await {
                 Ok(eth_height) => {
