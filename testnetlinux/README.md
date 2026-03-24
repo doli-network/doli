@@ -11,26 +11,38 @@ Operational environment for running a local DOLI testnet on Linux. Uses **system
 - Producer keys in `testnetlinux/keys/producer_{1..12}.json` (included)
 - Node.js (for the block explorer + swap bot)
 
+### Linux build dependencies (Fedora)
+
+```bash
+sudo dnf install -y gtk3-devel webkit2gtk4.1-devel
+```
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+```
+
+These are required by the `tao`/`webkit2gtk` crates. Without them `cargo build` will fail with missing `.pc` files.
+
 ## Quick Start
 
 ```bash
-# 1. Build from doli repo (DPFAESI branch)
-cd ~/repos/doli && cargo build --release -p doli-node -p doli-cli
-
-# 2. Install systemd user services (seed + n1-n12 + explorer)
+# 1. Install systemd user services (first time only)
 ~/repos/localdoli/testnetlinux/scripts/install-services.sh
 
-# 3. Start seed + N1-N5
-~/repos/localdoli/testnetlinux/scripts/testnet.sh start seed
-sleep 5
-~/repos/localdoli/testnetlinux/scripts/testnet.sh start n1 n2 n3 n4 n5
+# 2. Build + deploy (builds, stops, wipes stale chain data, restarts)
+~/repos/localdoli/testnetlinux/scripts/testnet.sh deploy all
 
-# 4. Check status
+# 3. Check status
 ~/repos/localdoli/testnetlinux/scripts/testnet.sh status
 
-# 5. Open the explorer
+# 4. Open the explorer
 xdg-open http://localhost:8080
 ```
+
+> **After a chain reset or new genesis**: use `deploy` — it auto-detects and wipes nodes with stale chain data.
+> To manually wipe specific nodes: `scripts/testnet.sh wipe n6 n7 n8` (must stop them first).
 
 ## Service Management
 
@@ -42,6 +54,8 @@ scripts/testnet.sh stop all            # Stop everything
 scripts/testnet.sh restart all         # Restart everything
 scripts/testnet.sh status              # Show status table
 scripts/testnet.sh logs n1             # Tail n1 log
+scripts/testnet.sh wipe n6 n7 n8       # Wipe chain data (node must be stopped first)
+scripts/testnet.sh deploy all          # Build → stop → wipe stale → copy binaries → start
 scripts/testnet.sh enable all          # Auto-start on boot
 scripts/testnet.sh disable all         # Disable auto-start
 ```

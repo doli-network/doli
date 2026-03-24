@@ -10,6 +10,8 @@
 #   testnetlinux/scripts/testnet.sh restart [seed|n1|n2|...|all]  Restart services
 #   testnetlinux/scripts/testnet.sh status                        Show all service status
 #   testnetlinux/scripts/testnet.sh logs [seed|n1|n2|...]         Tail logs
+#   testnetlinux/scripts/testnet.sh wipe [seed|n1|...|all]        Wipe chain data (must be stopped)
+#   testnetlinux/scripts/testnet.sh deploy [seed|n1|...|all]     Build, wipe stale, restart
 #   testnetlinux/scripts/testnet.sh enable [seed|n1|...|all]      Auto-start on boot
 #   testnetlinux/scripts/testnet.sh disable [seed|n1|...|all]     Disable auto-start
 #
@@ -24,6 +26,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTNET_DIR="$(dirname "$SCRIPT_DIR")"
+DOLI_REPO="$HOME/repos/doli"
 LOG_DIR="$TESTNET_DIR/logs"
 SERVICE_PREFIX="doli-testnet"
 
@@ -261,6 +264,146 @@ do_disable() {
   done
 }
 
+# Get data directory for a node name
+data_dir_for() {
+  local name="$1"
+  case "$name" in
+    seed) echo "$TESTNET_DIR/seed/data" ;;
+    n[0-9]|n[0-9][0-9]) echo "$TESTNET_DIR/${name}/data" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Check if a node's chain data matches the current testnet genesis
+is_chain_stale() {
+  local name="$1"
+  local datadir
+  datadir=$(data_dir_for "$name")
+  [[ -z "$datadir" || ! -d "$datadir" ]] && return 1
+
+  # No data yet — not stale
+  local db_dir="$datadir/db"
+  [[ ! -d "$db_dir" ]] && return 1
+
+  # Quick check: start the node in dry-run mode and look for chain mismatch
+  # Faster: compare genesis hash in block store vs the binary's embedded chainspec
+  # We use a lightweight probe: start node, capture first 5s of stderr, look for the error
+  local bin="$DOLI_REPO/target/release/doli-node"
+  [[ ! -f "$bin" ]] && return 1
+
+  local tmplog
+  tmplog=$(mktemp)
+  timeout 3 "$bin" --network testnet --data-dir "$datadir" run --relay-server --p2p-port 0 --rpc-port 0 --yes 2>"$tmplog" &
+  local pid=$!
+  sleep 2
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+
+  if grep -q "block store contains blocks from a different chain" "$tmplog" 2>/dev/null; then
+    rm -f "$tmplog"
+    return 0  # stale
+  fi
+  rm -f "$tmplog"
+  return 1  # not stale
+}
+
+do_wipe() {
+  if [[ $# -eq 0 ]]; then
+    echo "Usage: $0 wipe [seed|n1|n2|...|all]"
+    exit 1
+  fi
+
+  local targets
+  targets=($(resolve_targets "$@"))
+
+  for service in "${targets[@]}"; do
+    local name="${service##*-}"
+    local datadir
+    datadir=$(data_dir_for "$name")
+    [[ -z "$datadir" ]] && continue
+
+    # Refuse if running
+    local pid
+    pid=$(systemctl --user show -p MainPID --value "${service}.service" 2>/dev/null || echo "0")
+    if [[ "$pid" != "0" && -n "$pid" ]]; then
+      echo -e "  ${RED}Refusing to wipe $name — still running (PID $pid). Stop it first.${NC}"
+      continue
+    fi
+
+    if [[ -d "$datadir" ]]; then
+      rm -rf "${datadir:?}"/*
+      echo -e "  ${GREEN}Wiped${NC} $name → $datadir"
+    else
+      echo -e "  ${YELLOW}No data dir${NC} for $name"
+    fi
+  done
+}
+
+do_deploy() {
+  if [[ $# -eq 0 ]]; then
+    echo "Usage: $0 deploy [seed|n1|n2|...|all]"
+    echo "  Builds doli-node, stops targets, wipes stale chain data, restarts."
+    exit 1
+  fi
+
+  local targets_args=("$@")
+
+  # Step 1: Build
+  echo "=== Building doli-node ==="
+  if [[ ! -d "$DOLI_REPO" ]]; then
+    echo -e "${RED}doli repo not found at $DOLI_REPO${NC}"
+    exit 1
+  fi
+  (cd "$DOLI_REPO" && cargo build --release -p doli-node -p doli-cli) || {
+    echo -e "${RED}Build failed${NC}"
+    exit 1
+  }
+  echo -e "${GREEN}Build OK${NC}"
+  echo ""
+
+  # Step 2: Stop targets
+  echo "=== Stopping nodes ==="
+  do_stop "${targets_args[@]}"
+  sleep 2
+  echo ""
+
+  # Step 3: Wipe stale chain data (only nodes with mismatched genesis)
+  echo "=== Checking for stale chain data ==="
+  local targets
+  targets=($(resolve_targets "${targets_args[@]}"))
+  local wiped=0
+  for service in "${targets[@]}"; do
+    local name="${service##*-}"
+    local datadir
+    datadir=$(data_dir_for "$name")
+    [[ -z "$datadir" || ! -d "$datadir" ]] && continue
+
+    # Quick check: if db dir is empty, skip
+    [[ ! -d "$datadir/db" ]] && continue
+
+    if is_chain_stale "$name"; then
+      rm -rf "${datadir:?}"/*
+      echo -e "  ${YELLOW}Wiped stale data${NC} for $name"
+      wiped=$((wiped + 1))
+    else
+      echo -e "  ${GREEN}OK${NC} $name (chain matches)"
+    fi
+  done
+  [[ $wiped -eq 0 ]] && echo "  No stale data found."
+  echo ""
+
+  # Step 4: Copy binaries to testnetlinux/bin/
+  cp "$DOLI_REPO/target/release/doli-node" "$TESTNET_DIR/bin/doli-node"
+  cp "$DOLI_REPO/target/release/doli" "$TESTNET_DIR/bin/doli"
+  echo "=== Binaries copied to $TESTNET_DIR/bin/ ==="
+  echo ""
+
+  # Step 5: Start
+  echo "=== Starting nodes ==="
+  do_start "${targets_args[@]}"
+  echo ""
+  echo -e "${GREEN}Deploy complete.${NC}"
+}
+
 # Main
 ACTION="${1:-status}"
 shift || true
@@ -271,12 +414,25 @@ case "$ACTION" in
   restart) do_restart "$@" ;;
   status)  do_status ;;
   logs)    do_logs "$@" ;;
+  wipe)    do_wipe "$@" ;;
+  deploy)  do_deploy "$@" ;;
   enable)  do_enable "$@" ;;
   disable) do_disable "$@" ;;
   *)
-    echo "Usage: $0 {start|stop|restart|status|logs|enable|disable} [targets...]"
+    echo "Usage: $0 {start|stop|restart|status|logs|wipe|deploy|enable|disable} [targets...]"
     echo ""
     echo "Targets: seed, n1-n12, explorer, swap, all"
+    echo ""
+    echo "Commands:"
+    echo "  start    Start services"
+    echo "  stop     Stop services"
+    echo "  restart  Stop + start"
+    echo "  status   Show status table"
+    echo "  logs     Tail log file"
+    echo "  wipe     Wipe chain data (node must be stopped)"
+    echo "  deploy   Build → stop → wipe stale → copy binaries → start"
+    echo "  enable   Auto-start on boot"
+    echo "  disable  Disable auto-start"
     exit 1
     ;;
 esac
