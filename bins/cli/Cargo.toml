@@ -18,7 +18,11 @@ storage = { workspace = true }
 vdf = { workspace = true }
 updater = { workspace = true }
 channels = { workspace = true }
+bridge = { workspace = true }
 bincode.workspace = true
+sha2.workspace = true
+tiny-keccak = { workspace = true }
+rand = { workspace = true }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

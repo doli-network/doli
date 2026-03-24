@@ -287,13 +287,17 @@ impl From<&doli_core::Output> for OutputResponse {
         let bridge_metadata = if output.output_type == doli_core::OutputType::BridgeHTLC {
             output
                 .bridge_htlc_metadata()
-                .map(|(chain_id, target_addr)| {
-                    serde_json::json!({
+                .map(|(chain_id, target_addr, counter_hash)| {
+                    let mut obj = serde_json::json!({
                         "targetChain": doli_core::Output::bridge_chain_name(chain_id),
                         "targetChainId": chain_id,
                         "targetAddress": String::from_utf8(target_addr.clone())
                             .unwrap_or_else(|_| hex::encode(&target_addr))
-                    })
+                    });
+                    if let Some(ch) = counter_hash {
+                        obj["counterHash"] = serde_json::Value::String(ch.to_hex());
+                    }
+                    obj
                 })
         } else {
             None

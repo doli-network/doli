@@ -231,6 +231,40 @@ async fn main() -> Result<()> {
         Commands::TokenInfo { utxo } => {
             cmd_token::cmd_token_info(&rpc_endpoint, &utxo).await?;
         }
+        Commands::BridgeSwap {
+            amount,
+            chain,
+            to,
+            counter_rpc,
+            confirmations,
+        } => {
+            cmd_bridge::cmd_bridge_swap(
+                &wallet,
+                &rpc_endpoint,
+                &amount,
+                &to,
+                &chain,
+                counter_rpc.as_deref(),
+                confirmations,
+            )
+            .await?;
+        }
+        Commands::BridgeStatus {
+            swap_id,
+            btc_rpc,
+            eth_rpc,
+            auto,
+        } => {
+            cmd_bridge::cmd_bridge_status(
+                &wallet,
+                &rpc_endpoint,
+                &swap_id,
+                btc_rpc.as_deref(),
+                eth_rpc.as_deref(),
+                auto,
+            )
+            .await?;
+        }
         Commands::BridgeLock {
             amount,
             hash,
@@ -239,6 +273,7 @@ async fn main() -> Result<()> {
             expiry,
             chain,
             to,
+            counter_hash,
         } => {
             let resolved_hash = match (hash, preimage) {
                 (Some(h), _) => h,
@@ -268,6 +303,7 @@ async fn main() -> Result<()> {
                 expiry,
                 &chain,
                 &to,
+                &counter_hash,
             )
             .await?;
         }
