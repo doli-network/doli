@@ -28,8 +28,14 @@ pub const FUNGIBLE_ASSET_HEADER_SIZE: usize = 42;
 /// Maximum ticker length
 pub const MAX_TICKER_LEN: usize = 12;
 
-/// Bridge HTLC metadata version
-pub const BRIDGE_HTLC_VERSION: u8 = 1;
+/// Bridge HTLC metadata version v1 (no counter_hash)
+pub const BRIDGE_HTLC_VERSION_V1: u8 = 1;
+/// Bridge HTLC metadata version v2 (with counter_hash)
+pub const BRIDGE_HTLC_VERSION_V2: u8 = 2;
+/// Current version for newly created BridgeHTLC outputs
+pub const BRIDGE_HTLC_CURRENT_VERSION: u8 = BRIDGE_HTLC_VERSION_V2;
+/// Size of the counter_hash field in v2 BridgeHTLC metadata
+pub const BRIDGE_HTLC_COUNTER_HASH_SIZE: usize = 32;
 /// Bridge target chain identifiers
 pub const BRIDGE_CHAIN_BITCOIN: u8 = 1;
 pub const BRIDGE_CHAIN_ETHEREUM: u8 = 2;
@@ -391,11 +397,13 @@ impl Output {
         Some((asset_id, total_supply, ticker))
     }
 
-    /// Create a bridge HTLC output for cross-chain atomic swaps.
+    /// Create a bridge HTLC output for cross-chain atomic swaps (v2 with counter_hash).
     ///
-    /// `extra_data` layout: `[condition_bytes][1B version][1B target_chain][1B addr_len][target_address]`
+    /// `extra_data` layout v2: `[condition_bytes][1B version=2][1B target_chain][1B addr_len][target_address][32B counter_hash]`
     /// The condition is a standard HTLC: `(Hashlock AND Timelock) OR TimelockExpiry`.
-    /// The metadata identifies the target chain and recipient for the counterpart swap.
+    /// The metadata identifies the target chain, recipient, and counter-chain hash for the swap.
+    /// `counter_hash` is the hash the target chain understands (SHA256 for Bitcoin, keccak256 for Ethereum).
+    #[allow(clippy::too_many_arguments)]
     pub fn bridge_htlc(
         amount: Amount,
         pubkey_hash: Hash,
@@ -404,6 +412,7 @@ impl Output {
         expiry_height: BlockHeight,
         target_chain: u8,
         target_address: &[u8],
+        counter_hash: Hash,
     ) -> Result<Self, crate::conditions::ConditionError> {
         if lock_height >= expiry_height {
             return Err(crate::conditions::ConditionError::InvalidTimelockRange {
@@ -413,17 +422,19 @@ impl Output {
         }
         let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
         let condition_bytes = cond.encode()?;
-        let metadata_len = BRIDGE_HTLC_HEADER_SIZE + target_address.len();
+        let metadata_len =
+            BRIDGE_HTLC_HEADER_SIZE + target_address.len() + BRIDGE_HTLC_COUNTER_HASH_SIZE;
         if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
             return Err(crate::conditions::ConditionError::EncodingTooLarge {
                 size: MAX_EXTRA_DATA_SIZE + 1,
             });
         }
         let mut extra_data = condition_bytes;
-        extra_data.push(BRIDGE_HTLC_VERSION);
+        extra_data.push(BRIDGE_HTLC_CURRENT_VERSION);
         extra_data.push(target_chain);
         extra_data.push(target_address.len() as u8);
         extra_data.extend_from_slice(target_address);
+        extra_data.extend_from_slice(counter_hash.as_bytes());
         Ok(Self {
             output_type: OutputType::BridgeHTLC,
             amount,
@@ -434,8 +445,9 @@ impl Output {
     }
 
     /// Extract bridge HTLC metadata from extra_data.
-    /// Returns (target_chain, target_address) or None.
-    pub fn bridge_htlc_metadata(&self) -> Option<(u8, Vec<u8>)> {
+    /// Returns (target_chain, target_address, counter_hash) or None.
+    /// Handles both v1 (no counter_hash) and v2 (with counter_hash) layouts.
+    pub fn bridge_htlc_metadata(&self) -> Option<(u8, Vec<u8>, Option<Hash>)> {
         if self.output_type != OutputType::BridgeHTLC || self.extra_data.is_empty() {
             return None;
         }
@@ -447,16 +459,26 @@ impl Output {
         if meta.len() < BRIDGE_HTLC_HEADER_SIZE {
             return None;
         }
-        if meta[0] != BRIDGE_HTLC_VERSION {
-            return None;
-        }
+        let version = meta[0];
         let target_chain = meta[1];
         let addr_len = meta[2] as usize;
         if meta.len() < 3 + addr_len {
             return None;
         }
         let target_address = meta[3..3 + addr_len].to_vec();
-        Some((target_chain, target_address))
+        match version {
+            BRIDGE_HTLC_VERSION_V1 => Some((target_chain, target_address, None)),
+            BRIDGE_HTLC_VERSION_V2 => {
+                let hash_start = 3 + addr_len;
+                if meta.len() < hash_start + BRIDGE_HTLC_COUNTER_HASH_SIZE {
+                    return None;
+                }
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&meta[hash_start..hash_start + 32]);
+                Some((target_chain, target_address, Some(Hash::from_bytes(buf))))
+            }
+            _ => None,
+        }
     }
 
     /// Human-readable name for a bridge target chain ID.

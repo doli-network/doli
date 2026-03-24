@@ -313,7 +313,47 @@ pub(crate) enum Commands {
         utxo: String,
     },
 
-    /// Lock DOLI in a bridge HTLC for cross-chain atomic swap
+    /// Initiate a complete cross-chain atomic swap (generates preimage, locks DOLI)
+    BridgeSwap {
+        /// Amount of DOLI to lock
+        amount: String,
+
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        #[arg(long)]
+        chain: String,
+
+        /// Recipient address on the target chain
+        #[arg(long)]
+        to: String,
+
+        /// Counter-chain RPC endpoint (e.g. http://localhost:8332 for Bitcoin)
+        #[arg(long)]
+        counter_rpc: Option<String>,
+
+        /// Required confirmations on counter-chain (default: 6 BTC, 12 ETH)
+        #[arg(long, default_value = "0")]
+        confirmations: u32,
+    },
+
+    /// Check the status of a bridge swap (reads on-chain state, no watcher needed)
+    BridgeStatus {
+        /// Swap ID: txhash:output_index
+        swap_id: String,
+
+        /// Bitcoin Core RPC endpoint for counter-chain monitoring
+        #[arg(long)]
+        btc_rpc: Option<String>,
+
+        /// Ethereum RPC endpoint for counter-chain monitoring
+        #[arg(long)]
+        eth_rpc: Option<String>,
+
+        /// Auto-claim/refund when conditions are met
+        #[arg(long)]
+        auto: bool,
+    },
+
+    /// Lock DOLI in a bridge HTLC for cross-chain atomic swap (manual, advanced)
     BridgeLock {
         /// Amount of DOLI to lock
         amount: String,
@@ -341,6 +381,10 @@ pub(crate) enum Commands {
         /// Recipient address on the target chain
         #[arg(long)]
         to: String,
+
+        /// Counter-chain hash (SHA256 for Bitcoin, keccak256 for Ethereum). 64 hex chars.
+        #[arg(long)]
+        counter_hash: String,
     },
 
     /// Claim a bridge HTLC with the preimage (receiver side)

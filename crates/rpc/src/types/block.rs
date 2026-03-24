@@ -122,6 +122,9 @@ pub struct TransactionResponse {
     pub inputs: Vec<InputResponse>,
     /// Outputs
     pub outputs: Vec<OutputResponse>,
+    /// Covenant witnesses (one per input, for conditioned output spends)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub covenant_witnesses: Vec<serde_json::Value>,
     /// Transaction size in bytes
     pub size: usize,
     /// Fee (if known)
@@ -161,12 +164,65 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::BurnAsset => "burn_asset",
         };
 
+        // Decode covenant witnesses from tx.extra_data (if present)
+        let covenant_witnesses = (0..tx.inputs.len())
+            .filter_map(|i| {
+                let witness_bytes = tx.get_covenant_witness(i)?;
+                if witness_bytes.is_empty() {
+                    return Some(serde_json::json!(null));
+                }
+                let witness = doli_core::conditions::Witness::decode(witness_bytes).ok()?;
+                let mut obj = serde_json::Map::new();
+                if let Some(preimage) = &witness.preimage {
+                    obj.insert(
+                        "preimage".to_string(),
+                        serde_json::Value::String(hex::encode(preimage)),
+                    );
+                }
+                if !witness.or_branches.is_empty() {
+                    obj.insert(
+                        "branches".to_string(),
+                        serde_json::Value::Array(
+                            witness
+                                .or_branches
+                                .iter()
+                                .map(|&b| {
+                                    serde_json::Value::String(
+                                        if b { "right" } else { "left" }.to_string(),
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+                if !witness.signatures.is_empty() {
+                    obj.insert(
+                        "signatures".to_string(),
+                        serde_json::Value::Array(
+                            witness
+                                .signatures
+                                .iter()
+                                .map(|ws| {
+                                    serde_json::json!({
+                                        "pubkey": hex::encode(ws.pubkey.as_bytes()),
+                                        "signature": hex::encode(ws.signature.as_bytes()),
+                                    })
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+                Some(serde_json::Value::Object(obj))
+            })
+            .collect::<Vec<_>>();
+
         Self {
             hash: tx.hash().to_hex(),
             version: tx.version,
             tx_type: tx_type.to_string(),
             inputs: tx.inputs.iter().map(InputResponse::from).collect(),
             outputs: tx.outputs.iter().map(OutputResponse::from).collect(),
+            covenant_witnesses,
             size: tx.size(),
             fee: None,
             block_hash: None,
@@ -287,13 +343,17 @@ impl From<&doli_core::Output> for OutputResponse {
         let bridge_metadata = if output.output_type == doli_core::OutputType::BridgeHTLC {
             output
                 .bridge_htlc_metadata()
-                .map(|(chain_id, target_addr)| {
-                    serde_json::json!({
+                .map(|(chain_id, target_addr, counter_hash)| {
+                    let mut obj = serde_json::json!({
                         "targetChain": doli_core::Output::bridge_chain_name(chain_id),
                         "targetChainId": chain_id,
                         "targetAddress": String::from_utf8(target_addr.clone())
                             .unwrap_or_else(|_| hex::encode(&target_addr))
-                    })
+                    });
+                    if let Some(ch) = counter_hash {
+                        obj["counterHash"] = serde_json::Value::String(ch.to_hex());
+                    }
+                    obj
                 })
         } else {
             None

@@ -10,6 +10,9 @@ pub enum BridgeError {
     #[error("Bitcoin RPC error: {0}")]
     BitcoinRpc(String),
 
+    #[error("Ethereum RPC error: {0}")]
+    EthereumRpc(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

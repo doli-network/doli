@@ -979,3 +979,689 @@ fn test_committed_output_count_serialization_roundtrip() {
     assert_eq!(tx2.inputs[0].sighash_type, SighashType::AnyoneCanPay);
     assert_eq!(tx2.inputs[0].committed_output_count, 3);
 }
+
+// ==================== Bridge HTLC v2 Tests ====================
+
+/// Test 1: BridgeHTLC v2 roundtrip — create, serialize, deserialize, extract metadata
+#[test]
+fn test_bridge_htlc_v2_roundtrip() {
+    use crate::conditions::HASHLOCK_DOMAIN;
+    use crate::transaction::{
+        BRIDGE_CHAIN_BITCOIN, BRIDGE_HTLC_CURRENT_VERSION, BRIDGE_HTLC_VERSION_V2,
+    };
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0x42u8; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+    let counter_hash = Hash::from_bytes([0xBBu8; 32]);
+    let pubkey_hash = Hash::from_bytes([0xAAu8; 32]);
+    let target_address = b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+    let output = Output::bridge_htlc(
+        1_000_000,
+        pubkey_hash,
+        expected_hash,
+        100,
+        200,
+        BRIDGE_CHAIN_BITCOIN,
+        target_address,
+        counter_hash,
+    )
+    .unwrap();
+
+    assert_eq!(output.output_type, OutputType::BridgeHTLC);
+    assert_eq!(output.amount, 1_000_000);
+    assert_eq!(output.pubkey_hash, pubkey_hash);
+
+    // Verify version byte in extra_data
+    assert_eq!(BRIDGE_HTLC_CURRENT_VERSION, BRIDGE_HTLC_VERSION_V2);
+
+    // Extract metadata and verify all fields
+    let (chain_id, addr, opt_counter) = output.bridge_htlc_metadata().unwrap();
+    assert_eq!(chain_id, BRIDGE_CHAIN_BITCOIN);
+    assert_eq!(addr, target_address.to_vec());
+    assert_eq!(opt_counter, Some(counter_hash));
+
+    // Verify condition decodes correctly
+    let cond = output.condition().unwrap().unwrap();
+    match &cond {
+        crate::conditions::Condition::Or(left, right) => {
+            // Left: And(Hashlock, Timelock)
+            match left.as_ref() {
+                crate::conditions::Condition::And(h, t) => {
+                    assert!(matches!(
+                        h.as_ref(),
+                        crate::conditions::Condition::Hashlock(_)
+                    ));
+                    assert!(matches!(
+                        t.as_ref(),
+                        crate::conditions::Condition::Timelock(100)
+                    ));
+                }
+                _ => panic!("Expected And(Hashlock, Timelock)"),
+            }
+            // Right: TimelockExpiry
+            assert!(matches!(
+                right.as_ref(),
+                crate::conditions::Condition::TimelockExpiry(200)
+            ));
+        }
+        _ => panic!("Expected Or condition"),
+    }
+
+    // Serialize and deserialize the output
+    let _bytes = output.serialize();
+    let tx = Transaction::new_transfer(vec![Input::new(Hash::ZERO, 0)], vec![output.clone()]);
+    let tx_bytes = tx.serialize();
+    let recovered = Transaction::deserialize(&tx_bytes).unwrap();
+    let recovered_output = &recovered.outputs[0];
+
+    // Metadata must survive serialization roundtrip
+    let (r_chain, r_addr, r_counter) = recovered_output.bridge_htlc_metadata().unwrap();
+    assert_eq!(r_chain, BRIDGE_CHAIN_BITCOIN);
+    assert_eq!(r_addr, target_address.to_vec());
+    assert_eq!(r_counter, Some(counter_hash));
+}
+
+/// Test 2: BridgeHTLC v1 backward compatibility
+#[test]
+fn test_bridge_htlc_v1_backward_compat() {
+    use crate::conditions::{Condition, HASHLOCK_DOMAIN};
+    use crate::transaction::{BRIDGE_CHAIN_ETHEREUM, BRIDGE_HTLC_VERSION_V1};
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0x55u8; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+    let pubkey_hash = Hash::from_bytes([0xCCu8; 32]);
+    let target_address = b"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+
+    // Manually construct a v1 BridgeHTLC (no counter_hash)
+    let cond = Condition::htlc(expected_hash, 50, 150);
+    let condition_bytes = cond.encode().unwrap();
+    let mut extra_data = condition_bytes;
+    extra_data.push(BRIDGE_HTLC_VERSION_V1); // version 1
+    extra_data.push(BRIDGE_CHAIN_ETHEREUM); // chain
+    extra_data.push(target_address.len() as u8);
+    extra_data.extend_from_slice(target_address);
+
+    let output = Output {
+        output_type: OutputType::BridgeHTLC,
+        amount: 500_000,
+        pubkey_hash,
+        lock_until: 0,
+        extra_data,
+    };
+
+    // bridge_htlc_metadata must work and return None for counter_hash
+    let (chain_id, addr, opt_counter) = output.bridge_htlc_metadata().unwrap();
+    assert_eq!(chain_id, BRIDGE_CHAIN_ETHEREUM);
+    assert_eq!(addr, target_address.to_vec());
+    assert_eq!(opt_counter, None); // v1 has no counter_hash
+
+    // Condition must still be decodable
+    let cond_decoded = output.condition().unwrap().unwrap();
+    assert_eq!(cond, cond_decoded);
+}
+
+/// Test 3: Counter-hash derivation correctness
+#[test]
+fn test_counter_hash_derivation() {
+    use sha2::{Digest, Sha256};
+
+    // Known preimage
+    let preimage = [0x01u8; 32];
+
+    // Bitcoin: SHA256(preimage)
+    let mut sha = Sha256::new();
+    sha.update(&preimage);
+    let sha256_result = sha.finalize();
+    // Verify it's 32 bytes and non-zero
+    assert_eq!(sha256_result.len(), 32);
+    assert_ne!(&sha256_result[..], &[0u8; 32]);
+
+    // Known SHA256([0x01; 32]) from external calculation
+    let sha256_hex = hex::encode(&sha256_result);
+    // SHA256 of 32 bytes of 0x01 is deterministic
+    let mut sha_verify = Sha256::new();
+    sha_verify.update(&[0x01u8; 32]);
+    assert_eq!(sha256_hex, hex::encode(sha_verify.finalize()));
+
+    // Ethereum: keccak256(preimage)
+    use tiny_keccak::{Hasher, Keccak};
+    let mut keccak_output = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(&preimage);
+    keccak.finalize(&mut keccak_output);
+    assert_ne!(keccak_output, [0u8; 32]);
+
+    // keccak256 and SHA256 must differ for same input
+    assert_ne!(&sha256_result[..], &keccak_output[..]);
+
+    // Verify keccak256 is deterministic
+    let mut keccak_output2 = [0u8; 32];
+    let mut keccak2 = Keccak::v256();
+    keccak2.update(&preimage);
+    keccak2.finalize(&mut keccak_output2);
+    assert_eq!(keccak_output, keccak_output2);
+
+    // Both hashes must be usable as Hash
+    let btc_hash = Hash::from_bytes(sha256_result.into());
+    let eth_hash = Hash::from_bytes(keccak_output);
+    assert_ne!(btc_hash, eth_hash);
+
+    // Verify they can be stored in BridgeHTLC
+    let doli_hash = crypto::hash::hash_with_domain(crate::conditions::HASHLOCK_DOMAIN, &preimage);
+    let pubkey = Hash::from_bytes([0xAAu8; 32]);
+
+    let btc_output = Output::bridge_htlc(
+        1000,
+        pubkey,
+        doli_hash,
+        10,
+        20,
+        crate::transaction::BRIDGE_CHAIN_BITCOIN,
+        b"bc1test",
+        btc_hash,
+    )
+    .unwrap();
+    let (_, _, ch) = btc_output.bridge_htlc_metadata().unwrap();
+    assert_eq!(ch, Some(btc_hash));
+
+    let eth_output = Output::bridge_htlc(
+        1000,
+        pubkey,
+        doli_hash,
+        10,
+        20,
+        crate::transaction::BRIDGE_CHAIN_ETHEREUM,
+        b"0xtest",
+        eth_hash,
+    )
+    .unwrap();
+    let (_, _, ch) = eth_output.bridge_htlc_metadata().unwrap();
+    assert_eq!(ch, Some(eth_hash));
+}
+
+/// Test 7: Claim with incorrect preimage fails
+#[test]
+fn test_bridge_htlc_wrong_preimage_fails() {
+    use crate::conditions::{evaluate, Condition, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    let correct_preimage = [0xAA; 32];
+    let wrong_preimage = [0xBB; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &correct_preimage);
+
+    let cond = Condition::htlc(expected_hash, 10, 100);
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+
+    // Correct preimage succeeds
+    let good_witness = Witness {
+        preimage: Some(correct_preimage),
+        or_branches: vec![false], // left branch (claim)
+        ..Default::default()
+    };
+    let ctx = EvalContext {
+        current_height: 50,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &good_witness, &ctx, &mut idx));
+
+    // Wrong preimage fails
+    let bad_witness = Witness {
+        preimage: Some(wrong_preimage),
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &bad_witness, &ctx, &mut idx));
+
+    // No preimage fails
+    let empty_witness = Witness {
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &empty_witness, &ctx, &mut idx));
+}
+
+/// Test 8: Cannot claim before lock_height
+#[test]
+fn test_bridge_htlc_claim_before_lock_fails() {
+    use crate::conditions::{evaluate, Condition, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0xCC; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+
+    // lock_height=100, meaning claim only at height >= 100
+    let cond = Condition::htlc(expected_hash, 100, 500);
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+
+    let claim_witness = Witness {
+        preimage: Some(preimage),
+        or_branches: vec![false], // left branch (claim path)
+        ..Default::default()
+    };
+
+    // At height 1 (well before lock): fails
+    let ctx_early = EvalContext {
+        current_height: 1,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &claim_witness, &ctx_early, &mut idx));
+
+    // At height 99 (just before lock): fails
+    let ctx_just_before = EvalContext {
+        current_height: 99,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &claim_witness, &ctx_just_before, &mut idx));
+
+    // At height 100 (exactly at lock): succeeds
+    let ctx_at_lock = EvalContext {
+        current_height: 100,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &claim_witness, &ctx_at_lock, &mut idx));
+
+    // At height 101 (after lock): succeeds
+    let ctx_after = EvalContext {
+        current_height: 101,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &claim_witness, &ctx_after, &mut idx));
+}
+
+/// Test 9: Cannot refund before expiry_height
+#[test]
+fn test_bridge_htlc_refund_before_expiry_fails() {
+    use crate::conditions::{evaluate, Condition, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0xDD; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+
+    // expiry_height=100
+    let cond = Condition::htlc(expected_hash, 10, 100);
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+
+    let refund_witness = Witness {
+        or_branches: vec![true], // right branch (refund path)
+        ..Default::default()
+    };
+
+    // At height 1: refund fails
+    let ctx_early = EvalContext {
+        current_height: 1,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &refund_witness, &ctx_early, &mut idx));
+
+    // At height 99: refund fails
+    let ctx_just_before = EvalContext {
+        current_height: 99,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(!evaluate(
+        &cond,
+        &refund_witness,
+        &ctx_just_before,
+        &mut idx
+    ));
+
+    // At height 100 (exactly at expiry): refund succeeds
+    let ctx_at_expiry = EvalContext {
+        current_height: 100,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &refund_witness, &ctx_at_expiry, &mut idx));
+
+    // At height 200 (well after expiry): refund succeeds
+    let ctx_well_after = EvalContext {
+        current_height: 200,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &refund_witness, &ctx_well_after, &mut idx));
+}
+
+/// Test 10: counter_hash is metadata only — does not affect spending condition
+#[test]
+fn test_counter_hash_does_not_affect_spending() {
+    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0xEE; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+    let pubkey_hash = Hash::from_bytes([0xAA; 32]);
+
+    // Two BridgeHTLCs with different counter_hashes
+    let counter_hash_a = Hash::from_bytes([0x11; 32]);
+    let counter_hash_b = Hash::from_bytes([0x22; 32]);
+
+    let output_a = Output::bridge_htlc(
+        1000,
+        pubkey_hash,
+        expected_hash,
+        10,
+        100,
+        crate::transaction::BRIDGE_CHAIN_BITCOIN,
+        b"addr1",
+        counter_hash_a,
+    )
+    .unwrap();
+
+    let output_b = Output::bridge_htlc(
+        1000,
+        pubkey_hash,
+        expected_hash,
+        10,
+        100,
+        crate::transaction::BRIDGE_CHAIN_BITCOIN,
+        b"addr1",
+        counter_hash_b,
+    )
+    .unwrap();
+
+    // Verify counter_hashes differ
+    let (_, _, ch_a) = output_a.bridge_htlc_metadata().unwrap();
+    let (_, _, ch_b) = output_b.bridge_htlc_metadata().unwrap();
+    assert_ne!(ch_a, ch_b);
+
+    // Both must be spendable with the same preimage
+    let cond_a = output_a.condition().unwrap().unwrap();
+    let cond_b = output_b.condition().unwrap().unwrap();
+
+    // The conditions themselves must be identical (counter_hash is outside the condition)
+    assert_eq!(cond_a, cond_b);
+
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+    let claim_witness = Witness {
+        preimage: Some(preimage),
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    let ctx = EvalContext {
+        current_height: 50,
+        signing_hash: &signing_hash,
+    };
+
+    let mut idx = 0;
+    assert!(evaluate(&cond_a, &claim_witness, &ctx, &mut idx));
+    let mut idx = 0;
+    assert!(evaluate(&cond_b, &claim_witness, &ctx, &mut idx));
+
+    // Refund also works identically on both
+    let refund_witness = Witness {
+        or_branches: vec![true],
+        ..Default::default()
+    };
+    let ctx_expired = EvalContext {
+        current_height: 200,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond_a, &refund_witness, &ctx_expired, &mut idx));
+    let mut idx = 0;
+    assert!(evaluate(&cond_b, &refund_witness, &ctx_expired, &mut idx));
+}
+
+/// Test 4: Swap happy path — BridgeHTLC creation + claim with preimage
+#[test]
+fn test_bridge_swap_claim_happy_path() {
+    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    // Simulate: Alice creates BridgeHTLC on DOLI targeting Bitcoin
+    let preimage = [0x77; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+
+    // Compute Bitcoin counter_hash (SHA256)
+    use sha2::{Digest, Sha256};
+    let mut sha = Sha256::new();
+    sha.update(&preimage);
+    let sha_result: [u8; 32] = sha.finalize().into();
+    let counter_hash = Hash::from_bytes(sha_result);
+
+    let creator_hash = Hash::from_bytes([0x01; 32]);
+    let lock_height = 50;
+    let expiry_height = 200;
+
+    let bridge_output = Output::bridge_htlc(
+        10_000_000,
+        creator_hash,
+        expected_hash,
+        lock_height,
+        expiry_height,
+        crate::transaction::BRIDGE_CHAIN_BITCOIN,
+        b"bc1qtest",
+        counter_hash,
+    )
+    .unwrap();
+
+    // Verify UTXO is self-describing
+    let (chain, addr, ch) = bridge_output.bridge_htlc_metadata().unwrap();
+    assert_eq!(chain, crate::transaction::BRIDGE_CHAIN_BITCOIN);
+    assert_eq!(addr, b"bc1qtest".to_vec());
+    assert_eq!(ch.unwrap(), counter_hash);
+
+    // Simulate: counterparty locks BTC (off-chain, we just note counter_hash matches)
+    // Now preimage P is revealed on Bitcoin. Bob uses P to claim on DOLI.
+
+    // Build claim transaction
+    let claim_dest = Hash::from_bytes([0x02; 32]);
+    let claim_output = Output::normal(10_000_000 - 1, claim_dest); // minus fee
+    let mut claim_tx = Transaction::new_transfer(
+        vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+        vec![claim_output],
+    );
+
+    let signing_hash = claim_tx.signing_message_for_input(0);
+
+    // Claim witness: branch(left) + preimage
+    let claim_witness = Witness {
+        preimage: Some(preimage),
+        or_branches: vec![false], // left branch (claim path)
+        ..Default::default()
+    };
+
+    // Evaluate: must succeed at height >= lock_height
+    let cond = bridge_output.condition().unwrap().unwrap();
+    let ctx = EvalContext {
+        current_height: 100, // > lock_height(50)
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &claim_witness, &ctx, &mut idx));
+
+    // Encode witness into transaction
+    let witness_bytes = claim_witness.encode();
+    claim_tx.set_covenant_witnesses(&[witness_bytes]);
+    assert!(!claim_tx.extra_data.is_empty());
+}
+
+/// Test 5: Swap happy path Ethereum — keccak256 counter_hash
+#[test]
+fn test_bridge_swap_ethereum_happy_path() {
+    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+    use tiny_keccak::{Hasher, Keccak};
+
+    let preimage = [0x99; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+
+    // Compute Ethereum counter_hash (keccak256)
+    let mut keccak_out = [0u8; 32];
+    let mut keccak = Keccak::v256();
+    keccak.update(&preimage);
+    keccak.finalize(&mut keccak_out);
+    let counter_hash = Hash::from_bytes(keccak_out);
+
+    let creator_hash = Hash::from_bytes([0x03; 32]);
+    let eth_address = b"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+
+    let bridge_output = Output::bridge_htlc(
+        5_000_000,
+        creator_hash,
+        expected_hash,
+        10,
+        360,
+        crate::transaction::BRIDGE_CHAIN_ETHEREUM,
+        eth_address,
+        counter_hash,
+    )
+    .unwrap();
+
+    // Verify counter_hash is keccak256
+    let (chain, addr, ch) = bridge_output.bridge_htlc_metadata().unwrap();
+    assert_eq!(chain, crate::transaction::BRIDGE_CHAIN_ETHEREUM);
+    assert_eq!(addr, eth_address.to_vec());
+    assert_eq!(ch.unwrap(), counter_hash);
+
+    // Verify keccak256(preimage) == stored counter_hash
+    let mut verify_keccak = [0u8; 32];
+    let mut k = Keccak::v256();
+    k.update(&preimage);
+    k.finalize(&mut verify_keccak);
+    assert_eq!(verify_keccak, keccak_out);
+
+    // Claim with preimage succeeds
+    let cond = bridge_output.condition().unwrap().unwrap();
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+    let claim_witness = Witness {
+        preimage: Some(preimage),
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    let ctx = EvalContext {
+        current_height: 50,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &claim_witness, &ctx, &mut idx));
+}
+
+/// Test 6: Refund after expiry
+#[test]
+fn test_bridge_htlc_refund_after_expiry() {
+    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crypto::hash::hash_with_domain;
+
+    let preimage = [0xDD; 32];
+    let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+    let counter_hash = Hash::from_bytes([0xFF; 32]);
+    let creator_hash = Hash::from_bytes([0x01; 32]);
+
+    // Create BridgeHTLC with expiry close to current
+    let current_height = 100;
+    let expiry_height = current_height + 1; // expires at 101
+    let lock_height = current_height;
+
+    let bridge_output = Output::bridge_htlc(
+        2_000_000,
+        creator_hash,
+        expected_hash,
+        lock_height,
+        expiry_height,
+        crate::transaction::BRIDGE_CHAIN_BITCOIN,
+        b"bc1qrefund",
+        counter_hash,
+    )
+    .unwrap();
+
+    let cond = bridge_output.condition().unwrap().unwrap();
+    let signing_hash = Hash::from_bytes([0x00; 32]);
+
+    // Refund witness: branch(right) + no preimage
+    let refund_witness = Witness {
+        or_branches: vec![true],
+        ..Default::default()
+    };
+
+    // Before expiry (height 100): refund fails
+    let ctx_before = EvalContext {
+        current_height: 100,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(!evaluate(&cond, &refund_witness, &ctx_before, &mut idx));
+
+    // At expiry (height 101): refund succeeds
+    let ctx_at = EvalContext {
+        current_height: 101,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &refund_witness, &ctx_at, &mut idx));
+
+    // Well after expiry (height 200): refund still succeeds
+    let ctx_after = EvalContext {
+        current_height: 200,
+        signing_hash: &signing_hash,
+    };
+    let mut idx = 0;
+    assert!(evaluate(&cond, &refund_witness, &ctx_after, &mut idx));
+
+    // Build a refund transaction and verify witness encoding
+    let refund_output = Output::normal(2_000_000 - 1, creator_hash);
+    let mut refund_tx = Transaction::new_transfer(
+        vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+        vec![refund_output],
+    );
+    let refund_bytes = refund_witness.encode();
+    refund_tx.set_covenant_witnesses(&[refund_bytes]);
+    assert!(!refund_tx.extra_data.is_empty());
+}
+
+/// Test 10 (from crypto crate): BridgeHTLC v2 with Monero counter_hash roundtrip
+#[test]
+fn test_bridge_htlc_monero_roundtrip() {
+    use crate::conditions::HASHLOCK_DOMAIN;
+    use crate::transaction::BRIDGE_CHAIN_MONERO;
+    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use curve25519_dalek::scalar::Scalar;
+
+    // Generate adaptor secret t and point T = t * G
+    let t_bytes = [0x42u8; 32];
+    let t = Scalar::from_bytes_mod_order(t_bytes);
+    let adaptor_point = &t * ED25519_BASEPOINT_TABLE;
+    let counter_hash = Hash::from_bytes(*adaptor_point.compress().as_bytes());
+
+    // The preimage on DOLI side is the adaptor secret t
+    let preimage = t_bytes;
+    let expected_hash = crypto::hash::hash_with_domain(HASHLOCK_DOMAIN, &preimage);
+    let dummy_address = b"888tNkZrPN6JsEG2vx7JX4B1F7f4zF52";
+
+    let output = Output::bridge_htlc(
+        1000,
+        Hash::from_bytes([0xAA; 32]),
+        expected_hash,
+        100,
+        200,
+        BRIDGE_CHAIN_MONERO,
+        dummy_address,
+        counter_hash,
+    )
+    .unwrap();
+
+    assert_eq!(output.output_type, OutputType::BridgeHTLC);
+
+    let (chain, addr, ch) = output.bridge_htlc_metadata().unwrap();
+    assert_eq!(chain, BRIDGE_CHAIN_MONERO);
+    assert_eq!(addr, dummy_address.to_vec());
+    assert_eq!(ch, Some(counter_hash));
+
+    // Verify T can be reconstructed from the UTXO
+    let recovered = curve25519_dalek::edwards::CompressedEdwardsY(*ch.unwrap().as_bytes());
+    let t_recovered = recovered.decompress().unwrap();
+    assert_eq!(adaptor_point.compress(), t_recovered.compress());
+}

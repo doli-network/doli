@@ -1,17 +1,13 @@
-//! Bridge watcher for cross-chain atomic swaps.
+//! Bridge library for cross-chain atomic swaps.
 //!
-//! Monitors DOLI and Bitcoin chains for HTLC activity,
-//! tracking swap state and auto-claiming when preimages are revealed.
+//! Provides chain clients (Bitcoin, Ethereum, DOLI) and swap types
+//! for use by CLI bridge commands. No daemon, no state — stateless library.
 
 pub mod bitcoin;
-pub mod config;
 pub mod doli;
 pub mod error;
-pub mod store;
+pub mod ethereum;
 pub mod swap;
-pub mod watcher;
 
-pub use config::WatcherConfig;
 pub use error::{BridgeError, Result};
 pub use swap::{SwapRecord, SwapRole, SwapState};
-pub use watcher::BridgeWatcher;
