@@ -274,9 +274,27 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
         }
     }
 
-    // 7. Summary
+    // 7. Verify and summarize
     println!();
-    println!("Wiped {} items. Data directory is clean.", deleted);
+    println!("Wiped {} items.", deleted);
+
+    // Re-scan to verify directory is actually clean
+    let mut remaining = Vec::new();
+    collect_deletable(&data_dir, preserve_names, &mut remaining);
+    if remaining.is_empty() {
+        println!("Data directory is clean.");
+    } else {
+        println!("Warning: {} items remain after wipe:", remaining.len());
+        for item in &remaining {
+            let suffix = if item.is_dir() { "/" } else { "" };
+            println!(
+                "  - {}{}",
+                item.strip_prefix(&data_dir).unwrap_or(item).display(),
+                suffix
+            );
+        }
+    }
+
     println!("Start the node to resync from peers.");
 
     Ok(())
