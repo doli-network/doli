@@ -1113,17 +1113,17 @@ fn test_counter_hash_derivation() {
 
     // Bitcoin: SHA256(preimage)
     let mut sha = Sha256::new();
-    sha.update(&preimage);
+    sha.update(preimage);
     let sha256_result = sha.finalize();
     // Verify it's 32 bytes and non-zero
     assert_eq!(sha256_result.len(), 32);
     assert_ne!(&sha256_result[..], &[0u8; 32]);
 
     // Known SHA256([0x01; 32]) from external calculation
-    let sha256_hex = hex::encode(&sha256_result);
+    let sha256_hex = hex::encode(sha256_result);
     // SHA256 of 32 bytes of 0x01 is deterministic
     let mut sha_verify = Sha256::new();
-    sha_verify.update(&[0x01u8; 32]);
+    sha_verify.update([0x01u8; 32]);
     assert_eq!(sha256_hex, hex::encode(sha_verify.finalize()));
 
     // Ethereum: keccak256(preimage)
@@ -1428,7 +1428,7 @@ fn test_bridge_swap_claim_happy_path() {
     // Compute Bitcoin counter_hash (SHA256)
     use sha2::{Digest, Sha256};
     let mut sha = Sha256::new();
-    sha.update(&preimage);
+    sha.update(preimage);
     let sha_result: [u8; 32] = sha.finalize().into();
     let counter_hash = Hash::from_bytes(sha_result);
 

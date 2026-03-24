@@ -192,9 +192,9 @@ pub fn adaptor_sign(
     // Lower 32 bytes -> scalar (with clamping per Ed25519 spec)
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(&expanded[..32]);
-    scalar_bytes[0] &= 248;
-    scalar_bytes[31] &= 127;
-    scalar_bytes[31] |= 64;
+    scalar_bytes[0] &= 0b1111_1000;
+    scalar_bytes[31] &= 0b0111_1111;
+    scalar_bytes[31] |= 0b0100_0000;
     let a = Scalar::from_bytes_mod_order(scalar_bytes);
 
     // Upper 32 bytes -> nonce prefix (for deterministic nonce generation)
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(secret, extracted);
     }
 
-    /// Test 2: adaptor_verify fails with wrong T
+    /// Test 2: `adaptor_verify` fails with wrong T
     #[test]
     fn test_adaptor_verify_wrong_t() {
         let secret = AdaptorSecret::generate();
@@ -400,7 +400,7 @@ mod tests {
         ));
     }
 
-    /// Test 3: adaptor_verify fails with wrong message
+    /// Test 3: `adaptor_verify` fails with wrong message
     #[test]
     fn test_adaptor_verify_wrong_message() {
         let secret = AdaptorSecret::generate();
@@ -418,7 +418,7 @@ mod tests {
         ));
     }
 
-    /// Test 4: adaptor_complete with wrong t produces invalid signature
+    /// Test 4: `adaptor_complete` with wrong t produces invalid signature
     #[test]
     fn test_adaptor_complete_wrong_t() {
         let secret = AdaptorSecret::generate();
@@ -433,7 +433,7 @@ mod tests {
         assert!(crate::signature::verify(msg, &bad_sig, keypair.public_key()).is_err());
     }
 
-    /// Test 5: adaptor_extract with wrong completed signature returns wrong t
+    /// Test 5: `adaptor_extract` with wrong completed signature returns wrong t
     #[test]
     fn test_adaptor_extract_wrong_signature() {
         let secret = AdaptorSecret::generate();
@@ -495,7 +495,7 @@ mod tests {
 
     // ========== GRUPO 3 — BridgeHTLC integration ==========
 
-    /// Test 9: counter_hash for Monero is the compressed adaptor point (32 bytes)
+    /// Test 9: `counter_hash` for Monero is the compressed adaptor point (32 bytes)
     #[test]
     fn test_monero_counter_hash_is_compressed_point() {
         let secret = AdaptorSecret::generate();
@@ -516,7 +516,7 @@ mod tests {
 
     // ========== GRUPO 4 — Additional robustness tests ==========
 
-    /// Test 11: AdaptorSignature serialization roundtrip
+    /// Test 11: `AdaptorSignature` serialization roundtrip
     #[test]
     fn test_adaptor_signature_serialization() {
         let secret = AdaptorSecret::generate();
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(sig1, sig2);
     }
 
-    /// Test 14: adaptor_verify fails with wrong public key
+    /// Test 14: `adaptor_verify` fails with wrong public key
     #[test]
     fn test_adaptor_verify_wrong_pubkey() {
         let secret = AdaptorSecret::generate();
