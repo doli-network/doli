@@ -61,8 +61,8 @@ pub const MAX_CONDITION_OPS: usize = 20;
 pub const MAX_CONDITION_DEPTH: usize = 4;
 
 /// Maximum number of keys in a multisig condition.
-/// Limited by MAX_EXTRA_DATA_SIZE (256 bytes): 2B header + 2B params + N×32B = 256 → N=7.
-pub const MAX_MULTISIG_KEYS: usize = 7;
+/// Limited by MAX_EXTRA_DATA_SIZE (512 bytes): 2B header + 2B params + N×32B = 512 → N=15.
+pub const MAX_MULTISIG_KEYS: usize = 15;
 
 /// Maximum number of sub-conditions in a Threshold.
 pub const MAX_THRESHOLD_CONDITIONS: usize = 5;
@@ -199,7 +199,12 @@ impl std::fmt::Display for ConditionError {
                 )
             }
             Self::EncodingTooLarge { size } => {
-                write!(f, "encoded condition {} bytes exceeds max 256", size)
+                write!(
+                    f,
+                    "encoded condition {} bytes exceeds max {}",
+                    size,
+                    crate::transaction::MAX_EXTRA_DATA_SIZE
+                )
             }
             Self::TrailingBytes { remaining } => {
                 write!(f, "unexpected {} trailing bytes after condition", remaining)

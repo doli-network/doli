@@ -6,7 +6,7 @@
 //! 2. **To-local** (commitment): `Or(And(Sig(counterparty), Hashlock(revocation)), And(Sig(self), Timelock(delay)))`
 //! 3. **HTLC**: `Or(And(Sig(remote), Hashlock(payment)), And(Sig(local), TimelockExpiry(expiry)))`
 //!
-//! All conditions must fit within 256 bytes of `extra_data`.
+//! All conditions must fit within 512 bytes of `extra_data`.
 
 use crypto::Hash;
 use doli_core::conditions::Condition;
@@ -165,7 +165,7 @@ pub fn htlc_received_output(
     Output::conditioned(OutputType::HTLC, amount, local_pubkey_hash, &cond)
 }
 
-/// Verify that a condition encodes within the 256-byte extra_data limit.
+/// Verify that a condition encodes within the extra_data size limit.
 pub fn verify_encoding_size(condition: &Condition) -> Result<usize, ConditionError> {
     let encoded = condition.encode()?;
     if encoded.len() > MAX_EXTRA_DATA_SIZE {

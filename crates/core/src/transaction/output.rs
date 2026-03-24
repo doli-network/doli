@@ -8,7 +8,8 @@ use super::types::OutputType;
 /// Maximum size of extra_data in an output (bytes).
 /// Reserved for future contract types (scripts, conditions, metadata).
 /// Normal and Bond outputs must have empty extra_data.
-pub const MAX_EXTRA_DATA_SIZE: usize = 256;
+/// 512 bytes supports multisig up to 15 signers (was 256 / 7 signers).
+pub const MAX_EXTRA_DATA_SIZE: usize = 512;
 
 /// NFT metadata version (without royalties)
 pub const NFT_METADATA_VERSION: u8 = 1;
@@ -59,7 +60,7 @@ pub struct Output {
     /// Lock until height (0 for normal, >0 for bonds)
     pub lock_until: BlockHeight,
     /// Extensible data for future output types (empty for Normal/Bond).
-    /// Interpretation depends on output_type. Max 256 bytes.
+    /// Interpretation depends on output_type. Max 512 bytes.
     #[serde(default)]
     pub extra_data: Vec<u8>,
 }
