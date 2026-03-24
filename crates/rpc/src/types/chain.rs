@@ -23,6 +23,9 @@ pub struct UtxoResponse {
     pub height: u64,
     /// Whether spendable at current height
     pub spendable: bool,
+    /// Whether this UTXO is from a pending mempool transaction (not yet confirmed)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
     /// Decoded covenant condition (only for conditioned output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<serde_json::Value>,

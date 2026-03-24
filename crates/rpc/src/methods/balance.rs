@@ -158,6 +158,7 @@ impl RpcContext {
                     lock_until: entry.output.lock_until,
                     height: entry.height,
                     spendable: entry.is_spendable_at_with_maturity(current_height, maturity),
+                    pending: false,
                     condition,
                     nft,
                     asset,
@@ -165,6 +166,41 @@ impl RpcContext {
                 }
             })
             .collect();
+
+        // Add pending outputs from mempool transactions owned by this address.
+        // This enables chained transactions: spend change from a pending TX
+        // without waiting for confirmation.
+        let pubkey_hash_crypto = crypto::Hash::from_hex(&pubkey_hash.to_hex())
+            .unwrap_or(crypto::Hash::ZERO);
+        for (_tx_hash, entry) in mempool.iter() {
+            let tx = &entry.tx;
+            let tx_hash_hex = tx.hash().to_hex();
+            for (idx, output) in tx.outputs.iter().enumerate() {
+                if output.pubkey_hash == pubkey_hash_crypto
+                    && output.output_type == doli_core::OutputType::Normal
+                {
+                    // Skip if this output is already being spent by another mempool TX
+                    let outpoint = doli_core::Outpoint::new(tx.hash(), idx as u32);
+                    if mempool.is_outpoint_spent(&outpoint) {
+                        continue;
+                    }
+                    responses.push(UtxoResponse {
+                        tx_hash: tx_hash_hex.clone(),
+                        output_index: idx as u32,
+                        amount: output.amount,
+                        output_type: "normal".to_string(),
+                        lock_until: 0,
+                        height: 0,
+                        spendable: true,
+                        pending: true,
+                        condition: None,
+                        nft: None,
+                        asset: None,
+                        bridge: None,
+                    });
+                }
+            }
+        }
 
         serde_json::to_value(responses).map_err(|e| RpcError::internal_error(e.to_string()))
     }

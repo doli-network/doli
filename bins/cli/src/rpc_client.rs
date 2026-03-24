@@ -74,6 +74,9 @@ pub struct Utxo {
     pub height: u64,
     /// Whether this UTXO is currently spendable
     pub spendable: bool,
+    /// Whether this UTXO is from a pending mempool transaction
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// Chain information

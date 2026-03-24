@@ -347,12 +347,15 @@ pub(crate) async fn cmd_send(
     let from_pubkey_hash = wallet.primary_pubkey_hash();
 
     // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
-    let utxos: Vec<_> = rpc
+    // Includes pending mempool outputs (change from previous sends) for chained transactions.
+    // Confirmed UTXOs first, then pending — prefer confirmed for reliability.
+    let mut utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
         .await?
         .into_iter()
         .filter(|u| u.output_type == "normal" && u.spendable)
         .collect();
+    utxos.sort_by_key(|u| u.pending as u8);
 
     if utxos.is_empty() {
         anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require {} confirmations before they can be spent.", doli_core::consensus::COINBASE_MATURITY);
