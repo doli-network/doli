@@ -155,16 +155,21 @@ pub fn validate_transaction(
         TxType::ProtocolActivation => {
             validate_protocol_activation_data(tx)?;
         }
-        // Pool/lending tx types: Phase 1 stub — validation not yet implemented.
-        TxType::CreatePool
-        | TxType::AddLiquidity
-        | TxType::RemoveLiquidity
-        | TxType::Swap
-        | TxType::CreateLoan
-        | TxType::RepayLoan
-        | TxType::LiquidateLoan => {
+        TxType::CreatePool => {
+            super::pool::validate_create_pool(tx)?;
+        }
+        TxType::Swap => {
+            super::pool::validate_swap(tx)?;
+        }
+        TxType::AddLiquidity => {
+            super::pool::validate_add_liquidity(tx)?;
+        }
+        TxType::RemoveLiquidity => {
+            super::pool::validate_remove_liquidity(tx)?;
+        }
+        TxType::CreateLoan | TxType::RepayLoan | TxType::LiquidateLoan => {
             return Err(ValidationError::InvalidTransaction(
-                "pool/lending transactions not yet supported".to_string(),
+                "lending transactions not yet supported".to_string(),
             ));
         }
     }
@@ -219,8 +224,8 @@ pub(super) fn validate_outputs(
     let mut total: Amount = 0;
 
     for (i, output) in outputs.iter().enumerate() {
-        // Amount must be positive
-        if output.amount == 0 {
+        // Amount must be positive (Pool outputs exempt: reserves tracked in extra_data)
+        if output.amount == 0 && output.output_type != OutputType::Pool {
             return Err(ValidationError::InvalidTransaction(format!(
                 "output {} has zero amount",
                 i
@@ -396,12 +401,40 @@ pub(super) fn validate_outputs(
                     )));
                 }
             }
-            // Pool/LP/Collateral output types: Phase 1 stub — validation not yet implemented.
-            OutputType::Pool | OutputType::LPShare | OutputType::Collateral => {
-                return Err(ValidationError::InvalidTransaction(format!(
-                    "pool/lending output type {} not yet supported",
-                    i
-                )));
+            OutputType::Pool => {
+                if output.extra_data.len() < crate::transaction::POOL_METADATA_SIZE {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "Pool output {} has invalid extra_data size: {} < {}",
+                        i,
+                        output.extra_data.len(),
+                        crate::transaction::POOL_METADATA_SIZE
+                    )));
+                }
+                if output.pool_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "Pool output {} has invalid or undecodable metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::LPShare => {
+                if output.extra_data.len() < crate::transaction::LP_SHARE_METADATA_SIZE {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "LPShare output {} has invalid extra_data size",
+                        i
+                    )));
+                }
+                if output.lp_share_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "LPShare output {} has invalid metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::Collateral => {
+                return Err(ValidationError::InvalidTransaction(
+                    "Collateral outputs not yet supported".to_string(),
+                ));
             }
         }
 

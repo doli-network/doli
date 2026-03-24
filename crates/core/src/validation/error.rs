@@ -260,4 +260,16 @@ pub enum ValidationError {
     /// Protocol activation transaction validation failed.
     #[error("invalid protocol activation: {0}")]
     InvalidProtocolActivation(String),
+
+    /// Pool transaction is invalid.
+    #[error("invalid pool transaction: {0}")]
+    InvalidPool(String),
+
+    /// Swap transaction is invalid.
+    #[error("invalid swap: {0}")]
+    InvalidSwap(String),
+
+    /// Liquidity operation is invalid.
+    #[error("invalid liquidity operation: {0}")]
+    InvalidLiquidity(String),
 }
