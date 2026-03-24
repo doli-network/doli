@@ -55,9 +55,17 @@ fn check_sudo() -> Result<()> {
     if is_macos() {
         return Ok(());
     }
-    // On Linux, check effective UID via `id -u`
-    let uid = get_uid();
-    if uid != "0" {
+    // On Linux, check effective UID (EUID) — NOT get_uid() which returns the real UID.
+    // `id -u` returns EUID, which is 0 under sudo. get_uid() returns SUDO_UID (the
+    // real user), which is never 0 under sudo — causing this check to always fail.
+    let euid = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if euid != "0" {
         bail!("This command requires root privileges.\n  Try: sudo doli service install ...");
     }
     Ok(())
