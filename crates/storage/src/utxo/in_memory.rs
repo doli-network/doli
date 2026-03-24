@@ -200,6 +200,15 @@ impl InMemoryUtxoStore {
         bonds
     }
 
+    /// Get all Pool UTXOs.
+    pub fn get_all_pools(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        self.utxos
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Pool)
+            .map(|(op, entry)| (*op, entry.clone()))
+            .collect()
+    }
+
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
         self.utxos.insert(outpoint, entry);
     }

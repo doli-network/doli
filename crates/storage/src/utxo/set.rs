@@ -143,6 +143,22 @@ impl UtxoSet {
         }
     }
 
+    /// Get the current Pool UTXO by pool ID.
+    /// Pool outputs use pubkey_hash = pool_id, so this is just a filtered lookup.
+    pub fn get_pool_utxo(&self, pool_id: &Hash) -> Option<(Outpoint, UtxoEntry)> {
+        self.get_by_pubkey_hash(pool_id)
+            .into_iter()
+            .find(|(_, entry)| entry.output.output_type == doli_core::OutputType::Pool)
+    }
+
+    /// Get all active Pool UTXOs.
+    pub fn get_all_pools(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        match self {
+            Self::InMemory(store) => store.get_all_pools(),
+            Self::RocksDb(store) => store.get_all_pools(),
+        }
+    }
+
     /// Get all UTXOs for a given pubkey hash (returns owned entries)
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         match self {

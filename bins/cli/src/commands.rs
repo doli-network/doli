@@ -468,6 +468,12 @@ pub(crate) enum Commands {
         yes: bool,
     },
 
+    /// Pool AMM operations (create, swap, add/remove liquidity)
+    Pool {
+        #[command(subcommand)]
+        command: PoolCommands,
+    },
+
     /// Payment channel operations (open, pay, close, list, info)
     Channel {
         #[command(subcommand)]
@@ -511,6 +517,106 @@ pub(crate) enum Commands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PoolCommands {
+    /// Create a new AMM pool with initial liquidity
+    Create {
+        /// FungibleAsset ID (hex) for the token side of the pool
+        #[arg(long)]
+        asset: String,
+
+        /// Initial DOLI amount
+        #[arg(long)]
+        doli: String,
+
+        /// Initial token amount
+        #[arg(long)]
+        tokens: String,
+
+        /// Fee in basis points (default: 30 = 0.3%)
+        #[arg(long, default_value = "30")]
+        fee: u16,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Swap assets through a pool
+    Swap {
+        /// Pool ID (hex)
+        #[arg(long)]
+        pool: String,
+
+        /// Amount to swap
+        #[arg(long)]
+        amount: String,
+
+        /// Direction: a2b (DOLI->token) or b2a (token->DOLI)
+        #[arg(long)]
+        direction: String,
+
+        /// Minimum output amount (slippage protection)
+        #[arg(long)]
+        min_out: Option<String>,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Add liquidity to a pool
+    Add {
+        /// Pool ID (hex)
+        #[arg(long)]
+        pool: String,
+
+        /// DOLI amount to add
+        #[arg(long)]
+        doli: String,
+
+        /// Token amount to add
+        #[arg(long)]
+        tokens: String,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove liquidity from a pool (burn LP shares)
+    Remove {
+        /// Pool ID (hex)
+        #[arg(long)]
+        pool: String,
+
+        /// LP shares to burn
+        #[arg(long)]
+        shares: String,
+
+        /// Minimum DOLI to receive
+        #[arg(long)]
+        min_doli: Option<String>,
+
+        /// Minimum tokens to receive
+        #[arg(long)]
+        min_tokens: Option<String>,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// List all pools
+    List,
+
+    /// Show pool info
+    Info {
+        /// Pool ID (hex)
+        pool_id: String,
     },
 }
 

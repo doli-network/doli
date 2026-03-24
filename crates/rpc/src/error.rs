@@ -31,6 +31,8 @@ pub mod codes {
     pub const UTXO_NOT_FOUND: i32 = -32005;
     /// Producer not found
     pub const PRODUCER_NOT_FOUND: i32 = -32006;
+    /// Pool not found
+    pub const POOL_NOT_FOUND: i32 = -32007;
 }
 
 /// RPC error
@@ -125,6 +127,11 @@ impl RpcError {
     /// Producer not found
     pub fn producer_not_found() -> Self {
         Self::new(codes::PRODUCER_NOT_FOUND, "Producer not found")
+    }
+
+    /// Pool not found
+    pub fn pool_not_found() -> Self {
+        Self::new(codes::POOL_NOT_FOUND, "Pool not found")
     }
 }
 

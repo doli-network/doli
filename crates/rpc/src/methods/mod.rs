@@ -22,6 +22,7 @@ mod dispatch;
 mod governance;
 mod history;
 mod network;
+mod pool;
 mod producer;
 mod schedule;
 mod snapshot;

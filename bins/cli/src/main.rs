@@ -15,6 +15,7 @@ mod cmd_channel;
 mod cmd_governance;
 mod cmd_init;
 mod cmd_nft;
+mod cmd_pool;
 mod cmd_producer;
 mod cmd_service;
 mod cmd_snap;
@@ -146,6 +147,9 @@ async fn main() -> Result<()> {
         }
         Commands::Protocol { command } => {
             cmd_governance::cmd_protocol(&wallet, &rpc_endpoint, command).await?;
+        }
+        Commands::Pool { command } => {
+            cmd_pool::cmd_pool(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Channel { command } => {
             cmd_channel::cmd_channel(&wallet, &rpc_endpoint, &cli.network, command).await?;

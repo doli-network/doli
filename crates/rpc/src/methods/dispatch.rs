@@ -46,6 +46,10 @@ impl RpcContext {
             "getStateRootDebug" => self.get_state_root_debug().await,
             "getUtxoDiff" => self.get_utxo_diff(request.params).await,
             "getStateSnapshot" => self.get_state_snapshot().await,
+            "getPoolInfo" => self.get_pool_info(request.params).await,
+            "getPoolList" => self.get_pool_list(request.params).await,
+            "getPoolPrice" => self.get_pool_price(request.params).await,
+            "getSwapQuote" => self.get_swap_quote(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 
