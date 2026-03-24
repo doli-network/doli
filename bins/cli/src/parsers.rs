@@ -33,9 +33,61 @@ pub(crate) fn parse_condition(s: &str) -> Result<doli_core::Condition> {
 
     let name = s[..open].trim().to_lowercase();
     let args_str = &s[open + 1..close];
-    let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
 
+    // For and/or, split at top-level commas (respecting nested parentheses)
     match name.as_str() {
+        "and" => {
+            let top_args = split_top_level(args_str);
+            if top_args.len() != 2 {
+                anyhow::bail!("and requires exactly 2 args: and(cond1, cond2)");
+            }
+            let left = parse_condition(top_args[0])?;
+            let right = parse_condition(top_args[1])?;
+            Ok(doli_core::Condition::And(Box::new(left), Box::new(right)))
+        }
+        "or" => {
+            let top_args = split_top_level(args_str);
+            if top_args.len() != 2 {
+                anyhow::bail!("or requires exactly 2 args: or(cond1, cond2)");
+            }
+            let left = parse_condition(top_args[0])?;
+            let right = parse_condition(top_args[1])?;
+            Ok(doli_core::Condition::Or(Box::new(left), Box::new(right)))
+        }
+        _ => {
+            // Simple comma split for non-nested conditions
+            let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
+            parse_simple_condition(&name, &args)
+        }
+    }
+}
+
+/// Split a string at top-level commas, respecting nested parentheses.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+/// Parse a simple (non-compositional) condition from name + flat args.
+fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condition> {
+    match name {
         "multisig" => {
             if args.len() < 3 {
                 anyhow::bail!("multisig requires at least 3 args: threshold, key1, key2");
@@ -100,7 +152,7 @@ pub(crate) fn parse_condition(s: &str) -> Result<doli_core::Condition> {
             Ok(doli_core::Condition::vesting(pkh, height))
         }
         _ => anyhow::bail!(
-            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, timelock_expiry, vesting",
+            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, timelock_expiry, vesting, and, or",
             name
         ),
     }

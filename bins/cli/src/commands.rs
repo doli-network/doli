@@ -88,6 +88,10 @@ pub(crate) enum Commands {
         ///   vesting(addr, unlock_height)
         #[arg(short, long)]
         condition: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Spend a covenant-conditioned UTXO
@@ -353,6 +357,43 @@ pub(crate) enum Commands {
         auto: bool,
     },
 
+    /// Buy into an existing bridge swap (counterparty/buyer side)
+    BridgeBuy {
+        /// Swap ID: txhash:output_index (the BridgeHTLC UTXO on DOLI)
+        swap_id: String,
+
+        /// Preimage (64 hex chars) — if you already have it from the counter-chain
+        #[arg(long)]
+        preimage: Option<String>,
+
+        /// Bitcoin Core RPC endpoint (to auto-detect preimage from BTC claim)
+        #[arg(long)]
+        btc_rpc: Option<String>,
+
+        /// Ethereum/BSC RPC endpoint (to auto-detect preimage from ETH claim)
+        #[arg(long)]
+        eth_rpc: Option<String>,
+
+        /// Send claimed DOLI to this address instead of your wallet
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// List active bridge HTLC swaps on-chain
+    BridgeList {
+        /// Filter by target chain (bitcoin, ethereum, bsc, monero, etc.)
+        #[arg(long)]
+        chain: Option<String>,
+
+        /// Number of recent blocks to scan (default: 100)
+        #[arg(long, default_value = "100")]
+        blocks: u64,
+    },
+
     /// Lock DOLI in a bridge HTLC for cross-chain atomic swap (manual, advanced)
     BridgeLock {
         /// Amount of DOLI to lock
@@ -385,6 +426,18 @@ pub(crate) enum Commands {
         /// Counter-chain hash (SHA256 for Bitcoin, keccak256 for Ethereum). 64 hex chars.
         #[arg(long)]
         counter_hash: String,
+
+        /// Multisig threshold (requires --multisig-keys)
+        #[arg(long)]
+        multisig_threshold: Option<u8>,
+
+        /// Comma-separated multisig key addresses (requires --multisig-threshold)
+        #[arg(long)]
+        multisig_keys: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Claim a bridge HTLC with the preimage (receiver side)
@@ -399,12 +452,20 @@ pub(crate) enum Commands {
         /// Send claimed funds to this address instead of your wallet
         #[arg(long)]
         to: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Refund a bridge HTLC after expiry (sender side)
     BridgeRefund {
         /// UTXO containing the bridge HTLC: txhash:output_index
         utxo: String,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Payment channel operations (open, pay, close, list, info)
@@ -533,6 +594,10 @@ pub(crate) enum ProducerCommands {
         /// Show only active producers
         #[arg(short, long)]
         active: bool,
+
+        /// Output format: table (default), json, csv
+        #[arg(long, default_value = "table")]
+        format: String,
     },
 
     /// Add more bonds to increase stake (bond stacking)

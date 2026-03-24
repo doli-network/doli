@@ -40,8 +40,8 @@ pub(crate) async fn cmd_producer(
             handle_bonds(wallet_path, &rpc, pubkey).await?;
         }
 
-        ProducerCommands::List { active } => {
-            handle_list(&rpc, active).await?;
+        ProducerCommands::List { active, format } => {
+            handle_list(&rpc, active, &format).await?;
         }
 
         ProducerCommands::AddBond { count } => {

@@ -297,6 +297,7 @@ pub(crate) async fn cmd_send(
     amount: &str,
     fee: Option<String>,
     condition: Option<String>,
+    yes: bool,
 ) -> Result<()> {
     use crypto::{signature, Hash};
     use doli_core::{Input, Output, Transaction};
@@ -475,6 +476,18 @@ pub(crate) async fn cmd_send(
     println!();
     println!("Transaction hash: {}", tx_hash.to_hex());
     println!("Transaction size: {} bytes", tx_bytes.len());
+
+    // Confirmation prompt
+    if !yes {
+        println!();
+        println!("Proceed? [y/N]");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
 
     // Submit to network
     println!();

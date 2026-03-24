@@ -278,6 +278,8 @@ pub struct OutputResponse {
     /// Bridge HTLC metadata (only for BridgeHTLC output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge: Option<serde_json::Value>,
+    /// Size of extra_data in bytes (useful for debugging/inspection)
+    pub extra_data_size: usize,
 }
 
 impl From<&doli_core::Output> for OutputResponse {
@@ -368,6 +370,7 @@ impl From<&doli_core::Output> for OutputResponse {
             nft: nft_metadata,
             asset: asset_metadata,
             bridge: bridge_metadata,
+            extra_data_size: output.extra_data.len(),
         }
     }
 }

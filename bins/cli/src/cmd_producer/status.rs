@@ -263,48 +263,107 @@ pub(super) async fn handle_bonds(
     Ok(())
 }
 
-pub(super) async fn handle_list(rpc: &RpcClient, active: bool) -> Result<()> {
-    println!("Network Producers");
-    println!("{:-<80}", "");
-    println!();
-
+pub(super) async fn handle_list(rpc: &RpcClient, active: bool, format: &str) -> Result<()> {
     match rpc.get_producers(active).await {
         Ok(producers) => {
             if producers.is_empty() {
-                println!("No producers found.");
-            } else {
-                println!(
-                    "{:<10} {:<20} {:<10} {:<10}",
-                    "Status", "Address", "Bonds", "Era"
-                );
-                println!("{:-<52}", "");
+                if format == "json" {
+                    println!("[]");
+                } else {
+                    println!("No producers found.");
+                }
+                return Ok(());
+            }
 
-                for p in &producers {
-                    let addr_display = if let Ok(pubkey_bytes) = hex::decode(&p.public_key) {
-                        crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
-                            .map(|a| format!("{}...", &a[..16]))
-                            .unwrap_or_else(|_| {
-                                format!(
-                                    "{}...{}",
-                                    &p.public_key[..8],
-                                    &p.public_key[p.public_key.len() - 4..]
-                                )
+            match format {
+                "json" => {
+                    let json_producers: Vec<serde_json::Value> = producers
+                        .iter()
+                        .map(|p| {
+                            let addr = hex::decode(&p.public_key)
+                                .ok()
+                                .and_then(|bytes| {
+                                    crypto::address::from_pubkey(&bytes, address_prefix()).ok()
+                                })
+                                .unwrap_or_else(|| p.public_key.clone());
+                            serde_json::json!({
+                                "status": p.status,
+                                "address": addr,
+                                "publicKey": p.public_key,
+                                "bondCount": p.bond_count,
+                                "bondAmount": p.bond_amount,
+                                "era": p.era,
+                                "registrationHeight": p.registration_height,
                             })
-                    } else {
-                        format!(
-                            "{}...{}",
-                            &p.public_key[..8],
-                            &p.public_key[p.public_key.len() - 4..]
-                        )
-                    };
+                        })
+                        .collect();
                     println!(
-                        "{:<10} {:<20} {:<10} {:<10}",
-                        p.status, addr_display, p.bond_count, p.era
+                        "{}",
+                        serde_json::to_string_pretty(&json_producers)
+                            .unwrap_or_else(|_| "[]".to_string())
                     );
                 }
+                "csv" => {
+                    println!(
+                        "status,address,public_key,bond_count,bond_amount,era,registration_height"
+                    );
+                    for p in &producers {
+                        let addr = hex::decode(&p.public_key)
+                            .ok()
+                            .and_then(|bytes| {
+                                crypto::address::from_pubkey(&bytes, address_prefix()).ok()
+                            })
+                            .unwrap_or_else(|| p.public_key.clone());
+                        println!(
+                            "{},{},{},{},{},{},{}",
+                            p.status,
+                            addr,
+                            p.public_key,
+                            p.bond_count,
+                            p.bond_amount,
+                            p.era,
+                            p.registration_height,
+                        );
+                    }
+                }
+                _ => {
+                    // Default: table format
+                    println!("Network Producers");
+                    println!("{:-<80}", "");
+                    println!();
+                    println!(
+                        "{:<10} {:<20} {:<10} {:<10}",
+                        "Status", "Address", "Bonds", "Era"
+                    );
+                    println!("{:-<52}", "");
 
-                println!();
-                println!("Total: {} producers", producers.len());
+                    for p in &producers {
+                        let addr_display = if let Ok(pubkey_bytes) = hex::decode(&p.public_key) {
+                            crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
+                                .map(|a| format!("{}...", &a[..16]))
+                                .unwrap_or_else(|_| {
+                                    format!(
+                                        "{}...{}",
+                                        &p.public_key[..8],
+                                        &p.public_key[p.public_key.len() - 4..]
+                                    )
+                                })
+                        } else {
+                            format!(
+                                "{}...{}",
+                                &p.public_key[..8],
+                                &p.public_key[p.public_key.len() - 4..]
+                            )
+                        };
+                        println!(
+                            "{:<10} {:<20} {:<10} {:<10}",
+                            p.status, addr_display, p.bond_count, p.era
+                        );
+                    }
+
+                    println!();
+                    println!("Total: {} producers", producers.len());
+                }
             }
         }
         Err(e) => {

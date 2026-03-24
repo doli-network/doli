@@ -76,8 +76,9 @@ async fn main() -> Result<()> {
             amount,
             fee,
             condition,
+            yes,
         } => {
-            cmd_wallet::cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee, condition).await?;
+            cmd_wallet::cmd_send(&wallet, &rpc_endpoint, &to, &amount, fee, condition, yes).await?;
         }
         Commands::Spend {
             utxo,
@@ -265,6 +266,29 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::BridgeBuy {
+            swap_id,
+            preimage,
+            btc_rpc,
+            eth_rpc,
+            to,
+            yes,
+        } => {
+            cmd_bridge::cmd_bridge_buy(
+                &wallet,
+                &rpc_endpoint,
+                &swap_id,
+                preimage.as_deref(),
+                btc_rpc.as_deref(),
+                eth_rpc.as_deref(),
+                to.as_deref(),
+                yes,
+            )
+            .await?;
+        }
+        Commands::BridgeList { chain, blocks } => {
+            cmd_bridge::cmd_bridge_list(&rpc_endpoint, chain.as_deref(), blocks).await?;
+        }
         Commands::BridgeLock {
             amount,
             hash,
@@ -274,6 +298,9 @@ async fn main() -> Result<()> {
             chain,
             to,
             counter_hash,
+            multisig_threshold,
+            multisig_keys,
+            yes,
         } => {
             let resolved_hash = match (hash, preimage) {
                 (Some(h), _) => h,
@@ -304,15 +331,30 @@ async fn main() -> Result<()> {
                 &chain,
                 &to,
                 &counter_hash,
+                multisig_threshold,
+                multisig_keys.as_deref(),
+                yes,
             )
             .await?;
         }
-        Commands::BridgeClaim { utxo, preimage, to } => {
-            cmd_bridge::cmd_bridge_claim(&wallet, &rpc_endpoint, &utxo, &preimage, to.as_deref())
-                .await?;
+        Commands::BridgeClaim {
+            utxo,
+            preimage,
+            to,
+            yes,
+        } => {
+            cmd_bridge::cmd_bridge_claim(
+                &wallet,
+                &rpc_endpoint,
+                &utxo,
+                &preimage,
+                to.as_deref(),
+                yes,
+            )
+            .await?;
         }
-        Commands::BridgeRefund { utxo } => {
-            cmd_bridge::cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo).await?;
+        Commands::BridgeRefund { utxo, yes } => {
+            cmd_bridge::cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo, yes).await?;
         }
         Commands::Service(command) => {
             cmd_service::cmd_service(&cli.network, command)?;

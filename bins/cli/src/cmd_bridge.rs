@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -6,6 +6,54 @@ use crate::common::address_prefix;
 use crate::parsers::parse_witness;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
+
+// =============================================================================
+// SWAP PERSISTENCE
+// =============================================================================
+
+fn swaps_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".doli")
+        .join("swaps")
+}
+
+fn save_swap(
+    swap_id: &str,
+    preimage: &[u8],
+    chain: &str,
+    target_address: &str,
+    counter_hash: &str,
+    lock: u64,
+    expiry: u64,
+) -> Result<()> {
+    let dir = swaps_dir();
+    std::fs::create_dir_all(&dir)?;
+    let safe_id = swap_id.replace(':', "_");
+    let path = dir.join(format!("{}.json", safe_id));
+    let data = serde_json::json!({
+        "swapId": swap_id,
+        "preimage": hex::encode(preimage),
+        "chain": chain,
+        "targetAddress": target_address,
+        "counterHash": counter_hash,
+        "lockHeight": lock,
+        "expiryHeight": expiry,
+        "createdAt": chrono::Utc::now().to_rfc3339()
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&data)?)?;
+    Ok(())
+}
+
+fn load_swap_preimage(swap_id: &str) -> Option<String> {
+    let safe_id = swap_id.replace(':', "_");
+    let path = swaps_dir().join(format!("{}.json", safe_id));
+    let data = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+    json.get("preimage")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
 
 /// Resolve target chain name to chain ID.
 fn resolve_chain_id(chain: &str) -> Result<u8> {
@@ -62,6 +110,9 @@ pub(crate) async fn cmd_bridge_lock(
     chain: &str,
     target_address: &str,
     counter_hash_hex: &str,
+    multisig_threshold: Option<u8>,
+    multisig_keys: Option<&str>,
+    yes: bool,
 ) -> Result<()> {
     use crypto::{signature, Hash};
     use doli_core::{Input, Output, Transaction};
@@ -101,17 +152,50 @@ pub(crate) async fn cmd_bridge_lock(
         Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
 
     // Build bridge HTLC output (v2 with counter_hash)
-    let bridge_output = Output::bridge_htlc(
-        amount_units,
-        from_hash,
-        expected_hash,
-        lock,
-        expiry,
-        chain_id,
-        target_address.as_bytes(),
-        counter_hash,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
+    // Optionally wrap the HTLC condition in And(Multisig(...), Htlc(...))
+    let bridge_output =
+        if let (Some(threshold), Some(keys_str)) = (multisig_threshold, multisig_keys) {
+            let key_strs: Vec<&str> = keys_str.split(',').map(|s| s.trim()).collect();
+            let keys: Vec<crypto::Hash> = key_strs
+                .iter()
+                .map(|k| crate::parsers::resolve_to_hash(k))
+                .collect::<Result<Vec<_>>>()?;
+            let htlc_cond = doli_core::Condition::htlc(expected_hash, lock, expiry);
+            let ms_cond = doli_core::Condition::multisig(threshold, keys);
+            let wrapped = doli_core::Condition::And(Box::new(ms_cond), Box::new(htlc_cond));
+            let condition_bytes = wrapped
+                .encode()
+                .map_err(|e| anyhow::anyhow!("Failed to encode wrapped condition: {:?}", e))?;
+            let metadata_len = 3 + target_address.len() + 32; // version + chain + addr_len + addr + counter_hash
+            if condition_bytes.len() + metadata_len > 512 {
+                anyhow::bail!("Multisig-wrapped HTLC condition too large for extra_data");
+            }
+            let mut extra_data = condition_bytes;
+            extra_data.push(2u8); // BRIDGE_HTLC_CURRENT_VERSION
+            extra_data.push(chain_id);
+            extra_data.push(target_address.len() as u8);
+            extra_data.extend_from_slice(target_address.as_bytes());
+            extra_data.extend_from_slice(counter_hash.as_bytes());
+            doli_core::Output {
+                output_type: doli_core::OutputType::BridgeHTLC,
+                amount: amount_units,
+                pubkey_hash: from_hash,
+                lock_until: 0,
+                extra_data,
+            }
+        } else {
+            Output::bridge_htlc(
+                amount_units,
+                from_hash,
+                expected_hash,
+                lock,
+                expiry,
+                chain_id,
+                target_address.as_bytes(),
+                counter_hash,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?
+        };
 
     // Get spendable normal UTXOs for funding (exclude bonds, conditioned, etc.)
     let fee_units = 1u64;
@@ -177,6 +261,17 @@ pub(crate) async fn cmd_bridge_lock(
     println!("  TX Hash:      {}", tx_hash.to_hex());
     println!("  Size:         {} bytes", tx_bytes.len());
 
+    if !yes {
+        println!();
+        println!("Proceed? [y/N]");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
@@ -205,6 +300,7 @@ pub(crate) async fn cmd_bridge_claim(
     utxo_ref: &str,
     preimage_hex: &str,
     to_address: Option<&str>,
+    yes: bool,
 ) -> Result<()> {
     use crypto::Hash;
     use doli_core::{Input, Output, Transaction};
@@ -297,6 +393,17 @@ pub(crate) async fn cmd_bridge_claim(
     println!("  Fee:      {}", format_balance(fee_units));
     println!("  TX Hash:  {}", tx_hash.to_hex());
 
+    if !yes {
+        println!();
+        println!("Proceed? [y/N]");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
@@ -320,6 +427,7 @@ pub(crate) async fn cmd_bridge_refund(
     wallet_path: &Path,
     rpc_endpoint: &str,
     utxo_ref: &str,
+    yes: bool,
 ) -> Result<()> {
     use crypto::Hash;
     use doli_core::{Input, Output, Transaction};
@@ -426,6 +534,17 @@ pub(crate) async fn cmd_bridge_refund(
     println!("  Amount:  {}", format_balance(refund_amount));
     println!("  Fee:     {}", format_balance(fee_units));
     println!("  TX Hash: {}", tx_hash.to_hex());
+
+    if !yes {
+        println!();
+        println!("Proceed? [y/N]");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
 
     println!();
     println!("Broadcasting transaction...");
@@ -607,6 +726,25 @@ pub(crate) async fn cmd_bridge_swap(
     println!("  P = {}", hex::encode(preimage));
     println!("============================================");
     println!();
+
+    // Save preimage to disk
+    let swap_id = format!("{}:0", result_hash);
+    if let Err(e) = save_swap(
+        &swap_id,
+        &preimage,
+        chain_name,
+        to_address,
+        &counter_hash.to_hex(),
+        lock_height,
+        expiry_height,
+    ) {
+        println!("Warning: failed to save swap data: {}", e);
+    } else {
+        let safe_id = swap_id.replace(':', "_");
+        println!("Preimage saved to ~/.doli/swaps/{}.json", safe_id);
+    }
+    println!();
+
     println!("Monitor with: doli bridge-status {}:0", result_hash);
     if counter_rpc.is_some() {
         println!(
@@ -824,11 +962,21 @@ pub(crate) async fn cmd_bridge_status(
         }
     }
 
-    // Step 5: Auto-claim hint
+    // Step 5: Auto-claim hint (check saved preimages)
     if utxo_exists && doli_state == "Locked" {
-        println!();
-        println!("Tip: If you have the preimage, claim with:");
-        println!("  doli bridge-claim {} --preimage <PREIMAGE>", swap_id);
+        if let Some(saved_preimage) = load_swap_preimage(swap_id) {
+            println!();
+            println!("Saved preimage found: {}", saved_preimage);
+            println!("Claim with:");
+            println!(
+                "  doli bridge-claim {} --preimage {}",
+                swap_id, saved_preimage
+            );
+        } else {
+            println!();
+            println!("Tip: If you have the preimage, claim with:");
+            println!("  doli bridge-claim {} --preimage <PREIMAGE>", swap_id);
+        }
     }
 
     // Step 6: Auto-refund if expired and UTXO still unspent
@@ -898,4 +1046,454 @@ fn find_condition_value(cond: Option<&serde_json::Value>, cond_type: &str, field
         }
     }
     0
+}
+
+// =============================================================================
+// BRIDGE BUY (counterparty/buyer side)
+// =============================================================================
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn cmd_bridge_buy(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    swap_id: &str,
+    preimage_hex: Option<&str>,
+    btc_rpc: Option<&str>,
+    eth_rpc: Option<&str>,
+    to_address: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    use crypto::Hash;
+    use doli_core::{Input, Output, Transaction};
+
+    let wallet = Wallet::load(wallet_path)?;
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to DOLI node at {}", rpc_endpoint);
+    }
+
+    // Parse swap_id (txhash:output_index)
+    let parts: Vec<&str> = swap_id.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("swap_id format: txhash:output_index");
+    }
+    let tx_hash_hex = parts[0];
+    let output_index: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index"))?;
+
+    // Step 1: Read the BridgeHTLC UTXO from DOLI
+    let tx_info = rpc.get_transaction_json(tx_hash_hex).await?;
+    let utxo_output = tx_info
+        .get("outputs")
+        .and_then(|o| o.as_array())
+        .and_then(|arr| arr.get(output_index as usize))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", tx_hash_hex, output_index))?;
+
+    let output_type = utxo_output
+        .get("outputType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if output_type != "bridgeHtlc" {
+        anyhow::bail!("Output is type '{}', expected 'bridgeHtlc'", output_type);
+    }
+
+    let utxo_amount = utxo_output
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Extract bridge metadata
+    let bridge = utxo_output.get("bridge");
+    let target_chain_name = bridge
+        .and_then(|b| b.get("targetChain"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    let target_chain_id = bridge
+        .and_then(|b| b.get("targetChainId"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u8;
+    let target_address = bridge
+        .and_then(|b| b.get("targetAddress"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let counter_hash_hex = bridge
+        .and_then(|b| b.get("counterHash"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Extract condition info (lock/expiry heights)
+    let condition = utxo_output.get("condition");
+    let lock_height = find_condition_value(condition, "timelock", "height")
+        .max(find_condition_value(condition, "timelock", "minHeight"));
+    let expiry_height = find_condition_value(condition, "timelockExpiry", "height").max(
+        find_condition_value(condition, "timelockExpiry", "maxHeight"),
+    );
+
+    // Step 2: Display swap details
+    println!("Bridge Swap Details:");
+    println!("  Swap ID:        {}", swap_id);
+    println!("  Amount:         {} DOLI", format_balance(utxo_amount));
+    println!("  Chain:          {}", target_chain_name);
+    println!("  Target Address: {}", target_address);
+    if !counter_hash_hex.is_empty() {
+        println!("  Counter Hash:   {}", counter_hash_hex);
+    }
+    if lock_height > 0 {
+        println!("  Lock Height:    {} (claim after)", lock_height);
+    }
+    if expiry_height > 0 {
+        println!("  Expiry Height:  {} (refund after)", expiry_height);
+    }
+
+    // Step 3: Resolve preimage
+    let resolved_preimage = if let Some(p) = preimage_hex {
+        Some(p.to_string())
+    } else if let Some(saved) = load_swap_preimage(swap_id) {
+        println!();
+        println!("Found saved preimage: {}", saved);
+        Some(saved)
+    } else if let Some(btc_endpoint) = btc_rpc {
+        // Scan Bitcoin for preimage reveals
+        if target_chain_id == doli_core::transaction::BRIDGE_CHAIN_BITCOIN
+            || target_chain_id == doli_core::transaction::BRIDGE_CHAIN_LITECOIN
+        {
+            println!();
+            println!("Scanning Bitcoin for preimage...");
+            let btc = bridge::bitcoin::BitcoinClient::new(btc_endpoint, "");
+            match btc.get_block_count().await {
+                Ok(btc_height) => {
+                    if !counter_hash_hex.is_empty() {
+                        let watch = vec![(counter_hash_hex.to_string(), swap_id.to_string())];
+                        let start = btc_height.saturating_sub(144);
+                        match btc.scan_for_htlcs(start, &watch).await {
+                            Ok(found) if !found.is_empty() => {
+                                let (htlc, _) = &found[0];
+                                println!(
+                                    "  HTLC found: txid={} confs={}",
+                                    &htlc.txid[..16],
+                                    htlc.confirmations
+                                );
+                                // TODO: extract preimage from BTC spending tx if available
+                                None
+                            }
+                            _ => {
+                                println!("  No HTLC claim found on Bitcoin");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    println!("  Bitcoin error: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else if let Some(eth_endpoint) = eth_rpc {
+        // Scan Ethereum for preimage reveals
+        if target_chain_id == doli_core::transaction::BRIDGE_CHAIN_ETHEREUM
+            || target_chain_id == doli_core::transaction::BRIDGE_CHAIN_BSC
+        {
+            println!();
+            println!("Scanning {} for preimage...", target_chain_name);
+            let eth = bridge::ethereum::EthereumClient::new(eth_endpoint);
+            match eth.get_block_number().await {
+                Ok(eth_height) => {
+                    if !counter_hash_hex.is_empty() {
+                        let start = eth_height.saturating_sub(1000);
+                        match eth.scan_for_htlc(counter_hash_hex, start).await {
+                            Ok(Some(htlc)) => {
+                                println!(
+                                    "  HTLC found: tx={} confs={}",
+                                    &htlc.tx_hash[..16],
+                                    htlc.confirmations
+                                );
+                                // TODO: extract preimage from ETH claim event if available
+                                None
+                            }
+                            _ => {
+                                println!("  No HTLC claim found on {}", target_chain_name);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    println!("  {} error: {}", target_chain_name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Step 5: If no preimage found/provided, print instructions and exit
+    let final_preimage = match resolved_preimage {
+        Some(p) => p,
+        None => {
+            println!();
+            println!("No preimage available. To claim this swap, provide:");
+            println!("  --preimage <64 hex chars>");
+            println!("  --btc-rpc <endpoint>  (to scan Bitcoin for preimage)");
+            println!("  --eth-rpc <endpoint>  (to scan Ethereum for preimage)");
+            return Ok(());
+        }
+    };
+
+    // Validate preimage
+    let preimage_bytes =
+        hex::decode(&final_preimage).map_err(|_| anyhow::anyhow!("Invalid preimage hex"))?;
+    if preimage_bytes.len() != 32 {
+        anyhow::bail!("Preimage must be exactly 32 bytes (64 hex chars)");
+    }
+
+    let fee_units = 1u64;
+    if utxo_amount <= fee_units {
+        anyhow::bail!(
+            "HTLC amount {} is too small to cover fee {}",
+            format_balance(utxo_amount),
+            format_balance(fee_units)
+        );
+    }
+    let claim_amount = utxo_amount - fee_units;
+
+    // Step 6: Confirmation prompt
+    println!();
+    println!("Claim Summary:");
+    println!("  Claim Amount: {}", format_balance(claim_amount));
+    println!("  Fee:          {}", format_balance(fee_units));
+    println!("  Preimage:     {}", final_preimage);
+
+    if !yes {
+        println!();
+        println!("Proceed? [y/N]");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Step 7: Build claim transaction with branch(left)+preimage witness
+    let prev_tx_hash =
+        Hash::from_hex(tx_hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid tx hash"))?;
+
+    let dest_hash = if let Some(addr) = to_address {
+        let (h, _) = crypto::address::decode(addr)
+            .map_err(|_| anyhow::anyhow!("Invalid --to address: {}", addr))?;
+        h
+    } else {
+        let from_pubkey_hash = wallet.primary_pubkey_hash();
+        Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?
+    };
+
+    let input = Input::new(prev_tx_hash, output_index);
+    let mut tx =
+        Transaction::new_transfer(vec![input], vec![Output::normal(claim_amount, dest_hash)]);
+
+    let signing_hash = tx.signing_message_for_input(0);
+    let witness_str = format!("branch(left)+preimage({})", final_preimage);
+    let witness_bytes = parse_witness(&witness_str, &signing_hash)?;
+    tx.set_covenant_witnesses(&[witness_bytes]);
+
+    let keypair = wallet.primary_keypair()?;
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let tx_bytes = tx.serialize();
+    let tx_hex = hex::encode(&tx_bytes);
+
+    // Step 8: Broadcast
+    println!();
+    println!("Broadcasting claim transaction...");
+    match rpc.send_transaction(&tx_hex).await {
+        Ok(result_hash) => {
+            println!("Bridge HTLC claimed successfully!");
+            println!("TX Hash: {}", result_hash);
+            println!();
+            println!("IMPORTANT: Preimage is now public on-chain.");
+            println!("Counterparty can use it to claim their locked funds.");
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Err(anyhow::anyhow!("Bridge buy (claim) failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// BRIDGE LIST (scan recent blocks for bridge HTLCs)
+// =============================================================================
+
+pub(crate) async fn cmd_bridge_list(
+    rpc_endpoint: &str,
+    chain_filter: Option<&str>,
+    scan_blocks: u64,
+) -> Result<()> {
+    let rpc = RpcClient::new(rpc_endpoint);
+
+    if !rpc.ping().await? {
+        anyhow::bail!("Cannot connect to DOLI node at {}", rpc_endpoint);
+    }
+
+    let chain_info = rpc.get_chain_info().await?;
+    let current_height = chain_info.best_height;
+    let start_height = current_height.saturating_sub(scan_blocks).max(1);
+
+    println!(
+        "Scanning blocks {} to {} for bridge HTLCs...",
+        start_height, current_height
+    );
+    println!();
+
+    struct SwapEntry {
+        swap_id: String,
+        amount: u64,
+        chain: String,
+        target_address: String,
+        counter_hash: String,
+        lock: u64,
+        expiry: u64,
+    }
+    let mut entries: Vec<SwapEntry> = Vec::new();
+
+    for height in start_height..=current_height {
+        // Get block by height
+        let block = match rpc
+            .call_raw("getBlockByHeight", serde_json::json!({ "height": height }))
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        let tx_hashes = match block.get("transactions").and_then(|t| t.as_array()) {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>(),
+            None => continue,
+        };
+
+        for tx_hash in &tx_hashes {
+            let tx_info = match rpc.get_transaction_json(tx_hash).await {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
+
+            let outputs = match tx_info.get("outputs").and_then(|o| o.as_array()) {
+                Some(arr) => arr,
+                None => continue,
+            };
+
+            for (idx, output) in outputs.iter().enumerate() {
+                let output_type = output
+                    .get("outputType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if output_type != "bridgeHtlc" {
+                    continue;
+                }
+
+                let amount = output.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+                let bridge = output.get("bridge");
+                let chain_name = bridge
+                    .and_then(|b| b.get("targetChain"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let target_addr = bridge
+                    .and_then(|b| b.get("targetAddress"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let counter_hash = bridge
+                    .and_then(|b| b.get("counterHash"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let condition = output.get("condition");
+                let lock = find_condition_value(condition, "timelock", "height")
+                    .max(find_condition_value(condition, "timelock", "minHeight"));
+                let expiry = find_condition_value(condition, "timelockExpiry", "height").max(
+                    find_condition_value(condition, "timelockExpiry", "maxHeight"),
+                );
+
+                // Apply chain filter
+                if let Some(filter) = chain_filter {
+                    if !chain_name.to_lowercase().contains(&filter.to_lowercase()) {
+                        continue;
+                    }
+                }
+
+                entries.push(SwapEntry {
+                    swap_id: format!("{}:{}", tx_hash, idx),
+                    amount,
+                    chain: chain_name,
+                    target_address: target_addr,
+                    counter_hash,
+                    lock,
+                    expiry,
+                });
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        println!("No bridge HTLCs found in the last {} blocks.", scan_blocks);
+    } else {
+        println!(
+            "{:<20} {:<14} {:<10} {:<20} {:<18} {:<8} {:<8}",
+            "Swap ID", "Amount", "Chain", "Target Address", "Counter Hash", "Lock", "Expiry"
+        );
+        println!("{:-<100}", "");
+
+        for entry in &entries {
+            let swap_display = if entry.swap_id.len() > 18 {
+                format!("{}...", &entry.swap_id[..16])
+            } else {
+                entry.swap_id.clone()
+            };
+            let addr_display = if entry.target_address.len() > 18 {
+                format!("{}...", &entry.target_address[..16])
+            } else {
+                entry.target_address.clone()
+            };
+            let hash_display = if entry.counter_hash.len() > 16 {
+                format!("{}...", &entry.counter_hash[..14])
+            } else {
+                entry.counter_hash.clone()
+            };
+
+            println!(
+                "{:<20} {:<14} {:<10} {:<20} {:<18} {:<8} {:<8}",
+                swap_display,
+                format_balance(entry.amount),
+                entry.chain,
+                addr_display,
+                hash_display,
+                entry.lock,
+                entry.expiry,
+            );
+        }
+
+        println!();
+        println!("Total: {} bridge HTLC(s)", entries.len());
+    }
+
+    Ok(())
 }
