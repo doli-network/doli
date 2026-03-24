@@ -293,10 +293,11 @@ impl Node {
             NetworkEvent::NewBlock(block, source_peer) => {
                 // Skip gossip blocks during snap sync — they cause spurious fork
                 // recovery that corrupts state mid-download.
-                if self.sync_manager.read().await.state().is_snap_syncing() {
+                if self.sync_manager.read().await.is_snap_syncing() {
                     debug!("Ignoring gossip block {} during snap sync", block.hash());
                     return Ok(());
                 }
+
 
                 debug!("Received new block: {} from {}", block.hash(), source_peer);
 

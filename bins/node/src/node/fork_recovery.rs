@@ -463,6 +463,16 @@ impl Node {
             sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
         }
 
+        // Step 5: Rebuild scheduled flags from block store (INC-I-006 defense-in-depth).
+        // After snap sync the store is usually empty so this resets all producers to
+        // scheduled=true (safe default). If blocks exist, scheduling converges
+        // deterministically — prevents stale peer flags from causing slot mismatches.
+        {
+            let tip = self.chain_state.read().await.best_height;
+            let mut ps = self.producer_set.write().await;
+            self.rebuild_scheduled_from_blocks(&mut ps, tip);
+        }
+
         // Step 6: Seed the canonical index so the first post-snap-sync block can
         // call set_canonical_chain without walking into an empty block store.
         self.block_store

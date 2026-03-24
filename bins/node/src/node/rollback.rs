@@ -202,23 +202,17 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub(super) async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, fork_sync_active, gap, stuck_signal) = {
+        let (empty_headers, local_height, gap, stuck_signal) = {
             let mut sync = self.sync_manager.write().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
             let stuck = sync.take_stuck_fork_signal();
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
-                sync.is_fork_sync_active(),
                 gap,
                 stuck,
             )
         };
-
-        // Don't start a new fork sync if one is already running
-        if fork_sync_active {
-            return Ok(false);
-        }
 
         // Need at least 3 fork evidence signals OR a stuck_fork_signal before activating.
         // The stuck_fork_signal is set by cleanup() and block_apply_failed() as a
@@ -295,18 +289,6 @@ impl Node {
                     // Reset empty headers so sync retries with new tip hash
                     let mut sync = self.sync_manager.write().await;
                     sync.reset_empty_headers();
-                    return Ok(true);
-                }
-                Ok(false)
-            }
-            ForkAction::StartForkSync { .. } => {
-                let started = self.sync_manager.write().await.start_fork_sync();
-                if started {
-                    info!(
-                        "Fork sync: binary search for common ancestor initiated \
-                         (empty_headers={}, local_height={}, gap={})",
-                        empty_headers, local_height, gap
-                    );
                     return Ok(true);
                 }
                 Ok(false)

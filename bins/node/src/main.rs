@@ -133,6 +133,7 @@ async fn main() -> Result<()> {
             yes,
             chainspec,
             archive_to,
+            seed,
             no_snap_sync,
             snap_sync,
         }) => {
@@ -163,6 +164,7 @@ async fn main() -> Result<()> {
                 yes,
                 chainspec,
                 archive_to,
+                seed,
                 no_snap_sync,
                 snap_sync,
             )
@@ -267,6 +269,7 @@ async fn main() -> Result<()> {
                 false, // yes
                 None,  // chainspec
                 None,  // archive_to
+                false, // seed
                 false, // no_snap_sync
                 false, // snap_sync
             )

@@ -25,6 +25,9 @@ scripts/install-nt-services.sh
 scripts/stress_test_600.sh
 scripts/stress-batch.sh
 scripts/deploy_producers.sh
+ops/scripts/install-nt-services.sh
+ops/scripts/stress_test_600.sh
+ops/scripts/stress-batch.sh
 
 # Binaries (build from source)
 *.backup
@@ -38,3 +41,7 @@ scripts/deploy_producers.sh
 *.json.key
 *.seed.txt
 *.pem
+.omega/cortex-config.json
+.omega/.cortex-key
+.omega/.cortex-private-key
+.omega/.pending-imports.jsonl

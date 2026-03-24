@@ -19,6 +19,7 @@ Master index for all DOLI protocol specifications.
 |------|-------------|
 | [syncmanager-architecture.md](./syncmanager-architecture.md) | Sync Manager redesign - subtraction-first restructuring of 55-field SyncManager into 5 typed sub-structs, fork recovery coordination, production gate simplification |
 | [sync-recovery-architecture.md](./sync-recovery-architecture.md) | Sync Recovery redesign - recovery gate method (request_genesis_resync), state transition validation, monotonic progress floor extension. Addresses INC-I-005 cascade feedback loops F1-F5 |
+| [sync-redesign-architecture.md](./sync-redesign-architecture.md) | **Sync Manager v3 redesign** — subtraction-first: 8 sync states -> 3, 5 recovery paths -> 3 levels, 11 production gate layers -> 3 checks. Addresses 13 incidents of cascading sync/fork bugs. Supersedes syncmanager-architecture and sync-recovery-architecture. |
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
 
@@ -41,6 +42,7 @@ specs/
 ├── security_model.md                 # Complete security model
 ├── syncmanager-architecture.md        # Sync Manager redesign architecture
 ├── sync-recovery-architecture.md     # Sync Recovery redesign (INC-I-005 cascade fix)
+├── sync-redesign-architecture.md     # Sync Manager v3 — subtraction-first redesign
 ├── single-proposer-architecture.md   # Single-proposer migration architecture
 ├── single-proposer-requirements.md   # Single-proposer migration requirements
 ├── gui-architecture.md               # GUI Desktop Application architecture

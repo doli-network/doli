@@ -42,6 +42,12 @@ pub struct BodyDownloader {
     downloaded: HashMap<Hash, Block>,
     /// Failed request hashes (need retry)
     failed: VecDeque<Hash>,
+    /// Per-hash failure count — give up after MAX_BODY_FAILURES
+    failure_count: HashMap<Hash, u32>,
+    /// Peers that returned empty for a specific hash — don't ask again
+    failed_peers: HashMap<Hash, HashSet<PeerId>>,
+    /// Permanently failed hashes (gave up after too many retries)
+    permanently_failed: HashSet<Hash>,
     /// Round-robin peer index
     next_peer_index: usize,
     /// Total bodies downloaded
@@ -63,6 +69,9 @@ impl BodyDownloader {
             in_flight: HashSet::new(),
             downloaded: HashMap::new(),
             failed: VecDeque::new(),
+            failure_count: HashMap::new(),
+            failed_peers: HashMap::new(),
+            permanently_failed: HashSet::new(),
             next_peer_index: 0,
             total_downloaded: 0,
         }
@@ -134,23 +143,24 @@ impl BodyDownloader {
         // Collect hashes to request (not already in flight)
         let mut hashes = Vec::new();
 
-        // First try failed hashes (skip any still in-flight)
+        // First try failed hashes (skip in-flight and permanently failed)
         while hashes.len() < self.max_bodies_per_request && !self.failed.is_empty() {
             if let Some(hash) = self.failed.pop_front() {
-                if !self.in_flight.contains(&hash) {
+                if !self.in_flight.contains(&hash) && !self.permanently_failed.contains(&hash) {
                     hashes.push(hash);
                 }
-                // If in-flight, silently drop — the invariant check above
-                // guarantees orphaned hashes get reclaimed.
             }
         }
 
-        // Then new hashes
+        // Then new hashes (skip permanently failed)
         for hash in needed.iter() {
             if hashes.len() >= self.max_bodies_per_request {
                 break;
             }
-            if !self.in_flight.contains(hash) && !self.downloaded.contains_key(hash) {
+            if !self.in_flight.contains(hash)
+                && !self.downloaded.contains_key(hash)
+                && !self.permanently_failed.contains(hash)
+            {
                 hashes.push(*hash);
             }
         }
@@ -166,9 +176,21 @@ impl BodyDownloader {
             return None;
         }
 
-        // Select peer (round-robin)
-        let peer_index = self.next_peer_index % free_peers.len();
-        let peer = *free_peers[peer_index];
+        // Select peer — prefer peers that haven't failed for these hashes
+        let first_hash = hashes[0];
+        let failed_for_hash = self.failed_peers.get(&first_hash);
+        let preferred: Vec<&PeerId> = free_peers
+            .iter()
+            .filter(|p| failed_for_hash.map(|f| !f.contains(*p)).unwrap_or(true))
+            .copied()
+            .collect();
+        let candidates = if preferred.is_empty() {
+            &free_peers
+        } else {
+            &preferred
+        };
+        let peer_index = self.next_peer_index % candidates.len();
+        let peer = *candidates[peer_index];
         self.next_peer_index = self.next_peer_index.wrapping_add(1);
 
         // Mark hashes as in-flight
@@ -218,12 +240,30 @@ impl BodyDownloader {
             self.total_downloaded += 1;
         }
 
-        // Mark missing hashes as failed
+        // Mark missing hashes as failed — track per-hash failure count
         for hash in &request.hashes {
             if !received_hashes.contains(hash) {
-                warn!("Missing body {} from peer {}", hash, peer);
                 self.in_flight.remove(hash);
-                self.failed.push_back(*hash);
+
+                // Track which peer failed for this hash
+                self.failed_peers.entry(*hash).or_default().insert(peer);
+
+                let count = self.failure_count.entry(*hash).or_insert(0);
+                *count += 1;
+
+                if *count >= 3 {
+                    warn!(
+                        "Giving up on body {} after {} failures — marking permanently failed",
+                        hash, count
+                    );
+                    self.permanently_failed.insert(*hash);
+                } else {
+                    warn!(
+                        "Missing body {} from peer {} (attempt {}/3)",
+                        hash, peer, count
+                    );
+                    self.failed.push_back(*hash);
+                }
             }
         }
 
@@ -301,12 +341,20 @@ impl BodyDownloader {
         }
     }
 
+    /// Number of permanently failed bodies (gave up after 3 attempts)
+    pub fn permanently_failed_count(&self) -> usize {
+        self.permanently_failed.len()
+    }
+
     /// Clear all state
     pub fn clear(&mut self) {
         self.active_requests.clear();
         self.in_flight.clear();
         self.downloaded.clear();
         self.failed.clear();
+        self.failure_count.clear();
+        self.failed_peers.clear();
+        self.permanently_failed.clear();
     }
 }
 

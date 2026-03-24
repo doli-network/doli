@@ -536,7 +536,14 @@ impl Node {
 
                 // Return headers from start_height+1 up to max_count
                 // Use get_hash_by_height → get_header to avoid deserializing full blocks
-                let end_height = (start_height + max_count as u64).min(best_height);
+                // Seed mode: only serve confirmed blocks (N blocks deep) to prevent
+                // fork propagation to syncing peers.
+                let serve_height = if self.config.seed_mode {
+                    best_height.saturating_sub(consensus::SEED_CONFIRMATION_DEPTH)
+                } else {
+                    best_height
+                };
+                let end_height = (start_height + max_count as u64).min(serve_height);
                 for height in (start_height + 1)..=end_height {
                     if let Ok(Some(hash)) = self.block_store.get_hash_by_height(height) {
                         if let Ok(Some(header)) = self.block_store.get_header(&hash) {

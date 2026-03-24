@@ -1,130 +1,133 @@
-# Developer Progress: DOLI GUI Desktop Application
+# Developer Progress: Sync Recovery Redesign
 
-## Status: Code Review Bug Fixes Complete
+## Status: M4 (State Collapse) Complete
 
-### Code Review Bug Fix Round (2026-03-13)
+### M4: Collapse SyncState from 8 Variants to 3 (2026-03-24)
 
-#### C1: Bincode serialization mismatch -- FIXED (Critical)
-- `crates/wallet/src/tx_builder.rs`: Added u64 LE length prefixes before all Hash (32 bytes) and Signature (64 bytes) fields in `sign_and_build()`
-- `doli-core`'s `Hash` and `Signature` use custom `Serialize` implementations calling `serialize_bytes()`, which in bincode 1.x writes a u64 LE length prefix before the raw bytes
-- Before fix: wallet wrote raw bytes (no prefix), causing deserialization failure at the node
-- After fix: wallet writes `32u64.to_le_bytes()` before every Hash field and `64u64.to_le_bytes()` before every Signature field
-- Verified byte-identical output with `bincode::serialize()` on `doli-core::Transaction`
+**Branch**: `fix/sync-state-explosion-root-causes`
 
-#### C2: register_producer uses wrong transaction type -- FIXED (Critical)
-- `bins/gui/src/commands/producer.rs`: Changed `register_producer()` to return a clear error explaining that VDF proof computation is required and must be done via CLI
-- Registration requires `TxType::Registration` (1) with VDF proof, but the wallet crate cannot compute VDF (no doli-core dependency)
-- Previous code incorrectly used `TxBuilder::build_add_bond()` which produces `TxType::AddBond` (7) -- wrong type entirely
-- All other producer operations (add-bond, withdrawal, simulate, exit, status) remain functional
+#### What was implemented:
 
-#### M1: Cross-crate serialization test -- ADDED (Major)
-- `crates/wallet/tests/serialization_compat.rs`: 4 tests verifying byte-identical output
-- `test_m1_transfer_serialization_matches_core`: Builds Transfer tx via TxBuilder and doli-core, compares byte-for-byte
-- `test_m1_add_bond_serialization_matches_core`: Same for AddBond
-- `test_m1_hash_field_has_length_prefix`: Verifies u64 LE prefix bytes at expected offsets
-- `test_m1_wallet_tx_deserializes_in_core`: Verifies `bincode::deserialize::<Transaction>()` succeeds on wallet output
-- Added `doli-core` and `bincode` as dev-dependencies only (runtime wallet still has no doli-core dep)
+1. **SyncState collapsed from 8 to 3 variants** (mod.rs)
+   - Old: Idle, DownloadingHeaders{...}, DownloadingBodies{...}, Processing{...}, Synchronized, SnapCollectingRoots{...}, SnapDownloading{...}, SnapReady{...}
+   - New: Idle, Syncing { phase: SyncPhase, started_at: Instant }, Synchronized
+   - Data that was embedded in variants moved to SyncPipelineData enum
 
-#### M2: Fix panics in wallet.rs -- FIXED (Major)
-- `crates/wallet/src/wallet.rs`: Changed `primary_pubkey_hash()` and `primary_bech32_address()` from `.expect()` to return `Result<String, anyhow::Error>`
-- Updated all callers in wallet crate tests, wallet_compat tests, and all GUI command files
-- No more panic paths from invalid wallet data
+2. **SyncPhase diagnostic label enum** (mod.rs)
+   - 5 variants: DownloadingHeaders, DownloadingBodies, ProcessingBlocks, SnapCollecting, SnapDownloading
+   - NOT a state machine — just tracks what the sync pipeline is doing
 
-#### M3: Path sanitization for wallet operations -- ADDED (Major)
-- `bins/gui/src/commands/wallet.rs`: Added `validate_path()` helper function
-- Rejects paths containing `..` (directory traversal), null bytes, and empty paths
-- Applied to all path parameters: `create_wallet`, `restore_wallet`, `load_wallet`, `export_wallet`, `import_wallet`
-- Added 6 unit tests for path validation
+3. **SyncPipelineData enum** (mod.rs)
+   - 7 variants: None, Headers{...}, Bodies{...}, Processing{...}, SnapCollecting{...}, SnapDownloading{...}, SnapReady{...}
+   - Carries operational data previously embedded in SyncState variants
+   - Added `pipeline_data` field to SyncManager
 
-#### M4: Fix list_addresses error handling -- FIXED (Major)
-- `bins/gui/src/commands/wallet.rs`: Replaced `unwrap_or_default()` with proper error handling
-- Now uses explicit `hex::decode()` and `from_pubkey()` with match/continue pattern
-- Addresses with invalid public keys are silently skipped instead of producing empty/garbage bech32 addresses
+4. **set_syncing() helper** (mod.rs)
+   - Atomically sets state + pipeline_data
+   - Preserves started_at across phase changes within a sync cycle
 
-#### M5: Fix coins_to_units integer-only parsing -- FIXED (Major)
-- `crates/wallet/src/types.rs`: Rewrote `coins_to_units()` to use integer-only arithmetic
-- Splits on `.`, parses integer and fractional parts separately
-- Pads/truncates fractional to exactly 8 digits
-- Combines: `integer * UNITS_PER_DOLI + fractional`
-- No floating point involved, eliminating precision loss for any valid DOLI amount
-- Handles overflow detection for both parse overflow and arithmetic overflow
+5. **is_valid_transition() simplified** (mod.rs)
+   - With 3 states, all 3x3 transitions are valid — always returns true
 
-### Validation Results
-- `cargo check -p wallet -p doli-gui` -- PASS
-- `cargo test -p wallet` -- 166 tests PASS (146 unit + 4 serialization_compat + 8 tx_builder + 8 wallet_compat)
-- `cargo test -p doli-gui` -- 19 tests PASS
-- `cargo clippy -p wallet -p doli-gui -- -D warnings` -- CLEAN (0 warnings)
-- `cargo build` (full workspace) -- PASS
-- `cargo test` (full workspace) -- All tests PASS, 0 failures
+6. **Source files updated** (sync_engine.rs, snap_sync.rs, cleanup.rs, block_lifecycle.rs)
+   - All state reads/writes converted to new model
+   - State checks use `self.state`, data access uses `self.pipeline_data`
 
-### Node Manager Feature (2026-03-13)
+7. **External callers updated**
+   - event_loop.rs: `state().is_snap_syncing()` -> `is_snap_syncing()`
+   - Re-exports added in sync/mod.rs and lib.rs
 
-#### New: `bins/gui/src/node_manager.rs` -- Embedded Node Process Manager
-- `NodeManager` struct managing doli-node child process lifecycle
-- `new(data_dir, network)` -- construct with RPC port per network (mainnet=8500, testnet=18500, devnet=28500)
-- `start()` -- spawn doli-node as child process; binary lookup: sibling dir then PATH; CREATE_NO_WINDOW on Windows
-- `stop()` -- SIGTERM on Unix (via /bin/kill), TerminateProcess on Windows; 10s timeout then SIGKILL
-- `is_running()` -- check child process via try_wait()
-- `rpc_url()` -- returns http://127.0.0.1:{port}
-- `restart(network)` -- stop, update network/port, start
-- `tail_log(n)` / `tail_log_bytes(max_bytes)` -- read log file tail
-- `Drop` impl for cleanup on app exit
-- `default_data_dir()` -- ~/.doli/ (Unix) or %APPDATA%/doli/ (Windows)
-- 18 unit tests covering construction, ports, URLs, log reading, restart, error cases
+8. **Tests fully updated** (tests.rs)
+   - All 226 tests pass (was 148 before test expansion)
+   - All old SyncState variant references converted to new 3-state model
+   - transition_validation_tests rewritten for 3-state model (all transitions valid)
+   - regression_tests: state assignments now set both state and pipeline_data
+   - State matches: `SyncState::Processing { .. }` -> `SyncState::Syncing { phase: SyncPhase::ProcessingBlocks, .. }`
+   - Data extraction: `SyncState::DownloadingHeaders { headers_count, .. }` -> `SyncPipelineData::Headers { headers_count, .. }`
 
-#### New: `bins/gui/src/commands/node.rs` -- Tauri Node Commands
-- `start_node`, `stop_node`, `node_status`, `restart_node`, `get_node_logs`
-- `NodeStatus` response struct with camelCase serialization
-- 3 unit tests for serialization
+#### Validation:
+- `cargo build --release` -- PASS
+- `cargo clippy -- -D warnings` -- CLEAN
+- `cargo fmt --check` -- CLEAN
+- `cargo test -p network` -- 226 passed, 0 failed
 
-#### Modified: `bins/gui/src/state.rs` -- Added NodeManager to AppState
-- Added `node_manager: RwLock<NodeManager>` field
-- Default RPC URL now points to local node (unless custom override)
-- 3 new integration tests
+---
 
-#### Modified: `bins/gui/src/main.rs` -- Auto-start Node
-- Added `mod node_manager` declaration
-- Registered 5 new node commands
-- Auto-start node on app launch (best-effort, no crash on missing binary)
+### M3: Hard Enforcement + ForkAction Wiring (2026-03-23)
 
-#### Modified: `bins/gui/src/commands/network.rs` -- Network Switch Restarts Node
-- `set_network` now restarts embedded node on the new network
-- Default RPC URL always points to local node
+**Commit**: `2320a24` on `fix/sync-state-explosion-root-causes`
 
-#### Modified: `bins/gui/src/commands/mod.rs` -- Added node module
+#### What was implemented:
 
-#### Updated Frontend Files
-- `bins/gui/src-ui/lib/api/network.js` -- Added 5 node control API functions
-- `bins/gui/src-ui/lib/stores/network.js` -- Added nodeRunning/nodeRpcUrl/nodeLogPath state, refreshNodeStatus(), startNode(), stopNode()
-- `bins/gui/src-ui/lib/components/StatusBar.svelte` -- Shows node status, sync status, peer count
+1. **Step 5: Hard enforcement in set_state()** (mod.rs)
+   - Changed from warn-only (M1) to hard-block: `return;` on invalid transitions
+   - Updated log message to include "BLOCKED" for observability
+   - Updated test T-TV-026 from `test_set_state_warn_only_allows_invalid_transition`
+     to `test_set_state_hard_blocks_invalid_transition` — now asserts state remains
+     unchanged after invalid transition attempt
 
-#### Validation Results
-- `cargo check -p doli-gui` -- PASS
-- `cargo test -p doli-gui` -- 45 tests PASS (19 existing + 26 new)
-- `cargo clippy -p doli-gui -- -D warnings` -- CLEAN
-- `cargo fmt -p doli-gui --check` -- CLEAN
-- `cargo build` (full workspace) -- PASS
+2. **Step 6: Wire ForkAction::recommend_action()** (rollback.rs, block_lifecycle.rs, mod.rs)
+   - Removed `#[allow(dead_code)]` from `ForkAction` enum and `recommend_action()` method
+   - Added `recommend_fork_action()` delegate on SyncManager (block_lifecycle.rs)
+   - Exported `ForkAction` through sync/mod.rs and lib.rs
+   - Imported `ForkAction` in node/mod.rs
+   - Refactored `resolve_shallow_fork()` to call `recommend_fork_action()` and match
+     on returned `ForkAction` variant (RollbackOne, StartForkSync, NeedsGenesisResync, None)
+   - Death spiral check retained as Node-level policy before recommend_fork_action() call
 
-### Previously Completed Milestones
+3. **Step 6b: Reorg floor check** (block_handling.rs)
+   - Added `confirmed_height_floor()` check in `execute_reorg()` after target_height computation
+   - If `floor > 0 && target_height < floor`, reorg is refused with warning
+   - Closes the last gap in monotonic progress enforcement (INC-I-005)
 
-#### M1: Core Infrastructure
-- [x] `crates/wallet/` with full test coverage
-- [x] VDF feature flag approach (wallet crate avoids doli-core)
+4. **Formatting fix** (tests.rs)
+   - Fixed pre-existing formatting issue at line 2140 in regression_tests
 
-#### M2: Tauri App Shell + Wallet
-- [x] `bins/gui/` -- Tauri 2.x binary crate with 35+ command handlers
+#### Validation:
+- `cargo build` -- PASS (full workspace)
+- `cargo clippy -- -D warnings` -- CLEAN (network + doli-node)
+- `cargo fmt --check` -- CLEAN
+- `cargo test --package network --lib sync::manager::tests` -- 148 passed, 0 failed
+- `cargo test --package network --lib` -- 243 passed, 0 failed
+- `cargo test --package doli-core --lib` -- 590 passed, 0 failed
 
-#### M3: Transactions + Balance
-- [x] Transaction commands, address decoding
+---
 
-#### M4: Producer + Rewards
-- [x] Producer and rewards commands
+### M2: Site Migration + Monotonic Floor Extension (2026-03-23)
 
-#### M5: NFT + Bridge + Governance
-- [x] NFT, bridge, governance command stubs
+**Commit**: `db8283d` on `fix/sync-state-explosion-root-causes`
 
-#### Frontend (Svelte 5 SPA)
-- [x] Complete Svelte 5 frontend in `bins/gui/src-ui/`
+---
 
-#### M6: CI/CD Pipeline
-- [x] `.github/workflows/release.yml` -- Multi-platform GUI builds (Linux, macOS, Windows)
+### M1: Recovery Gate + Transition Validation (2026-03-23)
+
+**Commit**: `dc4bb7c` on `fix/sync-state-explosion-root-causes`
+
+#### What was implemented:
+
+1. **RecoveryReason enum** (mod.rs)
+   - 8 variants covering all 9 `needs_genesis_resync = true` write sites
+   - Derives Clone + Debug for test assertions and logging
+
+2. **request_genesis_resync() method** (production_gate.rs)
+   - Central gate with 5 checks: height floor, concurrent recovery, rate limiting, snap availability, snap attempts
+   - Returns bool (true = honored, false = refused)
+   - Follows signal_stuck_fork() pattern (method on SyncManager, not a coordinator struct)
+
+3. **is_valid_transition() method** (mod.rs)
+   - Match-based transition matrix covering all 8 SyncState variants
+   - Idle = universal source/target, forward-only paths for sync pipeline
+   - Self-transitions allowed for: DownloadingBodies, Processing, Synchronized, SnapDownloading
+
+4. **set_state() updated** (mod.rs)
+   - Calls is_valid_transition() before mutation
+   - WARN-ONLY in M1: logs invalid transitions but still executes them
+   - Hard enforcement completed in M3
+
+5. **label_for() static method** (mod.rs)
+   - Refactored state_label() to delegate to static label_for(&SyncState)
+   - Needed by set_state() to log the new state label before mutation
+
+6. **Test gates removed** (tests.rs)
+   - Removed both `#[cfg(feature = "m1_recovery_gate")]` gates
+   - All 120 sync manager tests pass (46 existing + 13 regression + 13 recovery gate + 31 transition validation + 17 other)

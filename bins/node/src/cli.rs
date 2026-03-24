@@ -123,6 +123,12 @@ pub(crate) enum Commands {
         #[arg(long)]
         archive_to: Option<PathBuf>,
 
+        /// Run as a seed node. Seed nodes only serve blocks that are confirmed
+        /// (6+ blocks deep), preventing fork propagation to syncing peers.
+        /// Combine with --no-snap-sync for full archival seed.
+        #[arg(long)]
+        seed: bool,
+
         /// Disable snap sync. The node will only use header-first sync,
         /// preserving full block history. Use on seed/archiver nodes.
         /// Default on mainnet.

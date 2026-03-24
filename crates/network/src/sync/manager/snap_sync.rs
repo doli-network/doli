@@ -1,14 +1,13 @@
 //! Snap sync — state root voting, snapshot download, quorum verification, and fallback
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use libp2p::PeerId;
 use tracing::{info, warn};
 
 use crypto::Hash;
 
-use super::{SyncManager, SyncState, VerifiedSnapshot};
+use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot};
 
 impl SyncManager {
     /// Handle a StateRoot response: add vote and check quorum.
@@ -24,8 +23,8 @@ impl SyncManager {
         state_root: Hash,
     ) {
         // Extract target_height before taking a mutable borrow below.
-        let target_height = match &self.state {
-            SyncState::SnapCollectingRoots { target_height, .. } => *target_height,
+        let target_height = match &self.pipeline_data {
+            SyncPipelineData::SnapCollecting { target_height, .. } => *target_height,
             _ => return,
         };
 
@@ -49,7 +48,7 @@ impl SyncManager {
         // mechanisms make block_hash filtering unnecessary and avoid
         // rejecting valid votes from peers that simply advanced.
 
-        if let SyncState::SnapCollectingRoots { votes, .. } = &mut self.state {
+        if let SyncPipelineData::SnapCollecting { votes, .. } = &mut self.pipeline_data {
             votes.push((peer, block_hash, block_height, state_root));
         } else {
             return;
@@ -74,7 +73,7 @@ impl SyncManager {
         let quorum = std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 15));
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
-            if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+            if let SyncPipelineData::SnapCollecting { votes, .. } = &self.pipeline_data {
                 votes.clone()
             } else {
                 return;
@@ -110,14 +109,14 @@ impl SyncManager {
                 peers_with_info.len(), quorum_root, best_height, download_peer, alternate_peers.len()
             );
             let quorum_root = *quorum_root;
-            self.set_state(
-                SyncState::SnapDownloading {
+            self.set_syncing(
+                SyncPhase::SnapDownloading,
+                SyncPipelineData::SnapDownloading {
                     target_hash: download_hash,
                     target_height: best_height,
                     quorum_root,
                     peer: download_peer,
                     alternate_peers,
-                    started_at: Instant::now(),
                 },
                 "snap_quorum_reached",
             );
@@ -143,11 +142,11 @@ impl SyncManager {
         producer_set: Vec<u8>,
         response_root: Hash,
     ) {
-        if let SyncState::SnapDownloading {
+        if let SyncPipelineData::SnapDownloading {
             target_height,
             quorum_root,
             ..
-        } = &self.state
+        } = &self.pipeline_data
         {
             // INC-I-004 Fix: Reject snapshots whose height is too far below the
             // quorum target. Without this check, a peer that was in the quorum
@@ -175,8 +174,9 @@ impl SyncManager {
                 "[SNAP_SYNC] Snapshot received from {} — height={}, storing as SnapReady (node will verify root)",
                 peer, block_height
             );
-            self.set_state(
-                SyncState::SnapReady {
+            self.set_syncing(
+                SyncPhase::SnapDownloading, // Keep SnapDownloading phase — SnapReady is just data
+                SyncPipelineData::SnapReady {
                     snapshot: VerifiedSnapshot {
                         block_hash,
                         block_height,
@@ -204,13 +204,13 @@ impl SyncManager {
     /// the next alternate peer from the quorum group. If no alternates remain,
     /// fall back to normal sync (which may retry snap sync from scratch).
     pub(super) fn handle_snap_download_error(&mut self, peer: PeerId) {
-        if !matches!(self.state, SyncState::SnapDownloading { .. }) {
+        if !matches!(self.pipeline_data, SyncPipelineData::SnapDownloading { .. }) {
             return;
         }
         self.snap.blacklisted_peers.insert(peer);
-        // Take the state so we can decompose it without borrow issues
-        let old = std::mem::replace(&mut self.state, SyncState::Idle);
-        if let SyncState::SnapDownloading {
+        // Take the pipeline data so we can decompose it without borrow issues
+        let old = std::mem::replace(&mut self.pipeline_data, SyncPipelineData::None);
+        if let SyncPipelineData::SnapDownloading {
             quorum_root,
             mut alternate_peers,
             ..
@@ -221,14 +221,14 @@ impl SyncManager {
                     "[SNAP_SYNC] Peer {} failed, retrying with alternate peer {} at height={} ({} remaining)",
                     peer, next_peer, next_height, alternate_peers.len()
                 );
-                self.set_state(
-                    SyncState::SnapDownloading {
+                self.set_syncing(
+                    SyncPhase::SnapDownloading,
+                    SyncPipelineData::SnapDownloading {
                         target_hash: next_hash,
                         target_height: next_height,
                         quorum_root,
                         peer: next_peer,
                         alternate_peers,
-                        started_at: Instant::now(),
                     },
                     "snap_download_error_retry_alternate",
                 );
@@ -245,8 +245,8 @@ impl SyncManager {
 
     /// Take the ready snapshot for node application. Transitions to Synchronized.
     pub fn take_snap_snapshot(&mut self) -> Option<VerifiedSnapshot> {
-        if matches!(self.state, SyncState::SnapReady { .. }) {
-            let old = std::mem::replace(&mut self.state, SyncState::Idle);
+        if matches!(self.pipeline_data, SyncPipelineData::SnapReady { .. }) {
+            let old = std::mem::replace(&mut self.pipeline_data, SyncPipelineData::None);
             self.set_state(SyncState::Synchronized, "snap_snapshot_applied");
             self.fork.header_blacklisted_peers.clear();
             // Snap sync bypasses the normal sync pipeline, so complete_resync()
@@ -262,7 +262,7 @@ impl SyncManager {
                 started: std::time::Instant::now(),
             };
             info!("[SNAP_SYNC] Production gated: awaiting first canonical gossip block");
-            if let SyncState::SnapReady { snapshot } = old {
+            if let SyncPipelineData::SnapReady { snapshot } = old {
                 Some(snapshot)
             } else {
                 None
@@ -276,7 +276,7 @@ impl SyncManager {
     /// Returns (state_root, Vec<(peer_id, block_hash, height)>) or None.
     #[allow(clippy::type_complexity)]
     pub(super) fn pick_best_snap_group(&self) -> Option<(Hash, Vec<(PeerId, Hash, u64)>)> {
-        let votes = if let SyncState::SnapCollectingRoots { votes, .. } = &self.state {
+        let votes = if let SyncPipelineData::SnapCollecting { votes, .. } = &self.pipeline_data {
             votes
         } else {
             return None;

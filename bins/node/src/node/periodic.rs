@@ -286,86 +286,11 @@ impl Node {
             }
         }
 
-        // FORK SYNC: Binary search for common ancestor when on a dead fork.
-        // Triggers after 3+ consecutive empty header responses. O(log N) recovery.
+        // SHALLOW FORK RECOVERY: Rollback-based recovery when on a dead fork.
+        // Triggers after 3+ consecutive empty header responses.
         if self.resolve_shallow_fork().await? {
-            // Fork sync was just initiated, don't do anything else this tick
+            // Rollback was performed, don't do anything else this tick
             return Ok(());
-        }
-
-        // Drive active fork sync: compare probes with block_store, handle transitions
-        {
-            // Phase 1: Binary search — compare peer's block hash with ours
-            let probe = self.sync_manager.read().await.fork_sync_pending_probe();
-            if let Some((height, peer_hash)) = probe {
-                let our_hash = self.block_store.get_hash_by_height(height).ok().flatten();
-                let result = match our_hash {
-                    Some(h) if h == peer_hash => network::sync::ProbeResult::Match,
-                    Some(_) => network::sync::ProbeResult::Mismatch,
-                    None => network::sync::ProbeResult::NotInStore,
-                };
-                self.sync_manager
-                    .write()
-                    .await
-                    .fork_sync_handle_probe(result);
-            }
-
-            // Transition: search complete — provide ancestor hash from our block_store.
-            //
-            // Store-limited: search stopped because block store doesn't cover the range
-            // (snap sync gap). This is NOT a deep fork — the node just doesn't have
-            // the historical blocks. Re-snap to get back to tip and resume producing.
-            if self.sync_manager.read().await.fork_sync_store_limited() {
-                let floor = self.sync_manager.read().await.store_floor();
-                warn!(
-                    "Fork sync: search limited by block store floor (height {}). \
-                     Skipping — NOT a deep fork. Header-first sync will recover.",
-                    floor
-                );
-                self.sync_manager.write().await.fork_sync_clear();
-                // Do NOT snap sync. Clear fork state and let header-first sync handle it.
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
-
-            // Bottomed out: genuine deep fork — no common ancestor within MAX_FORK_SYNC_DEPTH
-            // and the block store covers the full range. Full resync required.
-            // BYPASS cooldown: fork_sync binary search is conclusive evidence.
-            // Repeating with cooldown gives the same result — skip directly to recovery.
-            if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                warn!("Fork sync: binary search hit floor without finding common ancestor — forcing recovery (bypassing cooldown)");
-                self.sync_manager.write().await.fork_sync_clear();
-                // Bypass cooldown: call recover_from_peers_inner directly.
-                // fork_sync already proved we're on a different chain — waiting
-                // 60s to repeat the same search is pointless.
-                self.recover_from_peers_inner(true).await?;
-                // Set grace period so fork_sync doesn't reactivate immediately
-                // while the node is syncing back up.
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
-            let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
-            if let Some(height) = ancestor_height {
-                let ancestor_hash = self
-                    .block_store
-                    .get_hash_by_height(height)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(self.chain_state.read().await.genesis_hash);
-                self.sync_manager
-                    .write()
-                    .await
-                    .fork_sync_set_ancestor(height, ancestor_hash);
-            }
-
-            // Phase 2/3 complete: take result and execute reorg
-            let result = self.sync_manager.write().await.fork_sync_take_result();
-            if let Some(result) = result {
-                if let Err(e) = self.execute_fork_sync_reorg(result).await {
-                    warn!("Fork sync reorg failed: {}", e);
-                }
-                return Ok(());
-            }
         }
 
         // GENESIS RESYNC: sync manager detected persistent chain rejection.

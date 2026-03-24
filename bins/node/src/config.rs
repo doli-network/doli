@@ -63,6 +63,11 @@ pub struct NodeConfig {
     /// Use --snap-sync to explicitly enable for faster initial sync.
     #[serde(default)]
     pub no_snap_sync: bool,
+
+    /// Seed mode: only serve blocks that are confirmed (N blocks deep).
+    /// Prevents fork propagation to syncing peers.
+    #[serde(default)]
+    pub seed_mode: bool,
 }
 
 impl Default for NodeConfig {
@@ -97,6 +102,7 @@ impl NodeConfig {
             // Snap sync skips block_store, making producer_liveness empty and
             // consensus-critical scheduling divergent between full and snap-synced nodes.
             no_snap_sync: network == Network::Mainnet,
+            seed_mode: false,
         }
     }
 }

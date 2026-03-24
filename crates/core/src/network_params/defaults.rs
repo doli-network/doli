@@ -97,7 +97,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774290394, // Testnet v66 genesis - Full chain reset 2026-03-23
+                genesis_time: 1774348000, // Testnet v70 genesis - INC-I-008 fix v2 chain reset 2026-03-24
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,

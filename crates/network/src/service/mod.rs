@@ -128,8 +128,8 @@ impl NetworkService {
         // Also required for DCUtR hole-punching (relay + direct coexist briefly).
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
-            .with_max_established_incoming(Some(config.max_peers as u32))
-            .with_max_established_outgoing(Some(config.max_peers as u32));
+            .with_max_established_incoming(Some((config.max_peers * 2) as u32))
+            .with_max_established_outgoing(Some((config.max_peers * 2) as u32));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits

@@ -32,6 +32,7 @@ pub(crate) async fn run_node(
     yes: bool,
     chainspec_path: Option<PathBuf>,
     archive_to: Option<PathBuf>,
+    seed: bool,
     no_snap_sync: bool,
     snap_sync: bool,
 ) -> Result<()> {
@@ -129,6 +130,10 @@ pub(crate) async fn run_node(
         // Clear default bootstrap nodes - only use explicitly provided ones
         config.bootstrap_nodes.clear();
         info!("DHT discovery disabled - cleared default bootstrap nodes, only connecting to explicit bootstrap addresses");
+    }
+    if seed {
+        config.seed_mode = true;
+        info!("Seed mode enabled — only serving confirmed blocks to prevent fork propagation");
     }
     if no_snap_sync {
         config.no_snap_sync = true;

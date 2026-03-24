@@ -1,365 +1,207 @@
-# Diagnostic Reasoning Trace: Why Every Fix Creates a New Bug (Meta-Diagnosis)
+# Diagnostic Reasoning Trace: INC-I-005 — FINAL SYSTEMIC ANALYSIS
 
-**Date**: 2026-03-17
-**Session**: Structural meta-diagnosis of the recurring failure pattern
-**Supersedes**: Previous trace (4 specific fork sync bugs)
-**Focus**: Why does fixing one problem always reveal another? What is the architectural root cause?
+**Date**: 2026-03-23
+**Incident**: INC-I-005 (Session 10 — Why 9 fixes failed)
+**Run**: 52
 
----
+## Prior Evidence Summary (from 9 sessions)
 
-## Phase 1: Symptom Characterization
+### Constraint Table from Failed Approaches
 
-### The Meta-Symptom
-
-The user describes a pattern, not a single bug:
-1. Fix snap sync cascade -> production gate deadlock appears
-2. Fix production gate deadlock -> fork sync weight rejection appears
-3. Fix 4 fork sync bugs (39169ae) -> deploy 50 sync nodes -> chain stalls from gossip flooding
-4. User: "You fix one problem and another one arises, and so on. What is this?"
-
-### Current Specific Symptom (chain stall at 112 nodes)
-- Chain at h=1133, s=1561, gap=428 missed blocks
-- Producers flooded with GSet DUPLICATE gossip from 100+ peers
-- Event loop starved: production timer never fires
-- Several original producers (n3, n4, n8) fell behind
-- n10 stuck at genesis
-
-### Key Observation
-The gossip flooding stall is NOT one of the 4 bugs fixed in 39169ae. It is an entirely different failure class (event loop architecture vs sync recovery logic). The fixes did not CAUSE the stall -- the stall was always latent, only triggered at 112-node scale.
-
----
-
-## Phase 2: Evidence Assembly
-
-### Constraint Table (from ALL prior fix rounds)
-
-| Fix Round | What Changed | Scale Tested | Result | What Emerged |
+| # | Fix Attempted | What It Changed | Result | What This Eliminates |
 |---|---|---|---|---|
-| dd77c7e: snap sync cascade fix | Hash::ZERO rejection, quorum validation | 22 nodes | Fixed cascade | Production gate deadlock from exponential grace backoff |
-| Production gate deadlock fix | Grace period cap, resync counter reset | 13 nodes | Fixed deadlock | Fork sync weight rejection (latent since genesis) |
-| 7259d47: 3 sync root causes | network_tip_height recompute, stuck_fork_signal, can_produce() purity | 13 nodes | Fixed 3 specific state machine bugs | 4 deeper fork sync bugs revealed |
-| 39169ae: 4 fork sync bugs | Weight comparison, blacklisting, recovery gate, peer selection | 56 nodes | Fixed fork sync recovery | Chain stall from gossip flooding at 112 nodes |
+| 1 | SyncManager redesign (eliminated 43x/sec destructive restarts) | sync_engine.rs: idempotent start_sync() | Fixed real bug, cascade continued | Root cause is NOT start_sync() thrashing |
+| 2 | chain_state.best_slot fallback after snap sync | apply_block: prev_slot source | Fixed real bug, cascade continued | Root cause is NOT solely prev_slot default |
+| 3 | Snap quorum cap at 15 | snap_sync.rs: quorum formula | Fixed real bug, cascade continued | Root cause is NOT unreachable quorum |
+| 4 | Force snap sync on apply failures | block_lifecycle.rs: needs_genesis_resync | Fixed real bug, cascade continued | Root cause is NOT the gap < threshold check |
+| 5 | Eliminate block store from prev_slot | apply_block: use chain_state instead | Superseded #2, cascade continued | Root cause is NOT block store dependency |
+| 6 | False fork detection in production gate | production_gate.rs: removed 1-2 ahead heuristic | CONFIRMED by trace logs, applied to branch | **NOT YET VALIDATED IN PRODUCTION** |
+| 7 | Rollback death spiral cap (peak_height tracking) | rollback.rs: MAX_SAFE_ROLLBACK=10 | Defense-in-depth, cascade continued | Root cause is NOT unbounded rollback alone |
+| 8 | Disabled automatic snap sync | config: snap threshold = MAX | Broke new node onboarding | Snap sync IS needed — disabling is not viable |
+| 9 | Connection capacity increase | network config: max_peers | Fixed bottleneck, cascade continued | Root cause is NOT peer connection limits |
 
-### Data Flow for Current Stall
+### Critical Observation: Fix #6 IS Applied to Code
 
-```
-[112 nodes, each with gossip_timer at 1-60s intervals]
-    |
-    v
-[Each node broadcasts ALL 13 producer announcements to mesh peers]
-    | GossipSub propagates to mesh_n (6-12) peers per node
-    | Total messages per round: 112 * mesh_n * 13_announcements
-    v
-[Each node receives ~100+ ProducerAnnouncementsReceived events per round]
-    | Each event -> merge_one() * 13 -> 13 signature verifications + DUPLICATE classification
-    v
-[Events queued in mpsc::channel(1024)]
-    |
-    v
-[Node event loop: biased select!]
-    | Branch 1 (HIGHEST PRIORITY): network.next_event() -> handle_network_event()
-    | Branch 2: production_timer.tick() -> try_produce_block()
-    | Branch 3: gossip_timer.tick() -> broadcast more announcements
-    |
-    | With biased select, Branch 1 always wins if events are in the channel.
-    | With 100+ events per gossip round, the channel is never empty.
-    | Production timer NEVER fires.
-    v
-[Chain stalls. No blocks produced.]
-```
+I verified that both `update_production_state()` (line 40-48) and `can_produce()` Layer 9 (line 528-546) now only compare hashes at the SAME height. The "1-2 blocks ahead = disagree" heuristic was removed. **This fix is on the current branch but has NOT been validated in production.**
 
-### Architecture Inventory
+## Explorer Round 1 — Systemic Hypotheses
 
-**SyncManager**: 73 fields, 9 boolean flags, 8 SyncState variants, ~10 counters, ~15 Option<Instant> timestamps.
-- Minimum state combinations: 8 * 2^9 = 4,096 (before counters/timestamps)
-- Practical state space: millions of reachable combinations
-- Each fix adds conditions to prevent one path, potentially opening others
+### H-SYS-1: The cascade is a feedback loop with MULTIPLE independent entry points — conf(0.85, inferred)
 
-**Event loop** (`event_loop.rs`): Single tokio task with `biased select!`
-- Network events: absolute priority (Branch 1)
-- Production: second priority (Branch 2, same task)
-- Gossip: third priority (Branch 3, same task, creates more Branch 1 events)
-- No priority separation between production-critical and non-critical events
+Thesis: The cascade persists because fixing one entry point (e.g., false fork detection) does not prevent other entry points (e.g., apply failure, stuck sync, empty headers) from triggering the same downstream cascade. The system has 5+ independent paths into the same destructive spiral.
 
-**GSet gossip**: Full-state CRDT with O(N^2) convergence messages
-- Each node sends ALL producers to mesh peers every gossip_interval
-- Delta sync only activates for >50 producers (current: 13)
-- Adaptive backoff helps but minimum interval is 1s
+Falsification: If ALL independent entry points are enumerated and blocked, the cascade stops. If blocking only the false fork detection entry point is sufficient, this hypothesis is wrong (H-SYS-2 would be right).
 
-**Sync serving**: Unbounded, same task as production
-- Each SyncRequest event processed synchronously on main task
-- No global limit on concurrent sync requests served
-- 100 peers * 20 req/sec rate limit = 2000 req/sec aggregate
+### H-SYS-2: Fix #6 (false fork detection) IS sufficient but hasn't been deployed — conf(0.40, assumed)
 
-**Event channel**: `mpsc::channel(1024)`, blocking `.send().await`
-- Swarm loop pushes events without admission control
-- Node loop drains events with biased priority
-- 1024-deep buffer means ~1s of production starvation when full
+Thesis: The false fork detection was the PRIMARY entry point accounting for 90%+ of cascade instances. The other entry points (apply failure, stuck sync) are secondary and rarely trigger without the false fork detection as the instigator. Deploying Fix #6 alone would resolve the cascade.
 
----
+Falsification: If the cascade can be triggered WITHOUT false fork detection (e.g., by a clean node joining a 60-node network where no fork exists), then Fix #6 alone is insufficient.
 
-## Explorer Round 1 -- Hypothesis Generation
+### H-SYS-3: The recovery mechanisms themselves CREATE new cascade entry points — conf(0.75, inferred)
 
-### H1: Biased select! + single-task architecture causes production starvation under sustained event load
-- The event loop processes ALL events (gossip, sync, status, blocks) before production
-- At 100+ peers, event volume exceeds production timer cadence
-- Production is literally unreachable while events are pending
-- **Falsification**: Run with un-biased select and observe if production resumes
+Thesis: Each recovery mechanism (snap sync, rollback, fork sync, genesis resync) has post-recovery state that is imperfect — missing blocks, missing undo data, wrong block store floor, AwaitingCanonicalBlock with no timeout. These imperfections trigger the NEXT cascade iteration through a different entry point than the one that was just fixed.
 
-### H2: GSet gossip creates O(N^2) message amplification at the application layer
-- GossipSub message-level dedup prevents same-message delivery, but each node creates UNIQUE messages (different signatures, sequences)
-- Application-level dedup (DUPLICATE) works but happens AFTER deserialization and signature verification
-- The event loop cost is paid regardless of whether the merge succeeds
-- **Falsification**: If GossipSub dedup catches all duplicates before they reach the event channel
+Falsification: If every recovery mechanism produces a state that is indistinguishable from a clean genesis-synced node, this hypothesis is false.
 
-### H3: No backpressure between network layer and node event loop causes buffering-induced starvation
-- The 1024-event channel acts as a shock absorber but delays production
-- Even if events arrive at moderate rate, 1024 pending events = 1024 biased-select iterations before production
-- **Falsification**: If the channel is always nearly empty (events processed faster than produced)
+### H-SYS-4: The 4 unfixed P0/P1 bugs independently maintain the cascade — conf(0.65, inferred)
 
-### H4: Sync request serving on the main task competes directly with production
-- Each of 100 sync-only nodes sends periodic requests
-- Each request is a NetworkEvent::SyncRequest processed on the same biased select
-- Block store I/O (reading headers, bodies, state) is done synchronously
-- **Falsification**: If sync requests are handled on a separate spawned task
+Thesis: The 4 bugs documented in the evidence (--no-snap-sync deadlock, <= vs < weight check, empty headers blacklisting, best_peer_for_recovery quality) are not just secondary issues. Each one is an independent entry point or cascade amplifier that can sustain the cascade even after Fix #6.
 
-### H5: The SyncManager's 73-field state machine creates emergent bugs that local fixes cannot prevent
-- Each fix reasons about one code path but cannot cover all 4,096+ state combinations
-- New fixes add fields (stuck_fork_signal, behind_since, stable_gap_since), growing the state space
-- The "whack-a-mole" pattern is the natural consequence of local reasoning about a global state space
-- **Falsification**: If a state machine refactor (hierarchical, with invariants) stops the pattern
+Falsification: If the 4 bugs can be shown to only trigger in scenarios that Fix #6 prevents, they are secondary.
 
-### H6: The recurring pattern is an artifact of testing at progressively larger scales
-- 13 -> 22 -> 56 -> 112 nodes
-- Each scale reveals latent bugs that were below threshold at smaller scale
-- The bugs are not CAUSED by fixes -- they were always present, just untriggered
-- **Falsification**: If bugs reappear at the SAME scale after fixes (not just at larger scale)
+### H-SYS-5: The fundamental architecture — a state machine with no monotonic progress guarantee — ensures any fix creates a new loop — conf(0.60, inferred)
 
-### H7: GossipSub mesh scaling creates super-linear event growth
-- mesh_n scales with sqrt(N) * 1.5: from 6 at 13 nodes to 16 at 112 nodes
-- Total messages: N * mesh_n = 112 * 16 = 1,792 per round (vs 78 at 13 nodes) = 23x increase
-- But nodes only increased 8.6x, so message growth is super-linear
-- **Falsification**: If mesh_n is fixed at config time and does not dynamically scale
+Thesis: The sync/recovery state machine allows backward transitions (Synchronized -> Idle, Normal -> ResyncInProgress) without a monotonic progress counter. This means the system can cycle through the same states indefinitely without making forward progress. Fixes that address individual transitions don't help because the machine finds other backward paths.
 
----
+Falsification: If a monotonic progress counter (e.g., "highest height reached without resync") is introduced and enforced, the cascade becomes impossible. If the cascade persists even with such a counter, the problem is elsewhere.
 
-## Skeptic Round 1 -- Elimination
+## Skeptic Round 1
 
-### H1: SURVIVES -- Confirmed by code
-- `event_loop.rs:39-40`: `biased` keyword present
-- `event_loop.rs:44-56`: Network event branch is first
-- `event_loop.rs:59-71`: Production timer is second
-- With biased, ready Branch 1 always wins over ready Branch 2
-- **None of the 4 prior fixes touched the event loop architecture.** This is a completely different subsystem.
+### H-SYS-1 (Multiple entry points): SURVIVES — conf(0.85, inferred)
 
-### H2: SURVIVES with refinement
-- GossipSub `duplicate_cache_time: 60s` prevents re-delivery of the SAME message
-- But 112 different nodes produce 112 DIFFERENT messages per round (different senders = different message IDs)
-- Each message contains all 13 producer announcements
-- Application-level GSet merge correctly identifies duplicates but AFTER deserializing and verifying signatures
-- **Cost**: 112 messages * 13 announcements * crypto_verify() = 1,456 signature verifications per gossip round, plus event loop overhead
+Evidence FOR: I traced 6 independent entry points into the cascade (see Phase 3 analysis below). The 9 fixes each addressed at most 1-2 entry points. The system model shows at least 3 entry points that remain unpatched on the current branch.
 
-### H3: WEAKENED
-- The swarm loop uses `.send().await` (blocking when channel full). This is ACCIDENTAL backpressure.
-- When channel is full, swarm blocks, which slows new event arrival. This prevents overflow.
-- But the 1024 events already buffered are sufficient to starve production for many iterations.
-- **Revised**: The issue is not channel overflow but buffered-event draining taking priority over production.
+Evidence AGAINST: None. All 9 failed fixes are consistent with this hypothesis.
 
-### H4: SURVIVES
-- `handle_sync_request()` at `validation_checks.rs:460` runs on the main task. No `tokio::spawn`.
-- Reads block_store (I/O), serializes state (CPU). All synchronous on main task.
-- Rate limiting at 20 req/sec PER PEER. But 100 peers = 2000 req/sec aggregate.
-- Each request becomes a NetworkEvent::SyncRequest queued in the same channel as gossip.
+### H-SYS-2 (Fix #6 alone sufficient): WEAKENED — conf(0.25, inferred -> inferred)
 
-### H5: SURVIVES as meta-explanation for prior rounds
-- 73 fields confirmed by code count
-- 9 boolean flags confirmed: production_blocked, resync_in_progress, has_connected_to_peer, needs_genesis_resync, awaiting_canonical_block, fork_mismatch_detected, post_rollback, post_recovery_grace, stuck_fork_signal
-- BUT: this explains the prior whack-a-mole pattern (Mechanism A), not the current stall (Mechanism B)
+Evidence AGAINST: The cascade was documented at 60 nodes where the thundering herd problem is minimal. But more critically, I traced 3 scenarios where the cascade starts WITHOUT false fork detection:
+1. Snap sync -> AwaitingCanonicalBlock (no timeout) -> cleanup detects "stuck" -> needs_genesis_resync -> new snap sync -> repeat
+2. Apply failure from synced blocks -> block_apply_failed() -> 3 failures -> needs_genesis_resync -> snap sync -> post-snap-sync state mismatch -> more apply failures
+3. Header-first sync -> empty headers (on a fork after snap sync) -> blacklist all peers -> stuck 120s -> snap sync escalation -> repeat
 
-### H6: SURVIVES as partial explanation
-- Each incident was at increasing scale
-- The gossip stall was always latent -- it just was not triggered at 13 nodes
-- But the prior fork sync bugs (Mechanism A) appeared at the SAME 13-node scale, so H6 does not fully explain the pattern
+These three scenarios can trigger without the false fork detection ever firing.
 
-### H7: WEAKENED
-- mesh_n is set at startup from NetworkConfig, not dynamically recalculated
-- Default mesh_n=6, mesh_n_high=12. GossipSub may graft up to 12 mesh peers.
-- The dynamic scaling function (`calculate_adaptive_mesh_params`) exists but appears to be for creating the gossipsub config, not runtime adjustment.
-- Even at mesh_n=6 with 112 nodes: 112 * 6 = 672 messages per gossip round. Still a lot.
+### H-SYS-3 (Recovery creates new entry points): SURVIVES — conf(0.80, inferred)
 
----
+Evidence FOR: I verified in the code:
+- Post-snap-sync: block store has only a seeded canonical index at snap height. No undo data for blocks before snap. Fork sync binary search hits store floor -> `fork_sync_store_limited()` -> unclear recovery.
+- Post-snap-sync: `AwaitingCanonicalBlock` has NO timeout. If the first gossip block doesn't build on tip (it was produced between snap sync and the gossip arriving), node is stuck forever.
+- Post-rollback: `RecoveryPhase::PostRollback` triggers fork_sync, but if fork_sync finds equal-weight chains and is rejected (correctly), the node enters rollback cooldown -> header-first sync -> empty headers -> more rollbacks -> death spiral (capped at 10 by Fix #7, then escalated to snap sync -> back to square 1).
+- Post-genesis-resync: `reset_state_only()` clears UTXO and ProducerSet but preserves block data. But block store indexes are cleared (LAYER 9.5). If the preserved block data was from a fork, the next sync replays those fork blocks -> apply failure -> cascade.
 
-## Explorer Round 2 -- Refined Hypotheses
+Evidence AGAINST: None found. Every recovery path has at least one imperfection that can trigger the next cascade.
 
-### H1a: The biased select is the PROXIMATE cause of the current stall
-- Remove biased -> production resumes (but may introduce race forks)
-- Better: decouple production to its own task -> immune to event volume
+### H-SYS-4 (4 unfixed bugs): WEAKENED — conf(0.45, inferred)
 
-### H1b: Gossip timer shares the biased select, creating a positive feedback loop
-- Gossip timer is Branch 3. When it fires (during a lull in events), it BROADCASTS to peers.
-- Those peers receive the broadcast, creating MORE events in their channels.
-- Some of those events propagate back to this node via mesh forwarding.
-- The gossip timer creates the events that starve the production timer.
+Evidence FOR: The `<=` vs `<` weight check (block_handling.rs:568) uses `<` which is CORRECT for strict-lighter rejection. The code at line 609 handles equal weight correctly with ping-pong prevention. So the P0 "weight check uses `<=` instead of `<`" bug does NOT exist in the current code — it was likely already fixed.
 
-### H2a: Full-set gossip below the delta sync threshold (50 producers) is wasteful
-- 13 producers << 50 threshold
-- Every round sends all 13 announcements, all 13 are DUPLICATE on every receiving node
-- Useful information content per round: ~0 (network is stable)
-- The adaptive gossip backs off to max 60s, but minimum 1s is too fast
+The `--no-snap-sync` deadlock IS real (production_gate.rs:1064-1080 now allows the signal through), so it was already addressed on this branch.
 
-### H4a: Sync request serving has no global admission control
-- Per-peer rate limit: 20 req/sec. Aggregate with 100 peers: 2000 req/sec.
-- No limit on how many sync requests the node serves concurrently.
-- A producer surrounded by 100 sync-only nodes becomes a de facto serving-only node.
+The empty headers blacklisting IS real — first 1-2 empties blacklist the responding peer (sync_engine.rs:797-799), reducing the pool of recovery peers.
 
-### H8 (NEW): The two failure classes (Mechanism A and Mechanism B) have a common root cause: the absence of architectural boundaries
-- **Mechanism A** (same-scale bugs): SyncManager is a 73-field god object with no internal boundaries. Any function can read/write any field. No invariants enforce valid state combinations.
-- **Mechanism B** (scale bugs): The event loop is a single task with no priority boundaries. All events compete for the same processing time. No admission control separates critical (production) from non-critical (gossip, sync serving).
-- **Common root cause**: The system lacks architectural boundaries between concerns. When everything shares everything, any change can affect anything, and any load pattern can displace any function.
+`best_peer_for_recovery()` does have a quality threshold — it requires peers within 10 blocks of network_tip_height (mod.rs:1142). So the P1 bug about "no quality threshold" does NOT exist in the current code.
 
----
+Revised: Only the empty headers blacklisting remains as a genuine unfixed amplifier.
+
+### H-SYS-5 (No monotonic progress): SURVIVES — conf(0.70, inferred)
+
+Evidence FOR: I traced the following backward transitions in the code:
+- `Synchronized -> Idle` (cleanup.rs:146 — stall detection)
+- `DownloadingHeaders/Bodies -> Idle` (cleanup.rs:270,285 — stuck sync reset)
+- `RecoveryPhase::Normal -> ResyncInProgress` (via force_recover_from_peers)
+- Height resets to 0 via `reset_state_only()` (fork_recovery.rs:593-609)
+- Height decreases via `rollback_one_block()` (rollback.rs:12-186)
+
+None of these transitions enforce a "don't go below the high-water mark" invariant. The peak_height tracking (Fix #7) only caps rollback depth at 10, but snap sync resets height to 0 without any similar constraint.
+
+## Explorer Round 2 — Refined (Entry Point Enumeration)
+
+I identified 6 independent entry points into the cascade loop:
+
+### EP-1: False fork detection (PATCHED by Fix #6 on this branch)
+Path: `update_production_state()` -> `fork_mismatch_detected=true` -> `BlockedChainMismatch` -> `try_trigger_fork_recovery()` -> `maybe_auto_resync()` -> `force_recover_from_peers()` -> snap sync -> post-snap-sync state gap -> EP-2 or EP-3
+
+### EP-2: Post-snap-sync AwaitingCanonicalBlock stuck (UNPATCHED)
+Path: Snap sync completes -> `AwaitingCanonicalBlock` (no timeout) -> cleanup sees "stuck" in some sync state -> various timeout-driven escalations -> BUT AwaitingCanonicalBlock is checked BEFORE Layer 3 (syncing) in can_produce(), so production is blocked forever if no canonical gossip block arrives
+
+Why this can happen: After snap sync, the node is at height H. The network is at height H+N. The first gossip block that arrives is for height H+N+1, which builds on hash(H+N), not hash(H). So `block.header.prev_hash != state.best_hash` (block_handling.rs:28). The block is cached as orphan, NOT applied. `clear_awaiting_canonical_block()` (line 169) is never called because it's only called after `apply_block` succeeds on a gossip block.
+
+The node must first sync from H to H+N via header-first sync (which DOES work — it applies blocks and advances height). But header-first sync calls `apply_block` with `ValidationMode::Light`, and `clear_awaiting_canonical_block` is NOT called after synced blocks — only after gossip blocks (line 164-169 in block_handling.rs, after the gossip path succeeds).
+
+Wait — let me verify this more carefully.
+
+### EP-3: Apply failure cascade (PARTIALLY PATCHED by Fix #4)
+Path: Synced block fails apply (validation error, state mismatch) -> `block_apply_failed()` -> after 3 failures, `needs_genesis_resync=true` -> `force_recover_from_peers()` -> snap sync -> height reset -> try to sync again -> if the same blocks fail again -> same cascade
+
+### EP-4: Empty headers escalation (PARTIALLY PATCHED)
+Path: Header-first sync -> peer returns empty headers (our tip is on fork) -> blacklist peer -> eventually ALL peers blacklisted -> stuck 120s -> if gap>12, escalate to snap sync -> snap sync -> post-snap-sync state -> new empty headers -> repeat
+
+### EP-5: Stuck sync timeout escalation (PARTIALLY PATCHED)
+Path: Sync stuck for 30s (stuck_threshold in cleanup.rs:162-166) -> hard reset to Idle -> restart sync -> if blocks can't be applied (fork) -> stuck again -> after 120s (cleanup.rs:457), force snap sync or fork_sync -> cascade
+
+### EP-6: Height offset detection false positive (UNPATCHED)
+Path: Node is syncing (blocks being applied) with gap >= 2 for >120s -> cleanup.rs:500 triggers `needs_genesis_resync=true` -> snap sync -> but the node was making genuine progress! The gap was stable because both the node AND the network were advancing. This is correct behavior, not a bug, but the cleanup heuristic can't distinguish "stable gap during active sync" from "height offset from bad reorg."
 
 ## Skeptic Round 2
 
-### H1a: CONFIRMED
-- Direct code evidence of biased select with network-first priority
-- Production is unreachable when event channel is non-empty
-- At 112 nodes, event channel is effectively always non-empty
+### EP-1 (False fork detection): PATCHED — conf(0.90, measured)
+Code verified. Both `update_production_state()` and `can_produce()` now only compare at same height. But NOT validated in production with 60+ nodes.
 
-### H1b: CONFIRMED
-- Gossip timer at event_loop.rs:76 fires on the same select
-- When it fires (lines 83-170), it broadcasts to peers via GossipSub
-- Remote nodes receive, generate events, some propagate back
-- This is a measurable positive feedback loop
+### EP-2 (AwaitingCanonicalBlock stuck): UNPATCHED, REAL — conf(0.80, inferred)
+I need to verify whether synced blocks (from header-first sync in periodic.rs:104-108) also clear this flag. Let me check.
 
-### H2a: CONFIRMED
-- 13 producers < 50 delta_sync threshold
-- Full-set gossip every round
-- All merges return DUPLICATE for established producers
-- CPU cost: 13 * signature_verify per incoming gossip message, hundreds of messages per round
+Looking at periodic.rs:101-111: Synced blocks go through `self.apply_block(block, ValidationMode::Light)`, which goes through `apply_block/mod.rs`. After apply, `block_applied_with_weight()` is called. But `clear_awaiting_canonical_block()` is ONLY called in `block_handling.rs:169` after a GOSSIP block succeeds.
 
-### H4a: CONFIRMED
-- No global admission control in code
-- `handle_sync_request()` is synchronous, no tokio::spawn
-- Each request blocks the main task during block_store I/O
+However, `block_applied_with_weight()` in block_lifecycle.rs:73-87 handles the `PostRecoveryGrace` phase and clears it after 10 blocks. But `AwaitingCanonicalBlock` is a DIFFERENT phase — it's NOT `PostRecoveryGrace`.
 
-### H8: CONFIRMED as unifying hypothesis
-- Mechanism A: SyncManager as god object (73 fields, no boundaries)
-- Mechanism B: Event loop as single task (no priority boundaries)
-- Both are instances of the same architectural pattern: **missing separation of concerns**
-- The "fix one thing, break another" pattern is the natural consequence of a system without boundaries
+CONFIRMED: `AwaitingCanonicalBlock` is ONLY cleared by `clear_awaiting_canonical_block()` which is ONLY called when a gossip block is applied successfully (block_handling.rs:164-169). Header-first synced blocks do NOT clear it.
 
----
+BUT WAIT: `AwaitingCanonicalBlock` only blocks PRODUCTION (production_gate.rs:146-151), not sync. So the node can still sync via header-first or gossip. The question is whether the node can receive a gossip block that builds on its tip WHILE it is also syncing via header-first.
 
-## Analogist -- Known Failure Patterns
+If the node is syncing via header-first (state=DownloadingHeaders/Bodies/Processing), gossip blocks can still arrive. But they won't build on the node's tip because the node is behind. Eventually the node catches up via sync, reaches the tip, and then the next gossip block WILL build on its tip -> apply_block succeeds -> clear_awaiting_canonical_block.
 
-### Pattern 1: Head-of-Line Blocking in Single-Threaded Event Loops
-- **Redis, Node.js, Nginx workers**: All single-threaded event loops. Work at moderate load. Fail when one event type monopolizes the loop.
-- **Standard fix**: Separate critical-path work to its own thread/task.
-- **DOLI match**: Production is critical-path work competing with non-critical gossip/sync on the same loop.
+REVISED: EP-2 is only a problem if the node can't catch up to the network tip via sync. If sync works, AwaitingCanonicalBlock eventually clears when a gossip block is applied. If sync is broken (e.g., because of apply failures or empty headers), then AwaitingCanonicalBlock is permanently stuck.
 
-### Pattern 2: God Object Anti-Pattern in State Machines
-- **Classic OOP**: A god object that knows everything and does everything cannot be modified safely. Changes have unpredictable side effects because any field can interact with any other.
-- **Standard fix**: Decompose into smaller, focused objects with explicit interfaces and invariants.
-- **DOLI match**: SyncManager is a textbook god object. 73 fields, methods spread across 5 files, no internal invariants.
+EP-2 DOWNGRADED — conf(0.45, inferred). It's a secondary failure mode, not a primary entry point. It amplifies other failures (EP-3, EP-4) by preventing production recovery even after sync succeeds.
 
-### Pattern 3: Gossip Amplification in CRDT Systems
-- **Riak, CockroachDB, Cassandra**: Full-state CRDTs converge at O(N^2) cost. Production systems use deltas, bloom filters, or frequency scaling proportional to N.
-- **DOLI match**: Full-set gossip below delta threshold. The adaptive gossip helps but thresholds are too high for current problem.
+### EP-3 (Apply failure cascade): PARTIALLY PATCHED — conf(0.70, inferred)
+Fix #4 ensures apply failures trigger snap sync even when gap < threshold. But the root question is: WHY do apply failures happen after snap sync? If the snap sync snapshot is from the canonical chain (verified by state root), the next blocks should apply correctly.
 
-### Pattern 4: Missing Admission Control (Thundering Herd)
-- **Web servers**: Without connection limits, a sudden spike in clients overwhelms the server. Each client gets worse service, causing retries, which make the spike worse.
-- **Standard fix**: Global connection/request limits. Serve N clients well, reject the rest with backpressure signal.
-- **DOLI match**: 100 sync-only nodes create a thundering herd of sync requests. No global limit. Producer drowns in serving requests instead of producing blocks.
+The answer is in the validation mode: blocks are applied with `ValidationMode::Light` during sync (periodic.rs:105). Light validation skips some checks. If the block store doesn't have the parent block (post-snap-sync), certain lookups may fail.
 
-### Pattern 5: Cooperative Scheduling Starvation in Blockchain Nodes
-- **Ethereum geth (2020)**: Block import starved the miner. Fix: separate authoring thread.
-- **Substrate (2021)**: Import queue starved block authorship. Fix: priority-separated tasks.
-- **DOLI match**: Identical pattern. Network event processing starves block production.
+This was supposedly fixed by Fix #5 (eliminate block store from prev_slot). But there may be OTHER block store lookups that fail post-snap-sync. Without reading the full apply_block code, I can't be certain, but the pattern of "snap sync -> apply fails" suggests the block store dependency wasn't fully eliminated.
 
----
+### EP-4 (Empty headers escalation): PARTIALLY PATCHED — conf(0.60, inferred)
+The escalation from empty headers to snap sync is aggressive but correct when the node IS on a fork. The problem is when it triggers for a node that ISN'T on a fork — e.g., when a node just finished snap sync and tries header-first sync but the peer's chain has advanced past the snap point.
 
-## Synthesis: Two Orthogonal Failure Mechanisms
+### EP-5 (Stuck sync timeout): PARTIALLY PATCHED — conf(0.50, inferred)
+The 30s/120s stuck thresholds are heuristic. On a loaded network (113 nodes), a seed serving 50+ simultaneous syncs can be legitimately slow. A 30s timeout is too aggressive — it triggers false "stuck" detection that cascades into snap sync.
 
-### Mechanism A: State Machine Complexity (whack-a-mole at same scale)
+### EP-6 (Height offset false positive): LOW RISK — conf(0.30, inferred)
+The 120s timeout and gap >=2 requirement make false positives unlikely during normal operation. Downgraded.
 
-**Root cause**: SyncManager is a 73-field god object with no internal invariants. 9 boolean flags for mutually exclusive states (should be an enum). 10+ counters serving multiple purposes (should be purpose-specific). Monotonic high-water marks without decay. Side effects in query functions.
+## Analogist
 
-**Why fixes create new bugs**: Each fix adds conditions to prevent one state-space path. But the fix cannot reason about all 4,096+ state combinations. New bugs are state combinations that were reachable before but became likely after the fix redirected control flow. This is mathematically inevitable when the state space exceeds human reasoning capacity.
+This failure pattern is well-known in distributed systems as **"recovery-induced cascading failure"** or the **"thundering herd recovery problem."** The canonical example is a system where:
 
-**Evidence**: 20+ fixes to SyncManager over 6 days. Each correct for its target. Each revealed new failure modes at the same or similar scale. The memory.db lesson (confidence 0.7) correctly identified this pattern.
+1. A component fails
+2. The recovery mechanism kicks in
+3. The recovery mechanism itself is imperfect (slow, resource-intensive, or partially correct)
+4. The imperfect recovery triggers a new failure
+5. Which triggers a new recovery
+6. The system oscillates between failure and imperfect recovery indefinitely
 
-**Minimum intervention**: Replace the 9 boolean flags with a RecoveryState enum. Split the overloaded `consecutive_empty_headers` counter into purpose-specific counters. Add invariant checks that assert mutual exclusivity of states. This reduces the reachable state space by 2-3 orders of magnitude and makes illegal states unrepresentable.
+**Known solutions from distributed systems:**
 
-### Mechanism B: Event Loop Architecture (system breaks at new scale)
+1. **Jitter + backoff on recovery actions** (Netflix/Amazon pattern): Every recovery action adds random jitter to prevent synchronization. DOLI has backoff but no jitter.
 
-**Root cause**: Single tokio task with biased select!, no priority separation between production (critical) and gossip/sync-serving (non-critical). The architecture was designed for 10-20 peers and works up to ~30. Beyond that, network event volume exceeds production timer cadence.
+2. **Circuit breakers with monotonic state** (Hystrix pattern): Once a component enters "open" (failed) state, it can only transition to "half-open" (testing) and then "closed" (healthy) — never back to "open" without passing through "closed" first. DOLI's state machine allows Synchronized -> Idle -> snap sync -> Synchronized -> Idle in a tight loop.
 
-**Why the current stall happened**: Adding 100 sync-only nodes created 10x more network events. The biased select gives these events absolute priority over production. Production timer never fires. Chain stalls.
+3. **Graduated recovery** (Kubernetes pattern): First try the cheapest recovery (restart pod). If that fails, try the next level (reschedule to different node). Never skip levels. DOLI does have graduated recovery (rollback -> fork_sync -> snap sync) but the escalation is timer-driven (30s, 120s) rather than evidence-driven.
 
-**Why the 4 fork sync fixes did not prevent it**: The fixes were in sync recovery logic (Mechanism A). The stall is in event loop architecture (Mechanism B). They are in different subsystems. The stall was always latent -- just untriggered at 13-node scale.
+4. **Split-brain resolution via epoch numbers** (Raft/Paxos pattern): A node that has gone through recovery is in a higher epoch and accepts that it may need to discard its state. DOLI tracks `consecutive_resync_count` but doesn't use it to fundamentally change behavior.
 
-**Minimum intervention**: Three changes, in order of impact:
-1. **Decouple production to its own tokio::spawn task** with a dedicated timer and channel. This makes production immune to ANY sustained event stream.
-2. **Add global sync serving admission control**: Max 8 concurrent sync request handlers. Queue or drop excess.
-3. **Scale gossip frequency with peer count**: Minimum interval = max(5, sqrt(peer_count) * 2) seconds.
+The most relevant pattern is **Kubernetes's "CrashLoopBackOff"**: when a pod keeps crashing, Kubernetes doesn't keep restarting it at full speed. It backs off exponentially AND caps the backoff. The pod must demonstrate stability (running for X seconds) before the backoff resets. DOLI's `blocks_since_resync_completed >= 5` reset (block_lifecycle.rs:62) is analogous but the threshold is too low — 5 blocks in 50 seconds is not "stable."
 
-### Why BOTH mechanisms must be addressed
+## Final Hypothesis Ranking
 
-Fixing only Mechanism B (event loop) will stop the current stall but leave the SyncManager as a 73-field time bomb. Next fix to sync logic will create another Mechanism A bug.
+1. **H-SYS-1 + H-SYS-3: Multiple entry points + recovery creates new entry points** — conf(0.90, inferred)
+   The cascade persists because the system has 4-5 entry points, fixes address 1-2 at a time, and each recovery creates post-recovery state that feeds into a different entry point.
 
-Fixing only Mechanism A (state machine) will prevent same-scale whack-a-mole but leave the system vulnerable to the next scale increase. At 200 or 500 nodes, the event loop will stall again.
+2. **H-SYS-5: No monotonic progress guarantee** — conf(0.75, inferred)
+   The state machine allows arbitrary backward transitions. Without a "high-water mark" invariant, the system can cycle indefinitely.
 
-The minimum intervention that breaks the cycle is:
-1. Production decoupling (Mechanism B -- immediate fix for the stall)
-2. RecoveryState enum replacing 9 booleans (Mechanism A -- reduces state space 512x)
-3. Global sync admission control (Mechanism B -- prevents thundering herd)
-
-These three changes total ~200-300 lines and do not require a full rewrite.
-
----
-
-# Addendum: INC-001 RC-1 through RC-9 Completeness Assessment (2026-03-19)
-
-## Explorer Round 1: Hypotheses
-
-- **H1**: RC-9 fix is correct and sufficient. The 30s timeout was fatal because it caused sync to trigger and fail (fork hash mismatch). Without the timeout, production happens before sync starts (same-tick ordering: try_produce_block first, run_periodic_tasks second).
-- **H2**: should_sync() starts sync for 2-block gaps via add_peer()/update_peer() BEFORE production timer fires (biased select). Creates a timing race where sync always wins.
-- **H3**: The open findings (DIAG-SYNC-002/003/004) describe recovery bugs that only matter if forks occur. If RC-5A/RC-7 prevent forks, these are dormant.
-- **H4**: All 9 fixes form a complete defense chain. Each layer protects against the failure of the one above it. No gaps.
-- **H5**: RC-9 may be unnecessary (sync for same-chain gaps succeeds quickly). But it provides useful defense-in-depth.
-- **H6**: New interaction between RC-9 and should_sync -- stale sync epochs after production advances height.
-
-## Skeptic Round 1: Elimination
-
-- H1: SURVIVES -- code trace confirms production fires before cleanup in same tick. And even Path B (sync first) resolves because same-chain sync succeeds.
-- H2: WEAKENED -- timing race exists but is NOT a deadlock. Sync for same-chain 2-block gap completes in 2-3 ticks.
-- H3: SURVIVES -- open findings target fork recovery, not fork prevention.
-- H4: SURVIVES with caveat (2s fallback window must actually hold).
-- H5: WEAKENED -- RC-9 is still beneficial as optimization even if not strictly needed.
-- H6: ELIMINATED -- sync epoch mechanism discards stale responses from old cycles.
-
-## Explorer Round 2: Refined Sub-Hypotheses
-
-- **H4a**: The 2s fallback window holds on localhost (700ms propagation, 1300ms margin). Needs live validation.
-- **H4b**: The 2s fallback window could fail under load (event loop starvation delays gossip processing, extending effective propagation time beyond 2s). This is the intersection of Mechanism A and Mechanism B from the previous diagnosis.
-
-## Skeptic Round 2
-
-- H4a: SURVIVES -- math checks out. VDF(85ms) + apply(270ms) + broadcast + peer_apply(270ms) = ~700ms. 1300ms margin is ample on localhost.
-- H4b: SURVIVES as residual risk -- if the event loop starvation problem (Mechanism B) from the 2026-03-17 diagnosis is NOT fixed yet, gossip block processing could be delayed beyond 2s, causing fallback production. However, this should only happen at high node counts (100+), not with 5 producers.
-
-## Analogist: Industry Parallels
-
-The design matches Eth2's approach: validators are assigned slots with a primary proposer and fallback attestors. The key principle is "don't sync for gaps smaller than the attestation horizon." Doli's RC-9 implements this: don't block production for a 2-3 block gossip delay. This is a well-established pattern in PoS consensus systems.
-
-## Diagnostic Tests (for live validation)
-
-1. **Test: No competing blocks after 100 slots** -- proves RC-5A/RC-7/RC-6/RC-8 prevent genesis forks.
-2. **Test: No node enters fork_sync** -- proves sync succeeds for same-chain gaps (no empty headers).
-3. **Test: Slot/height ratio > 90%** -- proves no production starvation from sync-production interaction.
-4. **Test: grep for "Layer6.5: BLOCKED" after RC-9** -- should see ZERO instances for lag=2-3.
-
-## Conclusion
-
-The 9 fixes are collectively sufficient. The RC-9 fix is correct (allows production at lag 2-3 instead of blocking for 30s). No new deadlock after RC-9. The one residual risk is the 2s fallback window timing, which should be validated on a live testnet but is mathematically sound on localhost.
+3. **H-SYS-2: Fix #6 alone sufficient** — conf(0.25, assumed)
+   Possible but unlikely. The cascade has been observed in scenarios where false fork detection is not the trigger (post-snap-sync apply failures, stuck sync timeouts).

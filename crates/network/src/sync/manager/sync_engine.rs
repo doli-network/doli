@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use crypto::Hash;
 use doli_core::{Block, BlockHeader};
 
-use super::{PendingRequest, SyncManager, SyncRequestId, SyncState};
+use super::{PendingRequest, SyncManager, SyncPhase, SyncPipelineData, SyncRequestId, SyncState};
 use crate::protocols::{SyncRequest, SyncResponse};
 
 impl SyncManager {
@@ -19,21 +19,24 @@ impl SyncManager {
             return false;
         }
 
-        // CRITICAL: Only sync if a peer has MORE BLOCKS (higher height).
-        // Do NOT use slot comparison alone — peers with different genesis times
-        // can have much higher slots despite having far fewer blocks. This caused
-        // N4 (40K blocks) to sync from N3 (1,235 blocks, higher slot) and reorg
-        // its own chain down to 37K.
-        let peer_ahead = self
-            .peers
-            .values()
-            .any(|p| p.best_height > self.local_height);
+        // Only trigger sync for SIGNIFICANT gaps (>= 3 blocks behind best peer).
+        // A 1-2 block gap is normal gossip propagation delay — the gossip block
+        // will arrive momentarily. Starting a full sync cycle for a 1-block gap
+        // pulls the node out of Synchronized → Syncing → blocks production via
+        // Check 1 → node misses its slot → falls further behind → cascade.
+        //
+        // Exception: at height 0 (initial sync), always sync — there's no gossip yet.
+        let min_gap = if self.local_height == 0 { 1 } else { 3 };
 
-        // Also check network_tip_height (updated by gossip) since peer best_height
-        // in the HashMap can be stale if no status messages are received.
-        let network_ahead = self.network.network_tip_height > self.local_height;
+        let best_peer_height = self.best_peer_height();
+        let peer_gap = best_peer_height.saturating_sub(self.local_height);
 
-        peer_ahead || network_ahead
+        let network_gap = self
+            .network
+            .network_tip_height
+            .saturating_sub(self.local_height);
+
+        peer_gap >= min_gap || network_gap >= min_gap
     }
 
     /// Get the best_hash that the MAJORITY of eligible peers agree on.
@@ -189,8 +192,9 @@ impl SyncManager {
                             self.pipeline.sync_epoch, peer, target_slot
                         );
                         self.pipeline.header_downloader.clear();
-                        self.set_state(
-                            SyncState::DownloadingHeaders {
+                        self.set_syncing(
+                            SyncPhase::DownloadingHeaders,
+                            SyncPipelineData::Headers {
                                 target_slot,
                                 peer,
                                 headers_count: 0,
@@ -206,98 +210,25 @@ impl SyncManager {
                     self.pipeline.sync_epoch, gap, best_height, target_hash
                 );
 
-                self.set_state(
-                    SyncState::SnapCollectingRoots {
+                self.set_syncing(
+                    SyncPhase::SnapCollecting,
+                    SyncPipelineData::SnapCollecting {
                         target_hash,
                         target_height: best_height,
                         votes: Vec::new(),
                         asked: HashSet::new(),
-                        started_at: Instant::now(),
                     },
                     "start_snap_sync",
                 );
-            } else if matches!(self.recovery_phase, super::RecoveryPhase::PostRollback) {
-                // NT10 fix: After a fork rollback, our tip is still on the fork
-                // (just 1 block shorter). Header-first sync will always get 0
-                // headers because peers don't recognize our rolled-back fork tip.
-                // Instead, try fork_sync (binary search for common ancestor).
-                // If fork_sync can't start (e.g., no recovery peer), escalate to
-                // snap sync via needs_genesis_resync.
-                self.recovery_phase = super::RecoveryPhase::Normal;
-
-                // INC-001 fix: Circuit breaker — if 3+ fork syncs within 5 minutes,
-                // stop trying fork sync and use header-first only.
-                if self.is_fork_sync_breaker_tripped() {
-                    warn!(
-                        "Post-rollback: fork sync circuit breaker tripped ({} fork syncs) — \
-                         forcing header-first sync",
-                        self.fork.consecutive_fork_syncs
-                    );
-                    self.set_state(
-                        SyncState::DownloadingHeaders {
-                            target_slot,
-                            peer,
-                            headers_count: 0,
-                        },
-                        "post_rollback_breaker_tripped",
-                    );
-                // Reorg cooldown: if we just rejected a fork sync (delta=0),
-                // don't start another one immediately. This breaks the infinite
-                // reorg loop when 50+ peers offer equal-weight competing chains.
-                } else if self.fork.last_fork_sync_rejection.elapsed().as_secs()
-                    < self.fork.fork_sync_cooldown_secs
-                {
-                    info!(
-                        "Post-rollback: fork sync in cooldown ({}s/{}) — using header-first",
-                        self.fork.last_fork_sync_rejection.elapsed().as_secs(),
-                        self.fork.fork_sync_cooldown_secs
-                    );
-                    self.set_state(
-                        SyncState::DownloadingHeaders {
-                            target_slot,
-                            peer,
-                            headers_count: 0,
-                        },
-                        "post_rollback_cooldown_fallback",
-                    );
-                } else if self.start_fork_sync() {
-                    info!(
-                        "Post-rollback: started fork_sync (binary search) instead of header-first",
-                    );
-                } else if enough_peers && snap_allowed && self.snap.attempts < 3 {
-                    warn!(
-                        "Post-rollback: fork_sync failed to start, requesting snap sync \
-                         (gap={}, peers={})",
-                        gap,
-                        self.peers.len()
-                    );
-                    self.request_genesis_resync(super::RecoveryReason::PostRollbackSnapEscalation);
-                } else {
-                    // Not enough peers for snap sync — fall through to header-first
-                    // as a last resort (it may fail, but cleanup() will retry).
-                    warn!(
-                        "Post-rollback: fork_sync failed, not enough peers for snap sync — \
-                         falling back to header-first (gap={}, peers={})",
-                        gap,
-                        self.peers.len()
-                    );
-                    self.set_state(
-                        SyncState::DownloadingHeaders {
-                            target_slot,
-                            peer,
-                            headers_count: 0,
-                        },
-                        "post_rollback_no_peers_fallback",
-                    );
-                }
             } else {
                 info!(
                     "Starting sync epoch {} with peer {} (target_slot={})",
                     self.pipeline.sync_epoch, peer, target_slot
                 );
 
-                self.set_state(
-                    SyncState::DownloadingHeaders {
+                self.set_syncing(
+                    SyncPhase::DownloadingHeaders,
+                    SyncPipelineData::Headers {
                         target_slot,
                         peer,
                         headers_count: 0,
@@ -315,32 +246,8 @@ impl SyncManager {
 
     /// Get the next sync request to send
     pub fn next_request(&mut self) -> Option<(PeerId, SyncRequest)> {
-        // Fork sync takes priority when active (runs in Idle state)
-        if let Some(ref mut fs) = self.fork.fork_sync {
-            if fs.is_timed_out() {
-                warn!("Fork sync timed out — cancelling");
-                self.fork.fork_sync = None;
-            } else {
-                let peer = fs.peer();
-                // Guard: don't send if peer already has a pending request
-                if let Some(status) = self.peers.get(&peer) {
-                    if status.pending_request.is_some() {
-                        return None;
-                    }
-                }
-                if let Some(request) = fs.next_request() {
-                    let id = self.register_request(peer, request.clone());
-                    if let Some(status) = self.peers.get_mut(&peer) {
-                        status.pending_request = Some(id);
-                    }
-                    return Some((peer, request));
-                }
-                return None; // Fork sync active but no request needed right now
-            }
-        }
-
-        match &self.state {
-            SyncState::Idle | SyncState::Synchronized => {
+        match &self.pipeline_data {
+            SyncPipelineData::None => {
                 // Serve fork recovery requests when main sync is idle
                 if let Some((peer, hash)) = self.fork.fork_recovery.next_fetch() {
                     let request = SyncRequest::GetBlockByHash { hash };
@@ -353,7 +260,7 @@ impl SyncManager {
                 None
             }
 
-            SyncState::DownloadingHeaders { peer, .. } => {
+            SyncPipelineData::Headers { peer, .. } => {
                 let peer = *peer;
 
                 // Guard: don't send a new request if the peer already has one in flight.
@@ -392,14 +299,14 @@ impl SyncManager {
                         self.start_sync();
                         return None;
                     }
-                    // Small gaps (≤12): redirect to fork_sync/rollback instead of
+                    // Small gaps (≤12): redirect to rollback instead of
                     // genesis resync. Snap sync for small gaps loses block history
                     // and creates a cascade (snap → no block 1 → future rollback
                     // fails → re-snap). Rollback is O(1) per block and preserves
                     // full chain history.
                     if gap <= 12 && self.local_height > 0 {
                         warn!(
-                            "Small fork (gap={}, empties={}): redirecting to fork_sync \
+                            "Small fork (gap={}, empties={}): redirecting to rollback \
                              instead of genesis resync — rollback can handle this",
                             gap, self.fork.consecutive_empty_headers
                         );
@@ -430,7 +337,7 @@ impl SyncManager {
                 }
             }
 
-            SyncState::DownloadingBodies { .. } => {
+            SyncPipelineData::Bodies { .. } => {
                 // Only request bodies from peers that actually HAVE the blocks
                 // we need. A peer at height 130 can't serve bodies for blocks
                 // 131-37000 — it'll return "Missing body" for everything,
@@ -472,14 +379,14 @@ impl SyncManager {
                 }
             }
 
-            SyncState::Processing { .. } => None,
+            SyncPipelineData::Processing { .. } => None,
 
             // Snap sync root collection is batched via next_snap_requests().
             // Returning None here ensures the normal 1-per-tick path doesn't
             // interfere with the batch approach.
-            SyncState::SnapCollectingRoots { .. } => None,
+            SyncPipelineData::SnapCollecting { .. } => None,
 
-            SyncState::SnapDownloading {
+            SyncPipelineData::SnapDownloading {
                 target_hash, peer, ..
             } => {
                 let target_hash = *target_hash;
@@ -498,7 +405,7 @@ impl SyncManager {
                 Some((peer, request))
             }
 
-            SyncState::SnapReady { .. } => None,
+            SyncPipelineData::SnapReady { .. } => None,
         }
     }
 
@@ -510,8 +417,8 @@ impl SyncManager {
     /// reached. Batching all requests in one tick keeps responses within
     /// ~1-2 seconds so most peers respond at the same height.
     pub fn next_snap_requests(&mut self) -> Vec<(PeerId, SyncRequest)> {
-        let (target_hash, already_asked) = match &self.state {
-            SyncState::SnapCollectingRoots {
+        let (target_hash, already_asked) = match &self.pipeline_data {
+            SyncPipelineData::SnapCollecting {
                 target_hash, asked, ..
             } => (*target_hash, asked.clone()),
             _ => return vec![],
@@ -532,7 +439,7 @@ impl SyncManager {
 
         let mut batch = Vec::with_capacity(candidates.len());
         for pid in candidates {
-            if let SyncState::SnapCollectingRoots { asked, .. } = &mut self.state {
+            if let SyncPipelineData::SnapCollecting { asked, .. } = &mut self.pipeline_data {
                 asked.insert(pid);
             }
             let request = SyncRequest::get_state_root(target_hash);
@@ -610,13 +517,6 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling headers response: count={}",
                     headers.len()
                 );
-                // Fork sync intercept: route headers to fork sync when active
-                if let Some(ref mut fs) = self.fork.fork_sync {
-                    if fs.peer() == peer {
-                        fs.handle_headers_response(headers);
-                        return vec![];
-                    }
-                }
                 // Discard responses from old sync epochs. Responses with no tracking
                 // (request_epoch=None, e.g. after soft retry cleared requests) are
                 // allowed through — the header chain linkage check in process_headers
@@ -639,13 +539,6 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling bodies response: count={}",
                     bodies.len()
                 );
-                // Fork sync intercept: route bodies to fork sync when active
-                if let Some(ref mut fs) = self.fork.fork_sync {
-                    if fs.peer() == peer {
-                        fs.handle_bodies_response(bodies);
-                        return vec![];
-                    }
-                }
                 if is_stale_epoch {
                     debug!(
                         "Discarding stale bodies from {} ({} bodies) — epoch {:?} != current {}",
@@ -663,13 +556,6 @@ impl SyncManager {
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
                 );
-                // Fork sync intercept: consume block responses during binary search
-                if let Some(ref mut fs) = self.fork.fork_sync {
-                    if fs.peer() == peer {
-                        fs.handle_block_response(maybe_block);
-                        return vec![];
-                    }
-                }
                 // Fork recovery intercept: consume blocks during active recovery
                 if self.fork.fork_recovery.is_active()
                     && self
@@ -738,8 +624,9 @@ impl SyncManager {
             // No more headers, transition to body download
             if !self.pipeline.headers_needing_bodies.is_empty() {
                 let total = self.pipeline.headers_needing_bodies.len();
-                self.set_state(
-                    SyncState::DownloadingBodies { pending: 0, total },
+                self.set_syncing(
+                    SyncPhase::DownloadingBodies,
+                    SyncPipelineData::Bodies { pending: 0, total },
                     "headers_complete",
                 );
                 info!("Starting body download for {} blocks", total);
@@ -852,8 +739,6 @@ impl SyncManager {
             self.fork.consecutive_empty_headers = 0;
             self.fork.consecutive_sync_failures = 0;
             self.network.last_sync_activity = Instant::now();
-            // INC-001: Reset fork sync circuit breaker on successful header-first sync
-            self.reset_fork_sync_breaker();
 
             // Queue header hashes for body download
             for header in headers.iter().take(valid_count) {
@@ -863,19 +748,18 @@ impl SyncManager {
                 self.pipeline.pending_headers.push_back(header.clone());
             }
 
-            // Update state
-            if let SyncState::DownloadingHeaders {
+            // Update pipeline data with new headers count
+            if let SyncPipelineData::Headers {
                 target_slot,
                 peer,
                 headers_count,
-            } = &self.state
+            } = &self.pipeline_data
             {
-                let new_state = SyncState::DownloadingHeaders {
+                self.pipeline_data = SyncPipelineData::Headers {
                     target_slot: *target_slot,
                     peer: *peer,
                     headers_count: headers_count + valid_count,
                 };
-                self.set_state(new_state, "headers_received");
             }
         } else {
             // CHAIN BREAK: Received headers but none chain to expected_prev_hash.
@@ -926,17 +810,19 @@ impl SyncManager {
         // Update state
         let remaining = self.pipeline.headers_needing_bodies.len();
         if remaining == 0 {
-            self.set_state(
-                SyncState::Processing {
+            self.set_syncing(
+                SyncPhase::ProcessingBlocks,
+                SyncPipelineData::Processing {
                     height: self.local_height + 1,
                 },
                 "bodies_complete",
             );
             info!("All bodies downloaded, starting processing");
-        } else if let SyncState::DownloadingBodies { total, .. } = &self.state {
-            let total_copy = *total; // Copy before reassigning self.state
-            self.set_state(
-                SyncState::DownloadingBodies {
+        } else if let SyncPipelineData::Bodies { total, .. } = &self.pipeline_data {
+            let total_copy = *total; // Copy before reassigning
+            self.set_syncing(
+                SyncPhase::DownloadingBodies,
+                SyncPipelineData::Bodies {
                     pending: remaining,
                     total: total_copy,
                 },
@@ -966,7 +852,7 @@ impl SyncManager {
         // body may not have arrived yet, but that's normal. Clearing everything
         // during active body download causes an infinite retry loop: download 13K
         // headers → download partial bodies → mismatch → clear → repeat forever.
-        let in_processing = matches!(self.state, SyncState::Processing { .. });
+        let in_processing = matches!(self.pipeline_data, SyncPipelineData::Processing { .. });
         if let Some(header) = self.pipeline.pending_headers.front() {
             if header.prev_hash != current_hash && in_processing {
                 warn!(
@@ -1014,7 +900,7 @@ impl SyncManager {
         // block_applied_with_weight() to transition us out. The 30s stuck timeout in
         // cleanup is too slow — 3 slots are wasted per stall. Reset to Idle immediately
         // so the node can resume production and process gossip blocks.
-        if blocks.is_empty() && matches!(self.state, SyncState::Processing { .. }) {
+        if blocks.is_empty() && matches!(self.pipeline_data, SyncPipelineData::Processing { .. }) {
             warn!(
                 "[PROCESSING_STALL] No blocks extractable in Processing state \
                  (pending_headers={}, pending_blocks={}, local_h={}, local_hash={:.12}) \

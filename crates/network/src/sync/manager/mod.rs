@@ -71,67 +71,75 @@ impl Default for SyncConfig {
     }
 }
 
-/// Synchronization state
+/// Synchronization state — 3 variants only.
+///
+/// Data that was previously embedded in the state enum (peer IDs, slot targets,
+/// vote vectors, snapshots) now lives in `SyncPipelineData` on SyncManager.
+/// The state enum is a pure discriminant; the pipeline carries the data.
 #[derive(Clone, Debug)]
 pub enum SyncState {
     /// Not syncing, waiting for peers
     Idle,
-    /// Downloading headers from target
-    DownloadingHeaders {
-        /// Target slot we're syncing to
-        target_slot: u32,
-        /// Peer we're syncing from
-        peer: PeerId,
-        /// Headers downloaded so far
-        headers_count: usize,
-    },
-    /// Downloading block bodies in parallel
-    DownloadingBodies {
-        /// Number of pending body requests
-        pending: usize,
-        /// Total bodies to download
-        total: usize,
-    },
-    /// Processing downloaded blocks
-    Processing {
-        /// Current height being processed
-        height: u64,
+    /// Actively syncing — the `SyncPhase` label tracks what the pipeline is doing.
+    Syncing {
+        /// Diagnostic label — what phase of sync we are in
+        phase: SyncPhase,
+        /// When this sync cycle started (for stuck detection)
+        started_at: Instant,
     },
     /// Fully synchronized
     Synchronized,
-    /// Snap sync: collecting state root votes from peers
-    SnapCollectingRoots {
-        /// Target block hash to snapshot at (initial estimate, may differ from quorum)
-        target_hash: Hash,
-        /// Target block height (initial estimate)
-        target_height: u64,
-        /// Collected (peer, block_hash, block_height, state_root) votes
-        votes: Vec<(PeerId, Hash, u64, Hash)>,
-        /// Peers already asked
-        asked: HashSet<PeerId>,
-        /// When this phase started
-        started_at: Instant,
-    },
-    /// Snap sync: downloading full snapshot from a peer
-    SnapDownloading {
-        /// Target block hash
-        target_hash: Hash,
-        /// Target block height
-        target_height: u64,
-        /// Quorum-agreed state root
-        quorum_root: Hash,
-        /// Peer serving the snapshot
+}
+
+/// Diagnostic label for the current sync phase.
+///
+/// NOT a state machine — just tracks what the sync pipeline is doing for
+/// logging, progress reporting, and phase-specific timeout thresholds.
+/// Transitions are implicit based on pipeline progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncPhase {
+    DownloadingHeaders,
+    DownloadingBodies,
+    ProcessingBlocks,
+    SnapCollecting,
+    SnapDownloading,
+}
+
+/// Pipeline data — carries the data that was previously embedded in SyncState variants.
+///
+/// This is NOT a state machine. It holds operational data for the current sync phase.
+/// State checks use `self.state` (SyncState); data access uses `self.pipeline_data`.
+#[derive(Clone, Debug)]
+pub enum SyncPipelineData {
+    /// No active pipeline data
+    None,
+    /// Header-first sync data
+    Headers {
+        target_slot: u32,
         peer: PeerId,
-        /// Alternate peers that agreed on the same quorum root (fallback on error)
+        headers_count: usize,
+    },
+    /// Body download data
+    Bodies { pending: usize, total: usize },
+    /// Block processing data
+    Processing { height: u64 },
+    /// Snap sync: collecting state root votes
+    SnapCollecting {
+        target_hash: Hash,
+        target_height: u64,
+        votes: Vec<(PeerId, Hash, u64, Hash)>,
+        asked: HashSet<PeerId>,
+    },
+    /// Snap sync: downloading snapshot from a peer
+    SnapDownloading {
+        target_hash: Hash,
+        target_height: u64,
+        quorum_root: Hash,
+        peer: PeerId,
         alternate_peers: Vec<(PeerId, Hash, u64)>,
-        /// When download started
-        started_at: Instant,
     },
-    /// Snap sync: snapshot ready for node to consume
-    SnapReady {
-        /// The verified snapshot
-        snapshot: VerifiedSnapshot,
-    },
+    /// Snap sync: snapshot ready for node consumption
+    SnapReady { snapshot: VerifiedSnapshot },
 }
 
 /// A verified state snapshot ready for application by the node.
@@ -234,14 +242,16 @@ pub enum ProductionAuthorization {
 impl SyncState {
     /// Check if we're actively syncing
     pub fn is_syncing(&self) -> bool {
-        !matches!(self, SyncState::Idle | SyncState::Synchronized)
+        matches!(self, SyncState::Syncing { .. })
     }
+}
 
-    /// Check if snap sync is in progress (collecting roots or downloading snapshot)
+impl SyncPipelineData {
+    /// Check if snap sync pipeline data is active (collecting or downloading)
     pub fn is_snap_syncing(&self) -> bool {
         matches!(
             self,
-            SyncState::SnapCollectingRoots { .. } | SyncState::SnapDownloading { .. }
+            SyncPipelineData::SnapCollecting { .. } | SyncPipelineData::SnapDownloading { .. }
         )
     }
 }
@@ -334,28 +344,20 @@ impl SyncPipeline {
 
 /// Recovery phase of the sync manager.
 ///
-/// Replaces 5 independent booleans (`resync_in_progress`, `post_rollback`,
-/// `post_recovery_grace`, `awaiting_canonical_block`, `stuck_fork_signal`) with
-/// a single enum. Illegal states (e.g., resync AND post_recovery_grace simultaneously)
-/// become unrepresentable. State space drops from 2^5=32 to 6 variants.
+/// Replaces independent booleans (`resync_in_progress`, `post_recovery_grace`,
+/// `awaiting_canonical_block`) with a single enum. Illegal states (e.g., resync AND
+/// post_recovery_grace simultaneously) become unrepresentable.
 ///
 /// Lifecycle:
-///   Normal → StuckForkDetected → (fork_sync/rollback) → PostRollback → (sync) → Normal
 ///   Normal → ResyncInProgress → PostRecoveryGrace → Normal
 ///   Normal → (snap sync) → AwaitingCanonicalBlock → Normal
 #[derive(Clone, Debug)]
 pub enum RecoveryPhase {
     /// No recovery in progress. Normal operation.
     Normal,
-    /// Stuck fork detected by cleanup or sync engine.
-    /// Waiting for fork_sync (binary search) to resolve.
-    StuckForkDetected,
-    /// Fork sync completed with rollback. Next start_sync() should
-    /// NOT use header-first sync (our tip is still on the fork).
-    PostRollback,
     /// Forced resync from genesis/snap is in progress.
     ResyncInProgress,
-    /// Resync/recovery completed. Grace period suppresses fork_sync reactivation.
+    /// Resync/recovery completed. Grace period suppresses reactivation.
     PostRecoveryGrace {
         /// When grace started.
         started: Instant,
@@ -381,8 +383,6 @@ pub enum RecoveryReason {
     StuckSyncLargeGap { gap: u64 },
     /// Height offset: stable gap while blocks applied (cleanup.rs)
     HeightOffsetDetected { gap: u64 },
-    /// Post-rollback snap escalation (sync_engine.rs)
-    PostRollbackSnapEscalation,
     /// Genesis fallback: 10+ empty headers from peer (sync_engine.rs)
     GenesisFallbackEmptyHeaders,
     /// Body download peer error (sync_engine.rs)
@@ -476,7 +476,7 @@ impl SnapSyncState {
 
 /// Fork detection and recovery state.
 ///
-/// Groups all fork-related fields (counters, fork_sync, fork_recovery, blacklists,
+/// Groups all fork-related fields (counters, fork_recovery, blacklists,
 /// cooldowns, circuit breakers) into a single sub-struct. Single point of truth for
 /// "are we on a fork, and what are we doing about it?"
 pub(crate) struct ForkState {
@@ -486,8 +486,6 @@ pub(crate) struct ForkState {
     pub consecutive_empty_headers: u32,
     /// Consecutive sync failures (empty header responses)
     pub consecutive_sync_failures: u32,
-    /// Max sync failures before fork detection triggers
-    pub max_sync_failures_before_fork_detection: u32,
     /// Consecutive block-apply failures (downloaded chain can't be applied).
     /// Unlike consecutive_empty_headers (reset by header downloads), this is
     /// ONLY reset by successful block_applied(). At >= 3, triggers genesis resync.
@@ -495,34 +493,8 @@ pub(crate) struct ForkState {
     /// Flag set when genesis fallback confirms peers reject our chain —
     /// node must call force_resync_from_genesis().
     pub needs_genesis_resync: bool,
-    /// Fork sync — binary search for common ancestor when on a dead fork.
-    pub fork_sync: Option<super::fork_sync::ForkSync>,
-    /// Reorg cooldown: when a fork sync is rejected (delta=0 or shorter chain),
-    /// suppress further fork syncs for this duration. Prevents infinite reorg loops
-    /// when multiple peers offer equal-weight competing chains.
-    pub last_fork_sync_rejection: Instant,
-    /// Reorg cooldown duration (seconds)
-    pub fork_sync_cooldown_secs: u64,
-    /// Fork sync loop circuit breaker count.
-    pub consecutive_fork_syncs: u32,
-    /// Timestamp of last fork sync (for breaker window expiry).
-    pub last_fork_sync_at: Option<Instant>,
-    /// Recently-held tip hashes to prevent equal-weight ping-pong.
-    /// Capacity: 10. If a remedial reorg would switch to a tip we recently held,
-    /// reject it to break the oscillation.
-    pub recently_held_tips: Vec<(Hash, Instant)>,
     /// Fork recovery tracker — active parent chain download for automatic reorg.
     pub fork_recovery: super::fork_recovery::ForkRecoveryTracker,
-    /// Persistent fork detection flag.
-    ///
-    /// Set when Layer 9 (hash mismatch) detects we're in the minority.
-    /// Blocks production until cleared by a successful resync from peers.
-    ///
-    /// Without this, Layer 9 oscillates: it detects the fork, blocks production,
-    /// peers advance beyond the +/-2 comparison window, Layer 9 "forgets" the fork,
-    /// and the node resumes producing on its orphan chain. This flag prevents
-    /// that oscillation by remembering "we saw a fork, don't produce until resolved."
-    pub fork_mismatch_detected: bool,
     /// Peers that returned empty headers (blacklisted with cooldown)
     pub header_blacklisted_peers: HashMap<PeerId, Instant>,
     /// Height offset detection: tracks (gap, timestamp) when we first observed
@@ -535,6 +507,9 @@ pub(crate) struct ForkState {
     /// rolled back more than MAX_SAFE_ROLLBACK blocks from its peak, further
     /// rollbacks and equal-weight reorgs are rejected in favor of a clean resync.
     pub peak_height: u64,
+    /// Stuck fork signal: set by cleanup() and block_apply_failed() when fork
+    /// evidence is detected. Consumed by take_stuck_fork_signal() in resolve_shallow_fork().
+    pub stuck_fork_signal: bool,
 }
 
 impl ForkState {
@@ -543,66 +518,37 @@ impl ForkState {
         Self {
             consecutive_empty_headers: 0,
             consecutive_sync_failures: 0,
-            max_sync_failures_before_fork_detection: 3,
+
             consecutive_apply_failures: 0,
             needs_genesis_resync: false,
-            fork_sync: None,
-            last_fork_sync_rejection: Instant::now() - Duration::from_secs(300),
-            fork_sync_cooldown_secs: 30,
-            consecutive_fork_syncs: 0,
-            last_fork_sync_at: None,
-            recently_held_tips: Vec::new(),
             fork_recovery: super::fork_recovery::ForkRecoveryTracker::new(),
-            fork_mismatch_detected: false,
             header_blacklisted_peers: HashMap::new(),
             stable_gap_since: None,
             peak_height: 0,
-        }
-    }
-
-    /// Check if the fork sync reorg cooldown is active.
-    #[allow(dead_code)]
-    fn is_fork_sync_on_cooldown(&self) -> bool {
-        self.last_fork_sync_rejection.elapsed().as_secs() < self.fork_sync_cooldown_secs
-    }
-
-    /// Check if the fork sync circuit breaker is tripped.
-    /// Returns true if 3+ fork syncs happened within 5 minutes.
-    #[allow(dead_code)]
-    fn is_fork_sync_breaker_tripped_internal(&self) -> bool {
-        if self.consecutive_fork_syncs < 3 {
-            return false;
-        }
-        match self.last_fork_sync_at {
-            Some(ts) => ts.elapsed() < Duration::from_secs(300),
-            None => false,
+            stuck_fork_signal: false,
         }
     }
 
     /// Recommend a fork recovery action based on current state.
     /// The Node calls this from resolve_shallow_fork() and executes the returned action.
+    ///
+    /// Recovery levels (M1 redesign):
+    /// 1. RollbackOne — shallow fork, up to max_rollback_depth blocks
+    /// 2. NeedsGenesisResync — deep fork (10+ empty headers) or gap > rollback depth
     pub fn recommend_action(
         &self,
         gap: u64,
         consecutive_rollbacks: u32,
         max_rollback_depth: u32,
-        best_peer: Option<PeerId>,
+        _best_peer: Option<PeerId>,
     ) -> ForkAction {
-        // Deep fork: need genesis resync
+        // Deep fork or exhausted rollbacks: need snap sync
         if self.consecutive_empty_headers >= 10 || self.needs_genesis_resync {
             return ForkAction::NeedsGenesisResync;
         }
-        // Medium fork: binary search via fork_sync (if not already active, not on cooldown, breaker not tripped)
+        // Gap too large for rollback: escalate to snap sync
         if gap > max_rollback_depth as u64 {
-            if let Some(peer) = best_peer {
-                if self.fork_sync.is_none()
-                    && !self.is_fork_sync_on_cooldown()
-                    && !self.is_fork_sync_breaker_tripped_internal()
-                {
-                    return ForkAction::StartForkSync { peer };
-                }
-            }
-            return ForkAction::None; // fork_sync active or on cooldown — wait
+            return ForkAction::NeedsGenesisResync;
         }
         // Shallow fork: rollback one block
         if consecutive_rollbacks < max_rollback_depth && self.consecutive_empty_headers >= 3 {
@@ -619,12 +565,7 @@ pub enum ForkAction {
     None,
     /// Rollback one block (shallow fork, gap <= 12)
     RollbackOne,
-    /// Start binary search for common ancestor (medium fork, gap <= 1000)
-    StartForkSync {
-        /// Peer to sync with
-        peer: PeerId,
-    },
-    /// Node needs full genesis resync (deep fork or fork_sync bottomed out)
+    /// Node needs full genesis resync (deep fork or rollback exhausted)
     NeedsGenesisResync,
 }
 
@@ -644,6 +585,9 @@ pub struct SyncManager {
     peers: HashMap<PeerId, PeerSyncStatus>,
     /// Sync pipeline: headers, bodies, blocks, requests, downloaders, epoch counter
     pub(crate) pipeline: SyncPipeline,
+    /// Pipeline data: operational data for the current sync phase.
+    /// Previously embedded in SyncState variants, now separated for clarity.
+    pub(crate) pipeline_data: SyncPipelineData,
     /// Reorg handler
     reorg_handler: ReorgHandler,
 
@@ -670,9 +614,6 @@ pub struct SyncManager {
     /// Maximum slots to produce solo without receiving any peer block via gossip.
     /// After this many slots (slot_duration * N seconds of silence while we're the tip),
     /// production pauses to avoid building a long orphan chain in isolation.
-    /// Default: 5 slots (50s at 10s/slot).
-    max_solo_production_secs: u64,
-
     /// Minimum peers required for production (P0 #5)
     min_peers_for_production: usize,
 
@@ -710,10 +651,6 @@ pub struct SyncManager {
 
     // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
     // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
-    /// When the node first became behind by >= 2 blocks (for L6.5 timeout).
-    /// Reset when gap closes to < 2.
-    behind_since: Option<Instant>,
-
     // === PRODUCTION GATE DEADLOCK FIX (PGD) FIELDS ===
     /// Hard cap on effective grace period after resync (seconds).
     /// Prevents exponential backoff from disabling producers for 480s+.
@@ -723,7 +660,7 @@ pub struct SyncManager {
     /// When this reaches 5, `reset_resync_counter()` is called to clear the
     /// exponential backoff. Only incremented when `resync_in_progress` is false.
     blocks_since_resync_completed: u32,
-    // `stuck_fork_signal` moved to RecoveryPhase::StuckForkDetected
+    // stuck_fork_signal is in ForkState
 
     // === INC-I-005 FIX C: MONOTONIC PROGRESS FLOOR ===
     /// Highest height at which the node was Synchronized and applied 10+
@@ -737,6 +674,7 @@ impl SyncManager {
     pub fn new(config: SyncConfig, genesis_hash: Hash) -> Self {
         Self {
             pipeline: SyncPipeline::new(&config),
+            pipeline_data: SyncPipelineData::None,
             reorg_handler: ReorgHandler::new(),
             config,
             state: SyncState::Idle,
@@ -753,7 +691,6 @@ impl SyncManager {
             max_slots_behind: 2,          // Spec: "within 2 slots of peers"
             last_block_received_via_gossip: Some(Instant::now()), // Grace period starts at boot
             gossip_activity_timeout_secs: 180, // 3 minutes default
-            max_solo_production_secs: 50, // INC-001: 5 slots (50s) — prevents long solo forks
             min_peers_for_production: 2,  // Need at least 2 peers to avoid echo chambers
             // Network state (sub-struct)
             network: NetworkState::new(),
@@ -769,7 +706,6 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync state (sub-struct)
             snap: SnapSyncState::new(),
-            behind_since: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
@@ -795,6 +731,12 @@ impl SyncManager {
     pub fn state(&self) -> &SyncState {
         &self.state
     }
+
+    /// Check if snap sync is in progress (collecting roots or downloading snapshot)
+    pub fn is_snap_syncing(&self) -> bool {
+        self.pipeline_data.is_snap_syncing()
+    }
+
 
     /// Get local chain tip
     pub fn local_tip(&self) -> (u64, Hash, u32) {
@@ -976,12 +918,13 @@ impl SyncManager {
             .retain(|_, req| &req.peer != peer);
 
         // If we were syncing from this peer, try another
-        if let SyncState::DownloadingHeaders {
+        if let SyncPipelineData::Headers {
             peer: sync_peer, ..
-        } = &self.state
+        } = &self.pipeline_data
         {
             if sync_peer == peer {
                 self.set_state(SyncState::Idle, "header_peer_disconnected");
+                self.pipeline_data = SyncPipelineData::None;
                 if self.should_sync() {
                     self.start_sync();
                 }
@@ -989,9 +932,9 @@ impl SyncManager {
         }
 
         // If snap downloading from this peer, try alternate or fall back
-        if let SyncState::SnapDownloading {
+        if let SyncPipelineData::SnapDownloading {
             peer: snap_peer, ..
-        } = &self.state
+        } = &self.pipeline_data
         {
             if snap_peer == peer {
                 warn!(
@@ -1106,6 +1049,18 @@ impl SyncManager {
         self.network.last_block_seen.elapsed() > threshold
     }
 
+    /// Transition to Syncing state with the given phase and pipeline data.
+    /// Convenience method that sets both state and pipeline_data atomically.
+    pub(crate) fn set_syncing(&mut self, phase: SyncPhase, data: SyncPipelineData, trigger: &str) {
+        self.pipeline_data = data;
+        let started_at = match &self.state {
+            // Preserve existing started_at if already syncing (phase change within sync)
+            SyncState::Syncing { started_at, .. } => *started_at,
+            _ => Instant::now(),
+        };
+        self.set_state(SyncState::Syncing { phase, started_at }, trigger);
+    }
+
     /// Transition to a new sync state with logging.
     /// All state transitions MUST go through this method for auditability.
     fn set_state(&mut self, new_state: SyncState, trigger: &str) {
@@ -1121,6 +1076,10 @@ impl SyncManager {
         }
 
         let old_label = self.state_label();
+        // Clear pipeline data when leaving sync state
+        if matches!(new_state, SyncState::Idle | SyncState::Synchronized) {
+            self.pipeline_data = SyncPipelineData::None;
+        }
         self.state = new_state;
         let new_label = self.state_label();
         if old_label != new_label {
@@ -1133,37 +1092,19 @@ impl SyncManager {
 
     /// Check if a state transition is valid.
     /// Called by set_state() to prevent illegal transitions.
-    fn is_valid_transition(&self, new_state: &SyncState) -> bool {
-        use SyncState::*;
-        match (&self.state, new_state) {
-            // Idle can go anywhere (it's the reset state)
-            (Idle, _) => true,
-            // Any state can go to Idle (reset/error)
-            (_, Idle) => true,
-            // Header download leads to bodies, snap, synchronized, or self (count update)
-            (DownloadingHeaders { .. }, DownloadingHeaders { .. }) => true,
-            (DownloadingHeaders { .. }, DownloadingBodies { .. }) => true,
-            (DownloadingHeaders { .. }, SnapCollectingRoots { .. }) => true,
-            (DownloadingHeaders { .. }, Synchronized) => true,
-            // Body download leads to processing, or re-enters itself (soft retry)
-            (DownloadingBodies { .. }, Processing { .. }) => true,
-            (DownloadingBodies { .. }, DownloadingBodies { .. }) => true,
-            (DownloadingBodies { .. }, Synchronized) => true,
-            // Processing leads to synchronized or re-enters (height update)
-            (Processing { .. }, Synchronized) => true,
-            (Processing { .. }, Processing { .. }) => true,
-            // Synchronized: self-update, or re-enter sync when peers advance
-            (Synchronized, Synchronized) => true,
-            (Synchronized, DownloadingHeaders { .. }) => true,
-            (Synchronized, SnapCollectingRoots { .. }) => true,
-            // Snap sync forward path
-            (SnapCollectingRoots { .. }, SnapDownloading { .. }) => true,
-            (SnapDownloading { .. }, SnapReady { .. }) => true,
-            (SnapDownloading { .. }, SnapDownloading { .. }) => true, // alternate peer
-            (SnapReady { .. }, Synchronized) => true,
-            // Anything else is invalid
-            _ => false,
-        }
+    ///
+    /// With 3 states, the valid transitions are:
+    ///   Idle -> Syncing, Idle -> Synchronized, Idle -> Idle
+    ///   Syncing -> Synchronized, Syncing -> Idle, Syncing -> Syncing
+    ///   Synchronized -> Syncing, Synchronized -> Idle, Synchronized -> Synchronized
+    /// All 9 combinations are valid — the 3-state model eliminates invalid transitions.
+    fn is_valid_transition(&self, _new_state: &SyncState) -> bool {
+        // With only 3 states, all transitions are valid:
+        // - Idle is the reset state (anything -> Idle)
+        // - Syncing covers all active sync phases (Idle/Synchronized -> Syncing)
+        // - Synchronized is the terminal state (Syncing -> Synchronized)
+        // - Self-transitions are always valid
+        true
     }
 
     /// Short label for the current sync state (for logging)
@@ -1175,13 +1116,23 @@ impl SyncManager {
     fn label_for(state: &SyncState) -> &'static str {
         match state {
             SyncState::Idle => "Idle",
-            SyncState::DownloadingHeaders { .. } => "DownloadingHeaders",
-            SyncState::DownloadingBodies { .. } => "DownloadingBodies",
-            SyncState::Processing { .. } => "Processing",
+            SyncState::Syncing { phase, .. } => match phase {
+                SyncPhase::DownloadingHeaders => "Syncing:Headers",
+                SyncPhase::DownloadingBodies => "Syncing:Bodies",
+                SyncPhase::ProcessingBlocks => "Syncing:Processing",
+                SyncPhase::SnapCollecting => "Syncing:SnapCollecting",
+                SyncPhase::SnapDownloading => "Syncing:SnapDownloading",
+            },
             SyncState::Synchronized => "Synchronized",
-            SyncState::SnapCollectingRoots { .. } => "SnapCollectingRoots",
-            SyncState::SnapDownloading { .. } => "SnapDownloading",
-            SyncState::SnapReady { .. } => "SnapReady",
+        }
+    }
+
+    /// Get the current sync phase (if syncing), or None.
+    pub fn sync_phase(&self) -> Option<&SyncPhase> {
+        if let SyncState::Syncing { phase, .. } = &self.state {
+            Some(phase)
+        } else {
+            None
         }
     }
 
@@ -1194,34 +1145,40 @@ impl SyncManager {
     pub fn progress(&self) -> Option<f64> {
         match &self.state {
             SyncState::Idle | SyncState::Synchronized => None,
-            SyncState::DownloadingHeaders { target_slot, .. } => {
-                if *target_slot > 0 {
-                    Some(self.local_slot as f64 / *target_slot as f64 * 100.0)
-                } else {
-                    Some(0.0)
-                }
-            }
-            SyncState::DownloadingBodies { pending, total } => {
-                if *total > 0 {
-                    Some((*total - *pending) as f64 / *total as f64 * 100.0)
-                } else {
-                    Some(100.0)
-                }
-            }
-            SyncState::Processing { height } => {
-                if let Some(best) = self.best_peer().and_then(|p| self.peers.get(&p)) {
-                    if best.best_height > 0 {
-                        Some(*height as f64 / best.best_height as f64 * 100.0)
-                    } else {
-                        Some(100.0)
+            SyncState::Syncing { .. } => {
+                // Progress is derived from pipeline_data
+                match &self.pipeline_data {
+                    SyncPipelineData::Headers { target_slot, .. } => {
+                        if *target_slot > 0 {
+                            Some(self.local_slot as f64 / *target_slot as f64 * 100.0)
+                        } else {
+                            Some(0.0)
+                        }
                     }
-                } else {
-                    None
+                    SyncPipelineData::Bodies { pending, total } => {
+                        if *total > 0 {
+                            Some((*total - *pending) as f64 / *total as f64 * 100.0)
+                        } else {
+                            Some(100.0)
+                        }
+                    }
+                    SyncPipelineData::Processing { height } => {
+                        if let Some(best) = self.best_peer().and_then(|p| self.peers.get(&p)) {
+                            if best.best_height > 0 {
+                                Some(*height as f64 / best.best_height as f64 * 100.0)
+                            } else {
+                                Some(100.0)
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    SyncPipelineData::SnapCollecting { .. } => Some(5.0),
+                    SyncPipelineData::SnapDownloading { .. } => Some(50.0),
+                    SyncPipelineData::SnapReady { .. } => Some(95.0),
+                    SyncPipelineData::None => Some(0.0),
                 }
             }
-            SyncState::SnapCollectingRoots { .. } => Some(5.0),
-            SyncState::SnapDownloading { .. } => Some(50.0),
-            SyncState::SnapReady { .. } => Some(95.0),
         }
     }
 

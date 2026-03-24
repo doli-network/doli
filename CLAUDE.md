@@ -88,36 +88,15 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Block archiver | `crates/storage/src/archiver.rs` |
 | CLI | `bins/cli/src/` |
 
-## Map — Scripts (local testnet)
+## Local Testnet Operations — `ops/`
 
-| Task | Script |
-|------|--------|
-| Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
-| Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
-| Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
-
-**Port layout**:
-- Seed: P2P=30300, RPC=8500, Metrics=9000
-- N{i}: P2P=30300+i, RPC=8500+i, Metrics=9000+i
-
-**Directories**: `~/testnet/` — keys, seed, n1-n12, logs, bin
-
-## Map — Scripts (local devnet)
-
-| Task | Script |
-|------|--------|
-| Node status | `scripts/status.sh` — scans local RPC ports 28500-28550 |
-| Wallet balances | `scripts/balances.sh` — queries all producer wallets |
-| Bond details | `scripts/bonds.sh` — shows producer/bond info via RPC |
-| Chain reset | `scripts/chain-reset.sh devnet` — kill processes, wipe data |
-| Build from source | `scripts/update.sh` — `cargo build --release` |
-| Launch 2-node testnet | `scripts/launch_testnet.sh` — creates local devnet |
-| Deploy producers | `scripts/deploy_producers.sh` — interactive producer setup |
+See `docs/ops.md` for full script reference, port layout, chain reset procedure, and directory structure.
 
 ## Map — Docs & Skills
 
 | What | Where |
 |------|-------|
+| **Testnet ops** | `docs/ops.md` — scripts, ports, chain reset, deployment |
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
 | RPC reference (31 methods) | `docs/rpc_reference.md` |
@@ -129,3 +108,117 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
+
+---
+
+# OMEGA Ω
+
+## Philosophy
+OMEGA is a multi-agent workflow where each agent has a specific role and code passes through multiple validation layers.
+Every agent reads from and writes to a shared institutional memory (SQLite) — no agent acts alone, without backpressure.
+
+## Source of Truth Hierarchy
+1. **Codebase** — the ultimate source of truth. Always trust code over documentation.
+2. **`.claude/memory.db`** — institutional memory. Accumulated decisions, failed approaches, hotspots, findings across all sessions.
+3. **specs/** — technical specifications per domain. `specs/SPECS.md` is the master index.
+4. **docs/** — user-facing and developer documentation. `docs/DOCS.md` is the master index.
+
+When specs or docs conflict with the codebase, the codebase wins. Agents must flag the discrepancy and update specs/docs accordingly.
+
+## Institutional Memory
+
+Every workflow reads from and writes to `.claude/memory.db`. **This protocol is not optional.**
+
+**Cortex (team sharing):** Read @INDEX of `.claude/protocols/cortex-protocol.md` for shared knowledge rules.
+
+**Full protocol reference:** Read the **@INDEX** (first 13 lines) of `.claude/protocols/memory-protocol.md` to find section line ranges, then Read ONLY needed sections with offset/limit. For cross-file lookup: `.claude/protocols/PROTOCOLS-INDEX.md`.
+
+**Core rules (always in effect):**
+- **DB Detection**: `test -f .claude/memory.db` at session/workflow start. If missing, skip memory ops gracefully.
+- **Session briefing = behavioral learnings + open incidents**. NOT decisions, bug details, outcomes, or hotspots — those are on-demand.
+- **Briefing before action**: Every agent queries memory.db for scope-specific context (hotspots, failed approaches, findings, decisions, patterns) before starting work.
+- **Log incrementally**: Write to memory.db immediately after each significant action. Never batch for the end — context compaction loses batched entries.
+- **Self-score every action**: Rate significant actions (-1/0/+1) immediately after completing them.
+- **Track bugs as incidents**: Every bug gets a contributor-prefixed ticket (INC-{PREFIX}-NNN, e.g., `INC-AJL-001`). The PREFIX comes from `user_profile.contributor_prefix`. Use `--incident=INC-{PREFIX}-NNN` on doctor to resume. Read the @INDEX of `.claude/protocols/incident-protocol.md` for section lookup.
+- **Extract behavioral learnings**: When the user corrects you or an incident reveals a reasoning flaw, extract a behavioral rule (HOW to think, not domain patterns).
+- **Close-out when done**: Verify completeness, distill lessons, extract behavioral learnings, track bugs as incidents.
+- **Pipeline tracking**: Every `/omega-*` command that modifies code registers a `workflow_runs` entry at start, updates status at end. Read-only commands (e.g., `audit` without `--fix`) skip tracking — the artifact is sufficient.
+- **Non-pipeline work**: Even informal work gets a `workflow_runs` entry with type `'manual'`.
+- **sqlite3 quoting**: ALWAYS use heredoc syntax (`<<'EOF' ... EOF`) for sqlite3 commands. NEVER use inline single-quote wrapping — it breaks `datetime('now')` and string literals due to shell quote nesting.
+- **Immediate self-correction**: When the user points out a mistake (even indirectly, e.g. "how can this be avoided?"), immediately save a behavioral learning and fix the behavior. Do not explain the fix back to the user as if they caused the problem — the correction target is Claude, not the user.
+- **Error tolerance**: If sqlite3 fails, log the error and continue working. Never block work for a DB failure.
+
+## Identity
+
+The briefing hook may inject an identity block. **Full reference:** Read @INDEX of `.claude/protocols/identity.md` for section lookup.
+
+**Core rules:**
+- Protocol always overrides identity. Identity influences communication style, not functional behavior.
+- **Auto-onboarding:** If the session briefing contains "No OMEGA profile found", you MUST run `/omega-onboard` before responding to the user's first message. This is a blocking prerequisite — do not skip it.
+
+## Contextual Tips (Progressive Onboarding)
+
+After completing a user's task, if they did something manually that an OMEGA command handles better, add a **one-line tip** at the end of your response. Format: `Tip: /omega-<command> can <benefit>.` Rules: max 1 tip per session, never repeat a tip the user has seen (query `tips_shown` in memory.db), and never tip about the command they just used.
+
+## Global Rules
+
+1. **NEVER write code without tests first** (strict TDD)
+2. **NEVER assume** — if something is unclear, the analyst must ask
+3. **Module by module** — do not implement everything at once
+4. **Understand architecture before ANY modification** — comprehend module boundaries, data flows, dependencies, blast radius
+5. **Every assumption must be explicit** — technical + human-readable summary
+6. **Codebase is king** — when in doubt, read the actual code
+7. **Keep specs/, docs/, and protocols in sync** — every code change must update relevant specs, docs, and protocol files
+8. **Every requirement has acceptance criteria** — "it should work" is not acceptable
+9. **Every requirement has a priority** — Must/Should/Could/Won't (MoSCoW)
+10. **Every requirement is traceable** — from ID through tests to implementation
+11. **60% context budget** — every agent must complete its work within 60% of the context window
+12. **Briefing before action** — every agent queries memory.db before starting work
+13. **Log incrementally during work** — every agent writes to memory.db immediately after each significant action
+14. **Self-score every action** — every agent rates its own significant actions (-1/0/+1) immediately
+15. **Distill lessons from patterns** — when 3+ outcomes share a theme, distill a permanent lesson that changes future agent behavior
+16. **Read-only agents stay in their lane** — research agents (codebase-expert, functionality-analyst) NEVER offer to implement. They report findings and suggest appropriate commands
+17. **Security chain enforcement** — when a feature involves external data (multi-user, network, file ingestion), 5 agents independently verify security: Analyst (REQ-*-SEC requirements), Architect (trust boundary analysis or STOP), Test Writer (adversarial injection tests), QA (independent probing), Reviewer (injection pattern scan — automatic blocker)
+18. **Anti-overengineering gate** — verify necessity, scale, and simplicity before proposing any solution. Read `.claude/protocols/anti-overengineering.md`
+
+## Fail-Safe Controls
+
+**Full reference:** Read @INDEX of `.claude/protocols/fail-safes.md` for section lookup.
+
+**Core rules:** Prerequisite gates (agents verify upstream output). Iteration limits (QA↔Dev: 3, Reviewer↔Dev: 2, Audit fix: 5). Error recovery to `docs/.workflow/chain-state.md`. Developer max 5 retries/module.
+
+## Context Efficiency (ENFORCED)
+
+**Full reference:** Read @INDEX of `.claude/protocols/context-budget.md` for section lookup.
+
+**Rules:** CLAUDE.md MUST stay under 15,000 characters. Never inline templates/SQL/procedures — put them in `core/protocols/` and reference. Never duplicate content across files. Lazy-load protocol sections via @INDEX (first N lines) then Read with offset/limit. 60% context budget per agent. Never read the entire codebase.
+
+## Traceability Chain
+```
+Discovery → Analyst (REQ-XXX-001) → Architect (module map) → Test Writer (TEST-XXX-001) → Developer → QA (acceptance criteria) → Reviewer (completeness)
+```
+
+## Project Layout
+```
+root-project/
+├── backend/              ← Backend source code
+├── frontend/             ← Frontend (if applicable)
+├── specs/                ← Technical specifications
+├── docs/                 ← Documentation
+├── CLAUDE.md             ← Workflow rules
+└── .claude/
+    ├── agents/           ← Agent definitions
+    ├── commands/         ← Command definitions
+    ├── protocols/        ← Protocol reference files (loaded on-demand)
+    ├── memory.db         ← Institutional memory (SQLite)
+    └── db-queries/       ← Query reference files
+```
+
+## Conventions
+- Preferred language: Rust (or whatever the user defines)
+- Tests: alongside code or in `backend/tests/` (or `frontend/tests/`)
+- Commits: conventional (feat:, fix:, docs:, refactor:, test:)
+- Branches: feature/, bugfix/, hotfix/

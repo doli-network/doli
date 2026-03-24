@@ -403,42 +403,44 @@ impl Node {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
                 let current_slot = block.header.slot;
 
+                // Snapshot scheduled list BEFORE step 1 — apply_block captures
+                // `missed_slot_scheduler` before missed-slot processing and uses
+                // it in step 2 (fallback detection). The rebuild must do the same
+                // or step 2 sees a post-step-1 list with different producers,
+                // causing `select_producer_for_slot` to pick a different rank 0.
+                // INC-I-008: This ordering mismatch was the root cause of
+                // ProducerSet divergence after rollback in 80+ node networks.
+                let pre_step1_scheduled: Vec<(crypto::PublicKey, u64)> = producers
+                    .scheduled_producers_at_height(h)
+                    .iter()
+                    .map(|p| (p.public_key, 1u64))
+                    .collect();
+
                 // 1. Missed slots → unschedule rank 0
-                if current_slot > prev_slot + 1 && h > 1 {
-                    let scheduled_list: Vec<(crypto::PublicKey, u64)> = producers
-                        .scheduled_producers_at_height(h)
-                        .iter()
-                        .map(|p| (p.public_key, 1u64))
-                        .collect();
-                    if !scheduled_list.is_empty() {
-                        let gap = (current_slot - prev_slot - 1) as usize;
-                        let max_missed = gap.min(100);
-                        for i in 0..max_missed {
-                            let missed_slot = prev_slot + 1 + i as u32;
-                            let eligible = doli_core::consensus::select_producer_for_slot(
-                                missed_slot,
-                                &scheduled_list,
-                            );
-                            if let Some(rank0) = eligible.first() {
-                                if producers.unschedule_producer(rank0) {
-                                    changes += 1;
-                                }
+                if current_slot > prev_slot + 1 && h > 1 && !pre_step1_scheduled.is_empty() {
+                    let gap = (current_slot - prev_slot - 1) as usize;
+                    let max_missed = gap.min(100);
+                    for i in 0..max_missed {
+                        let missed_slot = prev_slot + 1 + i as u32;
+                        let eligible = doli_core::consensus::select_producer_for_slot(
+                            missed_slot,
+                            &pre_step1_scheduled,
+                        );
+                        if let Some(rank0) = eligible.first() {
+                            if producers.unschedule_producer(rank0) {
+                                changes += 1;
                             }
                         }
                     }
                 }
 
                 // 2. Fallback detection → unschedule expected rank 0
+                // Uses the pre-step-1 snapshot (matches apply_block's missed_slot_scheduler)
                 {
-                    let scheduled_list: Vec<(crypto::PublicKey, u64)> = producers
-                        .scheduled_producers_at_height(h)
-                        .iter()
-                        .map(|p| (p.public_key, 1u64))
-                        .collect();
-                    if !scheduled_list.is_empty() {
+                    if !pre_step1_scheduled.is_empty() {
                         let eligible = doli_core::consensus::select_producer_for_slot(
                             current_slot,
-                            &scheduled_list,
+                            &pre_step1_scheduled,
                         );
                         if let Some(expected_rank0) = eligible.first() {
                             if *expected_rank0 != block.header.producer

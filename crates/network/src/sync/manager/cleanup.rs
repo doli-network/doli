@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use libp2p::PeerId;
 use tracing::{info, warn};
 
-use super::{SyncManager, SyncState};
+use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
 impl SyncManager {
     /// Clean up stale requests and peers
@@ -70,64 +70,69 @@ impl SyncManager {
             self.remove_peer(&peer);
         }
 
-        // Snap sync timeouts
-        match &self.state {
-            SyncState::SnapCollectingRoots { started_at, .. } => {
-                if started_at.elapsed() > self.snap.root_timeout {
-                    // Quorum wasn't reached in time. Instead of falling back to
-                    // header-first (which always fails for nodes at h=0 or on a
-                    // fork), pick the largest vote group with >= 2 peers.
-                    // Safety: the node independently verifies the snapshot via
-                    // compute_state_root_from_bytes() after download — quorum
-                    // only selects WHICH chain to download, not trust.
-                    if let Some((best_root, best_peers)) = self.pick_best_snap_group() {
-                        let (download_peer, download_hash, best_height) = best_peers
-                            .iter()
-                            .max_by_key(|(_, _, h)| *h)
-                            .copied()
-                            .unwrap();
-                        let alternate_peers: Vec<(PeerId, crypto::Hash, u64)> = best_peers
-                            .iter()
-                            .filter(|(pid, _, _)| *pid != download_peer)
-                            .copied()
-                            .collect();
-                        warn!(
-                            "[SNAP_SYNC] No quorum after {:?} — using best group: {} peers agree on root={:.16}, downloading from {} (height={})",
-                            self.snap.root_timeout, best_peers.len(), best_root, download_peer, best_height
-                        );
-                        self.set_state(
-                            SyncState::SnapDownloading {
-                                target_hash: download_hash,
-                                target_height: best_height,
-                                quorum_root: best_root,
-                                peer: download_peer,
-                                alternate_peers,
-                                started_at: Instant::now(),
-                            },
-                            "snap_root_timeout_best_group",
-                        );
-                    } else {
-                        warn!(
-                            "[SNAP_SYNC] State root collection timed out after {:?} — no group with >= 2 peers, falling back",
-                            self.snap.root_timeout
-                        );
-                        self.snap_fallback_to_normal();
-                    }
-                }
+        // Snap sync timeouts — check started_at from SyncState, data from pipeline
+        let snap_collecting_timed_out = matches!(
+            (&self.state, &self.pipeline_data),
+            (SyncState::Syncing { phase: SyncPhase::SnapCollecting, started_at }, SyncPipelineData::SnapCollecting { .. })
+            if started_at.elapsed() > self.snap.root_timeout
+        );
+        let snap_downloading_timed_out = matches!(
+            (&self.state, &self.pipeline_data),
+            (SyncState::Syncing { phase: SyncPhase::SnapDownloading, started_at }, SyncPipelineData::SnapDownloading { .. })
+            if started_at.elapsed() > self.snap.download_timeout
+        );
+
+        if snap_collecting_timed_out {
+            // Quorum wasn't reached in time. Instead of falling back to
+            // header-first (which always fails for nodes at h=0 or on a
+            // fork), pick the largest vote group with >= 2 peers.
+            // Safety: the node independently verifies the snapshot via
+            // compute_state_root_from_bytes() after download — quorum
+            // only selects WHICH chain to download, not trust.
+            if let Some((best_root, best_peers)) = self.pick_best_snap_group() {
+                let (download_peer, download_hash, best_height) = best_peers
+                    .iter()
+                    .max_by_key(|(_, _, h)| *h)
+                    .copied()
+                    .unwrap();
+                let alternate_peers: Vec<(PeerId, crypto::Hash, u64)> = best_peers
+                    .iter()
+                    .filter(|(pid, _, _)| *pid != download_peer)
+                    .copied()
+                    .collect();
+                warn!(
+                    "[SNAP_SYNC] No quorum after {:?} — using best group: {} peers agree on root={:.16}, downloading from {} (height={})",
+                    self.snap.root_timeout, best_peers.len(), best_root, download_peer, best_height
+                );
+                self.set_syncing(
+                    SyncPhase::SnapDownloading,
+                    SyncPipelineData::SnapDownloading {
+                        target_hash: download_hash,
+                        target_height: best_height,
+                        quorum_root: best_root,
+                        peer: download_peer,
+                        alternate_peers,
+                    },
+                    "snap_root_timeout_best_group",
+                );
+            } else {
+                warn!(
+                    "[SNAP_SYNC] State root collection timed out after {:?} — no group with >= 2 peers, falling back",
+                    self.snap.root_timeout
+                );
+                self.snap_fallback_to_normal();
             }
-            SyncState::SnapDownloading {
-                started_at, peer, ..
-            } => {
-                if started_at.elapsed() > self.snap.download_timeout {
-                    let peer = *peer;
-                    warn!(
-                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
-                        peer, self.snap.download_timeout
-                    );
-                    self.handle_snap_download_error(peer);
-                }
-            }
-            _ => {}
+        } else if snap_downloading_timed_out {
+            let peer = if let SyncPipelineData::SnapDownloading { peer, .. } = &self.pipeline_data {
+                *peer
+            } else {
+                return; // Should not happen given the guard above
+            };
+            warn!(
+                "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
+                peer, self.snap.download_timeout
+            );
+            self.handle_snap_download_error(peer);
         }
 
         // Stall recovery: if "Synchronized" but significantly behind in slots,
@@ -159,14 +164,15 @@ impl SyncManager {
         // were streaming in). This nuked 20-30K downloaded headers every 30s.
         // Bodies are much larger than headers and N4 may be serving 4 peers
         // simultaneously — give body download more time before declaring stuck.
-        let stuck_threshold = if matches!(self.state, SyncState::DownloadingBodies { .. }) {
+        let stuck_threshold = if matches!(self.pipeline_data, SyncPipelineData::Bodies { .. }) {
             Duration::from_secs(120)
         } else {
             Duration::from_secs(30)
         };
         if self.state.is_syncing() && self.network.last_sync_activity.elapsed() > stuck_threshold {
-            let was_processing = matches!(self.state, SyncState::Processing { .. });
-            let is_downloading_bodies = matches!(self.state, SyncState::DownloadingBodies { .. });
+            let was_processing = matches!(self.pipeline_data, SyncPipelineData::Processing { .. });
+            let is_downloading_bodies =
+                matches!(self.pipeline_data, SyncPipelineData::Bodies { .. });
             let have_pending_headers = !self.pipeline.pending_headers.is_empty();
             let have_downloaded_bodies = !self.pipeline.pending_blocks.is_empty();
 
@@ -226,8 +232,9 @@ impl SyncManager {
                 self.network.last_sync_activity = Instant::now();
                 let total = self.pipeline.pending_headers.len();
                 let pending = self.pipeline.headers_needing_bodies.len();
-                self.set_state(
-                    SyncState::DownloadingBodies { pending, total },
+                self.set_syncing(
+                    SyncPhase::DownloadingBodies,
+                    SyncPipelineData::Bodies { pending, total },
                     "body_stall_soft_retry",
                 );
 
@@ -327,7 +334,7 @@ impl SyncManager {
                 if self.fork.consecutive_empty_headers >= 20 {
                     // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
                     // Escalate to snap sync if enough peers AND gap is large enough.
-                    // For small gaps (≤12), redirect to rollback/fork_sync to preserve
+                    // For small gaps (≤12), redirect to rollback to preserve
                     // block history and avoid snap sync cascade.
                     let enough_peers = self.peers.len() >= 3;
                     let gap = self
@@ -375,12 +382,7 @@ impl SyncManager {
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
         // from gossip race), reset to Idle, and never retried.
-        // IMPORTANT: Skip retry when fork_sync is active — its binary search runs
-        // across multiple ticks and resetting to Idle interrupts it, causing infinite loops.
-        if matches!(self.state, SyncState::Idle)
-            && self.should_sync()
-            && !self.is_fork_sync_active()
-        {
+        if matches!(self.state, SyncState::Idle) && self.should_sync() {
             let gap = self
                 .network
                 .network_tip_height
@@ -420,7 +422,7 @@ impl SyncManager {
 
         // Post-recovery grace timeout: if 120s have passed since snap sync
         // and grace hasn't cleared (10 blocks not applied), force-clear it.
-        // This prevents grace from permanently blocking fork_sync when the node
+        // This prevents grace from permanently blocking recovery when the node
         // landed on a fork after snap sync (can't apply blocks → grace never clears).
         if let super::RecoveryPhase::PostRecoveryGrace {
             started,
@@ -456,17 +458,17 @@ impl SyncManager {
         // Stuck-sync detection: if height hasn't advanced for >120s and we're
         // behind peers, the node is stuck. The correct escalation depends on gap:
         //
-        // - gap <= 1000: likely on a fork with small gap. Escalate to fork_sync
-        //   via consecutive_empty_headers = 3 (triggers resolve_shallow_fork).
-        // - gap > 1000: too far behind for fork_sync (binary search only covers
-        //   1000 blocks). Force snap sync via needs_genesis_resync.
+        // - gap <= 1000: likely on a fork with small gap. Signal stuck fork
+        //   so resolve_shallow_fork() can rollback.
+        // - gap > 1000: too far behind for rollback. Force snap sync via
+        //   needs_genesis_resync.
         //
         // 120s gives gossip/header-first plenty of time before escalating.
         // Note: post_recovery_grace is intentionally NOT checked here. If the
         // node did snap sync but landed on a fork, it will be stuck forever
         // because grace requires 10 applied blocks to clear — but no blocks
         // can be applied on a fork. The 120s timeout is sufficient protection.
-        if !self.is_fork_sync_active() && self.should_sync() {
+        if self.should_sync() {
             let gap = self
                 .network
                 .network_tip_height
@@ -474,12 +476,11 @@ impl SyncManager {
             let stuck_secs = self.network.last_block_applied.elapsed().as_secs();
             if gap > 0 && stuck_secs > 120 {
                 if gap > 1000 {
-                    // Large gap: fork_sync can't help (only searches 1000 blocks).
-                    // Force snap sync to jump to tip.
+                    // Large gap: rollback can't help. Force snap sync to jump to tip.
                     if self.snap.attempts < 3 && self.peers.len() >= 3 {
                         warn!(
                             "Stuck-sync detected: no block applied for {}s, behind by {} blocks \
-                             (local_h={}, network_tip={}). Gap too large for fork_sync — requesting snap sync.",
+                             (local_h={}, network_tip={}). Gap too large for rollback — requesting snap sync.",
                             stuck_secs, gap, self.local_height, self.network.network_tip_height
                         );
                         self.request_genesis_resync(super::RecoveryReason::StuckSyncLargeGap {

@@ -9,7 +9,6 @@
 mod bodies;
 mod equivocation;
 mod fork_recovery;
-mod fork_sync;
 mod headers;
 mod manager;
 mod reorg;
@@ -17,10 +16,9 @@ mod reorg;
 pub use bodies::BodyDownloader;
 pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;
-pub use fork_sync::{ForkSync, ForkSyncResult, ProbeResult};
 pub use headers::HeaderDownloader;
 pub use manager::{
     ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncManager,
-    SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{ReorgHandler, ReorgResult};
