@@ -155,6 +155,18 @@ pub fn validate_transaction(
         TxType::ProtocolActivation => {
             validate_protocol_activation_data(tx)?;
         }
+        // Pool/lending tx types: Phase 1 stub — validation not yet implemented.
+        TxType::CreatePool
+        | TxType::AddLiquidity
+        | TxType::RemoveLiquidity
+        | TxType::Swap
+        | TxType::CreateLoan
+        | TxType::RepayLoan
+        | TxType::LiquidateLoan => {
+            return Err(ValidationError::InvalidTransaction(
+                "pool/lending transactions not yet supported".to_string(),
+            ));
+        }
     }
 
     Ok(())
@@ -383,6 +395,13 @@ pub(super) fn validate_outputs(
                         i
                     )));
                 }
+            }
+            // Pool/LP/Collateral output types: Phase 1 stub — validation not yet implemented.
+            OutputType::Pool | OutputType::LPShare | OutputType::Collateral => {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "pool/lending output type {} not yet supported",
+                    i
+                )));
             }
         }
 

@@ -48,6 +48,37 @@ pub const BRIDGE_CHAIN_BSC: u8 = 6;
 /// Bridge HTLC header: 1B version + 1B target_chain + 1B addr_len
 pub const BRIDGE_HTLC_HEADER_SIZE: usize = 3;
 
+/// Pool metadata version
+pub const POOL_VERSION: u8 = 1;
+/// Pool extra_data: 1B version + 32B pool_id + 32B asset_b_id + 8B reserve_a + 8B reserve_b + 8B total_lp + 16B cumulative_price + 4B last_slot + 2B fee_bps + 4B creation_slot + 1B status
+pub const POOL_METADATA_SIZE: usize = 116;
+/// Pool domain for deterministic ID
+pub const POOL_ID_DOMAIN: &[u8] = b"DOLI_POOL";
+/// Default pool fee: 0.3% = 30 basis points
+pub const POOL_DEFAULT_FEE_BPS: u16 = 30;
+/// Maximum pool fee: 10% = 1000 basis points
+pub const POOL_MAX_FEE_BPS: u16 = 1000;
+
+/// LPShare metadata version
+pub const LP_SHARE_VERSION: u8 = 1;
+/// LPShare extra_data: 1B version + 32B pool_id
+pub const LP_SHARE_METADATA_SIZE: usize = 33;
+
+/// Decoded pool metadata from extra_data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolMetadata {
+    pub pool_id: Hash,
+    pub asset_b_id: Hash,
+    pub reserve_a: Amount,
+    pub reserve_b: Amount,
+    pub total_lp_shares: Amount,
+    pub cumulative_price: u128,
+    pub last_update_slot: u32,
+    pub fee_bps: u16,
+    pub creation_slot: u32,
+    pub status: u8,
+}
+
 /// Transaction output
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Output {
@@ -528,5 +559,132 @@ impl Output {
         bytes.extend_from_slice(&(self.extra_data.len() as u16).to_le_bytes());
         bytes.extend_from_slice(&self.extra_data);
         bytes
+    }
+
+    /// Compute a deterministic pool ID.
+    /// `pool_id = BLAKE3("DOLI_POOL" || min(asset_a, asset_b) || max(asset_a, asset_b))`
+    pub fn compute_pool_id(asset_a: &Hash, asset_b: &Hash) -> Hash {
+        use crypto::hash::hash_with_domain;
+        let (lo, hi) = if asset_a.as_bytes() < asset_b.as_bytes() {
+            (asset_a, asset_b)
+        } else {
+            (asset_b, asset_a)
+        };
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(lo.as_bytes());
+        data.extend_from_slice(hi.as_bytes());
+        hash_with_domain(POOL_ID_DOMAIN, &data)
+    }
+
+    /// Create a pool output.
+    ///
+    /// `asset_a` = DOLI (Hash::ZERO), `asset_b` = FungibleAsset ID.
+    /// `pubkey_hash` = deterministic pool address (same as pool_id for simplicity).
+    #[allow(clippy::too_many_arguments)]
+    pub fn pool(
+        pool_id: Hash,
+        asset_b_id: Hash,
+        reserve_a: Amount,
+        reserve_b: Amount,
+        total_lp_shares: Amount,
+        cumulative_price: u128,
+        last_update_slot: u32,
+        fee_bps: u16,
+        creation_slot: u32,
+    ) -> Self {
+        let mut extra_data = Vec::with_capacity(POOL_METADATA_SIZE);
+        extra_data.push(POOL_VERSION);
+        extra_data.extend_from_slice(pool_id.as_bytes());
+        extra_data.extend_from_slice(asset_b_id.as_bytes());
+        extra_data.extend_from_slice(&reserve_a.to_le_bytes());
+        extra_data.extend_from_slice(&reserve_b.to_le_bytes());
+        extra_data.extend_from_slice(&total_lp_shares.to_le_bytes());
+        extra_data.extend_from_slice(&cumulative_price.to_le_bytes());
+        extra_data.extend_from_slice(&last_update_slot.to_le_bytes());
+        extra_data.extend_from_slice(&fee_bps.to_le_bytes());
+        extra_data.extend_from_slice(&creation_slot.to_le_bytes());
+        extra_data.push(0u8); // status: active
+        Self {
+            output_type: OutputType::Pool,
+            amount: 0,            // reserves tracked in extra_data
+            pubkey_hash: pool_id, // pool address = pool_id
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Extract pool metadata from extra_data.
+    /// Returns None if not a Pool output.
+    #[allow(clippy::type_complexity)]
+    pub fn pool_metadata(&self) -> Option<PoolMetadata> {
+        if self.output_type != OutputType::Pool || self.extra_data.len() < POOL_METADATA_SIZE {
+            return None;
+        }
+        let d = &self.extra_data;
+        if d[0] != POOL_VERSION {
+            return None;
+        }
+        let pool_id = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&d[1..33]);
+            buf
+        });
+        let asset_b_id = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&d[33..65]);
+            buf
+        });
+        let reserve_a = u64::from_le_bytes(d[65..73].try_into().ok()?);
+        let reserve_b = u64::from_le_bytes(d[73..81].try_into().ok()?);
+        let total_lp_shares = u64::from_le_bytes(d[81..89].try_into().ok()?);
+        let cumulative_price = u128::from_le_bytes(d[89..105].try_into().ok()?);
+        let last_update_slot = u32::from_le_bytes(d[105..109].try_into().ok()?);
+        let fee_bps = u16::from_le_bytes(d[109..111].try_into().ok()?);
+        let creation_slot = u32::from_le_bytes(d[111..115].try_into().ok()?);
+        let status = d[115];
+        Some(PoolMetadata {
+            pool_id,
+            asset_b_id,
+            reserve_a,
+            reserve_b,
+            total_lp_shares,
+            cumulative_price,
+            last_update_slot,
+            fee_bps,
+            creation_slot,
+            status,
+        })
+    }
+
+    /// Create an LP share output.
+    /// `amount` = share amount. `pool_id` links to the pool.
+    pub fn lp_share(share_amount: Amount, pool_id: Hash, owner: Hash) -> Self {
+        let mut extra_data = Vec::with_capacity(LP_SHARE_METADATA_SIZE);
+        extra_data.push(LP_SHARE_VERSION);
+        extra_data.extend_from_slice(pool_id.as_bytes());
+        Self {
+            output_type: OutputType::LPShare,
+            amount: share_amount,
+            pubkey_hash: owner,
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Extract LP share metadata. Returns the pool_id or None.
+    pub fn lp_share_metadata(&self) -> Option<Hash> {
+        if self.output_type != OutputType::LPShare || self.extra_data.len() < LP_SHARE_METADATA_SIZE
+        {
+            return None;
+        }
+        if self.extra_data[0] != LP_SHARE_VERSION {
+            return None;
+        }
+        let pool_id = Hash::from_bytes({
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&self.extra_data[1..33]);
+            buf
+        });
+        Some(pool_id)
     }
 }

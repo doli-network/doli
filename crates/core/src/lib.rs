@@ -125,6 +125,7 @@ pub mod heartbeat;
 pub mod maintainer;
 pub mod network;
 pub mod network_params;
+pub mod pool;
 pub mod presence;
 pub mod rewards;
 pub mod scheduler;
@@ -260,6 +261,10 @@ pub use maintainer::{
 };
 pub use network::Network;
 pub use network_params::NetworkParams;
+pub use pool::{
+    compute_initial_lp_shares, compute_lp_shares, compute_remove_liquidity, compute_swap,
+    compute_twap_price, update_twap, verify_invariant,
+};
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
@@ -269,6 +274,8 @@ pub use transaction::{
     Input,
     Output,
     OutputType,
+    // Pool types
+    PoolMetadata,
     RegistrationData,
     RevokeDelegationData,
     SighashType,
@@ -278,6 +285,12 @@ pub use transaction::{
     MAX_EXTRA_DATA_SIZE,
     MAX_ROYALTY_BPS,
     NFT_METADATA_VERSION_ROYALTY,
+    // Pool constants
+    POOL_DEFAULT_FEE_BPS,
+    POOL_ID_DOMAIN,
+    POOL_MAX_FEE_BPS,
+    POOL_METADATA_SIZE,
+    POOL_VERSION,
 };
 pub use types::{coins_to_units, units_to_coins, Amount, BlockHeight, Epoch, Era, Slot};
 pub use validation::{

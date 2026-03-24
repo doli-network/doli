@@ -60,6 +60,20 @@ pub enum TxType {
     MintAsset = 17,
     /// Burn units of a fungible asset (holder burns own tokens, provably destroyed).
     BurnAsset = 18,
+    /// Create a new AMM pool with initial liquidity
+    CreatePool = 19,
+    /// Add liquidity to an existing pool
+    AddLiquidity = 20,
+    /// Remove liquidity from a pool (burn LP shares)
+    RemoveLiquidity = 21,
+    /// Swap assets through a pool
+    Swap = 22,
+    /// Create a collateralized loan
+    CreateLoan = 24,
+    /// Repay a loan and recover collateral
+    RepayLoan = 25,
+    /// Liquidate an undercollateralized loan
+    LiquidateLoan = 26,
 }
 
 impl TxType {
@@ -83,6 +97,13 @@ impl TxType {
             15 => Some(Self::ProtocolActivation),
             17 => Some(Self::MintAsset),
             18 => Some(Self::BurnAsset),
+            19 => Some(Self::CreatePool),
+            20 => Some(Self::AddLiquidity),
+            21 => Some(Self::RemoveLiquidity),
+            22 => Some(Self::Swap),
+            24 => Some(Self::CreateLoan),
+            25 => Some(Self::RepayLoan),
+            26 => Some(Self::LiquidateLoan),
             _ => None,
         }
     }
@@ -110,6 +131,12 @@ pub enum OutputType {
     FungibleAsset = 7,
     /// Bridge HTLC output (cross-chain atomic swap with target chain metadata)
     BridgeHTLC = 8,
+    /// AMM pool output (reserves + TWAP state)
+    Pool = 9,
+    /// Liquidity provider share (transferable)
+    LPShare = 10,
+    /// Lending collateral (locked loan collateral)
+    Collateral = 11,
 }
 
 impl OutputType {
@@ -124,6 +151,9 @@ impl OutputType {
             6 => Some(Self::NFT),
             7 => Some(Self::FungibleAsset),
             8 => Some(Self::BridgeHTLC),
+            9 => Some(Self::Pool),
+            10 => Some(Self::LPShare),
+            11 => Some(Self::Collateral),
             _ => None,
         }
     }

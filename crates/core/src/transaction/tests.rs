@@ -67,7 +67,15 @@ fn test_tx_type_conversion() {
     assert_eq!(TxType::from_u32(16), None);
     assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
     assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
-    assert_eq!(TxType::from_u32(19), None);
+    assert_eq!(TxType::from_u32(19), Some(TxType::CreatePool));
+    assert_eq!(TxType::from_u32(20), Some(TxType::AddLiquidity));
+    assert_eq!(TxType::from_u32(21), Some(TxType::RemoveLiquidity));
+    assert_eq!(TxType::from_u32(22), Some(TxType::Swap));
+    assert_eq!(TxType::from_u32(23), None);
+    assert_eq!(TxType::from_u32(24), Some(TxType::CreateLoan));
+    assert_eq!(TxType::from_u32(25), Some(TxType::RepayLoan));
+    assert_eq!(TxType::from_u32(26), Some(TxType::LiquidateLoan));
+    assert_eq!(TxType::from_u32(27), None);
     assert_eq!(TxType::from_u32(u32::MAX), None);
 }
 
@@ -82,7 +90,10 @@ fn test_output_type_conversion() {
     assert_eq!(OutputType::from_u8(6), Some(OutputType::NFT));
     assert_eq!(OutputType::from_u8(7), Some(OutputType::FungibleAsset));
     assert_eq!(OutputType::from_u8(8), Some(OutputType::BridgeHTLC));
-    assert_eq!(OutputType::from_u8(9), None);
+    assert_eq!(OutputType::from_u8(9), Some(OutputType::Pool));
+    assert_eq!(OutputType::from_u8(10), Some(OutputType::LPShare));
+    assert_eq!(OutputType::from_u8(11), Some(OutputType::Collateral));
+    assert_eq!(OutputType::from_u8(12), None);
     assert_eq!(OutputType::from_u8(u8::MAX), None);
 }
 
@@ -623,7 +634,15 @@ fn test_tx_type_from_u32_protocol_activation() {
     assert_eq!(TxType::from_u32(16), None);
     assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
     assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
-    assert_eq!(TxType::from_u32(19), None);
+    assert_eq!(TxType::from_u32(19), Some(TxType::CreatePool));
+    assert_eq!(TxType::from_u32(20), Some(TxType::AddLiquidity));
+    assert_eq!(TxType::from_u32(21), Some(TxType::RemoveLiquidity));
+    assert_eq!(TxType::from_u32(22), Some(TxType::Swap));
+    assert_eq!(TxType::from_u32(23), None);
+    assert_eq!(TxType::from_u32(24), Some(TxType::CreateLoan));
+    assert_eq!(TxType::from_u32(25), Some(TxType::RepayLoan));
+    assert_eq!(TxType::from_u32(26), Some(TxType::LiquidateLoan));
+    assert_eq!(TxType::from_u32(27), None);
 }
 
 // Property-based tests

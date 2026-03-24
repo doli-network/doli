@@ -89,6 +89,9 @@ impl RpcContext {
                     doli_core::OutputType::NFT => "nft",
                     doli_core::OutputType::FungibleAsset => "fungibleAsset",
                     doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
+                    doli_core::OutputType::Pool => "pool",
+                    doli_core::OutputType::LPShare => "lpShare",
+                    doli_core::OutputType::Collateral => "collateral",
                 };
 
                 let condition = if entry.output.output_type.is_conditioned() {

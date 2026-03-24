@@ -162,6 +162,13 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::RevokeDelegation => "revoke_delegation",
             doli_core::TxType::ProtocolActivation => "protocol_activation",
             doli_core::TxType::BurnAsset => "burn_asset",
+            doli_core::TxType::CreatePool => "create_pool",
+            doli_core::TxType::AddLiquidity => "add_liquidity",
+            doli_core::TxType::RemoveLiquidity => "remove_liquidity",
+            doli_core::TxType::Swap => "swap",
+            doli_core::TxType::CreateLoan => "create_loan",
+            doli_core::TxType::RepayLoan => "repay_loan",
+            doli_core::TxType::LiquidateLoan => "liquidate_loan",
         };
 
         // Decode covenant witnesses from tx.extra_data (if present)
@@ -294,6 +301,9 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::NFT => "nft",
             doli_core::OutputType::FungibleAsset => "fungibleAsset",
             doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
+            doli_core::OutputType::Pool => "pool",
+            doli_core::OutputType::LPShare => "lpShare",
+            doli_core::OutputType::Collateral => "collateral",
         };
 
         // Decode covenant condition for conditioned outputs

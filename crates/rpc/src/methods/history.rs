@@ -133,6 +133,13 @@ impl RpcContext {
                     doli_core::TxType::RevokeDelegation => "revoke_delegation",
                     doli_core::TxType::ProtocolActivation => "protocol_activation",
                     doli_core::TxType::BurnAsset => "burn_asset",
+                    doli_core::TxType::CreatePool => "create_pool",
+                    doli_core::TxType::AddLiquidity => "add_liquidity",
+                    doli_core::TxType::RemoveLiquidity => "remove_liquidity",
+                    doli_core::TxType::Swap => "swap",
+                    doli_core::TxType::CreateLoan => "create_loan",
+                    doli_core::TxType::RepayLoan => "repay_loan",
+                    doli_core::TxType::LiquidateLoan => "liquidate_loan",
                 };
 
                 history.push(HistoryEntryResponse {
