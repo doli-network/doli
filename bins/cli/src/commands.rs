@@ -322,7 +322,7 @@ pub(crate) enum Commands {
         /// Amount of DOLI to lock
         amount: String,
 
-        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano, bsc
         #[arg(long)]
         chain: String,
 
@@ -415,7 +415,7 @@ pub(crate) enum Commands {
         #[arg(long)]
         expiry: u64,
 
-        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano
+        /// Target chain: bitcoin, ethereum, monero, litecoin, cardano, bsc
         #[arg(long)]
         chain: String,
 
