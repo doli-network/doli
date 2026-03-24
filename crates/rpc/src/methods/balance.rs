@@ -68,7 +68,7 @@ impl RpcContext {
         let utxos = utxo_set.get_by_pubkey_hash(&pubkey_hash);
         let maturity = self.coinbase_maturity;
 
-        let responses: Vec<UtxoResponse> = utxos
+        let mut responses: Vec<UtxoResponse> = utxos
             .into_iter()
             .filter(|(outpoint, entry)| {
                 // Exclude UTXOs being spent by mempool transactions
@@ -170,17 +170,15 @@ impl RpcContext {
         // Add pending outputs from mempool transactions owned by this address.
         // This enables chained transactions: spend change from a pending TX
         // without waiting for confirmation.
-        let pubkey_hash_crypto = crypto::Hash::from_hex(&pubkey_hash.to_hex())
-            .unwrap_or(crypto::Hash::ZERO);
         for (_tx_hash, entry) in mempool.iter() {
             let tx = &entry.tx;
             let tx_hash_hex = tx.hash().to_hex();
             for (idx, output) in tx.outputs.iter().enumerate() {
-                if output.pubkey_hash == pubkey_hash_crypto
+                if output.pubkey_hash == pubkey_hash
                     && output.output_type == doli_core::OutputType::Normal
                 {
                     // Skip if this output is already being spent by another mempool TX
-                    let outpoint = doli_core::Outpoint::new(tx.hash(), idx as u32);
+                    let outpoint = storage::Outpoint::new(tx.hash(), idx as u32);
                     if mempool.is_outpoint_spent(&outpoint) {
                         continue;
                     }
