@@ -177,7 +177,35 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
     println!("Data dir:  {:?}", data_dir);
     println!();
 
-    // 3. Safety check: is doli-node running with this data dir?
+    // 3. Safety: stop the service if running (Restart=always would revive it)
+    let service_name = format!("doli-{}", network);
+    let service_active = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", &service_name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if service_active {
+        println!("Stopping {} service...", service_name);
+        let _ = std::process::Command::new("systemctl")
+            .args(["stop", &service_name])
+            .status();
+        // Fallback with sudo if unprivileged
+        let still_active = std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", &service_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if still_active {
+            let _ = std::process::Command::new("sudo")
+                .args(["systemctl", "stop", &service_name])
+                .status();
+        }
+        // Brief pause for process cleanup
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    // Also check for any doli-node process using this data dir
     let data_dir_str = data_dir.to_string_lossy().to_string();
     let is_running = std::process::Command::new("pgrep")
         .args(["-f", &format!("doli-node.*{}", data_dir_str)])
@@ -187,8 +215,9 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
 
     if is_running {
         anyhow::bail!(
-            "A doli-node process is running with this data directory.\n\
-             Stop the node first: sudo systemctl stop <service>"
+            "A doli-node process is still running with this data directory.\n\
+             Stop it manually: sudo systemctl stop {} && sudo kill $(pgrep -f doli-node)",
+            service_name
         );
     }
 
