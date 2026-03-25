@@ -93,11 +93,11 @@ impl NetworkParams {
                     "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
-                max_peers: 200, // Testnet: higher for stress testing with 100+ nodes
+                max_peers: 50, // Testnet: same as mainnet — 135+ connections caused Yamux buffer explosion (INC-I-009)
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774348000, // Testnet v70 genesis - INC-I-008 fix v2 chain reset 2026-03-24
+                genesis_time: 1774397695, // Testnet v73 genesis - fresh start 2026-03-25
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
