@@ -234,7 +234,10 @@ pub(super) fn validate_outputs(
     let mut total: Amount = 0;
 
     for (i, output) in outputs.iter().enumerate() {
-        // Amount must be positive (Pool outputs exempt: reserves tracked in extra_data)
+        // Amount must be positive.
+        // Pool outputs exempt: reserves tracked in extra_data.
+        // Non-native types (FungibleAsset, LPShare, Collateral) carry token
+        // units / LP shares — zero is also prohibited for them.
         if output.amount == 0 && output.output_type != OutputType::Pool {
             return Err(ValidationError::InvalidTransaction(format!(
                 "output {} has zero amount",
@@ -242,21 +245,23 @@ pub(super) fn validate_outputs(
             )));
         }
 
-        // Amount must not exceed max supply individually
-        if output.amount > TOTAL_SUPPLY {
+        // Amount must not exceed max DOLI supply individually (native only).
+        // Non-native types may hold token supplies larger than TOTAL_SUPPLY.
+        if output.output_type.is_native_amount() && output.amount > TOTAL_SUPPLY {
             return Err(ValidationError::AmountExceedsSupply {
                 amount: output.amount,
                 max: TOTAL_SUPPLY,
             });
         }
 
-        // Check for overflow when adding to total
-        total =
-            total
-                .checked_add(output.amount)
-                .ok_or_else(|| ValidationError::AmountOverflow {
+        // Accumulate only native DOLI amounts for the TOTAL_SUPPLY check.
+        if output.output_type.is_native_amount() {
+            total = total.checked_add(output.amount).ok_or_else(|| {
+                ValidationError::AmountOverflow {
                     context: format!("output total at index {}", i),
-                })?;
+                }
+            })?;
+        }
 
         // Validate extra_data size limit (all output types)
         if output.extra_data.len() > MAX_EXTRA_DATA_SIZE {
