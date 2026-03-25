@@ -66,7 +66,7 @@ pub(crate) async fn cmd_nft_batch_mint(
         let nft_output = if let Some(royalty_pct) = entry.royalty {
             let royalty_bps = (royalty_pct * 100.0) as u16;
             Output::nft_with_royalty(
-                0,
+                1,
                 from_hash,
                 token_id,
                 &content_bytes,
@@ -76,7 +76,7 @@ pub(crate) async fn cmd_nft_batch_mint(
             )
             .map_err(|e| anyhow::anyhow!("NFT {} build failed: {}", i, e))?
         } else {
-            Output::nft(0, from_hash, token_id, &content_bytes, &cond)
+            Output::nft(1, from_hash, token_id, &content_bytes, &cond)
                 .map_err(|e| anyhow::anyhow!("NFT {} build failed: {}", i, e))?
         };
 
@@ -84,11 +84,13 @@ pub(crate) async fn cmd_nft_batch_mint(
         nft_outputs.push(nft_output);
     }
 
-    // Calculate fee
+    // Calculate fee + dust for each NFT (1 sat per NFT)
+    let nft_dust = entries.len() as u64;
     let fee_units =
         doli_core::consensus::BASE_FEE + total_extra_bytes * doli_core::consensus::FEE_PER_BYTE;
+    let total_needed = fee_units + nft_dust;
 
-    // Select DOLI UTXOs for fee
+    // Select DOLI UTXOs for fee + dust
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
         .await?
@@ -99,17 +101,19 @@ pub(crate) async fn cmd_nft_batch_mint(
     let mut selected = Vec::new();
     let mut total_input = 0u64;
     for utxo in &utxos {
-        if total_input >= fee_units {
+        if total_input >= total_needed {
             break;
         }
         selected.push(utxo.clone());
         total_input += utxo.amount;
     }
-    if total_input < fee_units {
+    if total_input < total_needed {
         anyhow::bail!(
-            "Insufficient balance for fee. Available: {}, Required: {}",
+            "Insufficient balance. Available: {}, Required: {} (fee {} + dust {})",
             format_balance(total_input),
-            format_balance(fee_units)
+            format_balance(total_needed),
+            format_balance(fee_units),
+            format_balance(nft_dust)
         );
     }
 
@@ -123,7 +127,7 @@ pub(crate) async fn cmd_nft_batch_mint(
 
     // Build outputs: all NFTs + DOLI change
     let mut outputs = nft_outputs;
-    let change = total_input - fee_units;
+    let change = total_input - total_needed;
     if change > 0 {
         outputs.push(Output::normal(change, from_hash));
     }
