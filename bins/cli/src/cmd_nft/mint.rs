@@ -16,6 +16,7 @@ pub(crate) async fn cmd_mint(
     condition: Option<String>,
     amount: &str,
     royalty_pct: Option<f64>,
+    data: Option<String>,
 ) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -34,8 +35,11 @@ pub(crate) async fn cmd_mint(
         coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?,
     );
 
-    // Content hash: if it looks like hex (64 chars), use as-is; otherwise treat as URI bytes
-    let content_bytes = if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+    // Content bytes: --data overrides content with raw hex-decoded binary data.
+    // Without --data, content is interpreted as hex (if 64 hex chars) or URI bytes.
+    let content_bytes = if let Some(ref hex_data) = data {
+        hex::decode(hex_data).map_err(|_| anyhow::anyhow!("Invalid hex in --data"))?
+    } else if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
         hex::decode(content).unwrap_or_else(|_| content.as_bytes().to_vec())
     } else {
         content.as_bytes().to_vec()

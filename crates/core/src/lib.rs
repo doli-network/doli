@@ -126,6 +126,7 @@ pub mod lending;
 pub mod maintainer;
 pub mod network;
 pub mod network_params;
+pub mod nft;
 pub mod pool;
 pub mod presence;
 pub mod rewards;
@@ -266,6 +267,7 @@ pub use maintainer::{
 };
 pub use network::Network;
 pub use network_params::NetworkParams;
+pub use nft::{detect_content_format, NftContentFormat};
 pub use pool::{
     compute_initial_lp_shares, compute_lp_shares, compute_remove_liquidity, compute_swap,
     compute_twap_price, update_twap, verify_invariant,

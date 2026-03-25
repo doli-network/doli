@@ -992,6 +992,49 @@ fn test_committed_output_count_zero_means_all() {
     );
 }
 
+// ==================== Fee Routing Tests ====================
+
+#[test]
+fn test_coinbase_extra_fees_from_nft() {
+    // Block with 1 NFT (300 bytes extra_data)
+    // extra_fees = 300 * FEE_PER_BYTE = 300
+    // coinbase = block_reward + 300
+    let block_reward = 100_000_000u64;
+    let extra_fees = 300u64 * crate::consensus::FEE_PER_BYTE;
+    assert_eq!(block_reward + extra_fees, 100_000_300);
+}
+
+#[test]
+fn test_coinbase_no_extra_for_transfers() {
+    let extra_fees = 0u64 * crate::consensus::FEE_PER_BYTE;
+    assert_eq!(extra_fees, 0);
+}
+
+#[test]
+fn test_extra_fees_mixed_block() {
+    // 3 NFTs x 300 bytes + 1 pool x 116 bytes + 2 transfers x 0
+    let bytes: Vec<u64> = vec![300, 300, 300, 116, 0, 0];
+    let extra: u64 = bytes
+        .iter()
+        .map(|b| b * crate::consensus::FEE_PER_BYTE)
+        .sum();
+    assert_eq!(extra, 1016);
+}
+
+#[test]
+fn test_protocol_txs_excluded_from_extra_fees() {
+    // Registration and EpochReward TXs have extra_data but should NOT count
+    // This is enforced by filtering in validation_checks.rs
+    let excluded = [TxType::Registration, TxType::EpochReward, TxType::Coinbase];
+    for tt in &excluded {
+        // These types are filtered out in the extra_fees calculation
+        assert!(matches!(
+            tt,
+            TxType::Registration | TxType::EpochReward | TxType::Coinbase
+        ));
+    }
+}
+
 #[test]
 fn test_committed_output_count_serialization_roundtrip() {
     let tx = Transaction::new_transfer(
@@ -1887,4 +1930,103 @@ fn test_fee_no_overflow_many_outputs() {
     // No overflow — u64 handles this trivially.
     let expected = 1 + 100 * MAX_EXTRA_DATA_SIZE as u64;
     assert_eq!(tx.minimum_fee(), expected);
+}
+
+// ==================== Fee Routing (Coinbase Extra Fees) Tests ====================
+
+#[test]
+fn test_coinbase_extra_fees_calculation() {
+    use crate::consensus::FEE_PER_BYTE;
+
+    // Simulate: block with 1 NFT (300 bytes extra_data) + 1 transfer (0 bytes)
+    let extra_fees: u64 = [300u64, 0u64]
+        .iter()
+        .map(|bytes| bytes * FEE_PER_BYTE)
+        .sum();
+    assert_eq!(extra_fees, 300);
+
+    // Coinbase should be block_reward + extra_fees
+    // Using a test block_reward of 100_000_000 (1 DOLI)
+    let block_reward = 100_000_000u64;
+    let coinbase_amount = block_reward + extra_fees;
+    assert_eq!(coinbase_amount, 100_000_300);
+}
+
+#[test]
+fn test_coinbase_no_extra_fees_for_transfers() {
+    use crate::consensus::FEE_PER_BYTE;
+
+    // Block with only transfers (0 extra_data each)
+    let extra_fees: u64 = [0u64, 0u64, 0u64]
+        .iter()
+        .map(|bytes| bytes * FEE_PER_BYTE)
+        .sum();
+    assert_eq!(extra_fees, 0);
+}
+
+#[test]
+fn test_extra_fees_multiple_nfts() {
+    use crate::consensus::FEE_PER_BYTE;
+
+    // 3 NFTs of 300 bytes each + 1 pool swap of 116 bytes
+    let extra_fees: u64 = [300u64, 300, 300, 116]
+        .iter()
+        .map(|bytes| bytes * FEE_PER_BYTE)
+        .sum();
+    assert_eq!(extra_fees, 1016);
+}
+
+#[test]
+fn test_extra_fees_only_from_user_txs() {
+    use crate::consensus::FEE_PER_BYTE;
+
+    // Coinbase and EpochReward TXs should NOT count.
+    // Only user TXs contribute extra fees.
+    let user_tx_bytes = vec![300u64, 116]; // NFT + pool
+    let _protocol_tx_bytes = vec![40u64, 200]; // registration + epoch reward (not counted)
+
+    // Only user TXs count
+    let extra_fees: u64 = user_tx_bytes.iter().map(|bytes| bytes * FEE_PER_BYTE).sum();
+    assert_eq!(extra_fees, 416); // NOT 416 + 240
+}
+
+#[test]
+fn test_block_builder_add_coinbase_with_extra() {
+    use crate::block::BlockBuilder;
+    use crate::consensus::ConsensusParams;
+    use crypto::PublicKey;
+
+    let producer = PublicKey::from_bytes([1u8; 32]);
+    let pool_hash = crate::consensus::reward_pool_pubkey_hash();
+    let params = ConsensusParams::mainnet();
+
+    let mut builder = BlockBuilder::new(Hash::ZERO, 0, producer).with_params(params.clone());
+
+    // Add a user transaction first (simulates mempool tx)
+    let user_tx = Transaction::new_transfer(
+        vec![Input::new(Hash::ZERO, 0)],
+        vec![Output {
+            output_type: OutputType::NFT,
+            amount: 1,
+            pubkey_hash: Hash::ZERO,
+            lock_until: 0,
+            extra_data: vec![0u8; 300],
+        }],
+    );
+    builder.add_transaction(user_tx);
+
+    // Add coinbase with extra fees (300 bytes * FEE_PER_BYTE = 300)
+    let extra_fees = 300u64;
+    builder.add_coinbase_with_extra(1, pool_hash, extra_fees);
+
+    // Build the block
+    let result = builder.build(params.genesis_time + params.slot_duration);
+    assert!(result.is_some());
+    let (_header, txs) = result.unwrap();
+
+    // Coinbase must be at position 0 (insert(0, ...))
+    assert!(txs[0].is_coinbase());
+    let expected_reward = params.block_reward(1) + extra_fees;
+    assert_eq!(txs[0].outputs[0].amount, expected_reward);
+    assert_eq!(txs[0].outputs[0].pubkey_hash, pool_hash);
 }

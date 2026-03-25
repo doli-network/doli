@@ -19,10 +19,10 @@ impl Node {
         let mut builder =
             BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
 
-        // ALL blocks: coinbase goes to reward pool (built-in mining pool).
-        // No producer can spend rewards early — only the consensus engine distributes
-        // pool funds to qualified producers at epoch boundaries.
-        builder.add_coinbase(height, pool_hash);
+        // Coinbase is deferred until after mempool tx inclusion, so that
+        // per-byte extra fees from user transactions can be routed to the
+        // reward pool via an inflated coinbase amount.
+        // See add_coinbase_with_extra() call below.
 
         if !self.config.network.is_in_genesis(height) {
             // POST-GENESIS: distribute pool at epoch boundaries.
@@ -133,6 +133,7 @@ impl Node {
             );
             let total_mempool = mempool_txs.len();
             let mut included_count = 0usize;
+            let mut included_txs: Vec<&Transaction> = Vec::new();
             for tx in &mempool_txs {
                 if Instant::now() > deadline {
                     warn!(
@@ -150,8 +151,22 @@ impl Node {
                     continue;
                 }
                 included_count += 1;
+                included_txs.push(tx);
                 builder.add_transaction(tx.clone());
             }
+
+            // Calculate extra fees from included user transactions only.
+            // Protocol-generated transactions (coinbase, epoch rewards, registrations)
+            // are NOT counted — only mempool TXs contribute per-byte fees.
+            let extra_fees: u64 = included_txs
+                .iter()
+                .flat_map(|tx| tx.outputs.iter())
+                .map(|o| o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE)
+                .sum();
+
+            // Now add coinbase with block reward + extra fees.
+            // insert(0, ...) places it at position 0 regardless of when called.
+            builder.add_coinbase_with_extra(height, pool_hash, extra_fees);
         }
 
         // Recapture timestamp just before building the block.

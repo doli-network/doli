@@ -295,6 +295,10 @@ pub(crate) enum Commands {
         /// Royalty in percent for the creator (for --mint, e.g. 5 = 5%)
         #[arg(long)]
         royalty: Option<f64>,
+
+        /// Raw binary data (hex-encoded) to embed in the NFT on-chain (for --mint)
+        #[arg(long, value_name = "HEX")]
+        data: Option<String>,
     },
 
     /// Issue a fungible token (meme coin, stablecoin, etc.)

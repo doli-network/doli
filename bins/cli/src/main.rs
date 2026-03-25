@@ -175,6 +175,7 @@ async fn main() -> Result<()> {
             amount,
             witness,
             royalty,
+            data,
         } => {
             if list {
                 cmd_nft::cmd_nft_list(&wallet, &rpc_endpoint).await?;
@@ -188,6 +189,7 @@ async fn main() -> Result<()> {
                     condition,
                     &amount,
                     royalty,
+                    data,
                 )
                 .await?;
             } else if let Some(utxo) = transfer {

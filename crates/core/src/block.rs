@@ -12,7 +12,7 @@ use vdf::{VdfOutput, VdfProof};
 
 use crate::consensus::ConsensusParams;
 use crate::transaction::Transaction;
-use crate::types::{BlockHeight, Slot};
+use crate::types::{Amount, BlockHeight, Slot};
 
 /// Block header
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +278,23 @@ impl BlockBuilder {
     /// Add the coinbase transaction
     pub fn add_coinbase(&mut self, height: BlockHeight, pubkey_hash: Hash) -> &mut Self {
         let reward = self.params.block_reward(height);
+        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
+        self.transactions.insert(0, coinbase);
+        self
+    }
+
+    /// Add coinbase with extra fee amount (from per-byte fees of block transactions).
+    ///
+    /// The coinbase reward is `block_reward(height) + extra_amount`, where extra_amount
+    /// represents the aggregate per-byte fees collected from user transactions in this block.
+    /// This routes fee revenue into the reward pool via the coinbase output.
+    pub fn add_coinbase_with_extra(
+        &mut self,
+        height: BlockHeight,
+        pubkey_hash: Hash,
+        extra_amount: Amount,
+    ) -> &mut Self {
+        let reward = self.params.block_reward(height) + extra_amount;
         let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
         self.transactions.insert(0, coinbase);
         self

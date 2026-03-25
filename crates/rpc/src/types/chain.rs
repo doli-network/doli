@@ -202,6 +202,8 @@ pub struct ChainStatsResponse {
     pub total_staked: u64,
     /// Chain height
     pub height: u64,
+    /// Reward pool balance (base units) — sum of all coinbase UTXOs held by the pool
+    pub reward_pool_balance: u64,
 }
 
 /// Attestation statistics for current epoch

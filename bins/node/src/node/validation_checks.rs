@@ -291,12 +291,27 @@ impl Node {
             anyhow::bail!("first transaction is not a valid coinbase");
         }
 
-        let expected_reward = self.params.block_reward(height);
+        // Calculate extra fees from user transactions in this block.
+        // Only non-coinbase, non-epoch-reward, non-registration TXs contribute
+        // per-byte fees via their output extra_data.
+        let extra_fees: u64 = block
+            .transactions
+            .iter()
+            .filter(|tx| {
+                !tx.is_coinbase() && !tx.is_epoch_reward() && tx.tx_type != TxType::Registration
+            })
+            .flat_map(|tx| tx.outputs.iter())
+            .map(|o| o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE)
+            .sum();
+
+        let expected_reward = self.params.block_reward(height) + extra_fees;
         if coinbase.outputs[0].amount != expected_reward {
             anyhow::bail!(
-                "coinbase amount {} != expected block reward {}",
+                "coinbase amount {} != expected block reward {} (base {} + extra_fees {})",
                 coinbase.outputs[0].amount,
-                expected_reward
+                expected_reward,
+                self.params.block_reward(height),
+                extra_fees
             );
         }
 
@@ -383,7 +398,8 @@ impl Node {
                     let utxo = self.utxo_set.read().await;
                     let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
                     let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-                    utxo_total + self.params.block_reward(height)
+                    // Include the coinbase from this block (block_reward + extra_fees)
+                    utxo_total + self.params.block_reward(height) + extra_fees
                 };
 
                 if total_distributed > pool_balance {
