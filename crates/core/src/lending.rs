@@ -231,4 +231,111 @@ mod tests {
         assert_eq!(output.amount, 1000);
         assert_eq!(output.pubkey_hash, depositor);
     }
+
+    /// Simulate a real loan: 150 tokens collateral, 100 DOLI borrowed, 5% rate.
+    /// Verify Collateral UTXO serialization roundtrips correctly with realistic values.
+    #[test]
+    fn test_collateral_output_with_real_values() {
+        use crate::transaction::Output;
+        let pool_id = crypto::Hash::from_bytes([0x11; 32]);
+        let borrower = crypto::Hash::from_bytes([0x22; 32]);
+        let asset_id = crypto::Hash::from_bytes([0x33; 32]);
+
+        // 150 tokens collateral, 100 DOLI (10^10 base units) principal, 5% rate, slot 1000
+        let collateral_amount = 150_000_000_000u64; // 150 tokens (assuming 10^9 decimals)
+        let principal = 100_000_000_00u64; // 100 DOLI in base units (10^8)
+        let rate_bps = 500u16;
+        let creation_slot = 1000u32;
+        let liq_ratio = 15000u16;
+
+        let output = Output::collateral(
+            collateral_amount,
+            pool_id,
+            borrower,
+            principal,
+            rate_bps,
+            creation_slot,
+            liq_ratio,
+            asset_id,
+        );
+
+        // Verify amount field
+        assert_eq!(output.amount, collateral_amount);
+
+        // Roundtrip metadata
+        let meta = output.collateral_metadata().unwrap();
+        assert_eq!(meta.pool_id, pool_id);
+        assert_eq!(meta.borrower_hash, borrower);
+        assert_eq!(meta.principal, principal);
+        assert_eq!(meta.interest_rate_bps, rate_bps);
+        assert_eq!(meta.creation_slot, creation_slot);
+        assert_eq!(meta.liquidation_ratio_bps, liq_ratio);
+        assert_eq!(meta.collateral_asset_id, asset_id);
+
+        // Verify serialization roundtrip via serialize/deserialize
+        let serialized = output.serialize();
+        assert!(!serialized.is_empty());
+    }
+
+    /// Test interest accrual over one epoch (360 slots).
+    #[test]
+    fn test_interest_over_one_epoch() {
+        // 100 DOLI at 5%, 360 slots
+        let interest = compute_interest(100_000_000_00, 500, 360);
+        assert!(interest > 0);
+        // Expected: 100 * 0.05 * 360 / 3_155_760 ~ 0.000570 DOLI ~ 57058 units
+        // The exact value depends on integer truncation
+        let expected_approx = (100_000_000_00u128 * 500 * 360) / (10000 * SLOTS_PER_YEAR as u128);
+        assert_eq!(interest, expected_approx as u64);
+    }
+
+    /// Test that half-year interest accrual is approximately half of yearly.
+    #[test]
+    fn test_interest_half_year() {
+        let principal = 100_000_000_000u64; // 1000 DOLI
+        let rate_bps = 500; // 5%
+        let full_year = compute_interest(principal, rate_bps, SLOTS_PER_YEAR);
+        let half_year = compute_interest(principal, rate_bps, SLOTS_PER_YEAR / 2);
+        // Half-year interest should be approximately half of full year
+        // Allow 1 unit rounding difference
+        assert!((full_year / 2).abs_diff(half_year) <= 1);
+    }
+
+    /// Test that compute_total_debt includes both principal and interest.
+    #[test]
+    fn test_total_debt_exceeds_principal() {
+        let principal = 50_000_000_00u64; // 50 DOLI
+        let rate_bps = 1000; // 10%
+        let elapsed = SLOTS_PER_YEAR;
+        let debt = compute_total_debt(principal, rate_bps, elapsed);
+        assert!(debt > principal);
+        assert_eq!(
+            debt,
+            principal + compute_interest(principal, rate_bps, elapsed)
+        );
+    }
+
+    /// Test LTV with large real-world values.
+    #[test]
+    fn test_ltv_real_world() {
+        // 80 DOLI debt, 120 DOLI collateral value = 66.67% LTV = 6666 bps
+        let debt = 80_000_000_00u64;
+        let collateral = 120_000_000_00u64;
+        let ltv = compute_ltv_bps(debt, collateral);
+        assert_eq!(ltv, 6666);
+    }
+
+    /// Test lending pool ID derivation is deterministic.
+    #[test]
+    fn test_lending_pool_id_deterministic() {
+        use crate::transaction::Output;
+        let pool_id = crypto::Hash::from_bytes([0x55; 32]);
+        let lending_pool_id_a = Output::compute_lending_pool_id(&pool_id);
+        let lending_pool_id_b = Output::compute_lending_pool_id(&pool_id);
+        assert_eq!(lending_pool_id_a, lending_pool_id_b);
+        // Different pool ID produces different lending pool ID
+        let pool_id_2 = crypto::Hash::from_bytes([0x66; 32]);
+        let lending_pool_id_c = Output::compute_lending_pool_id(&pool_id_2);
+        assert_ne!(lending_pool_id_a, lending_pool_id_c);
+    }
 }

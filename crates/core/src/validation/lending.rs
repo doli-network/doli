@@ -351,4 +351,210 @@ mod tests {
         };
         assert!(validate_liquidate_loan(&tx).is_ok());
     }
+
+    /// Test that CreateLoan with excessive interest rate fails validation.
+    #[test]
+    fn test_create_loan_excessive_interest_fails() {
+        let pool_id = Hash::from_bytes([0xAA; 32]);
+        let borrower = Hash::from_bytes([0xBB; 32]);
+        let asset_id = Hash::from_bytes([0xCC; 32]);
+        // Use interest rate above max (5001 > 5000)
+        let collateral_output = Output::collateral(
+            500,
+            pool_id,
+            borrower,
+            100,
+            COLLATERAL_MAX_INTEREST_BPS + 1,
+            42,
+            15000,
+            asset_id,
+        );
+        let borrow_output = Output::normal(100, borrower);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreateLoan,
+            inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+            outputs: vec![collateral_output, borrow_output],
+            extra_data: vec![],
+        };
+        let result = validate_create_loan(&tx);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("interest rate"));
+    }
+
+    /// Test that CreateLoan with liquidation ratio below minimum fails validation.
+    #[test]
+    fn test_create_loan_low_liquidation_ratio_fails() {
+        let pool_id = Hash::from_bytes([0xAA; 32]);
+        let borrower = Hash::from_bytes([0xBB; 32]);
+        let asset_id = Hash::from_bytes([0xCC; 32]);
+        // Use liquidation ratio below minimum (11999 < 12000)
+        let collateral_output = Output::collateral(
+            500,
+            pool_id,
+            borrower,
+            100,
+            500,
+            42,
+            COLLATERAL_MIN_LIQUIDATION_BPS - 1,
+            asset_id,
+        );
+        let borrow_output = Output::normal(100, borrower);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreateLoan,
+            inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+            outputs: vec![collateral_output, borrow_output],
+            extra_data: vec![],
+        };
+        let result = validate_create_loan(&tx);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("liquidation ratio"));
+    }
+
+    /// Test that CreateLoan with zero principal fails validation.
+    #[test]
+    fn test_create_loan_zero_principal_fails() {
+        let pool_id = Hash::from_bytes([0xAA; 32]);
+        let borrower = Hash::from_bytes([0xBB; 32]);
+        let asset_id = Hash::from_bytes([0xCC; 32]);
+        let collateral_output =
+            Output::collateral(500, pool_id, borrower, 0, 500, 42, 15000, asset_id);
+        let borrow_output = Output::normal(0, borrower);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreateLoan,
+            inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+            outputs: vec![collateral_output, borrow_output],
+            extra_data: vec![],
+        };
+        let result = validate_create_loan(&tx);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("principal"));
+    }
+
+    /// Test that CreateLoan with zero collateral amount fails validation.
+    #[test]
+    fn test_create_loan_zero_collateral_fails() {
+        let pool_id = Hash::from_bytes([0xAA; 32]);
+        let borrower = Hash::from_bytes([0xBB; 32]);
+        let asset_id = Hash::from_bytes([0xCC; 32]);
+        let collateral_output =
+            Output::collateral(0, pool_id, borrower, 100, 500, 42, 15000, asset_id);
+        let borrow_output = Output::normal(100, borrower);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreateLoan,
+            inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+            outputs: vec![collateral_output, borrow_output],
+            extra_data: vec![],
+        };
+        let result = validate_create_loan(&tx);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("collateral amount"));
+    }
+
+    /// Test that LendingDeposit with zero amount fails validation.
+    #[test]
+    fn test_lending_deposit_zero_amount_fails() {
+        let pool_id = Hash::from_bytes([0xDD; 32]);
+        let depositor = Hash::from_bytes([0xEE; 32]);
+        let deposit_output = Output::lending_deposit(0, pool_id, depositor, 50);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LendingDeposit,
+            inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
+            outputs: vec![deposit_output],
+            extra_data: vec![],
+        };
+        let result = validate_lending_deposit(&tx);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("deposit amount"));
+    }
+
+    /// Test that LiquidateLoan with no inputs fails.
+    #[test]
+    fn test_liquidate_loan_no_inputs_fails() {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LiquidateLoan,
+            inputs: vec![],
+            outputs: vec![Output::normal(500, Hash::from_bytes([0xCC; 32]))],
+            extra_data: vec![],
+        };
+        assert!(validate_liquidate_loan(&tx).is_err());
+    }
+
+    /// Test that LiquidateLoan with no outputs fails.
+    #[test]
+    fn test_liquidate_loan_no_outputs_fails() {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LiquidateLoan,
+            inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        assert!(validate_liquidate_loan(&tx).is_err());
+    }
+
+    /// Test that LendingWithdraw with no inputs fails.
+    #[test]
+    fn test_lending_withdraw_no_inputs_fails() {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LendingWithdraw,
+            inputs: vec![],
+            outputs: vec![Output::normal(500, Hash::from_bytes([0xCC; 32]))],
+            extra_data: vec![],
+        };
+        assert!(validate_lending_withdraw(&tx).is_err());
+    }
+
+    /// Test that LendingWithdraw with no outputs fails.
+    #[test]
+    fn test_lending_withdraw_no_outputs_fails() {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LendingWithdraw,
+            inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        assert!(validate_lending_withdraw(&tx).is_err());
+    }
+
+    /// Test that CreateLoan with valid change outputs passes.
+    #[test]
+    fn test_create_loan_with_change_outputs() {
+        let pool_id = Hash::from_bytes([0xAA; 32]);
+        let borrower = Hash::from_bytes([0xBB; 32]);
+        let asset_id = Hash::from_bytes([0xCC; 32]);
+        let collateral_output =
+            Output::collateral(500, pool_id, borrower, 100, 500, 42, 15000, asset_id);
+        let borrow_output = Output::normal(100, borrower);
+        let change_output = Output::normal(50, borrower);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreateLoan,
+            inputs: vec![
+                Input::new(Hash::from_bytes([0xFF; 32]), 0),
+                Input::new(Hash::from_bytes([0xFE; 32]), 0),
+            ],
+            outputs: vec![collateral_output, borrow_output, change_output],
+            extra_data: vec![],
+        };
+        assert!(validate_create_loan(&tx).is_ok());
+    }
 }
