@@ -37,6 +37,7 @@ pub(super) async fn handle_swarm_event(
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     mismatch_redial_cooldown: &mut HashMap<String, Instant>,
     dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
+    eviction_cooldown: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -55,6 +56,22 @@ pub(super) async fn handle_swarm_event(
 
             // Only register peer on first connection (dedup)
             if num_established.get() == 1 {
+                // INC-I-011: Check eviction cooldown BEFORE acquiring the peer table lock.
+                // If this peer was recently evicted, disconnect immediately to break
+                // the evict→reconnect→evict thrashing loop that causes RAM explosion
+                // when network_nodes > max_peers.
+                if let Some(evicted_at) = eviction_cooldown.get(&peer_id) {
+                    if evicted_at.elapsed() < Duration::from_secs(30) {
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                        // Don't log per-event — would flood logs just like the thrashing.
+                        // The periodic cleanup logs aggregate counts.
+                        return;
+                    } else {
+                        // Cooldown expired — remove stale entry and allow connection
+                        eviction_cooldown.remove(&peer_id);
+                    }
+                }
+
                 let mut peers = peers.write().await;
                 if peers.len() >= config.max_peers {
                     // SCALE-T2-004: Producer-aware peer eviction.
@@ -82,6 +99,9 @@ pub(super) async fn handle_swarm_event(
                         let _ = event_tx
                             .send(NetworkEvent::PeerDisconnected(evict_id))
                             .await;
+                        // INC-I-011: Add evicted peer to cooldown so it can't
+                        // immediately reconnect and trigger another eviction.
+                        eviction_cooldown.insert(evict_id, Instant::now());
                     }
                 }
                 if peers.len() < config.max_peers {

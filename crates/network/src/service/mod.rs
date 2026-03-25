@@ -120,16 +120,23 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, max_peers total).
+        // Build connection limits (2 connections per peer, max_peers + headroom total).
         // Allow 2 per-peer to survive the simultaneous-dial race condition
         // (rust-libp2p#752): when both sides dial each other at the same time,
         // both connections complete the handshake. With limit=1 the second is
         // denied → rapid connect/disconnect loop on co-located nodes.
         // Also required for DCUtR hole-punching (relay + direct coexist briefly).
+        //
+        // INC-I-011: Tightened from max_peers*2 to max_peers+10. The old 2x
+        // multiplier allowed 100 connections with max_peers=50, meaning libp2p
+        // accepted connections far beyond what the peer table could track.
+        // Combined with eviction thrashing (evict→reconnect loops when
+        // network_nodes > max_peers), this caused unbounded RAM growth.
+        let conn_headroom = (config.max_peers + 10) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
-            .with_max_established_incoming(Some((config.max_peers * 2) as u32))
-            .with_max_established_outgoing(Some((config.max_peers * 2) as u32));
+            .with_max_established_incoming(Some(conn_headroom))
+            .with_max_established_outgoing(Some(conn_headroom));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits

@@ -65,6 +65,11 @@ pub(super) async fn run_swarm(
     // multiple old peer IDs for the same address after a chain reset.
     let mut mismatch_redial_cooldown: HashMap<String, Instant> = HashMap::new();
 
+    // INC-I-011: Eviction cooldown — recently evicted peers cannot reconnect
+    // for 30 seconds, breaking the evict→reconnect→evict thrashing loop that
+    // causes RAM explosion when network_nodes > max_peers.
+    let mut eviction_cooldown: HashMap<PeerId, Instant> = HashMap::new();
+
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
     let mut tx_batch: Vec<Transaction> = Vec::new();
@@ -77,7 +82,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -153,6 +158,16 @@ pub(super) async fn run_swarm(
                 mismatch_redial_cooldown.retain(|_, last| last.elapsed() < Duration::from_secs(60));
                 // Purge expired dial backoff entries (older than 10 minutes)
                 dial_backoff.retain(|_, (_, last)| last.elapsed() < Duration::from_secs(600));
+                // INC-I-011: Purge expired eviction cooldowns (older than 60s, 2x the cooldown)
+                let before = eviction_cooldown.len();
+                eviction_cooldown.retain(|_, evicted_at| evicted_at.elapsed() < Duration::from_secs(60));
+                let purged = before - eviction_cooldown.len();
+                if purged > 0 || !eviction_cooldown.is_empty() {
+                    tracing::info!(
+                        "[EVICTION] Cooldown: {} active, {} purged",
+                        eviction_cooldown.len(), purged
+                    );
+                }
             }
         }
     }

@@ -737,7 +737,6 @@ impl SyncManager {
         self.pipeline_data.is_snap_syncing()
     }
 
-
     /// Get local chain tip
     pub fn local_tip(&self) -> (u64, Hash, u32) {
         (self.local_height, self.local_hash, self.local_slot)

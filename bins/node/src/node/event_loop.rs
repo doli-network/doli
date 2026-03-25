@@ -298,7 +298,6 @@ impl Node {
                     return Ok(());
                 }
 
-
                 debug!("Received new block: {} from {}", block.hash(), source_peer);
 
                 // DEFENSE: Slot sanity — reject gossip blocks with wildly wrong slots.
