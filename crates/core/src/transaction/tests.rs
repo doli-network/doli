@@ -2256,3 +2256,64 @@ fn test_minimum_fee_for_nft_transaction() {
     // Fee must be > 1 because NFT has extra_data
     assert!(tx.minimum_fee() > 1, "NFT tx fee must exceed BASE_FEE");
 }
+
+// ==================== Group E: Batch NFT tests ====================
+
+/// E1: Batch of 5 NFTs with ~150-byte content each must have fee > 1000.
+#[test]
+fn test_batch_nft_minimum_fee() {
+    let cond = crate::conditions::Condition::signature(Hash::from_bytes([0x01; 32]));
+    let mut outputs = Vec::new();
+    for i in 0..5u8 {
+        let token_id = Hash::from_bytes([i + 1; 32]);
+        let nft = Output::nft(
+            0,
+            Hash::from_bytes([0x01; 32]),
+            token_id,
+            &[0u8; 150],
+            &cond,
+        )
+        .unwrap();
+        outputs.push(nft);
+    }
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs,
+        extra_data: vec![],
+    };
+    let min_fee = tx.minimum_fee();
+    // Each NFT extra_data = condition(~34) + version(1) + token_id(32) + content(150) = ~217
+    // 5 * 217 = ~1085 + 1 base = ~1086
+    assert!(
+        min_fee > 1000,
+        "min_fee={} should be > 1000 for 5 NFTs",
+        min_fee
+    );
+}
+
+/// E2: Batch of 100 NFTs -- fee must equal BASE_FEE + total_extra_bytes.
+#[test]
+fn test_batch_nft_100_outputs_fee() {
+    let cond = crate::conditions::Condition::signature(Hash::from_bytes([0x01; 32]));
+    let mut total_extra = 0u64;
+    let mut outputs = Vec::new();
+    for i in 0..100u16 {
+        let mut id_bytes = [0u8; 32];
+        id_bytes[..2].copy_from_slice(&i.to_le_bytes());
+        let token_id = Hash::from_bytes(id_bytes);
+        let nft =
+            Output::nft(0, Hash::from_bytes([0x01; 32]), token_id, b"content", &cond).unwrap();
+        total_extra += nft.extra_data.len() as u64;
+        outputs.push(nft);
+    }
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs,
+        extra_data: vec![],
+    };
+    assert_eq!(tx.minimum_fee(), 1 + total_extra);
+}

@@ -176,6 +176,9 @@ async fn main() -> Result<()> {
             witness,
             royalty,
             data,
+            export,
+            batch_mint,
+            yes,
         } => {
             if list {
                 cmd_nft::cmd_nft_list(&wallet, &rpc_endpoint).await?;
@@ -192,6 +195,12 @@ async fn main() -> Result<()> {
                     data,
                 )
                 .await?;
+            } else if let Some(utxo) = export {
+                let out =
+                    output.ok_or_else(|| anyhow::anyhow!("-o/--out is required for --export"))?;
+                cmd_nft::cmd_nft_export(&rpc_endpoint, &utxo, &out).await?;
+            } else if let Some(manifest) = batch_mint {
+                cmd_nft::cmd_nft_batch_mint(&wallet, &rpc_endpoint, &manifest, yes).await?;
             } else if let Some(utxo) = transfer {
                 let to = to.ok_or_else(|| anyhow::anyhow!("--to is required for --transfer"))?;
                 cmd_nft::cmd_nft_transfer(&wallet, &rpc_endpoint, &utxo, &to, &witness).await?;
@@ -228,7 +237,7 @@ async fn main() -> Result<()> {
                 .await?;
             } else {
                 anyhow::bail!(
-                    "Specify an action: --list, --info, --mint, --transfer, --sell, --sell-sign, --buy, or --from\nRun 'doli nft --help' for details."
+                    "Specify an action: --list, --info, --mint, --transfer, --sell, --sell-sign, --buy, --from, --export, or --batch-mint\nRun 'doli nft --help' for details."
                 );
             }
         }

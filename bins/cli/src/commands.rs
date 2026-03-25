@@ -299,6 +299,18 @@ pub(crate) enum Commands {
         /// Raw binary data (hex-encoded) to embed in the NFT on-chain (for --mint)
         #[arg(long, value_name = "HEX")]
         data: Option<String>,
+
+        /// Export NFT content to a file (extract from on-chain UTXO)
+        #[arg(long, value_name = "UTXO")]
+        export: Option<String>,
+
+        /// Batch mint NFTs from a JSON manifest file
+        #[arg(long, value_name = "FILE")]
+        batch_mint: Option<String>,
+
+        /// Skip confirmation prompt (for --batch-mint)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Issue a fungible token (meme coin, stablecoin, etc.)

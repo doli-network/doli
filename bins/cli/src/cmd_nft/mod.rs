@@ -1,12 +1,16 @@
+mod batch;
 mod buy;
+mod export;
 mod info;
 mod list;
 mod mint;
 mod sell;
 mod transfer;
 
+pub(crate) use batch::cmd_nft_batch_mint;
 pub(crate) use buy::cmd_nft_buy;
 pub(crate) use buy::cmd_nft_buy_from_offer;
+pub(crate) use export::cmd_nft_export;
 pub(crate) use info::cmd_nft_info;
 pub(crate) use list::cmd_nft_list;
 pub(crate) use mint::cmd_mint;
