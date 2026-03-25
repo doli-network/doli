@@ -1006,7 +1006,8 @@ fn test_coinbase_extra_fees_from_nft() {
 
 #[test]
 fn test_coinbase_no_extra_for_transfers() {
-    let extra_fees = 0u64 * crate::consensus::FEE_PER_BYTE;
+    let extra_bytes: u64 = 0; // transfers have no extra_data
+    let extra_fees = extra_bytes * crate::consensus::FEE_PER_BYTE;
     assert_eq!(extra_fees, 0);
 }
 
@@ -1982,8 +1983,8 @@ fn test_extra_fees_only_from_user_txs() {
 
     // Coinbase and EpochReward TXs should NOT count.
     // Only user TXs contribute extra fees.
-    let user_tx_bytes = vec![300u64, 116]; // NFT + pool
-    let _protocol_tx_bytes = vec![40u64, 200]; // registration + epoch reward (not counted)
+    let user_tx_bytes = [300u64, 116]; // NFT + pool
+    let _protocol_tx_bytes = [40u64, 200]; // registration + epoch reward (not counted)
 
     // Only user TXs count
     let extra_fees: u64 = user_tx_bytes.iter().map(|bytes| bytes * FEE_PER_BYTE).sum();

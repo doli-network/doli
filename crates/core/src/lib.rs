@@ -267,7 +267,7 @@ pub use maintainer::{
 };
 pub use network::Network;
 pub use network_params::NetworkParams;
-pub use nft::{detect_content_format, NftContentFormat};
+pub use nft::{detect_content_format, format_mime, format_name, NftContentFormat};
 pub use pool::{
     compute_initial_lp_shares, compute_lp_shares, compute_remove_liquidity, compute_swap,
     compute_twap_price, update_twap, verify_invariant,
