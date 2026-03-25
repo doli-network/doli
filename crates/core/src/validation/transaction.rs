@@ -232,6 +232,8 @@ pub(super) fn validate_outputs(
     ctx: &ValidationContext,
 ) -> Result<Amount, ValidationError> {
     let mut total: Amount = 0;
+    let mut seen_nft_token_ids: std::collections::HashSet<[u8; 32]> =
+        std::collections::HashSet::new();
 
     for (i, output) in outputs.iter().enumerate() {
         // Amount must be positive.
@@ -360,6 +362,15 @@ pub(super) fn validate_outputs(
                         "NFT output {} has invalid or missing NFT metadata",
                         i
                     )));
+                }
+                // Reject duplicate NFT token_ids within the same transaction
+                if let Some((token_id, _)) = output.nft_metadata() {
+                    if !seen_nft_token_ids.insert(*token_id.as_bytes()) {
+                        return Err(ValidationError::InvalidTransaction(format!(
+                            "duplicate NFT token_id in output {}",
+                            i
+                        )));
+                    }
                 }
             }
             OutputType::FungibleAsset => {

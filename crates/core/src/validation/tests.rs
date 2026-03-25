@@ -1732,3 +1732,169 @@ fn test_fee_validation_coinbase_bypass() {
         result
     );
 }
+
+/// A5 (validation): minimum_fee consistency — validate_transaction_with_utxos uses
+/// the same formula as Transaction::minimum_fee().
+/// Uses a Bond output (4 bytes extra_data) to avoid covenant activation height issues.
+#[test]
+fn test_fee_validation_consistency_with_transaction_minimum_fee() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_consistency");
+    // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
+    let bond_amount: u64 = 1_000_000_000;
+    let min_fee: u64 = 1 + 4; // BASE_FEE + 4 * FEE_PER_BYTE
+    let prev_output = Output::normal(bond_amount + min_fee, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let bond_data = crate::transaction::AddBondData::new(pubkey, 1);
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::AddBond,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::bond(bond_amount, pubkey_hash, u64::MAX, 0)],
+        extra_data: bond_data.to_bytes(),
+    };
+
+    // Verify Transaction::minimum_fee() matches expected
+    assert_eq!(tx.minimum_fee(), min_fee);
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    // Validation should pass because fee exactly matches minimum
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Fee matching minimum_fee() should pass validation: {:?}",
+        result
+    );
+}
+
+/// A6 (validation): Fee check is deterministic — same tx validates the same way twice.
+#[test]
+fn test_fee_validation_determinism() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_det");
+    let prev_output = Output::normal(500, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let recipient = crypto::hash::hash(b"det_recipient");
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::normal(100, recipient)],
+        extra_data: vec![],
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let result1 = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    let result2 = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+
+    assert!(result1.is_ok());
+    assert!(result2.is_ok());
+}
+
+// ==========================================================================
+// UniqueIdIndex — within-TX duplicate NFT token_id validation tests
+// ==========================================================================
+
+/// Context with covenants active (devnet, height 1000)
+fn covenant_context() -> ValidationContext {
+    ValidationContext::new(
+        ConsensusParams::for_network(Network::Devnet),
+        Network::Devnet,
+        GENESIS_TIME + 10_000,
+        1000,
+    )
+    .with_prev_block(999, GENESIS_TIME + 9_990, Hash::ZERO)
+}
+
+// Test 14: duplicate token_id within a single TX is rejected
+#[test]
+fn test_validate_duplicate_token_id_within_tx() {
+    let ctx = covenant_context();
+    let minter = crypto::hash::hash(b"minter_dup");
+    let nonce = 1u64.to_le_bytes().to_vec();
+    let token_id = Output::compute_nft_token_id(&minter, &nonce);
+    let cond = crate::conditions::Condition::signature(minter);
+
+    let nft1 = Output::nft(1, minter, token_id, b"data1", &cond).unwrap();
+    let nft2 = Output::nft(1, minter, token_id, b"data2", &cond).unwrap();
+
+    let result = validate_outputs(&[nft1, nft2], &ctx);
+    assert!(result.is_err(), "should reject duplicate token_id");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("duplicate NFT token_id"),
+        "error should mention duplicate, got: {}",
+        err_msg
+    );
+}
+
+// Test 15: unique token_ids within a single TX are accepted
+#[test]
+fn test_validate_unique_token_ids_within_tx() {
+    let ctx = covenant_context();
+    let minter = crypto::hash::hash(b"minter_uniq");
+    let cond = crate::conditions::Condition::signature(minter);
+
+    let nonce1 = 1u64.to_le_bytes().to_vec();
+    let nonce2 = 2u64.to_le_bytes().to_vec();
+    let id1 = Output::compute_nft_token_id(&minter, &nonce1);
+    let id2 = Output::compute_nft_token_id(&minter, &nonce2);
+
+    let nft1 = Output::nft(1, minter, id1, b"a", &cond).unwrap();
+    let nft2 = Output::nft(1, minter, id2, b"b", &cond).unwrap();
+
+    let result = validate_outputs(&[nft1, nft2], &ctx);
+    assert!(result.is_ok(), "unique token_ids should pass: {:?}", result);
+}
+
+// Test 16: batch of 100 unique NFTs is accepted
+#[test]
+fn test_validate_batch_100_unique_nfts() {
+    let ctx = covenant_context();
+    let minter = crypto::hash::hash(b"minter_batch");
+    let cond = crate::conditions::Condition::signature(minter);
+
+    let mut outputs = Vec::with_capacity(100);
+    for i in 0u64..100 {
+        let nonce = i.to_le_bytes().to_vec();
+        let token_id = Output::compute_nft_token_id(&minter, &nonce);
+        outputs.push(Output::nft(1, minter, token_id, b"x", &cond).unwrap());
+    }
+
+    let result = validate_outputs(&outputs, &ctx);
+    assert!(result.is_ok(), "100 unique NFTs should pass: {:?}", result);
+}
+
+// Test 17: mixed outputs with NFTs and normal outputs pass
+#[test]
+fn test_validate_mixed_outputs_with_unique_nfts() {
+    let ctx = covenant_context();
+    let minter = crypto::hash::hash(b"minter_mixed");
+    let cond = crate::conditions::Condition::signature(minter);
+
+    let nonce = 1u64.to_le_bytes().to_vec();
+    let token_id = Output::compute_nft_token_id(&minter, &nonce);
+    let nft = Output::nft(1, minter, token_id, b"nft", &cond).unwrap();
+    let normal = Output::normal(1000, minter);
+
+    let result = validate_outputs(&[normal, nft], &ctx);
+    assert!(result.is_ok(), "mixed outputs should pass: {:?}", result);
+}

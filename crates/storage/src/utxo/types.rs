@@ -5,6 +5,20 @@ use doli_core::transaction::{Output, OutputType};
 use doli_core::types::BlockHeight;
 use serde::{Deserialize, Serialize};
 
+/// Unique ID index prefixes — one byte type tag + 32-byte ID
+pub const UID_PREFIX_NFT: u8 = 0x01;
+pub const UID_PREFIX_ASSET: u8 = 0x02;
+pub const UID_PREFIX_POOL: u8 = 0x03;
+pub const UID_PREFIX_CHANNEL: u8 = 0x04;
+
+/// Build a 33-byte unique index key from prefix + hash
+pub fn uid_key(prefix: u8, id: &Hash) -> [u8; 33] {
+    let mut key = [0u8; 33];
+    key[0] = prefix;
+    key[1..33].copy_from_slice(id.as_bytes());
+    key
+}
+
 /// An entry in the UTXO set
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UtxoEntry {

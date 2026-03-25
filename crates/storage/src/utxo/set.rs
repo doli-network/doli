@@ -328,6 +328,14 @@ impl UtxoSet {
         Ok(UtxoSet::InMemory(store))
     }
 
+    /// Check if a unique ID exists in the index.
+    pub fn has_unique_id(&self, prefix: u8, id: &Hash) -> bool {
+        match self {
+            Self::InMemory(store) => store.has_unique_id(prefix, id),
+            Self::RocksDb(store) => store.has_unique_id(prefix, id),
+        }
+    }
+
     /// Check if this is the RocksDB backend
     pub fn is_rocksdb(&self) -> bool {
         matches!(self, UtxoSet::RocksDb(_))

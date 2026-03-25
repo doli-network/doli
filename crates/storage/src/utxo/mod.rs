@@ -17,5 +17,6 @@ mod types;
 pub use in_memory::InMemoryUtxoStore;
 pub use set::UtxoSet;
 pub use types::reward_maturity_for_network;
+pub use types::{uid_key, UID_PREFIX_ASSET, UID_PREFIX_CHANNEL, UID_PREFIX_NFT, UID_PREFIX_POOL};
 #[allow(deprecated)]
 pub use types::{Outpoint, UtxoEntry, DEFAULT_REWARD_MATURITY};

@@ -56,6 +56,8 @@ pub struct ChainInfoResponse {
     pub best_slot: u32,
     /// Genesis hash
     pub genesis_hash: String,
+    /// Reward pool balance (base units) — sum of all coinbase UTXOs held by the pool
+    pub reward_pool_balance: u64,
 }
 
 /// Network info response

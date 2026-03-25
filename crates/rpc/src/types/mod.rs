@@ -51,6 +51,7 @@ mod tests {
             best_height: 50_000,
             best_slot: 50_100,
             genesis_hash: "genesis".to_string(),
+            reward_pool_balance: 500_000_000,
         };
 
         let json = serde_json::to_string(&response).unwrap();

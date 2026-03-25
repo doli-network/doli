@@ -79,7 +79,8 @@ pub(crate) async fn cmd_nft_buy(
         .ok_or_else(|| anyhow::anyhow!("Invalid seller pubkey hash"))?;
 
     // Get buyer's spendable UTXOs for payment + fee
-    let fee_units = 1u64;
+    // Fee will be recalculated after outputs are built, but estimate from known NFT content size
+    let mut fee_units = 1u64; // provisional — recalculated below
     let required = price_units + fee_units;
     let buyer_utxos: Vec<_> = rpc
         .get_utxos(&buyer_pubkey_hash, true)
@@ -169,6 +170,22 @@ pub(crate) async fn cmd_nft_buy(
                 outputs.push(Output::normal(royalty_amount, creator_hash));
             }
         }
+    }
+
+    // Recalculate fee from actual outputs extra_data
+    fee_units = {
+        let extra_bytes: u64 = outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
+    let required = price_units + fee_units;
+    if total_input < required {
+        anyhow::bail!(
+            "Buyer insufficient balance after fee recalc. Available: {}, Required: {} (price {} + fee {})",
+            format_balance(total_input),
+            format_balance(required),
+            format_balance(price_units),
+            format_balance(fee_units)
+        );
     }
 
     // Output 3: Change to buyer (if any)
@@ -349,7 +366,15 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
     // The partial TX has: input[0] = seller's NFT (signed with AnyoneCanPay), outputs = final
     // We need to add buyer's payment inputs.
 
-    let fee_units = 1u64;
+    // Calculate fee from partial tx outputs (which include NFT extra_data)
+    let fee_units = {
+        let extra_bytes: u64 = partial_tx
+            .outputs
+            .iter()
+            .map(|o| o.extra_data.len() as u64)
+            .sum();
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = price_units + fee_units;
 
     // Get buyer's spendable UTXOs

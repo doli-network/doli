@@ -20,6 +20,11 @@ const CF_UTXO: &str = "utxo";
 /// Column family for the secondary index: pubkey_hash ++ outpoint -> empty
 const CF_UTXO_BY_PUBKEY: &str = "utxo_by_pubkey";
 
+/// Column family for the generic unique ID index: prefix(1B) + id(32B) -> empty
+const CF_UNIQUE_ID: &str = "unique_id";
+
+use crate::utxo::{uid_key, UID_PREFIX_ASSET, UID_PREFIX_NFT, UID_PREFIX_POOL};
+
 /// RocksDB-backed UTXO store
 pub struct RocksDbUtxoStore {
     db: rocksdb::DB,
@@ -35,7 +40,7 @@ impl RocksDbUtxoStore {
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
-        let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY];
+        let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
         // Count existing entries to initialize the atomic counter
@@ -146,6 +151,27 @@ impl RocksDbUtxoStore {
             idx_key.extend_from_slice(&key);
             batch.put_cf(cf_by_pk, &idx_key, [0u8]);
 
+            // Update unique ID index
+            let cf_uid = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+            match entry.output.output_type {
+                doli_core::OutputType::NFT => {
+                    if let Some((token_id, _)) = entry.output.nft_metadata() {
+                        batch.put_cf(cf_uid, uid_key(UID_PREFIX_NFT, &token_id), [0u8]);
+                    }
+                }
+                doli_core::OutputType::Pool => {
+                    if let Some(meta) = entry.output.pool_metadata() {
+                        batch.put_cf(cf_uid, uid_key(UID_PREFIX_POOL, &meta.pool_id), [0u8]);
+                    }
+                }
+                doli_core::OutputType::FungibleAsset => {
+                    if let Some((asset_id, _, _)) = entry.output.fungible_asset_metadata() {
+                        batch.put_cf(cf_uid, uid_key(UID_PREFIX_ASSET, &asset_id), [0u8]);
+                    }
+                }
+                _ => {}
+            }
+
             added += 1;
         }
 
@@ -193,6 +219,27 @@ impl RocksDbUtxoStore {
             idx_key.extend_from_slice(entry.output.pubkey_hash.as_bytes());
             idx_key.extend_from_slice(&key);
             batch.delete_cf(cf_by_pk, &idx_key);
+
+            // Remove from unique ID index
+            let cf_uid = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+            match entry.output.output_type {
+                doli_core::OutputType::NFT => {
+                    if let Some((token_id, _)) = entry.output.nft_metadata() {
+                        batch.delete_cf(cf_uid, uid_key(UID_PREFIX_NFT, &token_id));
+                    }
+                }
+                doli_core::OutputType::Pool => {
+                    if let Some(meta) = entry.output.pool_metadata() {
+                        batch.delete_cf(cf_uid, uid_key(UID_PREFIX_POOL, &meta.pool_id));
+                    }
+                }
+                doli_core::OutputType::FungibleAsset => {
+                    if let Some((asset_id, _, _)) = entry.output.fungible_asset_metadata() {
+                        batch.delete_cf(cf_uid, uid_key(UID_PREFIX_ASSET, &asset_id));
+                    }
+                }
+                _ => {}
+            }
 
             removed += 1;
         }
@@ -430,6 +477,16 @@ impl RocksDbUtxoStore {
         }
         let _ = self.db.write(batch);
         self.count.store(0, Ordering::Relaxed);
+    }
+
+    /// Check if a unique ID exists in the index.
+    pub fn has_unique_id(&self, prefix: u8, id: &Hash) -> bool {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        self.db
+            .get_cf(cf, uid_key(prefix, id))
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Insert a UTXO entry directly (for migration and reorgs)
@@ -767,5 +824,48 @@ mod tests {
         assert_eq!(store.len(), 0);
         assert!(store.is_empty());
         assert!(store.get_by_pubkey_hash(&pk_hash).is_empty());
+    }
+
+    // Test 7: RocksDB unique ID survives reopen
+    #[test]
+    fn test_unique_index_rocks_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = crypto::Hash::from_bytes([0x11; 32]);
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            let cf = store.db.cf_handle(CF_UNIQUE_ID).unwrap();
+            store
+                .db
+                .put_cf(cf, uid_key(UID_PREFIX_NFT, &id), [0u8])
+                .unwrap();
+        }
+        // Reopen
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            assert!(store.has_unique_id(UID_PREFIX_NFT, &id));
+        }
+    }
+
+    // Test 8: RocksDB unique ID removal survives reopen
+    #[test]
+    fn test_unique_index_rocks_remove_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = crypto::Hash::from_bytes([0x22; 32]);
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            let cf = store.db.cf_handle(CF_UNIQUE_ID).unwrap();
+            store
+                .db
+                .put_cf(cf, uid_key(UID_PREFIX_NFT, &id), [0u8])
+                .unwrap();
+            store
+                .db
+                .delete_cf(cf, uid_key(UID_PREFIX_NFT, &id))
+                .unwrap();
+        }
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            assert!(!store.has_unique_id(UID_PREFIX_NFT, &id));
+        }
     }
 }

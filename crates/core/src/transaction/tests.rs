@@ -2031,3 +2031,228 @@ fn test_block_builder_add_coinbase_with_extra() {
     assert_eq!(txs[0].outputs[0].amount, expected_reward);
     assert_eq!(txs[0].outputs[0].pubkey_hash, pool_hash);
 }
+
+// ==================== Group A: Fee per byte (additional tests) ====================
+
+/// A5: minimum_fee formula matches the validation formula exactly.
+/// Both use BASE_FEE + sum(extra_data.len()) * FEE_PER_BYTE.
+#[test]
+fn test_fee_formula_matches_validation() {
+    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+
+    let pubkey_hash = crypto::hash::hash(b"formula_test");
+    let extra_sizes: Vec<usize> = vec![0, 4, 33, 116, 300, 3000, 4096];
+
+    for &size in &extra_sizes {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![Input::new(Hash::ZERO, 0)],
+            outputs: vec![Output {
+                output_type: OutputType::NFT,
+                amount: 1,
+                pubkey_hash,
+                lock_until: 0,
+                extra_data: vec![0u8; size],
+            }],
+            extra_data: vec![],
+        };
+
+        // Transaction::minimum_fee()
+        let tx_fee = tx.minimum_fee();
+
+        // Manual formula (same as validation/utxo.rs)
+        let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+        let manual_fee = BASE_FEE + extra_bytes * FEE_PER_BYTE;
+
+        assert_eq!(
+            tx_fee, manual_fee,
+            "minimum_fee() and manual formula must match for {} extra bytes",
+            size
+        );
+    }
+}
+
+/// A6: minimum_fee is deterministic — calling it multiple times yields the same result.
+#[test]
+fn test_fee_determinism() {
+    let pubkey_hash = crypto::hash::hash(b"determinism");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output {
+            output_type: OutputType::NFT,
+            amount: 1,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0xAB; 256],
+        }],
+        extra_data: vec![],
+    };
+
+    let fee1 = tx.minimum_fee();
+    let fee2 = tx.minimum_fee();
+    let fee3 = tx.minimum_fee();
+
+    assert_eq!(fee1, fee2);
+    assert_eq!(fee2, fee3);
+    assert_eq!(fee1, 1 + 256); // BASE_FEE + 256 * FEE_PER_BYTE
+}
+
+// ==================== Group B: NFT lifecycle tests ====================
+
+/// B1: Verify NFT output type after construction via Output::nft().
+#[test]
+fn test_nft_output_type_after_construction() {
+    let owner = crypto::hash::hash(b"nft_owner_b1");
+    let token_id = crypto::hash::hash(b"token_b1");
+    let content = b"https://example.com/nft.png";
+    let condition = crate::conditions::Condition::signature(owner);
+
+    let nft = Output::nft(1, owner, token_id, content, &condition).unwrap();
+
+    assert_eq!(nft.output_type, OutputType::NFT);
+    assert_eq!(nft.amount, 1);
+    assert_eq!(nft.pubkey_hash, owner);
+    assert_eq!(nft.lock_until, 0);
+    assert!(!nft.extra_data.is_empty());
+}
+
+/// B4: NFT binary data roundtrip — extra_data survives serialize/deserialize.
+#[test]
+fn test_nft_binary_roundtrip() {
+    let owner = crypto::hash::hash(b"nft_owner_b4");
+    let token_id = crypto::hash::hash(b"token_b4");
+    let content = b"binary_test_data_1234567890";
+    let condition = crate::conditions::Condition::signature(owner);
+
+    let nft_output = Output::nft(1, owner, token_id, content, &condition).unwrap();
+    let original_extra_data = nft_output.extra_data.clone();
+
+    // Build a transaction, serialize it, deserialize it
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![nft_output],
+        extra_data: vec![],
+    };
+
+    let serialized = tx.serialize();
+    let deserialized = Transaction::deserialize(&serialized).expect("deserialize should succeed");
+
+    assert_eq!(deserialized.outputs[0].output_type, OutputType::NFT);
+    assert_eq!(deserialized.outputs[0].extra_data, original_extra_data);
+    assert_eq!(deserialized.outputs[0].pubkey_hash, owner);
+}
+
+/// B5: NFT magic bytes (version byte) are preserved through roundtrip.
+#[test]
+fn test_nft_magic_bytes_preserved() {
+    let owner = crypto::hash::hash(b"nft_owner_b5");
+    let token_id = crypto::hash::hash(b"token_b5");
+    let content = b"test_content";
+    let condition = crate::conditions::Condition::signature(owner);
+
+    let nft_output = Output::nft(1, owner, token_id, content, &condition).unwrap();
+
+    // Extract metadata — the version byte (NFT_METADATA_VERSION = 0x01)
+    // comes after the condition prefix
+    let metadata = nft_output.nft_metadata();
+    assert!(metadata.is_some(), "NFT metadata extraction must succeed");
+
+    let (extracted_token_id, extracted_content) = metadata.unwrap();
+    assert_eq!(extracted_token_id, token_id);
+    assert_eq!(extracted_content, content);
+}
+
+// ==================== Group C: Coinbase + reward pool (additional tests) ====================
+
+/// C1: Coinbase has exactly one output (reward pool payout).
+#[test]
+fn test_coinbase_single_output() {
+    let pool_hash = crypto::hash::hash(b"reward_pool");
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+
+    assert_eq!(coinbase.outputs.len(), 1);
+    assert_eq!(coinbase.outputs[0].pubkey_hash, pool_hash);
+    assert_eq!(coinbase.outputs[0].amount, 100_000_000);
+    assert_eq!(coinbase.outputs[0].output_type, OutputType::Normal);
+}
+
+/// C2: Coinbase has no inputs.
+#[test]
+fn test_coinbase_no_inputs() {
+    let pool_hash = crypto::hash::hash(b"reward_pool_c2");
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+
+    assert!(coinbase.inputs.is_empty());
+    assert!(coinbase.is_coinbase());
+}
+
+/// C3: Coinbase uses Transfer tx_type and is identified by empty inputs.
+#[test]
+fn test_coinbase_tx_type() {
+    let pool_hash = crypto::hash::hash(b"reward_pool_c3");
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+
+    // Coinbase is a Transfer with no inputs (not a separate TxType)
+    assert_eq!(coinbase.tx_type, TxType::Transfer);
+    assert!(coinbase.is_coinbase());
+}
+
+/// C4: Coinbase amount matches block_reward for given height.
+#[test]
+fn test_coinbase_amount_matches_block_reward() {
+    use crate::consensus::ConsensusParams;
+
+    let params = ConsensusParams::mainnet();
+    let height = 1u64;
+    let expected_reward = params.block_reward(height);
+    let pool_hash = crypto::hash::hash(b"reward_pool_c4");
+
+    let coinbase = Transaction::new_coinbase(expected_reward, pool_hash, height);
+    assert_eq!(coinbase.outputs[0].amount, expected_reward);
+}
+
+/// C5: Coinbase with extra fees routes to reward pool.
+#[test]
+fn test_coinbase_extra_fees_route_to_pool() {
+    use crate::consensus::{ConsensusParams, FEE_PER_BYTE};
+
+    let params = ConsensusParams::mainnet();
+    let height = 1u64;
+    let block_reward = params.block_reward(height);
+
+    // Simulate a block with an NFT (300 bytes extra_data)
+    let extra_fees = 300u64 * FEE_PER_BYTE;
+    let total_coinbase = block_reward + extra_fees;
+    let pool_hash = crypto::hash::hash(b"reward_pool_c5");
+
+    let coinbase = Transaction::new_coinbase(total_coinbase, pool_hash, height);
+    assert_eq!(coinbase.outputs[0].amount, total_coinbase);
+    assert!(total_coinbase > block_reward);
+}
+
+// ==================== Group D: CLI integration tests ====================
+
+/// D3: minimum_fee output for NFT transactions is correct.
+/// Verifies that a Transaction with an NFT output computes the expected fee.
+#[test]
+fn test_minimum_fee_for_nft_transaction() {
+    let owner = crypto::hash::hash(b"nft_owner_d3");
+    let token_id = crypto::hash::hash(b"token_d3");
+    let content = b"https://ipfs.io/ipfs/QmTest1234567890abcdef";
+    let condition = crate::conditions::Condition::signature(owner);
+
+    let nft_output = Output::nft(1, owner, token_id, content, &condition).unwrap();
+    let extra_bytes = nft_output.extra_data.len() as u64;
+
+    let tx = Transaction::new_transfer(vec![Input::new(Hash::ZERO, 0)], vec![nft_output]);
+
+    let expected_fee = crate::consensus::BASE_FEE + extra_bytes * crate::consensus::FEE_PER_BYTE;
+    assert_eq!(tx.minimum_fee(), expected_fee);
+    // Fee must be > 1 because NFT has extra_data
+    assert!(tx.minimum_fee() > 1, "NFT tx fee must exceed BASE_FEE");
+}

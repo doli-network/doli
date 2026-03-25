@@ -106,6 +106,9 @@ pub struct ChainInfo {
     pub best_slot: u64,
     /// Genesis block hash
     pub genesis_hash: String,
+    /// Reward pool balance (base units)
+    #[serde(default)]
+    pub reward_pool_balance: u64,
 }
 
 /// Chain integrity verification result (from verifyChainIntegrity RPC)

@@ -71,8 +71,11 @@ pub(crate) async fn cmd_issue_token(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
 
-    // Only DOLI needed is the transaction fee — token amount is not DOLI.
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for token output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = token_output.extra_data.len() as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let utxos: Vec<_> = rpc
         .get_utxos(&issuer_pubkey_hash, true)
         .await?

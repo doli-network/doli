@@ -272,8 +272,13 @@ async fn cmd_pool_create(
     let from_hash =
         Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
 
-    // Get spendable normal UTXOs for DOLI funding
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for pool + LP share outputs extra_data
+    // Pool output: POOL_METADATA_SIZE (116) bytes, LP share: 33 bytes
+    let fee_units = {
+        let extra_bytes: u64 = (doli_core::transaction::POOL_METADATA_SIZE
+            + doli_core::transaction::LP_SHARE_METADATA_SIZE) as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = doli_units + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
@@ -569,8 +574,11 @@ async fn cmd_pool_swap(
 
     let mut inputs = vec![Input::new(pool_tx_hash, pool_output_index)];
 
-    // Fund the swap input
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for pool output extra_data (POOL_METADATA_SIZE)
+    let fee_units = {
+        let extra_bytes: u64 = doli_core::transaction::POOL_METADATA_SIZE as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     if direction == "a2b" {
         // Swapping DOLI in: need DOLI UTXOs
         let required = amount_in + fee_units;
@@ -895,8 +903,12 @@ async fn cmd_pool_add(
 
     let mut inputs = vec![Input::new(pool_tx_hash, pool_output_index)];
 
-    // Fund DOLI
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for pool + LP share outputs extra_data
+    let fee_units = {
+        let extra_bytes: u64 = (doli_core::transaction::POOL_METADATA_SIZE
+            + doli_core::transaction::LP_SHARE_METADATA_SIZE) as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = doli_units + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
@@ -1186,8 +1198,11 @@ async fn cmd_pool_remove(
         );
     }
 
-    // Need a DOLI UTXO for fee
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for pool output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = doli_core::transaction::POOL_METADATA_SIZE as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let doli_utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
         .await?

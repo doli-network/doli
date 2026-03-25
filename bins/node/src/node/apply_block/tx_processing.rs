@@ -70,15 +70,27 @@ impl Node {
             })?;
         }
 
-        // Reject duplicate pool creation: a pool with this ID must not already exist
-        if tx.tx_type == TxType::CreatePool {
-            if let Some(pool_meta) = tx.outputs.first().and_then(|o| o.pool_metadata()) {
-                if utxo.get_pool_utxo(&pool_meta.pool_id).is_some() {
-                    anyhow::bail!(
-                        "Pool {} already exists — cannot create duplicate",
-                        pool_meta.pool_id.to_hex()
-                    );
+        // Reject outputs with duplicate unique IDs
+        for output in &tx.outputs {
+            match output.output_type {
+                doli_core::OutputType::NFT => {
+                    if let Some((token_id, _)) = output.nft_metadata() {
+                        if utxo.has_unique_id(storage::UID_PREFIX_NFT, &token_id) {
+                            anyhow::bail!("NFT token_id {} already exists", token_id.to_hex());
+                        }
+                    }
                 }
+                doli_core::OutputType::Pool if tx.tx_type == TxType::CreatePool => {
+                    if let Some(meta) = output.pool_metadata() {
+                        if utxo.has_unique_id(storage::UID_PREFIX_POOL, &meta.pool_id) {
+                            anyhow::bail!(
+                                "Pool {} already exists — cannot create duplicate",
+                                meta.pool_id.to_hex()
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 

@@ -126,8 +126,11 @@ async fn cmd_loan_deposit(
     let deposit_output =
         Output::lending_deposit(deposit_amount, lending_pool_id, from_hash, current_slot);
 
-    // Select Normal DOLI UTXOs for funding (deposit + fee)
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for deposit output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = deposit_output.extra_data.len() as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = deposit_amount + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
@@ -468,8 +471,11 @@ async fn cmd_loan_create(
         );
     }
 
-    // Select a Normal DOLI UTXO for fee
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for collateral output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = collateral_output.extra_data.len() as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let doli_utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
         .await?

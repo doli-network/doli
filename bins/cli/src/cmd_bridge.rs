@@ -197,8 +197,11 @@ pub(crate) async fn cmd_bridge_lock(
             .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?
         };
 
-    // Get spendable normal UTXOs for funding (exclude bonds, conditioned, etc.)
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for bridge output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = bridge_output.extra_data.len() as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = amount_units + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)
@@ -643,7 +646,11 @@ pub(crate) async fn cmd_bridge_swap(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create bridge HTLC: {}", e))?;
 
-    let fee_units = 1u64;
+    // Calculate fee: base + per-byte for bridge output extra_data
+    let fee_units = {
+        let extra_bytes: u64 = bridge_output.extra_data.len() as u64;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     let required = amount_units + fee_units;
     let utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)

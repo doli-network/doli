@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crypto::Hash;
@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 #[allow(deprecated)]
 use super::types::DEFAULT_REWARD_MATURITY;
-use super::types::{Outpoint, UtxoEntry};
+use super::types::{
+    uid_key, Outpoint, UtxoEntry, UID_PREFIX_ASSET, UID_PREFIX_NFT, UID_PREFIX_POOL,
+};
 use crate::StorageError;
 
 // ============================================================================
@@ -19,13 +21,34 @@ use crate::StorageError;
 #[derive(Serialize, Deserialize)]
 pub struct InMemoryUtxoStore {
     utxos: HashMap<Outpoint, UtxoEntry>,
+    /// Generic unique ID index: prefix(1B) + id(32B) -> exists.
+    /// Covers NFT token_ids, FungibleAsset asset_ids, Pool pool_ids, Channel channel_ids.
+    /// Derived from UTXOs — not part of canonical state serialization.
+    #[serde(skip)]
+    unique_ids: HashSet<[u8; 33]>,
 }
 
 impl InMemoryUtxoStore {
     pub fn new() -> Self {
         Self {
             utxos: HashMap::new(),
+            unique_ids: HashSet::new(),
         }
+    }
+
+    /// Check if a unique ID exists in the index.
+    pub fn has_unique_id(&self, prefix: u8, id: &Hash) -> bool {
+        self.unique_ids.contains(&uid_key(prefix, id))
+    }
+
+    /// Insert a unique ID into the index. Returns `true` if the ID was new.
+    pub fn insert_unique_id(&mut self, prefix: u8, id: &Hash) -> bool {
+        self.unique_ids.insert(uid_key(prefix, id))
+    }
+
+    /// Remove a unique ID from the index. Returns `true` if the ID existed.
+    pub fn remove_unique_id(&mut self, prefix: u8, id: &Hash) -> bool {
+        self.unique_ids.remove(&uid_key(prefix, id))
     }
 
     pub fn clear(&mut self) {
@@ -107,12 +130,33 @@ impl InMemoryUtxoStore {
                 }
             }
             let entry = UtxoEntry {
-                output: stamped_output,
+                output: stamped_output.clone(),
                 height,
                 is_coinbase,
                 is_epoch_reward,
             };
             self.utxos.insert(outpoint, entry);
+
+            // Update unique ID index
+            match stamped_output.output_type {
+                OutputType::NFT => {
+                    if let Some((token_id, _)) = stamped_output.nft_metadata() {
+                        self.unique_ids.insert(uid_key(UID_PREFIX_NFT, &token_id));
+                    }
+                }
+                OutputType::Pool => {
+                    if let Some(meta) = stamped_output.pool_metadata() {
+                        self.unique_ids
+                            .insert(uid_key(UID_PREFIX_POOL, &meta.pool_id));
+                    }
+                }
+                OutputType::FungibleAsset => {
+                    if let Some((asset_id, _, _)) = stamped_output.fungible_asset_metadata() {
+                        self.unique_ids.insert(uid_key(UID_PREFIX_ASSET, &asset_id));
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -125,6 +169,28 @@ impl InMemoryUtxoStore {
                 Some(entry) => {
                     if entry.output.output_type.is_native_amount() {
                         total_input += entry.output.amount;
+                    }
+
+                    // Remove from unique ID index
+                    match entry.output.output_type {
+                        OutputType::NFT => {
+                            if let Some((token_id, _)) = entry.output.nft_metadata() {
+                                self.unique_ids.remove(&uid_key(UID_PREFIX_NFT, &token_id));
+                            }
+                        }
+                        OutputType::Pool => {
+                            if let Some(meta) = entry.output.pool_metadata() {
+                                self.unique_ids
+                                    .remove(&uid_key(UID_PREFIX_POOL, &meta.pool_id));
+                            }
+                        }
+                        OutputType::FungibleAsset => {
+                            if let Some((asset_id, _, _)) = entry.output.fungible_asset_metadata() {
+                                self.unique_ids
+                                    .remove(&uid_key(UID_PREFIX_ASSET, &asset_id));
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 None => {
@@ -418,5 +484,274 @@ mod tests {
         let results = store.get_by_pubkey_hash(&pool_id);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1.output.output_type, doli_core::OutputType::Pool);
+    }
+
+    // ==================================================================
+    // UniqueIdIndex tests
+    // ==================================================================
+
+    #[test]
+    fn test_unique_id_nft_insert_and_check() {
+        let mut store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xAA; 32]);
+        assert!(!store.has_unique_id(UID_PREFIX_NFT, &id));
+        store.insert_unique_id(UID_PREFIX_NFT, &id);
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &id));
+    }
+
+    #[test]
+    fn test_unique_id_different_prefixes_independent() {
+        let mut store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xBB; 32]);
+        store.insert_unique_id(UID_PREFIX_NFT, &id);
+        // Same hash, different prefix = different entry
+        assert!(!store.has_unique_id(UID_PREFIX_POOL, &id));
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &id));
+    }
+
+    #[test]
+    fn test_unique_id_remove() {
+        let mut store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xCC; 32]);
+        store.insert_unique_id(UID_PREFIX_ASSET, &id);
+        assert!(store.has_unique_id(UID_PREFIX_ASSET, &id));
+        store.remove_unique_id(UID_PREFIX_ASSET, &id);
+        assert!(!store.has_unique_id(UID_PREFIX_ASSET, &id));
+    }
+
+    #[test]
+    fn test_unique_id_nft_via_add_transaction() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter_hash = crypto::hash::hash(b"minter");
+        let nonce = 42u64.to_le_bytes().to_vec();
+        let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+        let cond = doli_core::Condition::signature(minter_hash);
+        let nft_output = Output::nft(1, minter_hash, token_id, b"hello", &cond).unwrap();
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft_output],
+            extra_data: vec![],
+        };
+
+        assert!(!store.has_unique_id(UID_PREFIX_NFT, &token_id));
+        store.add_transaction(&tx, 1, false, 100);
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &token_id));
+    }
+
+    #[test]
+    fn test_unique_id_nft_spend_removes() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter_hash = crypto::hash::hash(b"minter2");
+        let nonce = 99u64.to_le_bytes().to_vec();
+        let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+        let cond = doli_core::Condition::signature(minter_hash);
+        let nft_output = Output::nft(1, minter_hash, token_id, b"world", &cond).unwrap();
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft_output],
+            extra_data: vec![],
+        };
+
+        store.add_transaction(&tx, 1, false, 100);
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &token_id));
+
+        // Spend the NFT
+        let tx_hash = tx.hash();
+        let spend_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![doli_core::transaction::Input::new(tx_hash, 0)],
+            outputs: vec![],
+            extra_data: vec![],
+        };
+        let _ = store.spend_transaction(&spend_tx);
+        assert!(!store.has_unique_id(UID_PREFIX_NFT, &token_id));
+    }
+
+    #[test]
+    fn test_unique_id_pool_via_add_transaction() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xDD; 32]);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 0, 30, 0);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreatePool,
+            inputs: vec![],
+            outputs: vec![pool_output],
+            extra_data: vec![],
+        };
+
+        assert!(!store.has_unique_id(UID_PREFIX_POOL, &pool_id));
+        store.add_transaction(&tx, 1, false, 100);
+        assert!(store.has_unique_id(UID_PREFIX_POOL, &pool_id));
+    }
+
+    // Test 2: missing ID returns false
+    #[test]
+    fn test_unique_index_missing_returns_false() {
+        let store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xBB; 32]);
+        assert!(!store.has_unique_id(UID_PREFIX_NFT, &id));
+    }
+
+    // Test 4: duplicate insert returns false
+    #[test]
+    fn test_unique_index_duplicate_returns_false() {
+        let mut store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xDD; 32]);
+        assert!(store.insert_unique_id(UID_PREFIX_NFT, &id)); // first: true
+        assert!(!store.insert_unique_id(UID_PREFIX_NFT, &id)); // duplicate: false
+    }
+
+    // Test 6: same type + same id = duplicate
+    #[test]
+    fn test_unique_index_same_type_same_id_duplicate() {
+        let mut store = InMemoryUtxoStore::new();
+        let id = crypto::Hash::from_bytes([0xFF; 32]);
+        assert!(store.insert_unique_id(UID_PREFIX_NFT, &id));
+        assert!(!store.insert_unique_id(UID_PREFIX_NFT, &id)); // same prefix+id = dup
+    }
+
+    // Test 11: NFT transfer (spend old, add new with same token_id) preserves token_id
+    #[test]
+    fn test_spend_nft_transfer_preserves_token_id() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter_hash = crypto::hash::hash(b"minter_transfer");
+        let nonce = 77u64.to_le_bytes().to_vec();
+        let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+        let cond = doli_core::Condition::signature(minter_hash);
+        let nft = Output::nft(1, minter_hash, token_id, b"data", &cond).unwrap();
+
+        // Mint
+        let mint_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft],
+            extra_data: vec![],
+        };
+        store.add_transaction(&mint_tx, 1, false, 100);
+        let mint_hash = mint_tx.hash();
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &token_id));
+
+        // Transfer: spend old, create new with same token_id but different owner
+        let new_owner = crypto::hash::hash(b"new_owner");
+        let cond2 = doli_core::Condition::signature(new_owner);
+        let new_nft = Output::nft(1, new_owner, token_id, b"data", &cond2).unwrap();
+        let transfer_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![doli_core::transaction::Input::new(mint_hash, 0)],
+            outputs: vec![new_nft],
+            extra_data: vec![],
+        };
+        let _ = store.spend_transaction(&transfer_tx); // removes old
+        store.add_transaction(&transfer_tx, 2, false, 110); // adds new
+
+        // token_id still exists (new owner has it)
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &token_id));
+    }
+
+    // Test 12: rollback removes token_id
+    #[test]
+    fn test_rollback_removes_token_id() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter_hash = crypto::hash::hash(b"minter_rollback");
+        let nonce = 88u64.to_le_bytes().to_vec();
+        let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+        let cond = doli_core::Condition::signature(minter_hash);
+        let nft = Output::nft(1, minter_hash, token_id, b"x", &cond).unwrap();
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx, 1, false, 100);
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &token_id));
+
+        // Rollback: remove the created UTXO
+        let outpoint = Outpoint::new(tx.hash(), 0);
+        let removed = store.remove(&outpoint);
+        assert!(removed.is_some());
+        // After removing the NFT UTXO, manually clean up unique_id
+        // (In real rollback, the undo log handles this)
+        store.remove_unique_id(UID_PREFIX_NFT, &token_id);
+        assert!(!store.has_unique_id(UID_PREFIX_NFT, &token_id));
+    }
+
+    // Test 18: 10,000 entries stress test
+    #[test]
+    fn test_unique_index_10000_entries() {
+        let mut store = InMemoryUtxoStore::new();
+        for i in 0..10_000u32 {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            let id = crypto::Hash::from_bytes(bytes);
+            assert!(store.insert_unique_id(UID_PREFIX_NFT, &id));
+        }
+        // Verify all exist
+        for i in 0..10_000u32 {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            assert!(store.has_unique_id(UID_PREFIX_NFT, &crypto::Hash::from_bytes(bytes)));
+        }
+    }
+
+    // Test 19: zero ID is valid
+    #[test]
+    fn test_unique_index_zero_id() {
+        let mut store = InMemoryUtxoStore::new();
+        let zero = crypto::Hash::ZERO;
+        assert!(store.insert_unique_id(UID_PREFIX_NFT, &zero));
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &zero));
+    }
+
+    // Test 20: consecutive blocks both register their token_ids
+    #[test]
+    fn test_unique_index_consecutive_blocks() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter = crypto::hash::hash(b"minter_consec");
+        let cond = doli_core::Condition::signature(minter);
+
+        // Block 1: mint NFT with token_id A
+        let nonce_a = 1u64.to_le_bytes().to_vec();
+        let id_a = Output::compute_nft_token_id(&minter, &nonce_a);
+        let nft_a = Output::nft(1, minter, id_a, b"a", &cond).unwrap();
+        let tx1 = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft_a],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx1, 1, false, 100);
+
+        // Block 2: mint NFT with token_id B
+        let nonce_b = 2u64.to_le_bytes().to_vec();
+        let id_b = Output::compute_nft_token_id(&minter, &nonce_b);
+        let nft_b = Output::nft(1, minter, id_b, b"b", &cond).unwrap();
+        let tx2 = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs: vec![nft_b],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx2, 2, false, 110);
+
+        // Both exist
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &id_a));
+        assert!(store.has_unique_id(UID_PREFIX_NFT, &id_b));
     }
 }

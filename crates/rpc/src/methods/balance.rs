@@ -176,34 +176,84 @@ impl RpcContext {
 
         // Add pending outputs from mempool transactions owned by this address.
         // This enables chained transactions: spend change from a pending TX
-        // without waiting for confirmation.
+        // without waiting for confirmation. Includes all output types (Normal,
+        // NFT, FungibleAsset, etc.) so that `nft --list` can find just-minted NFTs.
         for (_tx_hash, entry) in mempool.iter() {
             let tx = &entry.tx;
             let tx_hash_hex = tx.hash().to_hex();
             for (idx, output) in tx.outputs.iter().enumerate() {
-                if output.pubkey_hash == pubkey_hash
-                    && output.output_type == doli_core::OutputType::Normal
-                {
-                    // Skip if this output is already being spent by another mempool TX
-                    let outpoint = storage::Outpoint::new(tx.hash(), idx as u32);
-                    if mempool.is_outpoint_spent(&outpoint) {
-                        continue;
-                    }
-                    responses.push(UtxoResponse {
-                        tx_hash: tx_hash_hex.clone(),
-                        output_index: idx as u32,
-                        amount: output.amount,
-                        output_type: "normal".to_string(),
-                        lock_until: 0,
-                        height: 0,
-                        spendable: true,
-                        pending: true,
-                        condition: None,
-                        nft: None,
-                        asset: None,
-                        bridge: None,
-                    });
+                if output.pubkey_hash != pubkey_hash {
+                    continue;
                 }
+                // Skip if this output is already being spent by another mempool TX
+                let outpoint = storage::Outpoint::new(tx.hash(), idx as u32);
+                if mempool.is_outpoint_spent(&outpoint) {
+                    continue;
+                }
+
+                let output_type_str = match output.output_type {
+                    doli_core::OutputType::Normal => "normal",
+                    doli_core::OutputType::Bond => "bond",
+                    doli_core::OutputType::Multisig => "multisig",
+                    doli_core::OutputType::Hashlock => "hashlock",
+                    doli_core::OutputType::HTLC => "htlc",
+                    doli_core::OutputType::Vesting => "vesting",
+                    doli_core::OutputType::NFT => "nft",
+                    doli_core::OutputType::FungibleAsset => "fungibleAsset",
+                    doli_core::OutputType::BridgeHTLC => "bridgeHtlc",
+                    doli_core::OutputType::Pool => "pool",
+                    doli_core::OutputType::LPShare => "lpShare",
+                    doli_core::OutputType::Collateral => "collateral",
+                    doli_core::OutputType::LendingDeposit => "lendingDeposit",
+                };
+
+                let nft = if output.output_type == doli_core::OutputType::NFT {
+                    output.nft_metadata().map(|(token_id, content_hash)| {
+                        let mut nft_json = serde_json::json!({
+                            "tokenId": token_id.to_hex(),
+                            "contentHash": hex::encode(&content_hash)
+                        });
+                        if let Some((creator_hash, royalty_bps)) = output.nft_royalty() {
+                            nft_json["royalty"] = serde_json::json!({
+                                "creator": creator_hash.to_hex(),
+                                "bps": royalty_bps,
+                                "percent": format!("{:.2}", royalty_bps as f64 / 100.0)
+                            });
+                        }
+                        nft_json
+                    })
+                } else {
+                    None
+                };
+
+                let asset = if output.output_type == doli_core::OutputType::FungibleAsset {
+                    output
+                        .fungible_asset_metadata()
+                        .map(|(asset_id, total_supply, ticker)| {
+                            serde_json::json!({
+                                "assetId": asset_id.to_hex(),
+                                "totalSupply": total_supply,
+                                "ticker": ticker
+                            })
+                        })
+                } else {
+                    None
+                };
+
+                responses.push(UtxoResponse {
+                    tx_hash: tx_hash_hex.clone(),
+                    output_index: idx as u32,
+                    amount: output.amount,
+                    output_type: output_type_str.to_string(),
+                    lock_until: output.lock_until,
+                    height: 0,
+                    spendable: output.output_type == doli_core::OutputType::Normal,
+                    pending: true,
+                    condition: None,
+                    nft,
+                    asset,
+                    bridge: None,
+                });
             }
         }
 

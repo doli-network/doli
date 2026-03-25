@@ -46,6 +46,14 @@ impl RpcContext {
     pub(super) async fn get_chain_info(&self) -> Result<Value, RpcError> {
         let chain_state = self.chain_state.read().await;
 
+        // Compute reward pool balance from pool UTXOs
+        let reward_pool_balance = {
+            let utxo = self.utxo_set.read().await;
+            let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+            let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+            pool_utxos.iter().map(|(_, e)| e.output.amount).sum::<u64>()
+        };
+
         let response = ChainInfoResponse {
             network: self.network.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -53,6 +61,7 @@ impl RpcContext {
             best_height: chain_state.best_height,
             best_slot: chain_state.best_slot,
             genesis_hash: chain_state.genesis_hash.to_hex(),
+            reward_pool_balance,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))

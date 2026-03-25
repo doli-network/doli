@@ -18,6 +18,7 @@ pub(crate) async fn cmd_chain(rpc_endpoint: &str) -> Result<()> {
             println!("Best Slot:    {}", info.best_slot);
             println!("Best Hash:    {}", info.best_hash);
             println!("Genesis Hash: {}", info.genesis_hash);
+            println!("Reward Pool:  {}", format_balance(info.reward_pool_balance));
         }
         Err(e) => {
             anyhow::bail!("Cannot connect to node at {}. Details: {}. Make sure a DOLI node is running and accessible.", rpc_endpoint, e);

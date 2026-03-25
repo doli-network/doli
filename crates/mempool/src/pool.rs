@@ -185,9 +185,10 @@ impl Mempool {
         let fee = total_input - total_output;
         let fee_rate = if tx_size > 0 { fee / tx_size as u64 } else { 0 };
 
-        // Require fee > 0 (flat fee model: any non-zero fee is accepted)
-        if fee == 0 {
-            return Err(MempoolError::FeeTooLow(0, 1));
+        // Require fee >= minimum_fee (base + per-byte for output extra_data)
+        let min_fee = tx.minimum_fee();
+        if fee < min_fee {
+            return Err(MempoolError::FeeTooLow(fee, min_fee));
         }
 
         // Check minimum fee rate (if configured)
@@ -922,5 +923,123 @@ mod tests {
         let empty_utxo = UtxoSet::new();
         mempool.revalidate(&empty_utxo, 200);
         assert_eq!(mempool.len(), 0);
+    }
+
+    /// Test that mempool rejects transactions with insufficient per-byte fee.
+    /// Uses a Bond output (4 bytes extra_data) which doesn't need covenant activation.
+    #[test]
+    fn test_mempool_rejects_insufficient_per_byte_fee() {
+        let mut mempool = test_mempool();
+        let pubkey_hash = crypto::hash::hash(b"fee_test_addr");
+        let tx_hash = crypto::hash::hash(b"fee_funding_tx");
+
+        // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
+        // Fund with bond_amount + 4 sats (fee = 4 < minimum 5)
+        let bond_amount = 1_000_000_000u64;
+        let mut utxo_set = UtxoSet::new();
+        let outpoint = Outpoint::new(tx_hash, 0);
+        let entry = UtxoEntry {
+            output: Output::normal(bond_amount + 4, pubkey_hash),
+            height: 1,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        utxo_set.insert(outpoint, entry).unwrap();
+
+        // Fee: (bond_amount + 4) - bond_amount = 4 sats, but needs 5 (1 + 4).
+        let tx = Transaction {
+            version: 1,
+            tx_type: doli_core::TxType::Transfer,
+            inputs: vec![doli_core::Input::new(tx_hash, 0)],
+            outputs: vec![doli_core::Output::bond(
+                bond_amount,
+                pubkey_hash,
+                u64::MAX,
+                0,
+            )],
+            extra_data: vec![],
+        };
+
+        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        assert!(
+            matches!(result, Err(MempoolError::FeeTooLow(4, 5))),
+            "Mempool should reject tx with fee 4 when minimum is 5: {:?}",
+            result
+        );
+    }
+
+    /// Test that mempool accepts transactions with sufficient per-byte fee.
+    /// Uses a Bond output (4 bytes extra_data) which doesn't need covenant activation.
+    #[test]
+    fn test_mempool_accepts_sufficient_per_byte_fee() {
+        let mut mempool = test_mempool();
+        let pubkey_hash = crypto::hash::hash(b"fee_ok_addr");
+        let tx_hash = crypto::hash::hash(b"fee_ok_funding");
+
+        // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
+        // Fund with bond_amount + 100 sats (fee = 100 >> 5)
+        let bond_amount = 1_000_000_000u64;
+        let mut utxo_set = UtxoSet::new();
+        let outpoint = Outpoint::new(tx_hash, 0);
+        let entry = UtxoEntry {
+            output: Output::normal(bond_amount + 100, pubkey_hash),
+            height: 1,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        utxo_set.insert(outpoint, entry).unwrap();
+
+        // Fee: (bond_amount + 100) - bond_amount = 100 sats >= 5. Should pass.
+        let tx = Transaction {
+            version: 1,
+            tx_type: doli_core::TxType::Transfer,
+            inputs: vec![doli_core::Input::new(tx_hash, 0)],
+            outputs: vec![doli_core::Output::bond(
+                bond_amount,
+                pubkey_hash,
+                u64::MAX,
+                0,
+            )],
+            extra_data: vec![],
+        };
+
+        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        assert!(
+            result.is_ok(),
+            "Mempool should accept tx with sufficient per-byte fee: {:?}",
+            result
+        );
+    }
+
+    /// Test that mempool accepts plain transfers with fee = 1 (BASE_FEE, no extra_data).
+    #[test]
+    fn test_mempool_accepts_base_fee_for_transfers() {
+        let mut mempool = test_mempool();
+        let pubkey_hash = crypto::hash::hash(b"base_fee_addr");
+        let tx_hash = crypto::hash::hash(b"base_fee_funding");
+
+        // Fund with 101 sats (output 100 + fee 1 = BASE_FEE)
+        let mut utxo_set = UtxoSet::new();
+        let outpoint = Outpoint::new(tx_hash, 0);
+        let entry = UtxoEntry {
+            output: Output::normal(101, pubkey_hash),
+            height: 1,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        utxo_set.insert(outpoint, entry).unwrap();
+
+        let dest = crypto::hash::hash(b"dest_base_fee");
+        let tx = Transaction::new_transfer(
+            vec![doli_core::Input::new(tx_hash, 0)],
+            vec![Output::normal(100, dest)],
+        );
+
+        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        assert!(
+            result.is_ok(),
+            "Plain transfer with fee=1 should be accepted: {:?}",
+            result
+        );
     }
 }

@@ -55,10 +55,13 @@ pub(super) async fn handle_add_bond(
         .collect();
     let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
 
-    // Initial UTXO selection with minimum fee estimate
+    // Calculate fee: base + per-byte for Bond output extra_data (4 bytes each)
     let mut selected_utxos = Vec::new();
     let mut total_input = 0u64;
-    let mut fee = 1u64;
+    let fee = {
+        let extra_bytes = count as u64 * 4;
+        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+    };
     for utxo in &utxos {
         if total_input >= required_amount + fee {
             break;
@@ -66,9 +69,6 @@ pub(super) async fn handle_add_bond(
         selected_utxos.push(utxo.clone());
         total_input += utxo.amount;
     }
-
-    // Flat fee: 1 satoshi per transaction
-    fee = 1u64;
 
     if total_available < required_amount + fee {
         anyhow::bail!(
