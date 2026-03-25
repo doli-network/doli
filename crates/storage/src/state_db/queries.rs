@@ -85,7 +85,9 @@ impl StateDb {
             .flatten()
         {
             if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
-                total += entry.output.amount;
+                if entry.output.output_type.is_native_amount() {
+                    total += entry.output.amount;
+                }
             }
         }
         total
@@ -100,7 +102,10 @@ impl StateDb {
     ) -> Amount {
         self.get_utxos_by_pubkey(pubkey_hash)
             .iter()
-            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
+            .filter(|(_, entry)| {
+                entry.output.output_type.is_native_amount()
+                    && entry.is_spendable_at_with_maturity(height, maturity)
+            })
             .map(|(_, entry)| entry.output.amount)
             .sum()
     }
@@ -115,7 +120,8 @@ impl StateDb {
         self.get_utxos_by_pubkey(pubkey_hash)
             .iter()
             .filter(|(_, entry)| {
-                (entry.is_coinbase || entry.is_epoch_reward)
+                entry.output.output_type.is_native_amount()
+                    && (entry.is_coinbase || entry.is_epoch_reward)
                     && !entry.is_spendable_at_with_maturity(height, maturity)
             })
             .map(|(_, entry)| entry.output.amount)

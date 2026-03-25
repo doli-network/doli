@@ -215,8 +215,12 @@ async fn cmd_pool_create(
 
     let doli_units =
         coins_to_units(doli_amount).map_err(|e| anyhow::anyhow!("Invalid DOLI amount: {}", e))?;
-    let token_units =
-        coins_to_units(token_amount).map_err(|e| anyhow::anyhow!("Invalid token amount: {}", e))?;
+    let token_units: u64 = token_amount.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid token amount: {} (use raw token units)",
+            token_amount
+        )
+    })?;
 
     if doli_units == 0 || token_units == 0 {
         anyhow::bail!("Both DOLI and token amounts must be greater than zero");
@@ -427,13 +431,28 @@ async fn cmd_pool_swap(
     let pool_id = Hash::from_hex(pool_id_hex)
         .ok_or_else(|| anyhow::anyhow!("Invalid pool ID hex: {}", pool_id_hex))?;
 
-    let amount_in = coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+    let amount_in = if direction == "a2b" {
+        // Swapping DOLI in — DOLI notation
+        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid DOLI amount: {}", e))?
+    } else {
+        // Swapping tokens in — raw token units
+        amount
+            .parse::<u64>()
+            .map_err(|_| anyhow::anyhow!("Invalid token amount: {} (use raw units)", amount))?
+    };
     if amount_in == 0 {
         anyhow::bail!("Amount must be greater than zero");
     }
 
     let min_output = if let Some(m) = min_out {
-        coins_to_units(m).map_err(|e| anyhow::anyhow!("Invalid min_out: {}", e))?
+        if direction == "a2b" {
+            // Output is tokens — raw units
+            m.parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("Invalid min_out: {} (raw token units)", m))?
+        } else {
+            // Output is DOLI
+            coins_to_units(m).map_err(|e| anyhow::anyhow!("Invalid min_out: {}", e))?
+        }
     } else {
         0
     };
@@ -765,8 +784,12 @@ async fn cmd_pool_add(
 
     let doli_units =
         coins_to_units(doli_amount).map_err(|e| anyhow::anyhow!("Invalid DOLI amount: {}", e))?;
-    let token_units =
-        coins_to_units(token_amount).map_err(|e| anyhow::anyhow!("Invalid token amount: {}", e))?;
+    let token_units: u64 = token_amount.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid token amount: {} (use raw token units)",
+            token_amount
+        )
+    })?;
 
     if doli_units == 0 || token_units == 0 {
         anyhow::bail!("Both amounts must be greater than zero");
@@ -1015,8 +1038,9 @@ async fn cmd_pool_remove(
     } else {
         0
     };
-    let min_token_units = if let Some(m) = min_tokens {
-        coins_to_units(m).map_err(|e| anyhow::anyhow!("Invalid min_tokens: {}", e))?
+    let min_token_units: u64 = if let Some(m) = min_tokens {
+        m.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid min_tokens: {} (raw token units)", m))?
     } else {
         0
     };

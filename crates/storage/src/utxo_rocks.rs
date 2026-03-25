@@ -148,7 +148,9 @@ impl RocksDbUtxoStore {
             let entry: UtxoEntry = bincode::deserialize(&entry_bytes)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-            total_input += entry.output.amount;
+            if entry.output.output_type.is_native_amount() {
+                total_input += entry.output.amount;
+            }
 
             // Delete from primary index
             batch.delete_cf(cf_utxo, &key);
@@ -170,7 +172,10 @@ impl RocksDbUtxoStore {
         Ok(total_input)
     }
 
-    /// Get total value in the UTXO set
+    /// Get total native DOLI value in the UTXO set.
+    ///
+    /// Non-native output types (FungibleAsset, LPShare, Pool, Collateral) are
+    /// excluded — their `amount` field holds token units, not DOLI.
     pub fn total_value(&self) -> Amount {
         let cf = self.db.cf_handle(CF_UTXO).unwrap();
         let mut total: Amount = 0;
@@ -180,7 +185,9 @@ impl RocksDbUtxoStore {
             .flatten()
         {
             if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
-                total += entry.output.amount;
+                if entry.output.output_type.is_native_amount() {
+                    total += entry.output.amount;
+                }
             }
         }
         total
@@ -250,7 +257,8 @@ impl RocksDbUtxoStore {
         results
     }
 
-    /// Get spendable balance for a pubkey hash at a given height with custom maturity
+    /// Get spendable DOLI balance for a pubkey hash at a given height with custom maturity.
+    /// Only counts native DOLI amounts (excludes FungibleAsset, LPShare, etc.).
     pub fn get_balance_with_maturity(
         &self,
         pubkey_hash: &Hash,
@@ -259,12 +267,15 @@ impl RocksDbUtxoStore {
     ) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
-            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
+            .filter(|(_, entry)| {
+                entry.output.output_type.is_native_amount()
+                    && entry.is_spendable_at_with_maturity(height, maturity)
+            })
             .map(|(_, entry)| entry.output.amount)
             .sum()
     }
 
-    /// Get immature balance for a pubkey hash with custom maturity
+    /// Get immature DOLI balance for a pubkey hash with custom maturity.
     pub fn get_immature_balance_with_maturity(
         &self,
         pubkey_hash: &Hash,
@@ -274,7 +285,8 @@ impl RocksDbUtxoStore {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| {
-                (entry.is_coinbase || entry.is_epoch_reward)
+                entry.output.output_type.is_native_amount()
+                    && (entry.is_coinbase || entry.is_epoch_reward)
                     && !entry.is_spendable_at_with_maturity(height, maturity)
             })
             .map(|(_, entry)| entry.output.amount)

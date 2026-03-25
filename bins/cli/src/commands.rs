@@ -538,7 +538,7 @@ pub(crate) enum PoolCommands {
         #[arg(long)]
         doli: String,
 
-        /// Initial token amount
+        /// Initial token amount (raw token units, NOT DOLI notation)
         #[arg(long)]
         tokens: String,
 
@@ -557,7 +557,7 @@ pub(crate) enum PoolCommands {
         #[arg(long)]
         pool: String,
 
-        /// Amount to swap
+        /// Amount to swap (DOLI notation for a2b, raw token units for b2a)
         #[arg(long)]
         amount: String,
 
@@ -565,7 +565,7 @@ pub(crate) enum PoolCommands {
         #[arg(long)]
         direction: String,
 
-        /// Minimum output amount (slippage protection)
+        /// Minimum output (raw token units for a2b, DOLI notation for b2a)
         #[arg(long)]
         min_out: Option<String>,
 
@@ -584,7 +584,7 @@ pub(crate) enum PoolCommands {
         #[arg(long)]
         doli: String,
 
-        /// Token amount to add
+        /// Token amount to add (raw token units, NOT DOLI notation)
         #[arg(long)]
         tokens: String,
 
@@ -599,15 +599,15 @@ pub(crate) enum PoolCommands {
         #[arg(long)]
         pool: String,
 
-        /// LP shares to burn
+        /// LP shares to burn (raw units)
         #[arg(long)]
         shares: String,
 
-        /// Minimum DOLI to receive
+        /// Minimum DOLI to receive (DOLI notation)
         #[arg(long)]
         min_doli: Option<String>,
 
-        /// Minimum tokens to receive
+        /// Minimum tokens to receive (raw token units)
         #[arg(long)]
         min_tokens: Option<String>,
 

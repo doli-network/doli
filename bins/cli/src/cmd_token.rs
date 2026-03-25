@@ -59,10 +59,10 @@ pub(crate) async fn cmd_issue_token(
         doli_core::Condition::signature(issuer_hash)
     };
 
-    // Attach dust DOLI (1 sat) to anchor the token UTXO on-chain
-    let dust = 1u64;
+    // Token UTXO amount = supply in token base units (not DOLI).
+    // FungibleAsset.amount represents token quantity, not native DOLI.
     let token_output = Output::fungible_asset(
-        dust,
+        supply,
         issuer_hash,
         placeholder_asset_id,
         supply,
@@ -71,7 +71,7 @@ pub(crate) async fn cmd_issue_token(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
 
-    // Get spendable normal UTXOs for fee (exclude bonds, conditioned, etc.)
+    // Only DOLI needed is the transaction fee — token amount is not DOLI.
     let fee_units = 1u64;
     let utxos: Vec<_> = rpc
         .get_utxos(&issuer_pubkey_hash, true)
@@ -85,7 +85,7 @@ pub(crate) async fn cmd_issue_token(
 
     let mut selected_utxos = Vec::new();
     let mut total_input = 0u64;
-    let required = dust + fee_units;
+    let required = fee_units;
     for utxo in &utxos {
         if total_input >= required {
             break;

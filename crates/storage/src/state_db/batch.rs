@@ -102,7 +102,9 @@ impl<'a> BlockBatch<'a> {
         for input in &tx.inputs {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
             let entry = self.spend_utxo(&outpoint)?;
-            total += entry.output.amount;
+            if entry.output.output_type.is_native_amount() {
+                total += entry.output.amount;
+            }
         }
         Ok(total)
     }

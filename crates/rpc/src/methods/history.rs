@@ -85,8 +85,10 @@ impl RpcContext {
                 let mut is_relevant = false;
 
                 for output in &tx.outputs {
-                    if output.pubkey_hash == pubkey_hash {
+                    if output.pubkey_hash == pubkey_hash && output.output_type.is_native_amount() {
                         amount_received += output.amount;
+                        is_relevant = true;
+                    } else if output.pubkey_hash == pubkey_hash {
                         is_relevant = true;
                     }
                 }
@@ -94,9 +96,15 @@ impl RpcContext {
                 for input in &tx.inputs {
                     if let Some(prev_outputs) = tx_output_cache.get(&input.prev_tx_hash) {
                         if let Some(prev_output) = prev_outputs.get(input.output_index as usize) {
-                            total_input += prev_output.amount;
-                            if prev_output.pubkey_hash == pubkey_hash {
+                            if prev_output.output_type.is_native_amount() {
+                                total_input += prev_output.amount;
+                            }
+                            if prev_output.pubkey_hash == pubkey_hash
+                                && prev_output.output_type.is_native_amount()
+                            {
                                 amount_sent += prev_output.amount;
+                                is_relevant = true;
+                            } else if prev_output.pubkey_hash == pubkey_hash {
                                 is_relevant = true;
                             }
                         }
@@ -107,7 +115,12 @@ impl RpcContext {
                     continue;
                 }
 
-                let total_output: u64 = tx.outputs.iter().map(|o| o.amount).sum();
+                let total_output: u64 = tx
+                    .outputs
+                    .iter()
+                    .filter(|o| o.output_type.is_native_amount())
+                    .map(|o| o.amount)
+                    .sum();
                 let fee = if total_input > 0 && total_input >= total_output {
                     total_input - total_output
                 } else {
