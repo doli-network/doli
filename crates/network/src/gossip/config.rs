@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use libp2p::gossipsub::{
@@ -56,11 +54,15 @@ pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
 /// Devnet uses larger mesh (12/8/48) for --no-dht star topology.
 /// Mainnet/testnet use standard mesh (6/4/12) with DHT peer rotation.
 pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, GossipError> {
-    // Message ID function: hash of message data
+    // INC-I-012 F9: Message ID uses BLAKE3 (deterministic across platforms).
+    // DefaultHasher is NOT guaranteed to produce the same output across Rust
+    // versions or platforms (x86 vs ARM). If two nodes compute different IDs
+    // for the same message, gossipsub breaks deduplication. BLAKE3 is already
+    // a project dependency (via crypto crate) and is platform-independent.
     let message_id_fn = |message: &Message| {
-        let mut hasher = DefaultHasher::new();
-        message.data.hash(&mut hasher);
-        MessageId::from(hasher.finish().to_be_bytes().to_vec())
+        let hash = crypto::hash::hash(&message.data);
+        // Use first 20 bytes of BLAKE3 hash as message ID (standard gossipsub practice)
+        MessageId::from(hash.as_bytes()[..20].to_vec())
     };
 
     let config = ConfigBuilder::default()
@@ -103,6 +105,35 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
             first_message_deliveries_weight: 10.0,
             first_message_deliveries_decay: 0.5,
             first_message_deliveries_cap: 100.0,
+            ..Default::default()
+        },
+    );
+    // INC-I-012 F8: Add scoring for TRANSACTIONS and PRODUCERS topics.
+    // Without topic scoring, mesh manipulation and invalid message flooding
+    // on these topics face no penalty. Transactions use moderate weight
+    // (high volume, low criticality). Producers use higher weight (GSet
+    // flooding caused O(N*mesh_n) event storms at 106 nodes).
+    topic_scores.insert(
+        IdentTopic::new(TRANSACTIONS_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 0.5,
+            first_message_deliveries_weight: 2.0,
+            first_message_deliveries_decay: 0.5,
+            first_message_deliveries_cap: 50.0,
+            invalid_message_deliveries_weight: -10.0,
+            invalid_message_deliveries_decay: 0.3,
+            ..Default::default()
+        },
+    );
+    topic_scores.insert(
+        IdentTopic::new(PRODUCERS_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 0.7,
+            first_message_deliveries_weight: 5.0,
+            first_message_deliveries_decay: 0.5,
+            first_message_deliveries_cap: 50.0,
+            invalid_message_deliveries_weight: -20.0,
+            invalid_message_deliveries_decay: 0.3,
             ..Default::default()
         },
     );

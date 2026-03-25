@@ -14,8 +14,12 @@ use doli_core::{Block, BlockHeader};
 /// Protocol identifier for sync
 pub const SYNC_PROTOCOL: &str = "/doli/sync/1.0.0";
 
-/// Maximum message size for sync messages (64MB for state snapshots)
-const MAX_SYNC_SIZE: usize = 64 * 1024 * 1024;
+/// INC-I-012 F13: Maximum message size for sync messages.
+/// Reduced from 64MB to 16MB. State snapshots are the largest message type;
+/// 16MB is generous for any reasonable UTXO set + producer set. Non-snapshot
+/// messages (headers, bodies, blocks) are much smaller. The 64MB limit allowed
+/// a malicious peer to force 64MB allocation per stream via the length prefix.
+const MAX_SYNC_SIZE: usize = 16 * 1024 * 1024;
 
 /// Sync request types
 #[derive(Clone, Debug, Serialize, Deserialize)]

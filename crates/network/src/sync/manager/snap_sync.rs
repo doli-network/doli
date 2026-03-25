@@ -1,6 +1,7 @@
 //! Snap sync — state root voting, snapshot download, quorum verification, and fallback
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use libp2p::PeerId;
 use tracing::{info, warn};
@@ -249,6 +250,7 @@ impl SyncManager {
         if matches!(self.pipeline_data, SyncPipelineData::SnapReady { .. }) {
             let old = std::mem::replace(&mut self.pipeline_data, SyncPipelineData::None);
             self.set_state(SyncState::Synchronized, "snap_snapshot_applied");
+            self.snap.last_snap_completed = Some(Instant::now());
             self.fork.header_blacklisted_peers.clear();
             // Snap sync bypasses the normal sync pipeline, so complete_resync()
             // is never reached via handle_applied_block(). Clear it here so

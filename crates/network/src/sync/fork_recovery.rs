@@ -23,6 +23,9 @@ const RECOVERY_COOLDOWN: Duration = Duration::from_secs(30);
 /// Timeout for a single recovery session
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Timeout for a single block request before trying a different peer
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Active recovery session state
 struct ActiveRecovery {
     /// Blocks collected so far, newest first (tip → ancestor direction)
@@ -35,6 +38,10 @@ struct ActiveRecovery {
     peer: PeerId,
     /// When this session started
     started_at: Instant,
+    /// When the current request was sent (for per-request timeout / F11 failover)
+    request_sent_at: Option<Instant>,
+    /// Alternate peers to try if primary fails or times out
+    alternate_peers: Vec<PeerId>,
 }
 
 /// Result of a completed fork recovery
@@ -88,22 +95,59 @@ impl ForkRecoveryTracker {
             pending: false,
             peer,
             started_at: Instant::now(),
+            request_sent_at: None,
+            alternate_peers: Vec::new(),
         });
         true
+    }
+
+    /// Set alternate peers for failover during recovery (INC-I-012 F11).
+    /// Called by the node when it knows which peers have higher heights.
+    #[allow(dead_code)]
+    pub fn set_alternate_peers(&mut self, peers: Vec<PeerId>) {
+        if let Some(recovery) = self.active.as_mut() {
+            recovery.alternate_peers = peers.into_iter().filter(|p| *p != recovery.peer).collect();
+        }
     }
 
     /// Get next fetch request. Returns (peer, hash_to_fetch) if a request should be sent.
     pub fn next_fetch(&mut self) -> Option<(PeerId, Hash)> {
         let recovery = self.active.as_mut()?;
-        if recovery.pending {
-            return None;
-        }
-        // Check timeout
+        // Check session timeout
         if recovery.started_at.elapsed() > RECOVERY_TIMEOUT {
             self.cancel("session timeout");
             return None;
         }
+        // INC-I-012 F11: Per-request timeout with peer failover.
+        // If the current request has been pending for >10s, switch to an
+        // alternate peer and retry. This prevents a single slow/disconnected
+        // peer from stalling the entire 120s recovery session.
+        if recovery.pending {
+            if let Some(sent_at) = recovery.request_sent_at {
+                if sent_at.elapsed() > REQUEST_TIMEOUT {
+                    if let Some(next_peer) = recovery.alternate_peers.pop() {
+                        warn!(
+                            "Fork recovery: request to {} timed out after {}s — failing over to {}",
+                            recovery.peer,
+                            sent_at.elapsed().as_secs(),
+                            next_peer
+                        );
+                        recovery.peer = next_peer;
+                        recovery.pending = false;
+                        // Fall through to send new request below
+                    } else {
+                        // No alternates left — let the session timeout handle it
+                        return None;
+                    }
+                } else {
+                    return None; // Still waiting, not timed out yet
+                }
+            } else {
+                return None;
+            }
+        }
         recovery.pending = true;
+        recovery.request_sent_at = Some(Instant::now());
         Some((recovery.peer, recovery.next_parent))
     }
 

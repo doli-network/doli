@@ -606,7 +606,9 @@ impl Node {
                     best_height
                 };
                 let max_count = max_count.min(2000); // Cap to prevent expensive iteration
-                let end_height = start_height.saturating_add(max_count as u64).min(serve_height);
+                let end_height = start_height
+                    .saturating_add(max_count as u64)
+                    .min(serve_height);
                 for height in (start_height + 1)..=end_height {
                     if let Ok(Some(hash)) = self.block_store.get_hash_by_height(height) {
                         if let Ok(Some(header)) = self.block_store.get_header(&hash) {

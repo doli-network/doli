@@ -42,30 +42,27 @@ impl SyncManager {
     /// Get the best_hash that the MAJORITY of eligible peers agree on.
     ///
     /// This prevents a partitioned minority from steering snap sync to a
-    /// forked chain. Returns None if no hash has strict majority (>50%).
+    /// forked chain. Returns None if no (height, hash) pair has >= 2 peers.
     fn consensus_target_hash(&self) -> Option<Hash> {
-        // Group eligible peers by height, then pick the hash at the most common
-        // height. During normal operation peers are at slightly different heights
-        // (tip race), so requiring >50% on the same best_hash always fails.
-        // Instead: find the height with the most peers, use any peer's hash at
-        // that height. This is safe because all honest peers at the same height
-        // MUST have the same hash (deterministic consensus).
-        let mut height_counts: HashMap<u64, (usize, Hash)> = HashMap::new();
+        // INC-I-012 F10: Group by (height, hash) pairs, not just height.
+        // During active forks, two honest peers at the same height may have
+        // different blocks. The old code assumed all peers at the same height
+        // have the same hash (using the first peer's hash as representative).
+        // Now we correctly count agreement on both height AND hash.
+        let mut pair_counts: HashMap<(u64, Hash), usize> = HashMap::new();
         for status in self.peers.values() {
             if status.best_height > self.local_height {
-                let entry = height_counts
-                    .entry(status.best_height)
-                    .or_insert((0, status.best_hash));
-                entry.0 += 1;
+                *pair_counts
+                    .entry((status.best_height, status.best_hash))
+                    .or_default() += 1;
             }
         }
-        if height_counts.is_empty() {
+        if pair_counts.is_empty() {
             return None;
         }
-        // Pick the height with the most peers (break ties by highest height)
-        let (_best_height, (count, hash)) = height_counts
-            .into_iter()
-            .max_by_key(|(h, (c, _))| (*c, *h))?;
+        // Pick the (height, hash) pair with the most peers
+        // Break ties by: most peers first, then highest height
+        let ((_, hash), count) = pair_counts.into_iter().max_by_key(|((h, _), c)| (*c, *h))?;
         // Require at least 2 peers to agree (prevents single-peer poisoning)
         if count >= 2 {
             Some(hash)
@@ -760,18 +757,34 @@ impl SyncManager {
                     self.fork.header_blacklisted_peers.clear();
                     self.signal_stuck_fork();
                 } else {
-                    // First 1-2 empties: could be a peer-specific issue. Blacklist this peer.
-                    self.fork
-                        .header_blacklisted_peers
-                        .insert(peer, Instant::now());
+                    // First 1-2 empties: could be a peer-specific issue.
+                    // INC-I-012 F7: Skip blacklisting if snap sync completed
+                    // within the last 5 minutes — ALL canonical peers will return
+                    // empty for our unrecognizable hash, so blacklisting just
+                    // removes good peers from the pool.
+                    let recently_snapped = self
+                        .snap
+                        .last_snap_completed
+                        .map(|t| t.elapsed().as_secs() < 300)
+                        .unwrap_or(false);
+                    if !recently_snapped {
+                        self.fork
+                            .header_blacklisted_peers
+                            .insert(peer, Instant::now());
+                    }
                     warn!(
                         "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                         fork evidence (consecutive={}). Blacklisted peer.",
+                         fork evidence (consecutive={}){}.",
                         peer,
                         peer_height,
                         self.local_height,
                         gap,
-                        self.fork.consecutive_empty_headers
+                        self.fork.consecutive_empty_headers,
+                        if recently_snapped {
+                            " (skipping blacklist — recent snap sync)"
+                        } else {
+                            ". Blacklisted peer"
+                        }
                     );
                 }
                 self.set_state(SyncState::Idle, "empty_headers_fork_detected");

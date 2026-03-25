@@ -453,6 +453,10 @@ pub(crate) struct SnapSyncState {
     pub fresh_node_wait_start: Option<Instant>,
     /// Lowest block height in local store
     pub store_floor: u64,
+    /// INC-I-012 F7: When snap sync last completed. Used to suppress peer
+    /// blacklisting for empty headers within 5 minutes of snap sync — all
+    /// canonical peers will return empty when local_hash is unrecognizable.
+    pub last_snap_completed: Option<Instant>,
 }
 
 impl SnapSyncState {
@@ -474,6 +478,7 @@ impl SnapSyncState {
             attempts: 0,
             fresh_node_wait_start: None,
             store_floor: 1, // Default: full-sync node has block 1
+            last_snap_completed: None,
         }
     }
 }

@@ -523,7 +523,12 @@ impl Node {
                 // production interval. Without this, 100+ syncing peers each sending
                 // 20 req/sec (per-peer limit) create 2000+ req/sec aggregate, saturating
                 // the event loop with block_store I/O and starving production.
-                const MAX_SYNC_REQUESTS_PER_INTERVAL: u32 = 8;
+                // INC-I-012 F6: Raised from 8 to 24 to reflect P3 throughput
+                // improvements (while-let loop processes 4-8x faster). At 8 req/slot
+                // with 10s slots, aggregate serving was 0.8 req/sec — too low for 50+
+                // syncing peers. 24 req/slot = 2.4 req/sec, sufficient for moderate
+                // networks without starving production.
+                const MAX_SYNC_REQUESTS_PER_INTERVAL: u32 = 24;
                 if self.sync_requests_this_interval >= MAX_SYNC_REQUESTS_PER_INTERVAL {
                     debug!(
                         "Sync request from {} deferred — serving limit reached ({}/{})",

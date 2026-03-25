@@ -46,8 +46,10 @@ pub struct BodyDownloader {
     failure_count: HashMap<Hash, u32>,
     /// Peers that returned empty for a specific hash — don't ask again
     failed_peers: HashMap<Hash, HashSet<PeerId>>,
-    /// Permanently failed hashes (gave up after too many retries)
-    permanently_failed: HashSet<Hash>,
+    /// Permanently failed hashes with timestamp (gave up after too many retries).
+    /// INC-I-012 F12: Entries expire after 60s and move back to retry queue,
+    /// allowing the downloader to try peers that may have come online since.
+    permanently_failed: HashMap<Hash, Instant>,
     /// Round-robin peer index
     next_peer_index: usize,
     /// Total bodies downloaded
@@ -71,7 +73,7 @@ impl BodyDownloader {
             failed: VecDeque::new(),
             failure_count: HashMap::new(),
             failed_peers: HashMap::new(),
-            permanently_failed: HashSet::new(),
+            permanently_failed: HashMap::new(),
             next_peer_index: 0,
             total_downloaded: 0,
         }
@@ -143,10 +145,26 @@ impl BodyDownloader {
         // Collect hashes to request (not already in flight)
         let mut hashes = Vec::new();
 
+        // INC-I-012 F12: Expire permanently_failed entries after 60s.
+        // Allows retrying with peers that may have come online since the failure.
+        let now_for_expiry = Instant::now();
+        let expired: Vec<Hash> = self
+            .permanently_failed
+            .iter()
+            .filter(|(_, failed_at)| now_for_expiry.duration_since(**failed_at).as_secs() >= 60)
+            .map(|(h, _)| *h)
+            .collect();
+        for hash in expired {
+            self.permanently_failed.remove(&hash);
+            self.failure_count.remove(&hash);
+            self.failed_peers.remove(&hash);
+            self.failed.push_back(hash);
+        }
+
         // First try failed hashes (skip in-flight and permanently failed)
         while hashes.len() < self.max_bodies_per_request && !self.failed.is_empty() {
             if let Some(hash) = self.failed.pop_front() {
-                if !self.in_flight.contains(&hash) && !self.permanently_failed.contains(&hash) {
+                if !self.in_flight.contains(&hash) && !self.permanently_failed.contains_key(&hash) {
                     hashes.push(hash);
                 }
             }
@@ -159,7 +177,7 @@ impl BodyDownloader {
             }
             if !self.in_flight.contains(hash)
                 && !self.downloaded.contains_key(hash)
-                && !self.permanently_failed.contains(hash)
+                && !self.permanently_failed.contains_key(hash)
             {
                 hashes.push(*hash);
             }
@@ -253,10 +271,10 @@ impl BodyDownloader {
 
                 if *count >= 3 {
                     warn!(
-                        "Giving up on body {} after {} failures — marking permanently failed",
+                        "Giving up on body {} after {} failures — marking permanently failed (60s expiry)",
                         hash, count
                     );
-                    self.permanently_failed.insert(*hash);
+                    self.permanently_failed.insert(*hash, Instant::now());
                 } else {
                     warn!(
                         "Missing body {} from peer {} (attempt {}/3)",
@@ -341,7 +359,7 @@ impl BodyDownloader {
         }
     }
 
-    /// Number of permanently failed bodies (gave up after 3 attempts)
+    /// Number of permanently failed bodies (active, non-expired)
     pub fn permanently_failed_count(&self) -> usize {
         self.permanently_failed.len()
     }
