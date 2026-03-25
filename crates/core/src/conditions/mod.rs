@@ -55,14 +55,16 @@ pub const CONDITION_VERSION: u8 = 1;
 
 /// Maximum number of cryptographic operations in a single condition tree.
 /// Prevents DoS via deeply nested or wide condition trees.
-pub const MAX_CONDITION_OPS: usize = 20;
+/// 128 ops supports multisig up to 127 signers (~127ms worst case at 1ms/verify).
+pub const MAX_CONDITION_OPS: usize = 128;
 
 /// Maximum recursion depth for nested conditions (And/Or/Threshold).
 pub const MAX_CONDITION_DEPTH: usize = 4;
 
 /// Maximum number of keys in a multisig condition.
-/// Limited by MAX_EXTRA_DATA_SIZE (512 bytes): 2B header + 2B params + N×32B = 512 → N=15.
-pub const MAX_MULTISIG_KEYS: usize = 15;
+/// Limited by MAX_EXTRA_DATA_SIZE (4096 bytes): 2B header + 2B params + N×32B = 4096 → N=127.
+/// Capped at 127 (u8 max for threshold field).
+pub const MAX_MULTISIG_KEYS: usize = 127;
 
 /// Maximum number of sub-conditions in a Threshold.
 pub const MAX_THRESHOLD_CONDITIONS: usize = 5;

@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
 use crate::transaction::{Input, OutputType, SighashType, Transaction, TxType};
 use crate::types::Amount;
 use crypto::Hash;
@@ -121,6 +122,21 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             return Err(ValidationError::InsufficientFunds {
                 inputs: total_input,
                 outputs: total_output,
+            });
+        }
+
+        // Verify fee meets minimum (base + per-byte for output extra_data).
+        // fee = total_input - total_output (the "burned" DOLI).
+        let actual_fee = total_input.saturating_sub(total_output);
+        let min_fee = tx.minimum_fee();
+        if actual_fee < min_fee {
+            let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+            return Err(ValidationError::InsufficientFee {
+                actual: actual_fee,
+                minimum: min_fee,
+                base: BASE_FEE,
+                extra_bytes,
+                per_byte: FEE_PER_BYTE,
             });
         }
     }

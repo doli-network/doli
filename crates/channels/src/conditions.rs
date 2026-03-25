@@ -6,7 +6,7 @@
 //! 2. **To-local** (commitment): `Or(And(Sig(counterparty), Hashlock(revocation)), And(Sig(self), Timelock(delay)))`
 //! 3. **HTLC**: `Or(And(Sig(remote), Hashlock(payment)), And(Sig(local), TimelockExpiry(expiry)))`
 //!
-//! All conditions must fit within 512 bytes of `extra_data`.
+//! All conditions must fit within 4096 bytes of `extra_data`.
 
 use crypto::Hash;
 use doli_core::conditions::Condition;

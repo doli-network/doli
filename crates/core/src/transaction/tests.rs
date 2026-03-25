@@ -1689,3 +1689,202 @@ fn test_bridge_htlc_monero_roundtrip() {
     let t_recovered = recovered.decompress().unwrap();
     assert_eq!(adaptor_point.compress(), t_recovered.compress());
 }
+
+// ==================== Per-Byte Fee Tests ====================
+
+/// Test 1: Plain transfer (0 extra_data bytes) => minimum_fee = 1 sat (BASE_FEE only)
+#[test]
+fn test_fee_plain_transfer() {
+    let pubkey_hash = crypto::hash::hash(b"recipient");
+    let tx = Transaction::new_transfer(
+        vec![Input::new(Hash::ZERO, 0)],
+        vec![Output::normal(100, pubkey_hash)],
+    );
+    assert_eq!(tx.minimum_fee(), 1);
+}
+
+/// Test 2: Bond output (4 bytes extra_data) => minimum_fee = 5 sats
+#[test]
+fn test_fee_bond_output() {
+    let pubkey_hash = crypto::hash::hash(b"producer");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Registration,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output::bond(100_000_000, pubkey_hash, 1000, 0)],
+        extra_data: vec![],
+    };
+    // Bond has 4 bytes of extra_data (creation_slot)
+    assert_eq!(tx.outputs[0].extra_data.len(), 4);
+    assert_eq!(tx.minimum_fee(), 1 + 4); // BASE_FEE + 4 * FEE_PER_BYTE = 5
+}
+
+/// Test 3: NFT-sized output (300 bytes) => minimum_fee = 301 sats
+#[test]
+fn test_fee_nft_300_bytes() {
+    let pubkey_hash = crypto::hash::hash(b"nft_owner");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output {
+            output_type: OutputType::NFT,
+            amount: 0,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0u8; 300],
+        }],
+        extra_data: vec![],
+    };
+    assert_eq!(tx.minimum_fee(), 1 + 300); // 301
+}
+
+/// Test 4: Pool swap output (116 bytes) => minimum_fee = 117 sats
+#[test]
+fn test_fee_pool_swap_116_bytes() {
+    use crate::transaction::POOL_METADATA_SIZE;
+    let pubkey_hash = crypto::hash::hash(b"pool");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Swap,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output {
+            output_type: OutputType::Pool,
+            amount: 0,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0u8; POOL_METADATA_SIZE],
+        }],
+        extra_data: vec![],
+    };
+    assert_eq!(POOL_METADATA_SIZE, 116);
+    assert_eq!(tx.minimum_fee(), 1 + 116); // 117
+}
+
+/// Test 5: CryptoPunk-sized NFT (3000 bytes) => minimum_fee = 3001 sats
+#[test]
+fn test_fee_cryptopunk_3000_bytes() {
+    let pubkey_hash = crypto::hash::hash(b"punk_owner");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output {
+            output_type: OutputType::NFT,
+            amount: 0,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0u8; 3000],
+        }],
+        extra_data: vec![],
+    };
+    assert_eq!(tx.minimum_fee(), 1 + 3000); // 3001
+}
+
+/// Test 6: Multiple outputs with extra_data — fee sums across all outputs
+#[test]
+fn test_fee_multiple_outputs_sum() {
+    let pubkey_hash = crypto::hash::hash(b"multi");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![
+            Output::normal(50, pubkey_hash),         // 0 bytes
+            Output::bond(100, pubkey_hash, 1000, 0), // 4 bytes
+            Output {
+                output_type: OutputType::NFT,
+                amount: 0,
+                pubkey_hash,
+                lock_until: 0,
+                extra_data: vec![0u8; 100], // 100 bytes
+            },
+        ],
+        extra_data: vec![],
+    };
+    // Total extra_data: 0 + 4 + 100 = 104 bytes
+    assert_eq!(tx.minimum_fee(), 1 + 104); // 105
+}
+
+/// Test 7: Coinbase/EpochReward have minimum_fee but it is never enforced
+///         (they have no inputs, fee is moot). Verify calculation still works.
+#[test]
+fn test_fee_coinbase_and_epoch_reward() {
+    let coinbase = Transaction::new_coinbase(100_000_000, Hash::from_bytes([1u8; 32]), 0);
+    // Coinbase has no outputs with extra_data (normal output)
+    assert_eq!(coinbase.minimum_fee(), 1); // BASE_FEE only
+
+    let keypair = crypto::KeyPair::generate();
+    let epoch_reward = Transaction::new_epoch_reward(
+        1,
+        *keypair.public_key(),
+        1_000_000,
+        Hash::from_bytes([2u8; 32]),
+    );
+    assert_eq!(epoch_reward.minimum_fee(), 1); // BASE_FEE only
+}
+
+/// Test 14: Zero extra_data on all outputs => fee is exactly BASE_FEE
+#[test]
+fn test_fee_no_extra_data_is_base_only() {
+    let pubkey_hash = crypto::hash::hash(b"no_extra");
+    let tx = Transaction::new_transfer(
+        vec![Input::new(Hash::ZERO, 0)],
+        vec![
+            Output::normal(50, pubkey_hash),
+            Output::normal(30, pubkey_hash),
+        ],
+    );
+    // Normal outputs have empty extra_data
+    assert!(tx.outputs.iter().all(|o| o.extra_data.is_empty()));
+    assert_eq!(tx.minimum_fee(), 1); // BASE_FEE only
+}
+
+/// Test 15: Maximum extra_data (4096 bytes) => minimum_fee = 4097 sats
+#[test]
+fn test_fee_max_extra_data() {
+    use crate::transaction::MAX_EXTRA_DATA_SIZE;
+    let pubkey_hash = crypto::hash::hash(b"max_data");
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![Output {
+            output_type: OutputType::NFT,
+            amount: 0,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0u8; MAX_EXTRA_DATA_SIZE],
+        }],
+        extra_data: vec![],
+    };
+    assert_eq!(tx.minimum_fee(), 1 + MAX_EXTRA_DATA_SIZE as u64); // 4097
+}
+
+/// Test 16: Fee calculation does not overflow with many large outputs
+#[test]
+fn test_fee_no_overflow_many_outputs() {
+    use crate::transaction::MAX_EXTRA_DATA_SIZE;
+    let pubkey_hash = crypto::hash::hash(b"overflow");
+    // 100 outputs, each with 4096 bytes of extra_data
+    let outputs: Vec<Output> = (0..100)
+        .map(|_| Output {
+            output_type: OutputType::NFT,
+            amount: 1,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: vec![0u8; MAX_EXTRA_DATA_SIZE],
+        })
+        .collect();
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs,
+        extra_data: vec![],
+    };
+    // 100 * 4096 = 409,600 bytes. Fee = 1 + 409,600 = 409,601.
+    // No overflow — u64 handles this trivially.
+    let expected = 1 + 100 * MAX_EXTRA_DATA_SIZE as u64;
+    assert_eq!(tx.minimum_fee(), expected);
+}

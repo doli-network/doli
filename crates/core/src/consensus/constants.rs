@@ -443,3 +443,19 @@ pub const DELEGATION_UNBONDING_SLOTS: u64 = 60_480; // ~7 days
 /// This prevents grinding attacks: prev_hash is not used in selection,
 /// making it impossible to influence future producer selection.
 pub const ELIGIBLE_PRODUCER_POOL: usize = 5;
+
+// ==================== Per-Byte Fee System ====================
+
+/// Base transaction fee (1 satoshi).
+///
+/// Every transaction must pay at least this amount as fee (input - output).
+/// This is the minimum cost to include a zero-extra-data transfer on-chain.
+pub const BASE_FEE: Amount = 1;
+
+/// Fee per byte of extra_data in outputs (1 satoshi per byte).
+///
+/// Transactions with output-level extra_data (NFTs, bonds, pool state, etc.)
+/// pay `sum(output.extra_data.len()) * FEE_PER_BYTE` in addition to BASE_FEE.
+/// This prices on-chain storage proportionally: a 300-byte NFT costs 301 sats,
+/// a plain transfer costs 1 sat.
+pub const FEE_PER_BYTE: Amount = 1;

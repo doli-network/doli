@@ -6,10 +6,12 @@ use crate::types::{Amount, BlockHeight};
 use super::types::OutputType;
 
 /// Maximum size of extra_data in an output (bytes).
-/// Reserved for future contract types (scripts, conditions, metadata).
+/// Reserved for conditions, metadata, and embedded content (e.g. NFT images).
 /// Normal and Bond outputs must have empty extra_data.
-/// 512 bytes supports multisig up to 15 signers (was 256 / 7 signers).
-pub const MAX_EXTRA_DATA_SIZE: usize = 512;
+/// 4096 bytes enables: multisig 100+ signers, on-chain NFT images (64x64),
+/// complex composed conditions, zero-knowledge proofs, and cases not yet imagined.
+/// The field is variable — unused bytes cost nothing.
+pub const MAX_EXTRA_DATA_SIZE: usize = 4096;
 
 /// NFT metadata version (without royalties)
 pub const NFT_METADATA_VERSION: u8 = 1;

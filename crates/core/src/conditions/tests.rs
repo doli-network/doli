@@ -472,11 +472,11 @@ fn test_threshold_validate_errors() {
 
 #[test]
 fn test_max_multisig_fits() {
-    // 15 keys = 1 (version) + 1 (tag) + 2 (params) + 15*32 (keys) = 484 bytes < 512
-    let keys: Vec<Hash> = (0..15).map(dummy_hash).collect();
-    let cond = Condition::multisig(10, keys);
+    // 127 keys = 1 (version) + 1 (tag) + 2 (params) + 127*32 (keys) = 4068 bytes < 4096
+    let keys: Vec<Hash> = (0..127).map(|i| dummy_hash(i as u8)).collect();
+    let cond = Condition::multisig(64, keys);
     let encoded = cond.encode().unwrap();
-    assert!(encoded.len() <= 512);
+    assert!(encoded.len() <= 4096);
 }
 
 #[test]

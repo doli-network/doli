@@ -631,6 +631,20 @@ impl Transaction {
         None // unreachable in practice
     }
 
+    /// Calculate the minimum required fee for this transaction.
+    ///
+    /// `fee = BASE_FEE + sum(output.extra_data.len()) * FEE_PER_BYTE`
+    ///
+    /// This prices on-chain storage proportionally:
+    /// - Transfer (0 extra_data bytes): 1 sat
+    /// - Bond (4 bytes): 5 sats
+    /// - NFT (300 bytes): 301 sats
+    /// - Pool swap (116 bytes): 117 sats
+    pub fn minimum_fee(&self) -> Amount {
+        let extra_bytes: u64 = self.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+        crate::consensus::BASE_FEE + extra_bytes * crate::consensus::FEE_PER_BYTE
+    }
+
     /// Sum of native DOLI across all outputs.
     ///
     /// Non-native output types (FungibleAsset, LPShare, Pool, Collateral)

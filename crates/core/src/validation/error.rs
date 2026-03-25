@@ -261,6 +261,21 @@ pub enum ValidationError {
     #[error("invalid protocol activation: {0}")]
     InvalidProtocolActivation(String),
 
+    /// Transaction fee is below the minimum required.
+    #[error("insufficient fee: got {actual}, minimum {minimum} (base {base} + {extra_bytes} bytes * {per_byte}/byte)")]
+    InsufficientFee {
+        /// Actual fee paid (total_input - total_output).
+        actual: Amount,
+        /// Minimum required fee.
+        minimum: Amount,
+        /// Base fee component.
+        base: Amount,
+        /// Total extra_data bytes across all outputs.
+        extra_bytes: u64,
+        /// Per-byte fee rate.
+        per_byte: Amount,
+    },
+
     /// Pool transaction is invalid.
     #[error("invalid pool transaction: {0}")]
     InvalidPool(String),

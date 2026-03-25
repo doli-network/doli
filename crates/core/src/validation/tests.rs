@@ -1522,3 +1522,213 @@ fn test_validation_mode_enum_equality() {
     assert_eq!(ValidationMode::Light, ValidationMode::Light);
     assert_ne!(ValidationMode::Full, ValidationMode::Light);
 }
+
+// ==================== Per-Byte Fee Validation Tests ====================
+
+/// Test 8: Transfer with exact minimum fee (1 sat) passes validation
+#[test]
+fn test_fee_validation_transfer_exact_minimum() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_test_8");
+    // Input: 101 sats. Output: 100 sats. Fee: 1 sat = BASE_FEE. Passes.
+    let prev_output = Output::normal(101, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let recipient = crypto::hash::hash(b"recipient_8");
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::normal(100, recipient)],
+        extra_data: vec![],
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Exact minimum fee should pass: {:?}",
+        result
+    );
+}
+
+/// Test 9: Transfer with zero fee (input == output) fails InsufficientFee
+#[test]
+fn test_fee_validation_transfer_zero_fee_rejected() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_test_9");
+    // Input: 100 sats. Output: 100 sats. Fee: 0. Rejected.
+    let prev_output = Output::normal(100, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let recipient = crypto::hash::hash(b"recipient_9");
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::normal(100, recipient)],
+        extra_data: vec![],
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(
+            result,
+            Err(ValidationError::InsufficientFee { actual: 0, .. })
+        ),
+        "Zero fee should be rejected: {:?}",
+        result
+    );
+}
+
+/// Test 10: AddBond with bond output (4 bytes extra_data) needs 5 sat fee
+#[test]
+fn test_fee_validation_add_bond_exact_fee() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_test_10");
+    let bond_amount: u64 = 1_000_000_000;
+    // Input covers bond_amount + 5 sats fee (BASE_FEE + 4 bytes * FEE_PER_BYTE)
+    let prev_output = Output::normal(bond_amount + 5, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    // Build AddBond TX with 1 bond output
+    let bond_data = crate::transaction::AddBondData::new(pubkey, 1);
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::AddBond,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::bond(bond_amount, pubkey_hash, u64::MAX, 0)],
+        extra_data: bond_data.to_bytes(),
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    // Bond output has 4 bytes extra_data, so min fee = 1 + 4 = 5
+    assert_eq!(tx.minimum_fee(), 5);
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "AddBond with exact per-byte fee should pass: {:?}",
+        result
+    );
+}
+
+/// Test 11: AddBond with bond output but only 4 sat fee (needs 5) fails
+#[test]
+fn test_fee_validation_add_bond_insufficient_per_byte() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_test_11");
+    let bond_amount: u64 = 1_000_000_000;
+    // Input covers bond_amount + 4 sats fee — but needs 5 (1 base + 4 bytes)
+    let prev_output = Output::normal(bond_amount + 4, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let bond_data = crate::transaction::AddBondData::new(pubkey, 1);
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::AddBond,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::bond(bond_amount, pubkey_hash, u64::MAX, 0)],
+        extra_data: bond_data.to_bytes(),
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(
+            result,
+            Err(ValidationError::InsufficientFee {
+                actual: 4,
+                minimum: 5,
+                ..
+            })
+        ),
+        "AddBond with 4 sat fee (needs 5) should fail: {:?}",
+        result
+    );
+}
+
+/// Test 12: Overpaying fee is always fine (generous fee accepted)
+#[test]
+fn test_fee_validation_overpay_accepted() {
+    let ctx = test_context();
+    let keypair = crypto::KeyPair::generate();
+    let pubkey = *keypair.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+
+    let prev_tx_hash = crypto::hash::hash(b"fee_test_12");
+    // Input: 1000 sats. Output: 50 sats. Fee: 950 sats >> 1 sat minimum.
+    let prev_output = Output::normal(1000, pubkey_hash);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
+
+    let recipient = crypto::hash::hash(b"recipient_12");
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx_hash, 0)],
+        outputs: vec![Output::normal(50, recipient)],
+        extra_data: vec![],
+    };
+
+    let signing_hash = tx.signing_message_for_input(0);
+    tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Overpaying fee should be accepted: {:?}",
+        result
+    );
+}
+
+/// Test 13: Coinbase transactions bypass fee check entirely
+#[test]
+fn test_fee_validation_coinbase_bypass() {
+    let ctx = test_context();
+    let utxo_provider = MockUtxoProvider::new();
+
+    // Coinbase: no inputs, single output, minted from thin air.
+    // Must not trigger InsufficientFee.
+    let coinbase = Transaction::new_coinbase(100_000_000, crypto::hash::hash(b"producer_13"), 1);
+
+    let result = utxo::validate_transaction_with_utxos(&coinbase, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Coinbase should bypass fee check: {:?}",
+        result
+    );
+}
