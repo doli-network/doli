@@ -338,4 +338,159 @@ mod tests {
         let lending_pool_id_c = Output::compute_lending_pool_id(&pool_id_2);
         assert_ne!(lending_pool_id_a, lending_pool_id_c);
     }
+
+    // ========== Gap 1: Liquidation end-to-end scenarios ==========
+
+    /// L5: Liquidation executes when LTV > threshold
+    #[test]
+    fn test_liquidation_executes_above_threshold() {
+        // Setup: 150 tokens collateral, 100 DOLI principal, 150% liquidation ratio
+        // Price via TWAP: 1 token = 0.8 DOLI (price dropped)
+        // Collateral value = 150 * 0.8 = 120 DOLI
+        // Debt = 100 DOLI (ignore interest for simplicity)
+        // LTV = 100/120 = 83.3% > 66.67% max
+        // Liquidation check: collateral(120) * 10000 < debt(100) * ratio(15000)
+        //                    1200000 < 1500000 -> TRUE -> liquidatable
+        let debt = 100u64;
+        let collateral_value = 120u64;
+        assert!(is_liquidatable(debt, collateral_value, 15000));
+    }
+
+    /// L6: Liquidation rejected when position is healthy
+    #[test]
+    fn test_liquidation_rejected_when_healthy() {
+        // Collateral value = 200 DOLI, Debt = 100 DOLI
+        // LTV = 50% < 66.67% -> NOT liquidatable
+        let debt = 100u64;
+        let collateral_value = 200u64;
+        assert!(!is_liquidatable(debt, collateral_value, 15000));
+    }
+
+    /// L7: TWAP protects against spot manipulation
+    #[test]
+    fn test_twap_protects_against_spot_manipulation() {
+        // Normal price for 359 blocks: reserve_a=1000, reserve_b=500 (price = 2 DOLI/token)
+        let normal_price = (1000u128 << 64) / 500;
+        let cum_359 = normal_price * 359;
+
+        // Manipulated price for 1 block: reserve_a=100, reserve_b=500 (price = 0.2 DOLI/token = 10x drop)
+        let manip_price = (100u128 << 64) / 500;
+        let cum_360 = cum_359 + manip_price;
+
+        // TWAP over 360 blocks
+        let twap = cum_360 / 360;
+
+        // Normal collateral value at TWAP: 150 tokens * twap_price
+        // At normal price: 150 * 2 = 300 DOLI (healthy)
+        // At manipulated spot: 150 * 0.2 = 30 DOLI (would trigger liquidation)
+        // At TWAP: should be close to normal (300 DOLI), NOT close to manipulated (30 DOLI)
+        let deviation_bps = twap.abs_diff(normal_price) * 10000 / normal_price;
+        // TWAP must change < 3% (300 bps) from a single-block manipulation
+        assert!(
+            deviation_bps <= 300,
+            "TWAP changed {}bps from 1-block manipulation -- lending would be unsafe",
+            deviation_bps
+        );
+
+        // At TWAP price, position should NOT be liquidatable
+        let collateral_val = collateral_value_from_twap(150, twap);
+        let debt = 100u64;
+        assert!(
+            !is_liquidatable(debt, collateral_val, 15000),
+            "Position should be safe at TWAP price, but would be liquidated"
+        );
+    }
+
+    /// L8: Interest accrual makes position liquidatable over time
+    #[test]
+    fn test_interest_makes_position_liquidatable() {
+        // Position: 150 DOLI collateral, 100 DOLI principal, 5% annual rate
+        // At creation: LTV = 66.67% (healthy)
+        // After enough time, interest pushes debt above liquidation threshold
+        let principal = 100u64;
+        let collateral_value = 150u64;
+        let rate_bps = 500u16; // 5% annual
+
+        // Initially healthy
+        assert!(!is_liquidatable(principal, collateral_value, 15000));
+
+        // After 10 years of interest
+        let debt_10y = compute_total_debt(principal, rate_bps, SLOTS_PER_YEAR * 10);
+        // debt ~ 100 * 1.05^10 (linear here) = 100 + 100*0.05*10 = 150
+        // Liquidation: 150 * 10000 = 1500000 < 150 * 15000 = 2250000 -> liquidatable
+        assert!(
+            is_liquidatable(debt_10y, collateral_value, 15000),
+            "Position should be liquidatable after 10 years of interest: debt={}",
+            debt_10y
+        );
+    }
+
+    // ========== Gap 5 (partial): Full DeFi lifecycle integration ==========
+
+    /// Full DeFi lifecycle: create pool -> swap -> TWAP -> borrow -> accrue interest -> repay
+    #[test]
+    fn test_full_defi_lifecycle() {
+        use crate::pool::*;
+
+        // Use realistic DOLI-scale values (10^8 base units per DOLI)
+        let unit: u64 = 100_000_000; // 1 DOLI
+
+        // Step 1: Create pool with 1000 DOLI / 5000 tokens
+        let reserve_a = 1000 * unit;
+        let reserve_b = 5000 * unit;
+        let lp_shares = compute_initial_lp_shares(reserve_a, reserve_b);
+        assert!(lp_shares > 0);
+
+        // Step 2: Swap 100 DOLI -> tokens
+        let (tokens_out, new_ra, new_rb) =
+            compute_swap(reserve_a, reserve_b, 100 * unit, 30).unwrap();
+        assert!(tokens_out > 0);
+        assert!(verify_invariant(reserve_a, reserve_b, new_ra, new_rb));
+
+        // Step 3: TWAP accumulates over 100 slots
+        let cum = update_twap(0, new_ra, new_rb, 200, 100);
+        assert!(cum > 0);
+
+        // Step 4: Compute TWAP price
+        let twap_price = compute_twap_price(0, cum, 100).unwrap();
+        assert!(twap_price > 0);
+
+        // Step 5: Create loan -- 500 tokens collateral, borrow DOLI
+        let collateral_tokens = 500 * unit;
+        let collateral_val = collateral_value_from_twap(collateral_tokens, twap_price);
+        assert!(collateral_val > 0);
+
+        // Max borrow at 66.67% LTV
+        let max_borrow = collateral_val * 6667 / 10000;
+        assert!(max_borrow > 0);
+
+        // Verify LTV is acceptable
+        let ltv = verify_creation_ltv(max_borrow, collateral_val, 6667);
+        assert!(ltv.is_ok());
+
+        // Step 6: Accrue interest over 1 epoch (360 slots)
+        let interest = compute_interest(max_borrow, 500, 360);
+        assert!(interest > 0, "Interest must be >0 with DOLI-scale values");
+
+        // Step 7: Total debt
+        let total_debt = compute_total_debt(max_borrow, 500, 360);
+        assert!(total_debt > max_borrow);
+
+        // Step 8: Verify position is still healthy
+        let ltv_after = compute_ltv_bps(total_debt, collateral_val);
+        // Should still be under liquidation threshold (83.33%)
+        assert!(
+            ltv_after < 8333,
+            "Position should be healthy after 1 epoch, LTV={}bps",
+            ltv_after
+        );
+
+        // Step 9: Depositor earnings
+        let depositor_amount = 1000 * unit;
+        let total_deposits = 5000 * unit;
+        let earnings = compute_depositor_earnings(depositor_amount, total_deposits, interest);
+        assert!(earnings > 0);
+        // Depositor gets proportional share: 1000/5000 = 20% of interest
+        assert_eq!(earnings, interest / 5);
+    }
 }

@@ -754,4 +754,153 @@ mod tests {
         assert!(store.has_unique_id(UID_PREFIX_NFT, &id_a));
         assert!(store.has_unique_id(UID_PREFIX_NFT, &id_b));
     }
+
+    // ========== Gap 3: Batch mint with UniqueIdIndex ==========
+
+    /// Batch mint 10 NFTs -> all token_ids in index
+    #[test]
+    fn test_batch_mint_10_nfts_all_indexed() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter = crypto::hash::hash(b"batch_minter");
+        let cond = doli_core::Condition::signature(minter);
+
+        let mut outputs = Vec::new();
+        let mut token_ids = Vec::new();
+        for i in 0..10u8 {
+            let nonce = (i as u64).to_le_bytes().to_vec();
+            let token_id = Output::compute_nft_token_id(&minter, &nonce);
+            token_ids.push(token_id);
+            let nft = Output::nft(0, minter, token_id, &[i; 10], &cond).unwrap();
+            outputs.push(nft);
+        }
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs,
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx, 1, false, 100);
+
+        // All 10 token_ids must be in the index
+        for (i, token_id) in token_ids.iter().enumerate() {
+            assert!(
+                store.has_unique_id(UID_PREFIX_NFT, token_id),
+                "Token ID #{} not found in index",
+                i
+            );
+        }
+    }
+
+    /// Batch mint -> spend one -> that token_id removed, others remain
+    #[test]
+    fn test_batch_mint_spend_one_others_remain() {
+        let mut store = InMemoryUtxoStore::new();
+        let minter = crypto::hash::hash(b"batch_spend_minter");
+        let cond = doli_core::Condition::signature(minter);
+
+        let mut token_ids = Vec::new();
+        let mut outputs = Vec::new();
+        for i in 0..5u8 {
+            let nonce = (i as u64 + 100).to_le_bytes().to_vec();
+            let token_id = Output::compute_nft_token_id(&minter, &nonce);
+            token_ids.push(token_id);
+            outputs.push(Output::nft(0, minter, token_id, b"data", &cond).unwrap());
+        }
+
+        let mint_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![],
+            outputs,
+            extra_data: vec![],
+        };
+        let mint_hash = mint_tx.hash();
+        store.add_transaction(&mint_tx, 1, false, 100);
+
+        // Spend only NFT #2 (output index 2)
+        let spend_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Transfer,
+            inputs: vec![doli_core::transaction::Input::new(mint_hash, 2)],
+            outputs: vec![Output::normal(1, crypto::Hash::ZERO)],
+            extra_data: vec![],
+        };
+        let _ = store.spend_transaction(&spend_tx);
+
+        // NFT #2 removed from index, others remain
+        for (i, token_id) in token_ids.iter().enumerate() {
+            if i == 2 {
+                assert!(
+                    !store.has_unique_id(UID_PREFIX_NFT, token_id),
+                    "Spent NFT #{} should be removed from index",
+                    i
+                );
+            } else {
+                assert!(
+                    store.has_unique_id(UID_PREFIX_NFT, token_id),
+                    "Unspent NFT #{} should remain in index",
+                    i
+                );
+            }
+        }
+    }
+
+    // ========== Gap 4: Pool duplicate rejection via UniqueIdIndex ==========
+
+    /// Pool ID appears in unique index after create
+    #[test]
+    fn test_pool_id_in_unique_index_after_create() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreatePool,
+            inputs: vec![],
+            outputs: vec![pool_output],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx, 1, false, 100);
+
+        assert!(store.has_unique_id(UID_PREFIX_POOL, &pool_id));
+    }
+
+    /// Pool swap: spend old pool + add new pool preserves pool_id in index
+    #[test]
+    fn test_pool_swap_preserves_pool_id_in_index() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+
+        // Create pool
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
+        let create_tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreatePool,
+            inputs: vec![],
+            outputs: vec![pool_output],
+            extra_data: vec![],
+        };
+        let create_hash = create_tx.hash();
+        store.add_transaction(&create_tx, 1, false, 100);
+
+        // Swap: spend old pool, create new pool with updated reserves
+        let new_pool = Output::pool(pool_id, asset_b, 1100, 1900, 707, 0, 110, 30, 100);
+        let swap_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Swap,
+            inputs: vec![doli_core::transaction::Input::new(create_hash, 0)],
+            outputs: vec![new_pool],
+            extra_data: vec![],
+        };
+        let _ = store.spend_transaction(&swap_tx);
+        store.add_transaction(&swap_tx, 2, false, 110);
+
+        // Pool ID still in index (spend removed, add re-inserted)
+        assert!(store.has_unique_id(UID_PREFIX_POOL, &pool_id));
+    }
 }

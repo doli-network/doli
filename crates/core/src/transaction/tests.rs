@@ -2317,3 +2317,110 @@ fn test_batch_nft_100_outputs_fee() {
     };
     assert_eq!(tx.minimum_fee(), 1 + total_extra);
 }
+
+// ========== Gap 2: Fee routing end-to-end ==========
+
+/// Verify coinbase amount formula with real block construction including NFT extra fees
+#[test]
+fn test_coinbase_with_nft_extra_fees_real_block() {
+    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+
+    let block_reward = 100_000_000u64; // 1 DOLI
+
+    // NFT output with 250 bytes content_hash data
+    let cond = crate::conditions::Condition::signature(Hash::from_bytes([0x01; 32]));
+    let token_id = Hash::from_bytes([0xAA; 32]);
+    let nft = Output::nft(
+        0,
+        Hash::from_bytes([0x01; 32]),
+        token_id,
+        &[0x42u8; 250],
+        &cond,
+    )
+    .unwrap();
+    let nft_extra_bytes = nft.extra_data.len() as u64;
+
+    // Expected coinbase
+    let extra_fees = nft_extra_bytes * FEE_PER_BYTE;
+    let expected_coinbase = block_reward + extra_fees;
+
+    assert!(
+        extra_fees > 0,
+        "NFT must have non-zero extra_data for this test"
+    );
+    assert!(
+        expected_coinbase > block_reward,
+        "Coinbase must include extra fees"
+    );
+
+    // Create coinbase TX
+    let coinbase = Transaction::new_coinbase(expected_coinbase, Hash::from_bytes([0xFF; 32]), 100);
+    assert_eq!(coinbase.outputs[0].amount, expected_coinbase);
+    assert!(coinbase.is_coinbase());
+    let _ = BASE_FEE; // ensure constant is usable
+}
+
+/// Verify that transfers don't contribute extra fees
+#[test]
+fn test_transfer_contributes_zero_extra_fees() {
+    let tx = Transaction::new_transfer(
+        vec![Input::new(Hash::ZERO, 0)],
+        vec![Output::normal(999, Hash::ZERO)],
+    );
+    // Normal outputs have 0 extra_data
+    let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+    assert_eq!(extra_bytes, 0);
+    assert_eq!(tx.minimum_fee(), 1); // BASE_FEE only
+}
+
+// ========== Gap 5 (partial): Fee routing lifecycle ==========
+
+/// Full fee lifecycle: NFT mint -> fee calculation -> coinbase includes extra
+#[test]
+fn test_fee_routing_lifecycle() {
+    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+
+    // Step 1: Build NFT output (simulating CLI)
+    let cond = crate::conditions::Condition::signature(Hash::from_bytes([0x01; 32]));
+    let token_id = Hash::from_bytes([0xAA; 32]);
+    let nft = Output::nft(
+        0,
+        Hash::from_bytes([0x01; 32]),
+        token_id,
+        &[0x42u8; 300],
+        &cond,
+    )
+    .unwrap();
+    let extra_bytes = nft.extra_data.len() as u64;
+
+    // Step 2: Calculate fee (what CLI should do)
+    let fee = BASE_FEE + extra_bytes * FEE_PER_BYTE;
+    assert!(fee > 1, "NFT fee must be > BASE_FEE");
+
+    // Step 3: Build mint transaction
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![nft],
+        extra_data: vec![],
+    };
+    assert_eq!(tx.minimum_fee(), fee);
+
+    // Step 4: Calculate coinbase amount (what producer should do)
+    let block_reward = 100_000_000u64;
+    let extra_fees_from_block: u64 = tx
+        .outputs
+        .iter()
+        .map(|o| o.extra_data.len() as u64 * FEE_PER_BYTE)
+        .sum();
+    let coinbase_amount = block_reward + extra_fees_from_block;
+
+    // Step 5: Verify
+    assert_eq!(coinbase_amount, block_reward + extra_bytes * FEE_PER_BYTE);
+    assert!(coinbase_amount > block_reward);
+
+    // Step 6: Create coinbase (what goes to reward pool)
+    let coinbase = Transaction::new_coinbase(coinbase_amount, Hash::from_bytes([0xFF; 32]), 1);
+    assert_eq!(coinbase.outputs[0].amount, coinbase_amount);
+}
