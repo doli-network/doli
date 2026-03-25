@@ -180,6 +180,26 @@ impl OutputType {
                 | Self::BridgeHTLC
         )
     }
+
+    /// Returns true if `amount` on this output type is denominated in native DOLI.
+    ///
+    /// Non-native types store token units, LP shares, or zero (Pool) in the
+    /// `amount` field.  Summing those as DOLI would corrupt supply calculations,
+    /// balance queries, and fee accounting.
+    pub fn is_native_amount(&self) -> bool {
+        matches!(
+            self,
+            Self::Normal
+                | Self::Bond
+                | Self::Multisig
+                | Self::Hashlock
+                | Self::HTLC
+                | Self::Vesting
+                | Self::BridgeHTLC
+                | Self::NFT
+                | Self::LendingDeposit
+        )
+    }
 }
 
 /// Sighash type controlling what parts of the transaction an input's signature covers.

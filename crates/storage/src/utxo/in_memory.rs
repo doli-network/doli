@@ -89,7 +89,11 @@ impl InMemoryUtxoStore {
         for input in &tx.inputs {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
             match self.utxos.remove(&outpoint) {
-                Some(entry) => total_input += entry.output.amount,
+                Some(entry) => {
+                    if entry.output.output_type.is_native_amount() {
+                        total_input += entry.output.amount;
+                    }
+                }
                 None => {
                     return Err(StorageError::NotFound(format!(
                         "UTXO not found: {}:{}",
@@ -103,7 +107,11 @@ impl InMemoryUtxoStore {
     }
 
     pub fn total_value(&self) -> Amount {
-        self.utxos.values().map(|e| e.output.amount).sum()
+        self.utxos
+            .values()
+            .filter(|e| e.output.output_type.is_native_amount())
+            .map(|e| e.output.amount)
+            .sum()
     }
 
     pub fn len(&self) -> usize {
@@ -135,7 +143,10 @@ impl InMemoryUtxoStore {
     ) -> Amount {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
-            .filter(|(_, entry)| entry.is_spendable_at_with_maturity(height, maturity))
+            .filter(|(_, entry)| {
+                entry.output.output_type.is_native_amount()
+                    && entry.is_spendable_at_with_maturity(height, maturity)
+            })
             .map(|(_, entry)| entry.output.amount)
             .sum()
     }
@@ -154,7 +165,8 @@ impl InMemoryUtxoStore {
         self.get_by_pubkey_hash(pubkey_hash)
             .iter()
             .filter(|(_, entry)| {
-                (entry.is_coinbase || entry.is_epoch_reward)
+                entry.output.output_type.is_native_amount()
+                    && (entry.is_coinbase || entry.is_epoch_reward)
                     && !entry.is_spendable_at_with_maturity(height, maturity)
             })
             .map(|(_, entry)| entry.output.amount)

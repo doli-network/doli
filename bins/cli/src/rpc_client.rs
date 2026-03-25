@@ -77,6 +77,19 @@ pub struct Utxo {
     /// Whether this UTXO is from a pending mempool transaction
     #[serde(default)]
     pub pending: bool,
+    /// FungibleAsset metadata (assetId, totalSupply, ticker) — only for fungibleAsset outputs
+    #[serde(default)]
+    pub asset: Option<serde_json::Value>,
+}
+
+impl Utxo {
+    /// Get the asset ID for a FungibleAsset UTXO, or None.
+    pub fn asset_id(&self) -> Option<&str> {
+        self.asset
+            .as_ref()
+            .and_then(|a| a.get("assetId"))
+            .and_then(|v| v.as_str())
+    }
 }
 
 /// Chain information

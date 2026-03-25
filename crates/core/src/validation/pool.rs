@@ -88,11 +88,13 @@ pub(crate) fn validate_create_pool(tx: &Transaction) -> Result<(), ValidationErr
         ));
     }
 
-    // Remaining outputs (if any) must be Normal (change)
+    // Remaining outputs (if any) must be Normal (DOLI change) or FungibleAsset (token change)
     for (i, output) in tx.outputs.iter().enumerate().skip(2) {
-        if output.output_type != OutputType::Normal {
+        if output.output_type != OutputType::Normal
+            && output.output_type != OutputType::FungibleAsset
+        {
             return Err(ValidationError::InvalidPool(format!(
-                "output {} must be Normal type (change), got {:?}",
+                "output {} must be Normal or FungibleAsset type (change), got {:?}",
                 i, output.output_type
             )));
         }

@@ -604,9 +604,9 @@ impl Transaction {
 
     /// Decode covenant witness data from extra_data.
     /// Returns a witness bytes slice for each input, or None if extra_data
-    /// doesn't contain witness data (normal transfers, coinbase, etc.).
+    /// doesn't contain witness data.
     pub fn get_covenant_witness(&self, input_index: usize) -> Option<&[u8]> {
-        if self.extra_data.is_empty() || self.tx_type != TxType::Transfer {
+        if self.extra_data.is_empty() {
             return None;
         }
         let mut pos = 0;
@@ -631,9 +631,16 @@ impl Transaction {
         None // unreachable in practice
     }
 
-    /// Calculate total input amount (requires UTXO lookup - returns 0 here)
+    /// Sum of native DOLI across all outputs.
+    ///
+    /// Non-native output types (FungibleAsset, LPShare, Pool, Collateral)
+    /// store token units / LP shares / zero in `amount` and are excluded.
     pub fn total_output(&self) -> Amount {
-        self.outputs.iter().map(|o| o.amount).sum()
+        self.outputs
+            .iter()
+            .filter(|o| o.output_type.is_native_amount())
+            .map(|o| o.amount)
+            .sum()
     }
 
     /// Serialize the transaction

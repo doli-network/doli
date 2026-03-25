@@ -7,6 +7,31 @@ use crate::commands::PoolCommands;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
 
+/// Select FungibleAsset UTXOs matching a specific asset ID.
+/// Returns selected UTXOs and their total amount.
+fn select_token_utxos(
+    all_utxos: &[crate::rpc_client::Utxo],
+    asset_id_hex: &str,
+    required: u64,
+) -> (Vec<crate::rpc_client::Utxo>, u64) {
+    let mut selected = Vec::new();
+    let mut total = 0u64;
+    for utxo in all_utxos {
+        if total >= required {
+            break;
+        }
+        if utxo.output_type == "fungibleAsset" {
+            if let Some(id) = utxo.asset_id() {
+                if id == asset_id_hex {
+                    selected.push(utxo.clone());
+                    total += utxo.amount;
+                }
+            }
+        }
+    }
+    (selected, total)
+}
+
 /// Create a FungibleAsset output for token change in pool operations.
 /// Uses a signature condition owned by the recipient.
 fn token_change_output(amount: u64, owner: Hash, asset_id: Hash) -> Result<doli_core::Output> {
@@ -274,19 +299,9 @@ async fn cmd_pool_create(
         );
     }
 
-    // TODO: Also need to consume FungibleAsset UTXOs for token_units.
-    // For now, we assume the token side is funded via a FungibleAsset UTXO.
-    // Find FungibleAsset UTXOs matching asset_b_id.
+    // Select FungibleAsset UTXOs matching the specific asset_b_id
     let all_utxos = rpc.get_utxos(&from_pubkey_hash, false).await?;
-    let mut token_selected = Vec::new();
-    let mut token_total = 0u64;
-    for utxo in &all_utxos {
-        if utxo.output_type == "fungibleAsset" && token_total < token_units {
-            // We need to verify the asset ID matches — check via tx lookup
-            token_selected.push(utxo.clone());
-            token_total += utxo.amount;
-        }
-    }
+    let (token_selected, token_total) = select_token_utxos(&all_utxos, asset_hex, token_units);
     if token_total < token_units {
         anyhow::bail!(
             "Insufficient token balance for asset {}. Available: {}, Required: {}",
@@ -350,10 +365,23 @@ async fn cmd_pool_create(
     };
 
     let keypair = wallet.primary_keypair()?;
+
+    // Sign all inputs + set covenant witnesses for conditioned inputs (FungibleAsset)
+    let num_doli_inputs = selected.len();
+    let mut witnesses: Vec<Vec<u8>> = Vec::new();
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        // FungibleAsset inputs (after DOLI inputs) need covenant witnesses
+        if i >= num_doli_inputs {
+            let witness_str = format!("sign({})", wallet_path.display());
+            let witness_bytes = crate::parsers::parse_witness(&witness_str, &signing_hash)?;
+            witnesses.push(witness_bytes);
+        } else {
+            witnesses.push(Vec::new()); // empty witness for Normal DOLI inputs
+        }
     }
+    tx.set_covenant_witnesses(&witnesses);
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
@@ -616,20 +644,19 @@ async fn cmd_pool_swap(
 
         broadcast_swap_tx(&rpc, &tx, amount_in, amount_out, direction, fee_bps, yes).await?;
     } else {
-        // Swapping tokens in: need FungibleAsset UTXOs
+        // Swapping tokens in: need FungibleAsset UTXOs matching asset_b_id
         let all_utxos = rpc.get_utxos(&from_pubkey_hash, false).await?;
-        let mut token_total = 0u64;
-        for utxo in &all_utxos {
-            if utxo.output_type == "fungibleAsset" && token_total < amount_in {
-                let prev_hash = Hash::from_hex(&utxo.tx_hash)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid token UTXO tx_hash"))?;
-                inputs.push(Input::new(prev_hash, utxo.output_index));
-                token_total += utxo.amount;
-            }
+        let (token_utxos, token_total) = select_token_utxos(&all_utxos, asset_b_hex, amount_in);
+        let num_token_inputs = token_utxos.len();
+        for utxo in &token_utxos {
+            let prev_hash = Hash::from_hex(&utxo.tx_hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid token UTXO tx_hash"))?;
+            inputs.push(Input::new(prev_hash, utxo.output_index));
         }
         if token_total < amount_in {
             anyhow::bail!(
-                "Insufficient tokens. Available: {}, Required: {}",
+                "Insufficient tokens for asset {}. Available: {}, Required: {}",
+                &asset_b_hex[..16.min(asset_b_hex.len())],
                 token_total,
                 amount_in
             );
@@ -689,10 +716,23 @@ async fn cmd_pool_swap(
         };
 
         let keypair = wallet.primary_keypair()?;
+        // inputs layout: [pool, token_0..token_N, doli_fee_0..doli_fee_M]
+        // Token (FungibleAsset) inputs need covenant witnesses; pool and DOLI inputs don't.
+        let token_start = 1usize; // pool is index 0
+        let token_end = token_start + num_token_inputs;
+        let mut witnesses: Vec<Vec<u8>> = Vec::new();
         for i in 0..tx.inputs.len() {
             let signing_hash = tx.signing_message_for_input(i);
             tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+            if i >= token_start && i < token_end {
+                let witness_str = format!("sign({})", wallet_path.display());
+                let witness_bytes = crate::parsers::parse_witness(&witness_str, &signing_hash)?;
+                witnesses.push(witness_bytes);
+            } else {
+                witnesses.push(Vec::new());
+            }
         }
+        tx.set_covenant_witnesses(&witnesses);
 
         broadcast_swap_tx(&rpc, &tx, amount_in, amount_out, direction, fee_bps, yes).await?;
     }
@@ -900,20 +940,21 @@ async fn cmd_pool_add(
         );
     }
 
-    // Fund tokens
+    // Track where non-conditioned inputs end (pool + DOLI inputs)
+    let num_non_token_inputs = inputs.len();
+
+    // Fund tokens — filter by asset_id
     let all_utxos = rpc.get_utxos(&from_pubkey_hash, false).await?;
-    let mut token_total = 0u64;
-    for utxo in &all_utxos {
-        if utxo.output_type == "fungibleAsset" && token_total < token_units {
-            let prev_hash = Hash::from_hex(&utxo.tx_hash)
-                .ok_or_else(|| anyhow::anyhow!("Invalid token UTXO tx_hash"))?;
-            inputs.push(Input::new(prev_hash, utxo.output_index));
-            token_total += utxo.amount;
-        }
+    let (token_utxos, token_total) = select_token_utxos(&all_utxos, asset_b_hex, token_units);
+    for utxo in &token_utxos {
+        let prev_hash = Hash::from_hex(&utxo.tx_hash)
+            .ok_or_else(|| anyhow::anyhow!("Invalid token UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_hash, utxo.output_index));
     }
     if token_total < token_units {
         anyhow::bail!(
-            "Insufficient tokens. Available: {}, Required: {}",
+            "Insufficient tokens for asset {}. Available: {}, Required: {}",
+            &asset_b_hex[..16.min(asset_b_hex.len())],
             token_total,
             token_units
         );
@@ -956,10 +997,21 @@ async fn cmd_pool_add(
     };
 
     let keypair = wallet.primary_keypair()?;
+    // inputs layout: [pool, doli_0..doli_N, token_0..token_M]
+    // Token (FungibleAsset) inputs need covenant witnesses; pool and DOLI inputs don't.
+    let mut witnesses: Vec<Vec<u8>> = Vec::new();
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        if i >= num_non_token_inputs {
+            let witness_str = format!("sign({})", wallet_path.display());
+            let witness_bytes = crate::parsers::parse_witness(&witness_str, &signing_hash)?;
+            witnesses.push(witness_bytes);
+        } else {
+            witnesses.push(Vec::new());
+        }
     }
+    tx.set_covenant_witnesses(&witnesses);
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
