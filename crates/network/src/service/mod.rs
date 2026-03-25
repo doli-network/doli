@@ -120,19 +120,25 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, max_peers + headroom total).
+        // Build connection limits (2 connections per peer, proportional headroom).
         // Allow 2 per-peer to survive the simultaneous-dial race condition
         // (rust-libp2p#752): when both sides dial each other at the same time,
         // both connections complete the handshake. With limit=1 the second is
         // denied → rapid connect/disconnect loop on co-located nodes.
         // Also required for DCUtR hole-punching (relay + direct coexist briefly).
         //
-        // INC-I-011: Tightened from max_peers*2 to max_peers+10. The old 2x
-        // multiplier allowed 100 connections with max_peers=50, meaning libp2p
-        // accepted connections far beyond what the peer table could track.
-        // Combined with eviction thrashing (evict→reconnect loops when
-        // network_nodes > max_peers), this caused unbounded RAM growth.
-        let conn_headroom = (config.max_peers + 10) as u32;
+        // INC-I-012: Restored proportional headroom from max_peers+10 to
+        // max_peers*2+20. The INC-I-011 tightening was correct to reduce
+        // max_peers from 200→50, but over-tightened conn_headroom: with
+        // max_established_per_peer=2, peers average ~1.5 connections each,
+        // so max_peers+10 saturates before the peer table is full. This caused
+        // libp2p to reject connections at protocol level BEFORE the peer table
+        // eviction logic could run, permanently stranding late-joining nodes
+        // (15/56 nodes stuck at genesis in 50-node stress test).
+        // At max_peers=50: headroom=120, Yamux memory ~240MB — safe.
+        // The original INC-I-011 RAM explosion was from max_peers=200 (400+
+        // connections), not from the 2x ratio itself.
+        let conn_headroom = (config.max_peers * 2 + 20) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(conn_headroom))
