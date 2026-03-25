@@ -514,6 +514,18 @@ pub(crate) struct ForkState {
     /// Stuck fork signal: set by cleanup() and block_apply_failed() when fork
     /// evidence is detected. Consumed by take_stuck_fork_signal() in resolve_shallow_fork().
     pub stuck_fork_signal: bool,
+    /// INC-I-012 F1: Use height-based header request for the next sync cycle.
+    /// Set after snap sync when local_hash is unrecognizable by peers. The next
+    /// GetHeaders request uses GetHeadersByHeight(local_height) instead, which
+    /// bypasses the hash lookup that causes the post-snap deadlock. Cleared
+    /// after the first successful height-based response.
+    pub use_height_based_headers: bool,
+    /// INC-I-012 F1: Guard against re-entering height-based fallback.
+    /// Set to true after the first height-based request is sent. If that
+    /// request also returns empty, the post-snap fallback path skips the
+    /// height-based retry and falls through to normal fork detection.
+    /// Prevents a 60-second retry loop when the peer has no headers to serve.
+    pub height_fallback_attempted: bool,
 }
 
 impl ForkState {
@@ -530,6 +542,8 @@ impl ForkState {
             stable_gap_since: None,
             peak_height: 0,
             stuck_fork_signal: false,
+            use_height_based_headers: false,
+            height_fallback_attempted: false,
         }
     }
 

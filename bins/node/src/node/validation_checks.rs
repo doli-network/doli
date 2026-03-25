@@ -587,6 +587,47 @@ impl Node {
                 _ => SyncResponse::Block(None),
             },
 
+            // INC-I-012 F1: Height-based header request. Used after snap sync
+            // when the node's local_hash is unrecognizable by peers. The server
+            // uses its OWN canonical chain at start_height, bypassing the hash
+            // lookup that causes the deadlock.
+            SyncRequest::GetHeadersByHeight {
+                start_height,
+                max_count,
+            } => {
+                let mut headers = Vec::new();
+                let state = self.chain_state.read().await;
+                let best_height = state.best_height;
+                drop(state);
+
+                let serve_height = if self.config.seed_mode {
+                    best_height.saturating_sub(consensus::SEED_CONFIRMATION_DEPTH)
+                } else {
+                    best_height
+                };
+                let max_count = max_count.min(2000); // Cap to prevent expensive iteration
+                let end_height = start_height.saturating_add(max_count as u64).min(serve_height);
+                for height in (start_height + 1)..=end_height {
+                    if let Ok(Some(hash)) = self.block_store.get_hash_by_height(height) {
+                        if let Ok(Some(header)) = self.block_store.get_header(&hash) {
+                            headers.push(header);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                debug!(
+                    "GetHeadersByHeight: returning {} headers (heights {}..={})",
+                    headers.len(),
+                    start_height + 1,
+                    end_height
+                );
+                SyncResponse::Headers(headers)
+            }
+
             SyncRequest::GetStateRoot { block_hash: _ } => {
                 // Use cached state root to avoid race conditions.
                 // The cache is updated atomically after each apply_block, so all

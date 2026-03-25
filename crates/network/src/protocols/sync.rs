@@ -57,6 +57,20 @@ pub enum SyncRequest {
         /// Block hash to compute state root for
         block_hash: Hash,
     },
+
+    /// Request headers starting from a height (INC-I-012 F1).
+    ///
+    /// Used after snap sync when the node's local_hash is from a forked peer
+    /// and no canonical peer recognizes it. Height-based lookup bypasses the
+    /// hash lookup entirely — the server uses its OWN canonical hash at that
+    /// height. The first header returned provides the client with a canonical
+    /// hash to anchor subsequent GetHeaders requests.
+    GetHeadersByHeight {
+        /// Start from this height (returns headers from height+1 onward)
+        start_height: u64,
+        /// Maximum number of headers to return
+        max_count: u32,
+    },
 }
 
 /// Sync response types
@@ -127,6 +141,13 @@ impl SyncRequest {
 
     pub fn get_state_root(block_hash: Hash) -> Self {
         Self::GetStateRoot { block_hash }
+    }
+
+    pub fn get_headers_by_height(start_height: u64, max_count: u32) -> Self {
+        Self::GetHeadersByHeight {
+            start_height,
+            max_count,
+        }
     }
 }
 

@@ -331,6 +331,27 @@ impl SyncManager {
                     self.set_state(SyncState::Idle, "genesis_resync_fallback");
                     return None;
                 }
+                // INC-I-012 F1: After snap sync to a forked hash, use height-based
+                // request to bypass the unrecognizable hash. The server looks up its
+                // canonical chain at local_height and serves headers from there.
+                if self.fork.use_height_based_headers {
+                    let request = SyncRequest::get_headers_by_height(
+                        self.local_height,
+                        self.config.max_headers_per_request,
+                    );
+                    info!(
+                        "[SYNC] Using GetHeadersByHeight(height={}) — post-snap hash fallback",
+                        self.local_height
+                    );
+                    // Clear the flag — one height-based request is enough to get
+                    // canonical headers. Subsequent requests use normal hash-based.
+                    self.fork.use_height_based_headers = false;
+                    let id = self.register_request(peer, request.clone());
+                    if let Some(status) = self.peers.get_mut(&peer) {
+                        status.pending_request = Some(id);
+                    }
+                    return Some((peer, request));
+                }
                 let start_hash = self.local_hash;
                 let request = self.pipeline.header_downloader.create_request(start_hash);
 
@@ -582,7 +603,26 @@ impl SyncManager {
             }
             SyncResponse::Error(err) => {
                 warn!("[SYNC_DEBUG] Sync error from peer {}: {}", peer, err);
-                self.handle_snap_download_error(peer);
+                // INC-I-012 F2: Phase-aware error routing.
+                // Previously ALL errors routed to snap download error handler,
+                // which silently swallowed "busy" errors during header-first sync.
+                if matches!(self.pipeline_data, SyncPipelineData::SnapDownloading { .. }) {
+                    self.handle_snap_download_error(peer);
+                } else if err.contains("busy") {
+                    // Peer is rate-limited — temporarily blacklist and retry
+                    // immediately with a different peer instead of waiting 30s
+                    // for the next cleanup tick.
+                    self.fork
+                        .header_blacklisted_peers
+                        .insert(peer, Instant::now());
+                    self.set_state(SyncState::Idle, "peer_busy_retry");
+                    if self.should_sync() {
+                        self.start_sync();
+                    }
+                } else {
+                    // Unknown error — go idle, let cleanup retry
+                    self.set_state(SyncState::Idle, "sync_error");
+                }
                 vec![]
             }
             SyncResponse::StateSnapshot {
@@ -642,26 +682,35 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                // INC-I-005 Fix B: Post-snap-sync empty headers intercept.
-                // If we just finished snap sync (AwaitingCanonicalBlock) and get empty
-                // headers, it means the snap source gave us a hash no peer recognizes.
-                // The responding peer is CANONICAL — don't blacklist it. Instead, retry
-                // snap sync from a different peer to get a recognized hash.
+                // INC-I-012 F1: Post-snap empty headers — use height-based request.
+                // After snap sync, local_hash may be from a forked peer that no
+                // canonical peer recognizes. Instead of retrying snap sync (which
+                // may snap to the same fork), switch to GetHeadersByHeight which
+                // bypasses the hash lookup entirely. The peer serves canonical
+                // headers from local_height+1, giving us a valid chain anchor.
+                //
+                // Guard: only attempt height-based fallback ONCE. If the height-
+                // based request also returned empty (peer at same height or below),
+                // fall through to normal fork detection to avoid a 60s retry loop.
                 if matches!(
                     self.recovery_phase,
                     super::RecoveryPhase::AwaitingCanonicalBlock { .. }
                 ) && self.snap.threshold < u64::MAX
+                    && !self.fork.height_fallback_attempted
                 {
                     warn!(
                         "Post-snap empty headers from {} (gap={}) — snap hash not recognized. \
-                         Retrying snap sync from different peer (INC-I-005 Fix B).",
+                         Switching to height-based headers (INC-I-012 F1).",
                         peer, gap
                     );
                     // Don't blacklist — the peer is correct, our hash is wrong
                     // Don't increment consecutive_empty_headers — not fork evidence
-                    self.snap.attempts = 0; // Fresh snap sync attempts
-                    self.request_genesis_resync(super::RecoveryReason::BodyDownloadPeerError);
-                    self.set_state(SyncState::Idle, "post_snap_hash_mismatch");
+                    self.fork.use_height_based_headers = true;
+                    self.fork.height_fallback_attempted = true;
+                    self.set_state(SyncState::Idle, "post_snap_height_fallback");
+                    if self.should_sync() {
+                        self.start_sync();
+                    }
                     return;
                 }
 
@@ -746,6 +795,7 @@ impl SyncManager {
             // Successfully received valid headers — reset fork counters
             self.fork.consecutive_empty_headers = 0;
             self.fork.consecutive_sync_failures = 0;
+            self.fork.height_fallback_attempted = false;
             self.network.last_sync_activity = Instant::now();
 
             // Queue header hashes for body download

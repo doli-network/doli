@@ -130,15 +130,18 @@ impl NetworkService {
         // INC-I-011: Tightened from max_peers*2 to max_peers+10. The old 2x
         // multiplier allowed too many connections, causing Yamux buffer explosion
         // and RAM growth when network_nodes > max_peers.
-        // INC-I-012: Proportional headroom — scales with network size without
-        // the extremes of +10 (too tight for bootstrap) or *2+20 (RAM explosion).
-        // At max_peers=50: headroom=95 (50*1.5+20). Enough for bootstrap without
-        // the Yamux buffer explosion seen at headroom=120.
-        let conn_headroom = ((config.max_peers as f64 * 1.5) as usize + 20) as u32;
+        // INC-I-012 F3: Tighten incoming to max_peers+10 to close the eviction
+        // churn gap. Previous formula (max_peers*1.5+20=95) left a 45-connection
+        // gap above the eviction threshold (50), causing steady accept-evict-
+        // disconnect cycles at scale. Outgoing stays proportional (nodes need
+        // to reach out during bootstrap) but incoming is tighter since we
+        // control eviction on our side.
+        let incoming_limit = (config.max_peers + 10) as u32;
+        let outgoing_limit = ((config.max_peers as f64 * 1.5) as usize + 20) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
-            .with_max_established_incoming(Some(conn_headroom))
-            .with_max_established_outgoing(Some(conn_headroom));
+            .with_max_established_incoming(Some(incoming_limit))
+            .with_max_established_outgoing(Some(outgoing_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits

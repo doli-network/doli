@@ -1328,10 +1328,10 @@ fn test_awaiting_canonical_block_no_premature_timeout() {
 /// and gets empty headers, the problem is the snap source (gave a hash
 /// no peer recognizes), not the header peer.
 #[test]
-fn test_post_snap_empty_headers_triggers_snap_retry() {
+fn test_post_snap_empty_headers_triggers_height_fallback() {
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
-    // Node just completed snap sync (30s ago)
+    // Node just completed snap sync (5s ago)
     manager.recovery_phase = RecoveryPhase::AwaitingCanonicalBlock {
         started: Instant::now() - Duration::from_secs(5),
     };
@@ -1357,16 +1357,22 @@ fn test_post_snap_empty_headers_triggers_snap_retry() {
     let response = SyncResponse::Headers(vec![]);
     manager.handle_response(peer, response);
 
-    // Fix B: peer should NOT be blacklisted (it's canonical, our hash is wrong)
+    // INC-I-012 F1: peer should NOT be blacklisted (it's canonical, our hash is wrong)
     assert!(
         !manager.fork.header_blacklisted_peers.contains_key(&peer),
-        "Fix B: Post-snap empty headers must NOT blacklist responding peer"
+        "F1: Post-snap empty headers must NOT blacklist responding peer"
     );
 
-    // Fix B: needs_genesis_resync should be set (to retry snap sync)
+    // INC-I-012 F1: should NOT trigger genesis resync — use height-based headers instead
     assert!(
-        manager.fork.needs_genesis_resync,
-        "Fix B: Post-snap empty headers must trigger snap sync retry, not fork detection"
+        !manager.fork.needs_genesis_resync,
+        "F1: Post-snap empty headers must NOT trigger genesis resync"
+    );
+
+    // INC-I-012 F1: consecutive_empty_headers should NOT be incremented (not fork evidence)
+    assert_eq!(
+        manager.fork.consecutive_empty_headers, 0,
+        "F1: Post-snap empty headers should not count as fork evidence"
     );
 }
 

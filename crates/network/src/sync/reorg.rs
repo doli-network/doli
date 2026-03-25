@@ -181,17 +181,6 @@ impl ReorgHandler {
         weight_a.cmp(&weight_b)
     }
 
-    /// Check if we should reorg to a new chain based on weight
-    ///
-    /// Returns true if the new chain is heavier than our current chain.
-    /// This implements the "heaviest chain wins" fork choice rule.
-    /// When weights are equal, uses lower block hash as tie-breaker
-    /// so all nodes deterministically converge to the same chain.
-    pub fn should_reorg_by_weight(&self, new_tip: &Hash) -> bool {
-        let new_weight = self.chain_weight(new_tip);
-        new_weight > self.current_chain_weight
-    }
-
     /// Check if we should reorg to a new chain based on weight,
     /// with deterministic tie-breaking by block hash.
     ///
