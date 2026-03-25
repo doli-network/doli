@@ -169,6 +169,8 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::CreateLoan => "create_loan",
             doli_core::TxType::RepayLoan => "repay_loan",
             doli_core::TxType::LiquidateLoan => "liquidate_loan",
+            doli_core::TxType::LendingDeposit => "lending_deposit",
+            doli_core::TxType::LendingWithdraw => "lending_withdraw",
         };
 
         // Decode covenant witnesses from tx.extra_data (if present)
@@ -304,6 +306,7 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::Pool => "pool",
             doli_core::OutputType::LPShare => "lpShare",
             doli_core::OutputType::Collateral => "collateral",
+            doli_core::OutputType::LendingDeposit => "lendingDeposit",
         };
 
         // Decode covenant condition for conditioned outputs

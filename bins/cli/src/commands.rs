@@ -474,6 +474,12 @@ pub(crate) enum Commands {
         command: PoolCommands,
     },
 
+    /// Lending operations (deposit, withdraw, borrow, repay, liquidate)
+    Loan {
+        #[command(subcommand)]
+        command: LoanCommands,
+    },
+
     /// Payment channel operations (open, pay, close, list, info)
     Channel {
         #[command(subcommand)]
@@ -617,6 +623,75 @@ pub(crate) enum PoolCommands {
     Info {
         /// Pool ID (hex)
         pool_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum LoanCommands {
+    /// Deposit DOLI into lending pool to earn interest
+    Deposit {
+        /// Pool ID (hex)
+        #[arg(long)]
+        pool: String,
+        /// Amount of DOLI to deposit
+        #[arg(long)]
+        amount: String,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Withdraw DOLI + earned interest from lending pool
+    Withdraw {
+        /// LendingDeposit UTXO: txhash:output_index
+        deposit_utxo: String,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Create a collateralized loan (borrow DOLI against tokens)
+    Create {
+        /// Pool ID (hex)
+        #[arg(long)]
+        pool: String,
+        /// Collateral amount (token units)
+        #[arg(long)]
+        collateral: String,
+        /// Amount of DOLI to borrow
+        #[arg(long)]
+        borrow: String,
+        /// Interest rate in basis points (default: 500 = 5%)
+        #[arg(long, default_value = "500")]
+        interest_rate: u16,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Repay loan and recover collateral
+    Repay {
+        /// Collateral UTXO: txhash:output_index
+        loan_utxo: String,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Liquidate undercollateralized loan
+    Liquidate {
+        /// Collateral UTXO: txhash:output_index
+        loan_utxo: String,
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List active loans
+    List {
+        /// Filter by borrower address (hex)
+        #[arg(long)]
+        borrower: Option<String>,
+    },
+    /// Show loan details
+    Info {
+        /// Collateral UTXO: txhash:output_index
+        loan_utxo: String,
     },
 }
 

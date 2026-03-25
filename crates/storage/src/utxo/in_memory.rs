@@ -209,6 +209,15 @@ impl InMemoryUtxoStore {
             .collect()
     }
 
+    /// Get all Collateral UTXOs.
+    pub fn get_all_collateral(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        self.utxos
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Collateral)
+            .map(|(op, entry)| (*op, entry.clone()))
+            .collect()
+    }
+
     pub fn insert(&mut self, outpoint: Outpoint, entry: UtxoEntry) {
         self.utxos.insert(outpoint, entry);
     }

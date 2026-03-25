@@ -140,6 +140,8 @@ impl RpcContext {
                     doli_core::TxType::CreateLoan => "create_loan",
                     doli_core::TxType::RepayLoan => "repay_loan",
                     doli_core::TxType::LiquidateLoan => "liquidate_loan",
+                    doli_core::TxType::LendingDeposit => "lending_deposit",
+                    doli_core::TxType::LendingWithdraw => "lending_withdraw",
                 };
 
                 history.push(HistoryEntryResponse {

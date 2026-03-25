@@ -23,6 +23,7 @@
 
 mod block;
 mod error;
+pub(crate) mod lending;
 pub(crate) mod pool;
 mod producer;
 mod registration;

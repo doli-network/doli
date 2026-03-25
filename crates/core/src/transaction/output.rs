@@ -64,6 +64,33 @@ pub const LP_SHARE_VERSION: u8 = 1;
 /// LPShare extra_data: 1B version + 32B pool_id
 pub const LP_SHARE_METADATA_SIZE: usize = 33;
 
+/// Collateral metadata version
+pub const COLLATERAL_VERSION: u8 = 1;
+/// Collateral extra_data: 1B version + 32B pool_id + 32B borrower_hash + 8B principal +
+/// 2B interest_rate_bps + 4B creation_slot + 2B liquidation_ratio_bps + 32B collateral_asset_id
+pub const COLLATERAL_METADATA_SIZE: usize = 113;
+/// Default liquidation ratio: 150% = 15000 basis points
+pub const COLLATERAL_DEFAULT_LIQUIDATION_BPS: u16 = 15000;
+/// Minimum liquidation ratio: 120% = 12000 basis points
+pub const COLLATERAL_MIN_LIQUIDATION_BPS: u16 = 12000;
+/// Default interest rate: 5% annual = 500 basis points
+pub const COLLATERAL_DEFAULT_INTEREST_BPS: u16 = 500;
+/// Maximum interest rate: 50% annual = 5000 basis points
+pub const COLLATERAL_MAX_INTEREST_BPS: u16 = 5000;
+/// Maximum LTV at creation: 66.67% = 6667 basis points
+pub const COLLATERAL_MAX_LTV_BPS: u16 = 6667;
+/// Liquidation threshold: 83.33% = 8333 basis points (reciprocal of 120%)
+pub const COLLATERAL_LIQUIDATION_LTV_BPS: u16 = 8333;
+/// Lending domain for deterministic loan ID
+pub const LOAN_ID_DOMAIN: &[u8] = b"DOLI_LOAN";
+
+/// LendingDeposit metadata version
+pub const LENDING_DEPOSIT_VERSION: u8 = 1;
+/// LendingDeposit extra_data: 1B version + 32B lending_pool_id + 4B deposit_slot
+pub const LENDING_DEPOSIT_METADATA_SIZE: usize = 37;
+/// Lending pool domain for deterministic ID
+pub const LENDING_POOL_ID_DOMAIN: &[u8] = b"DOLI_LENDING_POOL";
+
 /// Decoded pool metadata from extra_data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolMetadata {
@@ -77,6 +104,25 @@ pub struct PoolMetadata {
     pub fee_bps: u16,
     pub creation_slot: u32,
     pub status: u8,
+}
+
+/// Decoded collateral metadata from extra_data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollateralMetadata {
+    pub pool_id: Hash,
+    pub borrower_hash: Hash,
+    pub principal: Amount,
+    pub interest_rate_bps: u16,
+    pub creation_slot: u32,
+    pub liquidation_ratio_bps: u16,
+    pub collateral_asset_id: Hash,
+}
+
+/// Decoded lending deposit metadata from extra_data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LendingDepositMetadata {
+    pub lending_pool_id: Hash,
+    pub deposit_slot: u32,
 }
 
 /// Transaction output
@@ -686,5 +732,137 @@ impl Output {
             buf
         });
         Some(pool_id)
+    }
+
+    /// Create a collateral output (locked loan collateral).
+    /// `collateral_amount` = collateral token amount. `pubkey_hash` = deterministic loan address.
+    #[allow(clippy::too_many_arguments)]
+    pub fn collateral(
+        collateral_amount: Amount,
+        pool_id: Hash,
+        borrower_hash: Hash,
+        principal: Amount,
+        interest_rate_bps: u16,
+        creation_slot: u32,
+        liquidation_ratio_bps: u16,
+        collateral_asset_id: Hash,
+    ) -> Self {
+        let mut extra_data = Vec::with_capacity(COLLATERAL_METADATA_SIZE);
+        extra_data.push(COLLATERAL_VERSION);
+        extra_data.extend_from_slice(pool_id.as_bytes());
+        extra_data.extend_from_slice(borrower_hash.as_bytes());
+        extra_data.extend_from_slice(&principal.to_le_bytes());
+        extra_data.extend_from_slice(&interest_rate_bps.to_le_bytes());
+        extra_data.extend_from_slice(&creation_slot.to_le_bytes());
+        extra_data.extend_from_slice(&liquidation_ratio_bps.to_le_bytes());
+        extra_data.extend_from_slice(collateral_asset_id.as_bytes());
+        // Loan address = hash of pool_id + borrower + creation_slot
+        let loan_addr = {
+            use crypto::hash::hash_with_domain;
+            let mut data = Vec::with_capacity(68);
+            data.extend_from_slice(pool_id.as_bytes());
+            data.extend_from_slice(borrower_hash.as_bytes());
+            data.extend_from_slice(&creation_slot.to_le_bytes());
+            hash_with_domain(LOAN_ID_DOMAIN, &data)
+        };
+        Self {
+            output_type: OutputType::Collateral,
+            amount: collateral_amount,
+            pubkey_hash: loan_addr,
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Extract collateral metadata from extra_data.
+    pub fn collateral_metadata(&self) -> Option<CollateralMetadata> {
+        if self.output_type != OutputType::Collateral
+            || self.extra_data.len() < COLLATERAL_METADATA_SIZE
+        {
+            return None;
+        }
+        let d = &self.extra_data;
+        if d[0] != COLLATERAL_VERSION {
+            return None;
+        }
+        let pool_id = Hash::from_bytes({
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&d[1..33]);
+            b
+        });
+        let borrower_hash = Hash::from_bytes({
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&d[33..65]);
+            b
+        });
+        let principal = u64::from_le_bytes(d[65..73].try_into().ok()?);
+        let interest_rate_bps = u16::from_le_bytes(d[73..75].try_into().ok()?);
+        let creation_slot = u32::from_le_bytes(d[75..79].try_into().ok()?);
+        let liquidation_ratio_bps = u16::from_le_bytes(d[79..81].try_into().ok()?);
+        let collateral_asset_id = Hash::from_bytes({
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&d[81..113]);
+            b
+        });
+        Some(CollateralMetadata {
+            pool_id,
+            borrower_hash,
+            principal,
+            interest_rate_bps,
+            creation_slot,
+            liquidation_ratio_bps,
+            collateral_asset_id,
+        })
+    }
+
+    /// Create a lending deposit output (depositor provides DOLI to lending pool).
+    /// `deposit_amount` = DOLI deposited. `depositor` = depositor's pubkey_hash.
+    pub fn lending_deposit(
+        deposit_amount: Amount,
+        lending_pool_id: Hash,
+        depositor: Hash,
+        deposit_slot: u32,
+    ) -> Self {
+        let mut extra_data = Vec::with_capacity(LENDING_DEPOSIT_METADATA_SIZE);
+        extra_data.push(LENDING_DEPOSIT_VERSION);
+        extra_data.extend_from_slice(lending_pool_id.as_bytes());
+        extra_data.extend_from_slice(&deposit_slot.to_le_bytes());
+        Self {
+            output_type: OutputType::LendingDeposit,
+            amount: deposit_amount,
+            pubkey_hash: depositor,
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Extract lending deposit metadata from extra_data.
+    pub fn lending_deposit_metadata(&self) -> Option<LendingDepositMetadata> {
+        if self.output_type != OutputType::LendingDeposit
+            || self.extra_data.len() < LENDING_DEPOSIT_METADATA_SIZE
+        {
+            return None;
+        }
+        let d = &self.extra_data;
+        if d[0] != LENDING_DEPOSIT_VERSION {
+            return None;
+        }
+        let lending_pool_id = Hash::from_bytes({
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&d[1..33]);
+            b
+        });
+        let deposit_slot = u32::from_le_bytes(d[33..37].try_into().ok()?);
+        Some(LendingDepositMetadata {
+            lending_pool_id,
+            deposit_slot,
+        })
+    }
+
+    /// Compute lending pool ID from the AMM pool ID.
+    /// `lending_pool_id = BLAKE3("DOLI_LENDING_POOL" || amm_pool_id)`
+    pub fn compute_lending_pool_id(amm_pool_id: &Hash) -> Hash {
+        use crypto::hash::hash_with_domain;
+        hash_with_domain(LENDING_POOL_ID_DOMAIN, amm_pool_id.as_bytes())
     }
 }

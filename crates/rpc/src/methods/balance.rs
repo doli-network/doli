@@ -92,6 +92,7 @@ impl RpcContext {
                     doli_core::OutputType::Pool => "pool",
                     doli_core::OutputType::LPShare => "lpShare",
                     doli_core::OutputType::Collateral => "collateral",
+                    doli_core::OutputType::LendingDeposit => "lendingDeposit",
                 };
 
                 let condition = if entry.output.output_type.is_conditioned() {

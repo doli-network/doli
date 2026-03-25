@@ -21,6 +21,7 @@ mod context;
 mod dispatch;
 mod governance;
 mod history;
+mod lending;
 mod network;
 mod pool;
 mod producer;

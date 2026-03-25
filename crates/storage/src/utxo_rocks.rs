@@ -343,6 +343,26 @@ impl RocksDbUtxoStore {
         results
     }
 
+    /// Get all Collateral UTXOs.
+    pub fn get_all_collateral(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut results = Vec::new();
+        for (key, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type == doli_core::OutputType::Collateral {
+                    if let Some(outpoint) = Outpoint::from_bytes(&key) {
+                        results.push((outpoint, entry));
+                    }
+                }
+            }
+        }
+        results
+    }
+
     /// Clear all UTXOs
     pub fn clear(&self) {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();

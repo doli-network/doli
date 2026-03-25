@@ -167,10 +167,20 @@ pub fn validate_transaction(
         TxType::RemoveLiquidity => {
             super::pool::validate_remove_liquidity(tx)?;
         }
-        TxType::CreateLoan | TxType::RepayLoan | TxType::LiquidateLoan => {
-            return Err(ValidationError::InvalidTransaction(
-                "lending transactions not yet supported".to_string(),
-            ));
+        TxType::CreateLoan => {
+            super::lending::validate_create_loan(tx)?;
+        }
+        TxType::RepayLoan => {
+            super::lending::validate_repay_loan(tx)?;
+        }
+        TxType::LiquidateLoan => {
+            super::lending::validate_liquidate_loan(tx)?;
+        }
+        TxType::LendingDeposit => {
+            super::lending::validate_lending_deposit(tx)?;
+        }
+        TxType::LendingWithdraw => {
+            super::lending::validate_lending_withdraw(tx)?;
         }
     }
 
@@ -432,9 +442,36 @@ pub(super) fn validate_outputs(
                 }
             }
             OutputType::Collateral => {
-                return Err(ValidationError::InvalidTransaction(
-                    "Collateral outputs not yet supported".to_string(),
-                ));
+                if output.extra_data.len() < crate::transaction::COLLATERAL_METADATA_SIZE {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "Collateral output {} has invalid extra_data size: {} < {}",
+                        i,
+                        output.extra_data.len(),
+                        crate::transaction::COLLATERAL_METADATA_SIZE
+                    )));
+                }
+                if output.collateral_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "Collateral output {} has invalid or undecodable metadata",
+                        i
+                    )));
+                }
+            }
+            OutputType::LendingDeposit => {
+                if output.extra_data.len() < crate::transaction::LENDING_DEPOSIT_METADATA_SIZE {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "LendingDeposit output {} has invalid extra_data size: {} < {}",
+                        i,
+                        output.extra_data.len(),
+                        crate::transaction::LENDING_DEPOSIT_METADATA_SIZE
+                    )));
+                }
+                if output.lending_deposit_metadata().is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "LendingDeposit output {} has invalid or undecodable metadata",
+                        i
+                    )));
+                }
             }
         }
 

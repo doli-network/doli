@@ -50,6 +50,8 @@ impl RpcContext {
             "getPoolList" => self.get_pool_list(request.params).await,
             "getPoolPrice" => self.get_pool_price(request.params).await,
             "getSwapQuote" => self.get_swap_quote(request.params).await,
+            "getLoanInfo" => self.get_loan_info(request.params).await,
+            "getLoanList" => self.get_loan_list(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

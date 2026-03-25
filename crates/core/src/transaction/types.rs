@@ -74,6 +74,10 @@ pub enum TxType {
     RepayLoan = 25,
     /// Liquidate an undercollateralized loan
     LiquidateLoan = 26,
+    /// Deposit DOLI into lending pool
+    LendingDeposit = 27,
+    /// Withdraw DOLI + interest from lending pool
+    LendingWithdraw = 28,
 }
 
 impl TxType {
@@ -104,6 +108,8 @@ impl TxType {
             24 => Some(Self::CreateLoan),
             25 => Some(Self::RepayLoan),
             26 => Some(Self::LiquidateLoan),
+            27 => Some(Self::LendingDeposit),
+            28 => Some(Self::LendingWithdraw),
             _ => None,
         }
     }
@@ -137,6 +143,8 @@ pub enum OutputType {
     LPShare = 10,
     /// Lending collateral (locked loan collateral)
     Collateral = 11,
+    /// Lending pool deposit receipt (depositor provides DOLI, earns interest)
+    LendingDeposit = 12,
 }
 
 impl OutputType {
@@ -154,6 +162,7 @@ impl OutputType {
             9 => Some(Self::Pool),
             10 => Some(Self::LPShare),
             11 => Some(Self::Collateral),
+            12 => Some(Self::LendingDeposit),
             _ => None,
         }
     }

@@ -159,6 +159,14 @@ impl UtxoSet {
         }
     }
 
+    /// Get all Collateral UTXOs.
+    pub fn get_all_collateral(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        match self {
+            Self::InMemory(store) => store.get_all_collateral(),
+            Self::RocksDb(store) => store.get_all_collateral(),
+        }
+    }
+
     /// Get all UTXOs for a given pubkey hash (returns owned entries)
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         match self {

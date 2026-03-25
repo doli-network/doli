@@ -122,6 +122,7 @@ pub mod discovery;
 pub mod finality;
 pub mod genesis;
 pub mod heartbeat;
+pub mod lending;
 pub mod maintainer;
 pub mod network;
 pub mod network_params;
@@ -254,6 +255,10 @@ pub use heartbeat::{
 pub use genesis::{
     generate_genesis_block, genesis_hash, verify_genesis_block, GenesisConfig, GenesisError,
 };
+pub use lending::{
+    collateral_value_from_twap, compute_depositor_earnings, compute_interest, compute_ltv_bps,
+    compute_total_debt, is_liquidatable, verify_creation_ltv, SLOTS_PER_YEAR,
+};
 pub use maintainer::{
     derive_maintainer_set, BlockchainReader, MaintainerChange, MaintainerChangeData,
     MaintainerError, MaintainerSet, MaintainerSignature, ProtocolActivationData,
@@ -268,10 +273,13 @@ pub use pool::{
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,
+    // Collateral/lending types
+    CollateralMetadata,
     // Delegation transactions
     DelegateBondData,
     ExitData,
     Input,
+    LendingDepositMetadata,
     Output,
     OutputType,
     // Pool types
@@ -282,6 +290,17 @@ pub use transaction::{
     Transaction,
     TxType,
     WithdrawalRequestData,
+    // Collateral/lending constants
+    COLLATERAL_DEFAULT_INTEREST_BPS,
+    COLLATERAL_DEFAULT_LIQUIDATION_BPS,
+    COLLATERAL_MAX_INTEREST_BPS,
+    COLLATERAL_MAX_LTV_BPS,
+    COLLATERAL_METADATA_SIZE,
+    COLLATERAL_MIN_LIQUIDATION_BPS,
+    LENDING_DEPOSIT_METADATA_SIZE,
+    LENDING_DEPOSIT_VERSION,
+    LENDING_POOL_ID_DOMAIN,
+    LOAN_ID_DOMAIN,
     MAX_EXTRA_DATA_SIZE,
     MAX_ROYALTY_BPS,
     NFT_METADATA_VERSION_ROYALTY,
