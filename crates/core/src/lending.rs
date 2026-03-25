@@ -243,7 +243,7 @@ mod tests {
 
         // 150 tokens collateral, 100 DOLI (10^10 base units) principal, 5% rate, slot 1000
         let collateral_amount = 150_000_000_000u64; // 150 tokens (assuming 10^9 decimals)
-        let principal = 100_000_000_00u64; // 100 DOLI in base units (10^8)
+        let principal = 10_000_000_000u64; // 100 DOLI in base units (10^8)
         let rate_bps = 500u16;
         let creation_slot = 1000u32;
         let liq_ratio = 15000u16;
@@ -281,11 +281,11 @@ mod tests {
     #[test]
     fn test_interest_over_one_epoch() {
         // 100 DOLI at 5%, 360 slots
-        let interest = compute_interest(100_000_000_00, 500, 360);
+        let interest = compute_interest(10_000_000_000, 500, 360);
         assert!(interest > 0);
         // Expected: 100 * 0.05 * 360 / 3_155_760 ~ 0.000570 DOLI ~ 57058 units
         // The exact value depends on integer truncation
-        let expected_approx = (100_000_000_00u128 * 500 * 360) / (10000 * SLOTS_PER_YEAR as u128);
+        let expected_approx = (10_000_000_000u128 * 500 * 360) / (10000 * SLOTS_PER_YEAR as u128);
         assert_eq!(interest, expected_approx as u64);
     }
 
@@ -304,7 +304,7 @@ mod tests {
     /// Test that compute_total_debt includes both principal and interest.
     #[test]
     fn test_total_debt_exceeds_principal() {
-        let principal = 50_000_000_00u64; // 50 DOLI
+        let principal = 5_000_000_000u64; // 50 DOLI
         let rate_bps = 1000; // 10%
         let elapsed = SLOTS_PER_YEAR;
         let debt = compute_total_debt(principal, rate_bps, elapsed);
@@ -319,8 +319,8 @@ mod tests {
     #[test]
     fn test_ltv_real_world() {
         // 80 DOLI debt, 120 DOLI collateral value = 66.67% LTV = 6666 bps
-        let debt = 80_000_000_00u64;
-        let collateral = 120_000_000_00u64;
+        let debt = 8_000_000_000u64;
+        let collateral = 12_000_000_000u64;
         let ltv = compute_ltv_bps(debt, collateral);
         assert_eq!(ltv, 6666);
     }
