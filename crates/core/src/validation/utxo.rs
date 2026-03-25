@@ -101,13 +101,28 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         }
     }
 
-    // Verify inputs >= outputs (difference is fee)
-    let total_output = tx.total_output();
-    if total_input < total_output {
-        return Err(ValidationError::InsufficientFunds {
-            inputs: total_input,
-            outputs: total_output,
-        });
+    // Verify inputs >= outputs (difference is fee).
+    // Pool TxTypes are exempt: DOLI flows in/out of pool reserves (tracked in extra_data,
+    // not in Output.amount). Their conservation is enforced by the invariant check below.
+    if !matches!(
+        tx.tx_type,
+        TxType::CreatePool
+            | TxType::Swap
+            | TxType::AddLiquidity
+            | TxType::RemoveLiquidity
+            | TxType::CreateLoan
+            | TxType::RepayLoan
+            | TxType::LiquidateLoan
+            | TxType::LendingDeposit
+            | TxType::LendingWithdraw
+    ) {
+        let total_output = tx.total_output();
+        if total_input < total_output {
+            return Err(ValidationError::InsufficientFunds {
+                inputs: total_input,
+                outputs: total_output,
+            });
+        }
     }
 
     // -- Royalty enforcement --

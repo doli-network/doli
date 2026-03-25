@@ -147,7 +147,7 @@ impl ConsensusParams {
     pub fn covenants_activation_height(&self, network: &Network) -> BlockHeight {
         match network {
             Network::Devnet => 0,     // Immediate on devnet
-            Network::Testnet => 6900, // Covenants activate at height 6900
+            Network::Testnet => 1295, // Covenants activate at height 1295
             Network::Mainnet => 9150, // Activated after v3.4.0 testnet validation
         }
     }
