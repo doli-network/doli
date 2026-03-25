@@ -17,7 +17,9 @@ pub(crate) async fn cmd_loan(
             yes: _,
         } => {
             println!("Lending deposit: {} DOLI into pool {}", amount, pool);
-            println!("(Transaction building not yet wired to node apply_block)");
+            println!(
+                "(CLI transaction building not yet implemented — node UTXO processing is ready)"
+            );
             Ok(())
         }
         LoanCommands::Withdraw {
@@ -25,7 +27,9 @@ pub(crate) async fn cmd_loan(
             yes: _,
         } => {
             println!("Lending withdraw from deposit UTXO: {}", deposit_utxo);
-            println!("(Transaction building not yet wired to node apply_block)");
+            println!(
+                "(CLI transaction building not yet implemented — node UTXO processing is ready)"
+            );
             Ok(())
         }
         LoanCommands::Create {
@@ -39,17 +43,23 @@ pub(crate) async fn cmd_loan(
                 "Create loan: borrow {} DOLI against {} collateral in pool {} at {}bps",
                 borrow, collateral, pool, interest_rate
             );
-            println!("(Transaction building not yet wired to node apply_block)");
+            println!(
+                "(CLI transaction building not yet implemented — node UTXO processing is ready)"
+            );
             Ok(())
         }
         LoanCommands::Repay { loan_utxo, yes: _ } => {
             println!("Repay loan: {}", loan_utxo);
-            println!("(Transaction building not yet wired to node apply_block)");
+            println!(
+                "(CLI transaction building not yet implemented — node UTXO processing is ready)"
+            );
             Ok(())
         }
         LoanCommands::Liquidate { loan_utxo, yes: _ } => {
             println!("Liquidate loan: {}", loan_utxo);
-            println!("(Transaction building not yet wired to node apply_block)");
+            println!(
+                "(CLI transaction building not yet implemented — node UTXO processing is ready)"
+            );
             Ok(())
         }
         LoanCommands::List { borrower } => cmd_loan_list(rpc_endpoint, borrower.as_deref()).await,

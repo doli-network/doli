@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crypto::Hash;
-use doli_core::transaction::{OutputType, Transaction};
+use doli_core::transaction::{Output, OutputType, Transaction};
 use doli_core::types::{Amount, BlockHeight};
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,26 @@ impl InMemoryUtxoStore {
             let mut stamped_output = output.clone();
             if stamped_output.output_type == OutputType::Bond {
                 stamped_output.extra_data = slot.to_le_bytes().to_vec();
+            }
+            // Stamp Pool outputs with creation_slot and last_update_slot
+            if stamped_output.output_type == OutputType::Pool {
+                if let Some(mut meta) = stamped_output.pool_metadata() {
+                    if meta.creation_slot == 0 {
+                        meta.creation_slot = slot;
+                    }
+                    meta.last_update_slot = slot;
+                    stamped_output = Output::pool(
+                        meta.pool_id,
+                        meta.asset_b_id,
+                        meta.reserve_a,
+                        meta.reserve_b,
+                        meta.total_lp_shares,
+                        meta.cumulative_price,
+                        meta.last_update_slot,
+                        meta.fee_bps,
+                        meta.creation_slot,
+                    );
+                }
             }
             let entry = UtxoEntry {
                 output: stamped_output,

@@ -18,7 +18,7 @@ impl RpcContext {
             .ok_or_else(|| RpcError::invalid_params("invalid poolId hex"))?;
 
         let utxo_set = self.utxo_set.read().await;
-        let (_outpoint, entry) = utxo_set
+        let (outpoint, entry) = utxo_set
             .get_pool_utxo(&pool_id)
             .ok_or_else(RpcError::pool_not_found)?;
 
@@ -46,6 +46,8 @@ impl RpcContext {
             "lastUpdateSlot": meta.last_update_slot,
             "creationSlot": meta.creation_slot,
             "status": meta.status,
+            "txHash": outpoint.tx_hash.to_hex(),
+            "outputIndex": outpoint.index,
         });
 
         Ok(response)
@@ -56,7 +58,9 @@ impl RpcContext {
         let utxo_set = self.utxo_set.read().await;
         let pools = utxo_set.get_all_pools();
 
-        let mut list = Vec::new();
+        // Deduplicate by pool_id: keep the entry with the highest reserveA
+        let mut seen: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
         for (_outpoint, entry) in pools {
             if let Some(meta) = entry.output.pool_metadata() {
                 let price = if meta.reserve_a > 0 {
@@ -64,17 +68,30 @@ impl RpcContext {
                 } else {
                     0.0
                 };
-                list.push(serde_json::json!({
+                let pool_json = serde_json::json!({
                     "poolId": meta.pool_id.to_hex(),
                     "assetB": meta.asset_b_id.to_hex(),
                     "reserveA": meta.reserve_a,
                     "reserveB": meta.reserve_b,
                     "feeBps": meta.fee_bps,
                     "price": price,
-                }));
+                });
+                let pid = meta.pool_id.to_hex();
+                if let Some(existing) = seen.get(&pid) {
+                    let existing_ra = existing
+                        .get("reserveA")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if meta.reserve_a > existing_ra {
+                        seen.insert(pid, pool_json);
+                    }
+                } else {
+                    seen.insert(pid, pool_json);
+                }
             }
         }
 
+        let list: Vec<serde_json::Value> = seen.into_values().collect();
         serde_json::to_value(list).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 

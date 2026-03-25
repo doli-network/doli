@@ -70,6 +70,18 @@ impl Node {
             })?;
         }
 
+        // Reject duplicate pool creation: a pool with this ID must not already exist
+        if tx.tx_type == TxType::CreatePool {
+            if let Some(pool_meta) = tx.outputs.first().and_then(|o| o.pool_metadata()) {
+                if utxo.get_pool_utxo(&pool_meta.pool_id).is_some() {
+                    anyhow::bail!(
+                        "Pool {} already exists — cannot create duplicate",
+                        pool_meta.pool_id.to_hex()
+                    );
+                }
+            }
+        }
+
         let _ = utxo.spend_transaction(tx); // In-memory
         utxo.add_transaction(tx, height, is_reward_tx, block_slot)?; // In-memory
 

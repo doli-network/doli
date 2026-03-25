@@ -125,10 +125,10 @@ async fn cmd_pool_list(rpc_endpoint: &str) -> Result<()> {
     }
 
     println!(
-        "{:<16}  {:>18}  {:>18}  {:>6}  {:>12}",
-        "POOL ID", "RESERVE A (DOLI)", "RESERVE B", "FEE", "PRICE"
+        "{:<16}  {:>18}  {:>24}  {:>6}  {:>12}",
+        "POOL ID", "RESERVE A (DOLI)", "RESERVE B (tokens)", "FEE", "PRICE"
     );
-    println!("{}", "-".repeat(78));
+    println!("{}", "-".repeat(84));
 
     for pool in &pools {
         let pool_id = pool.get("poolId").and_then(|v| v.as_str()).unwrap_or("?");
@@ -145,7 +145,7 @@ async fn cmd_pool_list(rpc_endpoint: &str) -> Result<()> {
         };
 
         println!(
-            "{:<16}  {:>18}  {:>18}  {:>6}  {:>12.8}",
+            "{:<16}  {:>18}  {:>24}  {:>6}  {:>12.8}",
             pool_id_short,
             format_balance(reserve_a),
             reserve_b,
@@ -197,7 +197,7 @@ async fn cmd_pool_info(rpc_endpoint: &str, pool_id: &str) -> Result<()> {
     println!("  Asset A (DOLI): {}", asset_a);
     println!("  Asset B:        {}", asset_b);
     println!("  Reserve A:      {}", format_balance(reserve_a));
-    println!("  Reserve B:      {}", reserve_b);
+    println!("  Reserve B:      {} (raw token units)", reserve_b);
     println!("  Total LP Shares:{}", total_shares);
     println!(
         "  Fee:            {:.2}% ({} bps)",
@@ -555,23 +555,14 @@ async fn cmd_pool_swap(
     let from_hash =
         Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
 
-    // Find the pool UTXO to consume
-    let pool_utxos = rpc.get_utxos_json(pool_id_hex, false).await?;
-    let pool_utxo_arr = pool_utxos
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("No pool UTXOs"))?;
-    let pool_utxo = pool_utxo_arr
-        .iter()
-        .find(|u| u.get("outputType").and_then(|v| v.as_str()) == Some("pool"))
-        .ok_or_else(|| anyhow::anyhow!("Pool UTXO not found"))?;
-
-    let pool_tx_hash_str = pool_utxo
+    // Get pool UTXO outpoint from getPoolInfo response
+    let pool_tx_hash_str = pool_info
         .get("txHash")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing pool UTXO txHash"))?;
-    let pool_tx_hash = Hash::from_hex(pool_tx_hash_str)
-        .ok_or_else(|| anyhow::anyhow!("Invalid pool UTXO txHash"))?;
-    let pool_output_index = pool_utxo
+        .ok_or_else(|| anyhow::anyhow!("Pool info missing txHash"))?;
+    let pool_tx_hash =
+        Hash::from_hex(pool_tx_hash_str).ok_or_else(|| anyhow::anyhow!("Invalid pool txHash"))?;
+    let pool_output_index = pool_info
         .get("outputIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
@@ -890,22 +881,14 @@ async fn cmd_pool_add(
     let from_hash =
         Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
 
-    // Find pool UTXO
-    let pool_utxos = rpc.get_utxos_json(pool_id_hex, false).await?;
-    let pool_utxo_arr = pool_utxos
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("No pool UTXOs"))?;
-    let pool_utxo = pool_utxo_arr
-        .iter()
-        .find(|u| u.get("outputType").and_then(|v| v.as_str()) == Some("pool"))
-        .ok_or_else(|| anyhow::anyhow!("Pool UTXO not found"))?;
-    let pool_tx_hash_str = pool_utxo
+    // Get pool UTXO outpoint from getPoolInfo response
+    let pool_tx_hash_str = pool_info
         .get("txHash")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let pool_tx_hash = Hash::from_hex(pool_tx_hash_str)
-        .ok_or_else(|| anyhow::anyhow!("Invalid pool UTXO txHash"))?;
-    let pool_output_index = pool_utxo
+        .ok_or_else(|| anyhow::anyhow!("Pool info missing txHash"))?;
+    let pool_tx_hash =
+        Hash::from_hex(pool_tx_hash_str).ok_or_else(|| anyhow::anyhow!("Invalid pool txHash"))?;
+    let pool_output_index = pool_info
         .get("outputIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
@@ -1170,22 +1153,14 @@ async fn cmd_pool_remove(
     let from_hash =
         Hash::from_hex(&from_pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid pubkey hash"))?;
 
-    // Find pool UTXO
-    let pool_utxos = rpc.get_utxos_json(pool_id_hex, false).await?;
-    let pool_utxo_arr = pool_utxos
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("No pool UTXOs"))?;
-    let pool_utxo = pool_utxo_arr
-        .iter()
-        .find(|u| u.get("outputType").and_then(|v| v.as_str()) == Some("pool"))
-        .ok_or_else(|| anyhow::anyhow!("Pool UTXO not found"))?;
-    let pool_tx_hash_str = pool_utxo
+    // Get pool UTXO outpoint from getPoolInfo response
+    let pool_tx_hash_str = pool_info
         .get("txHash")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let pool_tx_hash = Hash::from_hex(pool_tx_hash_str)
-        .ok_or_else(|| anyhow::anyhow!("Invalid pool UTXO txHash"))?;
-    let pool_output_index = pool_utxo
+        .ok_or_else(|| anyhow::anyhow!("Pool info missing txHash"))?;
+    let pool_tx_hash =
+        Hash::from_hex(pool_tx_hash_str).ok_or_else(|| anyhow::anyhow!("Invalid pool txHash"))?;
+    let pool_output_index = pool_info
         .get("outputIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
