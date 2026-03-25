@@ -94,11 +94,24 @@ impl RocksDbUtxoStore {
             if stamped_output.output_type == doli_core::OutputType::Bond {
                 stamped_output.extra_data = slot.to_le_bytes().to_vec();
             }
-            // Stamp Pool outputs with creation_slot and last_update_slot
+            // Stamp Pool outputs: creation_slot, last_update_slot, TWAP accumulation
             if stamped_output.output_type == doli_core::OutputType::Pool {
                 if let Some(mut meta) = stamped_output.pool_metadata() {
                     if meta.creation_slot == 0 {
                         meta.creation_slot = slot;
+                    }
+                    // Accumulate TWAP BEFORE updating last_update_slot
+                    if meta.last_update_slot > 0
+                        && slot > meta.last_update_slot
+                        && meta.reserve_b > 0
+                    {
+                        meta.cumulative_price = doli_core::update_twap(
+                            meta.cumulative_price,
+                            meta.reserve_a,
+                            meta.reserve_b,
+                            slot,
+                            meta.last_update_slot,
+                        );
                     }
                     meta.last_update_slot = slot;
                     stamped_output = doli_core::transaction::Output::pool(

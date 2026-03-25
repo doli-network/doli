@@ -73,11 +73,24 @@ impl InMemoryUtxoStore {
             if stamped_output.output_type == OutputType::Bond {
                 stamped_output.extra_data = slot.to_le_bytes().to_vec();
             }
-            // Stamp Pool outputs with creation_slot and last_update_slot
+            // Stamp Pool outputs: creation_slot, last_update_slot, TWAP accumulation
             if stamped_output.output_type == OutputType::Pool {
                 if let Some(mut meta) = stamped_output.pool_metadata() {
                     if meta.creation_slot == 0 {
                         meta.creation_slot = slot;
+                    }
+                    // Accumulate TWAP BEFORE updating last_update_slot
+                    if meta.last_update_slot > 0
+                        && slot > meta.last_update_slot
+                        && meta.reserve_b > 0
+                    {
+                        meta.cumulative_price = doli_core::update_twap(
+                            meta.cumulative_price,
+                            meta.reserve_a,
+                            meta.reserve_b,
+                            slot,
+                            meta.last_update_slot,
+                        );
                     }
                     meta.last_update_slot = slot;
                     stamped_output = Output::pool(
@@ -289,5 +302,121 @@ impl InMemoryUtxoStore {
 impl Default for InMemoryUtxoStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use doli_core::transaction::{Output, Transaction, TxType};
+
+    #[test]
+    fn test_pool_twap_accumulates_on_add_transaction() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+
+        // Create pool at slot 100, cumulative=0
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
+        let tx1 = Transaction {
+            version: 1,
+            tx_type: TxType::CreatePool,
+            inputs: vec![],
+            outputs: vec![pool_output],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx1, 1, false, 100);
+
+        // Verify: creation_slot stamped, cumulative=0 (first block, no elapsed)
+        let (_, entry1) = store.get_all_pools()[0].clone();
+        let meta1 = entry1.output.pool_metadata().unwrap();
+        assert_eq!(meta1.creation_slot, 100);
+        assert_eq!(meta1.last_update_slot, 100);
+        assert_eq!(meta1.cumulative_price, 0);
+
+        // Swap at slot 110 (10 slots later) — should accumulate TWAP
+        let pool_output2 = Output::pool(pool_id, asset_b, 1100, 1900, 707, 0, 100, 30, 100);
+        let tx2 = Transaction {
+            version: 1,
+            tx_type: TxType::Swap,
+            inputs: vec![],
+            outputs: vec![pool_output2],
+            extra_data: vec![],
+        };
+        // Remove old pool first (swap consumes it)
+        let old_outpoint = store.get_all_pools()[0].0;
+        store.remove(&old_outpoint);
+        store.add_transaction(&tx2, 2, false, 110);
+
+        // Verify: TWAP accumulated
+        let (_, entry2) = store.get_all_pools()[0].clone();
+        let meta2 = entry2.output.pool_metadata().unwrap();
+        assert_eq!(meta2.last_update_slot, 110);
+        assert!(
+            meta2.cumulative_price > 0,
+            "TWAP must accumulate after 10 slots, got {}",
+            meta2.cumulative_price
+        );
+
+        // Verify the TWAP value is correct:
+        // price = reserve_a << 64 / reserve_b = 1100 << 64 / 1900
+        // cumulative = price * (110 - 100) = price * 10
+        let expected_price = (1100u128 << 64) / 1900;
+        let expected_cum = expected_price * 10;
+        assert_eq!(meta2.cumulative_price, expected_cum);
+    }
+
+    #[test]
+    fn test_pool_twap_zero_on_first_block() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xCC; 32]);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+
+        // Create pool with last_update_slot=0 (CLI sends 0)
+        let pool_output = Output::pool(pool_id, asset_b, 500, 500, 100, 0, 0, 30, 0);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::CreatePool,
+            inputs: vec![],
+            outputs: vec![pool_output],
+            extra_data: vec![],
+        };
+        store.add_transaction(&tx, 1, false, 200);
+
+        let (_, entry) = store.get_all_pools()[0].clone();
+        let meta = entry.output.pool_metadata().unwrap();
+        // First block: creation_slot stamped, but no TWAP (no previous slot to diff)
+        assert_eq!(meta.creation_slot, 200);
+        assert_eq!(meta.last_update_slot, 200);
+        assert_eq!(meta.cumulative_price, 0);
+    }
+
+    #[test]
+    fn test_get_pool_utxo_finds_pool_by_id() {
+        let mut store = InMemoryUtxoStore::new();
+        let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
+        let pool_id =
+            doli_core::transaction::Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+
+        let pool_output = doli_core::transaction::Output::pool(
+            pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100,
+        );
+
+        // The pool output has pubkey_hash = pool_id
+        assert_eq!(pool_output.pubkey_hash, pool_id);
+
+        let outpoint = Outpoint::new(crypto::Hash::from_bytes([0xFF; 32]), 0);
+        let entry = UtxoEntry {
+            output: pool_output,
+            height: 1,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        store.insert(outpoint, entry);
+
+        // get_by_pubkey_hash should find it
+        let results = store.get_by_pubkey_hash(&pool_id);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.output.output_type, doli_core::OutputType::Pool);
     }
 }

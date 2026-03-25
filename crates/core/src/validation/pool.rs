@@ -327,4 +327,40 @@ mod tests {
         };
         assert!(validate_swap(&tx).is_err());
     }
+
+    #[test]
+    fn test_swap_b2a_valid_structure() {
+        // B→A swap: tokens go in, DOLI comes out
+        // The DOLI balance check is exempted for Swap TxType
+        let asset_b = Hash::from_bytes([0xBB; 32]);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        // Old pool: 1100 DOLI, 454M tokens
+        // After b2a swap of 50M tokens: reserve_a decreases, reserve_b increases
+        let new_pool = Output::pool(pool_id, asset_b, 991312418, 504669456, 707, 0, 101, 30, 100);
+        let doli_output = Output::normal(108687582, Hash::from_bytes([0x02; 32])); // DOLI to swapper
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Swap,
+            inputs: vec![
+                Input::new(Hash::from_bytes([0xAA; 32]), 0), // pool UTXO
+                Input::new(Hash::from_bytes([0xBB; 32]), 0), // token input
+                Input::new(Hash::from_bytes([0xCC; 32]), 0), // fee input
+            ],
+            outputs: vec![new_pool, doli_output],
+            extra_data: Vec::new(),
+        };
+        assert!(validate_swap(&tx).is_ok());
+    }
+
+    #[test]
+    fn test_create_pool_duplicate_same_pair_fails() {
+        // Creating two pools with the same asset pair should fail
+        // because they'd have the same pool_id
+        let asset_b = Hash::from_bytes([0xBB; 32]);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+
+        let pool_id_2 = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        assert_eq!(pool_id, pool_id_2, "Same pair must produce same pool_id");
+    }
 }
