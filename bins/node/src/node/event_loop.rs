@@ -529,6 +529,20 @@ impl Node {
                         "Sync request from {} deferred — serving limit reached ({}/{})",
                         peer_id, self.sync_requests_this_interval, MAX_SYNC_REQUESTS_PER_INTERVAL
                     );
+                    // Send explicit error instead of silently dropping.
+                    // Without this, the requester waits 30s for a response that never arrives,
+                    // wasting an entire sync cycle. With the error, it can immediately retry
+                    // with a different peer.
+                    if let Some(ref network) = self.network {
+                        let _ = network
+                            .send_sync_response(
+                                channel,
+                                network::protocols::SyncResponse::Error(
+                                    "busy: sync serving limit reached".to_string(),
+                                ),
+                            )
+                            .await;
+                    }
                 } else {
                     debug!("Sync request from {}: {:?}", peer_id, request);
                     self.sync_requests_this_interval += 1;

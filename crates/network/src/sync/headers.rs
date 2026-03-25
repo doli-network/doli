@@ -161,6 +161,17 @@ impl HeaderDownloader {
     pub fn expected_prev_hash(&self) -> Option<Hash> {
         self.expected_prev_hash
     }
+
+    /// Resume downloading from a specific hash (after preserving sync data).
+    /// Sets expected_prev_hash so the next request continues from this point
+    /// instead of re-downloading from local_tip.
+    pub fn resume_from(&mut self, hash: Hash) {
+        self.expected_prev_hash = Some(hash);
+        // Clear internal buffers — validated_headers should already be drained
+        // into pipeline.pending_headers, and known_hashes is stale after restart.
+        self.validated_headers.clear();
+        self.known_hashes.clear();
+    }
 }
 
 #[cfg(test)]

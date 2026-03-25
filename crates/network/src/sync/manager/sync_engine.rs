@@ -118,12 +118,19 @@ impl SyncManager {
             // discarded because their epoch won't match.
             self.pipeline.sync_epoch += 1;
 
-            // Clean slate for the new cycle. Clear ALL sync state from
-            // previous cycles to prevent contamination.
-            self.pipeline.header_downloader.clear();
-            self.pipeline.pending_headers.clear();
-            self.pipeline.pending_blocks.clear();
-            self.pipeline.headers_needing_bodies.clear();
+            // P4: Preserve valid downloaded data on sync restart.
+            // Instead of nuking ALL state (which destroyed 20-30K headers every 30s
+            // under stress), check if pending_headers has a valid prefix that chains
+            // from our current local_hash. Keep valid data, discard only stale/forked.
+            let preserved = self.preserve_valid_sync_data();
+            if !preserved {
+                // No valid data — clean slate
+                self.pipeline.header_downloader.clear();
+                self.pipeline.pending_headers.clear();
+                self.pipeline.pending_blocks.clear();
+                self.pipeline.headers_needing_bodies.clear();
+            }
+            // Always clear stale request tracking and body downloader in-flight state
             self.pipeline.pending_requests.clear();
             self.pipeline.body_downloader.clear();
             self.pipeline.body_stall_retries = 0;
@@ -221,9 +228,10 @@ impl SyncManager {
                     "start_snap_sync",
                 );
             } else {
+                let preserved_count = self.pipeline.pending_headers.len();
                 info!(
-                    "Starting sync epoch {} with peer {} (target_slot={})",
-                    self.pipeline.sync_epoch, peer, target_slot
+                    "Starting sync epoch {} with peer {} (target_slot={}, preserved_headers={})",
+                    self.pipeline.sync_epoch, peer, target_slot, preserved_count
                 );
 
                 self.set_syncing(
@@ -231,7 +239,7 @@ impl SyncManager {
                     SyncPipelineData::Headers {
                         target_slot,
                         peer,
-                        headers_count: 0,
+                        headers_count: preserved_count,
                     },
                     "start_header_sync",
                 );
@@ -918,5 +926,78 @@ impl SyncManager {
         }
 
         blocks
+    }
+
+    /// Preserve valid downloaded sync data across a sync restart.
+    ///
+    /// When sync restarts (timeout, peer disconnect, etc.), instead of clearing
+    /// ALL accumulated headers and bodies, this walks pending_headers and keeps
+    /// the valid prefix that chains from our current local_hash.
+    ///
+    /// Returns true if any data was preserved, false if everything was stale/forked.
+    fn preserve_valid_sync_data(&mut self) -> bool {
+        if self.pipeline.pending_headers.is_empty() {
+            return false;
+        }
+
+        let local_hash = self.local_hash;
+
+        // Find the first header that chains from our current tip.
+        // Headers before this point have already been applied or are on a dead fork.
+        let chain_start = self
+            .pipeline
+            .pending_headers
+            .iter()
+            .position(|h| h.prev_hash == local_hash);
+
+        let chain_start = match chain_start {
+            Some(idx) => idx,
+            None => {
+                // No header chains from local_hash — data is from a different fork
+                info!(
+                    "[SYNC_PRESERVE] No headers chain from local_hash={:.12} — discarding all {} headers",
+                    self.local_hash,
+                    self.pipeline.pending_headers.len()
+                );
+                return false;
+            }
+        };
+
+        let total_before = self.pipeline.pending_headers.len();
+
+        // Remove stale headers (already applied or on dead fork)
+        for _ in 0..chain_start {
+            if let Some(stale) = self.pipeline.pending_headers.pop_front() {
+                self.pipeline.pending_blocks.remove(&stale.hash());
+            }
+        }
+
+        // Rebuild headers_needing_bodies from surviving headers
+        self.pipeline.headers_needing_bodies.clear();
+        for header in &self.pipeline.pending_headers {
+            let hash = header.hash();
+            if !self.pipeline.pending_blocks.contains_key(&hash) {
+                self.pipeline.headers_needing_bodies.push_back(hash);
+            }
+        }
+
+        // Resume header downloader from the last preserved header
+        if let Some(last) = self.pipeline.pending_headers.back() {
+            self.pipeline.header_downloader.resume_from(last.hash());
+        } else {
+            self.pipeline.header_downloader.clear();
+        }
+
+        let preserved = self.pipeline.pending_headers.len();
+        let bodies_have = self.pipeline.pending_blocks.len();
+        let bodies_need = self.pipeline.headers_needing_bodies.len();
+
+        info!(
+            "[SYNC_PRESERVE] Preserved {}/{} headers ({} stale removed), \
+             {} bodies cached, {} bodies still needed",
+            preserved, total_before, chain_start, bodies_have, bodies_need
+        );
+
+        preserved > 0
     }
 }

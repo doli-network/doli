@@ -361,10 +361,18 @@ impl Node {
                     }
                 }
             }
-            // Normal sync: one request per tick
-            if let Some((peer_id, request)) = sm.next_request() {
+            // Normal sync: drain up to 8 requests per tick.
+            // Previously this was `if let` (1 request/tick), capping body download
+            // throughput at 128 blocks/sec. With 8 concurrent body requests that
+            // complete in ~100ms, we need to refill all slots each tick.
+            let mut sync_requests_sent = 0u32;
+            while let Some((peer_id, request)) = sm.next_request() {
                 if let Some(ref network) = self.network {
                     let _ = network.request_sync(peer_id, request).await;
+                }
+                sync_requests_sent += 1;
+                if sync_requests_sent >= 8 {
+                    break;
                 }
             }
         }
