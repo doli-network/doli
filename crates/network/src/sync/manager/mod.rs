@@ -459,12 +459,16 @@ impl SnapSyncState {
     /// Create a new SnapSyncState with default values
     pub fn new() -> Self {
         Self {
-            // Disabled by default — snap sync caused 4+ incidents (INC-I-004, INC-I-005)
-            // due to invariant violations (empty block store, false fork cascades).
-            // Use `doli snap` CLI command for manual snap sync when needed.
-            threshold: u64::MAX,
-            quorum: 5, // Minimum 5 peers for partition safety
-            root_timeout: Duration::from_secs(10),
+            // INC-I-012: Snap sync re-enabled. Original incidents (INC-I-004, INC-I-005)
+            // were caused by: (1) partition quorum (fixed: uses total peers as denominator),
+            // (2) stale snapshot acceptance (fixed: 100-block height window), (3) cascading
+            // resyncs (fixed: M2 recovery gate with rate limiting + floor checks).
+            // Threshold 50 = snap sync activates when >50 blocks behind.
+            // Header-first is still used for small gaps (≤50 blocks).
+            // Use --no-snap-sync to disable if needed.
+            threshold: 50,
+            quorum: 3, // Minimum 3 peers for quorum (testnet-friendly, still partition-safe)
+            root_timeout: Duration::from_secs(15),
             download_timeout: Duration::from_secs(60),
             blacklisted_peers: HashSet::new(),
             attempts: 0,

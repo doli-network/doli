@@ -120,25 +120,21 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, proportional headroom).
+        // Build connection limits (2 connections per peer, max_peers + headroom total).
         // Allow 2 per-peer to survive the simultaneous-dial race condition
         // (rust-libp2p#752): when both sides dial each other at the same time,
         // both connections complete the handshake. With limit=1 the second is
         // denied → rapid connect/disconnect loop on co-located nodes.
         // Also required for DCUtR hole-punching (relay + direct coexist briefly).
         //
-        // INC-I-012: Restored proportional headroom from max_peers+10 to
-        // max_peers*2+20. The INC-I-011 tightening was correct to reduce
-        // max_peers from 200→50, but over-tightened conn_headroom: with
-        // max_established_per_peer=2, peers average ~1.5 connections each,
-        // so max_peers+10 saturates before the peer table is full. This caused
-        // libp2p to reject connections at protocol level BEFORE the peer table
-        // eviction logic could run, permanently stranding late-joining nodes
-        // (15/56 nodes stuck at genesis in 50-node stress test).
-        // At max_peers=50: headroom=120, Yamux memory ~240MB — safe.
-        // The original INC-I-011 RAM explosion was from max_peers=200 (400+
-        // connections), not from the 2x ratio itself.
-        let conn_headroom = (config.max_peers * 2 + 20) as u32;
+        // INC-I-011: Tightened from max_peers*2 to max_peers+10. The old 2x
+        // multiplier allowed too many connections, causing Yamux buffer explosion
+        // and RAM growth when network_nodes > max_peers.
+        // INC-I-012: Proportional headroom — scales with network size without
+        // the extremes of +10 (too tight for bootstrap) or *2+20 (RAM explosion).
+        // At max_peers=50: headroom=95 (50*1.5+20). Enough for bootstrap without
+        // the Yamux buffer explosion seen at headroom=120.
+        let conn_headroom = ((config.max_peers as f64 * 1.5) as usize + 20) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(conn_headroom))
@@ -518,6 +514,15 @@ impl NetworkService {
     /// Get shared peers map for sync peer-count queries
     pub fn peers_arc(&self) -> Arc<RwLock<HashMap<PeerId, PeerInfo>>> {
         self.peers.clone()
+    }
+
+    /// Disconnect from a specific peer
+    pub async fn disconnect(&self, peer_id: PeerId) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::Disconnect(peer_id))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
     }
 
     /// Get command sender for external use

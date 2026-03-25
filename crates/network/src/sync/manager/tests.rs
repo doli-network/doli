@@ -599,6 +599,7 @@ fn test_next_request_guard_prevents_duplicate_requests() {
     // Fix 1: next_request() must return None when peer already has pending request
     let genesis = Hash::ZERO;
     let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+    manager.disable_snap_sync(); // Test header-first behavior specifically
 
     let peer = PeerId::random();
     manager.add_peer(peer, 1000, Hash::ZERO, 1000);
@@ -632,6 +633,7 @@ fn test_chain_break_preserves_state_on_stale_response() {
     // so the downloader state is still correct — just skip and continue.
     let genesis = Hash::ZERO;
     let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+    manager.disable_snap_sync(); // Test header-first behavior specifically
 
     let peer = PeerId::random();
     manager.add_peer(peer, 1000, Hash::ZERO, 1000);
@@ -1450,6 +1452,7 @@ mod regression_tests {
     #[test]
     fn test_regression_idle_to_downloading_headers() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.disable_snap_sync(); // Test header-first transition specifically
         assert!(matches!(*manager.state(), SyncState::Idle));
 
         let peer = PeerId::random();
@@ -1505,6 +1508,7 @@ mod regression_tests {
     #[test]
     fn test_regression_downloading_headers_to_idle() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.disable_snap_sync(); // Test header-first transition specifically
 
         let peer = PeerId::random();
         manager.add_peer(peer, 100, Hash::ZERO, 100);
@@ -2091,7 +2095,8 @@ mod recovery_gate_tests {
     fn test_request_genesis_resync_refused_when_snap_disabled() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
-        // Snap sync disabled (default — threshold is u64::MAX)
+        // Explicitly disable snap sync (simulates --no-snap-sync)
+        manager.disable_snap_sync();
         assert_eq!(manager.snap.threshold, u64::MAX);
         manager.snap.attempts = 0;
 
@@ -3130,7 +3135,7 @@ mod site_migration_tests {
     fn test_apply_failures_snap_disabled_uses_recovery_gate() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
         manager.confirmed_height_floor = 100;
-        // snap.threshold = u64::MAX (default — snap disabled)
+        manager.disable_snap_sync(); // Simulate --no-snap-sync
 
         manager.local_height = 100;
         manager.local_hash = crypto::hash::hash(b"block100");
@@ -3164,7 +3169,8 @@ mod site_migration_tests {
     #[test]
     fn test_genesis_fallback_empty_headers_gate_bypasses_snap_disabled() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
-        // Snap sync disabled (default) — but emergency bypasses gate 4
+        // Explicitly disable snap sync — emergency reasons should still bypass gate 4
+        manager.disable_snap_sync();
         assert_eq!(manager.snap.threshold, u64::MAX);
 
         let result = manager.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);

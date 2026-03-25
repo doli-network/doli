@@ -195,6 +195,12 @@ pub struct Node {
     /// Pending tx announcements tracker (announce-request pattern).
     /// Tracks tx hashes received via announcements that we need to fetch.
     pub(super) pending_tx_announcements: tx_announcements::PendingTxAnnouncements,
+    /// INC-I-012: Peer IDs of bootstrap/seed nodes (parsed from bootstrap_nodes multiaddrs).
+    /// Once synced with enough peers, we release these connections to free seed capacity
+    /// for new nodes joining the network.
+    pub(super) bootstrap_peer_ids: Vec<PeerId>,
+    /// Whether we've already released our bootstrap connections (one-shot).
+    pub(super) bootstrap_released: bool,
 }
 
 impl Node {

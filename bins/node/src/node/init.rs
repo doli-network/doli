@@ -586,6 +586,21 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
+        // INC-I-012: Extract peer IDs from bootstrap multiaddrs before config is moved.
+        let bootstrap_peer_ids = {
+            let mut ids = Vec::new();
+            for addr_str in &config.bootstrap_nodes {
+                // Multiaddr format: /ip4/.../tcp/.../p2p/<peer_id>
+                if let Some(idx) = addr_str.rfind("/p2p/") {
+                    let peer_str = &addr_str[idx + 5..];
+                    if let Ok(peer_id) = peer_str.parse::<PeerId>() {
+                        ids.push(peer_id);
+                    }
+                }
+            }
+            ids
+        };
+
         Ok(Self {
             config,
             params,
@@ -640,6 +655,8 @@ impl Node {
             consecutive_forced_recoveries: 0,
             sync_requests_this_interval: 0,
             pending_tx_announcements: tx_announcements::PendingTxAnnouncements::new(),
+            bootstrap_peer_ids,
+            bootstrap_released: false,
         })
     }
 }

@@ -256,15 +256,35 @@ impl ReorgHandler {
         let parent_weight = self.chain_weight(&prev_hash);
         let new_chain_weight = parent_weight.saturating_add(block_producer_weight);
 
-        // Only reorg if the new chain is strictly heavier (weight-based fork choice).
-        // Incumbent wins ties — equal-weight reorgs are unnecessary churn and were
-        // the trigger for the epoch-boundary fork bug (weight_delta=+0 reorg).
-        if new_chain_weight <= self.current_chain_weight {
+        // Weight-based fork choice with deterministic tie-breaking.
+        // Strictly lighter chains are always rejected.
+        if new_chain_weight < self.current_chain_weight {
             debug!(
-                "Ignoring fork: new_weight={} vs current_weight={} (incumbent wins ties)",
+                "Ignoring fork: new_weight={} < current_weight={}",
                 new_chain_weight, self.current_chain_weight,
             );
             return None;
+        }
+
+        // Equal weight: deterministic tie-break by block hash (lower wins).
+        // INC-I-012: Without this, ALL equal-weight gossip blocks are rejected
+        // and fall through to slow fork recovery (serialized, 10s/tick). On
+        // young networks where all producers have weight=1, this creates fork
+        // storms that accumulate faster than recovery can resolve them.
+        // Deterministic hash tie-breaking ensures all nodes converge to the
+        // same chain without any recovery overhead.
+        if new_chain_weight == self.current_chain_weight {
+            if block_hash.as_bytes() >= current_tip.as_bytes() {
+                debug!(
+                    "Ignoring fork: equal weight={}, block hash >= current tip (deterministic tie-break)",
+                    new_chain_weight,
+                );
+                return None;
+            }
+            debug!(
+                "Equal-weight tie-break: block {} < tip {} — switching chain",
+                block_hash, current_tip,
+            );
         }
 
         // Find common ancestor and build rollback list

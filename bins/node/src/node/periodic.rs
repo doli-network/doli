@@ -201,7 +201,11 @@ impl Node {
             if peer_count > 0 {
                 // Connected — reset all backoff counters
                 self.bootstrap_backoff.clear();
-            } else if !self.config.bootstrap_nodes.is_empty() {
+            } else if peer_count == 0 && self.bootstrap_released {
+                // Lost all peers after releasing bootstrap — allow re-bootstrap
+                self.bootstrap_released = false;
+            }
+            if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
                 let now = std::time::Instant::now();
                 if let Some(ref network) = self.network {
                     for addr in &self.config.bootstrap_nodes {
@@ -221,6 +225,35 @@ impl Node {
                         }
                     }
                 }
+            }
+        }
+
+        // INC-I-012: BOOTSTRAP RELEASE — synced nodes release seed connections.
+        // Once synchronized with enough peers, the seed connection is no longer needed.
+        // Releasing it frees connection capacity for new nodes joining the network.
+        // Without this, synced nodes hold seed connections forever, and late-joining
+        // nodes get rejected by ConnectionLimits (observed: 5/50 nodes permanently stuck).
+        if !self.bootstrap_released && !self.bootstrap_peer_ids.is_empty() {
+            let (is_synced, peer_count) = {
+                let sync = self.sync_manager.read().await;
+                (
+                    matches!(sync.state(), network::sync::SyncState::Synchronized),
+                    sync.peer_count(),
+                )
+            };
+            // Release when: synced + have enough non-bootstrap peers to sustain gossip
+            let min_peers_to_release = 3;
+            if is_synced && peer_count > min_peers_to_release {
+                if let Some(ref network) = self.network {
+                    for boot_peer in &self.bootstrap_peer_ids {
+                        info!(
+                            "Bootstrap release: disconnecting seed {} (synced with {} peers)",
+                            boot_peer, peer_count
+                        );
+                        let _ = network.disconnect(*boot_peer).await;
+                    }
+                }
+                self.bootstrap_released = true;
             }
         }
 

@@ -69,6 +69,30 @@ impl Node {
                     // interval, force it now. This guarantees production runs at least
                     // once per interval even under infinite event load.
                     if last_production_check.elapsed() >= production_interval {
+                        // INC-I-012: Drain pending network events before producing.
+                        // During connection storms (50+ nodes joining), block events
+                        // queue behind hundreds of Identify/Kademlia/GSet events in
+                        // the swarm loop. Without draining, the escape hatch produces
+                        // on a stale chain tip → competing blocks → fork cascade.
+                        // Cap scales with max_peers to handle larger networks:
+                        // at max_peers=50, drain_cap=150 (~150ms worst case).
+                        {
+                            let drain_cap = self.config.max_peers * 3;
+                            let mut pending = Vec::new();
+                            if let Some(ref mut network) = self.network {
+                                while pending.len() < drain_cap {
+                                    match network.try_next_event() {
+                                        Some(ev) => pending.push(ev),
+                                        None => break,
+                                    }
+                                }
+                            }
+                            for ev in pending {
+                                if let Err(e) = self.handle_network_event(ev).await {
+                                    warn!("Error handling drained event: {}", e);
+                                }
+                            }
+                        }
                         if self.producer_key.is_some() {
                             if let Err(e) = self.try_produce_block().await {
                                 warn!("Block production error: {}", e);
@@ -84,6 +108,25 @@ impl Node {
 
                 // Production timer tick
                 _ = production_timer.tick() => {
+                    // INC-I-012: Drain pending events before producing (same as escape hatch).
+                    {
+                        let drain_cap = self.config.max_peers * 3;
+                        let mut pending = Vec::new();
+                        if let Some(ref mut network) = self.network {
+                            while pending.len() < drain_cap {
+                                match network.try_next_event() {
+                                    Some(ev) => pending.push(ev),
+                                    None => break,
+                                }
+                            }
+                        }
+                        for ev in pending {
+                            if let Err(e) = self.handle_network_event(ev).await {
+                                warn!("Error handling drained event: {}", e);
+                            }
+                        }
+                    }
+
                     // Check for block production opportunity
                     if self.producer_key.is_some() {
                         if let Err(e) = self.try_produce_block().await {
