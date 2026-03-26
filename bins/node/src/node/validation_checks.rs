@@ -304,14 +304,23 @@ impl Node {
             .map(|o| o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE)
             .sum();
 
-        let expected_reward = self.params.block_reward(height) + extra_fees;
-        if coinbase.outputs[0].amount != expected_reward {
+        let base_reward = self.params.block_reward(height);
+        let expected_with_fees = base_reward + extra_fees;
+        let coinbase_amount = coinbase.outputs[0].amount;
+        // Accept both formats during version transition:
+        // - v4.9.0+: coinbase = block_reward + per-byte extra_fees
+        // - v4.5.x:  coinbase = block_reward only (no per-byte fees)
+        // External producers on older versions don't include extra_fees.
+        // Their blocks are valid — they just generate less reward pool revenue.
+        // See: N5 fork incident 2026-03-26 (coinbase mismatch on delta=0 reorg).
+        if coinbase_amount != expected_with_fees && coinbase_amount != base_reward {
             anyhow::bail!(
-                "coinbase amount {} != expected block reward {} (base {} + extra_fees {})",
-                coinbase.outputs[0].amount,
-                expected_reward,
-                self.params.block_reward(height),
-                extra_fees
+                "coinbase amount {} != expected block reward {} (base {} + extra_fees {}) and != base reward {}",
+                coinbase_amount,
+                expected_with_fees,
+                base_reward,
+                extra_fees,
+                base_reward
             );
         }
 
@@ -398,8 +407,9 @@ impl Node {
                     let utxo = self.utxo_set.read().await;
                     let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
                     let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-                    // Include the coinbase from this block (block_reward + extra_fees)
-                    utxo_total + self.params.block_reward(height) + extra_fees
+                    // Include the coinbase from this block (use actual coinbase amount,
+                    // not calculated — old-version blocks may not include extra_fees)
+                    utxo_total + coinbase_amount
                 };
 
                 if total_distributed > pool_balance {
