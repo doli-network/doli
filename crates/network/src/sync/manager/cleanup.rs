@@ -44,7 +44,7 @@ impl SyncManager {
             if let Some(req) = self.pipeline.pending_requests.remove(&id) {
                 warn!(
                     "[SYNC_DEBUG] Request timeout: id={}, peer={}, elapsed={:?}, request={:?}",
-                    id.0,
+                    id.inner(),
                     req.peer,
                     now.duration_since(req.sent_at),
                     req.request
