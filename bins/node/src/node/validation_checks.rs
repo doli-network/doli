@@ -292,13 +292,19 @@ impl Node {
         }
 
         // Calculate extra fees from user transactions in this block.
-        // Only non-coinbase, non-epoch-reward, non-registration TXs contribute
-        // per-byte fees via their output extra_data.
+        // Excluded from extra_fees calculation:
+        // - Coinbase/EpochReward: protocol-generated, no user fees
+        // - Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof
+        // User Registration (from mempool, has inputs/outputs) DOES pay per-byte fees.
         let extra_fees: u64 = block
             .transactions
             .iter()
             .filter(|tx| {
-                !tx.is_coinbase() && !tx.is_epoch_reward() && tx.tx_type != TxType::Registration
+                !(tx.is_coinbase()
+                    || tx.is_epoch_reward()
+                    || tx.tx_type == TxType::Registration
+                        && tx.inputs.is_empty()
+                        && tx.outputs.is_empty())
             })
             .flat_map(|tx| tx.outputs.iter())
             .map(|o| o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE)

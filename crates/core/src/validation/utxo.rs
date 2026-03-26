@@ -105,21 +105,26 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     // Verify inputs >= outputs (difference is fee).
     // Exempt TxTypes:
     // - Pool/Lending: DOLI flows in/out of reserves (tracked in extra_data, not Output.amount)
-    // - Registration: genesis registrations have 0 inputs/outputs, fee=0 by design
+    // - Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof, fee=0 by design
+    // User Registration (from mempool, has inputs/outputs) MUST pay per-byte fees.
     // See: testnet genesis deadlock 2026-03-26 (Registration fee=0 rejected by per-byte check)
-    if !matches!(
-        tx.tx_type,
-        TxType::CreatePool
-            | TxType::Swap
-            | TxType::AddLiquidity
-            | TxType::RemoveLiquidity
-            | TxType::CreateLoan
-            | TxType::RepayLoan
-            | TxType::LiquidateLoan
-            | TxType::LendingDeposit
-            | TxType::LendingWithdraw
-            | TxType::Registration
-    ) {
+    // See: coinbase mismatch 2026-03-26 (builder included user Reg fees, validator excluded ALL)
+    let is_genesis_registration =
+        tx.tx_type == TxType::Registration && tx.inputs.is_empty() && tx.outputs.is_empty();
+    if !is_genesis_registration
+        && !matches!(
+            tx.tx_type,
+            TxType::CreatePool
+                | TxType::Swap
+                | TxType::AddLiquidity
+                | TxType::RemoveLiquidity
+                | TxType::CreateLoan
+                | TxType::RepayLoan
+                | TxType::LiquidateLoan
+                | TxType::LendingDeposit
+                | TxType::LendingWithdraw
+        )
+    {
         let total_output = tx.total_output();
         if total_input < total_output {
             return Err(ValidationError::InsufficientFunds {
