@@ -244,6 +244,27 @@ pub(crate) async fn cmd_snap(
         producer_set.active_count()
     );
 
+    // Fix ownership: snap runs as root (sudo) but the service runs as user 'doli'.
+    // Without this, RocksDB files are owned by root and the service crashes with Permission denied.
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("chown")
+            .args(["-R", "doli:doli"])
+            .arg(&data_dir)
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            _ => {
+                // chown may fail if doli user doesn't exist (tarball install, macOS, etc.)
+                // Not fatal — the service might run as the current user instead
+                eprintln!(
+                    "  Warning: could not chown {} to doli:doli",
+                    data_dir.display()
+                );
+            }
+        }
+    }
+
     // 8. Restart the service that owns this data_dir
     if no_restart {
         println!("Skipping service restart (--no-restart)");
