@@ -261,6 +261,19 @@ impl Node {
                 );
                 return Ok(());
             }
+
+            // Defense-in-depth: finality guard. Even if plan_reorg/check_reorg_weighted
+            // missed it, never execute a reorg that rolls back past finalized height.
+            if let Some(finality_height) = sync.reorg_handler().last_finality_height() {
+                if target_height <= finality_height {
+                    warn!(
+                        "Reorg REFUSED (finality): target height {} at or below finalized height {}. \
+                         Rolling back {} blocks would violate finality.",
+                        target_height, finality_height, rollback_count
+                    );
+                    return Ok(());
+                }
+            }
         }
 
         // No-op reorg: rollback_count=0 means we're already at the common ancestor.

@@ -169,6 +169,11 @@ impl ReorgHandler {
         self.last_finality_height = Some(height);
     }
 
+    /// Get the last finality height (for defense-in-depth checks in execute_reorg).
+    pub fn last_finality_height(&self) -> Option<u64> {
+        self.last_finality_height
+    }
+
     /// Compare two chains and return which is heavier
     ///
     /// Returns:
@@ -397,6 +402,24 @@ impl ReorgHandler {
         }
 
         let common_ancestor = common_ancestor?;
+
+        // Finality check: never reorg past the last finalized block.
+        // This mirrors the check in check_reorg_weighted() — without it,
+        // fork recovery falls through to plan_reorg() and bypasses finality.
+        if let Some(finality_height) = self.last_finality_height {
+            let ancestor_height = self
+                .block_weights
+                .get(&common_ancestor)
+                .map(|w| w.height)
+                .unwrap_or(0);
+            if ancestor_height <= finality_height {
+                warn!(
+                    "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
+                    finality_height, ancestor_height
+                );
+                return None;
+            }
+        }
 
         // Find rollback blocks (from current tip to common ancestor)
         let rollback: Vec<Hash> = current_chain
@@ -905,5 +928,73 @@ mod tests {
             result.is_some(),
             "Heavier fork should trigger reorg after correct weight tracking"
         );
+    }
+
+    #[test]
+    fn test_plan_reorg_past_finality_rejected() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::ZERO;
+        let block1 = crypto::hash::hash(b"block1");
+        let block2 = crypto::hash::hash(b"block2");
+        let fork_tip = crypto::hash::hash(b"fork_tip");
+
+        // Build main chain: genesis -> block1 -> block2
+        handler.record_block_with_weight(block1, genesis, 10);
+        handler.record_block_with_weight(block2, block1, 10);
+
+        // Build fork chain: genesis -> fork_tip (higher weight)
+        handler.record_fork_block(fork_tip, genesis, 100);
+
+        // Set finality at height 1 (block1 is finalized)
+        handler.set_last_finality_height(1);
+
+        // plan_reorg from block2 to fork_tip — common ancestor is genesis (height 0)
+        // which is below finality height 1. Must be rejected.
+        let result = handler.plan_reorg(block2, fork_tip, |_| None);
+        assert!(
+            result.is_none(),
+            "plan_reorg must reject reorg past finalized height"
+        );
+    }
+
+    #[test]
+    fn test_plan_reorg_above_finality_ok() {
+        let mut handler = ReorgHandler::new();
+
+        let genesis = Hash::ZERO;
+        let block1 = crypto::hash::hash(b"block1");
+        let block2 = crypto::hash::hash(b"block2");
+        let fork_tip = crypto::hash::hash(b"fork_from_b1");
+
+        // Build main chain: genesis -> block1 -> block2
+        handler.record_block_with_weight(block1, genesis, 10);
+        handler.record_block_with_weight(block2, block1, 10);
+
+        // Build fork from block1: block1 -> fork_tip (higher weight)
+        handler.record_fork_block(fork_tip, block1, 100);
+
+        // Set finality at height 0 (genesis)
+        handler.set_last_finality_height(0);
+
+        // plan_reorg from block2 to fork_tip — common ancestor is block1 (height 1)
+        // which is above finality height 0. Should be allowed.
+        let result = handler.plan_reorg(block2, fork_tip, |_| None);
+        assert!(
+            result.is_some(),
+            "plan_reorg should allow reorg above finality"
+        );
+    }
+
+    #[test]
+    fn test_last_finality_height_getter() {
+        let mut handler = ReorgHandler::new();
+        assert_eq!(handler.last_finality_height(), None);
+
+        handler.set_last_finality_height(42);
+        assert_eq!(handler.last_finality_height(), Some(42));
+
+        handler.set_last_finality_height(100);
+        assert_eq!(handler.last_finality_height(), Some(100));
     }
 }
