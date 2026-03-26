@@ -41,6 +41,7 @@ struct RpcError {
 }
 
 /// Balance information
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Balance {

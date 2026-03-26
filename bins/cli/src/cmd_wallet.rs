@@ -114,19 +114,17 @@ pub(crate) fn cmd_address(wallet_path: &Path, label: Option<String>) -> Result<(
 pub(crate) fn cmd_addresses(wallet_path: &Path) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
 
-    println!("Addresses:");
-    for (i, addr) in wallet.addresses().iter().enumerate() {
-        let label = addr.label.as_deref().unwrap_or("");
-        let pubkey_bytes = hex::decode(&addr.public_key)?;
-        let bech32 = crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        let label_str = if label.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", label)
-        };
-        println!("  {}. {}{}", i + 1, bech32, label_str);
-    }
+    // Only show the primary address. Secondary addresses exist internally
+    // for UTXO consolidation but should not be displayed to users.
+    let addr = &wallet.addresses()[0];
+    let pubkey_bytes = hex::decode(&addr.public_key)?;
+    let bech32 = crypto::address::from_pubkey(&pubkey_bytes, address_prefix())
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let label_str = match addr.label.as_deref() {
+        Some(l) if !l.is_empty() => format!(" ({})", l),
+        _ => String::new(),
+    };
+    println!("Address: {}{}", bech32, label_str);
 
     Ok(())
 }
@@ -189,102 +187,69 @@ pub(crate) async fn cmd_balance(
     println!("Balances:");
     println!("{:-<60}", "");
 
-    // Collect addresses to query
-    let addresses: Vec<(String, String)> = if let Some(addr) = &address {
+    // Collect addresses to query — all addresses internally for correct totals,
+    // but only display under the primary address to avoid confusion.
+    let all_pubkey_hashes: Vec<String> = if let Some(addr) = &address {
         let pubkey_hash =
             crypto::address::resolve(addr, None).map_err(|e| anyhow::anyhow!("{}", e))?;
-        let pubkey_hash_hex = pubkey_hash.to_hex();
-        let display_addr = crypto::address::encode(&pubkey_hash, address_prefix())
-            .unwrap_or_else(|_| pubkey_hash_hex.clone());
-        vec![(pubkey_hash_hex, display_addr)]
+        vec![pubkey_hash.to_hex()]
     } else {
         wallet
-            .addresses()
-            .iter()
-            .filter_map(|wallet_addr| {
-                let pubkey_bytes = hex::decode(&wallet_addr.public_key).ok()?;
-                let pubkey_hash =
-                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
-                let pubkey_hash_hex = pubkey_hash.to_hex();
-                let label = wallet_addr.label.as_deref().unwrap_or("");
-                let bech32 = crypto::address::encode(&pubkey_hash, address_prefix())
-                    .unwrap_or_else(|_| pubkey_hash_hex.clone());
-                let display = if !label.is_empty() {
-                    format!("{} ({})", bech32, label)
-                } else {
-                    bech32
-                };
-                Some((pubkey_hash_hex, display))
-            })
+            .all_pubkey_hashes()
+            .into_iter()
+            .map(|(hash, _)| hash)
             .collect()
     };
 
-    for (pubkey_hash_hex, display_addr) in &addresses {
-        match rpc.get_balance(pubkey_hash_hex).await {
-            Ok(balance) => {
-                // Bonds live in ProducerSet (consumed on registration), not as UTXOs.
-                // So `confirmed` (spendable UTXOs) does NOT include bonds.
-                let bonded = bond_map.get(pubkey_hash_hex.as_str()).copied().unwrap_or(0);
-                let activating = pending_activation_map
-                    .get(pubkey_hash_hex.as_str())
-                    .copied()
-                    .unwrap_or(0);
-                let spendable = balance.confirmed;
-                let total = balance
-                    .total
-                    .saturating_add(bonded)
-                    .saturating_add(activating);
-
-                println!("{}", display_addr);
-                println!("  Spendable: {}", format_balance(spendable));
-                if bonded > 0 {
-                    println!("  Bonded:    {}  (producer bond)", format_balance(bonded));
-                }
-                if activating > 0 {
-                    println!(
-                        "  Activating: {}  (pending epoch)",
-                        format_balance(activating)
-                    );
-                }
-                if balance.immature > 0 {
-                    println!("  Immature:  {}", format_balance(balance.immature));
-                }
-                if balance.unconfirmed > 0 {
-                    println!("  Pending:   {}", format_balance(balance.unconfirmed));
-                }
-                println!("  Total:     {}", format_balance(total));
-                println!();
-
-                total_spendable += spendable;
-                total_bonded += bonded;
-                total_activating += activating;
-                total_immature += balance.immature;
-                total_unconfirmed += balance.unconfirmed;
-            }
-            Err(e) => {
-                println!("{}: Error - {}", display_addr, e);
-            }
+    // Query balances from ALL addresses and aggregate
+    for pubkey_hash_hex in &all_pubkey_hashes {
+        if let Ok(balance) = rpc.get_balance(pubkey_hash_hex).await {
+            let bonded = bond_map.get(pubkey_hash_hex.as_str()).copied().unwrap_or(0);
+            let activating = pending_activation_map
+                .get(pubkey_hash_hex.as_str())
+                .copied()
+                .unwrap_or(0);
+            total_spendable += balance.confirmed;
+            total_bonded += bonded;
+            total_activating += activating;
+            total_immature += balance.immature;
+            total_unconfirmed += balance.unconfirmed;
         }
     }
 
-    if address.is_none() && addresses.len() > 1 {
+    // Display consolidated balance under the primary address only
+    let primary_display = wallet.primary_bech32_address(address_prefix());
+    let label = wallet.addresses()[0].label.as_deref().unwrap_or("");
+    let display_addr = if !label.is_empty() {
+        format!("{} ({})", primary_display, label)
+    } else {
+        primary_display
+    };
+
+    println!("{}", display_addr);
+    println!("  Spendable: {}", format_balance(total_spendable));
+    if total_bonded > 0 {
+        println!(
+            "  Bonded:    {}  (producer bond)",
+            format_balance(total_bonded)
+        );
+    }
+    if total_activating > 0 {
+        println!(
+            "  Activating: {}  (pending epoch)",
+            format_balance(total_activating)
+        );
+    }
+    if total_immature > 0 {
+        println!("  Immature:  {}", format_balance(total_immature));
+    }
+    if total_unconfirmed > 0 {
+        println!("  Pending:   {}", format_balance(total_unconfirmed));
+    }
+    {
         let grand_total =
             total_spendable + total_bonded + total_activating + total_immature + total_unconfirmed;
-        println!("{:-<60}", "");
-        println!("Total Spendable: {}", format_balance(total_spendable));
-        if total_bonded > 0 {
-            println!("Total Bonded:    {}", format_balance(total_bonded));
-        }
-        if total_activating > 0 {
-            println!("Total Activating: {}", format_balance(total_activating));
-        }
-        if total_immature > 0 {
-            println!("Total Immature:  {}", format_balance(total_immature));
-        }
-        if total_unconfirmed > 0 {
-            println!("Total Pending:   {}", format_balance(total_unconfirmed));
-        }
-        println!("Total:           {}", format_balance(grand_total));
+        println!("  Total:     {}", format_balance(grand_total));
     }
 
     Ok(())

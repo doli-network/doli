@@ -196,7 +196,9 @@ impl Wallet {
     /// If the wallet is restored from the seed phrase, this address will be LOST
     /// along with any funds sent to it. Users are warned at generation time.
     pub fn generate_address(&mut self, label: Option<&str>) -> Result<String> {
-        eprintln!("WARNING: This address is randomly generated, NOT derived from your seed phrase.");
+        eprintln!(
+            "WARNING: This address is randomly generated, NOT derived from your seed phrase."
+        );
         eprintln!("         If you restore from seed, funds at this address will be LOST.");
         eprintln!("         Use this only for temporary purposes.");
 
@@ -399,7 +401,10 @@ mod tests {
         assert_eq!(hashes.len(), 2, "should return both primary and secondary");
         assert_eq!(hashes[0].1, 0, "first entry should be index 0 (primary)");
         assert_eq!(hashes[1].1, 1, "second entry should be index 1 (secondary)");
-        assert_ne!(hashes[0].0, hashes[1].0, "different addresses must have different hashes");
+        assert_ne!(
+            hashes[0].0, hashes[1].0,
+            "different addresses must have different hashes"
+        );
     }
 
     #[test]
@@ -428,7 +433,9 @@ mod tests {
     #[test]
     fn test_keypair_for_unknown_hash_fails() {
         let (wallet, _) = Wallet::new("test");
-        let result = wallet.keypair_for_pubkey_hash("0000000000000000000000000000000000000000000000000000000000000000");
+        let result = wallet.keypair_for_pubkey_hash(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
         assert!(result.is_err(), "should fail for unknown pubkey_hash");
     }
 
@@ -450,11 +457,18 @@ mod tests {
 
         // Restore from seed — only primary is recovered
         let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
-        assert_eq!(restored.addresses().len(), 1, "restored wallet should only have primary");
+        assert_eq!(
+            restored.addresses().len(),
+            1,
+            "restored wallet should only have primary"
+        );
         assert_eq!(restored.primary_public_key(), wallet.primary_public_key());
         // Secondary is gone
         assert!(
-            restored.addresses().iter().all(|a| a.public_key != secondary_pubkey),
+            restored
+                .addresses()
+                .iter()
+                .all(|a| a.public_key != secondary_pubkey),
             "secondary address must NOT be recoverable from seed"
         );
     }
