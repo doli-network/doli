@@ -190,8 +190,16 @@ impl Wallet {
         Ok(KeyPair::from_private_key(private_key))
     }
 
-    /// Generate a new address
+    /// Generate a new address.
+    ///
+    /// WARNING: This generates a RANDOM keypair, NOT derived from the BIP-39 seed.
+    /// If the wallet is restored from the seed phrase, this address will be LOST
+    /// along with any funds sent to it. Users are warned at generation time.
     pub fn generate_address(&mut self, label: Option<&str>) -> Result<String> {
+        eprintln!("WARNING: This address is randomly generated, NOT derived from your seed phrase.");
+        eprintln!("         If you restore from seed, funds at this address will be LOST.");
+        eprintln!("         Use this only for temporary purposes.");
+
         let kp = KeyPair::generate();
         let addr = WalletAddress {
             address: kp.address().to_hex(),
@@ -206,6 +214,39 @@ impl Wallet {
         self.addresses.push(addr);
 
         Ok(address)
+    }
+
+    /// Get pubkey_hashes for ALL addresses in the wallet.
+    /// Returns Vec of (pubkey_hash_hex, address_index).
+    pub fn all_pubkey_hashes(&self) -> Vec<(String, usize)> {
+        self.addresses
+            .iter()
+            .enumerate()
+            .filter_map(|(i, addr)| {
+                let pubkey_bytes = hex::decode(&addr.public_key).ok()?;
+                let hash = hash_with_domain(ADDRESS_DOMAIN, &pubkey_bytes);
+                Some((hash.to_hex(), i))
+            })
+            .collect()
+    }
+
+    /// Get the keypair for a specific address by its pubkey_hash.
+    /// Searches all addresses in the wallet.
+    pub fn keypair_for_pubkey_hash(&self, pubkey_hash: &str) -> Result<KeyPair> {
+        for addr in &self.addresses {
+            let pubkey_bytes =
+                hex::decode(&addr.public_key).map_err(|e| anyhow!("Invalid pubkey: {}", e))?;
+            let hash = hash_with_domain(ADDRESS_DOMAIN, &pubkey_bytes);
+            if hash.to_hex() == pubkey_hash {
+                let private_key = PrivateKey::from_hex(&addr.private_key)
+                    .map_err(|e| anyhow!("Invalid private key: {}", e))?;
+                return Ok(KeyPair::from_private_key(private_key));
+            }
+        }
+        Err(anyhow!(
+            "No address in wallet matches pubkey_hash: {}",
+            pubkey_hash
+        ))
     }
 
     /// Check if the primary address has a BLS key
@@ -347,6 +388,75 @@ mod tests {
 
         assert_eq!(wallet.addresses().len(), 2);
         assert!(!addr.is_empty());
+    }
+
+    #[test]
+    fn test_all_pubkey_hashes_returns_all_addresses() {
+        let (mut wallet, _) = Wallet::new("test");
+        wallet.generate_address(Some("secondary")).unwrap();
+
+        let hashes = wallet.all_pubkey_hashes();
+        assert_eq!(hashes.len(), 2, "should return both primary and secondary");
+        assert_eq!(hashes[0].1, 0, "first entry should be index 0 (primary)");
+        assert_eq!(hashes[1].1, 1, "second entry should be index 1 (secondary)");
+        assert_ne!(hashes[0].0, hashes[1].0, "different addresses must have different hashes");
+    }
+
+    #[test]
+    fn test_keypair_for_pubkey_hash_finds_primary() {
+        let (wallet, _) = Wallet::new("test");
+        let primary_hash = wallet.primary_pubkey_hash();
+
+        let kp = wallet.keypair_for_pubkey_hash(&primary_hash).unwrap();
+        assert_eq!(kp.public_key().to_hex(), wallet.primary_public_key());
+    }
+
+    #[test]
+    fn test_keypair_for_pubkey_hash_finds_secondary() {
+        let (mut wallet, _) = Wallet::new("test");
+        wallet.generate_address(Some("secondary")).unwrap();
+
+        let hashes = wallet.all_pubkey_hashes();
+        let secondary_hash = &hashes[1].0;
+
+        // Must find the secondary key, not the primary
+        let kp = wallet.keypair_for_pubkey_hash(secondary_hash).unwrap();
+        assert_eq!(kp.public_key().to_hex(), wallet.addresses()[1].public_key);
+        assert_ne!(kp.public_key().to_hex(), wallet.primary_public_key());
+    }
+
+    #[test]
+    fn test_keypair_for_unknown_hash_fails() {
+        let (wallet, _) = Wallet::new("test");
+        let result = wallet.keypair_for_pubkey_hash("0000000000000000000000000000000000000000000000000000000000000000");
+        assert!(result.is_err(), "should fail for unknown pubkey_hash");
+    }
+
+    #[test]
+    fn test_all_pubkey_hashes_single_address() {
+        let (wallet, _) = Wallet::new("test");
+        let hashes = wallet.all_pubkey_hashes();
+        assert_eq!(hashes.len(), 1);
+        assert_eq!(hashes[0].0, wallet.primary_pubkey_hash());
+    }
+
+    #[test]
+    fn test_secondary_address_not_derived_from_seed() {
+        // This test documents the current behavior: secondary addresses are random,
+        // NOT derived from the seed phrase. Restoring from seed will NOT recover them.
+        let (mut wallet, phrase) = Wallet::new("test");
+        wallet.generate_address(Some("secondary")).unwrap();
+        let secondary_pubkey = wallet.addresses()[1].public_key.clone();
+
+        // Restore from seed — only primary is recovered
+        let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
+        assert_eq!(restored.addresses().len(), 1, "restored wallet should only have primary");
+        assert_eq!(restored.primary_public_key(), wallet.primary_public_key());
+        // Secondary is gone
+        assert!(
+            restored.addresses().iter().all(|a| a.public_key != secondary_pubkey),
+            "secondary address must NOT be recoverable from seed"
+        );
     }
 
     #[test]

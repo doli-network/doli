@@ -344,19 +344,25 @@ pub(crate) async fn cmd_send(
     let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
         .unwrap_or_else(|_| recipient_hash.to_hex());
 
-    // Get the sender's pubkey_hash for UTXO lookup
+    // Get spendable normal UTXOs from ALL addresses in the wallet.
+    // This ensures funds at secondary addresses are not stranded.
+    // Each UTXO tracks which pubkey_hash owns it for correct signing.
+    let all_pubkey_hashes = wallet.all_pubkey_hashes();
+    let mut utxos: Vec<(crate::rpc_client::Utxo, String)> = Vec::new(); // (utxo, owner_pubkey_hash)
+    for (pubkey_hash, _idx) in &all_pubkey_hashes {
+        let addr_utxos: Vec<_> = rpc
+            .get_utxos(pubkey_hash, true)
+            .await?
+            .into_iter()
+            .filter(|u| u.output_type == "normal" && u.spendable)
+            .map(|u| (u, pubkey_hash.clone()))
+            .collect();
+        utxos.extend(addr_utxos);
+    }
+    // Prefer confirmed UTXOs over pending (mempool) ones
+    utxos.sort_by_key(|(u, _)| u.pending as u8);
+    // Change always goes to the primary address
     let from_pubkey_hash = wallet.primary_pubkey_hash();
-
-    // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
-    // Includes pending mempool outputs (change from previous sends) for chained transactions.
-    // Confirmed UTXOs first, then pending — prefer confirmed for reliability.
-    let mut utxos: Vec<_> = rpc
-        .get_utxos(&from_pubkey_hash, true)
-        .await?
-        .into_iter()
-        .filter(|u| u.output_type == "normal" && u.spendable)
-        .collect();
-    utxos.sort_by_key(|u| u.pending as u8);
 
     if utxos.is_empty() {
         anyhow::bail!("No spendable UTXOs available. Note: Coinbase outputs require {} confirmations before they can be spent.", doli_core::consensus::COINBASE_MATURITY);
@@ -364,16 +370,16 @@ pub(crate) async fn cmd_send(
 
     // Select UTXOs with a preliminary fee estimate, then recalculate
     let preliminary_fee = explicit_fee.unwrap_or(1);
-    let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
+    let total_available: u64 = utxos.iter().map(|(u, _)| u.amount).sum();
 
-    let mut selected_utxos = Vec::new();
+    let mut selected_utxos: Vec<(crate::rpc_client::Utxo, String)> = Vec::new();
     let mut total_input = 0u64;
-    for utxo in &utxos {
+    for entry in &utxos {
         if total_input >= amount_units + preliminary_fee {
             break;
         }
-        selected_utxos.push(utxo.clone());
-        total_input += utxo.amount;
+        selected_utxos.push(entry.clone());
+        total_input += entry.0.amount;
     }
 
     // Flat fee: 1 satoshi per transaction
@@ -383,12 +389,12 @@ pub(crate) async fn cmd_send(
     if explicit_fee.is_none() && total_input < amount_units + fee_units {
         selected_utxos.clear();
         total_input = 0;
-        for utxo in &utxos {
+        for entry in &utxos {
             if total_input >= amount_units + fee_units {
                 break;
             }
-            selected_utxos.push(utxo.clone());
-            total_input += utxo.amount;
+            selected_utxos.push(entry.clone());
+            total_input += entry.0.amount;
         }
     }
 
@@ -417,7 +423,7 @@ pub(crate) async fn cmd_send(
 
     println!();
     println!("Using {} UTXO(s):", selected_utxos.len());
-    for utxo in &selected_utxos {
+    for (utxo, _) in &selected_utxos {
         println!(
             "  {}:{} - {}",
             &utxo.tx_hash[..16],
@@ -428,7 +434,7 @@ pub(crate) async fn cmd_send(
 
     // Build transaction inputs (without signatures yet)
     let mut inputs: Vec<Input> = Vec::new();
-    for utxo in &selected_utxos {
+    for (utxo, _) in &selected_utxos {
         let prev_tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
         inputs.push(Input::new(prev_tx_hash, utxo.output_index));
@@ -449,7 +455,7 @@ pub(crate) async fn cmd_send(
         outputs.push(Output::normal(amount_units, recipient_hash));
     }
 
-    // Change output (if needed)
+    // Change output always goes to primary address
     let change = total_input - required;
     if change > 0 {
         let change_hash = Hash::from_hex(&from_pubkey_hash)
@@ -461,9 +467,10 @@ pub(crate) async fn cmd_send(
     // Create unsigned transaction
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign each input (BIP-143: per-input signing hash)
-    let keypair = wallet.primary_keypair()?;
-    for i in 0..tx.inputs.len() {
+    // Sign each input with the keypair that owns that UTXO.
+    // Different inputs may come from different addresses in the wallet.
+    for (i, (_utxo, owner_pubkey_hash)) in selected_utxos.iter().enumerate() {
+        let keypair = wallet.keypair_for_pubkey_hash(owner_pubkey_hash)?;
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
     }
