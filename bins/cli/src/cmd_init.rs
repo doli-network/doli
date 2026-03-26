@@ -106,12 +106,18 @@ pub(crate) fn cmd_init(
     wallet.save(wallet_path)?;
 
     // Also write seed phrase to a separate file (same as cmd_new)
+    // Permissions: owner-only (0600) to prevent other users from reading the seed
     let seed_path = wallet_path.with_extension("seed.txt");
     let mut seed_content = String::new();
     for (i, word) in words.iter().enumerate() {
         seed_content.push_str(&format!("{}. {}\n", i + 1, word));
     }
     std::fs::write(&seed_path, &seed_content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600))?;
+    }
 
     // Print the producer identity
     let bech32_addr = wallet.primary_bech32_address(address_prefix());

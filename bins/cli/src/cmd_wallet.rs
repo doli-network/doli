@@ -20,7 +20,7 @@ pub(crate) fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()>
     let (wallet, phrase) = Wallet::new(&name);
     wallet.save(wallet_path)?;
 
-    // Write seed phrase to a separate file
+    // Write seed phrase to a separate file (owner-only permissions)
     let seed_path = wallet_path.with_extension("seed.txt");
     let mut seed_content = String::new();
     let words: Vec<&str> = phrase.split_whitespace().collect();
@@ -28,6 +28,11 @@ pub(crate) fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()>
         seed_content.push_str(&format!("{}. {}\n", i + 1, word));
     }
     std::fs::write(&seed_path, &seed_content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600))?;
+    }
 
     let bech32_addr = wallet.primary_bech32_address(address_prefix());
 
