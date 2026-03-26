@@ -169,9 +169,11 @@ impl Node {
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
         network_config.max_peers = self.config.max_peers;
-        // Bootstrap headroom: allow as many temporary DHT-exchange connections
-        // as regular peer slots so burst joins can bootstrap via Kademlia.
-        network_config.bootstrap_slots = self.config.max_peers;
+        // Bootstrap headroom: small fixed pool for temporary DHT-exchange connections.
+        // Bootstrap peers only last 10s (Kademlia exchange), so we never need many
+        // simultaneously. 10 slots add only 20 connections to conn_limit — negligible
+        // RAM vs max_peers which added 50 connections and ~23GB at 156 nodes.
+        network_config.bootstrap_slots = 10;
         network_config.no_dht = self.config.no_dht;
         // Store node_key in parent of data_dir so chain resets (which wipe data_dir)
         // don't regenerate the peer ID. Stable peer IDs prevent Kademlia mismatch storms.

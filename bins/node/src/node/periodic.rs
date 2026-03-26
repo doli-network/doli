@@ -274,12 +274,27 @@ impl Node {
 
             if is_stale && !is_syncing {
                 if peer_count == 0 {
-                    // No peers — redial bootstrap nodes and re-bootstrap DHT
-                    info!("Stale chain detected (no blocks for 3 slots) with 0 peers — redialing bootstrap nodes");
+                    // No peers — redial bootstrap nodes using the SAME backoff tracking
+                    // as the peer maintenance block above. Without shared backoff, this
+                    // fires every second, flooding the seed with dozens of dial attempts
+                    // that trigger dial_backoff → Kademlia removal → permanent isolation.
+                    let now = std::time::Instant::now();
                     if let Some(ref network) = self.network {
                         for addr in &self.config.bootstrap_nodes {
-                            if let Err(e) = network.connect(addr).await {
-                                warn!("Failed to redial bootstrap {}: {}", addr, e);
+                            let (count, last_attempt) = self
+                                .bootstrap_backoff
+                                .entry(addr.clone())
+                                .or_insert((0, now - Duration::from_secs(300)));
+                            let backoff_secs = std::cmp::min(60, 1u64 << (*count).min(6));
+                            let backoff = Duration::from_secs(backoff_secs);
+                            if last_attempt.elapsed() >= backoff {
+                                info!(
+                                    "Stale chain: redialing bootstrap {} (attempt {}, backoff {}s)",
+                                    addr, count, backoff_secs
+                                );
+                                *last_attempt = now;
+                                *count = count.saturating_add(1);
+                                let _ = network.connect(addr).await;
                             }
                         }
                         let _ = network.bootstrap().await;

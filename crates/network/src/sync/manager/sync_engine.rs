@@ -266,7 +266,28 @@ impl SyncManager {
             }
 
             SyncPipelineData::Headers { peer, .. } => {
-                let peer = *peer;
+                let mut peer = *peer;
+
+                // If the designated sync peer was evicted (churn), pick a new one.
+                // Without this, we keep sending requests to a dead peer forever —
+                // they silently fail, time out, and the node stalls at 0 pending requests.
+                if !self.peers.contains_key(&peer) {
+                    if let Some(new_peer) = self.best_peer() {
+                        warn!(
+                            "[SYNC] Header peer {} lost (evicted) — switching to {}",
+                            peer, new_peer
+                        );
+                        peer = new_peer;
+                        if let SyncPipelineData::Headers {
+                            peer: ref mut p, ..
+                        } = &mut self.pipeline_data
+                        {
+                            *p = new_peer;
+                        }
+                    } else {
+                        return None;
+                    }
+                }
 
                 // Guard: don't send a new request if the peer already has one in flight.
                 // Without this, cleanup() calls next_request() every ~1s, creating
