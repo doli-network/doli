@@ -1,6 +1,6 @@
 name: Faucet Request
 description: Request 10.01 DOLI to register as a producer
-title: "Faucet: [your doli1... address]"
+title: "Faucet: [paste your doli1... address here]"
 labels: ["faucet"]
 body:
   - type: markdown
@@ -10,21 +10,38 @@ body:
 
         This sends you 10.01 DOLI — enough to register as a block producer (10 for the bond + 0.01 for fees).
 
-        **Before requesting:**
-        1. Install DOLI: `curl -sSfL https://doli.network/install.sh | sudo sh`
-        2. Initialize: `doli init`
-        3. Sync: `doli snap`
-        4. Start: `sudo doli service install`
-        5. Get your address: `doli info`
+        **Complete these steps BEFORE requesting:**
+        1. Install: `curl -sSfL https://doli.network/install.sh | sudo sh`
+        2. Create wallet: `doli init`
+        3. Sync: `sudo doli snap`
+        4. Start node: `sudo doli service install`
 
-        Full guide: https://doli.network/guide.html
+        Full guide: [doli.network/guide.html](https://doli.network/guide.html)
 
   - type: input
     id: address
     attributes:
       label: Your DOLI address
-      description: "Paste the doli1... address from `doli info`"
+      description: "Paste the doli1... address shown by `doli info`"
       placeholder: "doli1..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: chain_output
+    attributes:
+      label: "Output of: doli chain"
+      description: "Run `doli chain` and paste the FULL output here. This proves your node is synced."
+      placeholder: |
+        Chain Information
+        ------------------------------------------------------------
+        Network:      mainnet
+        Best Height:  ...
+        Best Slot:    ...
+        Best Hash:    ...
+        Genesis Hash: ...
+        Reward Pool:  ...
+      render: text
     validations:
       required: true
 
@@ -35,5 +52,5 @@ body:
       options:
         - label: My node is synced and running
           required: true
-        - label: I understand this is a one-time send (10.01 DOLI)
+        - label: I understand this is one-time (10.01 DOLI, one per GitHub account)
           required: true
