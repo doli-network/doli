@@ -273,8 +273,12 @@ impl SyncManager {
         }
 
         // Gate 2: Height lag — block production when significantly behind
+        // Skip at genesis (local_height == 0): the bootstrap phase (lines 82-143)
+        // already handles genesis production. A stale peer height from a previous
+        // chain (e.g., N13 at h=7363 before wipe) would deadlock genesis otherwise.
+        // See: testnet genesis deadlock 2026-03-26.
         let best_peer_height = self.best_peer_height();
-        if !self.peers.is_empty() && best_peer_height > 0 {
+        if !self.peers.is_empty() && best_peer_height > 0 && self.local_height > 0 {
             let height_lag = best_peer_height.saturating_sub(self.local_height);
 
             if height_lag > 3 {
