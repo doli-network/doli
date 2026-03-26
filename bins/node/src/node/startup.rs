@@ -173,7 +173,10 @@ impl Node {
         // Bootstrap peers only last 10s (Kademlia exchange), so we never need many
         // simultaneously. 10 slots add only 20 connections to conn_limit — negligible
         // RAM vs max_peers which added 50 connections and ~23GB at 156 nodes.
-        network_config.bootstrap_slots = 10;
+        network_config.bootstrap_slots = std::env::var("DOLI_BOOTSTRAP_SLOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
         network_config.no_dht = self.config.no_dht;
         // Store node_key in parent of data_dir so chain resets (which wipe data_dir)
         // don't regenerate the peer ID. Stable peer IDs prevent Kademlia mismatch storms.

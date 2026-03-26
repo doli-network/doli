@@ -133,7 +133,10 @@ impl NetworkService {
         // Steady state governed by max_peers eviction, not conn_limit.
         // Must be high enough for burst startup (N nodes dial seed simultaneously)
         // to avoid libp2p internal dial_backoff permanently isolating rejected peers.
-        let conn_limit = (config.max_peers * 2 + config.bootstrap_slots) as u32;
+        let conn_limit = std::env::var("DOLI_CONN_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((config.max_peers * 2 + config.bootstrap_slots) as u32);
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(conn_limit))

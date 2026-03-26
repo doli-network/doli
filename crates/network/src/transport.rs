@@ -11,7 +11,11 @@ use libp2p::{core::upgrade, dns, identity::Keypair, noise, relay, tcp, yamux, Pe
 #[allow(deprecated)] // set_receive_window_size will be replaced in next yamux breaking release
 fn yamux_config() -> yamux::Config {
     let mut cfg = yamux::Config::default();
-    cfg.set_receive_window_size(524_288);
+    let window = std::env::var("DOLI_YAMUX_WINDOW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(524_288u32);
+    cfg.set_receive_window_size(window);
     cfg
 }
 
