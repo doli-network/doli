@@ -510,13 +510,62 @@ impl Node {
             block_hash, height, current_slot, block.header.prev_hash
         );
 
-        // Apply the block locally.
-        // Use Light validation for self-produced blocks — we already verified our
-        // eligibility in try_produce_block(). Full validation uses a DIFFERENT code
-        // path (validate_block_for_apply) that doesn't include emergency equalization,
-        // causing "invalid producer for slot" rejections during chain stalls.
-        self.apply_block(block.clone(), ValidationMode::Light)
-            .await?;
+        // Apply the block locally with try-apply pattern.
+        // If apply_block fails (e.g., toxic mempool TX passed builder validation
+        // but fails apply validation), rollback + purge + return Ok so the next
+        // production tick retries with a clean mempool.
+        // See: testnet incident 2026-03-25, NFT token_id poisoned mempool.
+        match self.apply_block(block.clone(), ValidationMode::Light).await {
+            Ok(()) => {} // Success — proceed to broadcast
+            Err(e) => {
+                warn!(
+                    "[BLOCK_POISON] apply_block failed on self-produced block at h={}: {}. \
+                     Rolling back and purging toxic TXs from mempool.",
+                    height, e
+                );
+
+                // Rollback the partial state change
+                match self.rollback_one_block().await {
+                    Ok(true) => {
+                        info!("[BLOCK_POISON] Rollback succeeded");
+                    }
+                    Ok(false) => {
+                        warn!("[BLOCK_POISON] Rollback not possible (no undo data)");
+                    }
+                    Err(rb_err) => {
+                        error!(
+                            "[BLOCK_POISON] Rollback failed: {}. Manual intervention needed.",
+                            rb_err
+                        );
+                        return Err(e);
+                    }
+                }
+
+                // Purge ALL mempool TXs that were in the failed block.
+                // The toxic TX is among them — purge all to guarantee removal.
+                // Valid TXs will re-propagate via gossip and enter the next block.
+                {
+                    let mut mempool = self.mempool.write().await;
+                    let before = mempool.len();
+                    for tx in &block.transactions {
+                        mempool.remove_transaction(&tx.hash());
+                    }
+                    let after = mempool.len();
+                    if before != after {
+                        warn!(
+                            "[BLOCK_POISON] Purged {} TXs from mempool (block had {} TXs). \
+                             Next tick will build a clean block.",
+                            before - after,
+                            block.transactions.len()
+                        );
+                    }
+                }
+
+                // Return Ok so the event loop doesn't trigger additional purge logic.
+                // Next production tick will retry with a clean mempool.
+                return Ok(());
+            }
+        }
 
         // NOTE: Do NOT call note_block_received_via_gossip() here.
         // Self-produced blocks must not reset the solo production watchdog —

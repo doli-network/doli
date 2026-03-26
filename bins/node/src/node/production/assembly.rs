@@ -150,6 +150,44 @@ impl Node {
                     );
                     continue;
                 }
+                // Check UniqueIdIndex for NFT/Pool duplicate IDs.
+                // validate_transaction_with_utxos doesn't check this — the check
+                // only existed in apply_block, causing a fatal mismatch where the
+                // builder includes a TX that apply_block rejects, freezing the chain.
+                // See: testnet incident 2026-03-25, NFT token_id poisoned mempool.
+                let mut unique_conflict = false;
+                for output in &tx.outputs {
+                    match output.output_type {
+                        doli_core::OutputType::NFT => {
+                            if let Some((token_id, _)) = output.nft_metadata() {
+                                if utxo.has_unique_id(storage::UID_PREFIX_NFT, &token_id) {
+                                    warn!(
+                                        "Skipping mempool tx {} — NFT token_id {} already exists",
+                                        tx.hash(), token_id.to_hex()
+                                    );
+                                    unique_conflict = true;
+                                    break;
+                                }
+                            }
+                        }
+                        doli_core::OutputType::Pool if tx.tx_type == doli_core::TxType::CreatePool => {
+                            if let Some(meta) = output.pool_metadata() {
+                                if utxo.has_unique_id(storage::UID_PREFIX_POOL, &meta.pool_id) {
+                                    warn!(
+                                        "Skipping mempool tx {} — Pool {} already exists",
+                                        tx.hash(), meta.pool_id.to_hex()
+                                    );
+                                    unique_conflict = true;
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if unique_conflict {
+                    continue;
+                }
                 included_count += 1;
                 included_txs.push(tx);
                 builder.add_transaction(tx.clone());

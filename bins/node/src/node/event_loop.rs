@@ -64,19 +64,21 @@ impl Node {
                     if self.producer_key.is_some() {
                         if let Err(e) = self.try_produce_block().await {
                             warn!("Block production error: {}", e);
-                            // If block failed due to a bad mempool TX (e.g., duplicate
-                            // registration), purge registration TXs from mempool to
-                            // prevent infinite retry loops that halt the chain.
+                            // Purge toxic TXs from mempool to prevent infinite retry
+                            // loops that freeze the chain. Covers: duplicate NFT token_id,
+                            // duplicate pool_id, duplicate registration, or any TX that
+                            // causes "already exists" errors in apply_block.
+                            // See: testnet incident 2026-03-25.
                             let err_msg = e.to_string();
-                            if err_msg.contains("registration") || err_msg.contains("already") {
+                            if err_msg.contains("already exists") || err_msg.contains("already registered") {
                                 let mut mempool = self.mempool.write().await;
                                 let before = mempool.len();
-                                mempool.remove_registration_txs();
+                                mempool.remove_by_error_pattern(&err_msg);
                                 let after = mempool.len();
                                 if before != after {
                                     warn!(
-                                        "Purged {} registration TXs from mempool after production error",
-                                        before - after
+                                        "Purged {} toxic TXs from mempool after production error: {}",
+                                        before - after, err_msg
                                     );
                                 }
                             }

@@ -474,6 +474,40 @@ impl Mempool {
         }
     }
 
+    /// Remove TXs that could cause "already exists" errors in apply_block.
+    /// Purges NFT, CreatePool, or Registration TXs based on the error message.
+    /// Prevents toxic mempool TXs from freezing the chain indefinitely.
+    /// See: testnet incident 2026-03-25.
+    pub fn remove_by_error_pattern(&mut self, err_msg: &str) {
+        let toxic: Vec<Hash> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| {
+                let tx = &entry.tx;
+                if (err_msg.contains("token_id") || err_msg.contains("NFT"))
+                    && tx.outputs.iter().any(|o| o.output_type == doli_core::OutputType::NFT)
+                {
+                    return true;
+                }
+                if err_msg.contains("ool")
+                    && tx.tx_type == doli_core::TxType::CreatePool
+                {
+                    return true;
+                }
+                if err_msg.contains("egistration")
+                    && tx.tx_type == doli_core::TxType::Registration
+                {
+                    return true;
+                }
+                false
+            })
+            .map(|(hash, _)| *hash)
+            .collect();
+        for hash in toxic {
+            self.remove_transaction(&hash);
+        }
+    }
+
     /// Iterate all mempool entries
     pub fn iter(&self) -> impl Iterator<Item = (&Hash, &MempoolEntry)> {
         self.entries.iter()
