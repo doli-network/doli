@@ -156,8 +156,16 @@ impl Node {
             );
         }
 
-        // Sum qualifying bonds (includes delegated bonds via selection_weight)
-        let qualifying_bonds: u64 = qualified.iter().map(|p| p.selection_weight()).sum();
+        // Sum qualifying bonds using epoch-locked snapshot (deterministic across all nodes).
+        // CRITICAL: Do NOT use selection_weight() here — it reads live bond_count which can
+        // differ between nodes after mid-epoch withdrawals (N5 testnet incident 2026-03-26).
+        // The epoch_bond_snapshot is computed from the UTXO set at the epoch boundary,
+        // identical on all nodes.
+        let bond_for = |p: &storage::producer::ProducerInfo| -> u64 {
+            let pkh = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
+            self.epoch_bond_snapshot.get(&pkh).copied().unwrap_or(1)
+        };
+        let qualifying_bonds: u64 = qualified.iter().map(|p| bond_for(p)).sum();
 
         if qualifying_bonds == 0 {
             return Vec::new();
@@ -184,7 +192,7 @@ impl Node {
         let mut distributed: u64 = 0;
 
         for producer_info in &qualified {
-            let bonds = producer_info.selection_weight();
+            let bonds = bond_for(producer_info);
             let reward = (pool as u128 * bonds as u128 / qualifying_bonds as u128) as u64;
 
             if reward == 0 {

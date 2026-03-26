@@ -122,7 +122,7 @@ impl Node {
         tx: &Transaction,
         height: u64,
         block_slot: u32,
-        utxo: &UtxoSet,
+        _utxo: &UtxoSet,
         producers: &mut ProducerSet,
         dirty_producer_keys: &mut std::collections::HashSet<Hash>,
         new_registrations: &mut Vec<PublicKey>,
@@ -293,50 +293,33 @@ impl Node {
                             data.bond_count, available
                         );
                     } else {
-                        // Validate: output amount <= FIFO net calculation (from UTXO bonds)
-                        let pubkey_hash =
-                            hash_with_domain(ADDRESS_DOMAIN, data.producer_pubkey.as_bytes());
-                        let bond_entries = utxo.get_bond_entries(&pubkey_hash);
-                        let expected = storage::producer::calculate_withdrawal_from_bonds(
-                            &bond_entries,
-                            data.bond_count,
-                            block_slot,
-                            self.config.network.params().vesting_quarter_slots,
-                        );
-                        let tx_output = tx.outputs.first().map(|o| o.amount).unwrap_or(0);
-                        if let Some((expected_net, _penalty)) = expected {
-                            if tx_output > expected_net {
-                                warn!(
-                                    "WithdrawalRequest: output {} exceeds FIFO net {}",
-                                    tx_output, expected_net
-                                );
-                            } else {
-                                // Increment pending count (prevents double-withdrawal in same epoch)
-                                if let Some(producer) =
-                                    producers.get_by_pubkey_mut(&data.producer_pubkey)
-                                {
-                                    producer.withdrawal_pending_count += data.bond_count;
-                                    // Track as dirty for atomic batch write
-                                    dirty_producer_keys
-                                        .insert(crypto_hash(data.producer_pubkey.as_bytes()));
-                                }
+                        // TX is on-chain (passed consensus validation). Always enqueue
+                        // the deferred update. Previous code had a redundant FIFO check
+                        // here that silently dropped the update when output included
+                        // accumulated rewards, causing permanent ProducerSet inconsistency.
+                        // See: N12 testnet incident 2026-03-26.
 
-                                let bond_unit = self.config.network.bond_unit();
-                                producers.queue_update(PendingProducerUpdate::RequestWithdrawal {
-                                    pubkey: data.producer_pubkey,
-                                    bond_count: data.bond_count,
-                                    bond_unit,
-                                });
-                                info!(
-                                    "Queued WithdrawalRequest ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
-                                    data.bond_count,
-                                    crypto_hash(data.producer_pubkey.as_bytes()),
-                                    height
-                                );
-                            }
-                        } else {
-                            warn!("WithdrawalRequest: FIFO calculation failed for producer");
+                        // Increment pending count (prevents double-withdrawal in same epoch)
+                        if let Some(producer) =
+                            producers.get_by_pubkey_mut(&data.producer_pubkey)
+                        {
+                            producer.withdrawal_pending_count += data.bond_count;
+                            dirty_producer_keys
+                                .insert(crypto_hash(data.producer_pubkey.as_bytes()));
                         }
+
+                        let bond_unit = self.config.network.bond_unit();
+                        producers.queue_update(PendingProducerUpdate::RequestWithdrawal {
+                            pubkey: data.producer_pubkey,
+                            bond_count: data.bond_count,
+                            bond_unit,
+                        });
+                        info!(
+                            "Queued WithdrawalRequest ({} bonds) for producer {} at height {} (deferred to epoch boundary)",
+                            data.bond_count,
+                            crypto_hash(data.producer_pubkey.as_bytes()),
+                            height
+                        );
                     }
                 } else {
                     warn!("WithdrawalRequest: producer not found");
