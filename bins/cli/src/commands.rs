@@ -63,9 +63,13 @@ pub(crate) enum Commands {
 
     /// Show wallet balance
     Balance {
-        /// Specific address (default: all)
-        #[arg(short, long)]
+        /// Show balance for a specific address only
+        #[arg(short = 'A', long)]
         address: Option<String>,
+
+        /// Show per-address breakdown (all addresses in wallet)
+        #[arg(long)]
+        all: bool,
     },
 
     /// Send coins (optionally with a covenant condition)

@@ -133,6 +133,7 @@ pub(crate) async fn cmd_balance(
     wallet_path: &Path,
     rpc_endpoint: &str,
     address: Option<String>,
+    show_all: bool,
 ) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -187,29 +188,76 @@ pub(crate) async fn cmd_balance(
     println!("Balances:");
     println!("{:-<60}", "");
 
-    // Collect addresses to query — all addresses internally for correct totals,
-    // but only display under the primary address to avoid confusion.
-    let all_pubkey_hashes: Vec<String> = if let Some(addr) = &address {
+    // Build list of (pubkey_hash_hex, display_label) to query
+    let query_addresses: Vec<(String, String)> = if let Some(addr) = &address {
         let pubkey_hash =
             crypto::address::resolve(addr, None).map_err(|e| anyhow::anyhow!("{}", e))?;
-        vec![pubkey_hash.to_hex()]
+        let display = crypto::address::encode(&pubkey_hash, address_prefix())
+            .unwrap_or_else(|_| pubkey_hash.to_hex());
+        vec![(pubkey_hash.to_hex(), display)]
     } else {
         wallet
-            .all_pubkey_hashes()
-            .into_iter()
-            .map(|(hash, _)| hash)
+            .addresses()
+            .iter()
+            .filter_map(|wallet_addr| {
+                let pubkey_bytes = hex::decode(&wallet_addr.public_key).ok()?;
+                let pubkey_hash =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pubkey_bytes);
+                let bech32 = crypto::address::encode(&pubkey_hash, address_prefix())
+                    .unwrap_or_else(|_| pubkey_hash.to_hex());
+                let label = wallet_addr.label.as_deref().unwrap_or("");
+                let display = if !label.is_empty() {
+                    format!("{} ({})", bech32, label)
+                } else {
+                    bech32
+                };
+                Some((pubkey_hash.to_hex(), display))
+            })
             .collect()
     };
 
-    // Query balances from ALL addresses and aggregate
-    for pubkey_hash_hex in &all_pubkey_hashes {
+    // Query balances and display
+    // --address or --all: show per-address breakdown
+    // default: show consolidated under primary only
+    let show_per_address = address.is_some() || show_all;
+
+    for (pubkey_hash_hex, display_addr) in &query_addresses {
         if let Ok(balance) = rpc.get_balance(pubkey_hash_hex).await {
             let bonded = bond_map.get(pubkey_hash_hex.as_str()).copied().unwrap_or(0);
             let activating = pending_activation_map
                 .get(pubkey_hash_hex.as_str())
                 .copied()
                 .unwrap_or(0);
-            total_spendable += balance.confirmed;
+            let spendable = balance.confirmed;
+
+            if show_per_address {
+                println!("{}", display_addr);
+                println!("  Spendable: {}", format_balance(spendable));
+                if bonded > 0 {
+                    println!("  Bonded:    {}  (producer bond)", format_balance(bonded));
+                }
+                if activating > 0 {
+                    println!(
+                        "  Activating: {}  (pending epoch)",
+                        format_balance(activating)
+                    );
+                }
+                if balance.immature > 0 {
+                    println!("  Immature:  {}", format_balance(balance.immature));
+                }
+                if balance.unconfirmed > 0 {
+                    println!("  Pending:   {}", format_balance(balance.unconfirmed));
+                }
+                let addr_total = spendable
+                    .saturating_add(bonded)
+                    .saturating_add(activating)
+                    .saturating_add(balance.immature)
+                    .saturating_add(balance.unconfirmed);
+                println!("  Total:     {}", format_balance(addr_total));
+                println!();
+            }
+
+            total_spendable += spendable;
             total_bonded += bonded;
             total_activating += activating;
             total_immature += balance.immature;
@@ -217,39 +265,52 @@ pub(crate) async fn cmd_balance(
         }
     }
 
-    // Display consolidated balance under the primary address only
-    let primary_display = wallet.primary_bech32_address(address_prefix());
-    let label = wallet.addresses()[0].label.as_deref().unwrap_or("");
-    let display_addr = if !label.is_empty() {
-        format!("{} ({})", primary_display, label)
-    } else {
-        primary_display
-    };
-
-    println!("{}", display_addr);
-    println!("  Spendable: {}", format_balance(total_spendable));
-    if total_bonded > 0 {
-        println!(
-            "  Bonded:    {}  (producer bond)",
-            format_balance(total_bonded)
-        );
-    }
-    if total_activating > 0 {
-        println!(
-            "  Activating: {}  (pending epoch)",
-            format_balance(total_activating)
-        );
-    }
-    if total_immature > 0 {
-        println!("  Immature:  {}", format_balance(total_immature));
-    }
-    if total_unconfirmed > 0 {
-        println!("  Pending:   {}", format_balance(total_unconfirmed));
-    }
-    {
+    // Show totals
+    if !show_per_address {
+        // Default: consolidated under primary address
+        let primary_display = wallet.primary_bech32_address(address_prefix());
+        let label = wallet.addresses()[0].label.as_deref().unwrap_or("");
+        let display = if !label.is_empty() {
+            format!("{} ({})", primary_display, label)
+        } else {
+            primary_display
+        };
+        println!("{}", display);
+        println!("  Spendable: {}", format_balance(total_spendable));
+        if total_bonded > 0 {
+            println!(
+                "  Bonded:    {}  (producer bond)",
+                format_balance(total_bonded)
+            );
+        }
+        if total_activating > 0 {
+            println!(
+                "  Activating: {}  (pending epoch)",
+                format_balance(total_activating)
+            );
+        }
+        if total_immature > 0 {
+            println!("  Immature:  {}", format_balance(total_immature));
+        }
+        if total_unconfirmed > 0 {
+            println!("  Pending:   {}", format_balance(total_unconfirmed));
+        }
         let grand_total =
             total_spendable + total_bonded + total_activating + total_immature + total_unconfirmed;
         println!("  Total:     {}", format_balance(grand_total));
+    } else if show_all && query_addresses.len() > 1 {
+        // --all with multiple addresses: show aggregate totals
+        println!("{:-<60}", "");
+        println!("Total Spendable: {}", format_balance(total_spendable));
+        if total_bonded > 0 {
+            println!("Total Bonded:    {}", format_balance(total_bonded));
+        }
+        if total_activating > 0 {
+            println!("Total Activating: {}", format_balance(total_activating));
+        }
+        let grand_total =
+            total_spendable + total_bonded + total_activating + total_immature + total_unconfirmed;
+        println!("Total:           {}", format_balance(grand_total));
     }
 
     Ok(())

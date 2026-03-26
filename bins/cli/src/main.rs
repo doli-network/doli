@@ -70,8 +70,8 @@ async fn main() -> Result<()> {
         Commands::Addresses => {
             cmd_wallet::cmd_addresses(&wallet)?;
         }
-        Commands::Balance { address } => {
-            cmd_wallet::cmd_balance(&wallet, &rpc_endpoint, address).await?;
+        Commands::Balance { address, all } => {
+            cmd_wallet::cmd_balance(&wallet, &rpc_endpoint, address, all).await?;
         }
         Commands::Send {
             to,
