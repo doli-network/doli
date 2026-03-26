@@ -94,8 +94,8 @@ impl NetworkParams {
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
                 max_peers: 25, // Testnet: halved from 50 to reduce Yamux RAM (INC-I-012)
-                              // Each peer costs ~5MB in Yamux buffers: 25×2×5MB=250MB/node
-                              // At 200 nodes: ~50GB. At 50: ~12GB. Gossip mesh_n=12 fits in 25.
+                // Each peer costs ~5MB in Yamux buffers: 25×2×5MB=250MB/node
+                // At 200 nodes: ~50GB. At 50: ~12GB. Gossip mesh_n=12 fits in 25.
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,

@@ -47,6 +47,14 @@ pub struct NetworkConfig {
     /// and peers fetch missing transactions via the txfetch request-response protocol.
     /// Reduces bandwidth ~80% on redundant tx data at scale (1000+ nodes).
     pub tx_announce_enabled: bool,
+    /// Maximum number of temporary "bootstrap-only" connections.
+    /// When the peer table is full (at max_peers), extra incoming connections
+    /// are accepted into a bootstrap-only state for DHT exchange only.
+    /// After a brief window (10s), the connection is closed to free the slot.
+    /// This solves the chicken-and-egg problem: new nodes need a connected peer
+    /// to run Kademlia discovery, but the seed's peer table may be full.
+    /// Default: same as max_peers.
+    pub bootstrap_slots: usize,
 }
 
 impl Default for NetworkConfig {
@@ -77,6 +85,7 @@ impl NetworkConfig {
             nat_config: NatConfig::default(),
             external_address: None,
             tx_announce_enabled: false,
+            bootstrap_slots: 50, // Default; overridden from max_peers in node startup
         }
     }
 

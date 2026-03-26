@@ -70,6 +70,14 @@ pub(super) async fn run_swarm(
     // causes RAM explosion when network_nodes > max_peers.
     let mut eviction_cooldown: HashMap<PeerId, Instant> = HashMap::new();
 
+    // Bootstrap-only peers: temporarily accepted for DHT exchange when peer table is full.
+    // Each entry maps PeerId → connection time. After BOOTSTRAP_TTL, the connection is
+    // closed to free the slot for the next bootstrapping node.
+    let mut bootstrap_peers: HashMap<PeerId, Instant> = HashMap::new();
+    const BOOTSTRAP_TTL: Duration = Duration::from_secs(10);
+    let mut bootstrap_cleanup = tokio::time::interval(Duration::from_secs(5));
+    bootstrap_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
     let mut tx_batch: Vec<Transaction> = Vec::new();
@@ -82,7 +90,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -147,6 +155,30 @@ pub(super) async fn run_swarm(
                         Err(e) => {
                             warn!("[DHT] Bootstrap failed: {:?} — no peers in routing table", e);
                         }
+                    }
+                }
+            }
+
+            // Bootstrap-only peer cleanup: disconnect peers that have exceeded their TTL.
+            // These peers were accepted solely for Kademlia DHT exchange when the peer
+            // table was full. After 10s they've had enough time to discover other peers.
+            _ = bootstrap_cleanup.tick() => {
+                if !bootstrap_peers.is_empty() {
+                    let expired: Vec<PeerId> = bootstrap_peers
+                        .iter()
+                        .filter(|(_, connected_at)| connected_at.elapsed() >= BOOTSTRAP_TTL)
+                        .map(|(pid, _)| *pid)
+                        .collect();
+                    for pid in &expired {
+                        bootstrap_peers.remove(pid);
+                        let _ = swarm.disconnect_peer_id(*pid);
+                    }
+                    if !expired.is_empty() {
+                        tracing::info!(
+                            "[BOOTSTRAP] Disconnected {} expired bootstrap peers ({} still active)",
+                            expired.len(),
+                            bootstrap_peers.len()
+                        );
                     }
                 }
             }

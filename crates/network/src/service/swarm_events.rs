@@ -38,6 +38,7 @@ pub(super) async fn handle_swarm_event(
     mismatch_redial_cooldown: &mut HashMap<String, Instant>,
     dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
     eviction_cooldown: &mut HashMap<PeerId, Instant>,
+    bootstrap_peers: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -109,6 +110,22 @@ pub(super) async fn handle_swarm_event(
                     peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
 
                     let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                } else if config.bootstrap_slots > 0
+                    && bootstrap_peers.len() < config.bootstrap_slots
+                {
+                    // Bootstrap-only: peer table is full but we have bootstrap headroom.
+                    // Accept the connection temporarily for Kademlia DHT exchange.
+                    // The peer gets Identify + Kademlia routing table entries, then we
+                    // disconnect after 10s to free the slot. This solves the chicken-and-egg:
+                    // new nodes need at least one connected peer to bootstrap DHT discovery.
+                    bootstrap_peers.insert(peer_id, Instant::now());
+                    info!(
+                        "[BOOTSTRAP] Accepted {} as bootstrap-only peer ({}/{} bootstrap slots) — \
+                         will disconnect after DHT exchange",
+                        peer_id,
+                        bootstrap_peers.len(),
+                        config.bootstrap_slots
+                    );
                 }
             }
         }
@@ -126,6 +143,16 @@ pub(super) async fn handle_swarm_event(
 
             // Only remove peer when no connections remain
             if num_established == 0 {
+                // Clean up bootstrap-only tracking (before peer table, no event needed)
+                if bootstrap_peers.remove(&peer_id).is_some() {
+                    info!(
+                        "[BOOTSTRAP] Bootstrap-only peer {} disconnected ({} bootstrap slots remaining)",
+                        peer_id, bootstrap_peers.len()
+                    );
+                    rate_limiter.remove_peer(&peer_id);
+                    return;
+                }
+
                 let mut peers = peers.write().await;
                 peers.remove(&peer_id);
 

@@ -120,7 +120,7 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, max_peers + headroom total).
+        // Build connection limits (2 connections per peer, max_peers + bootstrap headroom).
         // Allow 2 per-peer to survive the simultaneous-dial race condition
         // (rust-libp2p#752): when both sides dial each other at the same time,
         // both connections complete the handshake. With limit=1 the second is
@@ -136,7 +136,13 @@ impl NetworkService {
         // races without rejecting legitimate peers. The eviction logic (at peers.len()
         // >= max_peers) handles the peer count — connection limits just need to not
         // reject connections before eviction has a chance to run.
-        let conn_limit = (config.max_peers * 2 + 10) as u32;
+        //
+        // Bootstrap headroom: additional slots for temporary bootstrap-only connections.
+        // When the peer table is full, new nodes are accepted briefly (10s) for
+        // Kademlia DHT exchange, then disconnected. Without this headroom, the
+        // transport layer rejects connections BEFORE ConnectionEstablished fires,
+        // preventing eviction and DHT bootstrap entirely (chicken-and-egg problem).
+        let conn_limit = ((config.max_peers + config.bootstrap_slots) * 2 + 10) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(conn_limit))
