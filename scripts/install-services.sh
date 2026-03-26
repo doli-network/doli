@@ -7,10 +7,10 @@
 #   scripts/install-services.sh all        # Both networks
 #   scripts/install-services.sh validate   # Validate deployed service files match expected
 #
-# Architecture v8 (2026-03-17):
+# Architecture v9 (2026-03-23):
 #   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
 #   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
-#   ai3 = seeds only (both networks)
+#   ai3 = seeds (both networks) + named producers (SANTIAGO, IVAN)
 #   ai4 = mainnet N6-N8
 #   ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
@@ -22,7 +22,7 @@ ucfirst() { echo "$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')${1:1}"; }
 
 AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
 AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
-AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds (both networks) + named producers (SANTIAGO, IVAN)
 AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
 AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
@@ -55,6 +55,48 @@ generate_producer_service() {
   cat <<EOF
 [Unit]
 Description=Doli $(ucfirst "$net") Producer ${prefix}${node_num}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ilozada
+Group=doliadmin
+ExecStart=${binary} \\
+  --network ${net} \\
+  --data-dir ${data_dir} \\
+  run \\
+  --producer \\
+  --producer-key ${key_file} \\
+  --p2p-port ${p2p} \\
+  --rpc-port ${rpc} --rpc-bind 0.0.0.0 \\
+  --metrics-port ${metrics} \\
+  --bootstrap ${boot1} \\
+  --bootstrap ${boot2} \\
+  --yes --force-start
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=5
+StandardOutput=append:${log_file}
+StandardError=append:${log_file}
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+generate_named_producer_service() {
+  local net="$1" binary="$2" name="$3" data_dir="$4" key_file="$5"
+  local p2p="$6" rpc="$7" metrics="$8" boot1="$9" boot2="${10}" log_file="${11}"
+
+  local display_name
+  display_name=$(ucfirst "$name")
+
+  cat <<EOF
+[Unit]
+Description=Doli $(ucfirst "$net") Producer ${display_name}
 After=network-online.target
 Wants=network-online.target
 
@@ -218,6 +260,20 @@ install_mainnet() {
     install_remote "$AI5" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
+  # SANTIAGO on ai3
+  svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "santiago" \
+    "/mainnet/santiago/data" "/mainnet/santiago/keys/wallet.json" \
+    30313 8513 9013 \
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log")
+  install_remote "$AI3" "doli-mainnet-santiago" "$svc" "$dry_run"
+
+  # IVAN on ai3
+  svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "ivan" \
+    "/mainnet/ivan/data" "/mainnet/ivan/keys/wallet.json" \
+    30314 8514 9014 \
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log")
+  install_remote "$AI3" "doli-mainnet-ivan" "$svc" "$dry_run"
+
   # Reload systemd
   reload_daemon "$AI1" "$dry_run" "ai1"
   reload_daemon "$AI2" "$dry_run" "ai2"
@@ -353,6 +409,20 @@ validate_mainnet() {
       "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
     validate_service "$AI5" "doli-mainnet-n${N}" "$svc" "N${N} (ai5)"
   done
+
+  # SANTIAGO on ai3
+  svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "santiago" \
+    "/mainnet/santiago/data" "/mainnet/santiago/keys/wallet.json" \
+    30313 8513 9013 \
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log")
+  validate_service "$AI3" "doli-mainnet-santiago" "$svc" "SANTIAGO (ai3)"
+
+  # IVAN on ai3
+  svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "ivan" \
+    "/mainnet/ivan/data" "/mainnet/ivan/keys/wallet.json" \
+    30314 8514 9014 \
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log")
+  validate_service "$AI3" "doli-mainnet-ivan" "$svc" "IVAN (ai3)"
   echo ""
 }
 

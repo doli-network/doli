@@ -53,3 +53,8 @@ fi
 if systemctl is-enabled --quiet "doli-mainnet-santiago" 2>/dev/null; then
   check_and_restart "doli-mainnet-santiago" 8513
 fi
+
+# Ivan (ai3)
+if systemctl is-enabled --quiet "doli-mainnet-ivan" 2>/dev/null; then
+  check_and_restart "doli-mainnet-ivan" 8514
+fi

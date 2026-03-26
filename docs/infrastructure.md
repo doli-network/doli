@@ -1,8 +1,8 @@
 # DOLI Infrastructure
 
-## Architecture Overview (v8 — March 17, 2026)
+## Architecture Overview (v9 — March 23, 2026)
 
-Mainnet producers distributed across ai1, ai2, ai4, ai5. Seeds on ai1, ai2, ai3. ai2 is the build server.
+Mainnet producers distributed across ai1, ai2, ai3, ai4, ai5. Seeds on ai1, ai2, ai3. ai2 is the build server. Named producers (SANTIAGO, IVAN) on ai3.
 
 ### Design Principles
 
@@ -18,7 +18,7 @@ Mainnet producers distributed across ai1, ai2, ai4, ai5. Seeds on ai1, ai2, ai3.
 |--------|------|
 | ai1 | Mainnet seed + N1-N3, Testnet seed + NT1-NT5 |
 | ai2 | Mainnet seed + N4-N5, Testnet seed + build + explorer |
-| ai3 | Seeds only (mainnet + testnet) |
+| ai3 | Seeds + Producers (SANTIAGO, IVAN) + testnet seed |
 | ai4 | Mainnet N6-N8 |
 | ai5 | Mainnet N9-N12, Testnet NT6-NT12 |
 
@@ -123,9 +123,9 @@ Non-producing, sync-only, publicly accessible. These are the network entry point
 
 All run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/blocks`.
 
-### Producer Nodes (N1-N12)
+### Producer Nodes (N1-N12 + Named Producers)
 
-Producers distributed across 4 servers. N1-N5 = maintainers + producers. N6-N12 = producers only.
+Producers distributed across 5 servers. N1-N5 = maintainers + producers. N6-N12 = producers only. Named producers (SANTIAGO, IVAN) on ai3.
 
 | Nodes | Server | P2P | RPC | Metrics | Service |
 |-------|--------|-----|-----|---------|---------|
@@ -133,10 +133,16 @@ Producers distributed across 4 servers. N1-N5 = maintainers + producers. N6-N12 
 | N4-N5 | ai2 | 30304-30305 | 8504-8505 | 9004-9005 | `doli-mainnet-n{4,5}` |
 | N6-N8 | ai4 | 30306-30308 | 8506-8508 | 9006-9008 | `doli-mainnet-n{6,7,8}` |
 | N9-N12 | ai5 | 30309-30312 | 8509-8512 | 9009-9012 | `doli-mainnet-n{9,10,11,12}` |
+| SANTIAGO | ai3 | 30313 | 8513 | 9013 | `doli-mainnet-santiago` |
+| IVAN | ai3 | 30314 | 8514 | 9014 | `doli-mainnet-ivan` |
 
 All bootstrap from `--bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300`.
 
 Keys: `/mainnet/n{N}/keys/producer.json`. Data: `/mainnet/n{N}/data/`.
+
+Named producers on ai3:
+- SANTIAGO: Keys `/mainnet/santiago/keys/wallet.json`, Data `/mainnet/santiago/data/`
+- IVAN: Keys `/mainnet/ivan/keys/wallet.json`, Data `/mainnet/ivan/data/`
 
 ### Port Formula
 
@@ -152,56 +158,125 @@ Seeds:    suffix = 00 (i.e., 30300, 8500, 9000 / 40300, 18500, 19000)
 |--------|-------------|
 | ai1 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` |
 | ai2 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (build server) |
-| ai3 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (seeds only) |
+| ai3 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` (seeds + SANTIAGO, IVAN) |
 | ai4 | `/mainnet/bin/doli-node` |
 | ai5 | `/mainnet/bin/doli-node`, `/testnet/bin/doli-node` |
 
-**Upgrade procedure (non-consensus changes only — UI, RPC, logging, etc.):**
+**Upgrade procedure — Atomic Deploy (non-consensus changes only — UI, RPC, logging, etc.):**
 
-> **IMPORTANT**: You cannot overwrite a binary while any process is using it ("Text file busy").
-> You must stop ALL nodes using that binary path before copying, then restart them.
-> This includes standby nodes (N7-N12, NT7-NT12) and cross-server services
-> (mainnet seed on ai1, testnet seed on ai2).
+> **CRITICAL**: NEVER stop services before binaries are pre-copied and MD5-verified on the target server.
+> The old stop-copy-start procedure is DEPRECATED — it caused 5-minute downtime per server.
+> This procedure achieves ~2 seconds disruption per server via atomic `mv` swap.
 
 ```bash
-# 1. Build on ai2 (exclude GUI — glib-2.0 not available on server)
+# ── Phase 1: Build on ai2 ──────────────────────────────────────────────
 ssh $USER@<ai2-ip>
 source ~/.cargo/env && cd ~/repos/doli
-git fetch origin && git reset --hard origin/main   # safe after force pushes
+git fetch origin && git reset --hard origin/main
 cargo build --release -p doli-node -p doli-cli
 
-# 2. Distribute to ai1 and ai3 BEFORE stopping anything
-scp target/release/doli-node $USER@<ai1-ip>:/tmp/doli-node-new
-scp -P $AI3_SSH_PORTtarget/release/doli-node $USER@<ai3-ip>:/tmp/doli-node-new
+# Record source MD5
+md5sum target/release/doli-node target/release/doli | tee /tmp/source_md5.txt
 
-# 3. Stop ALL nodes on ai2 (active + standby + cross-network seeds)
-sudo systemctl stop doli-mainnet-seed doli-mainnet-n{1..12} doli-testnet-seed 2>/dev/null
-pgrep -la doli-node || echo "ai2: all stopped"
+# ── Phase 2: Pre-copy as .new to ALL servers in parallel ────────────────
+# ai2 (local — build server)
+cp target/release/doli-node /mainnet/bin/doli-node.new
+cp target/release/doli /mainnet/bin/doli.new
 
-# 4. Copy binary on ai2
-sudo cp target/release/doli-node /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
+# ai1, ai3, ai4, ai5 (parallel scp)
+scp target/release/doli-node $USER@<ai1-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai1-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai3-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai3-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai4-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai4-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai5-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai5-ip>:/mainnet/bin/doli.new &
+wait
 
-# 5. Restart ai2 (seed first, then producers)
-sudo systemctl start doli-mainnet-seed && sleep 3
-sudo systemctl start doli-mainnet-n{1..6}
-sudo systemctl start doli-mainnet-n{7..12} 2>/dev/null  # standby nodes
+# ── Phase 3: Verify MD5 on ALL servers ──────────────────────────────────
+cat /tmp/source_md5.txt
+ssh $USER@<ai1-ip> 'md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new'
+ssh $USER@<ai3-ip> 'md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new'
+ssh $USER@<ai4-ip> 'md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new'
+ssh $USER@<ai5-ip> 'md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new'
+# ALL must match source_md5.txt — STOP if any mismatch
 
-# 6. Deploy ai1 — stop all, copy, restart
-ssh $USER@<ai1-ip> '
-  sudo systemctl stop doli-testnet-seed doli-testnet-nt{1..12} doli-mainnet-seed 2>/dev/null
-  pgrep -la doli-node || echo "ai1: all stopped"
-  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
-  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
-  sudo systemctl start doli-mainnet-seed doli-testnet-seed && sleep 3
-  sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
+# ── Phase 4: chmod +x on ALL servers ───────────────────────────────────
+chmod +x /mainnet/bin/doli-node.new /mainnet/bin/doli.new  # ai2 local
+ssh $USER@<ai1-ip> 'chmod +x /mainnet/bin/doli-node.new /mainnet/bin/doli.new' &
+ssh $USER@<ai3-ip> 'chmod +x /mainnet/bin/doli-node.new /mainnet/bin/doli.new' &
+ssh $USER@<ai4-ip> 'chmod +x /mainnet/bin/doli-node.new /mainnet/bin/doli.new' &
+ssh $USER@<ai5-ip> 'chmod +x /mainnet/bin/doli-node.new /mainnet/bin/doli.new' &
+wait
 
-# 7. Deploy ai3 — seeds only
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
-  sudo systemctl stop doli-mainnet-seed doli-testnet-seed
-  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
-  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
-  sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+# ── Phase 5: Atomic swap — ai2 FIRST (canary) ──────────────────────────
+# ai2: Seed2 + N4 + N5
+cd /mainnet/bin && \
+  sudo systemctl stop doli-mainnet-seed doli-mainnet-n4 doli-mainnet-n5 && \
+  mv doli-node doli-node.old && mv doli-node.new doli-node && \
+  mv doli doli.old && mv doli.new doli && \
+  sudo systemctl start doli-mainnet-seed doli-mainnet-n4 doli-mainnet-n5 && \
+  echo "ai2 done"
+
+# Verify ai2 — check version and height on seed2
+curl -s -X POST http://127.0.0.1:8500 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
+# Confirm version is correct and height is advancing before proceeding
+
+# ── Phase 6: Atomic swap — ai1/ai3/ai4/ai5 in parallel ─────────────────
+# ai1: Seed1 + N1 + N2 + N3
+ssh $USER@<ai1-ip> 'cd /mainnet/bin && \
+  sudo systemctl stop doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n2 doli-mainnet-n3 && \
+  mv doli-node doli-node.old && mv doli-node.new doli-node && \
+  mv doli doli.old && mv doli.new doli && \
+  sudo systemctl start doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n2 doli-mainnet-n3 && \
+  echo "ai1 done"' &
+
+# ai3: Seed3 + SANTIAGO + IVAN
+ssh $USER@<ai3-ip> 'cd /mainnet/bin && \
+  sudo systemctl stop doli-mainnet-seed doli-mainnet-santiago doli-mainnet-ivan && \
+  mv doli-node doli-node.old && mv doli-node.new doli-node && \
+  mv doli doli.old && mv doli.new doli && \
+  sudo systemctl start doli-mainnet-seed doli-mainnet-santiago doli-mainnet-ivan && \
+  echo "ai3 done"' &
+
+# ai4: N6 + N7 + N8
+ssh $USER@<ai4-ip> 'cd /mainnet/bin && \
+  sudo systemctl stop doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8 && \
+  mv doli-node doli-node.old && mv doli-node.new doli-node && \
+  mv doli doli.old && mv doli.new doli && \
+  sudo systemctl start doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8 && \
+  echo "ai4 done"' &
+
+# ai5: N9 + N10 + N11 + N12
+ssh $USER@<ai5-ip> 'cd /mainnet/bin && \
+  sudo systemctl stop doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12 && \
+  mv doli-node doli-node.old && mv doli-node.new doli-node && \
+  mv doli doli.old && mv doli.new doli && \
+  sudo systemctl start doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12 && \
+  echo "ai5 done"' &
+
+wait
+
+# ── Phase 7: Verify all seeds show correct version and synced height ────
+for ip in <ai1-ip> <ai2-ip> <ai3-ip>; do
+  echo "--- $ip ---"
+  curl -s --max-time 3 -X POST http://$ip:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
+  echo ""
+done
+# All seeds should show same version and heights within +/-1
 ```
+
+**Key rules:**
+- NEVER stop services before `.new` binaries are on disk and MD5-verified
+- NEVER separate `stop` and `start` into different commands -- one line, ~2 seconds disruption
+- ai2 deploys first (canary), verify version + height, then ai1/ai3/ai4/ai5 in parallel
+- The `mv` is atomic on the same filesystem -- instant swap, no "Text file busy"
+- Keep `.old` binaries for instant rollback if needed: `mv doli-node doli-node.bad && mv doli-node.old doli-node`
 
 > **WARNING**: For consensus-critical changes, do NOT use rolling restarts. See [Consensus-Critical Deployment](#consensus-critical-deployment) below.
 
@@ -221,7 +296,7 @@ Logs are on each node's respective server at `/var/log/doli/mainnet/n{N}.log`. S
 |--------|------|
 | ai1 | `seed.log`, `n1.log`, `n2.log`, `n3.log` |
 | ai2 | `seed.log`, `n4.log`, `n5.log` |
-| ai3 | `seed.log` |
+| ai3 | `seed.log`, `santiago.log`, `ivan.log` |
 | ai4 | `n6.log`, `n7.log`, `n8.log` |
 | ai5 | `n9.log`, `n10.log`, `n11.log`, `n12.log` |
 
@@ -325,19 +400,23 @@ sudo systemctl stop doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n2 doli-mainn
 
 ### Upgrade Order (Non-Consensus Changes)
 
-**Rolling restarts** — safe for: UI, RPC, logging, metrics, non-consensus bug fixes.
+Use the **Atomic Deploy** procedure above. Order:
 
-Seeds first, then producers. Testnet first, then mainnet. Include ALL nodes (active + standby).
+1. **ai2 first (canary)**: Seed2 + N4 + N5 -- verify version and height before proceeding
+2. **ai1/ai3/ai4/ai5 in parallel**: after ai2 is confirmed healthy
 
-> **NOTE**: `systemctl restart` does NOT work for binary upgrades — the binary is still
-> "text file busy" during restart. You must stop ALL nodes sharing the same binary path,
-> copy the new binary, then start them. See the upgrade procedure above.
+Per-server service groups for the atomic stop-swap-start command:
 
 ```
-ai1: mainnet-seed + testnet-seed → NT1-NT12
-ai2: mainnet-seed + testnet-seed → N1-N12
-ai3: mainnet-seed + testnet-seed
+ai1: doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n2 doli-mainnet-n3
+ai2: doli-mainnet-seed doli-mainnet-n4 doli-mainnet-n5
+ai3: doli-mainnet-seed doli-mainnet-santiago doli-mainnet-ivan
+ai4: doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8
+ai5: doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12
 ```
+
+> **NOTE**: `systemctl restart` does NOT work for binary upgrades -- the binary is
+> "text file busy" during restart. Use the atomic `stop → mv → start` pattern instead.
 
 > For consensus-critical changes, see [Consensus-Critical Deployment](#consensus-critical-deployment) below.
 
@@ -366,71 +445,78 @@ A change is consensus-critical if different binary versions would produce or val
 
 **NEVER use rolling restarts for consensus-critical changes.** A rolling deployment creates a window where nodes run incompatible binaries, causing an irreconcilable fork. See `docs/legacy/bugs/REPORT_HA_FAILURE.md` for the incident analysis.
 
-#### Phase 1: Build & Distribute
+#### Phase 1: Build & Pre-Copy
 
 ```bash
 # 1. Build on ai2 (build server)
 ssh $USER@<ai2-ip>
 source ~/.cargo/env && cd ~/repos/doli
-git fetch origin && git reset --hard origin/main   # safe after force pushes
-cargo build --release -p doli-node -p doli-cli      # exclude GUI (no glib-2.0 on server)
+git fetch origin && git reset --hard origin/main
+cargo build --release -p doli-node -p doli-cli
 
 # 2. Record source MD5
-md5sum target/release/doli-node | tee /tmp/source_md5.txt
+md5sum target/release/doli-node target/release/doli | tee /tmp/source_md5.txt
 
-# 3. Deploy locally on ai2 (mainnet)
-sudo cp target/release/doli-node /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
-sudo cp target/release/doli /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
+# 3. Pre-copy as .new to ALL 5 servers in parallel
+# ai2 (local)
+cp target/release/doli-node /mainnet/bin/doli-node.new
+cp target/release/doli /mainnet/bin/doli.new
 
-# 4. Distribute to ai1 (testnet)
-scp target/release/doli-node $USER@<ai1-ip>:/tmp/doli-node-new
-scp target/release/doli $USER@<ai1-ip>:/tmp/doli-new
-ssh $USER@<ai1-ip> '
-  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
-  sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
+# ai1, ai3, ai4, ai5 (parallel)
+scp target/release/doli-node $USER@<ai1-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai1-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai3-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai3-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai4-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai4-ip>:/mainnet/bin/doli.new &
+scp target/release/doli-node $USER@<ai5-ip>:/mainnet/bin/doli-node.new &
+scp target/release/doli      $USER@<ai5-ip>:/mainnet/bin/doli.new &
+wait
 
-# 5. Distribute to ai3 (seeds — via Mac relay if no direct connectivity)
-# Option A: direct from ai2
-scp -P $AI3_SSH_PORTtarget/release/doli-node $USER@<ai3-ip>:/tmp/doli-node-new
-scp -P $AI3_SSH_PORTtarget/release/doli $USER@<ai3-ip>:/tmp/doli-new
-# Option B: via Mac if ai2→ai3 has no route
-#   scp from ai2 to Mac, then scp -P $AI3_SSH_PORTfrom Mac to ai3
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
-  sudo cp /tmp/doli-node-new /mainnet/bin/doli-node && sudo chmod 755 /mainnet/bin/doli-node
-  sudo cp /tmp/doli-node-new /testnet/bin/doli-node && sudo chmod 755 /testnet/bin/doli-node
-  sudo cp /tmp/doli-new /mainnet/bin/doli && sudo chmod 755 /mainnet/bin/doli
-  sudo cp /tmp/doli-new /testnet/bin/doli && sudo chmod 755 /testnet/bin/doli'
-
-# 6. Verify checksums match on ALL THREE servers
+# 4. Verify MD5 on ALL servers
 cat /tmp/source_md5.txt
-ssh $USER@<ai1-ip> 'md5sum /testnet/bin/doli-node /testnet/bin/doli'
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'md5sum /mainnet/bin/doli-node /testnet/bin/doli-node'
-# All must be identical
+for ip in <ai1-ip> <ai3-ip> <ai4-ip> <ai5-ip>; do
+  echo "--- $ip ---"
+  ssh $USER@$ip 'md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new'
+done
+md5sum /mainnet/bin/doli-node.new /mainnet/bin/doli.new  # ai2 local
+# ALL must match — STOP if any mismatch
+
+# 5. chmod +x on ALL servers
+chmod +x /mainnet/bin/*.new  # ai2
+for ip in <ai1-ip> <ai3-ip> <ai4-ip> <ai5-ip>; do
+  ssh $USER@$ip 'chmod +x /mainnet/bin/*.new' &
+done
+wait
 ```
 
-#### Phase 2: Stop ALL Nodes (All Servers Simultaneously)
+#### Phase 2: Stop ALL Nodes Simultaneously (Atomic Swap)
+
+For consensus-critical changes, ALL nodes must be stopped before ANY are restarted.
+Use the atomic stop-swap-start pattern, but execute the stop on ALL 5 servers simultaneously.
 
 ```bash
-# Terminal 1 (ai2 — mainnet + standby + testnet seed):
-ssh $USER@<ai2-ip> 'sudo systemctl stop \
-  doli-mainnet-seed doli-mainnet-n{1..12} doli-testnet-seed 2>/dev/null'
+# Stop ALL nodes on ALL 5 servers (run in parallel terminals or with &)
+ssh $USER@<ai1-ip> 'sudo systemctl stop doli-mainnet-seed doli-mainnet-n1 doli-mainnet-n2 doli-mainnet-n3' &
+ssh $USER@<ai2-ip> 'sudo systemctl stop doli-mainnet-seed doli-mainnet-n4 doli-mainnet-n5' &
+ssh $USER@<ai3-ip> 'sudo systemctl stop doli-mainnet-seed doli-mainnet-santiago doli-mainnet-ivan' &
+ssh $USER@<ai4-ip> 'sudo systemctl stop doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8' &
+ssh $USER@<ai5-ip> 'sudo systemctl stop doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12' &
+wait
 
-# Terminal 2 (ai1 — testnet + standby + mainnet seed):
-ssh $USER@<ai1-ip> 'sudo systemctl stop \
-  doli-testnet-seed doli-testnet-nt{1..12} doli-mainnet-seed 2>/dev/null'
+# Verify ALL stopped
+for ip in <ai1-ip> <ai2-ip> <ai3-ip> <ai4-ip> <ai5-ip>; do
+  echo "--- $ip ---"
+  ssh $USER@$ip 'pgrep -la doli-node || echo "all stopped"'
+done
 
-# Terminal 3 (ai3 — seeds only):
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'sudo systemctl stop doli-mainnet-seed doli-testnet-seed'
-```
-
-**WAIT until ALL nodes are confirmed stopped on ALL THREE servers before proceeding.**
-Use `pgrep -la doli-node` — `systemctl stop` may miss nodes with old-gen service names.
-
-```bash
-# Verify no nodes running
-ssh $USER@<ai1-ip> 'pgrep -la doli-node || echo "ai1: all stopped"'
-ssh $USER@<ai2-ip> 'pgrep -la doli-node || echo "ai2: all stopped"'
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'pgrep -la doli-node || echo "ai3: all stopped"'
+# Atomic mv on ALL servers (parallel)
+ssh $USER@<ai1-ip> 'cd /mainnet/bin && mv doli-node doli-node.old && mv doli-node.new doli-node && mv doli doli.old && mv doli.new doli' &
+ssh $USER@<ai2-ip> 'cd /mainnet/bin && mv doli-node doli-node.old && mv doli-node.new doli-node && mv doli doli.old && mv doli.new doli' &
+ssh $USER@<ai3-ip> 'cd /mainnet/bin && mv doli-node doli-node.old && mv doli-node.new doli-node && mv doli doli.old && mv doli.new doli' &
+ssh $USER@<ai4-ip> 'cd /mainnet/bin && mv doli-node doli-node.old && mv doli-node.new doli-node && mv doli doli.old && mv doli.new doli' &
+ssh $USER@<ai5-ip> 'cd /mainnet/bin && mv doli-node doli-node.old && mv doli-node.new doli-node && mv doli doli.old && mv doli.new doli' &
+wait
 ```
 
 #### Phase 3: Wipe Data (If Genesis Changed)
@@ -438,24 +524,37 @@ ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'pgrep -la doli-node || echo "ai3: all stoppe
 Only needed if `genesis_hash` changed (timestamp, message, network_id, or slot_duration modified).
 
 ```bash
-# ai2 — wipe mainnet data (ALL nodes including standby)
-ssh $USER@<ai2-ip> '
-  for N in seed n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12; do
+# ai1 — wipe mainnet node data
+ssh $USER@<ai1-ip> '
+  for N in seed n1 n2 n3; do
     sudo rm -rf /mainnet/$N/data/* && echo "wiped /mainnet/$N/data"
   done
   sudo rm -rf /mainnet/seed/blocks/*'
 
-# ai1 — wipe testnet data (ALL nodes including standby)
-ssh $USER@<ai1-ip> '
-  for N in seed nt1 nt2 nt3 nt4 nt5 nt6 nt7 nt8 nt9 nt10 nt11 nt12; do
-    sudo rm -rf /testnet/$N/data/* && echo "wiped /testnet/$N/data"
+# ai2 — wipe mainnet node data
+ssh $USER@<ai2-ip> '
+  for N in seed n4 n5; do
+    sudo rm -rf /mainnet/$N/data/* && echo "wiped /mainnet/$N/data"
   done
-  sudo rm -rf /testnet/seed/blocks/*'
+  sudo rm -rf /mainnet/seed/blocks/*'
 
-# ai3 — wipe seed data
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
-  sudo rm -rf /mainnet/seed/data/* /testnet/seed/data/* && echo "wiped ai3 seed data"
-  sudo rm -rf /mainnet/seed/blocks/* /testnet/seed/blocks/*'
+# ai3 — wipe seed + named producer data
+ssh $USER@<ai3-ip> '
+  sudo rm -rf /mainnet/seed/data/* && echo "wiped ai3 seed data"
+  sudo rm -rf /mainnet/seed/blocks/*
+  sudo rm -rf /mainnet/santiago/data/* /mainnet/ivan/data/* && echo "wiped ai3 producer data"'
+
+# ai4 — wipe mainnet node data
+ssh $USER@<ai4-ip> '
+  for N in n6 n7 n8; do
+    sudo rm -rf /mainnet/$N/data/* && echo "wiped /mainnet/$N/data"
+  done'
+
+# ai5 — wipe mainnet node data
+ssh $USER@<ai5-ip> '
+  for N in n9 n10 n11 n12; do
+    sudo rm -rf /mainnet/$N/data/* && echo "wiped /mainnet/$N/data"
+  done'
 ```
 
 #### Phase 4: Start Nodes (Ordered)
@@ -463,19 +562,22 @@ ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
 Start seeds first (all three servers), wait for them to peer, then start producers.
 
 ```bash
-# Step 1: Start ALL seeds on ALL THREE servers
-ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-seed doli-testnet-seed 2>/dev/null'
-ssh $USER@<ai1-ip> 'sudo systemctl start doli-testnet-seed doli-mainnet-seed 2>/dev/null'
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> 'sudo systemctl start doli-mainnet-seed doli-testnet-seed'
+# Step 1: Start ALL seeds on ai1, ai2, ai3
+ssh $USER@<ai1-ip> 'sudo systemctl start doli-mainnet-seed' &
+ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-seed' &
+ssh $USER@<ai3-ip> 'sudo systemctl start doli-mainnet-seed' &
+wait
 
 # Wait 10 seconds for seeds to initialize and peer with each other
 sleep 10
 
-# Step 2: Start ai2 mainnet producers (active + standby)
-ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-n{1..12} 2>/dev/null'
-
-# Step 3: Start ai1 testnet producers (active + standby)
-ssh $USER@<ai1-ip> 'sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
+# Step 2: Start ALL producers on ALL servers (parallel)
+ssh $USER@<ai1-ip> 'sudo systemctl start doli-mainnet-n1 doli-mainnet-n2 doli-mainnet-n3' &
+ssh $USER@<ai2-ip> 'sudo systemctl start doli-mainnet-n4 doli-mainnet-n5' &
+ssh $USER@<ai3-ip> 'sudo systemctl start doli-mainnet-santiago doli-mainnet-ivan' &
+ssh $USER@<ai4-ip> 'sudo systemctl start doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8' &
+ssh $USER@<ai5-ip> 'sudo systemctl start doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12' &
+wait
 ```
 
 #### Phase 5: Verify Consensus
@@ -483,42 +585,72 @@ ssh $USER@<ai1-ip> 'sudo systemctl start doli-testnet-nt{1..12} 2>/dev/null'
 Wait ~30 seconds, then confirm all nodes are on the same chain.
 
 ```bash
-# ai2 mainnet (all N1-N12 + seed)
-ssh $USER@<ai2-ip> '
-for entry in "8500:Seed" "8501:N1" "8502:N2" "8503:N3" "8504:N4" "8505:N5" "8506:N6" \
-             "8507:N7" "8508:N8" "8509:N9" "8510:N10" "8511:N11" "8512:N12"; do
-  port=${entry%%:*}; name=${entry##*:}
-  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+# Check all seeds (ai1, ai2, ai3)
+for ip in <ai1-ip> <ai2-ip> <ai3-ip>; do
+  echo "--- Seed @ $ip ---"
+  curl -s --max-time 3 -X POST http://$ip:8500 \
     -H "Content-Type: application/json" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
-    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
-  printf "%-6s %s\n" "$name" "$h"
-done'
+    -d '{"jsonrpc":"2.0","method":"getChainInfo","params":{},"id":1}'
+  echo ""
+done
 
-# ai1 testnet (all NT1-NT12 + seed)
+# Check all producers per server
+# ai1: N1-N3
 ssh $USER@<ai1-ip> '
-for entry in "18500:Seed" "18501:NT1" "18502:NT2" "18503:NT3" "18504:NT4" "18505:NT5" "18506:NT6" \
-             "18507:NT7" "18508:NT8" "18509:NT9" "18510:NT10" "18511:NT11" "18512:NT12"; do
+for entry in "8501:N1" "8502:N2" "8503:N3"; do
   port=${entry%%:*}; name=${entry##*:}
   h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
     | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
-  printf "%-6s %s\n" "$name" "$h"
+  printf "%-10s %s\n" "$name" "$h"
 done'
 
-# ai3 seeds
-ssh -p $AI3_SSH_PORT$USER@<ai3-ip> '
-for entry in "8500:Seed-M" "18500:Seed-T"; do
+# ai2: N4-N5
+ssh $USER@<ai2-ip> '
+for entry in "8504:N4" "8505:N5"; do
   port=${entry%%:*}; name=${entry##*:}
   h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
-    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "?")
-  printf "%-6s %s\n" "$name" "$h"
+    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
+  printf "%-10s %s\n" "$name" "$h"
 done'
 
-# All heights should be within ±1 of each other within each network
+# ai3: SANTIAGO + IVAN
+ssh $USER@<ai3-ip> '
+for entry in "8513:SANTIAGO" "8514:IVAN"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
+  printf "%-10s %s\n" "$name" "$h"
+done'
+
+# ai4: N6-N8
+ssh $USER@<ai4-ip> '
+for entry in "8506:N6" "8507:N7" "8508:N8"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
+  printf "%-10s %s\n" "$name" "$h"
+done'
+
+# ai5: N9-N12
+ssh $USER@<ai5-ip> '
+for entry in "8509:N9" "8510:N10" "8511:N11" "8512:N12"; do
+  port=${entry%%:*}; name=${entry##*:}
+  h=$(curl -s --max-time 3 -X POST http://127.0.0.1:$port \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"getChainInfo\",\"params\":{},\"id\":1}" \
+    | grep -oP "\"bestHeight\":\d+" 2>/dev/null || echo "unreachable")
+  printf "%-10s %s\n" "$name" "$h"
+done'
+
+# All heights should be within +/-1 of each other
 ```
 
 ### Quick Decision Checklist

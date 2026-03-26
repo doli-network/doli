@@ -3,10 +3,10 @@
 #
 # Usage: scripts/health-check.sh [mainnet|testnet|all]
 #
-# Architecture v8 (2026-03-17):
+# Architecture v9 (2026-03-23):
 #   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
 #   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
-#   ai3 = seeds only (both networks), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
+#   ai3 = seeds (both networks) + named producers (SANTIAGO, IVAN), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
 # Checks (all must pass):
 #   1. All nodes responding to RPC
@@ -20,7 +20,7 @@ set -euo pipefail
 
 AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
 AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
-AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds (both networks) + named producers (SANTIAGO, IVAN)
 AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
 AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
@@ -189,6 +189,8 @@ do_mainnet() {
     "N10:${AI5}:8510:/var/log/doli/mainnet/n10.log:doli-mainnet-n10"
     "N11:${AI5}:8511:/var/log/doli/mainnet/n11.log:doli-mainnet-n11"
     "N12:${AI5}:8512:/var/log/doli/mainnet/n12.log:doli-mainnet-n12"
+    "SANTIAGO:${AI3}:8513:/var/log/doli/mainnet/santiago.log:doli-mainnet-santiago"
+    "IVAN:${AI3}:8514:/var/log/doli/mainnet/ivan.log:doli-mainnet-ivan"
   )
   check_network "Mainnet" "mainnet" "${nodes[@]}"
 }

@@ -1,6 +1,6 @@
 # DOLI Genesis & Full Chain Reset
 
-> Last updated: 2026-03-17 | Layout v8
+> Last updated: 2026-03-23 | Layout v9
 
 Complete procedure for resetting and relaunching DOLI networks from a new genesis.
 
@@ -14,7 +14,7 @@ Complete procedure for resetting and relaunching DOLI networks from a new genesi
 |--------|------|-------|
 | ai1 | Seed + Producers | Mainnet seed1 + N1, N2, N3 |
 | ai2 | Seed + Producers + Build | Mainnet seed2 + N4, N5 |
-| ai3 | Seed | Mainnet seed3 |
+| ai3 | Seed + Producers | Mainnet seed3 + SANTIAGO, IVAN |
 | ai4 | Producers | N6, N7, N8 |
 | ai5 | Producers | N9, N10, N11, N12 |
 
@@ -91,8 +91,8 @@ sudo systemctl stop doli-mainnet-seed doli-mainnet-{n1,n2,n3}
 # ai2 — seed + N4-N5:
 sudo systemctl stop doli-mainnet-seed doli-mainnet-{n4,n5}
 
-# ai3 — seed only:
-sudo systemctl stop doli-mainnet-seed
+# ai3 — seed + named producers:
+sudo systemctl stop doli-mainnet-seed doli-mainnet-santiago doli-mainnet-ivan
 
 # ai4 — N6-N8:
 sudo systemctl stop doli-mainnet-{n6,n7,n8}
@@ -122,8 +122,8 @@ for node in /mainnet/seed /mainnet/n{4..5}; do
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
 
-# ai3 — seed only:
-for node in /mainnet/seed; do
+# ai3 — seed + named producers:
+for node in /mainnet/seed /mainnet/santiago /mainnet/ivan; do
   find "$node/data" -mindepth 1 -delete 2>/dev/null
   rm -rf "$node"/{chain_state.bin,producers.bin,utxo.bin,producer_gset.bin,peers.cache,producer.lock,chainspec.json,node_key,maintainer_state.bin,blocks,signed_slots.db,utxo_rocks,state_db} 2>/dev/null
 done
@@ -241,10 +241,11 @@ done
 ```
 Wait ~10 seconds for seeds to peer.
 
-**16. Start producers (ai1, ai2, ai4, ai5):**
+**16. Start producers (ai1, ai2, ai3, ai4, ai5):**
 ```bash
 ssh ai1 "sudo systemctl start doli-mainnet-{n1,n2,n3}"
 ssh ai2 "sudo systemctl start doli-mainnet-{n4,n5}"
+ssh ai3 "sudo systemctl start doli-mainnet-santiago doli-mainnet-ivan"
 ssh ai4 "sudo systemctl start doli-mainnet-{n6,n7,n8}"
 ssh ai5 "sudo systemctl start doli-mainnet-{n9,n10,n11,n12}"
 ```

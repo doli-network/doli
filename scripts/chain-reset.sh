@@ -3,10 +3,10 @@
 #
 # Usage: scripts/chain-reset.sh [mainnet|testnet] [--skip-backup]
 #
-# Architecture v8 (2026-03-17):
+# Architecture v9 (2026-03-23):
 #   ai1 = mainnet seed+N1-N3 + testnet seed+NT1-NT5
 #   ai2 = mainnet seed+N4-N5 + testnet seed + build + explorer
-#   ai3 = seeds only (both networks), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
+#   ai3 = seeds (both networks) + named producers (SANTIAGO, IVAN), ai4 = mainnet N6-N8, ai5 = mainnet N9-N12 + testnet NT6-NT12
 #
 # Sequence:
 #   1. Validate ALL service files have --bootstrap (blocks reset if not)
@@ -22,7 +22,7 @@ set -euo pipefail
 
 AI1="${DOLI_AI1:?Set DOLI_AI1=user@host}"    # Mainnet seed+N1-N3 + Testnet seed+NT1-NT5
 AI2="${DOLI_AI2:?Set DOLI_AI2=user@host}"   # Mainnet seed+N4-N5 + Testnet seed + build + explorer
-AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds only (both networks)
+AI3="${DOLI_AI3:?Set DOLI_AI3=user@host}"   # Seeds (both networks) + named producers (SANTIAGO, IVAN)
 AI4="${DOLI_AI4:?Set DOLI_AI4=user@host}"  # Mainnet N6-N8
 AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 
@@ -149,7 +149,7 @@ if [[ "$SKIP_BACKUP" != "--skip-backup" ]]; then
     echo \"  Backed up to ${BACKUP_DIR} on \$(hostname)\"
   " 2>/dev/null || echo "  Warning: backup failed on primary"
 
-  # ai3 (seed only)
+  # ai3 (seed + named producers)
   do_ssh "$AI3" "
     sudo mkdir -p ${BACKUP_DIR}
     if [ -d /${NETWORK}/seed/data ] && [ \"\$(ls -A /${NETWORK}/seed/data 2>/dev/null)\" ]; then
@@ -202,9 +202,9 @@ if [[ -n "$QUATERNARY" ]]; then
   " 2>/dev/null && echo "  Stopped on quaternary" || echo "  Warning: stop failed on quaternary"
 fi
 
-# Stop seed on ai3
-do_ssh "$AI3" "sudo systemctl stop doli-${NETWORK}-seed 2>/dev/null || true" \
-  && echo "  Stopped seed on ai3" || echo "  Warning: stop failed on ai3"
+# Stop seed + named producers on ai3
+do_ssh "$AI3" "sudo systemctl stop doli-${NETWORK}-seed doli-mainnet-santiago doli-mainnet-ivan 2>/dev/null || true" \
+  && echo "  Stopped seed + producers on ai3" || echo "  Warning: stop failed on ai3"
 
 echo ""
 
@@ -246,7 +246,9 @@ fi
 do_ssh "$AI3" "
   sudo find /${NETWORK}/seed/data -mindepth 1 -delete 2>/dev/null || true
   sudo find /${NETWORK}/seed/blocks -mindepth 1 -delete 2>/dev/null || true
-" 2>/dev/null && echo "  Wiped seed on ai3" || echo "  Warning: wipe failed on ai3"
+  sudo find /mainnet/santiago/data -mindepth 1 -delete 2>/dev/null || true
+  sudo find /mainnet/ivan/data -mindepth 1 -delete 2>/dev/null || true
+" 2>/dev/null && echo "  Wiped seed + producers on ai3" || echo "  Warning: wipe failed on ai3"
 
 echo ""
 
@@ -314,6 +316,16 @@ if [[ -n "$QUATERNARY" && -n "$QUATERNARY_LIST" ]]; then
       && echo "  ${PRODUCERS}${N} started (quaternary)" || echo "  Warning: ${PRODUCERS}${N} start failed"
     sleep 2
   done
+fi
+
+# Start named producers on ai3 (mainnet only)
+if [[ "$NETWORK" == "mainnet" ]]; then
+  do_ssh "$AI3" "sudo systemctl start doli-mainnet-santiago" 2>/dev/null \
+    && echo "  SANTIAGO started (ai3)" || echo "  Warning: SANTIAGO start failed"
+  sleep 2
+  do_ssh "$AI3" "sudo systemctl start doli-mainnet-ivan" 2>/dev/null \
+    && echo "  IVAN started (ai3)" || echo "  Warning: IVAN start failed"
+  sleep 2
 fi
 echo ""
 

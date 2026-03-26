@@ -17,7 +17,7 @@ Archiver nodes are full sync-only nodes that run with `--archive-to` and `--rela
 ### Deployment
 
 ```
-Producer nodes (N1-N12 across ai1, ai2, ai4, ai5)
+Producer nodes (N1-N12 across ai1, ai2, ai4, ai5 + SANTIAGO, IVAN on ai3)
        │
        │ gossip (blocks + attestations)
        ▼
