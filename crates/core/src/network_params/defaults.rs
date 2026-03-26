@@ -93,11 +93,13 @@ impl NetworkParams {
                     "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
-                max_peers: 50, // Testnet: same as mainnet — 135+ connections caused Yamux buffer explosion (INC-I-009)
+                max_peers: 25, // Testnet: halved from 50 to reduce Yamux RAM (INC-I-012)
+                              // Each peer costs ~5MB in Yamux buffers: 25×2×5MB=250MB/node
+                              // At 200 nodes: ~50GB. At 50: ~12GB. Gossip mesh_n=12 fits in 25.
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774467856, // Testnet v81 genesis - fresh 2026-03-25
+                genesis_time: 1774477175, // Testnet v83 genesis - fresh 2026-03-25
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
