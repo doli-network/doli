@@ -103,8 +103,10 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     }
 
     // Verify inputs >= outputs (difference is fee).
-    // Pool TxTypes are exempt: DOLI flows in/out of pool reserves (tracked in extra_data,
-    // not in Output.amount). Their conservation is enforced by the invariant check below.
+    // Exempt TxTypes:
+    // - Pool/Lending: DOLI flows in/out of reserves (tracked in extra_data, not Output.amount)
+    // - Registration: genesis registrations have 0 inputs/outputs, fee=0 by design
+    // See: testnet genesis deadlock 2026-03-26 (Registration fee=0 rejected by per-byte check)
     if !matches!(
         tx.tx_type,
         TxType::CreatePool
@@ -116,6 +118,7 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             | TxType::LiquidateLoan
             | TxType::LendingDeposit
             | TxType::LendingWithdraw
+            | TxType::Registration
     ) {
         let total_output = tx.total_output();
         if total_input < total_output {
