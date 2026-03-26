@@ -639,6 +639,7 @@ impl Node {
             pending_update: None,
             last_peer_redial: None,
             bootstrap_backoff: HashMap::new(),
+            had_peers_last_tick: false,
             producer_liveness,
             snap_sync_height: None,
             genesis_vdf_output: None,

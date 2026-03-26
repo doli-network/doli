@@ -152,6 +152,10 @@ pub struct Node {
     /// Maps bootstrap address → (failure_count, last_attempt_time).
     /// Reset when any peer connects (peer_count > 0).
     pub(super) bootstrap_backoff: HashMap<String, (u32, Instant)>,
+    /// INC-I-013: Track whether we had sync peers on the previous periodic tick.
+    /// Detects the peers>0 → peers==0 transition (mass eviction) to reset
+    /// bootstrap_backoff for aggressive re-bootstrap instead of stale 60s backoff.
+    pub(super) had_peers_last_tick: bool,
     /// Last height at which each producer produced a block (for liveness filter).
     /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
     /// Used by bootstrap scheduling to exclude stale producers from primary rotation.

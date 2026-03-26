@@ -201,9 +201,20 @@ impl Node {
             if peer_count > 0 {
                 // Connected — reset all backoff counters
                 self.bootstrap_backoff.clear();
-            } else if peer_count == 0 && self.bootstrap_released {
-                // Lost all peers after releasing bootstrap — allow re-bootstrap
-                self.bootstrap_released = false;
+                self.had_peers_last_tick = true;
+            } else if peer_count == 0 {
+                // INC-I-013: Detect peers>0 → peers==0 transition (mass eviction).
+                // A node that WAS connected and lost ALL peers needs aggressive
+                // re-bootstrap (1s, 2s, 4s...) not stale backoff (possibly 60s).
+                if self.had_peers_last_tick {
+                    info!("Lost all sync peers (mass eviction) — resetting bootstrap backoff");
+                    self.bootstrap_backoff.clear();
+                }
+                self.had_peers_last_tick = false;
+
+                if self.bootstrap_released {
+                    self.bootstrap_released = false;
+                }
             }
             if peer_count == 0 && !self.config.bootstrap_nodes.is_empty() {
                 let now = std::time::Instant::now();
