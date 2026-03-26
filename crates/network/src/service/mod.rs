@@ -127,22 +127,13 @@ impl NetworkService {
         // denied → rapid connect/disconnect loop on co-located nodes.
         // Also required for DCUtR hole-punching (relay + direct coexist briefly).
         //
-        // INC-I-011: Tightened from max_peers*2 to max_peers+10. The old 2x
-        // multiplier allowed too many connections, causing Yamux buffer explosion
-        // and RAM growth when network_nodes > max_peers.
-        // INC-I-012 F3: Connection limits must accommodate max_established_per_peer=2.
-        // With max_peers=50 and per_peer=2, we need at least 100 connection slots.
-        // Use max_peers*2+10 for both incoming/outgoing to handle simultaneous-dial
-        // races without rejecting legitimate peers. The eviction logic (at peers.len()
-        // >= max_peers) handles the peer count — connection limits just need to not
-        // reject connections before eviction has a chance to run.
-        //
-        // Bootstrap headroom: additional slots for temporary bootstrap-only connections.
-        // When the peer table is full, new nodes are accepted briefly (10s) for
-        // Kademlia DHT exchange, then disconnected. Without this headroom, the
-        // transport layer rejects connections BEFORE ConnectionEstablished fires,
-        // preventing eviction and DHT bootstrap entirely (chicken-and-egg problem).
-        let conn_limit = ((config.max_peers + config.bootstrap_slots) * 2 + 10) as u32;
+        // INC-I-013: conn_limit = max_peers*2 + bootstrap_slots.
+        // Old formula (mp+bs)*2+10 = 80/dir caused 100GB RAM at 156 nodes (1MB Yamux).
+        // With 512KB Yamux: 300 nodes × 60/dir × 2 × 1.5MB = 54GB burst peak.
+        // Steady state governed by max_peers eviction, not conn_limit.
+        // Must be high enough for burst startup (N nodes dial seed simultaneously)
+        // to avoid libp2p internal dial_backoff permanently isolating rejected peers.
+        let conn_limit = (config.max_peers * 2 + config.bootstrap_slots) as u32;
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(2))
             .with_max_established_incoming(Some(conn_limit))

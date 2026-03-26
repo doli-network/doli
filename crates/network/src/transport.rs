@@ -5,13 +5,13 @@
 
 use libp2p::{core::upgrade, dns, identity::Keypair, noise, relay, tcp, yamux, PeerId, Transport};
 
-/// 1MB yamux receive window (default 256KB). Sync responses carry up to 500
-/// serialized headers (~100KB) and must fit in the yamux window even when
-/// multiple peers download simultaneously.
+/// 512KB yamux receive window. Sync headers are ~100KB per batch — 512KB
+/// is 5x headroom. Halves per-connection RAM vs 1MB default, enabling
+/// 300 nodes on 128GB (INC-I-013).
 #[allow(deprecated)] // set_receive_window_size will be replaced in next yamux breaking release
 fn yamux_config() -> yamux::Config {
     let mut cfg = yamux::Config::default();
-    cfg.set_receive_window_size(1_048_576);
+    cfg.set_receive_window_size(524_288);
     cfg
 }
 
