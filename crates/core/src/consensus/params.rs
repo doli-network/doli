@@ -148,7 +148,7 @@ impl ConsensusParams {
         match network {
             Network::Devnet => 0,     // Immediate on devnet
             Network::Testnet => 1295, // Covenants activate at height 1295
-            Network::Mainnet => 9150, // Activated after v3.4.0 testnet validation
+            Network::Mainnet => 2000, // Lowered from 9150 for genesis v2 (2026-03-26)
         }
     }
 
