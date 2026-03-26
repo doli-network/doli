@@ -602,7 +602,7 @@ mod tests {
         let rle = [3u8, 0, 2, 1, 1, 5];
         let decoded: Vec<u8> = rle
             .chunks(2)
-            .flat_map(|pair| std::iter::repeat(pair[1]).take(pair[0] as usize))
+            .flat_map(|pair| std::iter::repeat_n(pair[1], pair[0] as usize))
             .collect();
         assert_eq!(decoded, vec![0, 0, 0, 1, 1, 5]);
     }
@@ -613,7 +613,7 @@ mod tests {
         let rle = [12u8, 0, 12, 1];
         let decoded: Vec<u8> = rle
             .chunks(2)
-            .flat_map(|pair| std::iter::repeat(pair[1]).take(pair[0] as usize))
+            .flat_map(|pair| std::iter::repeat_n(pair[1], pair[0] as usize))
             .collect();
         assert_eq!(decoded.len(), 24);
         assert!(decoded[..12].iter().all(|&p| p == 0));
@@ -626,7 +626,7 @@ mod tests {
         let rle = [1u8, 0, 1, 1, 1, 2, 1, 3];
         let decoded: Vec<u8> = rle
             .chunks(2)
-            .flat_map(|pair| std::iter::repeat(pair[1]).take(pair[0] as usize))
+            .flat_map(|pair| std::iter::repeat_n(pair[1], pair[0] as usize))
             .collect();
         assert_eq!(decoded, vec![0, 1, 2, 3]);
     }
@@ -636,7 +636,7 @@ mod tests {
         let rle: [u8; 0] = [];
         let decoded: Vec<u8> = rle
             .chunks(2)
-            .flat_map(|pair| std::iter::repeat(pair[1]).take(pair[0] as usize))
+            .flat_map(|pair| std::iter::repeat_n(pair[1], pair[0] as usize))
             .collect();
         assert!(decoded.is_empty());
     }

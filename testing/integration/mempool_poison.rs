@@ -26,8 +26,8 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     // NFT extra_data format: condition_bytes + NFT metadata
     // Condition: version(1) + TAG_SIGNATURE(0x00) + pubkey_hash(32)
     let mut extra_data = Vec::new();
-    extra_data.push(1u8);   // CONDITION_VERSION
-    extra_data.push(0x00);  // TAG_SIGNATURE
+    extra_data.push(1u8); // CONDITION_VERSION
+    extra_data.push(0x00); // TAG_SIGNATURE
     extra_data.extend_from_slice(pubkey_hash.as_bytes());
     // NFT metadata: version(1) + token_id(32) + content_hash_len(1) + content_hash(32)
     extra_data.push(1u8); // nft metadata version
@@ -35,7 +35,8 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     extra_data.push(32u8); // content_hash_len
     extra_data.extend_from_slice(&[0xBB; 32]); // content_hash
 
-    let fee = doli_core::consensus::BASE_FEE + extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE;
+    let fee = doli_core::consensus::BASE_FEE
+        + extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE;
     let nft_output = Output {
         amount: 1,
         pubkey_hash,
@@ -136,10 +137,8 @@ async fn test_poison_purge_preserves_normal_txs() {
 #[tokio::test]
 async fn test_poison_10_purge_cycles_no_crash() {
     let keypair = KeyPair::generate();
-    let (mut pool, mut utxo_set) = setup_mempool_with_utxo(
-        &keypair,
-        crypto::hash::hash(b"funding_persistent_3"),
-    );
+    let (mut pool, mut utxo_set) =
+        setup_mempool_with_utxo(&keypair, crypto::hash::hash(b"funding_persistent_3"));
 
     for i in 0..10u64 {
         // Re-create funding UTXO for each cycle
@@ -159,7 +158,11 @@ async fn test_poison_10_purge_cycles_no_crash() {
         pool.remove_by_error_pattern("NFT token_id already exists");
     }
     // Should not crash, mempool should be empty or near-empty
-    assert!(pool.len() <= 1, "Mempool not clean after 10 cycles: {}", pool.len());
+    assert!(
+        pool.len() <= 1,
+        "Mempool not clean after 10 cycles: {}",
+        pool.len()
+    );
 }
 
 // ============================================================
@@ -324,7 +327,10 @@ async fn test_poison_full_lifecycle() {
     assert_eq!(pool.len(), 1);
 
     // Step 2: Simulate "already exists" error from apply_block
-    let error_msg = format!("NFT token_id {} already exists", Hash::from_bytes([0xAA; 32]).to_hex());
+    let error_msg = format!(
+        "NFT token_id {} already exists",
+        Hash::from_bytes([0xAA; 32]).to_hex()
+    );
 
     // Step 3: Purge
     pool.remove_by_error_pattern(&error_msg);

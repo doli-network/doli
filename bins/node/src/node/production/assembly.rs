@@ -163,19 +163,23 @@ impl Node {
                                 if utxo.has_unique_id(storage::UID_PREFIX_NFT, &token_id) {
                                     warn!(
                                         "Skipping mempool tx {} — NFT token_id {} already exists",
-                                        tx.hash(), token_id.to_hex()
+                                        tx.hash(),
+                                        token_id.to_hex()
                                     );
                                     unique_conflict = true;
                                     break;
                                 }
                             }
                         }
-                        doli_core::OutputType::Pool if tx.tx_type == doli_core::TxType::CreatePool => {
+                        doli_core::OutputType::Pool
+                            if tx.tx_type == doli_core::TxType::CreatePool =>
+                        {
                             if let Some(meta) = output.pool_metadata() {
                                 if utxo.has_unique_id(storage::UID_PREFIX_POOL, &meta.pool_id) {
                                     warn!(
                                         "Skipping mempool tx {} — Pool {} already exists",
-                                        tx.hash(), meta.pool_id.to_hex()
+                                        tx.hash(),
+                                        meta.pool_id.to_hex()
                                     );
                                     unique_conflict = true;
                                     break;

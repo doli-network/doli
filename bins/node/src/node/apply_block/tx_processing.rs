@@ -300,9 +300,7 @@ impl Node {
                         // See: N12 testnet incident 2026-03-26.
 
                         // Increment pending count (prevents double-withdrawal in same epoch)
-                        if let Some(producer) =
-                            producers.get_by_pubkey_mut(&data.producer_pubkey)
-                        {
+                        if let Some(producer) = producers.get_by_pubkey_mut(&data.producer_pubkey) {
                             producer.withdrawal_pending_count += data.bond_count;
                             dirty_producer_keys
                                 .insert(crypto_hash(data.producer_pubkey.as_bytes()));

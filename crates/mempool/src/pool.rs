@@ -485,17 +485,17 @@ impl Mempool {
             .filter(|(_, entry)| {
                 let tx = &entry.tx;
                 if (err_msg.contains("token_id") || err_msg.contains("NFT"))
-                    && tx.outputs.iter().any(|o| o.output_type == doli_core::OutputType::NFT)
+                    && tx
+                        .outputs
+                        .iter()
+                        .any(|o| o.output_type == doli_core::OutputType::NFT)
                 {
                     return true;
                 }
-                if err_msg.contains("ool")
-                    && tx.tx_type == doli_core::TxType::CreatePool
-                {
+                if err_msg.contains("ool") && tx.tx_type == doli_core::TxType::CreatePool {
                     return true;
                 }
-                if err_msg.contains("egistration")
-                    && tx.tx_type == doli_core::TxType::Registration
+                if err_msg.contains("egistration") && tx.tx_type == doli_core::TxType::Registration
                 {
                     return true;
                 }

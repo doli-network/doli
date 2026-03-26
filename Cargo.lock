@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "chrono",
  "crypto",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "chrono",
  "crypto",
@@ -1116,7 +1116,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "bech32",
  "blake3",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "chrono",
  "clap",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "doli-gui"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "anyhow",
  "crypto",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3053,11 +3053,12 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "bincode",
  "crypto",
  "doli-core",
+ "mempool",
  "network",
  "storage",
  "tempfile",
@@ -3069,14 +3070,15 @@ dependencies = [
 
 [[package]]
 name = "ipconfig"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b58db92f96b720de98181bbbe63c831e87005ab460c1bf306eb2622b4707997f"
+checksum = "4d40460c0ce33d6ce4b0630ad68ff63d6661961c48b6dba35e5a4d81cfb48222"
 dependencies = [
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "widestring",
- "windows-sys 0.48.0",
- "winreg 0.50.0",
+ "windows-registry",
+ "windows-result 0.4.1",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3832,9 +3834,9 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1744e39d1d6a9948f4f388969627434e31128196de472883b39f148769bfe30a"
+checksum = "7ddbf48fd451246b1f8c2610bd3b4ac0cc6e149d89832867093ab69a17194f08"
 dependencies = [
  "bitflags 2.11.0",
  "libc",
@@ -4036,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "mempool"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "crypto",
  "doli-core",
@@ -4269,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4356,9 +4358,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
+checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
 
 [[package]]
 name = "num-integer"
@@ -5208,9 +5210,9 @@ dependencies = [
 
 [[package]]
 name = "proptest"
-version = "1.10.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37566cb3fdacef14c0737f9546df7cfeadbfbc9fef10991038bf5015d0c80532"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
 dependencies = [
  "bit-set",
  "bit-vec",
@@ -5817,7 +5819,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6551,7 +6553,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "bincode",
  "crypto",
@@ -7707,9 +7709,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-segmentation"
-version = "1.12.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
+checksum = "da36089a805484bcccfffe0739803392c8298778a2d2f09febf76fac5ad9025b"
 
 [[package]]
 name = "unicode-xid"
@@ -7757,7 +7759,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "anyhow",
  "crypto",
@@ -7844,7 +7846,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "crypto",
  "doli-core",
@@ -7918,7 +7920,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "4.9.0"
+version = "4.9.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -8464,6 +8466,17 @@ checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
  "windows-core 0.62.2",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
 ]
 
 [[package]]
