@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -47,10 +47,28 @@ pub(super) async fn handle_swarm_event(
             num_established,
             ..
         } => {
-            info!(
-                "Connected to peer: {} via {:?} (num_established={})",
-                peer_id, endpoint, num_established
+            let network_info = swarm.network_info();
+            let conn_counters = network_info.connection_counters();
+            let total_established = conn_counters.num_established();
+            debug!(
+                "[MEM-CONN] +conn peer={} num_established={} | total_conns={} (in={} out={})",
+                peer_id,
+                num_established,
+                total_established,
+                conn_counters.num_established_incoming(),
+                conn_counters.num_established_outgoing()
             );
+            // Milestone log every 10 connections
+            if total_established.is_multiple_of(10) {
+                info!(
+                    "[MEM-CONN] connections={} (in={} out={}) pending_in={} pending_out={}",
+                    total_established,
+                    conn_counters.num_established_incoming(),
+                    conn_counters.num_established_outgoing(),
+                    conn_counters.num_pending_incoming(),
+                    conn_counters.num_pending_outgoing()
+                );
+            }
 
             // REQ-SCALE-004: Reset dial backoff on successful connection
             dial_backoff.remove(&peer_id);
@@ -62,7 +80,7 @@ pub(super) async fn handle_swarm_event(
                 // the evict→reconnect→evict thrashing loop that causes RAM explosion
                 // when network_nodes > max_peers.
                 if let Some(evicted_at) = eviction_cooldown.get(&peer_id) {
-                    if evicted_at.elapsed() < Duration::from_secs(30) {
+                    if evicted_at.elapsed() < Duration::from_secs(120) {
                         let _ = swarm.disconnect_peer_id(peer_id);
                         // Don't log per-event — would flood logs just like the thrashing.
                         // The periodic cleanup logs aggregate counts.
@@ -92,8 +110,9 @@ pub(super) async fn handle_swarm_event(
 
                     if let Some((evict_id, score)) = evictable {
                         info!(
-                            "Peer table full ({}) — evicting {} (score={:.1}) for new peer {}",
-                            config.max_peers, evict_id, score, peer_id
+                            "Peer table full ({}) — evicting {} (score={:.1}) for new peer {} | cooldowns={} bootstrap_slots={}",
+                            config.max_peers, evict_id, score, peer_id,
+                            eviction_cooldown.len(), bootstrap_peers.len()
                         );
                         peers.remove(&evict_id);
                         let _ = swarm.disconnect_peer_id(evict_id);
@@ -136,9 +155,14 @@ pub(super) async fn handle_swarm_event(
             num_established,
             ..
         } => {
-            info!(
-                "Connection closed to peer: {} cause: {:?} (num_established={})",
-                peer_id, cause, num_established
+            let network_info = swarm.network_info();
+            let conn_counters = network_info.connection_counters();
+            debug!(
+                "[MEM-CONN] -conn peer={} cause={:?} remaining={} | total_conns={}",
+                peer_id,
+                cause,
+                num_established,
+                conn_counters.num_established()
             );
 
             // Only remove peer when no connections remain

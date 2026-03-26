@@ -301,6 +301,26 @@ impl Node {
     }
 }
 
+/// Get process RSS (resident set size) in MB via libc::getrusage.
+/// Returns 0.0 on failure. Cross-platform: macOS reports bytes, Linux reports KB.
+pub(super) fn process_rss_mb() -> f64 {
+    unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut usage) == 0 {
+            #[cfg(target_os = "macos")]
+            {
+                usage.ru_maxrss as f64 / 1_048_576.0
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                usage.ru_maxrss as f64 / 1024.0
+            }
+        } else {
+            0.0
+        }
+    }
+}
+
 // Note: The weighted presence reward system uses automatic EpochReward
 // transactions distributed at epoch boundaries. Validation is in
 // crates/core/src/validation.rs and tests in crates/core/src/rewards.rs.

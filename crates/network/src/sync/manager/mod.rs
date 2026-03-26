@@ -379,6 +379,15 @@ impl SyncManager {
         self.state_label()
     }
 
+    /// Pipeline memory stats: (pending_headers, pending_blocks, active_requests)
+    pub fn pipeline_stats(&self) -> (usize, usize, usize) {
+        (
+            self.pipeline.pending_headers.len(),
+            self.pipeline.pending_blocks.len(),
+            self.pipeline.pending_requests.len(),
+        )
+    }
+
     /// Get sync progress as a percentage
     pub fn progress(&self) -> Option<f64> {
         match &self.state {

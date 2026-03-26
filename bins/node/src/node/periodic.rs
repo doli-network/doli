@@ -518,6 +518,7 @@ impl Node {
 
         // Periodic health diagnostic — one-line summary every 30s for fork debugging
         if now_secs.is_multiple_of(30) {
+            let rss = super::process_rss_mb();
             let cs = self.chain_state.read().await;
             let sync = self.sync_manager.read().await;
             let peer_count = sync.peer_count();
@@ -526,11 +527,31 @@ impl Node {
             let net_tip_h = sync.network_tip_height();
             let net_tip_s = sync.network_tip_slot();
             let sync_fails = sync.consecutive_sync_failure_count();
+            let pipeline_stats = sync.pipeline_stats();
             warn!(
-                "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} fork_counter={} state={:?}",
+                "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} fork_counter={} state={:?} | rss={:.0}MB",
                 cs.best_height, cs.best_slot, cs.best_hash,
                 peer_count, best_peer_h, best_peer_s, net_tip_h, net_tip_s,
-                sync_fails, self.consecutive_fork_blocks, sync.sync_state_name()
+                sync_fails, self.consecutive_fork_blocks, sync.sync_state_name(),
+                rss
+            );
+            // L4: Sync pipeline sizes (only when non-zero to reduce noise)
+            if pipeline_stats.0 > 0 || pipeline_stats.1 > 0 || pipeline_stats.2 > 0 {
+                debug!(
+                    "[MEM-SYNC] pending_headers={} pending_blocks={} active_requests={}",
+                    pipeline_stats.0, pipeline_stats.1, pipeline_stats.2
+                );
+            }
+        }
+
+        // L5: UTXO and producer set sizes every 60s
+        if now_secs.is_multiple_of(60) {
+            let utxo_count = self.utxo_set.read().await.len();
+            let producer_count = self.producer_set.read().await.active_count();
+            let rss = super::process_rss_mb();
+            info!(
+                "[MEM-STATE] utxos={} producers={} rss={:.0}MB",
+                utxo_count, producer_count, rss
             );
         }
 

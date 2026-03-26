@@ -140,6 +140,23 @@ impl Node {
             self.start_rpc().await?;
         }
 
+        // L7: Startup memory baseline
+        {
+            let rss = super::process_rss_mb();
+            let utxo_count = self.utxo_set.read().await.len();
+            let producer_count = self.producer_set.read().await.active_count();
+            let height = self.chain_state.read().await.best_height;
+            info!(
+                "[MEM-BOOT] rss={:.0}MB utxos={} producers={} height={} max_peers={} network={}",
+                rss,
+                utxo_count,
+                producer_count,
+                height,
+                self.config.max_peers,
+                self.config.network.name()
+            );
+        }
+
         // Main event loop
         self.run_event_loop().await?;
 

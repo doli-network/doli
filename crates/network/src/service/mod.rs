@@ -120,27 +120,31 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits (2 connections per peer, max_peers + bootstrap headroom).
-        // Allow 2 per-peer to survive the simultaneous-dial race condition
-        // (rust-libp2p#752): when both sides dial each other at the same time,
-        // both connections complete the handshake. With limit=1 the second is
-        // denied → rapid connect/disconnect loop on co-located nodes.
-        // Also required for DCUtR hole-punching (relay + direct coexist briefly).
+        // INC-I-014: Connection limits tuned for large localhost networks.
         //
-        // INC-I-013: conn_limit = max_peers*2 + bootstrap_slots.
-        // Old formula (mp+bs)*2+10 = 80/dir caused 100GB RAM at 156 nodes (1MB Yamux).
-        // With 512KB Yamux: 300 nodes × 60/dir × 2 × 1.5MB = 54GB burst peak.
-        // Steady state governed by max_peers eviction, not conn_limit.
-        // Must be high enough for burst startup (N nodes dial seed simultaneously)
-        // to avoid libp2p internal dial_backoff permanently isolating rejected peers.
-        let conn_limit = std::env::var("DOLI_CONN_LIMIT")
+        // max_established_per_peer=1: The old value of 2 meant each peer consumed
+        // 2 connections (1MB Yamux each). At 156 nodes this caused 100 connections
+        // per node and 54GB RAM. With 1 conn/peer, the same conn_limit serves
+        // 2x more unique peers. The simultaneous-dial race (libp2p#752) resolves
+        // itself — libp2p closes the duplicate, the surviving conn works fine.
+        //
+        // INC-I-014: Connection limits for large networks.
+        // Key insight: per-direction limits (in/out) are checked independently —
+        // 60 in + 60 out = 120 total connections, causing RAM explosion.
+        // Fix: cap TOTAL connections with with_max_established().
+        //
+        // max_peers*2 total gives fast Kademlia discovery (tested: great bootstrap
+        // up to 70+ nodes) while bounding RAM. At max_peers=25: 50 total connections
+        // × 512KB Yamux = 25MB/node. Eviction keeps steady-state at ~25 conns.
+        let total_conn_limit = std::env::var("DOLI_CONN_LIMIT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or((config.max_peers * 2 + config.bootstrap_slots) as u32);
+            .unwrap_or((config.max_peers * 2) as u32);
         let limits = libp2p::connection_limits::ConnectionLimits::default()
-            .with_max_established_per_peer(Some(2))
-            .with_max_established_incoming(Some(conn_limit))
-            .with_max_established_outgoing(Some(conn_limit));
+            .with_max_established_per_peer(Some(1))
+            .with_max_established(Some(total_conn_limit))
+            .with_max_established_incoming(Some(total_conn_limit))
+            .with_max_established_outgoing(Some(total_conn_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits
@@ -213,7 +217,19 @@ impl NetworkService {
             info!("Registered external address: {}", ext_addr);
         }
 
+        let yamux_window = std::env::var("DOLI_YAMUX_WINDOW")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(524_288);
         info!("Network service listening on {}", listen_addr);
+        info!(
+            "[MEM-BOOT] max_peers={} conn_limit={} yamux_window={}KB event_buf={} cmd_buf={}",
+            config.max_peers,
+            total_conn_limit,
+            yamux_window / 1024,
+            event_buf,
+            command_buf
+        );
 
         // Load cached peers and dial them (in addition to bootstrap nodes).
         // Strip embedded /p2p/<id> suffixes — peer IDs change after chain resets,
