@@ -114,6 +114,9 @@ See `docs/ops.md` for full script reference, port layout, chain reset procedure,
 
 ---
 
+
+---
+
 # OMEGA Ω
 
 ## Philosophy
@@ -183,6 +186,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 16. **Read-only agents stay in their lane** — research agents (codebase-expert, functionality-analyst) NEVER offer to implement. They report findings and suggest appropriate commands
 17. **Security chain enforcement** — when a feature involves external data (multi-user, network, file ingestion), 5 agents independently verify security: Analyst (REQ-*-SEC requirements), Architect (trust boundary analysis or STOP), Test Writer (adversarial injection tests), QA (independent probing), Reviewer (injection pattern scan — automatic blocker)
 18. **Anti-overengineering gate** — verify necessity, scale, and simplicity before proposing any solution. Read `.claude/protocols/anti-overengineering.md`
+19. **Modular coding enforcement** — no source file exceeds 500 lines (800 for test files). When approaching the limit, split into focused modules. Read MODULE-SIZE-BUDGET in `.claude/protocols/anti-overengineering.md`
 
 ## Fail-Safe Controls
 

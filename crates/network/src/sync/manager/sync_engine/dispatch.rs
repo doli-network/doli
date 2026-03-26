@@ -6,7 +6,9 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::protocols::SyncRequest;
-use crate::sync::manager::{PendingRequest, SyncManager, SyncPipelineData, SyncRequestId, SyncState};
+use crate::sync::manager::{
+    PendingRequest, SyncManager, SyncPipelineData, SyncRequestId, SyncState,
+};
 
 impl SyncManager {
     /// Get the next sync request to send
@@ -105,7 +107,9 @@ impl SyncManager {
                         "Genesis fallback: {} consecutive empty headers — requesting full resync",
                         self.fork.consecutive_empty_headers
                     );
-                    self.request_genesis_resync(super::super::RecoveryReason::GenesisFallbackEmptyHeaders);
+                    self.request_genesis_resync(
+                        super::super::RecoveryReason::GenesisFallbackEmptyHeaders,
+                    );
                     self.set_state(SyncState::Idle, "genesis_resync_fallback");
                     return None;
                 }
@@ -274,7 +278,10 @@ impl SyncManager {
 
         info!(
             "[SYNC_DEBUG] Registering request id={}: peer={}, request={:?}, state={:?}",
-            id.inner(), peer, request, self.state
+            id.inner(),
+            peer,
+            request,
+            self.state
         );
 
         self.pipeline.pending_requests.insert(

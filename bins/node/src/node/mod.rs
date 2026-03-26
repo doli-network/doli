@@ -9,6 +9,7 @@ mod event_loop;
 mod fork_recovery;
 mod genesis;
 mod init;
+mod network_events;
 mod periodic;
 mod production;
 mod rewards;

@@ -126,6 +126,7 @@ pub mod maintainer;
 pub mod network;
 pub mod network_params;
 pub mod presence;
+pub mod protocol_activation;
 pub mod rewards;
 pub mod scheduler;
 pub mod tpop;
@@ -259,11 +260,12 @@ pub use genesis::{
 };
 pub use maintainer::{
     derive_maintainer_set, BlockchainReader, MaintainerChange, MaintainerChangeData,
-    MaintainerError, MaintainerSet, MaintainerSignature, ProtocolActivationData,
-    INITIAL_MAINTAINER_COUNT, MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
+    MaintainerError, MaintainerSet, MaintainerSignature, INITIAL_MAINTAINER_COUNT,
+    MAINTAINER_THRESHOLD, MAX_MAINTAINERS, MIN_MAINTAINERS,
 };
 pub use network::Network;
 pub use network_params::NetworkParams;
+pub use protocol_activation::ProtocolActivationData;
 pub use transaction::{
     // Bond stacking transactions
     AddBondData,

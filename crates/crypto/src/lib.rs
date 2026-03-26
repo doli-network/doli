@@ -52,19 +52,21 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod address;
+pub mod address_type;
 pub mod bls;
 pub mod hash;
 pub mod keys;
 pub mod merkle;
 pub mod signature;
 
+pub use address_type::Address;
 pub use bls::{
     attestation_message, bls_aggregate, bls_sign, bls_sign_pop, bls_verify, bls_verify_aggregate,
     bls_verify_pop, BlsError, BlsKeyPair, BlsPublicKeyWrapped as BlsPublicKey, BlsSecretKey,
     BlsSignature, BLS_PUBLIC_KEY_SIZE, BLS_SIGNATURE_SIZE,
 };
 pub use hash::{hash_with_domain, Hash, Hasher};
-pub use keys::{Address, KeyPair, PrivateKey, PublicKey};
+pub use keys::{KeyPair, PrivateKey, PublicKey};
 pub use signature::Signature;
 
 /// Size of a BLAKE3-256 hash output in bytes.

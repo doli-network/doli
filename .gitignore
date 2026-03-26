@@ -41,7 +41,4 @@ ops/scripts/stress-batch.sh
 *.json.key
 *.seed.txt
 *.pem
-.omega/cortex-config.json
-.omega/.cortex-key
-.omega/.cortex-private-key
-.omega/.pending-imports.jsonl
+.omega/
