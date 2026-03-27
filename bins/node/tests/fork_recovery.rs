@@ -94,7 +94,6 @@ async fn apply_chain(node: &mut Node, blocks: &[Block]) {
 }
 
 /// Get the genesis hash from a node (the best_hash at height 0).
-
 /// Get the devnet genesis hash (used as prev_hash for the first block).
 fn devnet_genesis_hash() -> Hash {
     doli_core::chainspec::ChainSpec::devnet().genesis_hash()

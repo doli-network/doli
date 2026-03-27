@@ -42,7 +42,7 @@ impl TestNetwork {
     /// Create a network with `n_nodes` nodes, each having the same `n_producers` registered.
     /// All nodes start connected to all other nodes (full mesh).
     pub async fn new(n_nodes: usize, n_producers: usize) -> Self {
-        let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+        let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
         let mut nodes = Vec::with_capacity(n_nodes);
         let mut temps = Vec::with_capacity(n_nodes);
 
@@ -101,7 +101,7 @@ impl TestNetwork {
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
         let timestamp = self.params.genesis_time + (slot as u64 * self.params.slot_duration);
-        let merkle_root = doli_core::block::compute_merkle_root(&[coinbase.clone()]);
+        let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
         let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
         let header = BlockHeader {
@@ -430,7 +430,7 @@ async fn test_network_500_nodes() {
 #[ignore] // Run with --test-threads=1 to avoid FD exhaustion
 async fn test_network_1000_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(1000, 5).await;
+    let net = TestNetwork::new(1000, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(5, 0).await;
@@ -443,7 +443,7 @@ async fn test_network_1000_nodes() {
 #[ignore] // Requires ulimit -n 65536
 async fn test_network_5000_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(5000, 5).await;
+    let net = TestNetwork::new(5000, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(3, 0).await;
@@ -456,7 +456,7 @@ async fn test_network_5000_nodes() {
 #[ignore] // Requires ulimit -n 65536
 async fn test_network_10000_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(10000, 5).await;
+    let net = TestNetwork::new(10000, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(2, 0).await;
@@ -494,7 +494,7 @@ pub struct ClusterNetwork {
 
 impl ClusterNetwork {
     pub fn new(n_producers: usize, nodes_per_cluster: usize, blocks_per_cluster: usize) -> Self {
-        let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+        let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
         Self {
             producers,
             n_producers,
@@ -649,8 +649,8 @@ impl TestNetwork {
         use std::collections::HashSet;
 
         let n = self.nodes.len();
-        let mut received = 0;
-        let mut missed = 0;
+        let received;
+        let missed;
 
         // Determine which nodes receive this block (random subset)
         let mut receivers = Vec::new();
@@ -676,8 +676,8 @@ impl TestNetwork {
             .collect();
 
         let results = futures::future::join_all(futs).await;
-        received = results.iter().filter(|ok| **ok).count();
-        missed = n - received;
+        let received_count = results.iter().filter(|ok| **ok).count();
+        let missed_count = n - received_count;
 
         (received, missed)
     }
@@ -755,8 +755,8 @@ impl TestNetwork {
 async fn test_gossip_divergence_and_recovery() {
     let n_nodes = 20;
     let n_producers = 10;
-    let mut net = TestNetwork::new(n_nodes, n_producers).await;
-    let params = net.params.clone();
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let _params = net.params.clone();
     let genesis = net.genesis_hash;
 
     // Phase 1: Build 50 blocks (past genesis period for devnet)
@@ -857,7 +857,7 @@ async fn test_gossip_convergence_50_nodes() {
         net.apply_to_node(0, block.clone()).await.ok();
 
         // Gossip with 80% delivery — some nodes miss some blocks
-        let (received, missed) = net.gossip_propagate(block.clone(), 0.80).await;
+        let (_received, _missed) = net.gossip_propagate(block.clone(), 0.80).await;
         if missed > 0 {
             total_rejected += missed;
         }
@@ -1382,7 +1382,7 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
 
     // Phase 2 results
     let dist = net.height_distribution().await;
-    let (nodes_with_excl, max_excl, total_excl) = net.count_divergent_exclusions().await;
+    let (nodes_with_excl, max_excl, _total_excl) = net.count_divergent_exclusions().await;
 
     eprintln!();
     eprintln!(
@@ -1718,7 +1718,7 @@ async fn test_realistic_gossip_10k_clustered() {
     let blocks_per_cluster = 30;
 
     let total_start = std::time::Instant::now();
-    let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+    let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
 
     let mut total_synced = 0usize;
     let mut total_nodes = 0usize;

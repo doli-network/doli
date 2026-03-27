@@ -402,7 +402,6 @@ mod wipe_tests {
         assert!(names.contains(&"signed_slots.db".to_string()));
         assert!(names.contains(&"producer_gset.bin".to_string()));
         assert!(names.contains(&"peers.cache".to_string()));
-        
 
         // Total: 8 items to delete
         assert_eq!(deletable.len(), 7);
