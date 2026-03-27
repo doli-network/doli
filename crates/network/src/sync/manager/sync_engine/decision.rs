@@ -69,19 +69,42 @@ impl SyncManager {
         }
     }
 
-    /// Get the best peer to sync from
+    /// Get a peer to sync from, with load distribution.
+    ///
+    /// INC-I-014: The old implementation always picked the absolute best peer (highest
+    /// height), causing ALL syncing nodes to hammer the same peer (usually seed).
+    /// At 120+ nodes, this created a serial bottleneck where sync took exponentially
+    /// longer because the seed's event loop was saturated with sync requests.
+    ///
+    /// Fix: collect all peers that are ahead of us, then randomly select one.
+    /// This distributes sync load across all already-synced peers.
     pub(in crate::sync::manager) fn best_peer(&self) -> Option<PeerId> {
         // CRITICAL: Only consider peers with MORE BLOCKS (higher height).
         // Slot comparison alone is dangerous — see should_sync() comment.
         // Skip peers that recently returned empty headers (cooldown).
-        self.peers
+        let eligible: Vec<PeerId> = self
+            .peers
             .iter()
             .filter(|(pid, status)| {
                 status.best_height > self.local_height
                     && !self.fork.header_blacklisted_peers.contains_key(pid)
             })
-            .max_by_key(|(_, status)| (status.best_height, status.best_slot))
             .map(|(peer, _)| *peer)
+            .collect();
+
+        if eligible.is_empty() {
+            return None;
+        }
+
+        // Distribute load: pick a random eligible peer instead of always the best.
+        // Uses a simple hash-based selection seeded by local_height to vary across
+        // calls without requiring rand. Different nodes at different heights pick
+        // different peers, spreading the sync load across all synced nodes.
+        let idx = (self.local_height as usize)
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407)
+            % eligible.len();
+        Some(eligible[idx])
     }
 
     /// Start the sync process.

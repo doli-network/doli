@@ -129,6 +129,15 @@ impl Node {
             }
             None => {
                 warn!("Could not plan reorg from recovered fork — common ancestor not found");
+                // INC-I-014: Mark all blocks in this fork as rejected tips.
+                // Future gossip blocks extending from any of these hashes will be
+                // skipped immediately, preventing the amplification loop.
+                let mut rejected = self.rejected_fork_tips.write().await;
+                for block in &recovery.blocks {
+                    rejected.insert(block.hash());
+                }
+                // Also mark the fork tip itself
+                rejected.insert(fork_tip_hash);
             }
         }
 

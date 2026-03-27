@@ -4076,13 +4076,19 @@ mod m2_regression_tests {
 
         manager.complete_resync();
 
-        // BUG: Goes directly to Normal, skipping PostRecoveryGrace
+        // Fixed: now correctly transitions to PostRecoveryGrace
         assert!(
-            matches!(manager.recovery_phase, RecoveryPhase::Normal),
-            "BUG: complete_resync() goes to Normal, NOT PostRecoveryGrace"
+            matches!(
+                manager.recovery_phase,
+                RecoveryPhase::PostRecoveryGrace {
+                    blocks_applied: 0,
+                    ..
+                }
+            ),
+            "complete_resync() should transition to PostRecoveryGrace, not Normal"
         );
 
-        // Verify last_resync_completed is set (this IS working correctly)
+        // Verify last_resync_completed is set
         assert!(manager.last_resync_completed.is_some());
     }
 

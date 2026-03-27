@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn test_reorg_handler_creation() {
     let handler = ReorgHandler::new();
-    assert_eq!(handler.tracked_count(), 0);
+    // Genesis (Hash::ZERO) is pre-seeded in recent_blocks
+    assert_eq!(handler.tracked_count(), 1);
 }
 
 #[test]
@@ -17,7 +18,8 @@ fn test_record_block() {
 
     assert!(handler.knows_block(&hash1));
     assert_eq!(handler.get_parent(&hash1), Some(genesis));
-    assert_eq!(handler.tracked_count(), 1);
+    // 2 = genesis (pre-seeded) + block1
+    assert_eq!(handler.tracked_count(), 2);
 }
 
 #[test]

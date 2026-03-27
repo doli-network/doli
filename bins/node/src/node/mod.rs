@@ -110,6 +110,11 @@ pub struct Node {
     pub(super) vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
     /// Cache of blocks received during forks (for reorg execution)
     pub(super) fork_block_cache: Arc<RwLock<HashMap<Hash, Block>>>,
+    /// INC-I-014: Rejected fork tip hashes. Blocks whose reorg was rejected by
+    /// finality or whose common ancestor couldn't be found. Future gossip blocks
+    /// extending from these tips (prev_hash in this set) are skipped immediately,
+    /// preventing the gossip amplification loop that caused 92GB RAM at 166 nodes.
+    pub(super) rejected_fork_tips: Arc<RwLock<HashSet<Hash>>>,
     /// Last time we triggered a forced resync (cooldown to prevent loops)
     pub(super) last_resync_time: Option<Instant>,
     /// Time when the bootstrap producer list last changed (for stability check).

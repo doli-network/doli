@@ -622,6 +622,7 @@ impl Node {
             equivocation_detector,
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
+            rejected_fork_tips: Arc::new(RwLock::new(HashSet::new())),
             last_resync_time: None,
             last_producer_list_change: Arc::new(RwLock::new(None)),
             producer_stability_deadline: None,

@@ -136,20 +136,32 @@ impl NetworkService {
         // max_peers*2 total gives fast Kademlia discovery (tested: great bootstrap
         // up to 70+ nodes) while bounding RAM. At max_peers=25: 50 total connections
         // × 256KB Yamux = 12.5MB/node. Eviction keeps steady-state at ~25 conns.
+        // INC-I-014: Connection limit tightened from max_peers*2 to max_peers+10.
+        // The old 2x headroom allowed up to max_peers "ghost" connections that completed
+        // the Noise+Yamux handshake (~456KB each) but weren't in the peer table. With
+        // 213 nodes and constant churn, the macOS allocator never returned these freed
+        // pages → RSS grew monotonically. +10 gives headroom for bootstrap-only connections
+        // and connection races without doubling the buffer cost.
         let total_conn_limit = std::env::var("DOLI_CONN_LIMIT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or((config.max_peers * 2) as u32);
+            .unwrap_or((config.max_peers + 10) as u32);
         // INC-I-014: Pending connection limits. with_max_established() only caps
         // COMPLETED connections. During handshake (TCP+Noise+Yamux), each pending
         // connection allocates ~1MB with NO cap. At 156 nodes: pending_out=37/node
         // = 37MB invisible RAM per node. with_max_pending_* checks BEFORE the
         // handshake starts (handle_pending_inbound/outbound_connection), preventing
         // Noise+Yamux buffer allocation entirely.
+        // INC-I-014: Pending limit slashed from max_peers (25) to 5.
+        // Each pending connection allocates ~456KB for Noise+Yamux handshake BEFORE
+        // ConnectionEstablished. With max_peers=25 pending, 206 nodes × 25 pending
+        // = 5,150 simultaneous handshakes × 456KB = 2.3GB in handshake buffers that
+        // churn constantly (macOS allocator doesn't return pages → 6.6GB/min leak).
+        // At 5 pending, the handshake buffer cost drops to ~460MB system-wide.
         let pending_limit = std::env::var("DOLI_PENDING_LIMIT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(config.max_peers as u32);
+            .unwrap_or(5u32);
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(1))
             .with_max_established(Some(total_conn_limit))
@@ -205,7 +217,7 @@ impl NetworkService {
         // devnet (rapid iteration). Override with DOLI_IDLE_TIMEOUT_SECS for tuning.
         let default_idle_secs = match config.network_id {
             1 => 86400, // mainnet: 24h
-            2 => 3600,  // testnet: 1h
+            2 => 300,   // testnet: 5min (INC-I-014: 1h was too long, stale connections held buffers)
             _ => 300,   // devnet: 5min
         };
         let idle_timeout_secs = std::env::var("DOLI_IDLE_TIMEOUT_SECS")

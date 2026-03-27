@@ -93,6 +93,21 @@ pub(super) async fn handle_swarm_event(
 
                 let mut peers = peers.write().await;
                 if peers.len() >= config.max_peers {
+                    // INC-I-014: Eviction rate limiting — max 5 evictions per 60s.
+                    // When network has more nodes than max_peers, constant connect/evict
+                    // cycles allocate ~456KB yamux+noise buffers per connection. The macOS
+                    // allocator doesn't return freed pages → RSS grows monotonically.
+                    // Rate limiting breaks the churn loop: refuse new peers instead of
+                    // evicting when churn is already high.
+                    let recent_evictions = eviction_cooldown
+                        .values()
+                        .filter(|t| t.elapsed() < Duration::from_secs(60))
+                        .count();
+                    if recent_evictions >= 5 {
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                        return;
+                    }
+
                     // SCALE-T2-004: Producer-aware peer eviction.
                     // When at max capacity, evict the lowest-gossipsub-scored peer,
                     // but NEVER evict a peer marked as a producer (is_producer=true).
@@ -116,6 +131,11 @@ pub(super) async fn handle_swarm_event(
                         );
                         peers.remove(&evict_id);
                         let _ = swarm.disconnect_peer_id(evict_id);
+                        // INC-I-014: Remove evicted peer from Kademlia routing table.
+                        // Without this, DHT bootstrap (every 60s) rediscovers evicted
+                        // peers and re-dials them, creating O(N - max_peers) connection
+                        // attempts per cycle. At 213 nodes: ~188 unnecessary dials/60s.
+                        swarm.behaviour_mut().kademlia.remove_peer(&evict_id);
                         let _ = event_tx
                             .send(NetworkEvent::PeerDisconnected(evict_id))
                             .await;

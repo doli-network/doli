@@ -154,12 +154,26 @@ pub(super) async fn run_swarm(
             // Periodic DHT peer discovery
             _ = dht_refresh.tick() => {
                 if !config.no_dht {
-                    match swarm.behaviour_mut().kademlia.bootstrap() {
-                        Ok(query_id) => {
-                            tracing::info!("[DHT] Periodic bootstrap started (query={:?})", query_id);
-                        }
-                        Err(e) => {
-                            warn!("[DHT] Bootstrap failed: {:?} — no peers in routing table", e);
+                    // INC-I-014: Skip DHT bootstrap when peer table is full and churn is active.
+                    // At 200+ nodes, each bootstrap discovers ~175 unreachable peers and dials
+                    // them all, creating a pending connection storm (25 × 456KB = 11MB/node).
+                    // The freed handshake buffers aren't returned by the macOS allocator → 6.6GB/min leak.
+                    // Only bootstrap when we have room for more peers.
+                    let peer_count = peers.read().await.len();
+                    let churn_active = eviction_cooldown.len() > 3;
+                    if peer_count >= config.max_peers && churn_active {
+                        tracing::debug!(
+                            "[DHT] Skipping bootstrap: peer table full ({}/{}) with {} active cooldowns",
+                            peer_count, config.max_peers, eviction_cooldown.len()
+                        );
+                    } else {
+                        match swarm.behaviour_mut().kademlia.bootstrap() {
+                            Ok(query_id) => {
+                                tracing::info!("[DHT] Periodic bootstrap started (query={:?})", query_id);
+                            }
+                            Err(e) => {
+                                warn!("[DHT] Bootstrap failed: {:?} — no peers in routing table", e);
+                            }
                         }
                     }
                 }
@@ -196,9 +210,12 @@ pub(super) async fn run_swarm(
                 mismatch_redial_cooldown.retain(|_, last| last.elapsed() < Duration::from_secs(60));
                 // Purge expired dial backoff entries (older than 10 minutes)
                 dial_backoff.retain(|_, (_, last)| last.elapsed() < Duration::from_secs(600));
-                // INC-I-011: Purge expired eviction cooldowns (older than 60s, 2x the cooldown)
+                // INC-I-011: Purge expired eviction cooldowns.
+                // MUST match the 120s window in swarm_events.rs ConnectionEstablished check.
+                // Previous bug: purging at 60s removed entries before the 120s cooldown expired,
+                // allowing evicted peers to reconnect and sustain the churn loop.
                 let before = eviction_cooldown.len();
-                eviction_cooldown.retain(|_, evicted_at| evicted_at.elapsed() < Duration::from_secs(60));
+                eviction_cooldown.retain(|_, evicted_at| evicted_at.elapsed() < Duration::from_secs(120));
                 let purged = before - eviction_cooldown.len();
                 if purged > 0 || !eviction_cooldown.is_empty() {
                     tracing::info!(

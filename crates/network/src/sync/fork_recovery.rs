@@ -238,15 +238,15 @@ impl ForkRecoveryTracker {
 
     /// Cancel recovery with reason, start cooldown
     pub fn cancel(&mut self, reason: &str) {
+        if reason == "exceeded max depth" {
+            self.exceeded_max_depth = true;
+            warn!(
+                "Fork exceeds {} blocks — node should escalate to genesis resync",
+                MAX_RECOVERY_DEPTH
+            );
+        }
         if self.active.is_some() {
             warn!("Fork recovery cancelled: {}", reason);
-            if reason == "exceeded max depth" {
-                self.exceeded_max_depth = true;
-                warn!(
-                    "Fork exceeds {} blocks — node should escalate to genesis resync",
-                    MAX_RECOVERY_DEPTH
-                );
-            }
             self.active = None;
             self.cooldown_until = Some(Instant::now() + RECOVERY_COOLDOWN);
         }

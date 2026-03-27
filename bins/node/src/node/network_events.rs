@@ -71,6 +71,30 @@ impl Node {
 
         debug!("Received new block: {} from {}", block.hash(), source_peer);
 
+        // INC-I-014: Skip blocks extending from rejected fork tips.
+        // When finality rejects a reorg, the fork tip hash is cached. Future blocks
+        // with prev_hash in this set are dead ends — processing them wastes CPU and RAM.
+        // At 166 nodes, 3 competing fork blocks caused 92GB RAM via gossip amplification.
+        {
+            let rejected = self.rejected_fork_tips.read().await;
+            if rejected.contains(&block.header.prev_hash) {
+                debug!(
+                    "Skipping block {} — parent {} is a rejected fork tip",
+                    block.hash(),
+                    block.header.prev_hash
+                );
+                // Also mark THIS block as rejected so its children are skipped too
+                drop(rejected);
+                let mut rejected = self.rejected_fork_tips.write().await;
+                rejected.insert(block.hash());
+                // Cap the rejection cache at 1000 entries
+                if rejected.len() > 1000 {
+                    rejected.clear();
+                }
+                return Ok(());
+            }
+        }
+
         // Slot sanity — reject gossip blocks with wildly wrong slots.
         {
             let now_secs = std::time::SystemTime::now()

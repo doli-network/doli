@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1774572071,
-    "message": "DOLI Testnet v88 Genesis - stress test conn fixes 2026-03-27",
+    "timestamp": 1774620387,
+    "message": "DOLI Testnet v90 Genesis - gossip amplification fix + sync distribution 2026-03-27",
     "initial_reward": 100000000
   },
   "consensus": {

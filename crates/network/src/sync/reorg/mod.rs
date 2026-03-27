@@ -68,12 +68,19 @@ pub struct ReorgHandler {
 impl ReorgHandler {
     /// Create a new reorg handler
     pub fn new() -> Self {
+        // Seed genesis (Hash::ZERO) so forks sharing only genesis
+        // as common ancestor can be detected by check_reorg_weighted
+        let mut recent_blocks = HashSet::new();
+        recent_blocks.insert(Hash::ZERO);
+        let mut lru_order = VecDeque::new();
+        lru_order.push_back(Hash::ZERO);
+
         Self {
-            recent_blocks: HashSet::new(),
+            recent_blocks,
             block_parents: HashMap::new(),
             block_weights: HashMap::new(),
             max_tracked: 10000,
-            lru_order: VecDeque::new(),
+            lru_order,
             current_chain_weight: 0,
             last_finality_height: None,
         }
@@ -365,7 +372,10 @@ impl ReorgHandler {
                 .or_else(|| get_parent(&hash))
             {
                 if parent.is_zero() {
-                    break; // Genesis
+                    // Include genesis in ancestor set so forks sharing
+                    // only genesis as common ancestor can be resolved
+                    current_ancestors.insert(parent);
+                    break;
                 }
                 hash = parent;
             } else {
@@ -393,6 +403,10 @@ impl ReorgHandler {
                 .or_else(|| get_parent(&hash))
             {
                 if parent.is_zero() {
+                    // Check if genesis is the common ancestor
+                    if current_ancestors.contains(&parent) {
+                        common_ancestor = Some(parent);
+                    }
                     break;
                 }
                 hash = parent;
@@ -449,6 +463,9 @@ impl ReorgHandler {
         self.block_parents.clear();
         self.block_weights.clear();
         self.lru_order.clear();
+        // Re-seed genesis after clear
+        self.recent_blocks.insert(Hash::ZERO);
+        self.lru_order.push_back(Hash::ZERO);
         self.current_chain_weight = 0;
     }
 

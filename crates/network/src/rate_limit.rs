@@ -38,7 +38,7 @@ impl TokenBucket {
         let elapsed = self.last_refill.elapsed().as_secs_f64();
         let new_tokens = (elapsed * self.refill_rate) as u64;
         if new_tokens > 0 {
-            self.tokens = (self.tokens + new_tokens).min(self.capacity);
+            self.tokens = self.tokens.saturating_add(new_tokens).min(self.capacity);
             self.last_refill = Instant::now();
         }
     }
