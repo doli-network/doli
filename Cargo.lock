@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "chrono",
  "crypto",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "chrono",
  "crypto",
@@ -1116,7 +1116,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "bech32",
  "blake3",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "chrono",
  "clap",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "doli-gui"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "anyhow",
  "crypto",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "anyhow",
  "axum",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "bincode",
  "crypto",
@@ -4038,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "mempool"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "crypto",
  "doli-core",
@@ -4271,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5819,7 +5819,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6394,9 +6394,9 @@ dependencies = [
 
 [[package]]
 name = "simd-adler32"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "siphasher"
@@ -6553,7 +6553,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "bincode",
  "crypto",
@@ -7759,7 +7759,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "anyhow",
  "crypto",
@@ -7822,9 +7822,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.22.0"
+version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
+checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
@@ -7846,7 +7846,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "crypto",
  "doli-core",
@@ -7920,7 +7920,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "4.9.5"
+version = "4.9.6"
 dependencies = [
  "anyhow",
  "bincode",

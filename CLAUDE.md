@@ -65,6 +65,9 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
 | **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
 | **rollback_one_block(), resolve_shallow_fork()** | `bins/node/src/node/rollback.rs` |
+| **Fork recovery integration tests (11)** | `bins/node/tests/fork_recovery.rs` |
+| **Node::new_for_test()** | `bins/node/src/node/init.rs` |
+| **Node lib (test access)** | `bins/node/src/lib.rs` |
 | **run_periodic_tasks()** | `bins/node/src/node/periodic.rs` |
 | **genesis producer derivation** | `bins/node/src/node/genesis.rs` |
 | Constants | `crates/core/src/consensus.rs` |
