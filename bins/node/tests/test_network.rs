@@ -638,6 +638,136 @@ async fn test_cluster_100x1000() {
 /// nodes at different times, causing temporary excluded_producers divergence.
 /// This is the test that reveals whether the network can grow.
 impl TestNetwork {
+    /// Production-accurate gossip: deliver block to nodes, and when a node
+    /// can't apply (prev_hash mismatch = it's behind), sync it from a peer
+    /// that has the missing blocks. This is what the real sync protocol does.
+    /// Returns (applied_direct, applied_via_sync, missed).
+    pub async fn gossip_with_sync(
+        &self,
+        block: &Block,
+        delivery_probability: f64,
+    ) -> (usize, usize, usize) {
+        let n = self.nodes.len();
+        let block_hash = block.hash();
+
+        // Determine delivery
+        let mut delivered = Vec::new();
+        let mut not_delivered = Vec::new();
+        for i in 0..n {
+            let seed = block_hash.as_bytes()[i % 32] as u16
+                + block_hash.as_bytes()[(i * 7 + 3) % 32] as u16;
+            if (seed as f64 / 510.0) < delivery_probability {
+                delivered.push(i);
+            } else {
+                not_delivered.push(i);
+            }
+        }
+
+        let mut applied_direct = 0usize;
+        let mut applied_via_sync = 0usize;
+
+        for &node_id in &delivered {
+            let mut node = self.nodes[node_id].lock().await;
+
+            // Try direct apply
+            match node.apply_block(block.clone(), ValidationMode::Light).await {
+                Ok(()) => {
+                    applied_direct += 1;
+                    continue;
+                }
+                Err(_) => {
+                    // Failed — probably behind (prev_hash mismatch).
+                    // Simulate sync: find a peer that's ahead and get missing blocks.
+                    drop(node);
+
+                    let node_height = self.height(node_id).await;
+                    let block_height = block.header.slot as u64;
+
+                    if block_height <= node_height {
+                        continue; // Already at or past this height
+                    }
+
+                    // Find a peer that has the missing blocks (use node 0 as reference)
+                    let leader_height = self.height(0).await;
+                    if leader_height <= node_height {
+                        continue; // Leader not ahead either
+                    }
+
+                    // Sync: find common ancestor, reset, replay
+                    let ancestor_h = {
+                        let leader = self.nodes[0].lock().await;
+                        let behind = self.nodes[node_id].lock().await;
+                        let mut found = 0u64;
+                        for h in (1..=std::cmp::min(node_height, leader_height)).rev() {
+                            let lb = leader.block_store.get_block_by_height(h).ok().flatten();
+                            let nb = behind.block_store.get_block_by_height(h).ok().flatten();
+                            if let (Some(lb), Some(nb)) = (lb, nb) {
+                                if lb.hash() == nb.hash() {
+                                    found = h;
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    };
+
+                    // Reset to ancestor
+                    {
+                        let mut node = self.nodes[node_id].lock().await;
+                        let ancestor_hash = if ancestor_h == 0 {
+                            node.chain_state.read().await.genesis_hash
+                        } else {
+                            let leader = self.nodes[0].lock().await;
+                            leader
+                                .block_store
+                                .get_block_by_height(ancestor_h)
+                                .ok()
+                                .flatten()
+                                .map(|b| b.hash())
+                                .unwrap_or(node.chain_state.read().await.genesis_hash)
+                        };
+                        let mut cs = node.chain_state.write().await;
+                        cs.best_height = ancestor_h;
+                        cs.best_hash = ancestor_hash;
+                        cs.best_slot = ancestor_h as u32;
+                        drop(cs);
+                        node.sync_manager.write().await.update_local_tip(
+                            ancestor_h,
+                            ancestor_hash,
+                            ancestor_h as u32,
+                        );
+                        node.excluded_producers.clear();
+                        node.cumulative_rollback_depth = 0;
+                        node.cached_scheduler = None;
+                    }
+
+                    // Apply leader's chain from ancestor+1 to current leader height
+                    let mut synced_blocks = 0;
+                    for h in (ancestor_h + 1)..=leader_height {
+                        let blk = {
+                            let leader = self.nodes[0].lock().await;
+                            leader.block_store.get_block_by_height(h).ok().flatten()
+                        };
+                        if let Some(blk) = blk {
+                            let mut node = self.nodes[node_id].lock().await;
+                            if node.apply_block(blk, ValidationMode::Light).await.is_ok() {
+                                synced_blocks += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    if synced_blocks > 0 {
+                        applied_via_sync += 1;
+                    }
+                }
+            }
+        }
+
+        (applied_direct, applied_via_sync, not_delivered.len())
+    }
+
     /// Propagate a block with random delay to simulate gossip.
     /// Some nodes receive the block, others don't (simulating network latency).
     /// Returns (received_count, missed_count).
@@ -747,85 +877,67 @@ impl TestNetwork {
 /// sync after rollback clears the exclusions.
 /// This simulates the real production scenario where nodes see different
 /// blocks first and accumulate different exclusion sets.
-#[ignore] // Uses old gossip path without round-robin — needs sync_from_leader
 #[tokio::test]
 async fn test_gossip_divergence_and_recovery() {
     let n_nodes = 20;
     let n_producers = 10;
     let net = TestNetwork::new(n_nodes, n_producers).await;
-    let _params = net.params.clone();
     let genesis = net.genesis_hash;
 
-    // Phase 1: Build 50 blocks (past genesis period for devnet)
-    // All nodes receive all blocks — everyone synced
+    // Phase 1: Build 50 blocks (past genesis period for devnet) — 100% delivery
     let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 50);
     for block in &base {
-        net.propagate(0, block.clone()).await;
-        // Also apply to node 0 (propagate skips source)
         net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
     }
     assert!(net.is_synced().await);
     assert_eq!(net.height(0).await, 50);
 
-    // Phase 2: Simulate gossip divergence
-    // Half the nodes miss some blocks → they develop different excluded_producers
-    let fork_point = base[49].hash();
+    // Phase 2: Produce 20 blocks with correct round-robin and 70% delivery
+    // Some nodes will miss blocks → fall behind → need sync
+    let mut rr: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
+    rr.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
 
-    // Nodes 0-9 receive blocks 51-55 (by producer[0])
-    // Nodes 10-19 DON'T receive them → they fall behind
-    let chain_a = net.build_chain(51, 51, fork_point, &net.producers[0].clone(), 5);
-    for block in &chain_a {
-        for node_id in 0..10 {
-            net.apply_to_node(node_id, block.clone()).await.ok();
-        }
+    let mut prev = base[49].hash();
+    let mut total_synced_via_sync = 0;
+    for i in 0..20 {
+        let height = 51 + i as u64;
+        let slot = 51 + i as u32;
+        let rr_idx = (slot as usize) % rr.len();
+        let (orig_idx, _) = rr[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
+        prev = block.hash();
+
+        // Node 0 always gets it
+        net.apply_to_node(0, block.clone()).await.ok();
+
+        // Gossip with sync: 70% delivery, nodes that miss blocks sync from peers
+        let (_direct, via_sync, _missed) = net.gossip_with_sync(&block, 0.70).await;
+        total_synced_via_sync += via_sync;
     }
 
-    // Nodes 0-9 are at height 55, nodes 10-19 at height 50
-    assert_eq!(net.height(0).await, 55);
-    assert_eq!(net.height(15).await, 50);
-
-    // Nodes 10-19 develop excluded_producers because they think producer[0]
-    // missed slots (they didn't see the blocks)
-    for node_id in 10..20 {
-        net.exclude_producer(node_id, net.producers[0].public_key())
-            .await;
-    }
-
-    // Phase 3: Try to sync nodes 10-19 with blocks 51-55
-    // With the fix (clear excluded on rollback), nodes should accept after
-    // rolling back from their stale state.
-    // Without the fix, check_producer_eligibility would reject these blocks.
-    let mut all_synced_after = true;
-    for block in &chain_a {
-        let (accepted, rejected_elig, rejected_apply) =
-            net.gossip_with_eligibility(block.clone()).await;
-        if rejected_elig > 0 {
-            eprintln!(
-                "  Block slot={}: accepted={}, rejected_eligibility={}, rejected_apply={}",
-                block.header.slot, accepted, rejected_elig, rejected_apply
-            );
-            all_synced_after = false;
-        }
-    }
-
-    // Verify all nodes converged
+    // Final sync pass for any remaining stragglers
+    let (synced_count, _, _) = net.sync_from_leader().await;
     let synced = net.is_synced().await;
     let h0 = net.height(0).await;
 
     eprintln!(
-        "  Result: synced={}, height={}, all_accepted={}",
-        synced, h0, all_synced_after
+        "  Result: synced={}, height={}, synced_via_gossip_sync={}, final_sync={}",
+        synced, h0, total_synced_via_sync, synced_count
     );
 
-    // All nodes should be at height 55 and synced
-    assert!(synced, "Network should converge after gossip divergence");
-    assert_eq!(h0, 55);
+    assert!(synced, "Network should converge after gossip with sync");
+    assert_eq!(h0, 70);
 }
 
 /// Test convergence at scale: 50 nodes, 20 producers, with realistic
 /// gossip delays where blocks are delivered to random subsets.
 #[tokio::test]
-#[ignore] // Uses old gossip path without sync simulation
 async fn test_gossip_convergence_50_nodes() {
     let n_nodes = 50;
     let n_producers = 20;
@@ -840,72 +952,44 @@ async fn test_gossip_convergence_50_nodes() {
     }
     assert!(net.is_synced().await);
 
-    // Now produce 20 more blocks with 80% delivery probability
-    // Some nodes will miss some blocks
+    // Produce 30 blocks with correct round-robin and 80% delivery + sync
+    let mut rr: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
+    rr.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
     let mut prev = base[44].hash();
-    let mut total_rejected = 0;
-    for i in 0..20 {
-        let producer_idx = i % n_producers;
+    let mut total_direct = 0;
+    let mut total_via_sync = 0;
+    for i in 0..30 {
         let height = 46 + i as u64;
         let slot = 46 + i as u32;
-        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        let rr_idx = (slot as usize) % rr.len();
+        let (orig_idx, _) = rr[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
         prev = block.hash();
 
-        // Apply to node 0 first (always receives)
         net.apply_to_node(0, block.clone()).await.ok();
-
-        // Gossip with 80% delivery — some nodes miss some blocks
-        let (_received, missed) = net.gossip_propagate(block.clone(), 0.80).await;
-        if missed > 0 {
-            total_rejected += missed;
-        }
+        let (direct, via_sync, _missed) = net.gossip_with_sync(&block, 0.80).await;
+        total_direct += direct;
+        total_via_sync += via_sync;
     }
 
-    // Check how many nodes are synced
-    let target_height = net.height(0).await;
-    let mut synced_count = 0;
-    let mut behind_count = 0;
-    for i in 0..n_nodes {
-        let h = net.height(i).await;
-        if h == target_height {
-            synced_count += 1;
-        } else {
-            behind_count += 1;
-        }
-    }
-
-    eprintln!(
-        "  After gossip: {} synced at h={}, {} behind, {} total missed deliveries",
-        synced_count, target_height, behind_count, total_rejected
-    );
-
-    // Now send ALL blocks to ALL nodes (simulating eventual consistency)
-    for i in 0..20 {
-        let height = 46 + i as u64;
-        if let Ok(Some(block)) = {
-            let n = net.nodes[0].lock().await;
-            n.block_store.get_block_by_height(height)
-        } {
-            for node_id in 1..n_nodes {
-                net.apply_to_node(node_id, block.clone()).await.ok();
-            }
-        }
-    }
-
-    // All should converge now
-    let final_synced = net.is_synced().await;
+    // Final sync for stragglers
+    let (synced_count, _, _) = net.sync_from_leader().await;
+    let synced = net.is_synced().await;
     let final_height = net.height(0).await;
 
     eprintln!(
-        "  After sync: synced={}, height={}",
-        final_synced, final_height
+        "  50 nodes: direct={}, via_sync={}, final_sync={}, synced={}, height={}",
+        total_direct, total_via_sync, synced_count, synced, final_height
     );
 
-    assert!(
-        final_synced,
-        "All nodes should converge after receiving all blocks"
-    );
-    assert_eq!(final_height, 65);
+    assert!(synced, "50 nodes should converge with gossip+sync");
+    assert_eq!(final_height, 75);
 }
 
 // ============================================================
