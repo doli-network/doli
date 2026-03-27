@@ -11,7 +11,7 @@ impl Node {
     /// Non-qualifiers' share is redistributed to qualifiers (not burned).
     ///
     /// Returns a vector of (amount, pubkey_hash) tuples for the EpochReward transaction.
-    pub(super) async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
+    pub async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
@@ -275,7 +275,7 @@ impl Node {
     ///
     /// Creates and submits a slash transaction to the mempool when a producer
     /// is caught creating two different blocks for the same slot.
-    pub(super) async fn handle_equivocation(&mut self, proof: EquivocationProof) {
+    pub async fn handle_equivocation(&mut self, proof: EquivocationProof) {
         // Log the equivocation with all details
         warn!(
             "SLASHING: Producer {} created two blocks for slot {}: {} and {}",
@@ -356,7 +356,7 @@ impl Node {
     /// Scans the last LIVENESS_WINDOW_MIN blocks to determine which producers
     /// have been active recently. Must be called after any rollback to prevent
     /// divergent liveness views between nodes (fork block entries pollute the map).
-    pub(super) fn rebuild_producer_liveness(&mut self, tip_height: u64) {
+    pub fn rebuild_producer_liveness(&mut self, tip_height: u64) {
         let window = consensus::LIVENESS_WINDOW_MIN;
         let start = tip_height.saturating_sub(window).max(1);
         self.producer_liveness.clear();
@@ -373,7 +373,7 @@ impl Node {
         );
     }
 
-    pub(super) fn rebuild_producer_set_from_blocks(
+    pub fn rebuild_producer_set_from_blocks(
         &self,
         producers: &mut ProducerSet,
         target_height: u64,

@@ -141,7 +141,7 @@ impl Node {
 
     /// Return the canonical genesis hash from the embedded chainspec.
     /// Always correct regardless of state_db corruption.
-    pub(super) fn canonical_genesis_hash(&self) -> Hash {
+    pub fn canonical_genesis_hash(&self) -> Hash {
         let spec = match self.config.network {
             Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
             Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
@@ -151,7 +151,7 @@ impl Node {
     }
 
     /// Start the network service
-    pub(super) async fn start_network(&mut self) -> Result<()> {
+    pub async fn start_network(&mut self) -> Result<()> {
         let listen_addr: SocketAddr = self.config.listen_addr.parse()?;
         let genesis_hash = self.chain_state.read().await.genesis_hash;
 
@@ -235,7 +235,7 @@ impl Node {
     }
 
     /// Start the RPC server
-    pub(super) async fn start_rpc(&self) -> Result<()> {
+    pub async fn start_rpc(&self) -> Result<()> {
         let listen_addr: SocketAddr = self.config.rpc.listen_addr.parse()?;
 
         let rpc_config = RpcServerConfig {
@@ -428,7 +428,7 @@ impl Node {
 
     /// Recompute our tier classification from the active producer set.
     /// Called once per epoch boundary (when `height / blocks_per_epoch` changes).
-    pub(super) async fn recompute_tier(&mut self, height: u64) {
+    pub async fn recompute_tier(&mut self, height: u64) {
         let current_epoch = height / self.config.network.blocks_per_reward_epoch();
         if self.last_tier_epoch == Some(current_epoch) {
             return; // Already computed for this epoch
@@ -495,7 +495,7 @@ impl Node {
     /// Create an attestation for a block and broadcast it to the network.
     ///
     /// Adds attestation weight for the finality gadget.
-    pub(super) async fn create_and_broadcast_attestation(
+    pub async fn create_and_broadcast_attestation(
         &self,
         block_hash: Hash,
         slot: u32,

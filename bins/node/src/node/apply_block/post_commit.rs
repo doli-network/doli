@@ -3,7 +3,7 @@ use super::*;
 impl Node {
     /// Actions performed after the batch commit: tier recompute, epoch snapshot,
     /// attestation, archive buffering, and websocket broadcast.
-    pub(super) async fn post_commit_actions(
+    pub async fn post_commit_actions(
         &mut self,
         block: &Block,
         block_hash: Hash,

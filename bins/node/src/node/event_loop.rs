@@ -2,7 +2,7 @@ use super::*;
 
 impl Node {
     /// Main event loop
-    pub(super) async fn run_event_loop(&mut self) -> Result<()> {
+    pub async fn run_event_loop(&mut self) -> Result<()> {
         info!("Entering main event loop");
 
         // Check production opportunity - faster for devnet to catch the 700ms heartbeat window
@@ -223,7 +223,7 @@ impl Node {
     }
 
     /// Handle network events
-    pub(super) async fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
+    pub async fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
         match event {
             NetworkEvent::PeerConnected(peer_id) => {
                 info!("Peer connected: {}", peer_id);

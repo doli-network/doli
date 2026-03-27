@@ -7,7 +7,7 @@ impl Node {
     /// which is verified here but applied when chain_state lock is acquired.
     ///
     /// Returns `Some((version, epoch))` if a ProtocolActivation was verified.
-    pub(super) async fn process_transaction_governance(
+    pub async fn process_transaction_governance(
         &self,
         tx: &Transaction,
         height: u64,

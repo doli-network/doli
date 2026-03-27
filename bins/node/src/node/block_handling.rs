@@ -2,7 +2,7 @@ use super::*;
 
 impl Node {
     /// Handle a new block from the network
-    pub(super) async fn handle_new_block(
+    pub async fn handle_new_block(
         &mut self,
         block: Block,
         source_peer: PeerId,
@@ -185,7 +185,7 @@ impl Node {
     /// This function is atomic: either the full reorg succeeds, or the chain
     /// remains unchanged. We build new state in temporary structures and only
     /// swap them in on success.
-    pub(super) async fn execute_reorg(
+    pub async fn execute_reorg(
         &mut self,
         reorg_result: ReorgResult,
         triggering_block: Block,
@@ -484,7 +484,7 @@ impl Node {
 
     /// Execute a fork sync reorg: the binary search found the common ancestor,
     /// canonical blocks have been downloaded. Build a ReorgResult and call execute_reorg.
-    pub(super) async fn execute_fork_sync_reorg(
+    pub async fn execute_fork_sync_reorg(
         &mut self,
         result: network::sync::ForkSyncResult,
     ) -> Result<()> {

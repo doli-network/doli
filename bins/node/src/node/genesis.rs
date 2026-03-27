@@ -10,7 +10,7 @@ impl Node {
     /// Cached via OnceLock for the common path. Invalidated by
     /// execute_reorg/rollback_one_block when a reorg crosses the genesis
     /// boundary (target_height <= genesis_blocks).
-    pub(super) fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
+    pub fn derive_genesis_producers_from_chain(&self) -> Vec<PublicKey> {
         self.cached_genesis_producers
             .get_or_init(|| {
                 let genesis_blocks = self.config.network.genesis_blocks();
@@ -89,7 +89,7 @@ impl Node {
     /// Extract BLS pubkeys from genesis registration TXs.
     /// Returns a map from producer PublicKey → BLS pubkey bytes (48 bytes).
     /// Only includes producers that included a BLS pubkey in their registration.
-    pub(super) fn genesis_bls_pubkeys(&self) -> std::collections::HashMap<PublicKey, Vec<u8>> {
+    pub fn genesis_bls_pubkeys(&self) -> std::collections::HashMap<PublicKey, Vec<u8>> {
         let genesis_blocks = self.config.network.genesis_blocks();
         let mut bls_keys = std::collections::HashMap::new();
 
@@ -118,7 +118,7 @@ impl Node {
     /// to match the apply_block() behavior. All per-block coinbase goes to the
     /// reward pool — this consumes pool UTXOs to create bonds for each producer
     /// and returns the remainder to the pool.
-    pub(super) fn consume_genesis_bond_utxos(
+    pub fn consume_genesis_bond_utxos(
         utxo: &mut storage::UtxoSet,
         genesis_producers: &[PublicKey],
         bond_unit: u64,

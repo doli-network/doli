@@ -770,4 +770,164 @@ impl Node {
             minute_tracker: MinuteAttestationTracker::new(),
         })
     }
+
+    /// Create a minimal Node for integration tests.
+    ///
+    /// Uses real RocksDB (tempdir), real ProducerSet, real SyncManager, real fork recovery
+    /// state. No networking, no archiver, no updater.
+    ///
+    /// `producers`: list of KeyPairs to register as genesis producers (each gets 1 bond).
+    /// The first producer in the list is set as `producer_key` (the node's own key).
+    /// Create a minimal Node for integration tests.
+    /// Uses real RocksDB, real ProducerSet, real SyncManager, real fork recovery state.
+    /// No networking, no archiver, no updater.
+    pub async fn new_for_test(
+        data_dir: std::path::PathBuf,
+        producers: Vec<KeyPair>,
+    ) -> Result<Self> {
+        let network = Network::Devnet;
+        let mut params = ConsensusParams::devnet();
+
+        // Use genesis_time = 0 for devnet tests.
+        // This matches ConsensusParams::devnet() which validate_block_for_apply uses.
+        params.genesis_time = 0;
+
+        // Open real RocksDB storage
+        std::fs::create_dir_all(&data_dir)?;
+        let block_store = Arc::new(BlockStore::open(&data_dir.join("blocks"))?);
+        let state_db = Arc::new(StateDb::open(&data_dir.join("state_db"))?);
+
+        // Build real ProducerSet with genesis producers
+        let mut ps = ProducerSet::new();
+        let bond_unit = network.bond_unit();
+        for kp in &producers {
+            ps.register_genesis_producer(*kp.public_key(), 1, bond_unit)
+                .expect("register_genesis_producer failed");
+        }
+
+        // Build real epoch bond snapshot from producer set
+        let mut epoch_bond_snapshot: HashMap<Hash, u64> = HashMap::new();
+        for kp in &producers {
+            let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, kp.public_key().as_bytes());
+            epoch_bond_snapshot.insert(pubkey_hash, 1); // 1 bond each
+        }
+
+        // Build real producer liveness (all producers alive at height 0)
+        let mut producer_liveness: HashMap<PublicKey, u64> = HashMap::new();
+        for kp in &producers {
+            producer_liveness.insert(*kp.public_key(), 0);
+        }
+
+        // Real chain state at genesis
+        let spec = doli_core::chainspec::ChainSpec::devnet();
+        let genesis_hash = spec.genesis_hash();
+        let chain_state = ChainState::new(genesis_hash);
+        state_db.put_chain_state(&chain_state)?;
+        state_db.write_producer_set(&ps)?;
+
+        let chain_state = Arc::new(RwLock::new(chain_state));
+        let producer_set = Arc::new(RwLock::new(ps));
+        let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
+
+        // Real mempool
+        let mempool = Arc::new(RwLock::new(Mempool::new(
+            MempoolPolicy::testnet(),
+            params.clone(),
+            network,
+        )));
+
+        // Real sync manager
+        let sync_config = SyncConfig::default();
+        let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
+        {
+            let mut sm = sync_manager.write().await;
+            sm.set_bootstrap_grace_period_secs(0); // No grace period in tests
+            sm.set_min_peers_for_production(0); // No peers needed in tests
+        }
+
+        // Real VDF calibrator (minimal iterations for speed)
+        let vdf_calibrator = Arc::new(RwLock::new(VdfCalibrator::new(100, 55)));
+
+        // Producer key: first producer in list
+        let producer_key = producers.first().cloned();
+        let bls_key = Some(crypto::BlsKeyPair::generate());
+
+        // Config
+        let config = NodeConfig {
+            network,
+            data_dir,
+            listen_addr: "0.0.0.0:0".to_string(),
+            bootstrap_nodes: Vec::new(),
+            max_peers: 0,
+            rpc: crate::config::RpcConfig::for_network(network),
+            producer: None,
+            no_dht: true,
+            relay_server: false,
+            genesis_time_override: Some(params.genesis_time),
+            chainspec: None,
+            slot_duration_override: Some(params.slot_duration),
+            external_address: None,
+        };
+
+        Ok(Self {
+            config,
+            params,
+            block_store,
+            state_db,
+            utxo_set,
+            chain_state,
+            producer_set,
+            mempool,
+            network: None, // No networking in tests
+            sync_manager,
+            shutdown: Arc::new(RwLock::new(false)),
+            producer_key,
+            bls_key,
+            last_produced_slot: None,
+            _last_production_check: Instant::now(),
+            known_producers: Arc::new(RwLock::new(
+                producers.iter().map(|kp| *kp.public_key()).collect(),
+            )),
+            first_peer_connected: None,
+            equivocation_detector: Arc::new(RwLock::new(EquivocationDetector::new())),
+            vdf_calibrator,
+            fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
+            last_resync_time: None,
+            last_producer_list_change: None,
+            producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
+            our_announcement: Arc::new(RwLock::new(None)),
+            announcement_sequence: Arc::new(AtomicU64::new(0)),
+            last_broadcast_gset_len: 0,
+            signed_slots_db: None, // No double-sign DB in tests
+            // --- Fork recovery state: ALL REAL ---
+            consecutive_fork_blocks: 0,
+            shallow_rollback_count: 0,
+            cumulative_rollback_depth: 0,
+            seen_blocks_for_slot: HashSet::new(),
+            excluded_producers: HashSet::new(),
+            epoch_bond_snapshot,
+            epoch_bond_snapshot_epoch: 0,
+            cached_scheduler: None,
+            our_tier: 1, // Tier 1 in tests
+            last_tier_epoch: None,
+            // --- Non-fork-recovery fields: safe defaults ---
+            vote_tx: None,
+            pending_update: None,
+            last_peer_redial: None,
+            bootstrap_backoff: HashMap::new(),
+            producer_liveness,
+            genesis_vdf_output: None,
+            cached_state_root: Arc::new(RwLock::new(None)),
+            cached_genesis_producers: std::sync::OnceLock::new(),
+            port_check_done: true,
+            maintainer_state: None,
+            archive_tx: None,
+            pending_archive: std::collections::VecDeque::new(),
+            archive_dir: None,
+            archive_caught_up: true,
+            ws_sender: Arc::new(RwLock::new(None)),
+            minute_tracker: MinuteAttestationTracker::new(),
+        })
+    }
 }

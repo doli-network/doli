@@ -5,7 +5,7 @@ impl Node {
     ///
     /// Called when the parent chain walk connects to a block in our block_store.
     /// Records weights, moves blocks to fork_block_cache, plans reorg, executes if heavier.
-    pub(super) async fn handle_completed_fork_recovery(
+    pub async fn handle_completed_fork_recovery(
         &mut self,
         recovery: network::sync::CompletedRecovery,
     ) -> Result<()> {
@@ -130,7 +130,7 @@ impl Node {
 
     /// Try to start fork recovery from cached orphan blocks.
     /// Called from production gate when fork is detected (ChainMismatch, AheadOfPeers).
-    pub(super) async fn try_trigger_fork_recovery(&mut self) {
+    pub async fn try_trigger_fork_recovery(&mut self) {
         let can_start = self.sync_manager.read().await.can_start_fork_recovery();
         if !can_start {
             return;
@@ -158,7 +158,7 @@ impl Node {
     ///
     /// This function attempts to build a chain from cached fork blocks
     /// back to our current tip, then applies them in order.
-    pub(super) async fn try_apply_cached_chain(&mut self, latest_block: Block) -> Result<()> {
+    pub async fn try_apply_cached_chain(&mut self, latest_block: Block) -> Result<()> {
         let our_tip = self.chain_state.read().await.best_hash;
 
         // Build chain backwards from latest_block to our tip
@@ -248,7 +248,7 @@ impl Node {
     ///
     /// Triggers `recover_from_peers()` after N consecutive fork-blocked
     /// slots, respecting cooldown to prevent resync loops.
-    pub(super) async fn maybe_auto_resync(&mut self, _current_slot: u32) {
+    pub async fn maybe_auto_resync(&mut self, _current_slot: u32) {
         // Threshold: trigger resync after 10 consecutive fork-blocked slots
         // This gives the node enough time for normal recovery (reorg, sync)
         // before escalating to a full resync.
@@ -365,7 +365,7 @@ impl Node {
     /// CHECKPOINT_STATE_ROOT constant compiled into the binary.
     ///
     /// Only called for new nodes (height=0) during initial sync.
-    pub(super) async fn apply_checkpoint_state(
+    pub async fn apply_checkpoint_state(
         &mut self,
         block_hash: Hash,
         block_height: u64,
@@ -462,7 +462,7 @@ impl Node {
     /// This is a complete state reset + full block store clear.
     /// Reserved for manual CLI `recover --yes` — NEVER called automatically.
     #[allow(dead_code)]
-    pub(super) async fn force_resync_from_genesis(&mut self) -> Result<()> {
+    pub async fn force_resync_from_genesis(&mut self) -> Result<()> {
         warn!("Force resync initiated - performing COMPLETE state reset to genesis (including block data)");
 
         // Use canonical chainspec genesis hash, not state_db (may be corrupt).

@@ -66,137 +66,137 @@ use crate::producer::SignedSlotsDb;
 /// The main node struct
 pub struct Node {
     /// Configuration
-    pub(super) config: NodeConfig,
+    pub config: NodeConfig,
     /// Consensus parameters
-    pub(super) params: ConsensusParams,
+    pub params: ConsensusParams,
     /// Block storage
-    pub(super) block_store: Arc<BlockStore>,
+    pub block_store: Arc<BlockStore>,
     /// Unified state database (UTXO + producers + chain state, atomic WriteBatch per block)
-    pub(super) state_db: Arc<StateDb>,
+    pub state_db: Arc<StateDb>,
     /// UTXO set (in-memory working copy, populated from state_db on startup)
-    pub(super) utxo_set: Arc<RwLock<UtxoSet>>,
+    pub utxo_set: Arc<RwLock<UtxoSet>>,
     /// Chain state
-    pub(super) chain_state: Arc<RwLock<ChainState>>,
+    pub chain_state: Arc<RwLock<ChainState>>,
     /// Producer set
-    pub(super) producer_set: Arc<RwLock<ProducerSet>>,
+    pub producer_set: Arc<RwLock<ProducerSet>>,
     /// Mempool
-    pub(super) mempool: Arc<RwLock<Mempool>>,
+    pub mempool: Arc<RwLock<Mempool>>,
     /// Network service
-    pub(super) network: Option<NetworkService>,
+    pub network: Option<NetworkService>,
     /// Sync manager
-    pub(super) sync_manager: Arc<RwLock<SyncManager>>,
+    pub sync_manager: Arc<RwLock<SyncManager>>,
     /// Shutdown flag
-    pub(super) shutdown: Arc<RwLock<bool>>,
+    pub shutdown: Arc<RwLock<bool>>,
     /// Producer key (if producing blocks)
-    pub(super) producer_key: Option<KeyPair>,
+    pub producer_key: Option<KeyPair>,
     /// BLS key pair for aggregate attestation signatures
-    pub(super) bls_key: Option<crypto::BlsKeyPair>,
+    pub bls_key: Option<crypto::BlsKeyPair>,
     /// Last slot we successfully produced a block for (to avoid double-producing).
     /// Set after successful broadcast — checked at the top of try_produce_block()
     /// before any eligibility/scheduler work to save CPU and silence fallback-rank noise.
-    pub(super) last_produced_slot: Option<u64>,
+    pub last_produced_slot: Option<u64>,
     /// Last time we checked for production opportunity
-    pub(super) _last_production_check: Instant,
+    pub _last_production_check: Instant,
     /// All known producers (persists across epochs for round-robin)
-    pub(super) known_producers: Arc<RwLock<Vec<PublicKey>>>,
+    pub known_producers: Arc<RwLock<Vec<PublicKey>>>,
     /// Time when we first connected to a peer (for discovery grace period)
-    pub(super) first_peer_connected: Option<Instant>,
+    pub first_peer_connected: Option<Instant>,
     /// Equivocation detector for slashing double-signers
-    pub(super) equivocation_detector: Arc<RwLock<EquivocationDetector>>,
+    pub equivocation_detector: Arc<RwLock<EquivocationDetector>>,
     /// VDF calibrator for dynamic iteration adjustment
-    pub(super) vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
+    pub vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
     /// Cache of blocks received during forks (for reorg execution)
-    pub(super) fork_block_cache: Arc<RwLock<HashMap<Hash, Block>>>,
+    pub fork_block_cache: Arc<RwLock<HashMap<Hash, Block>>>,
     /// Last time we triggered a forced resync (cooldown to prevent loops)
-    pub(super) last_resync_time: Option<Instant>,
+    pub last_resync_time: Option<Instant>,
     /// Time when the bootstrap producer list last changed (for stability check)
-    pub(super) last_producer_list_change: Option<Instant>,
+    pub last_producer_list_change: Option<Instant>,
     /// Producer discovery CRDT with cryptographic announcements
-    pub(super) producer_gset: Arc<RwLock<ProducerGSet>>,
+    pub producer_gset: Arc<RwLock<ProducerGSet>>,
     /// Adaptive gossip controller for smart interval management
-    pub(super) adaptive_gossip: Arc<RwLock<AdaptiveGossip>>,
+    pub adaptive_gossip: Arc<RwLock<AdaptiveGossip>>,
     /// Our current producer announcement (if we are a producer)
-    pub(super) our_announcement: Arc<RwLock<Option<ProducerAnnouncement>>>,
+    pub our_announcement: Arc<RwLock<Option<ProducerAnnouncement>>>,
     /// Sequence number for our announcements (monotonically increasing)
-    pub(super) announcement_sequence: Arc<AtomicU64>,
+    pub announcement_sequence: Arc<AtomicU64>,
     /// GSet size at last broadcast. Suppresses redundant gossip when unchanged.
     /// Reset to 0 on new peer connection so late joiners receive the full GSet.
-    pub(super) last_broadcast_gset_len: usize,
+    pub last_broadcast_gset_len: usize,
     /// Signed slots database (prevents double-signing after restart)
-    pub(super) signed_slots_db: Option<SignedSlotsDb>,
+    pub signed_slots_db: Option<SignedSlotsDb>,
     /// Consecutive slots where production was blocked due to fork detection
     /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
-    pub(super) consecutive_fork_blocks: u32,
+    pub consecutive_fork_blocks: u32,
     /// Number of shallow fork rollbacks performed since last successful sync.
     /// Capped at MAX_SHALLOW_ROLLBACKS to prevent rolling back the entire chain.
-    pub(super) shallow_rollback_count: u32,
+    pub shallow_rollback_count: u32,
     /// Cumulative rollback depth since last successful block application.
     /// Tracks how far we've rolled back in total. Capped at MAX_CUMULATIVE_ROLLBACK (50)
     /// to prevent cascading rollbacks from reaching genesis.
-    pub(super) cumulative_rollback_depth: u32,
+    pub cumulative_rollback_depth: u32,
     /// Slots for which we've seen a block via gossip (not yet applied to block_store).
     /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
-    pub(super) seen_blocks_for_slot: std::collections::HashSet<u32>,
+    pub seen_blocks_for_slot: std::collections::HashSet<u32>,
     /// Producers excluded from round-robin for missing their slot.
     /// Re-included when they attest. Rebuilt from block store at startup.
     /// Updated live in post_commit_actions on every block.
-    pub(super) excluded_producers: HashSet<PublicKey>,
+    pub excluded_producers: HashSet<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.
     /// Prevents mid-epoch add-bond from changing total_bonds and diverging schedulers.
-    pub(super) epoch_bond_snapshot: HashMap<Hash, u64>,
+    pub epoch_bond_snapshot: HashMap<Hash, u64>,
     /// The epoch number for which the bond snapshot was taken.
-    pub(super) epoch_bond_snapshot_epoch: u64,
+    pub epoch_bond_snapshot_epoch: u64,
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
-    pub(super) cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
+    pub cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
     /// Our computed tier (1, 2, or 3). Recomputed at each epoch boundary.
-    pub(super) our_tier: u8,
+    pub our_tier: u8,
     /// Last epoch for which we computed our tier (to detect epoch boundaries).
-    pub(super) last_tier_epoch: Option<u64>,
+    pub last_tier_epoch: Option<u64>,
     /// Channel to forward gossip votes to the UpdateService
-    pub(super) vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
+    pub vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
     /// Shared pending update state from UpdateService (for RPC to read live)
-    pub(super) pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
+    pub pending_update: Option<Arc<RwLock<Option<node_updater::PendingUpdate>>>>,
     /// Last time we attempted to redial bootstrap nodes (rate limiter)
-    pub(super) last_peer_redial: Option<Instant>,
+    pub last_peer_redial: Option<Instant>,
     /// REQ-NET-001: Exponential backoff tracking for bootstrap node reconnection.
     /// Maps bootstrap address → (failure_count, last_attempt_time).
     /// Reset when any peer connects (peer_count > 0).
-    pub(super) bootstrap_backoff: HashMap<String, (u32, Instant)>,
+    pub bootstrap_backoff: HashMap<String, (u32, Instant)>,
     /// Last height at which each producer produced a block (for liveness filter).
     /// Populated from chain data in apply_block(), rebuilt from block_store on startup.
     /// Used by bootstrap scheduling to exclude stale producers from primary rotation.
-    pub(super) producer_liveness: HashMap<PublicKey, u64>,
+    pub producer_liveness: HashMap<PublicKey, u64>,
     /// Cached genesis VDF proof output (computed in background at startup during genesis).
     /// Used to create a zero-bond Registration TX that proves VDF work on-chain.
-    pub(super) genesis_vdf_output: Option<[u8; 32]>,
+    pub genesis_vdf_output: Option<[u8; 32]>,
     /// Cached state root, updated atomically after each block application.
     /// Avoids race conditions when GetStateRoot reads during apply_block.
     /// Tuple: (state_root, block_hash, block_height)
-    pub(super) cached_state_root: Arc<RwLock<Option<(Hash, Hash, u64)>>>,
+    pub cached_state_root: Arc<RwLock<Option<(Hash, Hash, u64)>>>,
     /// Cached genesis producers. Invalidated on reorgs crossing genesis boundary.
-    pub(super) cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
+    pub cached_genesis_producers: std::sync::OnceLock<Vec<PublicKey>>,
     /// Whether we've already checked inbound peer connectivity (one-shot after 60s)
-    pub(super) port_check_done: bool,
+    pub port_check_done: bool,
     /// On-chain maintainer set (3-5 members, persisted, bootstrapped from first 5 producers).
     /// Used by the auto-update system for release signature verification.
-    pub(super) maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
+    pub maintainer_state: Option<Arc<RwLock<storage::MaintainerState>>>,
     /// Channel to send blocks to the archiver (if --archive-to is set)
-    pub(super) archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
+    pub archive_tx: Option<tokio::sync::mpsc::Sender<ArchiveBlock>>,
     /// Blocks waiting for finality before being archived
-    pub(super) pending_archive: std::collections::VecDeque<ArchiveBlock>,
+    pub pending_archive: std::collections::VecDeque<ArchiveBlock>,
     /// Archive directory path (for catch-up after sync)
-    pub(super) archive_dir: Option<PathBuf>,
+    pub archive_dir: Option<PathBuf>,
     /// Whether archive catch-up has been performed after sync
-    pub(super) archive_caught_up: bool,
+    pub archive_caught_up: bool,
     /// WebSocket broadcast sender for real-time events (new blocks, new txs)
-    pub(super) ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
+    pub ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
-    pub(super) minute_tracker: MinuteAttestationTracker,
+    pub minute_tracker: MinuteAttestationTracker,
 }
 
 impl Node {
@@ -236,7 +236,7 @@ impl Node {
     /// Called by production, validation, and gossip eligibility checks.
     /// Using the epoch-locked snapshot prevents mid-epoch add-bond TXs from
     /// changing total_bonds and causing scheduler divergence across nodes.
-    pub(super) async fn bond_weights_for_scheduling(
+    pub async fn bond_weights_for_scheduling(
         &self,
         active_producers: Vec<PublicKey>,
     ) -> Vec<(PublicKey, u64)> {
@@ -326,7 +326,7 @@ impl Node {
     /// All state persistence happens atomically via StateDb WriteBatch.
     /// apply_block() commits chain_state + producers + UTXOs in one batch.
     /// Reorg/rollback/snap_sync use atomic_replace().
-    pub(super) async fn save_state(&self) -> Result<()> {
+    pub async fn save_state(&self) -> Result<()> {
         Ok(())
     }
 

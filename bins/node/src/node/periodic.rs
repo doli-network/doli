@@ -3,7 +3,7 @@ use super::*;
 impl Node {
     /// Flush pending archive blocks up to the last finalized height.
     /// Only blocks that the protocol has declared irreversible get archived.
-    pub(super) async fn flush_finalized_to_archive(&mut self) {
+    pub async fn flush_finalized_to_archive(&mut self) {
         let finalized_height = {
             let sync = self.sync_manager.read().await;
             match sync.last_finalized_height() {
@@ -26,7 +26,7 @@ impl Node {
     /// Bootstrap the maintainer set from the first 5 registered producers.
     /// Called once at the epoch boundary where the 5th producer is first available.
     /// After bootstrap, maintainer membership only changes via MaintainerAdd/Remove txs.
-    pub(super) async fn maybe_bootstrap_maintainer_set(&self, height: u64) {
+    pub async fn maybe_bootstrap_maintainer_set(&self, height: u64) {
         use doli_core::maintainer::INITIAL_MAINTAINER_COUNT;
 
         let maintainer_state = match &self.maintainer_state {
@@ -86,7 +86,7 @@ impl Node {
     }
 
     /// Run periodic tasks
-    pub(super) async fn run_periodic_tasks(&mut self) -> Result<()> {
+    pub async fn run_periodic_tasks(&mut self) -> Result<()> {
         // Clean stale entries from seen_blocks_for_slot (keep last 10 slots)
         {
             let current_slot = self.chain_state.read().await.best_slot;

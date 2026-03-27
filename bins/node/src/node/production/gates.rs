@@ -19,7 +19,7 @@ impl Node {
 
     /// Handle production authorization from SyncManager.
     /// Returns `true` if production is authorized, `false` if blocked.
-    pub(super) async fn handle_production_authorization(&mut self, current_slot: u32) -> bool {
+    pub async fn handle_production_authorization(&mut self, current_slot: u32) -> bool {
         let auth_result = {
             let mut sync_state = self.sync_manager.write().await;
             let result = sync_state.can_produce(current_slot);

@@ -8,7 +8,7 @@ impl Node {
     /// creating a proper bond-backed registration (no phantom bonds).
     ///
     /// Returns `true` if a full producer write is needed for the batch.
-    pub(super) async fn maybe_complete_genesis(
+    pub async fn maybe_complete_genesis(
         &mut self,
         height: u64,
         batch: &mut storage::BlockBatch<'_>,

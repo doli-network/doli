@@ -3,7 +3,7 @@ use super::*;
 impl Node {
     /// Determine eligible producers using bootstrap mode (genesis/no registered producers).
     /// Returns `Some((eligible, optional_rank))` or `None` to skip this slot.
-    pub(super) async fn resolve_bootstrap_eligibility(
+    pub async fn resolve_bootstrap_eligibility(
         &mut self,
         current_slot: u32,
         height: u64,
@@ -418,7 +418,7 @@ impl Node {
     ///
     /// Algorithm: slot % total_bonds -> deterministic ticket assignment
     /// Uses cached DeterministicScheduler for O(log n) lookups per slot.
-    pub(super) fn resolve_epoch_eligibility(
+    pub fn resolve_epoch_eligibility(
         &mut self,
         current_slot: u32,
         _height: u64,

@@ -9,7 +9,7 @@ impl Node {
     // Rewards go 100% to block producer via coinbase, no heartbeats needed
 
     /// Try to produce a block if we're an eligible producer
-    pub(super) async fn try_produce_block(&mut self) -> Result<()> {
+    pub async fn try_produce_block(&mut self) -> Result<()> {
         let our_pubkey = match &self.producer_key {
             Some(k) => *k.public_key(),
             None => return Ok(()),

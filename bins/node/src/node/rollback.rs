@@ -9,7 +9,7 @@ impl Node {
     /// empty header responses (peers are at the same height, not ahead).
     ///
     /// Returns `Ok(true)` if rollback succeeded, `Ok(false)` if at height 0.
-    pub(super) async fn rollback_one_block(&mut self) -> Result<bool> {
+    pub async fn rollback_one_block(&mut self) -> Result<bool> {
         let local_height = {
             let sync = self.sync_manager.read().await;
             sync.local_tip().0
@@ -173,6 +173,21 @@ impl Node {
         // converge on the same liveness view.
         self.rebuild_producer_liveness(target_height);
 
+        // Clear excluded_producers after rollback.
+        // The excluded set is computed from slot gaps in the chain. After rollback,
+        // the chain history changed — the old exclusions are invalid and would cause
+        // the node to reject valid blocks from the canonical chain ("invalid producer
+        // for slot") because check_producer_eligibility filters them from round-robin.
+        // This was the root cause of forked nodes never recovering: their divergent
+        // excluded set made them reject every canonical block they received.
+        if !self.excluded_producers.is_empty() {
+            info!(
+                "[FORK] Clearing {} excluded producers after rollback (stale liveness data)",
+                self.excluded_producers.len()
+            );
+            self.excluded_producers.clear();
+        }
+
         // Update chain state to parent
         {
             let mut state = self.chain_state.write().await;
@@ -225,7 +240,7 @@ impl Node {
     /// Fix: roll back one block at a time until we reach a tip peers recognize.
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
-    pub(super) async fn resolve_shallow_fork(&mut self) -> Result<bool> {
+    pub async fn resolve_shallow_fork(&mut self) -> Result<bool> {
         let (empty_headers, local_height, fork_sync_active, gap) = {
             let sync = self.sync_manager.read().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
@@ -349,7 +364,7 @@ impl Node {
     /// ones from peers. This always works because it doesn't depend on any peer
     /// recognizing our tip hash.
     #[allow(dead_code)]
-    pub(super) async fn state_reset_recovery(&mut self, local_height: u64) -> Result<bool> {
+    pub async fn state_reset_recovery(&mut self, local_height: u64) -> Result<bool> {
         warn!(
             "State reset recovery: hash-based sync failed after {} attempts. \
              Resetting to genesis for full resync (current h={}).",

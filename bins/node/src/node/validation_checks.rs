@@ -9,7 +9,7 @@ impl Node {
     ///
     /// Full validation happens in apply_block() where the block is checked
     /// against the actual chain state it builds on.
-    pub(super) async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
+    pub async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
         // Use the BLOCK's slot for eligibility, not our local chain state.
         // Our local tip may be on a different micro-fork, causing us to
         // reject valid blocks from the canonical chain.
@@ -121,7 +121,7 @@ impl Node {
     /// Builds a full ValidationContext and calls `validate_block_with_mode`.
     /// In `Light` mode (gap blocks after snap sync), VDF is skipped.
     /// In `Full` mode (recent blocks near tip), VDF is verified.
-    pub(super) async fn validate_block_for_apply(
+    pub async fn validate_block_for_apply(
         &self,
         block: &Block,
         height: u64,
@@ -275,7 +275,7 @@ impl Node {
     /// - At most one EpochReward TX per block
     /// - Total distributed must not exceed pool balance (conservation)
     /// - Exact match of amounts and recipients (both Full and Light modes)
-    pub(super) async fn validate_block_economics(
+    pub async fn validate_block_economics(
         &self,
         block: &Block,
         height: u64,
@@ -472,7 +472,7 @@ impl Node {
     }
 
     /// Handle a new transaction from the network
-    pub(super) async fn handle_new_transaction(&self, tx: Transaction) -> Result<()> {
+    pub async fn handle_new_transaction(&self, tx: Transaction) -> Result<()> {
         let tx_hash = tx.hash();
 
         // Check if we already have this transaction
@@ -521,7 +521,7 @@ impl Node {
     /// Handle a sync request from a peer (legacy inline path, kept for reference).
     /// Production code uses handle_sync_request_bg() in event_loop.rs instead.
     #[allow(dead_code)]
-    pub(super) async fn handle_sync_request(
+    pub async fn handle_sync_request(
         &self,
         request: network::protocols::SyncRequest,
         channel: network::ResponseChannel<network::protocols::SyncResponse>,

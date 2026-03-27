@@ -4,7 +4,7 @@ impl Node {
     /// Build block content: coinbase, epoch rewards, genesis VDF registration, mempool txs,
     /// attestation bitfield, and header. Returns `None` if build failed (slot monotonicity
     /// violation or slot boundary crossed during assembly).
-    pub(super) async fn build_block_content(
+    pub async fn build_block_content(
         &mut self,
         prev_hash: Hash,
         prev_slot: u32,
@@ -295,7 +295,7 @@ impl Node {
 
     /// Drain pending network events before VDF computation.
     /// Returns `true` if chain advanced (caller should abort production).
-    pub(super) async fn drain_pending_events(&mut self, prev_slot: u32, height: u64) -> bool {
+    pub async fn drain_pending_events(&mut self, prev_slot: u32, height: u64) -> bool {
         // First, collect pending events (releases borrow of self.network quickly)
         let pending_events: Vec<NetworkEvent> = {
             if let Some(ref mut network) = self.network {
@@ -344,7 +344,7 @@ impl Node {
     /// Compute VDF proof for the block header.
     /// Uses hash-chain with dynamically calibrated iterations.
     /// For devnet, VDF is disabled to enable rapid development.
-    pub(super) async fn compute_block_vdf(
+    pub async fn compute_block_vdf(
         &mut self,
         prev_hash: &Hash,
         header: &BlockHeader,
@@ -404,7 +404,7 @@ impl Node {
 
     /// Aggregate BLS signatures from minute tracker for on-chain proof.
     /// Only includes producers that have BLS sigs for this minute.
-    pub(super) fn aggregate_bls_signatures(&self, current_slot: u32) -> Vec<u8> {
+    pub fn aggregate_bls_signatures(&self, current_slot: u32) -> Vec<u8> {
         let current_minute = attestation_minute(current_slot);
         let bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
         info!(
@@ -435,7 +435,7 @@ impl Node {
     }
 
     /// Attest our own block for finality gadget + record in minute tracker.
-    pub(super) async fn attest_own_block(
+    pub async fn attest_own_block(
         &mut self,
         block_hash: Hash,
         current_slot: u32,

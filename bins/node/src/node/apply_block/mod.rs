@@ -11,7 +11,7 @@ impl Node {
     ///
     /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
     ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
-    pub(super) async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
+    pub async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
         let block_hash = block.hash();
 
         let height = self.chain_state.read().await.best_height + 1;

@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "doli_node"
+path = "src/lib.rs"
+
 [[bin]]
 name = "doli-node"
 path = "src/main.rs"

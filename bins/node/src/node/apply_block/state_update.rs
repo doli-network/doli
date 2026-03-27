@@ -2,7 +2,7 @@ use super::*;
 
 impl Node {
     /// Add newly registered producers to known_producers for bootstrap round-robin.
-    pub(super) async fn update_known_producers(
+    pub async fn update_known_producers(
         &mut self,
         new_registrations: Vec<PublicKey>,
         height: u64,
@@ -41,7 +41,7 @@ impl Node {
     ///
     /// Handles: height/hash/slot update, snap sync clear, protocol activation,
     /// genesis timestamp, and state root caching.
-    pub(super) async fn update_chain_state_for_block(
+    pub async fn update_chain_state_for_block(
         &mut self,
         block: &Block,
         block_hash: Hash,
@@ -138,7 +138,7 @@ impl Node {
     /// Track block for finality and apply deferred producer updates at epoch boundaries.
     ///
     /// Returns whether a full producer write is needed for the batch.
-    pub(super) async fn track_finality_and_apply_deferred(
+    pub async fn track_finality_and_apply_deferred(
         &mut self,
         block_hash: Hash,
         height: u64,

@@ -5,7 +5,7 @@ impl Node {
     ///
     /// Returns the transaction hash (needed for undo log tracking of created UTXOs).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process_transaction_utxos(
+    pub fn process_transaction_utxos(
         &self,
         tx: &Transaction,
         tx_index: usize,
@@ -117,7 +117,7 @@ impl Node {
     /// Handles: Registration, Exit, SlashProducer, AddBond, RequestWithdrawal,
     /// DelegateBond, RevokeDelegation — all epoch-deferred.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process_transaction_producer_effects(
+    pub fn process_transaction_producer_effects(
         &self,
         tx: &Transaction,
         height: u64,
@@ -359,7 +359,7 @@ impl Node {
     }
 
     /// Process completed unbonding periods for producers.
-    pub(super) fn process_unbonding(producers: &mut ProducerSet, height: u64) {
+    pub fn process_unbonding(producers: &mut ProducerSet, height: u64) {
         let completed = producers.process_unbonding(height, UNBONDING_PERIOD);
         for producer in &completed {
             info!(
