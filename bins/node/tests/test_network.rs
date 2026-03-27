@@ -469,3 +469,172 @@ async fn test_network_10000_nodes() {
     assert!(net.is_synced().await);
     eprintln!("10000 nodes: init={:?}, 2 blocks={:?}", init, produce);
 }
+
+// ============================================================
+// ClusterNetwork — sequential clusters for massive scale
+// ============================================================
+
+/// Results from a single cluster run
+pub struct ClusterResult {
+    pub cluster_id: usize,
+    pub nodes: usize,
+    pub init_time: std::time::Duration,
+    pub produce_time: std::time::Duration,
+    pub blocks_produced: usize,
+    pub all_synced: bool,
+    pub final_height: u64,
+    pub final_hash: Hash,
+}
+
+/// Run N clusters of M nodes sequentially, reusing memory.
+/// Each cluster shares the same genesis and producer set.
+/// Total simulated nodes = clusters × nodes_per_cluster.
+pub struct ClusterNetwork {
+    pub producers: Vec<KeyPair>,
+    pub n_producers: usize,
+    pub nodes_per_cluster: usize,
+    pub blocks_per_cluster: usize,
+    pub results: Vec<ClusterResult>,
+}
+
+impl ClusterNetwork {
+    pub fn new(
+        n_producers: usize,
+        nodes_per_cluster: usize,
+        blocks_per_cluster: usize,
+    ) -> Self {
+        let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+        Self {
+            producers,
+            n_producers,
+            nodes_per_cluster,
+            blocks_per_cluster,
+            results: Vec::new(),
+        }
+    }
+
+    /// Run `n_clusters` clusters sequentially.
+    /// Each cluster creates `nodes_per_cluster` real nodes, produces blocks,
+    /// verifies sync, then drops everything (freeing FDs and memory).
+    pub async fn run(&mut self, n_clusters: usize) {
+        let total_start = std::time::Instant::now();
+
+        for cluster_id in 0..n_clusters {
+            let start = std::time::Instant::now();
+
+            // Create cluster
+            let net = TestNetwork::new(self.nodes_per_cluster, self.n_producers).await;
+            let init_time = start.elapsed();
+
+            // Produce blocks
+            let prod_start = std::time::Instant::now();
+            net.produce_blocks(self.blocks_per_cluster, cluster_id % self.n_producers)
+                .await;
+            let produce_time = prod_start.elapsed();
+
+            // Verify sync
+            let synced = net.is_synced().await;
+            let final_height = net.height(0).await;
+            let final_hash = net.hash(0).await;
+
+            let result = ClusterResult {
+                cluster_id,
+                nodes: self.nodes_per_cluster,
+                init_time,
+                produce_time,
+                blocks_produced: self.blocks_per_cluster,
+                all_synced: synced,
+                final_height,
+                final_hash,
+            };
+
+            eprintln!(
+                "  Cluster {}/{}: {} nodes, init={:?}, {} blocks={:?}, synced={}",
+                cluster_id + 1,
+                n_clusters,
+                result.nodes,
+                result.init_time,
+                result.blocks_produced,
+                result.produce_time,
+                result.all_synced,
+            );
+
+            self.results.push(result);
+
+            // Drop net — frees all RocksDB instances and temp dirs
+            drop(net);
+        }
+
+        let total_time = total_start.elapsed();
+        let total_nodes: usize = self.results.iter().map(|r| r.nodes).sum();
+        let all_synced = self.results.iter().all(|r| r.all_synced);
+        let avg_init: std::time::Duration = self
+            .results
+            .iter()
+            .map(|r| r.init_time)
+            .sum::<std::time::Duration>()
+            / self.results.len() as u32;
+        let avg_produce: std::time::Duration = self
+            .results
+            .iter()
+            .map(|r| r.produce_time)
+            .sum::<std::time::Duration>()
+            / self.results.len() as u32;
+
+        eprintln!();
+        eprintln!("  === ClusterNetwork Summary ===");
+        eprintln!("  Clusters:        {}", self.results.len());
+        eprintln!("  Nodes/cluster:   {}", self.nodes_per_cluster);
+        eprintln!("  Total nodes:     {}", total_nodes);
+        eprintln!("  Blocks/cluster:  {}", self.blocks_per_cluster);
+        eprintln!("  Avg init:        {:?}", avg_init);
+        eprintln!("  Avg produce:     {:?}", avg_produce);
+        eprintln!("  All synced:      {}", all_synced);
+        eprintln!("  Total time:      {:?}", total_time);
+        eprintln!(
+            "  Throughput:      {:.0} nodes/sec",
+            total_nodes as f64 / total_time.as_secs_f64()
+        );
+
+        assert!(all_synced, "Not all clusters synced!");
+    }
+}
+
+// ============================================================
+// CLUSTER TESTS
+// ============================================================
+
+/// 10 clusters × 100 nodes = 1,000 total (fast, runs in CI)
+#[tokio::test]
+async fn test_cluster_10x100() {
+    let mut cluster = ClusterNetwork::new(5, 100, 5);
+    cluster.run(10).await;
+    assert_eq!(cluster.results.len(), 10);
+}
+
+/// 10 clusters × 500 nodes = 5,000 total
+#[tokio::test]
+#[ignore] // ~30s, run with --test-threads=1
+async fn test_cluster_10x500() {
+    let mut cluster = ClusterNetwork::new(5, 500, 3);
+    cluster.run(10).await;
+    assert_eq!(cluster.results.len(), 10);
+}
+
+/// 10 clusters × 1000 nodes = 10,000 total
+#[tokio::test]
+#[ignore] // ~90s, run with --test-threads=1
+async fn test_cluster_10x1000() {
+    let mut cluster = ClusterNetwork::new(5, 1000, 3);
+    cluster.run(10).await;
+    assert_eq!(cluster.results.len(), 10);
+}
+
+/// 100 clusters × 1000 nodes = 100,000 total
+#[tokio::test]
+#[ignore] // ~15min, run with --test-threads=1
+async fn test_cluster_100x1000() {
+    let mut cluster = ClusterNetwork::new(5, 1000, 2);
+    cluster.run(100).await;
+    assert_eq!(cluster.results.len(), 100);
+}
