@@ -13,7 +13,6 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};
 use doli_node::node::Node;
-use storage::ProducerSet;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -43,7 +42,7 @@ fn build_block(
     let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
     let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
     let timestamp = params.genesis_time + (slot as u64 * params.slot_duration);
-    let merkle_root = doli_core::block::compute_merkle_root(&[coinbase.clone()]);
+    let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
     let header = BlockHeader {
@@ -95,9 +94,6 @@ async fn apply_chain(node: &mut Node, blocks: &[Block]) {
 }
 
 /// Get the genesis hash from a node (the best_hash at height 0).
-async fn genesis_hash(node: &Node) -> Hash {
-    node.chain_state.read().await.best_hash
-}
 
 /// Get the devnet genesis hash (used as prev_hash for the first block).
 fn devnet_genesis_hash() -> Hash {

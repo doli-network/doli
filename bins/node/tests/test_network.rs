@@ -287,12 +287,7 @@ impl TestNetwork {
         for i in 0..self.nodes.len() {
             let h = self.height(i).await;
             let hash = self.hash(i).await;
-            eprintln!(
-                "  Node {}: h={} hash={:.16}",
-                i,
-                h,
-                hash.to_string()
-            );
+            eprintln!("  Node {}: h={} hash={:.16}", i, h, hash.to_string());
         }
     }
 }
@@ -498,11 +493,7 @@ pub struct ClusterNetwork {
 }
 
 impl ClusterNetwork {
-    pub fn new(
-        n_producers: usize,
-        nodes_per_cluster: usize,
-        blocks_per_cluster: usize,
-    ) -> Self {
+    pub fn new(n_producers: usize, nodes_per_cluster: usize, blocks_per_cluster: usize) -> Self {
         let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
         Self {
             producers,
@@ -694,10 +685,7 @@ impl TestNetwork {
     /// Simulate gossip with check_producer_eligibility — the REAL path.
     /// Blocks go through eligibility check before apply_block, just like production.
     /// Returns (accepted, rejected_eligibility, rejected_apply).
-    pub async fn gossip_with_eligibility(
-        &self,
-        block: Block,
-    ) -> (usize, usize, usize) {
+    pub async fn gossip_with_eligibility(&self, block: Block) -> (usize, usize, usize) {
         let n = self.nodes.len();
         let mut accepted = 0;
         let mut rejected_elig = 0;
@@ -714,8 +702,8 @@ impl TestNetwork {
                         Ok(()) => {
                             // Step 2: apply_block (consensus)
                             match n.apply_block(block, ValidationMode::Light).await {
-                                Ok(()) => 0u8,     // accepted
-                                Err(_) => 2u8,     // rejected at apply
+                                Ok(()) => 0u8, // accepted
+                                Err(_) => 2u8, // rejected at apply
                             }
                         }
                         Err(_) => 1u8, // rejected at eligibility
@@ -802,7 +790,8 @@ async fn test_gossip_divergence_and_recovery() {
     // Nodes 10-19 develop excluded_producers because they think producer[0]
     // missed slots (they didn't see the blocks)
     for node_id in 10..20 {
-        net.exclude_producer(node_id, net.producers[0].public_key()).await;
+        net.exclude_producer(node_id, net.producers[0].public_key())
+            .await;
     }
 
     // Phase 3: Try to sync nodes 10-19 with blocks 51-55
@@ -832,10 +821,7 @@ async fn test_gossip_divergence_and_recovery() {
     );
 
     // All nodes should be at height 55 and synced
-    assert!(
-        synced,
-        "Network should converge after gossip divergence"
-    );
+    assert!(synced, "Network should converge after gossip divergence");
     assert_eq!(h0, 55);
 }
 
@@ -992,14 +978,14 @@ impl TestNetwork {
         let slot = block.header.slot;
 
         // Determine delivery per node (deterministic pseudo-random)
-        let block_hash = block.hash(); let block_bytes = block_hash.as_bytes();
+        let block_hash = block.hash();
+        let block_bytes = block_hash.as_bytes();
         let mut delivered_to = Vec::new();
         let mut missed_by = Vec::new();
 
         for i in 0..n {
             // Mix block hash with node index for deterministic but varied delivery
-            let seed = block_bytes[(i * 7) % 32] as u16
-                + block_bytes[(i * 13 + 3) % 32] as u16;
+            let seed = block_bytes[(i * 7) % 32] as u16 + block_bytes[(i * 13 + 3) % 32] as u16;
             let prob = (seed as f64) / 510.0; // 0.0 to 1.0
             if prob < delivery_probability {
                 delivered_to.push(i);
@@ -1026,8 +1012,8 @@ impl TestNetwork {
                         Ok(()) => {
                             // Gate 2: apply_block
                             match n.apply_block(block, ValidationMode::Light).await {
-                                Ok(()) => 0u8,  // accepted
-                                Err(_) => 2u8,  // rejected at apply (duplicate, etc)
+                                Ok(()) => 0u8, // accepted
+                                Err(_) => 2u8, // rejected at apply (duplicate, etc)
                             }
                         }
                         Err(_) => 1u8, // rejected at eligibility
@@ -1187,8 +1173,11 @@ impl TestNetwork {
                         cs.genesis_hash
                     } else {
                         let leader = self.nodes[0].lock().await;
-                        leader.block_store.get_block_by_height(ancestor_h)
-                            .ok().flatten()
+                        leader
+                            .block_store
+                            .get_block_by_height(ancestor_h)
+                            .ok()
+                            .flatten()
                             .map(|b| b.hash())
                             .unwrap_or(cs.genesis_hash)
                     };
@@ -1200,7 +1189,9 @@ impl TestNetwork {
                 {
                     let cs = node.chain_state.read().await;
                     node.sync_manager.write().await.update_local_tip(
-                        cs.best_height, cs.best_hash, cs.best_slot,
+                        cs.best_height,
+                        cs.best_hash,
+                        cs.best_slot,
                     );
                 }
 
@@ -1303,8 +1294,11 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         // What does node 1 compute as expected producer for slot 46?
         let n1 = net.nodes[1].lock().await;
         let ps = n1.producer_set.read().await;
-        let active: Vec<PublicKey> = ps.active_producers_at_height(46)
-            .iter().map(|p| p.public_key).collect();
+        let active: Vec<PublicKey> = ps
+            .active_producers_at_height(46)
+            .iter()
+            .map(|p| p.public_key)
+            .collect();
         let n_active = active.len();
         drop(ps);
 
@@ -1330,8 +1324,14 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         eprintln!("  Excluded count:     {}", excluded_count);
         eprintln!("  Bond snapshot len:  {}", snapshot_len);
         eprintln!("  Slot 46 % {} = idx {}", sorted.len(), expected_idx);
-        eprintln!("  Expected producer:  {:?}", &expected_producer.as_bytes()[..4]);
-        eprintln!("  Actual producer:    {:?}", &actual_producer.as_bytes()[..4]);
+        eprintln!(
+            "  Expected producer:  {:?}",
+            &expected_producer.as_bytes()[..4]
+        );
+        eprintln!(
+            "  Actual producer:    {:?}",
+            &actual_producer.as_bytes()[..4]
+        );
         eprintln!("  Match: {}", expected_producer == actual_producer);
 
         // Also check: does the ValidationContext path match?
@@ -1385,10 +1385,19 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
     let (nodes_with_excl, max_excl, total_excl) = net.count_divergent_exclusions().await;
 
     eprintln!();
-    eprintln!("  === Realistic Gossip Test ({} nodes, {} producers, {} blocks) ===", n_nodes, n_producers, total_blocks);
+    eprintln!(
+        "  === Realistic Gossip Test ({} nodes, {} producers, {} blocks) ===",
+        n_nodes, n_producers, total_blocks
+    );
     eprintln!("  Delivery rate:     {:.1}%", stats.delivery_rate() * 100.0);
-    eprintln!("  Acceptance rate:   {:.1}%", stats.acceptance_rate() * 100.0);
-    eprintln!("  Elig rejections:   {:.1}%", stats.eligibility_rejection_rate() * 100.0);
+    eprintln!(
+        "  Acceptance rate:   {:.1}%",
+        stats.acceptance_rate() * 100.0
+    );
+    eprintln!(
+        "  Elig rejections:   {:.1}%",
+        stats.eligibility_rejection_rate() * 100.0
+    );
     eprintln!("  Height distribution: {:?}", dist);
     eprintln!("  Nodes with exclusions: {}/{}", nodes_with_excl, n_nodes);
     eprintln!("  Max exclusions on one node: {}", max_excl);
@@ -1401,7 +1410,10 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
 
     eprintln!();
     eprintln!("  === After backfill WITH eligibility check ===");
-    eprintln!("  Backfilled: {}, Rejected: {}", backfilled_elig, rejected_elig);
+    eprintln!(
+        "  Backfilled: {}, Rejected: {}",
+        backfilled_elig, rejected_elig
+    );
     eprintln!("  Height distribution: {:?}", dist_after_elig);
     eprintln!("  All synced: {}", synced_after_elig);
 
@@ -1461,7 +1473,9 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         synced_after_sync,
         "Network must converge after sync simulation. \
          {} of {} nodes synced. Distribution: {:?}",
-        synced_count, n_nodes - 1, final_dist
+        synced_count,
+        n_nodes - 1,
+        final_dist
     );
     assert_eq!(final_height, 145); // 45 base + 100 gossip
 }
@@ -1516,9 +1530,17 @@ async fn test_realistic_gossip_100_nodes_200_blocks() {
     let (nodes_with_excl, max_excl, _) = net.count_divergent_exclusions().await;
 
     eprintln!();
-    eprintln!("  === Scale Gossip ({} nodes, {} producers, {} blocks, {:.0}% delivery) ===",
-        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
-    eprintln!("  Eligibility rejections during gossip: {}", total_rejected_elig);
+    eprintln!(
+        "  === Scale Gossip ({} nodes, {} producers, {} blocks, {:.0}% delivery) ===",
+        n_nodes,
+        n_producers,
+        total_blocks,
+        delivery_rate * 100.0
+    );
+    eprintln!(
+        "  Eligibility rejections during gossip: {}",
+        total_rejected_elig
+    );
     eprintln!("  Height distribution: {:?}", dist);
     eprintln!("  Nodes with exclusions: {}/{}", nodes_with_excl, n_nodes);
     eprintln!("  Max exclusions: {}", max_excl);
@@ -1528,8 +1550,14 @@ async fn test_realistic_gossip_100_nodes_200_blocks() {
     let synced = net.is_synced().await;
     let final_height = net.height(0).await;
 
-    eprintln!("  Synced: {}/{}, Rollbacks: {}, Applied: {}, Height: {}",
-        synced_count, n_nodes - 1, rollbacks, applied, final_height);
+    eprintln!(
+        "  Synced: {}/{}, Rollbacks: {}, Applied: {}, Height: {}",
+        synced_count,
+        n_nodes - 1,
+        rollbacks,
+        applied,
+        final_height
+    );
 
     assert!(synced, "100 nodes should converge after sync");
     assert_eq!(final_height, 245);
@@ -1555,8 +1583,12 @@ async fn test_realistic_gossip_500_nodes() {
         net.propagate(0, block.clone()).await;
     }
 
-    let mut rr_producers: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
-        .map(|(i, kp)| (i, *kp.public_key())).collect();
+    let mut rr_producers: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
     rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
 
     let gossip_start = std::time::Instant::now();
@@ -1582,8 +1614,13 @@ async fn test_realistic_gossip_500_nodes() {
     let final_height = net.height(0).await;
 
     eprintln!();
-    eprintln!("  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
-        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
+    eprintln!(
+        "  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
+        n_nodes,
+        n_producers,
+        total_blocks,
+        delivery_rate * 100.0
+    );
     eprintln!("  Init:          {:?}", init_time);
     eprintln!("  Gossip:        {:?}", gossip_time);
     eprintln!("  Sync:          {:?}", sync_time);
@@ -1618,8 +1655,12 @@ async fn test_realistic_gossip_1000_nodes() {
         net.propagate(0, block.clone()).await;
     }
 
-    let mut rr_producers: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
-        .map(|(i, kp)| (i, *kp.public_key())).collect();
+    let mut rr_producers: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
     rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
 
     let gossip_start = std::time::Instant::now();
@@ -1645,8 +1686,13 @@ async fn test_realistic_gossip_1000_nodes() {
     let final_height = net.height(0).await;
 
     eprintln!();
-    eprintln!("  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
-        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
+    eprintln!(
+        "  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
+        n_nodes,
+        n_producers,
+        total_blocks,
+        delivery_rate * 100.0
+    );
     eprintln!("  Init:          {:?}", init_time);
     eprintln!("  Gossip:        {:?}", gossip_time);
     eprintln!("  Sync:          {:?}", sync_time);
@@ -1691,8 +1737,12 @@ async fn test_realistic_gossip_10k_clustered() {
         }
 
         // Round-robin producer order
-        let mut rr: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
-            .map(|(i, kp)| (i, *kp.public_key())).collect();
+        let mut rr: Vec<(usize, PublicKey)> = net
+            .producers
+            .iter()
+            .enumerate()
+            .map(|(i, kp)| (i, *kp.public_key()))
+            .collect();
         rr.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
 
         // Gossip blocks
@@ -1716,8 +1766,11 @@ async fn test_realistic_gossip_10k_clustered() {
 
         eprintln!(
             "  Cluster {}/{}: {} nodes, synced={}/{}, elig_rejects={}, time={:?}",
-            cluster_id + 1, n_clusters, nodes_per_cluster,
-            synced, nodes_per_cluster - 1,
+            cluster_id + 1,
+            n_clusters,
+            nodes_per_cluster,
+            synced,
+            nodes_per_cluster - 1,
             cluster_elig_rejects,
             cluster_start.elapsed()
         );
@@ -1739,7 +1792,10 @@ async fn test_realistic_gossip_10k_clustered() {
     eprintln!("  Synced:        {}/{}", total_synced, total_nodes);
     eprintln!("  Elig rejects:  {}", total_elig_rejects);
     eprintln!("  Total time:    {:?}", total_time);
-    eprintln!("  Throughput:    {:.0} nodes/sec", (total_nodes + n_clusters) as f64 / total_time.as_secs_f64());
+    eprintln!(
+        "  Throughput:    {:.0} nodes/sec",
+        (total_nodes + n_clusters) as f64 / total_time.as_secs_f64()
+    );
 
     assert_eq!(total_synced, total_nodes, "All 10K nodes should converge");
 }
