@@ -1534,3 +1534,129 @@ async fn test_realistic_gossip_100_nodes_200_blocks() {
     assert!(synced, "100 nodes should converge after sync");
     assert_eq!(final_height, 245);
 }
+
+/// 500 nodes, 50 producers, 100 blocks, 95% delivery
+#[tokio::test]
+#[ignore]
+async fn test_realistic_gossip_500_nodes() {
+    let n_nodes = 500;
+    let n_producers = 50;
+    let delivery_rate = 0.95;
+    let total_blocks = 100;
+
+    let start = std::time::Instant::now();
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let init_time = start.elapsed();
+
+    let genesis = net.genesis_hash;
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+
+    let mut rr_producers: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
+        .map(|(i, kp)| (i, *kp.public_key())).collect();
+    rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
+    let gossip_start = std::time::Instant::now();
+    let mut prev = base[44].hash();
+    let mut total_elig_reject = 0;
+    for i in 0..total_blocks {
+        let height = 46 + i as u64;
+        let slot = 46 + i as u32;
+        let rr_idx = (slot as usize) % rr_producers.len();
+        let (orig_idx, _) = rr_producers[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
+        prev = block.hash();
+        net.apply_to_node(0, block.clone()).await.ok();
+        let round = net.gossip_realistic(&block, delivery_rate).await;
+        total_elig_reject += round.rejected_eligibility;
+    }
+    let gossip_time = gossip_start.elapsed();
+
+    let sync_start = std::time::Instant::now();
+    let (synced_count, rollbacks, applied) = net.sync_from_leader().await;
+    let sync_time = sync_start.elapsed();
+    let synced = net.is_synced().await;
+    let final_height = net.height(0).await;
+
+    eprintln!();
+    eprintln!("  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
+        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
+    eprintln!("  Init:          {:?}", init_time);
+    eprintln!("  Gossip:        {:?}", gossip_time);
+    eprintln!("  Sync:          {:?}", sync_time);
+    eprintln!("  Total:         {:?}", start.elapsed());
+    eprintln!("  Elig rejects:  {}", total_elig_reject);
+    eprintln!("  Synced:        {}/{}", synced_count, n_nodes - 1);
+    eprintln!("  Rollbacks:     {}", rollbacks);
+    eprintln!("  Applied:       {}", applied);
+    eprintln!("  Final height:  {}", final_height);
+
+    assert!(synced, "{} nodes should converge", n_nodes);
+    assert_eq!(final_height, 145);
+}
+
+/// 1000 nodes, 100 producers, 50 blocks, 95% delivery
+#[tokio::test]
+#[ignore]
+async fn test_realistic_gossip_1000_nodes() {
+    let n_nodes = 1000;
+    let n_producers = 100;
+    let delivery_rate = 0.95;
+    let total_blocks = 50;
+
+    let start = std::time::Instant::now();
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let init_time = start.elapsed();
+
+    let genesis = net.genesis_hash;
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+
+    let mut rr_producers: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
+        .map(|(i, kp)| (i, *kp.public_key())).collect();
+    rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
+    let gossip_start = std::time::Instant::now();
+    let mut prev = base[44].hash();
+    let mut total_elig_reject = 0;
+    for i in 0..total_blocks {
+        let height = 46 + i as u64;
+        let slot = 46 + i as u32;
+        let rr_idx = (slot as usize) % rr_producers.len();
+        let (orig_idx, _) = rr_producers[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
+        prev = block.hash();
+        net.apply_to_node(0, block.clone()).await.ok();
+        let round = net.gossip_realistic(&block, delivery_rate).await;
+        total_elig_reject += round.rejected_eligibility;
+    }
+    let gossip_time = gossip_start.elapsed();
+
+    let sync_start = std::time::Instant::now();
+    let (synced_count, rollbacks, applied) = net.sync_from_leader().await;
+    let sync_time = sync_start.elapsed();
+    let synced = net.is_synced().await;
+    let final_height = net.height(0).await;
+
+    eprintln!();
+    eprintln!("  === {} nodes, {} producers, {} blocks, {:.0}% delivery ===",
+        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
+    eprintln!("  Init:          {:?}", init_time);
+    eprintln!("  Gossip:        {:?}", gossip_time);
+    eprintln!("  Sync:          {:?}", sync_time);
+    eprintln!("  Total:         {:?}", start.elapsed());
+    eprintln!("  Elig rejects:  {}", total_elig_reject);
+    eprintln!("  Synced:        {}/{}", synced_count, n_nodes - 1);
+    eprintln!("  Rollbacks:     {}", rollbacks);
+    eprintln!("  Applied:       {}", applied);
+    eprintln!("  Final height:  {}", final_height);
+
+    assert!(synced, "{} nodes should converge", n_nodes);
+    assert_eq!(final_height, 95);
+}
