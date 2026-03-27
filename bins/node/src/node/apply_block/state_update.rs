@@ -2,11 +2,7 @@ use super::*;
 
 impl Node {
     /// Add newly registered producers to known_producers for bootstrap round-robin.
-    pub async fn update_known_producers(
-        &mut self,
-        new_registrations: Vec<PublicKey>,
-        height: u64,
-    ) {
+    pub async fn update_known_producers(&mut self, new_registrations: Vec<PublicKey>, height: u64) {
         let genesis_active = self.config.network.is_in_genesis(height);
         if !new_registrations.is_empty()
             && (self.config.network == Network::Testnet

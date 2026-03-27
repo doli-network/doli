@@ -495,12 +495,7 @@ impl Node {
     /// Create an attestation for a block and broadcast it to the network.
     ///
     /// Adds attestation weight for the finality gadget.
-    pub async fn create_and_broadcast_attestation(
-        &self,
-        block_hash: Hash,
-        slot: u32,
-        height: u64,
-    ) {
+    pub async fn create_and_broadcast_attestation(&self, block_hash: Hash, slot: u32, height: u64) {
         let (private_key, public_key, weight) = match &self.producer_key {
             Some(kp) => {
                 let pk = *kp.public_key();

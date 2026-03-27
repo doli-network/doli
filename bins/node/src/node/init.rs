@@ -781,6 +781,7 @@ impl Node {
     /// Create a minimal Node for integration tests.
     /// Uses real RocksDB, real ProducerSet, real SyncManager, real fork recovery state.
     /// No networking, no archiver, no updater.
+    #[allow(dead_code)] // Used by integration tests in bins/node/tests/
     pub async fn new_for_test(
         data_dir: std::path::PathBuf,
         producers: Vec<KeyPair>,

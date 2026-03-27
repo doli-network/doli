@@ -256,7 +256,16 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
 }
 
 /// Files/directories preserved during wipe (everything else is deleted).
-const WIPE_PRESERVE: &[&str] = &["keys", ".env"];
+/// CRITICAL: wallet.json contains private keys. Deleting it loses funds permanently.
+/// This list MUST match the preserve list in cmd_snap.rs.
+const WIPE_PRESERVE: &[&str] = &[
+    "keys",
+    ".env",
+    "wallet.json",
+    "wallet.seed.txt",
+    "node_key",
+    "config.toml",
+];
 
 /// Result of a wipe operation.
 #[derive(Debug)]
@@ -393,10 +402,10 @@ mod wipe_tests {
         assert!(names.contains(&"signed_slots.db".to_string()));
         assert!(names.contains(&"producer_gset.bin".to_string()));
         assert!(names.contains(&"peers.cache".to_string()));
-        assert!(names.contains(&"node_key".to_string()));
+        
 
         // Total: 8 items to delete
-        assert_eq!(deletable.len(), 8);
+        assert_eq!(deletable.len(), 7);
     }
 
     /// Test 2: keys/ and .env are NEVER in the deletable list
@@ -425,7 +434,7 @@ mod wipe_tests {
 
         match result {
             WipeResult::Wiped { deleted, remaining } => {
-                assert_eq!(deleted, 8);
+                assert_eq!(deleted, 7);
                 assert!(remaining.is_empty(), "remaining: {:?}", remaining);
             }
             other => panic!("Expected Wiped, got {:?}", other),
@@ -542,7 +551,6 @@ mod wipe_tests {
         fs::create_dir_all(tmp.path().join("signed_slots.db")).unwrap();
         fs::write(tmp.path().join("producer_gset.bin"), b"x").unwrap();
         fs::write(tmp.path().join("peers.cache"), b"x").unwrap();
-        fs::write(tmp.path().join("node_key"), b"x").unwrap();
         // These two were the bug — they survived the wipe
         fs::write(tmp.path().join("maintainer_state.bin"), [0u8; 232]).unwrap();
         fs::write(tmp.path().join("producer.lock"), b"12345\n").unwrap();
@@ -552,7 +560,7 @@ mod wipe_tests {
         match result {
             WipeResult::Wiped { deleted, remaining } => {
                 // ALL 8 items must be deleted
-                assert_eq!(deleted, 8, "should delete all 8 items");
+                assert_eq!(deleted, 7, "should delete all 7 chain data items");
                 // NOTHING should remain
                 assert!(
                     remaining.is_empty(),

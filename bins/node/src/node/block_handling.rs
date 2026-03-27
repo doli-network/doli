@@ -2,11 +2,7 @@ use super::*;
 
 impl Node {
     /// Handle a new block from the network
-    pub async fn handle_new_block(
-        &mut self,
-        block: Block,
-        source_peer: PeerId,
-    ) -> Result<()> {
+    pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
 
         // Check if we already have this block

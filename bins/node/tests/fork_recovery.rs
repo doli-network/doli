@@ -266,8 +266,10 @@ async fn test_recovery_with_scheduler_divergence() {
 
     // Simulate scheduler divergence: modify epoch_bond_snapshot
     // Producer[0] has 50 bonds in node's snapshot, but canonical chain expects 1
-    let pubkey_hash =
-        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producers[0].public_key().as_bytes());
+    let pubkey_hash = crypto::hash::hash_with_domain(
+        crypto::ADDRESS_DOMAIN,
+        producers[0].public_key().as_bytes(),
+    );
     node.epoch_bond_snapshot.insert(pubkey_hash, 50);
 
     // Fork: 5 blocks with divergent scheduler
@@ -287,10 +289,7 @@ async fn test_recovery_with_scheduler_divergence() {
     apply_chain(&mut node, &canonical).await;
 
     assert_eq!(node.chain_state.read().await.best_height, 18);
-    assert_eq!(
-        node.chain_state.read().await.best_hash,
-        canonical[7].hash()
-    );
+    assert_eq!(node.chain_state.read().await.best_hash, canonical[7].hash());
 }
 
 // ============================================================
@@ -315,10 +314,7 @@ async fn test_recovery_after_rollback_cap() {
 
     // 51st rollback should be refused (cap reached)
     let refused = node.rollback_one_block().await.unwrap();
-    assert!(
-        !refused,
-        "rollback should be refused after cap"
-    );
+    assert!(!refused, "rollback should be refused after cap");
 
     // Send a valid block via sync — should apply and reset the cap
     let sync_block = build_block(6, 6, chain[4].hash(), &producers[1], &params);
@@ -365,14 +361,7 @@ async fn test_no_refork_after_recovery() {
     let _post_recovery_hash = node.chain_state.read().await.best_hash;
 
     // Apply 100 more blocks on the canonical chain
-    let continuation = build_chain(
-        16,
-        16,
-        canonical[4].hash(),
-        &producers[1],
-        100,
-        &params,
-    );
+    let continuation = build_chain(16, 16, canonical[4].hash(), &producers[1], 100, &params);
     apply_chain(&mut node, &continuation).await;
 
     // Verify: 100 blocks applied cleanly, no re-fork
@@ -674,7 +663,8 @@ async fn test_fork_recovery_blocked_by_divergent_excluded_producers() {
 
     // All 8 canonical blocks should be accepted by check_producer_eligibility
     assert_eq!(
-        rejected_count, 0,
+        rejected_count,
+        0,
         "check_producer_eligibility rejected {} of {} canonical blocks. \
          The forked node's excluded_producers ({:?} excluded) rejected valid \
          producers from the canonical chain. This is the root cause of why \
@@ -687,8 +677,5 @@ async fn test_fork_recovery_blocked_by_divergent_excluded_producers() {
 
     // Verify final state
     assert_eq!(node.chain_state.read().await.best_height, 53);
-    assert_eq!(
-        node.chain_state.read().await.best_hash,
-        canonical[7].hash()
-    );
+    assert_eq!(node.chain_state.read().await.best_hash, canonical[7].hash());
 }

@@ -109,7 +109,8 @@ pub(crate) async fn cmd_snap(
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    // 3. Wipe data directory (preserve keys/, .env, node_key)
+    // 3. Wipe data directory (preserve wallet, keys, config)
+    // CRITICAL: wallet.json contains private keys. Never delete it.
     println!("Wiping chain data...");
     if data_dir.exists() {
         let preserve = [
@@ -126,11 +127,22 @@ pub(crate) async fn cmd_snap(
                 if !preserve.contains(&name.as_str()) {
                     let path = entry.path();
                     if path.is_dir() {
-                        let _ = std::fs::remove_dir_all(&path);
+                        if let Err(e) = std::fs::remove_dir_all(&path) {
+                            eprintln!("  Warning: failed to remove {:?}: {}", path, e);
+                        }
                     } else {
                         let _ = std::fs::remove_file(&path);
                     }
                 }
+            }
+        }
+
+        // Force-remove RocksDB directories. Stale .sst/.log files from a previous
+        // chain corrupt the database when reopened with different chain data.
+        for dir_name in ["state_db", "blocks"] {
+            let dir = data_dir.join(dir_name);
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
             }
         }
     } else {
@@ -246,23 +258,25 @@ pub(crate) async fn cmd_snap(
 
     // Fix ownership: snap runs as root (sudo) but the service runs as user 'doli'.
     // Without this, RocksDB files are owned by root and the service crashes with Permission denied.
+    // Also fix parent directory (/var/lib/doli/) and log directory (/var/log/doli/).
     #[cfg(target_os = "linux")]
     {
-        let status = std::process::Command::new("chown")
+        // Fix data_dir and all contents
+        let _ = std::process::Command::new("chown")
             .args(["-R", "doli:doli"])
             .arg(&data_dir)
             .status();
-        match status {
-            Ok(s) if s.success() => {}
-            _ => {
-                // chown may fail if doli user doesn't exist (tarball install, macOS, etc.)
-                // Not fatal — the service might run as the current user instead
-                eprintln!(
-                    "  Warning: could not chown {} to doli:doli",
-                    data_dir.display()
-                );
-            }
+        // Fix parent directory (node_key, doli-auto-bond.lock may live here)
+        if let Some(parent) = data_dir.parent() {
+            let _ = std::process::Command::new("chown")
+                .args(["-R", "doli:doli"])
+                .arg(parent)
+                .status();
         }
+        // Fix log directory
+        let _ = std::process::Command::new("chown")
+            .args(["-R", "doli:doli", "/var/log/doli"])
+            .status();
     }
 
     // 8. Restart the service that owns this data_dir

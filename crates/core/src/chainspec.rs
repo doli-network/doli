@@ -341,6 +341,20 @@ mod tests {
         );
     }
 
+    /// Hardcoded genesis hash guard. If this fails, the binary produces a different
+    /// chain identity than mainnet. Catches compiler/platform/code differences.
+    #[test]
+    fn test_mainnet_genesis_hash_hardcoded() {
+        let spec = ChainSpec::mainnet();
+        let hash = spec.genesis_hash();
+        assert_eq!(
+            hash.to_hex(),
+            "889fed89bea250bcaf8771ceec4e38fa034fc0a5a504b1bf062a78b7033df4a8",
+            "CRITICAL: Mainnet genesis hash changed! Binary incompatible with live network. Got {}",
+            hash.to_hex()
+        );
+    }
+
     #[test]
     fn test_serialize_deserialize() {
         let spec = ChainSpec::testnet();

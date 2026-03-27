@@ -3,12 +3,7 @@ use super::*;
 impl Node {
     /// Actions performed after the batch commit: tier recompute, epoch snapshot,
     /// attestation, archive buffering, and websocket broadcast.
-    pub async fn post_commit_actions(
-        &mut self,
-        block: &Block,
-        block_hash: Hash,
-        height: u64,
-    ) {
+    pub async fn post_commit_actions(&mut self, block: &Block, block_hash: Hash, height: u64) {
         // Recompute our tier at epoch boundaries and build EpochSnapshot
         // (moved after batch commit to avoid borrow conflict with BlockBatch)
         self.recompute_tier(height).await;

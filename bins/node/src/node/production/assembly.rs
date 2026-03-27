@@ -435,12 +435,7 @@ impl Node {
     }
 
     /// Attest our own block for finality gadget + record in minute tracker.
-    pub async fn attest_own_block(
-        &mut self,
-        block_hash: Hash,
-        current_slot: u32,
-        height: u64,
-    ) {
+    pub async fn attest_own_block(&mut self, block_hash: Hash, current_slot: u32, height: u64) {
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
         if let Some(ref kp) = self.producer_key {
