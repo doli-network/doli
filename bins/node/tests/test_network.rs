@@ -638,3 +638,680 @@ async fn test_cluster_100x1000() {
     cluster.run(100).await;
     assert_eq!(cluster.results.len(), 100);
 }
+
+// ============================================================
+// GOSSIP SIMULATION — realistic block propagation with delay
+// ============================================================
+
+/// Simulate realistic gossip propagation where blocks arrive at different
+/// nodes at different times, causing temporary excluded_producers divergence.
+/// This is the test that reveals whether the network can grow.
+impl TestNetwork {
+    /// Propagate a block with random delay to simulate gossip.
+    /// Some nodes receive the block, others don't (simulating network latency).
+    /// Returns (received_count, missed_count).
+    pub async fn gossip_propagate(
+        &self,
+        block: Block,
+        delivery_probability: f64,
+    ) -> (usize, usize) {
+        use std::collections::HashSet;
+
+        let n = self.nodes.len();
+        let mut received = 0;
+        let mut missed = 0;
+
+        // Determine which nodes receive this block (random subset)
+        let mut receivers = Vec::new();
+        for i in 0..n {
+            // Simple deterministic "random" based on block hash + node id
+            let hash_byte = block.hash().as_bytes()[(i % 32)] as f64 / 255.0;
+            if hash_byte < delivery_probability {
+                receivers.push(i);
+            }
+        }
+
+        // Apply to receivers in parallel
+        let futs: Vec<_> = receivers
+            .iter()
+            .map(|&node_id| {
+                let node = self.nodes[node_id].clone();
+                let block = block.clone();
+                async move {
+                    let mut n = node.lock().await;
+                    n.apply_block(block, ValidationMode::Light).await.is_ok()
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futs).await;
+        received = results.iter().filter(|ok| **ok).count();
+        missed = n - received;
+
+        (received, missed)
+    }
+
+    /// Simulate gossip with check_producer_eligibility — the REAL path.
+    /// Blocks go through eligibility check before apply_block, just like production.
+    /// Returns (accepted, rejected_eligibility, rejected_apply).
+    pub async fn gossip_with_eligibility(
+        &self,
+        block: Block,
+    ) -> (usize, usize, usize) {
+        let n = self.nodes.len();
+        let mut accepted = 0;
+        let mut rejected_elig = 0;
+        let mut rejected_apply = 0;
+
+        let futs: Vec<_> = (0..n)
+            .map(|node_id| {
+                let node = self.nodes[node_id].clone();
+                let block = block.clone();
+                async move {
+                    let mut n = node.lock().await;
+                    // Step 1: check_producer_eligibility (gossip gate)
+                    match n.check_producer_eligibility(&block).await {
+                        Ok(()) => {
+                            // Step 2: apply_block (consensus)
+                            match n.apply_block(block, ValidationMode::Light).await {
+                                Ok(()) => 0u8,     // accepted
+                                Err(_) => 2u8,     // rejected at apply
+                            }
+                        }
+                        Err(_) => 1u8, // rejected at eligibility
+                    }
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futs).await;
+        for r in results {
+            match r {
+                0 => accepted += 1,
+                1 => rejected_elig += 1,
+                _ => rejected_apply += 1,
+            }
+        }
+
+        (accepted, rejected_elig, rejected_apply)
+    }
+
+    /// Add a producer to excluded_producers on a specific node
+    pub async fn exclude_producer(&self, node_id: usize, producer: &PublicKey) {
+        let mut n = self.nodes[node_id].lock().await;
+        n.excluded_producers.insert(*producer);
+    }
+
+    /// Get excluded_producers count for a node
+    pub async fn excluded_count(&self, node_id: usize) -> usize {
+        let n = self.nodes[node_id].lock().await;
+        n.excluded_producers.len()
+    }
+
+    /// Clear excluded_producers on a specific node
+    pub async fn clear_excluded(&self, node_id: usize) {
+        let mut n = self.nodes[node_id].lock().await;
+        n.excluded_producers.clear();
+    }
+}
+
+// ============================================================
+// TEST: Gossip divergence with growing producer count
+// ============================================================
+
+/// Test that N nodes with different excluded_producers sets can still
+/// sync after rollback clears the exclusions.
+/// This simulates the real production scenario where nodes see different
+/// blocks first and accumulate different exclusion sets.
+#[tokio::test]
+async fn test_gossip_divergence_and_recovery() {
+    let n_nodes = 20;
+    let n_producers = 10;
+    let mut net = TestNetwork::new(n_nodes, n_producers).await;
+    let params = net.params.clone();
+    let genesis = net.genesis_hash;
+
+    // Phase 1: Build 50 blocks (past genesis period for devnet)
+    // All nodes receive all blocks — everyone synced
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 50);
+    for block in &base {
+        net.propagate(0, block.clone()).await;
+        // Also apply to node 0 (propagate skips source)
+        net.apply_to_node(0, block.clone()).await.ok();
+    }
+    assert!(net.is_synced().await);
+    assert_eq!(net.height(0).await, 50);
+
+    // Phase 2: Simulate gossip divergence
+    // Half the nodes miss some blocks → they develop different excluded_producers
+    let fork_point = base[49].hash();
+
+    // Nodes 0-9 receive blocks 51-55 (by producer[0])
+    // Nodes 10-19 DON'T receive them → they fall behind
+    let chain_a = net.build_chain(51, 51, fork_point, &net.producers[0].clone(), 5);
+    for block in &chain_a {
+        for node_id in 0..10 {
+            net.apply_to_node(node_id, block.clone()).await.ok();
+        }
+    }
+
+    // Nodes 0-9 are at height 55, nodes 10-19 at height 50
+    assert_eq!(net.height(0).await, 55);
+    assert_eq!(net.height(15).await, 50);
+
+    // Nodes 10-19 develop excluded_producers because they think producer[0]
+    // missed slots (they didn't see the blocks)
+    for node_id in 10..20 {
+        net.exclude_producer(node_id, net.producers[0].public_key()).await;
+    }
+
+    // Phase 3: Try to sync nodes 10-19 with blocks 51-55
+    // With the fix (clear excluded on rollback), nodes should accept after
+    // rolling back from their stale state.
+    // Without the fix, check_producer_eligibility would reject these blocks.
+    let mut all_synced_after = true;
+    for block in &chain_a {
+        let (accepted, rejected_elig, rejected_apply) =
+            net.gossip_with_eligibility(block.clone()).await;
+        if rejected_elig > 0 {
+            eprintln!(
+                "  Block slot={}: accepted={}, rejected_eligibility={}, rejected_apply={}",
+                block.header.slot, accepted, rejected_elig, rejected_apply
+            );
+            all_synced_after = false;
+        }
+    }
+
+    // Verify all nodes converged
+    let synced = net.is_synced().await;
+    let h0 = net.height(0).await;
+
+    eprintln!(
+        "  Result: synced={}, height={}, all_accepted={}",
+        synced, h0, all_synced_after
+    );
+
+    // All nodes should be at height 55 and synced
+    assert!(
+        synced,
+        "Network should converge after gossip divergence"
+    );
+    assert_eq!(h0, 55);
+}
+
+/// Test convergence at scale: 50 nodes, 20 producers, with realistic
+/// gossip delays where blocks are delivered to random subsets.
+#[tokio::test]
+async fn test_gossip_convergence_50_nodes() {
+    let n_nodes = 50;
+    let n_producers = 20;
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Build 45 blocks to exit genesis period — all nodes receive all
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+    assert!(net.is_synced().await);
+
+    // Now produce 20 more blocks with 80% delivery probability
+    // Some nodes will miss some blocks
+    let mut prev = base[44].hash();
+    let mut total_rejected = 0;
+    for i in 0..20 {
+        let producer_idx = i % n_producers;
+        let height = 46 + i as u64;
+        let slot = 46 + i as u32;
+        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        prev = block.hash();
+
+        // Apply to node 0 first (always receives)
+        net.apply_to_node(0, block.clone()).await.ok();
+
+        // Gossip with 80% delivery — some nodes miss some blocks
+        let (received, missed) = net.gossip_propagate(block.clone(), 0.80).await;
+        if missed > 0 {
+            total_rejected += missed;
+        }
+    }
+
+    // Check how many nodes are synced
+    let target_height = net.height(0).await;
+    let mut synced_count = 0;
+    let mut behind_count = 0;
+    for i in 0..n_nodes {
+        let h = net.height(i).await;
+        if h == target_height {
+            synced_count += 1;
+        } else {
+            behind_count += 1;
+        }
+    }
+
+    eprintln!(
+        "  After gossip: {} synced at h={}, {} behind, {} total missed deliveries",
+        synced_count, target_height, behind_count, total_rejected
+    );
+
+    // Now send ALL blocks to ALL nodes (simulating eventual consistency)
+    for i in 0..20 {
+        let height = 46 + i as u64;
+        if let Ok(Some(block)) = {
+            let n = net.nodes[0].lock().await;
+            n.block_store.get_block_by_height(height)
+        } {
+            for node_id in 1..n_nodes {
+                net.apply_to_node(node_id, block.clone()).await.ok();
+            }
+        }
+    }
+
+    // All should converge now
+    let final_synced = net.is_synced().await;
+    let final_height = net.height(0).await;
+
+    eprintln!(
+        "  After sync: synced={}, height={}",
+        final_synced, final_height
+    );
+
+    assert!(
+        final_synced,
+        "All nodes should converge after receiving all blocks"
+    );
+    assert_eq!(final_height, 65);
+}
+
+// ============================================================
+// REALISTIC GOSSIP — delay, partial delivery, slot gaps,
+// excluded_producers divergence, sync backfill
+// ============================================================
+
+/// Result of a gossip round for a single block
+#[derive(Debug)]
+pub struct GossipRoundResult {
+    pub slot: u32,
+    pub delivered: usize,
+    pub missed: usize,
+    pub rejected_eligibility: usize,
+    pub rejected_apply: usize,
+    pub accepted: usize,
+}
+
+/// Accumulated stats across all gossip rounds
+#[derive(Debug, Default)]
+pub struct GossipStats {
+    pub total_blocks: usize,
+    pub total_delivered: usize,
+    pub total_missed: usize,
+    pub total_rejected_elig: usize,
+    pub total_rejected_apply: usize,
+    pub total_accepted: usize,
+    pub rounds: Vec<GossipRoundResult>,
+}
+
+impl GossipStats {
+    pub fn delivery_rate(&self) -> f64 {
+        if self.total_delivered + self.total_missed == 0 {
+            return 1.0;
+        }
+        self.total_delivered as f64 / (self.total_delivered + self.total_missed) as f64
+    }
+
+    pub fn acceptance_rate(&self) -> f64 {
+        if self.total_delivered == 0 {
+            return 0.0;
+        }
+        self.total_accepted as f64 / self.total_delivered as f64
+    }
+
+    pub fn eligibility_rejection_rate(&self) -> f64 {
+        if self.total_delivered == 0 {
+            return 0.0;
+        }
+        self.total_rejected_elig as f64 / self.total_delivered as f64
+    }
+}
+
+impl TestNetwork {
+    /// Realistic gossip propagation with:
+    /// - Configurable delivery probability (simulates network loss)
+    /// - Deterministic "randomness" based on block hash + node id (reproducible)
+    /// - check_producer_eligibility gate (the real gossip path)
+    /// - Slot gap tracking that causes excluded_producers divergence
+    ///
+    /// Returns per-round stats.
+    pub async fn gossip_realistic(
+        &self,
+        block: &Block,
+        delivery_probability: f64,
+    ) -> GossipRoundResult {
+        let n = self.nodes.len();
+        let slot = block.header.slot;
+
+        // Determine delivery per node (deterministic pseudo-random)
+        let block_hash = block.hash(); let block_bytes = block_hash.as_bytes();
+        let mut delivered_to = Vec::new();
+        let mut missed_by = Vec::new();
+
+        for i in 0..n {
+            // Mix block hash with node index for deterministic but varied delivery
+            let seed = block_bytes[(i * 7) % 32] as u16
+                + block_bytes[(i * 13 + 3) % 32] as u16;
+            let prob = (seed as f64) / 510.0; // 0.0 to 1.0
+            if prob < delivery_probability {
+                delivered_to.push(i);
+            } else {
+                missed_by.push(i);
+            }
+        }
+
+        // Deliver to nodes in parallel — through check_producer_eligibility
+        let mut accepted = 0usize;
+        let mut rejected_elig = 0usize;
+        let mut rejected_apply = 0usize;
+
+        let futs: Vec<_> = delivered_to
+            .iter()
+            .map(|&node_id| {
+                let node = self.nodes[node_id].clone();
+                let block = block.clone();
+                async move {
+                    let mut n = node.lock().await;
+
+                    // Gate 1: check_producer_eligibility (gossip filter)
+                    match n.check_producer_eligibility(&block).await {
+                        Ok(()) => {
+                            // Gate 2: apply_block
+                            match n.apply_block(block, ValidationMode::Light).await {
+                                Ok(()) => 0u8,  // accepted
+                                Err(_) => 2u8,  // rejected at apply (duplicate, etc)
+                            }
+                        }
+                        Err(_) => 1u8, // rejected at eligibility
+                    }
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futs).await;
+        for r in results {
+            match r {
+                0 => accepted += 1,
+                1 => rejected_elig += 1,
+                _ => rejected_apply += 1,
+            }
+        }
+
+        GossipRoundResult {
+            slot,
+            delivered: delivered_to.len(),
+            missed: missed_by.len(),
+            rejected_eligibility: rejected_elig,
+            rejected_apply: rejected_apply,
+            accepted,
+        }
+    }
+
+    /// Simulate sync/backfill: send ALL blocks from node 0 to nodes that are behind.
+    /// This is what happens when a node requests missing blocks from peers.
+    /// Returns how many blocks were successfully backfilled across all nodes.
+    pub async fn backfill_from_leader(&self) -> usize {
+        let leader_height = self.height(0).await;
+        let n = self.nodes.len();
+        let mut total_backfilled = 0;
+
+        for node_id in 1..n {
+            let node_height = self.height(node_id).await;
+            if node_height < leader_height {
+                // This node is behind — send missing blocks
+                for h in (node_height + 1)..=leader_height {
+                    let block = {
+                        let n = self.nodes[0].lock().await;
+                        n.block_store.get_block_by_height(h).ok().flatten()
+                    };
+                    if let Some(block) = block {
+                        // Backfill bypasses check_producer_eligibility — it's sync, not gossip
+                        let mut n = self.nodes[node_id].lock().await;
+                        if n.apply_block(block, ValidationMode::Light).await.is_ok() {
+                            total_backfilled += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        total_backfilled
+    }
+
+    /// Simulate sync/backfill that goes through check_producer_eligibility.
+    /// This is the path that BREAKS when excluded_producers diverges.
+    /// Returns (backfilled, rejected_by_eligibility).
+    pub async fn backfill_with_eligibility(&self) -> (usize, usize) {
+        let leader_height = self.height(0).await;
+        let n = self.nodes.len();
+        let mut total_backfilled = 0;
+        let mut total_rejected = 0;
+
+        for node_id in 1..n {
+            let node_height = self.height(node_id).await;
+            if node_height < leader_height {
+                for h in (node_height + 1)..=leader_height {
+                    let block = {
+                        let n = self.nodes[0].lock().await;
+                        n.block_store.get_block_by_height(h).ok().flatten()
+                    };
+                    if let Some(block) = block {
+                        let mut n = self.nodes[node_id].lock().await;
+                        match n.check_producer_eligibility(&block).await {
+                            Ok(()) => {
+                                if n.apply_block(block, ValidationMode::Light).await.is_ok() {
+                                    total_backfilled += 1;
+                                }
+                            }
+                            Err(_) => {
+                                total_rejected += 1;
+                                break; // Can't continue — chain is broken
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (total_backfilled, total_rejected)
+    }
+
+    /// Count how many nodes have divergent excluded_producers
+    pub async fn count_divergent_exclusions(&self) -> (usize, usize, usize) {
+        let n = self.nodes.len();
+        let mut exclusion_counts: Vec<usize> = Vec::new();
+
+        for i in 0..n {
+            let node = self.nodes[i].lock().await;
+            exclusion_counts.push(node.excluded_producers.len());
+        }
+
+        let with_exclusions = exclusion_counts.iter().filter(|c| **c > 0).count();
+        let max_exclusions = exclusion_counts.iter().max().copied().unwrap_or(0);
+        let total_exclusions: usize = exclusion_counts.iter().sum();
+
+        (with_exclusions, max_exclusions, total_exclusions)
+    }
+
+    /// Count how many nodes are at each height
+    pub async fn height_distribution(&self) -> HashMap<u64, usize> {
+        let mut dist = HashMap::new();
+        for i in 0..self.nodes.len() {
+            let h = self.height(i).await;
+            *dist.entry(h).or_insert(0) += 1;
+        }
+        dist
+    }
+}
+
+// ============================================================
+// THE DEFINITIVE SCALE TEST
+// ============================================================
+
+/// 20 nodes, 10 producers, 100 blocks with 90% gossip delivery.
+/// Measures divergence and tests convergence after backfill.
+/// This is the test that reveals whether the network can grow.
+#[tokio::test]
+async fn test_realistic_gossip_20_nodes_100_blocks() {
+    let n_nodes = 20;
+    let n_producers = 10;
+    let delivery_rate = 0.90;
+    let total_blocks = 100;
+
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Phase 1: Build 45 blocks to exit genesis period — 100% delivery
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+    assert!(net.is_synced().await);
+
+    // Phase 2: Produce blocks with realistic gossip (90% delivery)
+    let mut stats = GossipStats::default();
+    let mut prev = base[44].hash();
+
+    for i in 0..total_blocks {
+        let producer_idx = i % n_producers;
+        let height = 46 + i as u64;
+        let slot = 46 + i as u32;
+        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        prev = block.hash();
+
+        // Node 0 always receives (it's the "leader")
+        net.apply_to_node(0, block.clone()).await.ok();
+
+        // Gossip to others with partial delivery
+        let round = net.gossip_realistic(&block, delivery_rate).await;
+
+        stats.total_delivered += round.delivered;
+        stats.total_missed += round.missed;
+        stats.total_rejected_elig += round.rejected_eligibility;
+        stats.total_rejected_apply += round.rejected_apply;
+        stats.total_accepted += round.accepted;
+        stats.total_blocks += 1;
+        stats.rounds.push(round);
+    }
+
+    // Phase 2 results
+    let dist = net.height_distribution().await;
+    let (nodes_with_excl, max_excl, total_excl) = net.count_divergent_exclusions().await;
+
+    eprintln!();
+    eprintln!("  === Realistic Gossip Test ({} nodes, {} producers, {} blocks) ===", n_nodes, n_producers, total_blocks);
+    eprintln!("  Delivery rate:     {:.1}%", stats.delivery_rate() * 100.0);
+    eprintln!("  Acceptance rate:   {:.1}%", stats.acceptance_rate() * 100.0);
+    eprintln!("  Elig rejections:   {:.1}%", stats.eligibility_rejection_rate() * 100.0);
+    eprintln!("  Height distribution: {:?}", dist);
+    eprintln!("  Nodes with exclusions: {}/{}", nodes_with_excl, n_nodes);
+    eprintln!("  Max exclusions on one node: {}", max_excl);
+
+    // Phase 3: Backfill — nodes that fell behind request missing blocks
+    // First try WITH eligibility check (the buggy path)
+    let (backfilled_elig, rejected_elig) = net.backfill_with_eligibility().await;
+    let dist_after_elig = net.height_distribution().await;
+    let synced_after_elig = net.is_synced().await;
+
+    eprintln!();
+    eprintln!("  === After backfill WITH eligibility check ===");
+    eprintln!("  Backfilled: {}, Rejected: {}", backfilled_elig, rejected_elig);
+    eprintln!("  Height distribution: {:?}", dist_after_elig);
+    eprintln!("  All synced: {}", synced_after_elig);
+
+    // Phase 4: Backfill WITHOUT eligibility check (direct apply — the fix)
+    let backfilled_direct = net.backfill_from_leader().await;
+    let synced_after_direct = net.is_synced().await;
+    let final_height = net.height(0).await;
+
+    eprintln!();
+    eprintln!("  === After direct backfill (bypassing eligibility) ===");
+    eprintln!("  Backfilled: {}", backfilled_direct);
+    eprintln!("  All synced: {}", synced_after_direct);
+    eprintln!("  Final height: {}", final_height);
+
+    // The network MUST converge after direct backfill
+    assert!(
+        synced_after_direct,
+        "Network must converge after direct backfill. \
+         If eligibility backfill failed ({} rejected) but direct worked, \
+         it confirms check_producer_eligibility blocks sync recovery.",
+        rejected_elig
+    );
+    assert_eq!(final_height, 145); // 45 base + 100 gossip
+
+    // Report whether the eligibility path is broken
+    if !synced_after_elig && synced_after_direct {
+        eprintln!();
+        eprintln!("  ⚠ BUG CONFIRMED: check_producer_eligibility blocks sync recovery.");
+        eprintln!("  Eligibility rejected {} backfill blocks.", rejected_elig);
+        eprintln!("  Direct backfill recovered all nodes.");
+        eprintln!("  FIX: Don't use excluded_producers in eligibility check for synced blocks.");
+    }
+}
+
+/// Scale test: 100 nodes, 20 producers, 200 blocks, 95% delivery
+#[tokio::test]
+#[ignore] // ~30s, run with --test-threads=1
+async fn test_realistic_gossip_100_nodes_200_blocks() {
+    let n_nodes = 100;
+    let n_producers = 20;
+    let delivery_rate = 0.95;
+    let total_blocks = 200;
+
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Exit genesis period
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+
+    // Produce with realistic gossip
+    let mut prev = base[44].hash();
+    let mut total_rejected_elig = 0;
+
+    for i in 0..total_blocks {
+        let producer_idx = i % n_producers;
+        let height = 46 + i as u64;
+        let slot = 46 + i as u32;
+        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        prev = block.hash();
+
+        net.apply_to_node(0, block.clone()).await.ok();
+        let round = net.gossip_realistic(&block, delivery_rate).await;
+        total_rejected_elig += round.rejected_eligibility;
+    }
+
+    let dist = net.height_distribution().await;
+    let (nodes_with_excl, max_excl, _) = net.count_divergent_exclusions().await;
+
+    eprintln!();
+    eprintln!("  === Scale Gossip ({} nodes, {} producers, {} blocks, {:.0}% delivery) ===",
+        n_nodes, n_producers, total_blocks, delivery_rate * 100.0);
+    eprintln!("  Eligibility rejections during gossip: {}", total_rejected_elig);
+    eprintln!("  Height distribution: {:?}", dist);
+    eprintln!("  Nodes with exclusions: {}/{}", nodes_with_excl, n_nodes);
+    eprintln!("  Max exclusions: {}", max_excl);
+
+    // Backfill
+    let backfilled = net.backfill_from_leader().await;
+    let synced = net.is_synced().await;
+    let final_height = net.height(0).await;
+
+    eprintln!("  Backfilled: {}, Synced: {}, Height: {}", backfilled, synced, final_height);
+
+    assert!(synced, "100 nodes should converge after backfill");
+    assert_eq!(final_height, 245);
+}
