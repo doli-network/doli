@@ -305,6 +305,18 @@ pub(super) async fn handle_swarm_event(
             }
         }
 
+        SwarmEvent::IncomingConnectionError {
+            local_addr,
+            send_back_addr,
+            error,
+            ..
+        } => {
+            warn!(
+                "[MEM-CONN] Incoming connection REJECTED: {} (local={}, remote={})",
+                error, local_addr, send_back_addr
+            );
+        }
+
         _ => {}
     }
 }

@@ -213,17 +213,38 @@ pub(super) async fn run_swarm(
                 let network_info = swarm.network_info();
                 let cc = network_info.connection_counters();
                 let peer_count = peers.read().await.len();
+                // Count evictions in last 60s (recent cooldown entries = recent evictions)
+                let recent_evictions = eviction_cooldown.values()
+                    .filter(|t| t.elapsed() < Duration::from_secs(60))
+                    .count();
+                let pending_in = cc.num_pending_incoming();
+                let pending_out = cc.num_pending_outgoing();
                 tracing::info!(
-                    "[MEM-CONN-BUDGET] peers={} established={} (in={} out={}) pending=(in={} out={}) bootstrap={} eviction_cooldown={}",
+                    "[MEM-CONN-BUDGET] peers={} established={} (in={} out={}) pending=(in={} out={}) bootstrap={} eviction_cooldown={} evictions_1m={}",
                     peer_count,
                     cc.num_established(),
                     cc.num_established_incoming(),
                     cc.num_established_outgoing(),
-                    cc.num_pending_incoming(),
-                    cc.num_pending_outgoing(),
+                    pending_in,
+                    pending_out,
                     bootstrap_peers.len(),
-                    eviction_cooldown.len()
+                    eviction_cooldown.len(),
+                    recent_evictions
                 );
+                // Warn if pending connections are high (INC-I-014: pending bypass detection)
+                if pending_in + pending_out > 20 {
+                    tracing::warn!(
+                        "[MEM-CONN-BUDGET] HIGH PENDING: in={} out={} — may indicate connection limit bypass",
+                        pending_in, pending_out
+                    );
+                }
+                // Warn if eviction churn rate is high (INC-I-014: churn loop detection)
+                if recent_evictions > 10 {
+                    tracing::warn!(
+                        "[MEM-CONN-BUDGET] HIGH EVICTION CHURN: {} evictions in last 60s — possible evict/reconnect loop",
+                        recent_evictions
+                    );
+                }
             }
         }
     }

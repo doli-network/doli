@@ -164,6 +164,20 @@ impl SyncManager {
         ProductionAuthorization::Authorized
     }
 
+    /// Log the production denial reason at warn level for observability.
+    /// Called by Node after can_produce() returns a non-Authorized result.
+    pub fn log_production_denial(&self, auth: &ProductionAuthorization) {
+        match auth {
+            ProductionAuthorization::Authorized => {}
+            other => {
+                warn!(
+                    "[CAN_PRODUCE] DENIED: {:?} (state={:?}, recovery={:?}, local_h={})",
+                    other, self.state, self.recovery_phase, self.local_height
+                );
+            }
+        }
+    }
+
     /// Quick boolean check for production authorization
     pub fn is_production_safe(&mut self, current_slot: u32) -> bool {
         matches!(
@@ -211,8 +225,11 @@ impl SyncManager {
     ///
     /// Starts the grace period timer before production can resume.
     pub fn complete_resync(&mut self) {
-        info!("Resync completed - starting grace period");
-        self.recovery_phase = super::RecoveryPhase::Normal;
+        info!("Resync completed - starting post-recovery grace period");
+        self.recovery_phase = super::RecoveryPhase::PostRecoveryGrace {
+            started: Instant::now(),
+            blocks_applied: 0,
+        };
         self.last_resync_completed = Some(Instant::now());
     }
 
@@ -670,7 +687,12 @@ impl SyncManager {
     /// Short forks (1-2 blocks) are normal and resolve naturally via heaviest chain.
     /// Only trigger genesis resync for genuine deep forks where we're stuck.
     pub fn is_deep_fork_detected(&self) -> bool {
-        if self.fork.consecutive_empty_headers < 10 {
+        let empty_headers = self.fork.consecutive_empty_headers;
+        if empty_headers < 10 {
+            debug!(
+                "[DEEP_FORK] Not detected: empty_headers={}/10",
+                empty_headers
+            );
             return false;
         }
         // Must be significantly behind peers to qualify as deep fork
@@ -681,6 +703,10 @@ impl SyncManager {
             .max()
             .unwrap_or(0);
         if best_peer_height <= self.local_height + 5 {
+            debug!(
+                "[DEEP_FORK] Not detected: peer_h={} not far enough ahead of local_h={} (need >5)",
+                best_peer_height, self.local_height
+            );
             return false;
         }
         // Small gaps (≤12 blocks) are NOT deep forks — resolve_shallow_fork()
@@ -689,13 +715,19 @@ impl SyncManager {
         // snap → no block 1 → next fork → rollback impossible → re-snap.
         let gap = best_peer_height.saturating_sub(self.local_height);
         if gap <= 12 {
+            debug!("[DEEP_FORK] Not detected: gap={} too small (need >12)", gap);
             return false;
         }
         // If snap sync can handle this gap, don't escalate to deep fork.
         // next_request() will attempt snap sync first.
-        let gap = best_peer_height.saturating_sub(self.local_height);
         let enough_peers = self.peers.len() >= 3;
         if enough_peers && gap > self.snap.threshold {
+            debug!(
+                "[DEEP_FORK] Not detected: snap sync can handle gap={} (threshold={}, peers={})",
+                gap,
+                self.snap.threshold,
+                self.peers.len()
+            );
             return false;
         }
         // Require at least one peer whose height is close to ours (within 100 blocks).
@@ -705,6 +737,21 @@ impl SyncManager {
             .peers
             .values()
             .any(|p| p.best_height <= self.local_height + 100);
+        if !has_close_peer {
+            debug!(
+                "[DEEP_FORK] Not detected: no close peer (all peers >100 blocks ahead of local_h={})",
+                self.local_height
+            );
+        } else {
+            warn!(
+                "[DEEP_FORK] DETECTED: empty_headers={} gap={} local_h={} best_peer_h={} peers={}",
+                empty_headers,
+                gap,
+                self.local_height,
+                best_peer_height,
+                self.peers.len()
+            );
+        }
         has_close_peer
     }
 }

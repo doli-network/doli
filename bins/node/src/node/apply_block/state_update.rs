@@ -49,10 +49,17 @@ impl Node {
         pending_protocol_activation_data: Option<(u32, u64)>,
     ) {
         let mut state = self.chain_state.write().await;
+        let was_snap_synced = state.is_snap_synced();
         state.update(block_hash, height, block.header.slot);
         // Clear snap sync marker: block store now has at least one real block,
         // so the next restart's integrity check will find it normally.
         state.clear_snap_sync();
+        if was_snap_synced {
+            info!(
+                "[SNAP_SYNC] Cleared snap_synced marker at height {} (first block applied post-snap)",
+                height
+            );
+        }
 
         // Apply deferred protocol activation (verified during tx processing)
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();

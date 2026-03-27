@@ -345,6 +345,15 @@ impl ProducerSet {
             if info.scheduled {
                 info.scheduled = false;
                 self.active_cache = None;
+                tracing::debug!(
+                    "[PRODUCER_SET] unschedule: {} (scheduled: {}/{})",
+                    &key.to_hex()[..12],
+                    self.producers
+                        .values()
+                        .filter(|p| p.is_active() && p.scheduled)
+                        .count(),
+                    self.active_count()
+                );
                 return true;
             }
         }
@@ -362,6 +371,15 @@ impl ProducerSet {
             if !info.scheduled && info.is_active() {
                 info.scheduled = true;
                 self.active_cache = None;
+                tracing::debug!(
+                    "[PRODUCER_SET] schedule: {} (scheduled: {}/{})",
+                    &key.to_hex()[..12],
+                    self.producers
+                        .values()
+                        .filter(|p| p.is_active() && p.scheduled)
+                        .count(),
+                    self.active_count()
+                );
                 return true;
             }
         }
@@ -379,9 +397,19 @@ impl ProducerSet {
     /// The rebuild then replays reactive scheduling from on-chain data to
     /// deterministically compute the correct scheduled flags.
     pub fn reset_scheduled_flags(&mut self) {
+        let active = self.active_count();
+        let previously_scheduled = self
+            .producers
+            .values()
+            .filter(|p| p.is_active() && p.scheduled)
+            .count();
         for info in self.producers.values_mut() {
             info.scheduled = true;
         }
         self.active_cache = None;
+        tracing::info!(
+            "[PRODUCER_SET] reset_scheduled_flags: {} active producers all set to scheduled=true (was {}/{} scheduled)",
+            active, previously_scheduled, active
+        );
     }
 }

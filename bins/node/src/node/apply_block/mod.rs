@@ -54,8 +54,20 @@ impl Node {
             }
         }
 
-        self.validate_block_for_apply(&block, height, mode).await?;
-        self.validate_block_economics(&block, height, mode).await?;
+        if let Err(e) = self.validate_block_for_apply(&block, height, mode).await {
+            warn!(
+                "[APPLY_BLOCK] Validation failed at height {} slot {} hash={} producer={}: {}",
+                height, block.header.slot, block_hash, block.header.producer, e
+            );
+            return Err(e.into());
+        }
+        if let Err(e) = self.validate_block_economics(&block, height, mode).await {
+            warn!(
+                "[APPLY_BLOCK] Economics validation failed at height {} slot {} hash={}: {}",
+                height, block.header.slot, block_hash, e
+            );
+            return Err(e);
+        }
 
         info!("Applying block {} at height {}", block_hash, height);
 

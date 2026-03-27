@@ -174,8 +174,11 @@ impl SyncManager {
     pub fn block_apply_failed(&mut self) {
         self.fork.consecutive_apply_failures += 1;
         warn!(
-            "Block apply failure #{} — clearing pending sync state",
-            self.fork.consecutive_apply_failures
+            "Block apply failure #{} — clearing pending sync state (local_h={} empty_headers={} recovery={:?})",
+            self.fork.consecutive_apply_failures,
+            self.local_height,
+            self.fork.consecutive_empty_headers,
+            self.recovery_phase
         );
 
         // Clear everything — don't salvage blocks from a bad chain
