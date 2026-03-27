@@ -47,6 +47,7 @@ base64.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+futures.workspace = true
 
 [package.metadata.deb]
 name = "doli"
