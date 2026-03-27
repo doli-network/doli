@@ -42,7 +42,7 @@ impl TestNetwork {
     /// Create a network with `n_nodes` nodes, each having the same `n_producers` registered.
     /// All nodes start connected to all other nodes (full mesh).
     pub async fn new(n_nodes: usize, n_producers: usize) -> Self {
-        let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+        let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
         let mut nodes = Vec::with_capacity(n_nodes);
         let mut temps = Vec::with_capacity(n_nodes);
 
@@ -310,7 +310,7 @@ async fn test_network_creates_and_syncs() {
 
 #[tokio::test]
 async fn test_network_partition_and_heal() {
-    let net = TestNetwork::new(5, 3).await;
+    let mut net = TestNetwork::new(5, 3).await;
 
     // Produce 5 blocks — all synced
     net.produce_blocks(5, 0).await;
@@ -494,7 +494,7 @@ pub struct ClusterNetwork {
 
 impl ClusterNetwork {
     pub fn new(n_producers: usize, nodes_per_cluster: usize, blocks_per_cluster: usize) -> Self {
-        let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+        let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
         Self {
             producers,
             n_producers,
@@ -646,8 +646,6 @@ impl TestNetwork {
         block: Block,
         delivery_probability: f64,
     ) -> (usize, usize) {
-        use std::collections::HashSet;
-
         let n = self.nodes.len();
 
         // Determine which nodes receive this block (random subset)
@@ -855,7 +853,7 @@ async fn test_gossip_convergence_50_nodes() {
         net.apply_to_node(0, block.clone()).await.ok();
 
         // Gossip with 80% delivery — some nodes miss some blocks
-        let (_received, _missed) = net.gossip_propagate(block.clone(), 0.80).await;
+        let (_received, missed) = net.gossip_propagate(block.clone(), 0.80).await;
         if missed > 0 {
             total_rejected += missed;
         }
@@ -1034,7 +1032,7 @@ impl TestNetwork {
             delivered: delivered_to.len(),
             missed: missed_by.len(),
             rejected_eligibility: rejected_elig,
-            rejected_apply: rejected_apply,
+            rejected_apply,
             accepted,
         }
     }
@@ -1716,7 +1714,6 @@ async fn test_realistic_gossip_10k_clustered() {
     let blocks_per_cluster = 30;
 
     let total_start = std::time::Instant::now();
-    let _producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
 
     let mut total_synced = 0usize;
     let mut total_nodes = 0usize;
