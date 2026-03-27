@@ -1523,13 +1523,14 @@ async fn test_realistic_gossip_100_nodes_200_blocks() {
     eprintln!("  Nodes with exclusions: {}/{}", nodes_with_excl, n_nodes);
     eprintln!("  Max exclusions: {}", max_excl);
 
-    // Backfill
-    let backfilled = net.backfill_from_leader().await;
+    // Full sync simulation
+    let (synced_count, rollbacks, applied) = net.sync_from_leader().await;
     let synced = net.is_synced().await;
     let final_height = net.height(0).await;
 
-    eprintln!("  Backfilled: {}, Synced: {}, Height: {}", backfilled, synced, final_height);
+    eprintln!("  Synced: {}/{}, Rollbacks: {}, Applied: {}, Height: {}",
+        synced_count, n_nodes - 1, rollbacks, applied, final_height);
 
-    assert!(synced, "100 nodes should converge after backfill");
+    assert!(synced, "100 nodes should converge after sync");
     assert_eq!(final_height, 245);
 }
