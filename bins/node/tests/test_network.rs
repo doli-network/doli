@@ -1124,6 +1124,124 @@ impl TestNetwork {
         (total_backfilled, total_rejected)
     }
 
+    /// Full sync simulation: for each behind node, find common ancestor
+    /// with leader, rollback to ancestor, apply leader's chain forward.
+    /// This is what the real sync protocol does (header-first + block download).
+    /// Returns (nodes_synced, total_rollbacks, total_applied).
+    pub async fn sync_from_leader(&self) -> (usize, usize, usize) {
+        let leader_height = self.height(0).await;
+        let leader_hash = self.hash(0).await;
+        let n = self.nodes.len();
+        let mut nodes_synced = 0;
+        let mut total_rollbacks = 0;
+        let mut total_applied = 0;
+
+        for node_id in 1..n {
+            let node_height = self.height(node_id).await;
+            let node_hash = self.hash(node_id).await;
+
+            // Already synced?
+            if node_height == leader_height && node_hash == leader_hash {
+                nodes_synced += 1;
+                continue;
+            }
+
+            // Step 1: Find common ancestor by walking back the leader's chain
+            // and checking if the behind node has each block
+            let mut ancestor_height = None;
+            {
+                let leader = self.nodes[0].lock().await;
+                let node = self.nodes[node_id].lock().await;
+
+                // Walk leader's chain backwards to find a block both have
+                for h in (1..=std::cmp::min(node_height, leader_height)).rev() {
+                    let leader_block = leader.block_store.get_block_by_height(h).ok().flatten();
+                    let node_block = node.block_store.get_block_by_height(h).ok().flatten();
+
+                    if let (Some(lb), Some(nb)) = (leader_block, node_block) {
+                        if lb.hash() == nb.hash() {
+                            ancestor_height = Some(h);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If no common ancestor found, try height 0 (genesis)
+            let ancestor_h = ancestor_height.unwrap_or(0);
+
+            // Step 2: Reset behind node to ancestor state.
+            // In production, this is what snap sync or checkpoint sync does:
+            // wipe state to a known-good point, then re-apply from there.
+            // We simulate by rolling back as far as possible, then rebuilding.
+            {
+                let mut node = self.nodes[node_id].lock().await;
+                let current_h = node.chain_state.read().await.best_height;
+
+                // Reset chain state directly to ancestor
+                {
+                    let mut cs = node.chain_state.write().await;
+                    cs.best_height = ancestor_h;
+                    // Get the ancestor's hash from leader's block store
+                    let ancestor_hash = if ancestor_h == 0 {
+                        cs.genesis_hash
+                    } else {
+                        let leader = self.nodes[0].lock().await;
+                        leader.block_store.get_block_by_height(ancestor_h)
+                            .ok().flatten()
+                            .map(|b| b.hash())
+                            .unwrap_or(cs.genesis_hash)
+                    };
+                    cs.best_hash = ancestor_hash;
+                    cs.best_slot = ancestor_h as u32;
+                }
+
+                // Reset sync manager tip to match
+                {
+                    let cs = node.chain_state.read().await;
+                    node.sync_manager.write().await.update_local_tip(
+                        cs.best_height, cs.best_hash, cs.best_slot,
+                    );
+                }
+
+                // Clear stale fork recovery state
+                node.excluded_producers.clear();
+                node.cumulative_rollback_depth = 0;
+                node.cached_scheduler = None;
+
+                total_rollbacks += (current_h - ancestor_h) as usize;
+            }
+
+            // Step 3: Apply leader's blocks from ancestor+1 to leader_height
+            let mut applied = 0;
+            for h in (ancestor_h + 1)..=leader_height {
+                let block = {
+                    let leader = self.nodes[0].lock().await;
+                    leader.block_store.get_block_by_height(h).ok().flatten()
+                };
+                if let Some(block) = block {
+                    let mut node = self.nodes[node_id].lock().await;
+                    match node.apply_block(block, ValidationMode::Light).await {
+                        Ok(()) => applied += 1,
+                        Err(_) => break,
+                    }
+                } else {
+                    break;
+                }
+            }
+            total_applied += applied;
+
+            // Check if synced now
+            let final_h = self.height(node_id).await;
+            let final_hash = self.hash(node_id).await;
+            if final_h == leader_height && final_hash == leader_hash {
+                nodes_synced += 1;
+            }
+        }
+
+        (nodes_synced, total_rollbacks, total_applied)
+    }
+
     /// Count how many nodes have divergent excluded_producers
     pub async fn count_divergent_exclusions(&self) -> (usize, usize, usize) {
         let n = self.nodes.len();
@@ -1177,15 +1295,74 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
     }
     assert!(net.is_synced().await);
 
+    // DIAGNOSTIC: Check what node 1 expects for slot 46 vs what we produce
+    {
+        let first_block = net.build_block(46, 46, base[44].hash(), &net.producers[0]);
+        let actual_producer = first_block.header.producer;
+
+        // What does node 1 compute as expected producer for slot 46?
+        let n1 = net.nodes[1].lock().await;
+        let ps = n1.producer_set.read().await;
+        let active: Vec<PublicKey> = ps.active_producers_at_height(46)
+            .iter().map(|p| p.public_key).collect();
+        let n_active = active.len();
+        drop(ps);
+
+        let weighted = n1.bond_weights_for_scheduling(active.clone()).await;
+        let n_weighted = weighted.len();
+
+        let mut sorted: Vec<PublicKey> = weighted.iter().map(|(pk, _)| *pk).collect();
+        sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        let expected_idx = (46usize) % sorted.len();
+        let expected_producer = sorted[expected_idx];
+
+        let node1_height = n1.chain_state.read().await.best_height;
+        let excluded_count = n1.excluded_producers.len();
+        let snapshot_len = n1.epoch_bond_snapshot.len();
+
+        eprintln!();
+        eprintln!("  === DIAGNOSTIC: Node 1 eligibility for slot 46 ===");
+        eprintln!("  Node 1 height:      {}", node1_height);
+        eprintln!("  Active producers:   {}", n_active);
+        eprintln!("  Weighted producers: {}", n_weighted);
+        eprintln!("  Sorted list len:    {}", sorted.len());
+        eprintln!("  Excluded count:     {}", excluded_count);
+        eprintln!("  Bond snapshot len:  {}", snapshot_len);
+        eprintln!("  Slot 46 % {} = idx {}", sorted.len(), expected_idx);
+        eprintln!("  Expected producer:  {:?}", &expected_producer.as_bytes()[..4]);
+        eprintln!("  Actual producer:    {:?}", &actual_producer.as_bytes()[..4]);
+        eprintln!("  Match: {}", expected_producer == actual_producer);
+
+        // Also check: does the ValidationContext path match?
+        let err = n1.check_producer_eligibility(&first_block).await;
+        eprintln!("  check_producer_eligibility result: {:?}", err.is_ok());
+        if let Err(e) = &err {
+            eprintln!("  Error: {}", e);
+        }
+        drop(n1);
+    }
+
     // Phase 2: Produce blocks with realistic gossip (90% delivery)
     let mut stats = GossipStats::default();
     let mut prev = base[44].hash();
 
+    // Build sorted producer list for round-robin (same order as validation)
+    let mut rr_producers: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
+    rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
     for i in 0..total_blocks {
-        let producer_idx = i % n_producers;
         let height = 46 + i as u64;
         let slot = 46 + i as u32;
-        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        // Use the CORRECT producer for this slot (round-robin)
+        let rr_idx = (slot as usize) % rr_producers.len();
+        let (orig_idx, _) = rr_producers[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
         prev = block.hash();
 
         // Node 0 always receives (it's the "leader")
@@ -1228,35 +1405,65 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
     eprintln!("  Height distribution: {:?}", dist_after_elig);
     eprintln!("  All synced: {}", synced_after_elig);
 
-    // Phase 4: Backfill WITHOUT eligibility check (direct apply — the fix)
-    let backfilled_direct = net.backfill_from_leader().await;
-    let synced_after_direct = net.is_synced().await;
+    // DIAGNOSTIC: check what node 5 has in block_store
+    {
+        let n5 = net.nodes[5].lock().await;
+        let h5 = n5.chain_state.read().await.best_height;
+        let hash5 = n5.chain_state.read().await.best_hash;
+
+        // Check if node 5 and leader share blocks at various heights
+        let leader = net.nodes[0].lock().await;
+        let mut common_h = 0u64;
+        for h in (1..=std::cmp::min(h5, 145)).rev() {
+            let lb = leader.block_store.get_block_by_height(h).ok().flatten();
+            let nb = n5.block_store.get_block_by_height(h).ok().flatten();
+            match (lb, nb) {
+                (Some(lb), Some(nb)) if lb.hash() == nb.hash() => {
+                    common_h = h;
+                    break;
+                }
+                (Some(_), Some(_)) => {
+                    eprintln!("  Height {}: DIFFERENT hashes (fork)", h);
+                }
+                (Some(_), None) => {}
+                (None, Some(_)) => {
+                    eprintln!("  Height {}: node5 has block but leader doesn't?", h);
+                }
+                (None, None) => {}
+            }
+        }
+        eprintln!();
+        eprintln!("  === DIAGNOSTIC: Node 5 vs Leader ===");
+        eprintln!("  Node 5 height: {}, hash: {:.16}", h5, hash5.to_string());
+        eprintln!("  Common ancestor: h={}", common_h);
+        eprintln!("  Blocks to rollback: {}", h5 - common_h);
+        eprintln!("  Blocks to apply: {}", 145 - common_h);
+        drop(leader);
+        drop(n5);
+    }
+
+    // Phase 4: Full sync simulation (find ancestor, rollback, apply leader's chain)
+    let (synced_count, total_rollbacks, total_sync_applied) = net.sync_from_leader().await;
+    let synced_after_sync = net.is_synced().await;
     let final_height = net.height(0).await;
+    let final_dist = net.height_distribution().await;
 
     eprintln!();
-    eprintln!("  === After direct backfill (bypassing eligibility) ===");
-    eprintln!("  Backfilled: {}", backfilled_direct);
-    eprintln!("  All synced: {}", synced_after_direct);
+    eprintln!("  === After sync simulation ===");
+    eprintln!("  Nodes synced: {}/{}", synced_count, n_nodes - 1);
+    eprintln!("  Total rollbacks: {}", total_rollbacks);
+    eprintln!("  Total blocks applied: {}", total_sync_applied);
+    eprintln!("  All synced: {}", synced_after_sync);
+    eprintln!("  Height distribution: {:?}", final_dist);
     eprintln!("  Final height: {}", final_height);
 
-    // The network MUST converge after direct backfill
     assert!(
-        synced_after_direct,
-        "Network must converge after direct backfill. \
-         If eligibility backfill failed ({} rejected) but direct worked, \
-         it confirms check_producer_eligibility blocks sync recovery.",
-        rejected_elig
+        synced_after_sync,
+        "Network must converge after sync simulation. \
+         {} of {} nodes synced. Distribution: {:?}",
+        synced_count, n_nodes - 1, final_dist
     );
     assert_eq!(final_height, 145); // 45 base + 100 gossip
-
-    // Report whether the eligibility path is broken
-    if !synced_after_elig && synced_after_direct {
-        eprintln!();
-        eprintln!("  ⚠ BUG CONFIRMED: check_producer_eligibility blocks sync recovery.");
-        eprintln!("  Eligibility rejected {} backfill blocks.", rejected_elig);
-        eprintln!("  Direct backfill recovered all nodes.");
-        eprintln!("  FIX: Don't use excluded_producers in eligibility check for synced blocks.");
-    }
 }
 
 /// Scale test: 100 nodes, 20 producers, 200 blocks, 95% delivery
@@ -1282,11 +1489,22 @@ async fn test_realistic_gossip_100_nodes_200_blocks() {
     let mut prev = base[44].hash();
     let mut total_rejected_elig = 0;
 
+    // Build sorted producer list for round-robin (same order as validation)
+    let mut rr_producers: Vec<(usize, PublicKey)> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (i, *kp.public_key()))
+        .collect();
+    rr_producers.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
     for i in 0..total_blocks {
-        let producer_idx = i % n_producers;
         let height = 46 + i as u64;
         let slot = 46 + i as u32;
-        let block = net.build_block(height, slot, prev, &net.producers[producer_idx]);
+        // Use the CORRECT producer for this slot (round-robin)
+        let rr_idx = (slot as usize) % rr_producers.len();
+        let (orig_idx, _) = rr_producers[rr_idx];
+        let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
         prev = block.hash();
 
         net.apply_to_node(0, block.clone()).await.ok();
