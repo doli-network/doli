@@ -298,7 +298,7 @@ impl TestNetwork {
 
 #[tokio::test]
 async fn test_network_creates_and_syncs() {
-    let mut net = TestNetwork::new(3, 3).await;
+    let net = TestNetwork::new(3, 3).await;
     assert_eq!(net.size(), 3);
     assert!(net.is_synced().await);
 
@@ -310,7 +310,7 @@ async fn test_network_creates_and_syncs() {
 
 #[tokio::test]
 async fn test_network_partition_and_heal() {
-    let mut net = TestNetwork::new(5, 3).await;
+    let net = TestNetwork::new(5, 3).await;
 
     // Produce 5 blocks — all synced
     net.produce_blocks(5, 0).await;
@@ -359,7 +359,7 @@ async fn test_network_partition_and_heal() {
 
 #[tokio::test]
 async fn test_network_10_nodes() {
-    let mut net = TestNetwork::new(10, 5).await;
+    let net = TestNetwork::new(10, 5).await;
     let final_h = net.produce_blocks(20, 0).await;
     assert_eq!(final_h, 20);
     assert!(net.is_synced().await);
@@ -375,7 +375,7 @@ async fn test_network_scale_ceiling() {
 
     let start = std::time::Instant::now();
     // Produce 10 blocks across 25 nodes
-    let mut net = net;
+    let net = net;
     net.produce_blocks(10, 0).await;
     let produce_time = start.elapsed();
 
@@ -392,7 +392,7 @@ async fn test_network_scale_ceiling() {
 #[tokio::test]
 async fn test_network_50_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(50, 5).await;
+    let net = TestNetwork::new(50, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(10, 0).await;
@@ -404,7 +404,7 @@ async fn test_network_50_nodes() {
 #[tokio::test]
 async fn test_network_100_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(100, 5).await;
+    let net = TestNetwork::new(100, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(10, 0).await;
@@ -417,7 +417,7 @@ async fn test_network_100_nodes() {
 #[ignore] // Run with --test-threads=1 to avoid FD exhaustion
 async fn test_network_500_nodes() {
     let start = std::time::Instant::now();
-    let mut net = TestNetwork::new(500, 5).await;
+    let net = TestNetwork::new(500, 5).await;
     let init = start.elapsed();
     let start = std::time::Instant::now();
     net.produce_blocks(5, 0).await;
@@ -649,14 +649,12 @@ impl TestNetwork {
         use std::collections::HashSet;
 
         let n = self.nodes.len();
-        let received;
-        let missed;
 
         // Determine which nodes receive this block (random subset)
+        let block_hash = block.hash();
         let mut receivers = Vec::new();
         for i in 0..n {
-            // Simple deterministic "random" based on block hash + node id
-            let hash_byte = block.hash().as_bytes()[(i % 32)] as f64 / 255.0;
+            let hash_byte = block_hash.as_bytes()[i % 32] as f64 / 255.0;
             if hash_byte < delivery_probability {
                 receivers.push(i);
             }
@@ -676,8 +674,8 @@ impl TestNetwork {
             .collect();
 
         let results = futures::future::join_all(futs).await;
-        let received_count = results.iter().filter(|ok| **ok).count();
-        let missed_count = n - received_count;
+        let received = results.iter().filter(|ok| **ok).count();
+        let missed = n - received;
 
         (received, missed)
     }
