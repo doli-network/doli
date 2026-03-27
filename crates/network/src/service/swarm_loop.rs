@@ -78,6 +78,12 @@ pub(super) async fn run_swarm(
     let mut bootstrap_cleanup = tokio::time::interval(Duration::from_secs(5));
     bootstrap_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // INC-I-014: Periodic connection budget log — shows steady-state connection
+    // distribution every 60s. Makes limit enforcement visible during stress tests
+    // without requiring lsof or external monitoring.
+    let mut conn_budget_log = tokio::time::interval(Duration::from_secs(60));
+    conn_budget_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
     let mut tx_batch: Vec<Transaction> = Vec::new();
@@ -200,6 +206,24 @@ pub(super) async fn run_swarm(
                         eviction_cooldown.len(), purged
                     );
                 }
+            }
+
+            // INC-I-014: Periodic connection budget log
+            _ = conn_budget_log.tick() => {
+                let network_info = swarm.network_info();
+                let cc = network_info.connection_counters();
+                let peer_count = peers.read().await.len();
+                tracing::info!(
+                    "[MEM-CONN-BUDGET] peers={} established={} (in={} out={}) pending=(in={} out={}) bootstrap={} eviction_cooldown={}",
+                    peer_count,
+                    cc.num_established(),
+                    cc.num_established_incoming(),
+                    cc.num_established_outgoing(),
+                    cc.num_pending_incoming(),
+                    cc.num_pending_outgoing(),
+                    bootstrap_peers.len(),
+                    eviction_cooldown.len()
+                );
             }
         }
     }

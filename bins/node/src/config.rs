@@ -89,7 +89,12 @@ impl NodeConfig {
             data_dir,
             listen_addr: format!("0.0.0.0:{}", network.default_p2p_port()),
             bootstrap_nodes: network.bootstrap_nodes(),
-            max_peers: network.params().max_peers,
+            // INC-I-014: Allow env override for stress test tuning without rebuild.
+            // Pattern matches DOLI_CONN_LIMIT, DOLI_PENDING_LIMIT, DOLI_BOOTSTRAP_SLOTS.
+            max_peers: std::env::var("DOLI_MAX_PEERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(network.params().max_peers),
             rpc: RpcConfig::for_network(network),
             producer: None,
             no_dht: false,

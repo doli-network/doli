@@ -186,6 +186,13 @@ impl Node {
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
         network_config.max_peers = self.config.max_peers;
+        // INC-I-015: Wire mesh params from NetworkParams (defaults.rs) into NetworkConfig.
+        // Previously these were hardcoded in config.rs and never overridden.
+        let net_params = doli_core::NetworkParams::load(self.config.network);
+        network_config.mesh_n = net_params.mesh_n;
+        network_config.mesh_n_low = net_params.mesh_n_low;
+        network_config.mesh_n_high = net_params.mesh_n_high;
+        network_config.gossip_lazy = net_params.gossip_lazy;
         // Bootstrap headroom: small fixed pool for temporary DHT-exchange connections.
         // Bootstrap peers only last 10s (Kademlia exchange), so we never need many
         // simultaneously. 10 slots add only 20 connections to conn_limit — negligible

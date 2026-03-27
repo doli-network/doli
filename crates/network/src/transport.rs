@@ -5,16 +5,17 @@
 
 use libp2p::{core::upgrade, dns, identity::Keypair, noise, relay, tcp, yamux, PeerId, Transport};
 
-/// 512KB yamux receive window. Sync headers are ~100KB per batch — 512KB
-/// is 5x headroom. Halves per-connection RAM vs 1MB default, enabling
-/// 300 nodes on 128GB (INC-I-013).
+/// 256KB yamux receive window. Sync headers are ~100KB per batch — 256KB
+/// is 2.5x headroom. Quarters per-connection RAM vs 1MB default. At 50
+/// established connections: 50 × 256KB = 12.5MB/node (INC-I-014).
+/// Override with DOLI_YAMUX_WINDOW=524288 to restore 512KB if needed.
 #[allow(deprecated)] // set_receive_window_size will be replaced in next yamux breaking release
 fn yamux_config() -> yamux::Config {
     let mut cfg = yamux::Config::default();
     let window = std::env::var("DOLI_YAMUX_WINDOW")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(524_288u32);
+        .unwrap_or(262_144u32);
     cfg.set_receive_window_size(window);
     cfg
 }

@@ -135,16 +135,28 @@ impl NetworkService {
         //
         // max_peers*2 total gives fast Kademlia discovery (tested: great bootstrap
         // up to 70+ nodes) while bounding RAM. At max_peers=25: 50 total connections
-        // × 512KB Yamux = 25MB/node. Eviction keeps steady-state at ~25 conns.
+        // × 256KB Yamux = 12.5MB/node. Eviction keeps steady-state at ~25 conns.
         let total_conn_limit = std::env::var("DOLI_CONN_LIMIT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or((config.max_peers * 2) as u32);
+        // INC-I-014: Pending connection limits. with_max_established() only caps
+        // COMPLETED connections. During handshake (TCP+Noise+Yamux), each pending
+        // connection allocates ~1MB with NO cap. At 156 nodes: pending_out=37/node
+        // = 37MB invisible RAM per node. with_max_pending_* checks BEFORE the
+        // handshake starts (handle_pending_inbound/outbound_connection), preventing
+        // Noise+Yamux buffer allocation entirely.
+        let pending_limit = std::env::var("DOLI_PENDING_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(config.max_peers as u32);
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(1))
             .with_max_established(Some(total_conn_limit))
             .with_max_established_incoming(Some(total_conn_limit))
-            .with_max_established_outgoing(Some(total_conn_limit));
+            .with_max_established_outgoing(Some(total_conn_limit))
+            .with_max_pending_incoming(Some(pending_limit))
+            .with_max_pending_outgoing(Some(pending_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits
@@ -188,13 +200,26 @@ impl NetworkService {
             autonat,
         );
 
+        // INC-I-014: Network-aware idle timeout. 24h for mainnet (stable long-lived
+        // connections). 1h for testnet (moderate churn during stress tests). 5min for
+        // devnet (rapid iteration). Override with DOLI_IDLE_TIMEOUT_SECS for tuning.
+        let default_idle_secs = match config.network_id {
+            1 => 86400, // mainnet: 24h
+            2 => 3600,  // testnet: 1h
+            _ => 300,   // devnet: 5min
+        };
+        let idle_timeout_secs = std::env::var("DOLI_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_idle_secs);
+
         // Build swarm
         let mut swarm = Swarm::new(
             transport,
             behaviour,
             local_peer_id,
             libp2p::swarm::Config::with_tokio_executor()
-                .with_idle_connection_timeout(Duration::from_secs(86400)),
+                .with_idle_connection_timeout(Duration::from_secs(idle_timeout_secs)),
         );
 
         // Listen on configured address
@@ -220,13 +245,15 @@ impl NetworkService {
         let yamux_window = std::env::var("DOLI_YAMUX_WINDOW")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(524_288);
+            .unwrap_or(262_144);
         info!("Network service listening on {}", listen_addr);
         info!(
-            "[MEM-BOOT] max_peers={} conn_limit={} yamux_window={}KB event_buf={} cmd_buf={}",
+            "[MEM-BOOT] max_peers={} conn_limit={} pending_limit={} yamux_window={}KB idle_timeout={}s event_buf={} cmd_buf={}",
             config.max_peers,
             total_conn_limit,
+            pending_limit,
             yamux_window / 1024,
+            idle_timeout_secs,
             event_buf,
             command_buf
         );

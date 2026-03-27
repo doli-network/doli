@@ -13,6 +13,9 @@ mod headers;
 mod manager;
 mod reorg;
 
+#[cfg(test)]
+mod adversarial_tests;
+
 pub use bodies::BodyDownloader;
 pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;

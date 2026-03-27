@@ -99,7 +99,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774537686, // Testnet v84 genesis - fresh 2026-03-26
+                genesis_time: 1774572071, // Testnet v88 genesis - stress test conn fixes 2026-03-27
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,
@@ -143,11 +143,17 @@ impl NetworkParams {
                 // Vesting (1-day: 6h quarters — faster than mainnet for testing)
                 vesting_quarter_slots: 2_160,
 
-                // Gossip mesh: same universal config as mainnet.
-                mesh_n: 12,
-                mesh_n_low: 8,
-                mesh_n_high: 24,
-                gossip_lazy: 12,
+                // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
+                // connected peers. At mesh_n=12, blocks reach 12 peers immediately
+                // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
+                // on localhost, this delay exceeds the 10s slot window → fork cascade
+                // → CPU saturation → RAM explosion. With mesh_n=max_peers, every
+                // connected peer gets eager push: zero multi-hop delay for blocks.
+                // Bandwidth cost: 25 peers × 2KB/block × 1 block/10s = 5KB/s. Negligible.
+                mesh_n: 25, // = max_peers: all connected peers in mesh
+                mesh_n_low: 20,
+                mesh_n_high: 50, // = max_peers*2: accept grafts up to total_conn_limit
+                gossip_lazy: 25,
             },
 
             Network::Devnet => NetworkParams {

@@ -11,8 +11,17 @@ use super::MergeResult;
 /// Default initial gossip interval (5 seconds).
 const DEFAULT_INTERVAL_SECS: u64 = 5;
 
-/// Minimum gossip interval (1 second).
+/// Minimum gossip interval (1 second for small networks).
 const MIN_INTERVAL_SECS: u64 = 1;
+
+/// Minimum gossip interval for large networks (>50 peers).
+/// INC-I-015: At 106 nodes with 1s GSet interval, gossipsub heartbeat is flooded
+/// with IHAVE/IWANT for GSet messages, delaying block propagation to 28s (vs 10s slots).
+/// 10s minimum ensures GSet doesn't starve block gossip at scale.
+const MIN_INTERVAL_LARGE_NETWORK_SECS: u64 = 10;
+
+/// Peer count threshold for large-network gossip intervals.
+const LARGE_NETWORK_THRESHOLD: usize = 50;
 
 /// Base maximum gossip interval (60 seconds for small networks).
 const MAX_INTERVAL_SECS: u64 = 60;
@@ -144,8 +153,15 @@ impl AdaptiveGossip {
         // Only speed up gossip when truly NEW producers are discovered
         // Sequence updates (liveness proofs) should not reset the interval
         if result.new_producers > 0 {
-            // New producers discovered - speed up gossip
-            self.interval = self.min_interval;
+            // New producers discovered - speed up gossip.
+            // INC-I-015: Use higher floor for large networks to avoid starving
+            // block gossip with GSet IHAVE/IWANT traffic.
+            let floor = if self.estimated_network_size >= LARGE_NETWORK_THRESHOLD {
+                Duration::from_secs(MIN_INTERVAL_LARGE_NETWORK_SECS)
+            } else {
+                self.min_interval
+            };
+            self.interval = floor;
             self.rounds_without_change = 0;
         } else {
             // No new producers - consider backing off

@@ -444,10 +444,11 @@ fn test_adaptive_gossip_integration() {
         },
         50,
     );
+    // INC-I-015: At 50+ peers, floor is 10s to avoid starving block gossip.
     assert_eq!(
         gossip.interval(),
-        Duration::from_secs(1),
-        "Should reset on new discovery"
+        Duration::from_secs(10),
+        "Should reset on new discovery (large network floor)"
     );
 }
 

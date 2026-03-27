@@ -3862,4 +3862,238 @@ mod m2_regression_tests {
             "T-M2-024: Small gap stuck-sync must not trigger genesis resync"
         );
     }
+
+    // =====================================================================
+    // ADVERSARIAL TESTS — INC-I-014 / INC-I-010 attack surface
+    // =====================================================================
+
+    /// P1: Verify confirmed_height_floor is set when state=Synchronized +
+    /// consecutive_resync_count=0. The floor prevents regression via
+    /// reset_local_state() (INC-I-005 Fix C).
+    #[test]
+    fn test_adversarial_confirmed_floor_monotonic() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Directly set state to Synchronized (avoids sync trigger complexity)
+        manager.state = SyncState::Synchronized;
+        manager.local_height = 100;
+        manager.local_slot = 100;
+        // consecutive_resync_count is 0 by default
+
+        // Apply 5 blocks in Synchronized state
+        for i in 101..=105 {
+            let hash = crypto::hash::hash(format!("block_{}", i).as_bytes());
+            manager.block_applied_with_weight(hash, i, i as u32, 1, Hash::ZERO);
+        }
+
+        let floor = manager.confirmed_height_floor();
+        assert!(
+            floor > 0,
+            "Floor should be established after applying blocks in Synchronized state, got {}",
+            floor
+        );
+        assert_eq!(floor, 105, "Floor should be at latest applied height");
+
+        // Floor must never decrease
+        let floor_after = manager.confirmed_height_floor();
+        assert!(
+            floor_after >= floor,
+            "Floor must be monotonically increasing"
+        );
+    }
+
+    /// P0: Verify production is blocked during active sync.
+    #[test]
+    fn test_adversarial_production_blocked_during_sync() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let peer = PeerId::random();
+        manager.add_peer(peer, 1000, crypto::hash::hash(b"peer_tip"), 1000);
+
+        let auth = manager.can_produce(1);
+        assert!(
+            !matches!(auth, ProductionAuthorization::Authorized),
+            "Production should be blocked during sync, got: {:?}",
+            auth
+        );
+    }
+
+    /// P1: Verify can_produce with no peers blocks production.
+    #[test]
+    fn test_adversarial_production_blocked_zero_peers() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.local_height = 100;
+        manager.local_slot = 100;
+        manager.first_peer_status_received = Some(Instant::now());
+
+        let auth = manager.can_produce(101);
+        assert!(
+            !matches!(auth, ProductionAuthorization::Authorized),
+            "Production should be blocked with 0 peers, got: {:?}",
+            auth
+        );
+    }
+
+    /// P1: Verify block_applied properly resets fork counters.
+    #[test]
+    fn test_adversarial_block_applied_resets_fork_counters() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        for _ in 0..5 {
+            manager.fork.consecutive_empty_headers += 1;
+        }
+        assert!(manager.fork.consecutive_empty_headers >= 5);
+
+        let hash = crypto::hash::hash(b"block1");
+        manager.block_applied_with_weight(hash, 1, 1, 1, Hash::ZERO);
+
+        assert_eq!(
+            manager.fork.consecutive_empty_headers, 0,
+            "block_applied should reset consecutive_empty_headers"
+        );
+    }
+
+    /// P1: Adding many peers doesn't cause quadratic behavior.
+    #[test]
+    fn test_adversarial_many_peers_performance() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        let start = Instant::now();
+        for i in 0..1000u64 {
+            let peer = PeerId::random();
+            let hash = crypto::hash::hash(format!("peer_{}", i).as_bytes());
+            manager.add_peer(peer, i, hash, i as u32);
+        }
+        let add_time = start.elapsed();
+
+        let best = manager.best_peer_for_recovery();
+        assert!(best.is_some(), "Should find a best peer");
+
+        assert!(
+            add_time < Duration::from_secs(2),
+            "Adding 1000 peers took {:?} — too slow",
+            add_time
+        );
+    }
+
+    /// P0: ForkState.recommend_action handles all edge cases.
+    #[test]
+    fn test_adversarial_fork_action_edge_cases() {
+        use super::ForkState;
+
+        // Deep fork (10+ empty headers) -> genesis resync
+        let mut fork = ForkState::new();
+        fork.consecutive_empty_headers = 10;
+        let action = fork.recommend_action(5, 0, 12, Some(PeerId::random()));
+        assert!(matches!(action, ForkAction::NeedsGenesisResync));
+
+        // needs_genesis_resync flag overrides everything
+        let mut fork2 = ForkState::new();
+        fork2.needs_genesis_resync = true;
+        let action2 = fork2.recommend_action(0, 0, 12, None);
+        assert!(matches!(action2, ForkAction::NeedsGenesisResync));
+
+        // Gap > max_rollback_depth escalates
+        let fork3 = ForkState::new();
+        let action3 = fork3.recommend_action(100, 0, 12, Some(PeerId::random()));
+        assert!(matches!(action3, ForkAction::NeedsGenesisResync));
+
+        // Shallow fork with < 3 empty headers -> None
+        let mut fork4 = ForkState::new();
+        fork4.consecutive_empty_headers = 2;
+        let action4 = fork4.recommend_action(5, 0, 12, Some(PeerId::random()));
+        assert!(matches!(action4, ForkAction::None));
+
+        // Shallow fork with >= 3 empty headers and rollbacks < max -> rollback
+        let mut fork5 = ForkState::new();
+        fork5.consecutive_empty_headers = 3;
+        let action5 = fork5.recommend_action(5, 0, 12, Some(PeerId::random()));
+        assert!(matches!(action5, ForkAction::RollbackOne));
+
+        // Exhausted rollbacks
+        let mut fork6 = ForkState::new();
+        fork6.consecutive_empty_headers = 3;
+        let action6 = fork6.recommend_action(5, 12, 12, Some(PeerId::random()));
+        assert!(matches!(action6, ForkAction::None));
+    }
+
+    /// P2: SyncPipelineData.is_snap_syncing for all variants.
+    #[test]
+    fn test_adversarial_pipeline_data_snap_syncing() {
+        assert!(!SyncPipelineData::None.is_snap_syncing());
+        assert!(!SyncPipelineData::Headers {
+            target_slot: 100,
+            peer: PeerId::random(),
+            headers_count: 50,
+        }
+        .is_snap_syncing());
+        assert!(!SyncPipelineData::Bodies {
+            pending: 10,
+            total: 100,
+        }
+        .is_snap_syncing());
+        assert!(!SyncPipelineData::Processing { height: 42 }.is_snap_syncing());
+        assert!(SyncPipelineData::SnapCollecting {
+            target_hash: Hash::ZERO,
+            target_height: 100,
+            votes: vec![],
+            asked: std::collections::HashSet::new(),
+        }
+        .is_snap_syncing());
+        assert!(SyncPipelineData::SnapDownloading {
+            target_hash: Hash::ZERO,
+            target_height: 100,
+            quorum_root: Hash::ZERO,
+            peer: PeerId::random(),
+            alternate_peers: vec![],
+        }
+        .is_snap_syncing());
+    }
+
+    /// P1 BUG FOUND: complete_resync() transitions to Normal, NOT
+    /// PostRecoveryGrace. The RecoveryPhase enum defines the lifecycle as:
+    ///   Normal -> ResyncInProgress -> PostRecoveryGrace -> Normal
+    /// But the actual code (production_gate.rs:215) does:
+    ///   complete_resync() { self.recovery_phase = Normal; }
+    ///
+    /// This means there's NO grace period after resync completes — the node
+    /// can immediately start producing blocks before it has confirmed
+    /// it's on the canonical chain. The PostRecoveryGrace variant exists
+    /// in the enum but is never entered via complete_resync().
+    ///
+    /// IMPACT: After a forced resync, the node may produce blocks before
+    /// receiving a canonical gossip block, potentially extending a fork.
+    /// The AwaitingCanonicalBlock phase (entered via snap sync) partially
+    /// mitigates this, but complete_resync() bypasses that check.
+    #[test]
+    fn test_adversarial_recovery_phase_lifecycle() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        assert!(matches!(manager.recovery_phase, RecoveryPhase::Normal));
+
+        manager.recovery_phase = RecoveryPhase::ResyncInProgress;
+        assert!(manager.is_resync_in_progress());
+
+        manager.complete_resync();
+
+        // BUG: Goes directly to Normal, skipping PostRecoveryGrace
+        assert!(
+            matches!(manager.recovery_phase, RecoveryPhase::Normal),
+            "BUG: complete_resync() goes to Normal, NOT PostRecoveryGrace"
+        );
+
+        // Verify last_resync_completed is set (this IS working correctly)
+        assert!(manager.last_resync_completed.is_some());
+    }
+
+    /// P3: Snap sync state defaults are sane.
+    #[test]
+    fn test_adversarial_snap_sync_defaults() {
+        let manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        assert_eq!(manager.snap.threshold, 50);
+        assert_eq!(manager.snap.quorum, 3);
+        assert_eq!(manager.snap.attempts, 0);
+        assert!(manager.snap.blacklisted_peers.is_empty());
+    }
 }

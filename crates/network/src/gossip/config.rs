@@ -79,7 +79,9 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2)) // Scale with mesh_n, capped at mesh_n/2 (gossipsub constraint)
         // Gossip parameters
         .gossip_lazy(mesh.gossip_lazy)
-        .gossip_factor(0.25) // Gossip to 25% of non-mesh peers
+        // INC-I-015: 50% ensures blocks reach non-mesh peers in 1-2 heartbeats
+        // instead of 3-4. At 106 nodes: 94 non-mesh × 0.5 = 47 IHAVE/heartbeat.
+        .gossip_factor(0.50)
         // History
         .history_length(5)
         .history_gossip(3)
