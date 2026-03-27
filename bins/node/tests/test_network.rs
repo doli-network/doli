@@ -1660,3 +1660,86 @@ async fn test_realistic_gossip_1000_nodes() {
     assert!(synced, "{} nodes should converge", n_nodes);
     assert_eq!(final_height, 95);
 }
+
+/// 10K nodes via clusters: 10 clusters × 1000 nodes, realistic gossip
+#[tokio::test]
+#[ignore]
+async fn test_realistic_gossip_10k_clustered() {
+    let n_clusters = 10;
+    let nodes_per_cluster = 1000;
+    let n_producers = 100;
+    let delivery_rate = 0.95;
+    let blocks_per_cluster = 30;
+
+    let total_start = std::time::Instant::now();
+    let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+
+    let mut total_synced = 0usize;
+    let mut total_nodes = 0usize;
+    let mut total_elig_rejects = 0usize;
+
+    for cluster_id in 0..n_clusters {
+        let cluster_start = std::time::Instant::now();
+        let net = TestNetwork::new(nodes_per_cluster, n_producers).await;
+        let genesis = net.genesis_hash;
+
+        // Base chain (exit genesis)
+        let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+        for block in &base {
+            net.apply_to_node(0, block.clone()).await.ok();
+            net.propagate(0, block.clone()).await;
+        }
+
+        // Round-robin producer order
+        let mut rr: Vec<(usize, PublicKey)> = net.producers.iter().enumerate()
+            .map(|(i, kp)| (i, *kp.public_key())).collect();
+        rr.sort_by(|a, b| a.1.as_bytes().cmp(b.1.as_bytes()));
+
+        // Gossip blocks
+        let mut prev = base[44].hash();
+        let mut cluster_elig_rejects = 0;
+        for i in 0..blocks_per_cluster {
+            let height = 46 + i as u64;
+            let slot = 46 + i as u32;
+            let rr_idx = (slot as usize) % rr.len();
+            let (orig_idx, _) = rr[rr_idx];
+            let block = net.build_block(height, slot, prev, &net.producers[orig_idx]);
+            prev = block.hash();
+            net.apply_to_node(0, block.clone()).await.ok();
+            let round = net.gossip_realistic(&block, delivery_rate).await;
+            cluster_elig_rejects += round.rejected_eligibility;
+        }
+
+        // Sync
+        let (synced, _, _) = net.sync_from_leader().await;
+        let all_synced = net.is_synced().await;
+
+        eprintln!(
+            "  Cluster {}/{}: {} nodes, synced={}/{}, elig_rejects={}, time={:?}",
+            cluster_id + 1, n_clusters, nodes_per_cluster,
+            synced, nodes_per_cluster - 1,
+            cluster_elig_rejects,
+            cluster_start.elapsed()
+        );
+
+        total_synced += synced;
+        total_nodes += nodes_per_cluster - 1; // exclude leader
+        total_elig_rejects += cluster_elig_rejects;
+
+        assert!(all_synced, "Cluster {} should converge", cluster_id);
+        drop(net);
+    }
+
+    let total_time = total_start.elapsed();
+    eprintln!();
+    eprintln!("  === 10K NODE GOSSIP SIMULATION ===");
+    eprintln!("  Clusters:      {}", n_clusters);
+    eprintln!("  Nodes/cluster: {}", nodes_per_cluster);
+    eprintln!("  Total nodes:   {}", total_nodes + n_clusters);
+    eprintln!("  Synced:        {}/{}", total_synced, total_nodes);
+    eprintln!("  Elig rejects:  {}", total_elig_rejects);
+    eprintln!("  Total time:    {:?}", total_time);
+    eprintln!("  Throughput:    {:.0} nodes/sec", (total_nodes + n_clusters) as f64 / total_time.as_secs_f64());
+
+    assert_eq!(total_synced, total_nodes, "All 10K nodes should converge");
+}
