@@ -604,67 +604,109 @@ impl Node {
 
             SyncRequest::GetBlockByHeight { height } => {
                 match self.block_store.get_block_by_height(height) {
-                    Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
-                    _ => SyncResponse::Block(Box::new(None)),
+                    Ok(Some(block)) => SyncResponse::Block(Some(block)),
+                    _ => SyncResponse::Block(None),
                 }
             }
 
             SyncRequest::GetBlockByHash { hash } => match self.block_store.get_block(&hash) {
-                Ok(Some(block)) => SyncResponse::Block(Box::new(Some(block))),
-                _ => SyncResponse::Block(Box::new(None)),
+                Ok(Some(block)) => SyncResponse::Block(Some(block)),
+                _ => SyncResponse::Block(None),
             },
 
-            SyncRequest::GetStateAtCheckpoint { height } => {
-                let best_height = self.chain_state.read().await.best_height;
-                // Only serve if we have this height
-                if best_height < height {
+            // INC-I-012 F1: Height-based header request. Used after snap sync
+            // when the node's local_hash is unrecognizable by peers. The server
+            // uses its OWN canonical chain at start_height, bypassing the hash
+            // lookup that causes the deadlock.
+            SyncRequest::GetHeadersByHeight {
+                start_height,
+                max_count,
+            } => {
+                let mut headers = Vec::new();
+                let state = self.chain_state.read().await;
+                let best_height = state.best_height;
+                drop(state);
+
+                let max_count = max_count.min(2000); // Cap to prevent expensive iteration
+                let end_height = start_height
+                    .saturating_add(max_count as u64)
+                    .min(best_height);
+                for height in (start_height + 1)..=end_height {
+                    if let Ok(Some(hash)) = self.block_store.get_hash_by_height(height) {
+                        if let Ok(Some(header)) = self.block_store.get_header(&hash) {
+                            headers.push(header);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                debug!(
+                    "GetHeadersByHeight: returning {} headers (heights {}..={})",
+                    headers.len(),
+                    start_height + 1,
+                    end_height
+                );
+                SyncResponse::Headers(headers)
+            }
+
+            SyncRequest::GetStateRoot { block_hash: _ } => {
+                // Use cached state root to avoid race conditions.
+                // The cache is updated atomically after each apply_block, so all
+                // three components (ChainState, UTXO, ProducerSet) are guaranteed
+                // to be at the same height.
+                let cache = self.cached_state_root.read().await;
+                if let Some((root, hash, height)) = *cache {
+                    SyncResponse::StateRoot {
+                        block_hash: hash,
+                        block_height: height,
+                        state_root: root,
+                    }
+                } else {
+                    // Fallback: compute on-the-fly if cache not yet populated (pre-first-block)
+                    drop(cache);
+                    let chain_state = self.chain_state.read().await;
+                    let current_hash = chain_state.best_hash;
+                    let current_height = chain_state.best_height;
+                    let utxo_set = self.utxo_set.read().await;
+                    let ps = self.producer_set.read().await;
+                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
+                        Ok(root) => SyncResponse::StateRoot {
+                            block_hash: current_hash,
+                            block_height: current_height,
+                            state_root: root,
+                        },
+                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
+                    }
+                }
+            }
+
+            SyncRequest::GetStateSnapshot { block_hash } => {
+                let chain_state = self.chain_state.read().await;
+                // Serve snapshot at current tip regardless of requested hash.
+                // The requesting node verifies the state root against quorum votes.
+                // Previously this rejected requests where best_hash != block_hash,
+                // causing a race condition: the peer advances between vote and
+                // download, making snap sync fail 100% of the time on active chains.
+                if chain_state.best_hash != block_hash {
                     info!(
-                        "[CHECKPOINT] Cannot serve state at height={} — we're at height={}",
-                        height, best_height
+                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
+                        block_hash, chain_state.best_hash
                     );
-                    if let Some(ref network) = self.network {
-                        let _ = network
-                            .send_sync_response(
-                                channel,
-                                SyncResponse::Error(format!(
-                                    "Behind checkpoint: local_h={} < requested_h={}",
-                                    best_height, height
-                                )),
-                            )
-                            .await;
-                    }
-                    return Ok(());
                 }
-                // Only serve if we have at least 10 blocks (not near genesis)
-                if best_height < 10 {
-                    warn!(
-                        "[CHECKPOINT] Refusing to serve state at height={} — too close to genesis (h={})",
-                        height, best_height
-                    );
-                    if let Some(ref network) = self.network {
-                        let _ = network
-                            .send_sync_response(
-                                channel,
-                                SyncResponse::Error("Too close to genesis".to_string()),
-                            )
-                            .await;
-                    }
-                    return Ok(());
-                }
-
-                let cs = self.chain_state.read().await;
-                let utxo = self.utxo_set.read().await;
+                let utxo_set = self.utxo_set.read().await;
                 let ps = self.producer_set.read().await;
-
-                match storage::StateSnapshot::create(&cs, &utxo, &ps) {
+                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
                     Ok(snap) => {
                         info!(
-                            "[CHECKPOINT] Serving state at height={}, size={}KB, root={}",
+                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
                             snap.block_height,
                             snap.total_bytes() / 1024,
-                            &snap.state_root.to_string()[..16]
+                            snap.state_root
                         );
-                        SyncResponse::StateAtCheckpoint {
+                        SyncResponse::StateSnapshot {
                             block_hash: snap.block_hash,
                             block_height: snap.block_height,
                             chain_state: snap.chain_state_bytes,
@@ -673,35 +715,8 @@ impl Node {
                             state_root: snap.state_root,
                         }
                     }
-                    Err(e) => {
-                        warn!("[CHECKPOINT] State snapshot error: {}", e);
-                        SyncResponse::Error(format!("Checkpoint state error: {}", e))
-                    }
+                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                 }
-            }
-
-            SyncRequest::GetBlocksByHeightRange {
-                start_height,
-                count,
-            } => {
-                let mut blocks = Vec::new();
-                let end_height = start_height.saturating_add(count as u64).saturating_sub(1);
-                let best_height = self.chain_state.read().await.best_height;
-                let actual_end = end_height.min(best_height);
-                for h in start_height..=actual_end {
-                    if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
-                        blocks.push(block);
-                    } else {
-                        break;
-                    }
-                }
-                debug!(
-                    "GetBlocksByHeightRange: returning {} blocks (heights {}..={})",
-                    blocks.len(),
-                    start_height,
-                    actual_end
-                );
-                SyncResponse::Bodies(blocks)
             }
         };
 

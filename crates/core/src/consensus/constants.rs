@@ -119,6 +119,11 @@ pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 /// every producer gets ~3 primary opportunities before being classified stale.
 pub const LIVENESS_WINDOW_MIN: u64 = 500;
 
+/// Seed confirmation depth: seed nodes only serve blocks this many blocks deep.
+/// Prevents fork propagation to syncing peers. At 1 block/slot (~10s per slot),
+/// 6 blocks ≈ 60 seconds of confirmation.
+pub const SEED_CONFIRMATION_DEPTH: u64 = 6;
+
 /// Re-entry interval in slots. Every K slots per stale producer, that producer
 /// gets rank 0 (exclusive 2s window) to produce a block and rejoin the live rotation.
 /// K=50 → 2% overhead per stale producer. Capped at 20% total (K/5 stale max).

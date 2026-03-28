@@ -143,8 +143,8 @@ impl SyncManager {
                     self.sync_epoch, peer, self.checkpoint_height
                 );
 
-                let request = SyncRequest::GetStateAtCheckpoint {
-                    height: self.checkpoint_height,
+                let request = SyncRequest::GetStateSnapshot {
+                    block_hash: self.checkpoint_hash,
                 };
                 let id = self.register_request(peer, request.clone());
                 if let Some(status) = self.peers.get_mut(&peer) {
@@ -430,8 +430,7 @@ impl SyncManager {
                 }
                 self.handle_bodies_response(peer, bodies)
             }
-            SyncResponse::Block(boxed_block) => {
-                let maybe_block = *boxed_block;
+            SyncResponse::Block(maybe_block) => {
                 info!(
                     "[SYNC_DEBUG] Handling block response: has_block={}",
                     maybe_block.is_some()
@@ -456,7 +455,7 @@ impl SyncManager {
                     vec![]
                 }
             }
-            SyncResponse::StateAtCheckpoint {
+            SyncResponse::StateSnapshot {
                 block_hash,
                 block_height,
                 chain_state,
@@ -508,6 +507,12 @@ impl SyncManager {
                     block_height
                 );
 
+                vec![]
+            }
+            SyncResponse::StateRoot { .. } => {
+                // StateRoot responses are used by snap sync quorum voting.
+                // Not handled in this checkpoint sync path — ignore gracefully.
+                debug!("[SYNC_DEBUG] Ignoring StateRoot response (not in snap sync mode)");
                 vec![]
             }
             SyncResponse::Error(err) => {
