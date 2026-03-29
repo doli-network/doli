@@ -111,7 +111,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
 | ProducerSet + bonds | `crates/storage/src/producer.rs` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (43) | `crates/rpc/src/methods/` |
+| RPC methods (45) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update + hard fork schedule | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
@@ -161,7 +161,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 |------|-------|
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
-| RPC reference (43 methods) | `docs/rpc_reference.md` |
+| RPC reference (45 methods) | `docs/rpc_reference.md` |
 | CLI reference | `docs/cli.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Protocol spec | `specs/protocol.md` |

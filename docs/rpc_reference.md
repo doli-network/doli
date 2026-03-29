@@ -51,6 +51,8 @@ This document describes the DOLI node JSON-RPC API.
 | **Guardian** | `resumeProduction` | Implemented |
 | **Guardian** | `createCheckpoint` | Implemented |
 | **Guardian** | `getGuardianStatus` | Implemented |
+| **Storage** | `pruneBlocks` | Implemented |
+| **Storage** | `getStorageInfo` | Implemented |
 
 ### Not Yet Implemented
 
@@ -2136,6 +2138,78 @@ curl -X POST http://127.0.0.1:8500 \
 
 ---
 
-*API version: 1.4 (43 methods)*
+## Storage Management Methods
+
+### `pruneBlocks`
+
+Prune old blocks below a given retention depth to reclaim disk space. Removes block headers, bodies, transaction indexes, address indexes, and slot indexes for pruned heights. Runs RocksDB compaction after deletion to actually free disk.
+
+**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (matching `UNDO_KEEP_DEPTH`). If an archive directory exists at `{data_dir}/archive/`, verifies archive coverage before pruning (advisory — pruning proceeds regardless).
+
+**Parameters:** `[keep_last_n]` — Number of recent blocks to keep (default: 2000, minimum: 2000).
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "pruned": 15000,
+  "lowest_remaining_height": 15001,
+  "chain_tip": 17000,
+  "keep_last_n": 2000,
+  "archive_verified": true
+}
+```
+
+**Example:**
+```bash
+# Prune keeping last 5000 blocks
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[5000],"id":1}'
+
+# Prune with minimum retention (2000 blocks)
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[],"id":1}'
+```
+
+**Note:** Pruned blocks cannot be recovered unless they were archived first. Use `--archive-to` when running the node to enable automatic archiving, or run `getStorageInfo` to check archive coverage before pruning.
+
+### `getStorageInfo`
+
+Get storage statistics for the block store — entry counts per column family, height range, prunable block count, and archive status.
+
+**Parameters:** None.
+
+**Response:**
+```json
+{
+  "chain_tip": 17000,
+  "height_range": { "min": 1, "max": 17000 },
+  "column_families": {
+    "headers": 17000,
+    "bodies": 17000,
+    "height_index": 17000,
+    "slot_index": 17000,
+    "hash_to_height": 17000,
+    "tx_index": 85000,
+    "addr_tx_index": 42000
+  },
+  "prunable_blocks": 15000,
+  "min_retention": 2000,
+  "archive_height": 17000
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getStorageInfo","params":[],"id":1}'
+```
+
+---
+
+*API version: 1.5 (45 methods)*
 
 *Last updated: March 2026*

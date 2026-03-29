@@ -27,6 +27,7 @@ mod lending;
 mod network;
 mod pool;
 mod producer;
+mod pruning;
 mod schedule;
 mod snapshot;
 mod stats;

@@ -52,6 +52,9 @@ impl RpcContext {
             "getSwapQuote" => self.get_swap_quote(request.params).await,
             "getLoanInfo" => self.get_loan_info(request.params).await,
             "getLoanList" => self.get_loan_list(request.params).await,
+            // Storage management
+            "pruneBlocks" => self.prune_blocks(Some(request.params)).await,
+            "getStorageInfo" => self.get_storage_info().await,
             // Seed Guardian methods
             "pauseProduction" => self.pause_production().await,
             "resumeProduction" => self.resume_production().await,

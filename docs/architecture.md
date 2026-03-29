@@ -597,6 +597,28 @@ fast reads by mempool, RPC, and state root computation. StateDb is authoritative
 **Migration**: On first startup after upgrade, old files (`chain_state.bin`,
 `producers.bin`, `utxo_rocks/`) are automatically migrated into StateDb.
 
+### 6.3. Storage Pruning
+
+Block history grows ~15-20 MB/day. On constrained nodes (50 GB VPS), operators
+can prune old blocks to reclaim disk space via `pruneBlocks` RPC.
+
+**What gets pruned**: headers, bodies, height_index, slot_index, hash_to_height,
+tx_index, addr_tx_index for blocks below the cutoff height.
+
+**What is never pruned**: UTXO set, producer set, chain state metadata, undo data
+(managed separately with its own 2000-block retention).
+
+**Safety**: Minimum retention of 2000 blocks enforced at the storage layer
+(matches `UNDO_KEEP_DEPTH = 2 × MAX_REORG_DEPTH`). Pruning runs RocksDB
+compaction after deletion to actually free disk.
+
+**Archive integration**: If the node runs with `--archive-to`, block files are
+written to disk with BLAKE3 checksums. `pruneBlocks` checks archive coverage
+before deleting (advisory — does not block pruning).
+
+**RPC**: `getStorageInfo` reports entry counts per CF, height range, prunable
+block count, and archive status. `pruneBlocks [keep_last_n]` executes pruning.
+
 ---
 
 ## 7. Binary Architecture
