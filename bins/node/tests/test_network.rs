@@ -453,7 +453,11 @@ async fn test_network_5000_nodes() {
 }
 
 #[tokio::test]
-#[ignore] // Requires ulimit -n 65536
+#[ignore] // BLOCKED on macOS: RocksDB uses fopen() which caps at FD 32767 (FILE._file is short).
+// Each node needs ~26 structural FDs (LOCK, MANIFEST, WAL, CF dirs for 2 DBs).
+// Max ~1259 nodes on macOS. Use test_realistic_gossip_10k_clustered instead
+// (drops nodes between clusters to stay under the ceiling).
+// On Linux this test works — fopen() uses int, no 32K cap.
 async fn test_network_10000_nodes() {
     let start = std::time::Instant::now();
     let net = TestNetwork::new(10000, 5).await;

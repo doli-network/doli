@@ -16,6 +16,7 @@ impl StateDb {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_max_open_files(256);
         // WAL for crash recovery
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
 

@@ -18,6 +18,7 @@ impl BlockStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_max_open_files(256);
 
         // Bloom filter: speeds up negative lookups (e.g., "does this hash exist?")
         let mut block_opts = rocksdb::BlockBasedOptions::default();
