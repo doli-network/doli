@@ -18,7 +18,7 @@ The testnet has been relaunched with accelerated epoch parameters for faster tes
 | Slot Duration | 10 seconds |
 | Epoch Length | 36 blocks (~6 minutes) |
 | Bond Unit | 1 tDOLI |
-| Bootstrap DNS | `bootstrap1.testnet.doli.network:40300` / `bootstrap2.testnet.doli.network:40300` / `seeds.testnet.doli.network:40300` |
+| Bootstrap DNS | `bootstrap1.testnet.doli.network:40300`, `bootstrap2.testnet.doli.network:40300`, `seeds.testnet.doli.network:40300` |
 
 **To join:**
 - Run with `--producer` flag to participate in block production
@@ -78,7 +78,7 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Genesis Producers | 0 (all NT1-NT12 register on-chain) |
 | P2P Port | 40300 |
 | RPC Port | 18500 |
-| Bootstrap | `bootstrap1.testnet.doli.network:40300` |
+| Bootstrap | `bootstrap1.testnet.doli.network:40300`, `bootstrap2.testnet.doli.network:40300`, `seeds.testnet.doli.network:40300` |
 
 ---
 
@@ -259,6 +259,7 @@ Dedicated archive+relay seed nodes for network entry and block archival.
 |-----|------|------|
 | `bootstrap1.testnet.doli.network` | 40300 | Seed + Archive + Relay |
 | `bootstrap2.testnet.doli.network` | 40300 | Seed + Archive + Relay |
+| `seeds.testnet.doli.network` | 40300 | DNS round-robin alias for all seeds |
 
 ### DNS Records
 
@@ -268,13 +269,14 @@ Dedicated archive+relay seed nodes for network entry and block archival.
 | `seed2.doli.network` | Mainnet P2P seed |
 | `bootstrap1.testnet.doli.network` | Testnet P2P seed |
 | `bootstrap2.testnet.doli.network` | Testnet P2P seed |
+| `seeds.testnet.doli.network` | Testnet P2P round-robin |
 | `testnet.doli.network` | Testnet web |
 | `archive.doli.network` | Archive RPC |
 
 ### Maintainer Keys (Auto-Update System)
 
 Each network has its own set of 5 maintainer keys (3-of-5 threshold for release signing).
-Hardcoded in binary at `crates/updater/src/lib.rs` for security.
+Hardcoded in binary at `crates/updater/src/constants.rs` for security.
 
 - **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
 - **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.

@@ -57,20 +57,20 @@ DOLI is built on three fundamental security principles:
 | Property | Value |
 |----------|-------|
 | Construction | Iterated BLAKE3 hash chain |
-| Iterations | T_BLOCK = 800,000 (~55ms). Network default override: 1,000 iterations |
+| Consensus constant | T_BLOCK = 800,000 (~55ms on reference hardware) |
+| Network default | `vdf_iterations` = 1,000 (~0.07ms) on all networks via NetworkParams. Bond is the real Sybil protection; VDF is minimal anti-grinding |
 | Verification | Recompute (linear time) |
-| Purpose | Block production heartbeat |
+| Purpose | Block production anti-grinding |
 
 **Registration VDF (Hash-Chain):**
 | Property | Value |
 |----------|-------|
-| Construction | Hash-chain VDF (same as block VDF) |
-| Discriminant | 1024 bits |
+| Construction | Iterated BLAKE3 hash chain (same as block VDF) |
 | Base iterations | 1,000 (essentially instant) |
 | Verification | Recompute (linear time) |
 | Purpose | Lightweight anti-flash-attack barrier (bond is the primary Sybil defense) |
 
-**Note:** Wesolowski class group VDF is only used for telemetry presence (non-consensus).
+**Note:** A Wesolowski class group VDF implementation exists in the `vdf` crate but is NOT used for consensus. It is only referenced by the telemetry presence module (`tpop::presence`), which is non-consensus. All consensus-critical VDF operations use the BLAKE3 hash-chain.
 
 **Security guarantees:**
 - Sequential computation required (no parallelization)
@@ -147,7 +147,7 @@ Only one slashable offense exists:
 | Double production | 100% bond burned | Any node can prove |
 
 **Non-slashable offenses:**
-- Inactivity (50 missed slots) → Removal from active set, bond retained
+- Inactivity (liveness window: max(500, producers×3) slots) → Excluded from primary scheduling, periodic re-entry slots every 50 slots, bond retained
 - Invalid blocks → Block rejected, no penalty
 
 ### 4.3. Economic Attack Costs
@@ -188,9 +188,10 @@ The sequential time requirement cannot be bypassed with additional hardware.
 
 | Resource | Limit |
 |----------|-------|
-| Blocks per peer/minute | 100 |
-| Transactions per peer/minute | 1000 |
-| Sync requests per peer/minute | 60 |
+| Blocks per peer per minute | 10 |
+| Transactions per peer per second | 50 |
+| Requests per peer per second | 20 |
+| Bandwidth per peer per second | 1 MB |
 
 ### 5.4. Peer Scoring
 
@@ -198,12 +199,14 @@ The sequential time requirement cannot be bypassed with additional hardware.
 |----------|--------------|
 | Valid block | +10 |
 | Valid transaction | +1 |
-| Invalid block | -50 |
-| Invalid transaction | -10 |
-| Timeout | -5 |
-| Protocol violation | -100 |
+| Invalid block | -100 |
+| Invalid transaction | -20 |
+| Timeout | -5 per timeout (max -50) |
+| Spam | -50 |
+| Duplicate | -5 |
+| Malformed message | -30 |
 
-Peers below threshold are disconnected and banned.
+Score range: -1000 to +1000. Peers below threshold are disconnected and banned.
 
 ---
 
@@ -240,7 +243,7 @@ Peers below threshold are disconnected and banned.
 | Mechanism | Threshold |
 |-----------|-----------|
 | Update veto | 40% of weighted votes |
-| Veto period | 7 days |
+| Veto period | 5 minutes (early network; target 7 days at maturity) |
 | Weight calculation | Seniority-based |
 
 ---
@@ -318,9 +321,10 @@ Peers below threshold are disconnected and banned.
 struct EquivocationProof {
     producer: PublicKey,
     slot: u32,
-    block_hash_1: Hash,
-    block_hash_2: Hash,
+    block_header_1: BlockHeader,  // Full header with VDF proof
+    block_header_2: BlockHeader,  // Full header with VDF proof
     // Both blocks signed by producer for same slot
+    // Full headers required so validators can verify VDF proofs
 }
 ```
 
@@ -404,9 +408,9 @@ struct EquivocationProof {
 The security of DOLI relies on:
 
 1. **Cryptographic assumptions**
-   - BLAKE3 is collision resistant
-   - Ed25519 is unforgeable
-   - Class group discrete log is hard
+   - BLAKE3 is collision and preimage resistant (used for hashing and VDF hash-chain)
+   - Ed25519 is unforgeable (all block/transaction signatures)
+   - BLS12-381 fields exist in block headers for future aggregate attestations but are not used in current consensus
 
 2. **Network assumptions**
    - Partial synchrony (bounded message delays)
@@ -418,4 +422,4 @@ The security of DOLI relies on:
 
 ---
 
-*Security model version: 1.0*
+*Security model version: 1.1 (synced against code 2026-03-29)*

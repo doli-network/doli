@@ -12,7 +12,7 @@
 
 Proponemos un sistema de efectivo electrónico peer-to-peer donde el único recurso requerido para el consenso es el tiempo — el único recurso distribuido equitativamente entre todos los participantes.
 
-La produccion de bloques sigue una rotacion determinista: un participante con un bond sabe exactamente cuando se producira su proximo bloque. El protocolo distribuye recompensas cada epoch a traves de un pool integrado — sin pools de mineria externos, sin operadores, sin comisiones. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
+La produccion de bloques sigue un round-robin puro: cada productor activo recibe asignaciones de bloques iguales sin importar su stake. El protocolo distribuye recompensas cada epoch a traves de un pool integrado — proporcional a los bonds, sin pools de mineria externos, sin operadores, sin comisiones. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
 
 Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad on-chain — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
 
@@ -319,7 +319,7 @@ La solucion es usar **pruebas de retardo secuencial** — funciones que imponen 
 2. No puede acelerarse significativamente mediante paralelizacion.
 3. Puede ser verificada por cualquier nodo (por recomputacion).
 
-> **Nota:** La prueba de retardo demuestra que *N* operaciones secuenciales fueron ejecutadas — el tiempo es el limite inferior efectivo ya que no se conoce ninguna tecnica que acelere la computacion secuencial de hashes mediante paralelizacion. La prueba sirve como latido (prueba de presencia), no como fuente de aleatoriedad. La seleccion de productor es una funcion pura de `(slot, ActiveSet(epoch))`, fijada al inicio del epoch, independiente de la velocidad de la prueba. Hardware mas rapido no proporciona ventaja de programacion.
+> **Nota:** La prueba de retardo demuestra que *N* operaciones secuenciales fueron ejecutadas — el tiempo es el limite inferior efectivo ya que no se conoce ninguna tecnica que acelere la computacion secuencial de hashes mediante paralelizacion. La prueba sirve como latido (prueba de presencia), no como fuente de aleatoriedad. La seleccion de productor es una funcion pura de `(slot, ActiveSet(epoch), LivenessFilter)`, independiente de la velocidad de la prueba. Hardware mas rapido no proporciona ventaja de programacion.
 
 Para cada bloque, el productor debe calcular:
 
@@ -419,7 +419,7 @@ Un bloque *B* es valido si:
 2. `B.timestamp <= network_time + DRIFT`
 3. `B.slot` se deriva correctamente de `B.timestamp`
 4. `B.slot > prev_block.slot`
-5. `B.producer` tiene un rango valido para `B.slot` (despues del periodo de arranque)
+5. `B.producer` es la seleccion round-robin correcta para `B.slot` dado el conjunto activo y el filtro de actividad
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. Todas las transacciones en el bloque son validas
 
@@ -517,42 +517,44 @@ MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
 MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
-La seleccion utiliza round-robin deterministico, no loteria probabilistica. Cada unidad de bond otorga un ticket en la rotacion:
+La produccion de bloques utiliza round-robin puro — cada productor activo recibe asignaciones de bloques iguales sin importar su cantidad de bonds. Un productor con 1 bond produce la misma cantidad de bloques que un productor con 250 bonds. Los bonds afectan unicamente la distribucion de recompensas por epoch (Seccion 10.2), no la frecuencia de produccion.
 
-**Ejemplo (3 productores, 10 unidades de bond totales):**
+**Ejemplo (3 productores):**
 
 ```
-Alice: 1 bond unit  (10 DOLI)   → 1 block every 10 slots
-Bob:   5 bond units (50 DOLI)   → 5 blocks every 10 slots
-Carol: 4 bond units (40 DOLI)   → 4 blocks every 10 slots
+Alice: 1 bond unit  (10 DOLI)   → 1 bloque cada 3 slots
+Bob:   5 bond units (50 DOLI)   → 1 bloque cada 3 slots
+Carol: 4 bond units (40 DOLI)   → 1 bloque cada 3 slots
 ```
 
-A 1 DOLI de recompensa por bloque:
+Los tres producen con igual frecuencia. En el limite de epoch, el pool de recompensas se distribuye proporcionalmente a los bonds:
 
-- Alice gana 1 DOLI por cada 10 slots (10% ROI por ciclo)
-- Bob gana 5 DOLI por cada 10 slots (10% ROI por ciclo)
-- Carol gana 4 DOLI por cada 10 slots (10% ROI por ciclo)
+- Alice gana 10% de las recompensas del epoch (1/10 bonds)
+- Bob gana 50% de las recompensas del epoch (5/10 bonds)
+- Carol gana 40% de las recompensas del epoch (4/10 bonds)
 
-**Todos los productores obtienen un porcentaje de ROI identico independientemente del tamano de su stake.**
+**Todos los productores obtienen un porcentaje de ROI identico independientemente del tamano de su stake** — porque la participacion en las recompensas escala linealmente con los bonds, y cada DOLI en bond genera el mismo retorno.
 
-| Parametro             | Valor                    |
-|-----------------------|--------------------------|
-| Unidad de bond        | 10 DOLI                  |
-| Stake minimo          | 10 DOLI (1 bond)         |
-| Stake maximo          | 30,000 DOLI (3,000 bonds) |
-| Recompensa de bloque (Era 1) | 1 DOLI            |
+| Parametro             | Valor                          |
+|-----------------------|--------------------------------|
+| Unidad de bond        | 10 DOLI                        |
+| Stake minimo          | 10 DOLI (1 bond)               |
+| Stake maximo          | 30,000 DOLI (3,000 bonds)      |
+| Recompensa de bloque (Era 1) | 1 DOLI                  |
+| Frecuencia de produccion | Igual por productor (round-robin) |
+| Distribucion de recompensas | Proporcional a bonds (pool de epoch) |
 
 #### Accesibilidad a escala
 
-En la madurez de la red (18,000 bonds totales entre todos los productores):
+En la madurez de la red (500 productores, 18,000 bonds totales):
 
 | Tu stake   | Bonds | Bloques/Semana | Ingreso/Semana | Hardware     |
 |-----------|-------|----------------|----------------|--------------|
-| 10 DOLI   | 1     | ~3             | ~3 DOLI        | Cualquier CPU|
-| 100 DOLI  | 10    | ~34            | ~34 DOLI       | Cualquier CPU|
-| 1,000 DOLI| 100   | ~336           | ~336 DOLI      | Cualquier CPU|
+| 10 DOLI   | 1     | ~121           | ~3 DOLI        | Cualquier CPU|
+| 100 DOLI  | 10    | ~121           | ~34 DOLI       | Cualquier CPU|
+| 1,000 DOLI| 100   | ~121           | ~336 DOLI      | Cualquier CPU|
 
-Sin equipos de mineria. Sin staking pools. Sin requisitos minimos de hardware. Un VPS de $5/mes es suficiente.
+Cada productor recibe la misma cantidad de asignaciones de bloques. Los ingresos difieren unicamente a traves de las recompensas de epoch ponderadas por bonds. Sin equipos de mineria. Sin staking pools. Sin requisitos minimos de hardware. Un VPS de $5/mes es suficiente.
 
 ### 7.4. Ciclo de vida del bond
 
@@ -583,31 +585,37 @@ Todas las penalizaciones se queman permanentemente, removiendo monedas de la cir
 
 ## 8. Seleccion de productores
 
-Para cada slot, una funcion determinista selecciona al productor de bloques. Sea *P* = {*p_1*, ..., *p_n*} el conjunto activo ordenado por clave publica, y *b(p_i)* el conteo de bonds del productor *p_i*. Definimos *B* = Sigma *b(p_i)*.
+Para cada slot, una funcion determinista selecciona al productor de bloques. Sea *P* = {*p_1*, ..., *p_n*} el conjunto activo ordenado por clave publica, y *L* ⊂ *P* el conjunto de productores actualmente excluidos por el filtro de actividad (Seccion 8.1). Definimos el conjunto efectivo *E* = *P* \ *L*, ordenado lexicograficamente por bytes de clave publica.
 
 ```
-producer(s) = p_j  where j = min{j : Σ_{i=1}^{j} b(p_i) > s mod B}
+producer(s) = E[s mod |E|]
 ```
 
-La funcion es pura: `producer(s) = f(s, ActiveSet(epoch(s)))`. No depende de ningun valor que el productor actual pueda influenciar — ni `prev_hash`, ni el ordenamiento de transacciones, ni marcas de tiempo dentro de la ventana de deriva. **Grinding es imposible porque el calendario es una funcion solo del tiempo, fijado al inicio del epoch.**
+La funcion es round-robin puro: `producer(s) = f(s, ActiveSet(epoch(s)), LivenessFilter(s))`. No depende de ningun valor que el productor actual pueda influenciar — ni `prev_hash`, ni el ordenamiento de transacciones, ni marcas de tiempo dentro de la ventana de deriva, ni el conteo de bonds. **Grinding es imposible porque el calendario es una funcion solo del tiempo.**
 
-### 8.1. Mecanismo de respaldo
+El conteo de bonds no influye en la frecuencia de produccion. Un productor con 1 bond y un productor con 250 bonds producen con igual frecuencia. Los bonds afectan unicamente la distribucion de recompensas por epoch (Seccion 10.2). Esta separacion asegura que la capacidad de produccion de bloques no pueda comprarse — solo la presencia y el tiempo determinan quien produce.
 
-Para evitar slots vacios cuando el productor primario esta fuera de linea, 5 rangos de respaldo se activan en ventanas secuenciales de 2 segundos:
+### 8.1. Filtro de actividad
 
-| Tiempo en slot | Productor elegible |
-|----------------|-------------------|
-| 0s - 2s        | solo rango 0      |
-| 2s - 4s        | solo rango 1      |
-| 4s - 6s        | solo rango 2      |
-| 6s - 8s        | solo rango 3      |
-| 8s - 10s       | solo rango 4      |
+El protocolo mantiene un filtro de actividad dinamico que excluye temporalmente a los productores que estan demostrablemente fuera de linea, previniendo slots desperdiciados en la rotacion round-robin.
 
-Cada rango tiene una ventana exclusiva de 2 segundos. Un bloque del rango *N* es valido solo si `timestamp >= slot_start + N x 2s`. Si llegan multiples bloques validos para el mismo slot, el de menor rango gana.
+**Exclusion.** Cuando un bloque se confirma, el protocolo verifica si la brecha de slots entre bloques consecutivos excede 1. Si un productor estaba programado para un slot omitido y no produjo, se agrega al conjunto de excluidos.
+
+**Re-inclusion.** El bitfield de presencia incluido en cada cabecera de bloque (`presence_root`, Seccion 10.3) registra cuales productores atestiguaron durante la ventana de attestation de ese bloque. Un productor en el conjunto de excluidos que aparece en el bitfield de presencia de un bloque es inmediatamente re-incluido en el conjunto efectivo.
+
+**Reconstruccion.** El conjunto de excluidos no se persiste — se reconstruye al iniciar el nodo escaneando el ultimo epoch de bloques (360 bloques) desde el almacen de bloques. Esto asegura que los nodos que se unen mediante cualquier metodo de sincronizacion computen un conjunto de excluidos identico a partir de los mismos datos de cadena.
+
+| Evento | Efecto |
+|--------|--------|
+| Productor pierde slot asignado | Agregado al conjunto de excluidos |
+| Productor aparece en bitfield de presencia | Removido del conjunto de excluidos |
+| Inicio de nodo | Conjunto de excluidos reconstruido desde ultimos 360 bloques |
+
+El filtro de actividad es determinista: cada nodo leyendo la misma cadena computa el mismo conjunto de excluidos y por lo tanto el mismo productor para cada slot. Sin aleatoriedad, sin votacion, sin subjetividad.
 
 ### 8.2. Comparacion con sistemas existentes
 
-Los pools existen en PoW y PoS porque las recompensas son probabilisticas — la varianza obliga a los pequenos participantes a delegar el control a operadores centralizados. El round-robin deterministico de DOLI elimina la varianza por completo (ver Seccion 7.3), y el pool de recompensas por epoch integrado (Seccion 10.5) distribuye recompensas directamente en cadena a todos los productores calificados. Los pools externos no pueden ofrecer un mejor trato.
+Los pools existen en PoW y PoS porque las recompensas son probabilisticas — la varianza obliga a los pequenos participantes a delegar el control a operadores centralizados. El round-robin puro de DOLI elimina la varianza de produccion por completo — cada productor recibe asignaciones de bloques iguales. El pool de recompensas por epoch integrado (Seccion 10.5) distribuye recompensas ponderadas por bonds a todos los productores calificados. Los pools externos no pueden ofrecer un mejor trato.
 
 | Sistema      | Seleccion                  | Varianza | Pools | Energia        | Hardware minimo     |
 |--------------|----------------------------|----------|-------|----------------|---------------------|
@@ -616,7 +624,9 @@ Los pools existen en PoW y PoS porque las recompensas son probabilisticas — la
 | Solana PoH   | Calendario (stake)         | Baja     | Si    | ~4 GWh/ano     | Servidor $10,000+   |
 | DOLI PoT     | Round-robin deterministico | **Cero** | **Integrado** | **Despreciable** | **Cualquier CPU ($5/mes)** |
 
-Solana usa Proof of History como reloj, pero la seleccion de lider sigue siendo ponderada por stake con elementos probabilisticos y requiere hardware de alto rendimiento. DOLI usa la prueba de retardo puramente como latido — la seleccion de lider es una funcion pura de `(slot, ActiveSet(epoch))`. No existe ventaja de hardware.
+Solana usa Proof of History como reloj, pero la seleccion de lider sigue siendo ponderada por stake con elementos probabilisticos y requiere hardware de alto rendimiento. DOLI usa la prueba de retardo puramente como latido — la seleccion de lider es una funcion pura de `(slot, ActiveSet(epoch), LivenessFilter)`. No existe ventaja de hardware. No existe ventaja de stake para la produccion — solo para las recompensas.
+
+**Ruta de escalamiento por niveles.** El protocolo define una arquitectura de dos niveles para crecimiento futuro: hasta 500 validadores de Nivel 1 (productores de bloques con participacion completa en el consenso) y hasta 15,000 attestors de Nivel 2 (attestation de actividad sin produccion de bloques). La delegacion permite a participantes de Nivel 3 hacer stake sin operar infraestructura, con recompensas divididas 10% al delegado (operador de nodo Nivel 1/2) y 90% al staker. Este modelo por niveles preserva la accesibilidad del protocolo base mientras escala la participacion en el consenso mas alla del conjunto activo de productores.
 
 ---
 
@@ -685,7 +695,7 @@ Esto produce un UTXO por productor por epoch en lugar de uno por bloque — elim
 
 ### 10.3. Attestation de actividad
 
-La produccion de bloques demuestra que un productor estuvo en linea durante sus slots asignados. Pero con programacion determinista, un productor sabe exactamente cuales slots son suyos y puede estar fuera de linea el resto del tiempo.
+La produccion de bloques demuestra que un productor estuvo en linea durante sus slots asignados. Pero con programacion determinista, un productor podria anticipar sus slots y estar fuera de linea el resto del tiempo.
 
 Para demostrar presencia **continua**, cada productor firma una attestation de actividad cada minuto usando ambas claves Ed25519 y BLS12-381:
 
@@ -861,7 +871,7 @@ El deficit es monotonamente no decreciente. Anadir hardware paralelo permite com
 
 **Contraste con Proof of Work:** En PoW, un atacante con >50% de hashpower reduce el deficit probabilisticamente porque los intentos de hash son paralelizables. En Prueba de Tiempo, la dependencia secuencial *h_{i+1} = H(h_i)* hace que cada cadena sea inherentemente serial. El deficit del atacante esta acotado inferiormente por su valor inicial, independientemente del presupuesto.
 
-El unico vector de ataque es controlar >50% de los slots ponderados por bonds, lo que requiere:
+El unico vector de ataque es controlar >50% de los productores en el conjunto activo, lo que requiere:
 
 1. *T_registration* de tiempo secuencial por identidad (no puede paralelizarse por identidad)
 2. *BOND_UNIT* de capital por identidad
@@ -887,7 +897,7 @@ El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema p
 
 ### 12.4. Teorema de seguridad
 
-**Teorema.** Sea *n* = total de slots ponderados por bonds por epoch. Un atacante que controla *f* < *n/2* slots ponderados por bonds no puede producir una cadena mas pesada que la red honesta sobre cualquier intervalo de *k* >= 1 epochs.
+**Teorema.** Sea *n* = total de productores en el conjunto activo. Un atacante que controla *f* < *n/2* productores no puede producir una cadena mas pesada que la red honesta sobre cualquier intervalo de *k* >= 1 epochs.
 
 **Demostracion.** Definimos por epoch *e*:
 
@@ -895,7 +905,7 @@ El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema p
 - *S_a(e)* = conjunto de slots asignados a productores atacantes
 - *w(p)* = peso de antiguedad del productor *p* perteneciente a [1.0, 4.0]
 
-El calendario es una funcion pura de `(slot, ActiveSet(epoch))` — ningun contenido de bloque lo influencia.
+El calendario es una funcion pura de `(slot, ActiveSet(epoch), LivenessFilter)` — ningun contenido de bloque lo influencia. Bajo round-robin, cada productor recibe asignaciones de slots iguales: *|S_h(e)| + |S_a(e)| = total slots*, distribuidos uniformemente.
 
 El peso acumulado de la cadena sobre *k* epochs:
 
@@ -1035,7 +1045,7 @@ A marzo de 2026, la red principal esta en su **fase de arranque** — operativa 
 | Productores activos | 14 (fase de arranque) |
 | Productores externos | Incorporacion en progreso |
 
-El conteo actual de productores refleja la fase de arranque descrita en la Seccion 16.2. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% ponderado por bonds y reduce la dependencia del conjunto fundador. El objetivo es un conjunto de productores lo suficientemente grande como para que ninguna entidad unica controle una fraccion significativa de los slots ponderados por bonds.
+El conteo actual de productores refleja la fase de arranque descrita en la Seccion 16.2. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% del conjunto activo y reduce la dependencia del conjunto fundador. El objetivo es un conjunto de productores lo suficientemente grande como para que ninguna entidad unica controle una fraccion significativa de las asignaciones de produccion.
 
 ```
 Genesis:    March 2026
@@ -1065,7 +1075,7 @@ Comenzamos con el marco habitual de monedas hechas de firmas digitales, que prop
 
 **Los nodos votan con su tiempo.** La red no puede acelerarse con riqueza ni paralelizarse con hardware. Una hora de computacion secuencial es una hora, ya sea realizada por un individuo o un estado-nacion.
 
-**Las recompensas son deterministas, no probabilisticas.** Un participante sabe exactamente cuando se producira su proximo bloque. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad on-chain. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
+**Las recompensas son deterministas, no probabilisticas.** Cada productor recibe asignaciones de bloques iguales a traves de round-robin puro. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch ponderadas por bonds en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad on-chain. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
 
 La red es robusta en su simplicidad. Los nodos trabajan con poca coordinacion. No necesitan ser identificados, ya que los mensajes no se enrutan a ningun lugar particular y solo necesitan ser entregados con el mejor esfuerzo posible. Los nodos pueden irse y reincorporarse a la red a voluntad, aceptando la cadena mas pesada como prueba de lo que ocurrio mientras estuvieron ausentes.
 

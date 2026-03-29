@@ -550,8 +550,8 @@ Updates have a veto period (currently 5 minutes, early network; target 7 days):
 ### 12.2. Veto Threshold
 
 - 40% of weighted votes required to reject
-- Weight based on seniority (1-4)
-- Dormant producers have reduced weight
+- Weight based on bonds x seniority multiplier (1.0-4.0x over 4 years)
+- Minimum 30-day producer age before votes count
 
 ---
 

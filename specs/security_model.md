@@ -76,7 +76,7 @@ The adversary **cannot**:
 | Attack | Mitigation |
 |--------|------------|
 | Identity flooding | VDF registration requires sequential time |
-| Cheap identity creation | Bond requirement (10 DOLI per bond, 1-3,000 bonds) |
+| Cheap identity creation | Bond requirement (10 DOLI/bond mainnet, 1 DOLI/bond testnet/devnet, 1-3,000 bonds) |
 | Identity accumulation | Registration difficulty scales with demand |
 
 #### 2.2.3 Consensus Attacks
@@ -285,7 +285,7 @@ The bond serves multiple security functions:
 | Accountability | Bond at risk for misbehavior |
 | Long-term alignment | Lock duration creates stake in network success |
 
-**Bond Unit**: Fixed at 10 DOLI per bond across all eras (never decreases). Producers can stake 1-3,000 bonds (10-30,000 DOLI). Bonds are stored as Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`) with `creation_slot` in `extra_data`.
+**Bond Unit**: Mainnet: 10 DOLI per bond (1,000,000,000 base units). Testnet/Devnet: 1 DOLI per bond (100,000,000 base units). Fixed across all eras (never decreases). Producers can stake 1-3,000 bonds. Bonds are stored as Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`) with `creation_slot` in `extra_data`.
 
 ### 4.2 Slashing Conditions
 
@@ -557,7 +557,7 @@ Producer registration uses a hash-chain VDF (iterated BLAKE3) for Sybil resistan
 | T_REGISTER_BASE | 1,000 | 1,000 (via `vdf_register_iterations`) |
 | T_REGISTER_CAP | 5,000,000 | Not applied (reserved for future tightening) |
 
-**Chained Hash System** (`RegistrationData` in `transaction.rs`):
+**Chained Hash System** (`RegistrationData` in `transaction/data.rs`):
 ```rust
 pub struct RegistrationData {
     pub public_key: PublicKey,
@@ -567,6 +567,8 @@ pub struct RegistrationData {
     pub prev_registration_hash: Hash,  // Chain to previous registration
     pub sequence_number: u64,          // Monotonic counter
     pub bond_count: u32,               // On-chain bond count (consensus-critical)
+    pub bls_pubkey: Vec<u8>,           // BLS12-381 public key (48 bytes, optional)
+    pub bls_pop: Vec<u8>,              // BLS proof-of-possession (96 bytes, optional)
 }
 ```
 

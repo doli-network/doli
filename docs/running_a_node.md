@@ -57,10 +57,10 @@ Download from: https://github.com/e-weil/doli/releases
 **Verify checksums:**
 ```bash
 # Download checksum file
-curl -LO https://github.com/e-weil/doli/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/e-weil/doli/releases/latest/download/CHECKSUMS.txt
 
 # Verify
-sha256sum -c SHA256SUMS.txt --ignore-missing
+sha256sum -c CHECKSUMS.txt --ignore-missing
 ```
 
 ### 2.2. Docker (Recommended for Servers)
@@ -146,9 +146,9 @@ cargo build --release
 
 | Network | Purpose | Slot Time | Data Directory |
 |---------|---------|-----------|----------------|
-| Mainnet | Production | 10s | `~/.doli/mainnet/` |
-| Testnet | Testing | 10s | `~/.doli/testnet/` |
-| Devnet | Development | 10s | `~/.doli/devnet/` |
+| Mainnet | Production | 10s | Linux: `/var/lib/doli/mainnet/`, macOS: `~/Library/Application Support/doli/mainnet/`, legacy: `~/.doli/mainnet/` |
+| Testnet | Testing | 10s | Linux: `/var/lib/doli/testnet/`, macOS: `~/Library/Application Support/doli/testnet/`, legacy: `~/.doli/testnet/` |
+| Devnet | Development | 10s | Linux: `/var/lib/doli/devnet/`, macOS: `~/Library/Application Support/doli/devnet/`, legacy: `~/.doli/devnet/` |
 
 **Devnet special features:**
 - **Dynamic genesis:** Genesis time is set automatically when the first node starts
@@ -311,17 +311,47 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_P2P_PORT` | 30300 | All networks |
 | `DOLI_RPC_PORT` | 8500 | All networks |
 | `DOLI_METRICS_PORT` | 9000 | All networks |
+| `DOLI_MAX_PEERS` | 50 | All networks |
 | `DOLI_BOOTSTRAP_NODES` | (seeds) | All networks |
 | `DOLI_SLOT_DURATION` | 10 | Testnet/Devnet |
 | `DOLI_GENESIS_TIME` | (fixed) | Testnet/Devnet |
 | `DOLI_VETO_PERIOD_SECS` | 300 (5 min) | All networks |
+| `DOLI_GRACE_PERIOD_SECS` | 120 (2 min) | All networks |
 | `DOLI_UNBONDING_PERIOD` | 60480 | Testnet/Devnet |
 | `DOLI_BOND_UNIT` | 1,000,000,000 (10 DOLI) | Testnet/Devnet |
 | `DOLI_INITIAL_REWARD` | 100,000,000 (1 DOLI) | Testnet/Devnet |
 | `DOLI_VDF_ITERATIONS` | 1000 | Testnet/Devnet |
+| `DOLI_HEARTBEAT_VDF_ITERATIONS` | 1000 | Testnet/Devnet |
+| `DOLI_VDF_REGISTER_ITERATIONS` | 1000 | Testnet/Devnet |
 | `DOLI_BLOCKS_PER_YEAR` | 3153600 | Testnet/Devnet |
 | `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Testnet/Devnet |
 | `DOLI_COINBASE_MATURITY` | 6 | Testnet/Devnet |
+| `DOLI_SLOTS_PER_REWARD_EPOCH` | 360 | Testnet/Devnet |
+| `DOLI_VESTING_QUARTER_SLOTS` | 3,153,600 | Testnet/Devnet |
+| `DOLI_MIN_VOTING_AGE_SECS` | 2,592,000 (30 days) | All networks |
+| `DOLI_UPDATE_CHECK_INTERVAL_SECS` | 600 (10 min) | All networks |
+| `DOLI_REGISTRATION_BASE_FEE` | 100,000 (0.001 DOLI) | All networks |
+| `DOLI_MAX_REGISTRATION_FEE` | 1,000,000,000 (10 DOLI) | All networks |
+| `DOLI_MAX_REGISTRATIONS_PER_BLOCK` | 5 | All networks |
+| `DOLI_CRASH_WINDOW_SECS` | 3600 (1 hour) | All networks |
+| `DOLI_PRESENCE_WINDOW_MS` | 200 | All networks |
+| `DOLI_GENESIS_BLOCKS` | 360 mainnet / 36 testnet / 40 devnet | Testnet/Devnet |
+| `DOLI_AUTOMATIC_GENESIS_BOND` | 1,000,000,000 (10 DOLI mainnet) / 100,000,000 (1 DOLI testnet/devnet) | Testnet/Devnet |
+| `DOLI_BOOTSTRAP_GRACE_PERIOD_SECS` | 15 mainnet/testnet / 5 devnet | Testnet/Devnet |
+| `DOLI_BOOTSTRAP_BLOCKS` | 60480 | Testnet/Devnet |
+| `DOLI_INACTIVITY_THRESHOLD` | 50 | Testnet/Devnet |
+| `DOLI_FALLBACK_TIMEOUT_MS` | 2000 | Testnet/Devnet |
+| `DOLI_MAX_FALLBACK_RANKS` | 2 | Testnet/Devnet |
+| `DOLI_NETWORK_MARGIN_MS` | 200 | Testnet/Devnet |
+| `DOLI_EVICTION_GRACE_SECS` | 30 | All networks |
+| `DOLI_MESH_N` | 12 mainnet / 25 testnet / 12 devnet | Testnet/Devnet |
+| `DOLI_MESH_N_LOW` | 8 mainnet / 20 testnet / 8 devnet | Testnet/Devnet |
+| `DOLI_MESH_N_HIGH` | 24 mainnet / 50 testnet / 24 devnet | Testnet/Devnet |
+| `DOLI_GOSSIP_LAZY` | 12 mainnet / 25 testnet / 12 devnet | Testnet/Devnet |
+| `DOLI_YAMUX_WINDOW` | 262144 (256KB) | All networks |
+| `DOLI_CONN_LIMIT` | max_peers + 10 | All networks |
+| `DOLI_PENDING_LIMIT` | 5 | All networks |
+| `DOLI_IDLE_TIMEOUT_SECS` | 86400 mainnet / 300 testnet / 300 devnet | All networks |
 
 ### 5.4. Mainnet Locked Parameters
 
@@ -330,21 +360,42 @@ For security, the following parameters are **locked for mainnet** and cannot be 
 - `DOLI_SLOT_DURATION` - Must be 10s
 - `DOLI_GENESIS_TIME` - Fixed launch time
 - `DOLI_INITIAL_REWARD` - Emission schedule (1 DOLI per block)
+- `DOLI_BOND_UNIT` - Bond unit (10 DOLI, consensus-critical)
 - `DOLI_VDF_ITERATIONS` - Consensus security (1,000 iterations)
+- `DOLI_HEARTBEAT_VDF_ITERATIONS` - Heartbeat VDF
+- `DOLI_VDF_REGISTER_ITERATIONS` - Registration VDF
 - `DOLI_BLOCKS_PER_YEAR` - Era calculation
 - `DOLI_BLOCKS_PER_REWARD_EPOCH` - Reward distribution
-- `DOLI_BOND_UNIT` - Bond unit (10 DOLI, consensus-critical)
+- `DOLI_SLOTS_PER_REWARD_EPOCH` - Reward epoch timing
+- `DOLI_COINBASE_MATURITY` - Coinbase maturity depth
+- `DOLI_BOOTSTRAP_BLOCKS` - Bootstrap phase duration
+- `DOLI_BOOTSTRAP_GRACE_PERIOD_SECS` - Genesis grace period
+- `DOLI_UNBONDING_PERIOD` - Unbonding delay
+- `DOLI_INACTIVITY_THRESHOLD` - Inactivity detection
+- `DOLI_AUTOMATIC_GENESIS_BOND` - Genesis bond amount
+- `DOLI_GENESIS_BLOCKS` - Open registration period
+- `DOLI_VESTING_QUARTER_SLOTS` - Vesting schedule
+- `DOLI_FALLBACK_TIMEOUT_MS` - Fallback producer timing
+- `DOLI_MAX_FALLBACK_RANKS` - Fallback producer count
+- `DOLI_NETWORK_MARGIN_MS` - Clock drift tolerance
+- `DOLI_MESH_N`, `DOLI_MESH_N_LOW`, `DOLI_MESH_N_HIGH`, `DOLI_GOSSIP_LAZY` - Gossip mesh
 
-Attempting to override these on mainnet will log a warning and use hardcoded values.
+Attempting to override these on mainnet will use the hardcoded values silently.
 
 ### 5.5. Configuration Precedence
 
 1. **Embedded binary** (mainnet ONLY — chainspec compiled in, `--chainspec` and disk files ignored)
-2. **CLI flags** (highest priority for non-chainspec settings, e.g., `--p2p-port`)
-3. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — testnet/devnet only
-4. **Parent process environment variables**
-5. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
-6. **Network defaults** (hardcoded in `consensus.rs`)
+2. **CLI flags** (highest priority for non-chainspec settings, e.g., `--p2p-port`, `--data-dir`)
+3. **`DOLI_DATA_DIR` environment variable** (data directory override)
+4. **Chainspec direct injection** (`--chainspec` or `{data_dir}/chainspec.json`) — testnet/devnet only
+5. **Parent process environment variables**
+6. **`.env` file variables** (from `{data_dir}/.env` or `~/.doli/{network}/.env` fallback)
+7. **Network defaults** (hardcoded in `consensus/constants.rs`)
+
+**Data directory resolution** (when `--data-dir` and `DOLI_DATA_DIR` are not set):
+- Linux: `/var/lib/doli/{network}/`
+- macOS: `~/Library/Application Support/doli/{network}/`
+- Legacy fallback: `~/.doli/{network}/` (used if it exists and the platform path doesn't)
 
 Example: `--rpc-port 9999` overrides `DOLI_RPC_PORT=8888` in `.env`.
 
@@ -526,7 +577,7 @@ sudo iptables -A INPUT -p tcp --dport 30300 -j ACCEPT
 sudo systemctl stop doli-node
 
 # Backup node key
-cp ~/.doli/mainnet/node.key ~/backup/
+cp ~/.doli/node_key ~/backup/
 
 # Optional: backup database
 tar -czf ~/backup/doli-db-$(date +%Y%m%d).tar.gz ~/.doli/mainnet/db/
@@ -539,7 +590,7 @@ sudo systemctl start doli-node
 
 ```bash
 # Restore node key
-cp ~/backup/node.key ~/.doli/mainnet/
+cp ~/backup/node_key ~/.doli/
 
 # Start node (will resync if db not restored)
 sudo systemctl start doli-node
@@ -635,7 +686,10 @@ doli-node truncate --blocks <N>   # Remove top N blocks (fork recovery)
 doli-node recover                 # Rebuild state from existing block data
 doli-node restore                 # Restore chain from archive (disaster recovery)
 doli-node reindex                 # Rebuild canonical chain index from headers
-doli-node devnet <subcommand>     # Local devnet management (init/start/stop/status/clean)
+doli-node devnet <subcommand>     # Local devnet management (init/start/stop/status/clean/add-producer)
+doli-node update <subcommand>     # Update management (check/status/vote/votes/apply/rollback/verify)
+doli-node maintainer <subcommand> # Maintainer management (list/remove/add/sign/verify)
+doli-node release <subcommand>    # Release signing (sign)
 doli-node upgrade                 # Upgrade to latest release from GitHub
 doli-node checkpoint-info         # Print checkpoint constants compiled into binary
 
@@ -650,12 +704,21 @@ doli-node checkpoint-info         # Print checkpoint constants compiled into bin
 --producer-key <path>             # Producer key file
 --p2p-port <port>                 # P2P listen port
 --rpc-port <port>                 # RPC listen port
---metrics-port <port>             # Metrics port
---bootstrap <multiaddr>           # Bootstrap node
+--rpc-bind <address>              # RPC bind address (default: 127.0.0.1)
+--metrics-port <port>             # Metrics port (default: 9000)
+--external-address <multiaddr>    # External address to advertise to peers
+--bootstrap <multiaddr>           # Bootstrap node (can be specified multiple times)
 --no-dht                          # Disable DHT discovery
+--relay-server                    # Enable relay server mode for NAT traversal
 --no-auto-update                  # Disable auto-updates
+--no-auto-rollback                # Disable automatic rollback on update failures
 --update-notify-only              # Notify only, don't apply updates
+--force-start                     # Skip duplicate key detection (DANGEROUS)
+--yes                             # Skip interactive confirmations
+--chainspec <path>                # Path to chainspec JSON (testnet/devnet only)
 --archive-to <path>               # Archive blocks to directory for disaster recovery
+--checkpoint-height <height>      # Start syncing from trusted checkpoint
+--checkpoint-hash <hash>          # Hash of trusted checkpoint block
 ```
 
 ---

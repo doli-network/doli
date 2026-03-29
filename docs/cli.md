@@ -10,17 +10,15 @@ DOLI provides two binaries:
 
 ## Running Commands
 
-All commands must be run inside the Nix development environment:
-
 ```bash
-# Enter the Nix shell first
-nix --extra-experimental-features "nix-command flakes" develop
+# Build from source
+cargo build --release
 
-# Then run commands
+# Run commands via cargo
 cargo run -p doli -- <command>
 cargo run -p doli-node -- <command>
 
-# Or use the built binaries
+# Or use the built binaries directly
 doli <command>
 doli-node <command>
 ```
@@ -451,12 +449,13 @@ Register as a block producer with bonds.
 doli producer register [OPTIONS]
 
 Options:
-  -b, --bonds <BONDS>    Number of bonds to stake (1-3,000) [default: 1]
+  -b, --bonds <BONDS>    Number of bonds to stake (1-10,000) [default: 1]
 ```
 
 **Bond Requirements:**
-- **Mainnet**: Each bond = 10 DOLI (minimum 1 bond, maximum 3,000 bonds = 30,000 DOLI)
-- **Testnet**: Each bond = 1 DOLI (minimum 1 bond, maximum 3,000 bonds = 3,000 DOLI)
+- **Mainnet**: Each bond = 10 DOLI (minimum 1 bond)
+- **Testnet**: Each bond = 1 DOLI (minimum 1 bond)
+- **Consensus limit**: MAX_BONDS_PER_PRODUCER = 3,000 (enforced by node validation, not CLI)
 - **Devnet**: Each bond = 1 DOLI (for testing)
 
 **Example:**
@@ -599,7 +598,7 @@ Increase stake by adding more bonds. Activation is epoch-deferred.
 doli producer add-bond --count <COUNT>
 
 Options:
-  -c, --count <COUNT>    Number of bonds to add (1-3,000)
+  -c, --count <COUNT>    Number of bonds to add (1-10,000)
 ```
 
 **Example:**

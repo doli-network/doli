@@ -13,7 +13,7 @@ This document describes the DOLI node JSON-RPC API.
 | **Chain** | `getBlockByHeight` | Implemented |
 | **Chain** | `getChainStats` | Implemented |
 | **Transaction** | `sendTransaction` | Implemented |
-| **Transaction** | `getTransaction` | Implemented (mempool only) |
+| **Transaction** | `getTransaction` | Implemented |
 | **Balance** | `getBalance` | Implemented |
 | **Balance** | `getUtxos` | Implemented |
 | **Balance** | `getHistory` | Implemented |
@@ -115,10 +115,10 @@ Returns current chain state information.
 {
     "network": "mainnet",
     "version": "1.1.11",
-    "bestHash": "0x...",
+    "bestHash": "abc123...",
     "bestHeight": 12345,
     "bestSlot": 45678,
-    "genesisHash": "0x...",
+    "genesisHash": "def456...",
     "rewardPoolBalance": 500000000
 }
 ```
@@ -150,21 +150,25 @@ Returns block by its hash.
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| hash | string | Block hash (hex, 0x-prefixed) |
+| hash | string | Block hash (hex, no 0x prefix) |
 
 **Response:**
 ```json
 {
-    "hash": "0x...",
-    "prevHash": "0x...",
+    "hash": "abc123...",
+    "prevHash": "abc123...",
     "height": 12345,
     "slot": 45678,
     "timestamp": 1706400000,
-    "producer": "0x...",
-    "merkleRoot": "0x...",
+    "producer": "abc123...",
+    "merkleRoot": "abc123...",
     "txCount": 5,
-    "transactions": ["0x...", "0x..."],
-    "size": 1234
+    "transactions": ["abc123...", "abc123..."],
+    "size": 1234,
+    "presenceRoot": "abc123...",
+    "aggregateBlsSig": "abc123...",
+    "attestationCount": 8,
+    "presence": { ... }
 }
 ```
 
@@ -172,7 +176,7 @@ Returns block by its hash.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getBlockByHash","params":{"hash":"0xabc..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getBlockByHash","params":{"hash":"abc123..."},"id":1}'
 ```
 
 ---
@@ -201,11 +205,7 @@ curl -X POST http://127.0.0.1:8500 \
 
 ### getTransaction
 
-Returns transaction by its hash.
-
-**Note:** Currently only returns transactions in the mempool. Confirmed transaction
-lookup requires a transaction index which is not yet implemented. For confirmed
-transactions, use `getBlockByHash` or `getBlockByHeight` and search the transaction list.
+Returns transaction by its hash. Checks the mempool first, then looks up confirmed transactions via the transaction index.
 
 **Parameters:**
 | Name | Type | Description |
@@ -215,27 +215,34 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 **Response:**
 ```json
 {
-    "hash": "0x...",
+    "hash": "abcd...",
     "version": 1,
     "txType": "transfer",
     "inputs": [
         {
-            "prevTxHash": "0x...",
+            "prevTxHash": "abcd...",
             "outputIndex": 0,
-            "signature": "0x..."
+            "signature": "abcd..."
         }
     ],
     "outputs": [
         {
             "outputType": "normal",
             "amount": 100000000,
-            "pubkeyHash": "0x...",
-            "lockUntil": 0
+            "pubkeyHash": "abcd...",
+            "lockUntil": 0,
+            "condition": null,
+            "nft": null,
+            "asset": null,
+            "bridge": null,
+            "extraDataSize": 0
         }
     ],
+    "covenantWitnesses": [],
     "size": 256,
     "fee": 10000,
-    "blockHash": "0x...",
+    "blockHash": "abcd...",
+    "blockHeight": 12345,
     "confirmations": 6
 }
 ```
@@ -275,7 +282,7 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getTransaction","params":{"hash":"0xabc..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getTransaction","params":{"hash":"abc123..."},"id":1}'
 ```
 
 ---
@@ -291,14 +298,14 @@ Submits a signed transaction to the network.
 
 **Response:**
 ```json
-"0x..." // Transaction hash
+"abc123..." // Transaction hash
 ```
 
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"sendTransaction","params":{"tx":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"sendTransaction","params":{"tx":"abc123..."},"id":1}'
 ```
 
 ---
@@ -340,7 +347,7 @@ Returns balance for an address.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getBalance","params":{"address":"abc123..."},"id":1}'
 ```
 
 ---
@@ -359,7 +366,7 @@ Returns unspent transaction outputs for an address.
 ```json
 [
     {
-        "txHash": "0x...",
+        "txHash": "abc123...",
         "outputIndex": 0,
         "amount": 100000000,
         "outputType": "normal",
@@ -368,7 +375,7 @@ Returns unspent transaction outputs for an address.
         "spendable": true
     },
     {
-        "txHash": "0x...",
+        "txHash": "abc123...",
         "outputIndex": 1,
         "amount": 1000000000000,
         "outputType": "bond",
@@ -377,7 +384,7 @@ Returns unspent transaction outputs for an address.
         "spendable": false
     },
     {
-        "txHash": "0x...",
+        "txHash": "abc123...",
         "outputIndex": 0,
         "amount": 0,
         "outputType": "nft",
@@ -385,13 +392,13 @@ Returns unspent transaction outputs for an address.
         "height": 12500,
         "spendable": true,
         "nft": {
-            "tokenId": "0x...",
-            "contentHash": "0x...",
-            "royalty": { "creator": "0x...", "bps": 500, "percent": "5.00" }
+            "tokenId": "abc123...",
+            "contentHash": "abc123...",
+            "royalty": { "creator": "abc123...", "bps": 500, "percent": "5.00" }
         }
     },
     {
-        "txHash": "0x...",
+        "txHash": "abc123...",
         "outputIndex": 0,
         "amount": 100000000,
         "outputType": "normal",
@@ -433,7 +440,7 @@ Returns unspent transaction outputs for an address.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"0x...","spendable_only":true},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getUtxos","params":{"address":"abc123...","spendable_only":true},"id":1}'
 ```
 
 ---
@@ -452,7 +459,7 @@ Returns mempool statistics.
     "txCount": 42,
     "totalSize": 12345,
     "minFeeRate": 1000,
-    "maxSize": 5242880,
+    "maxSize": 10485760,
     "maxCount": 5000
 }
 ```
@@ -479,7 +486,7 @@ Returns pending transactions from the mempool, sorted by fee rate (highest first
 ```json
 [
     {
-        "hash": "0x...",
+        "hash": "abc123...",
         "txType": "transfer",
         "size": 256,
         "fee": 10000,
@@ -589,16 +596,35 @@ Returns all producers in the network.
 ```json
 [
     {
-        "publicKey": "0x...",
+        "publicKey": "abcd...",
+        "addressHash": "ef01...",
         "registrationHeight": 100000,
+        "bondAmount": 50000000000,
         "bondCount": 5,
         "status": "active",
-        "era": 0
+        "era": 0,
+        "pendingWithdrawals": [],
+        "pendingUpdates": [],
+        "blsPubkey": "abcd..."
     }
 ]
 ```
 
-**Note:** `bondCount` is derived from the UTXO set (count of Bond UTXOs for the producer's pubkey_hash). It reflects the current live count, not the epoch snapshot used for scheduling.
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| publicKey | Producer Ed25519 public key (hex) |
+| addressHash | Address hash derived from pubkey -- use this for `getBalance` lookups |
+| registrationHeight | Block height when registration was applied |
+| bondAmount | Total bond amount in base units (from UTXO set) |
+| bondCount | Number of bonds staked (from UTXO set) |
+| status | Producer status (see below) |
+| era | Current era number |
+| pendingWithdrawals | Array of pending withdrawals (always empty -- withdrawals are instant) |
+| pendingUpdates | Array of pending epoch-deferred updates (register, exit, add_bond, etc.) |
+| blsPubkey | BLS12-381 public key for attestation (hex, empty string if not set) |
+
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. Producers with pending registrations appear with status `"pending"`.
 
 **Example:**
 ```bash
@@ -621,30 +647,35 @@ Returns information about a specific producer.
 **Response:**
 ```json
 {
-    "publicKey": "0x...",
+    "publicKey": "abcd...",
+    "addressHash": "ef01...",
     "registrationHeight": 100000,
+    "bondAmount": 50000000000,
     "bondCount": 5,
     "status": "active",
-    "era": 0
+    "era": 0,
+    "pendingWithdrawals": [],
+    "pendingUpdates": [],
+    "blsPubkey": "abcd..."
 }
 ```
 
-**Note:** `bondCount` is derived from the UTXO set. `RequestWithdrawal` (TxType 8)
-processes instantly with FIFO vesting penalty (per-bond quarter-based).
-`ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set. `RequestWithdrawal` (TxType 8) processes instantly with FIFO vesting penalty (per-bond quarter-based). `ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
 
 **Status values:**
 | Status | Description |
 |--------|-------------|
 | active | Producing blocks |
+| unbonding | Requested exit, in unbonding period |
 | exited | Completed exit |
 | slashed | Slashed for misbehavior |
+| pending | Registration pending (epoch-deferred, not yet active) |
 
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getProducer","params":{"public_key":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getProducer","params":{"public_key":"abc123..."},"id":1}'
 ```
 
 ---
@@ -662,33 +693,66 @@ Each Bond UTXO carries its `creation_slot` in `extra_data` (4 bytes LE).
 **Response:**
 ```json
 {
-    "publicKey": "0x...",
+    "publicKey": "abcd1234...",
     "bondCount": 10,
     "totalStaked": 10000000000,
+    "registrationSlot": 100,
+    "ageSlots": 5000,
+    "penaltyPct": 25,
+    "vested": false,
+    "maturationSlot": 8740,
     "vestingQuarterSlots": 2160,
     "vestingPeriodSlots": 8640,
-    "bonds": [
-        {
-            "outpoint": "txhash:index",
-            "creationSlot": 500,
-            "ageSlots": 3000,
-            "penaltyPct": 50,
-            "vested": false,
-            "quarter": "Q2"
-        }
-    ],
     "summary": {
         "q1": 0,
-        "q2": 10,
-        "q3": 0,
-        "vested": 0
-    }
+        "q2": 3,
+        "q3": 5,
+        "vested": 2
+    },
+    "bonds": [
+        {
+            "creationSlot": 500,
+            "amount": 1000000000,
+            "ageSlots": 5000,
+            "penaltyPct": 25,
+            "vested": false,
+            "maturationSlot": 9140
+        }
+    ],
+    "withdrawalPendingCount": 0
 }
 ```
 
+**Top-level fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| publicKey | string | Producer public key (hex) |
+| bondCount | integer | Total bond count (derived from UTXO total / bond_unit) |
+| totalStaked | integer | Total staked amount in base units |
+| registrationSlot | integer | Slot when producer was registered |
+| ageSlots | integer | Age of the oldest bond in slots |
+| penaltyPct | integer | Withdrawal penalty for the oldest bond (0-75) |
+| vested | boolean | Whether ALL bonds are fully vested |
+| maturationSlot | integer | Slot when the newest bond becomes fully vested |
+| vestingQuarterSlots | integer | Vesting quarter duration in slots |
+| vestingPeriodSlots | integer | Full vesting period in slots (4x quarter) |
+| summary | object | Bond count by vesting quarter (q1, q2, q3, vested) |
+| bonds | array | Per-bond detail entries (sorted oldest first) |
+| withdrawalPendingCount | integer | Bonds pending withdrawal this epoch |
+
+**Per-bond entry fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| creationSlot | integer | Slot when this bond was created |
+| amount | integer | Amount staked in base units |
+| ageSlots | integer | Age of this bond in slots |
+| penaltyPct | integer | Current withdrawal penalty (0-75) |
+| vested | boolean | Whether this bond is fully vested |
+| maturationSlot | integer | Slot when this bond becomes fully vested |
+
 **Data source:** Bond details are read directly from Bond UTXOs (output_type=1)
 owned by the producer. `creationSlot` is decoded from the Bond UTXO's `extra_data`
-field. No separate bond registry is consulted.
+field (4 bytes LE). No separate bond registry is consulted.
 
 **Vesting quarters:**
 | Quarter | Bond Age | Penalty |
@@ -702,7 +766,7 @@ field. No separate bond registry is consulted.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getBondDetails","params":{"public_key":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getBondDetails","params":{"public_key":"abc123..."},"id":1}'
 ```
 
 ---
@@ -715,15 +779,16 @@ Returns transaction history for an address.
 | Name | Type | Description |
 |------|------|-------------|
 | address | string | Address or pubkey hash (hex) |
-| limit | integer | Maximum entries to return (default: 10) |
+| limit | integer | Maximum entries to return (default: 10, max: 100) |
+| before_height | integer | (Optional) Only return entries before this height (for pagination) |
 
 **Response:**
 ```json
 [
     {
-        "hash": "0x...",
+        "hash": "abcd...",
         "txType": "transfer",
-        "blockHash": "0x...",
+        "blockHash": "abcd...",
         "height": 12345,
         "timestamp": 1706400000,
         "amountReceived": 100000000,
@@ -747,13 +812,13 @@ Returns transaction history for an address.
 | fee | Transaction fee (may be 0 if not calculable) |
 | confirmations | Number of confirmations |
 
-**Note:** Fee calculation may be incomplete for some transaction types. History scans up to 1000 recent blocks.
+**Note:** Fee calculation may be incomplete for some transaction types. History uses an address-transaction index for O(1) lookup (not block scanning). The `limit` parameter is capped at 100.
 
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getHistory","params":{"address":"0x...","limit":20},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getHistory","params":{"address":"abc123...","limit":20},"id":1}'
 ```
 
 ---
@@ -795,13 +860,13 @@ Returns the consensus and network parameters for the node's active network.
 ```json
 {
     "network": "mainnet",
-    "bondUnit": 1000000000000,
+    "bondUnit": 1000000000,
     "slotDuration": 10,
     "slotsPerEpoch": 360,
     "blocksPerRewardEpoch": 360,
-    "coinbaseMaturity": 100,
+    "coinbaseMaturity": 6,
     "initialReward": 100000000,
-    "genesisTime": 1706400000
+    "genesisTime": 1774540572
 }
 ```
 
@@ -927,7 +992,7 @@ Submit a veto vote for a pending update.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"submitVote","params":{"vote":{"version":"0.2.0","vote":"veto","producerId":"0x...","timestamp":1706400000,"signature":"0x..."}},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"submitVote","params":{"vote":{"version":"0.2.0","vote":"veto","producerId":"abc123...","timestamp":1706400000,"signature":"abc123..."}},"id":1}'
 ```
 
 ---
@@ -943,7 +1008,7 @@ Returns the current maintainer set. Since v1.1.15, reads from the persisted `Mai
 {
     "maintainers": [
         {
-            "pubkey": "0x...",
+            "pubkey": "abc123...",
             "registered_at_block": 100,
             "is_active_producer": true
         }
@@ -989,8 +1054,8 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 **Signature Entry:**
 ```json
 {
-    "pubkey": "0x...",
-    "signature": "0x..."
+    "pubkey": "abc123...",
+    "signature": "abc123..."
 }
 ```
 
@@ -998,7 +1063,7 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 ```json
 {
     "status": "accepted",
-    "tx_hash": "0x...",
+    "tx_hash": "abc123...",
     "message": "Maintainer add transaction submitted"
 }
 ```
@@ -1009,7 +1074,7 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"submitMaintainerChange","params":{"action":"add","target_pubkey":"0x...","signatures":[{"pubkey":"0x...","signature":"0x..."}]},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"submitMaintainerChange","params":{"action":"add","target_pubkey":"abc123...","signatures":[{"pubkey":"abc123...","signature":"abc123..."}]},"id":1}'
 ```
 
 ---
@@ -1102,12 +1167,12 @@ Returns the producer schedule for upcoming slots based on the current producer s
     "slots": [
         {
             "slot": 45678,
-            "producer": "0x...",
+            "producer": "abc123...",
             "rank": 0
         },
         {
             "slot": 45679,
-            "producer": "0x...",
+            "producer": "abc123...",
             "rank": 0
         }
     ],
@@ -1155,7 +1220,7 @@ Returns schedule and performance information for a specific producer in the curr
 **Response:**
 ```json
 {
-    "publicKey": "0x...",
+    "publicKey": "abc123...",
     "currentSlot": 45678,
     "epoch": 12,
     "nextSlot": 45690,
@@ -1196,7 +1261,7 @@ Returns schedule and performance information for a specific producer in the curr
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getProducerSchedule","params":{"publicKey":"0x..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getProducerSchedule","params":{"publicKey":"abc123..."},"id":1}'
 ```
 
 ---
@@ -1219,7 +1284,7 @@ Returns attestation statistics for the current epoch. Scans all blocks in the cu
     "currentMinute": 30,
     "producers": [
         {
-            "publicKey": "0x...",
+            "publicKey": "abc123...",
             "attestedMinutes": 28,
             "totalMinutes": 31,
             "threshold": 20,
@@ -1273,11 +1338,11 @@ Returns the per-component state root hashes. Compare these across nodes at the s
 ```json
 {
     "height": 12345,
-    "bestHash": "0x...",
-    "stateRoot": "0x...",
-    "csHash": "0x...",
-    "utxoHash": "0x...",
-    "psHash": "0x...",
+    "bestHash": "abc123...",
+    "stateRoot": "abc123...",
+    "csHash": "abc123...",
+    "utxoHash": "abc123...",
+    "psHash": "abc123...",
     "utxoCount": 1500,
     "producerCount": 5,
     "totalMinted": 0,
@@ -1335,7 +1400,7 @@ Returns per-UTXO canonical hashes for diffing across nodes. Supports two modes: 
     "entries": [
         {
             "outpoint": "abcd1234...0000",
-            "hash": "0x...",
+            "hash": "abc123...",
             "detail": "amt=100000000 h=100 type=0 cb=1 er=0 lock=0 ed= pk=abcdef0123456789"
         }
     ]
@@ -1351,7 +1416,7 @@ Returns per-UTXO canonical hashes for diffing across nodes. Supports two modes: 
     "diffs": [
         {
             "outpoint": "abcd1234...0000",
-            "hash": "0x...",
+            "hash": "abc123...",
             "detail": "amt=100000000 h=100 type=1 cb=0 er=0 lock=4294967295 ed=e8030000 pk=abcdef0123456789"
         }
     ]
@@ -1391,7 +1456,7 @@ curl -X POST http://127.0.0.1:8500 \
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["0xabc...","0xdef..."]},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["abc123...","def456..."]},"id":1}'
 ```
 
 ---
@@ -1412,9 +1477,7 @@ curl -X POST http://127.0.0.1:8500 \
 | -32004 | Mempool full | Mempool at capacity |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
 | -32006 | Producer not found | Producer not in registry |
-| -32007 | Epoch not complete | Epoch hasn't finished yet |
-| -32008 | Already claimed | Epoch already claimed by producer |
-| -32009 | No reward | Producer not present in epoch |
+| -32007 | Pool not found | AMM pool not found |
 
 **Error Response Format:**
 ```json
@@ -1442,24 +1505,24 @@ curl -X POST http://127.0.0.1:8500 \
 
 ### Hex Encoding
 
-All binary data is hex-encoded with `0x` prefix:
-- Hashes: 32 bytes → 66 characters (`0x` + 64 hex chars)
-- Public keys: 32 bytes → 66 characters
-- Addresses: 20 bytes → 42 characters
-- Signatures: 64 bytes → 130 characters
+All binary data is hex-encoded **without** a `0x` prefix (plain hex):
+- Hashes: 32 bytes -> 64 hex characters
+- Public keys: 32 bytes -> 64 hex characters
+- Signatures: 64 bytes -> 128 hex characters
 
 ---
 
-## 14. Rate Limiting
+## 14. Request Limits
 
-Default rate limits (configurable):
+There is no per-client rate limiting. The only enforced limit is on request body size:
 
 | Resource | Limit |
 |----------|-------|
-| Requests per second | 100 |
-| Burst size | 200 |
+| Max request body | 256 KB (262,144 bytes) |
 
-Exceeded limits return HTTP 429 (Too Many Requests).
+Requests exceeding the body size limit receive an HTTP 413 (Payload Too Large) response.
+For production deployments exposed to the internet, use a reverse proxy (nginx, caddy) to
+add rate limiting.
 
 ---
 
@@ -1490,12 +1553,65 @@ Cross-origin requests disabled by default. Enable in config if needed for web ap
 
 ## 16. WebSocket Support
 
-WebSocket subscriptions are planned but not yet implemented.
+The RPC server exposes a WebSocket endpoint at `/ws` for real-time event streaming.
 
-Future subscription topics:
-- `newBlocks` - New block notifications
-- `pendingTransactions` - New mempool transactions
-- `logs` - Event logs
+**Endpoint:** `ws://127.0.0.1:8500/ws`
+
+Clients receive JSON messages for every event. No subscription filtering -- all
+connected clients receive all events. The broadcast channel buffers up to 256
+events; slow clients that lag behind are skipped (events dropped, not queued).
+
+### Event: `new_block`
+
+Emitted when a new block is applied to the canonical chain.
+
+```json
+{
+    "type": "new_block",
+    "hash": "abc123...",
+    "height": 12345,
+    "slot": 45678,
+    "timestamp": 1774540572,
+    "producer": "def456...",
+    "tx_count": 3
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| hash | string | Block hash (hex) |
+| height | integer | Block height |
+| slot | integer | Slot number |
+| timestamp | integer | Block timestamp (Unix seconds) |
+| producer | string | Producer public key (hex) |
+| tx_count | integer | Number of transactions in the block |
+
+### Event: `new_tx`
+
+Emitted when a new transaction enters the mempool.
+
+```json
+{
+    "type": "new_tx",
+    "hash": "abc123...",
+    "tx_type": "Transfer",
+    "size": 256,
+    "fee": 50000
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| hash | string | Transaction hash (hex) |
+| tx_type | string | Transaction type name |
+| size | integer | Transaction size in bytes |
+| fee | integer | Transaction fee in base units |
+
+### Example (websocat)
+
+```bash
+websocat ws://127.0.0.1:8500/ws
+```
 
 ---
 
@@ -1511,9 +1627,9 @@ Retrieve a raw block by height (for archiving/backfill).
 **Response:**
 ```json
 {
-  "hash": "abc123...",
-  "height": 100,
-  "raw": "<hex-encoded block bytes>"
+  "block": "<base64-encoded bincode(Block)>",
+  "blake3": "abc123...",
+  "height": 100
 }
 ```
 
@@ -1527,10 +1643,9 @@ Trigger hot backfill of missing blocks from a remote seed/archive node.
 **Response:**
 ```json
 {
-  "status": "started",
-  "gap_start": 1,
-  "gap_end": 977,
-  "source": "http://127.0.0.1:18500"
+  "started": true,
+  "gaps": "1-977",
+  "total": 977
 }
 ```
 
@@ -1543,16 +1658,17 @@ Check the progress of an active backfill operation.
 **Response:**
 ```json
 {
-  "active": true,
-  "progress": 450,
+  "running": true,
+  "imported": 450,
   "total": 977,
-  "source": "http://127.0.0.1:18500"
+  "pct": 46,
+  "error": null
 }
 ```
 
 ### `verifyChainIntegrity`
 
-Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain, not just at the start. Uses lightweight height-index lookups (no block deserialization), so ~10-30 seconds for 1M blocks on SSD.
+Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain. Deserializes each block and computes a running BLAKE3 chain commitment (returned as `chainCommitment` when no gaps exist, null otherwise).
 
 **Parameters:** None
 
@@ -1563,7 +1679,8 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
   "tip": 1223,
   "scanned": 1223,
   "missing": [],
-  "missing_count": 0
+  "missingCount": 0,
+  "chainCommitment": "abc123..."
 }
 ```
 
@@ -1574,14 +1691,16 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
   "tip": 1000000,
   "scanned": 1000000,
   "missing": ["45-67", "1234", "50000-50100"],
-  "missing_count": 125
+  "missingCount": 125,
+  "chainCommitment": null
 }
 ```
 
 **Notes:**
 - Missing heights are returned as compressed ranges (e.g., `"45-67"` means blocks 45 through 67 are missing)
 - Single missing blocks are returned as individual strings (e.g., `"1234"`)
-- `missing_count` is the total number of missing blocks across all ranges
+- `missingCount` is the total number of missing blocks across all ranges
+- `chainCommitment` is a BLAKE3 fingerprint of the entire chain (null when gaps exist)
 - Runs in a background thread to avoid blocking the RPC event loop
 - Added in v2.0.29
 
@@ -1599,8 +1718,8 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
 ```json
 {
     "height": 12345,
-    "blockHash": "0x...",
-    "stateRoot": "0x...",
+    "blockHash": "abc123...",
+    "stateRoot": "abc123...",
     "chainState": "hex...",
     "utxoSet": "hex...",
     "producerSet": "hex...",
@@ -1642,9 +1761,9 @@ Returns detailed information about an AMM pool.
 **Response:**
 ```json
 {
-    "poolId": "0x...",
-    "assetA": "0x0000...0000",
-    "assetB": "0x...",
+    "poolId": "abc123...",
+    "assetA": "0000...0000",
+    "assetB": "abc123...",
     "reserveA": 1000000000,
     "reserveB": 5000000,
     "totalShares": 70710678,
@@ -1654,7 +1773,7 @@ Returns detailed information about an AMM pool.
     "lastUpdateSlot": 45000,
     "creationSlot": 40000,
     "status": 0,
-    "txHash": "0x...",
+    "txHash": "abc123...",
     "outputIndex": 0
 }
 ```
@@ -1681,7 +1800,7 @@ Returns detailed information about an AMM pool.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getPoolInfo","params":{"poolId":"0xabc..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getPoolInfo","params":{"poolId":"abc123..."},"id":1}'
 ```
 
 ---
@@ -1696,8 +1815,8 @@ Returns all AMM pools (deduplicated by pool ID).
 ```json
 [
     {
-        "poolId": "0x...",
-        "assetB": "0x...",
+        "poolId": "abc123...",
+        "assetB": "abc123...",
         "reserveA": 1000000000,
         "reserveB": 5000000,
         "feeBps": 30,
@@ -1745,7 +1864,7 @@ Returns the spot price for a pool, with optional TWAP computation.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getPoolPrice","params":{"poolId":"0xabc...","windowSlots":360},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getPoolPrice","params":{"poolId":"abc123...","windowSlots":360},"id":1}'
 ```
 
 ---
@@ -1781,7 +1900,7 @@ Simulates a swap without creating a transaction. Returns expected output amount,
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getSwapQuote","params":{"poolId":"0xabc...","amountIn":1000000,"direction":"a2b"},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getSwapQuote","params":{"poolId":"abc123...","amountIn":1000000,"direction":"a2b"},"id":1}'
 ```
 
 ---
@@ -1802,13 +1921,13 @@ Returns detailed information about a loan identified by its Collateral UTXO.
 ```json
 {
     "outpoint": {
-        "txHash": "0x...",
+        "txHash": "abc123...",
         "outputIndex": 0
     },
-    "poolId": "0x...",
-    "borrowerHash": "0x...",
+    "poolId": "abc123...",
+    "borrowerHash": "abc123...",
     "collateralAmount": 100000000,
-    "collateralAssetId": "0x...",
+    "collateralAssetId": "abc123...",
     "principal": 50000000,
     "interestRateBps": 500,
     "creationSlot": 40000,
@@ -1843,7 +1962,7 @@ Returns detailed information about a loan identified by its Collateral UTXO.
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getLoanInfo","params":{"txHash":"0xabc...","outputIndex":0},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getLoanInfo","params":{"txHash":"abc123...","outputIndex":0},"id":1}'
 ```
 
 ---
@@ -1862,10 +1981,10 @@ Returns all active loans (Collateral UTXOs), optionally filtered by borrower.
 [
     {
         "outpoint": {
-            "txHash": "0x...",
+            "txHash": "abc123...",
             "outputIndex": 0
         },
-        "borrowerHash": "0x...",
+        "borrowerHash": "abc123...",
         "collateralAmount": 100000000,
         "principal": 50000000,
         "totalDebt": 50125000,
@@ -1884,7 +2003,7 @@ curl -X POST http://127.0.0.1:8500 \
 # Filter by borrower
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{"borrower":"0xabc..."},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{"borrower":"abc123..."},"id":1}'
 ```
 
 ---

@@ -65,7 +65,7 @@ See [disaster-recovery.md](./disaster-recovery.md) for the full runbook.
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 (<ai1-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed1.doli.network` |
 | Seed2 | ai2 (<ai2-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed2.doli.network` |
-| Seed3 | ai3 (<ai3-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seed3.doli.network` |
+| Seed3 | ai3 (<ai3-ip>) | 30300 | 8500 | `doli-mainnet-seed` | `seeds.doli.network` |
 
 Archive directory: `/mainnet/seed/blocks/`
 
@@ -75,7 +75,7 @@ Archive directory: `/mainnet/seed/blocks/`
 |------|--------|-----|-----|---------|-----|
 | Seed1 | ai1 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap1.testnet.doli.network` |
 | Seed2 | ai2 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap2.testnet.doli.network` |
-| Seed3 | ai3 | 40300 | 18500 | `doli-testnet-seed` | `bootstrap3.testnet.doli.network` |
+| Seed3 | ai3 | 40300 | 18500 | `doli-testnet-seed` | `seeds.testnet.doli.network` |
 
 Archive directory: `/testnet/seed/blocks/`
 
@@ -85,11 +85,11 @@ Archive directory: `/testnet/seed/blocks/`
 |--------|------|-------|---------|
 | `seed1.doli.network` | A | <ai1-ip> | Mainnet P2P seed + RPC |
 | `seed2.doli.network` | A | <ai2-ip> | Mainnet P2P seed + RPC |
-| `seed3.doli.network` | A | <ai3-ip> | Mainnet P2P seed + RPC |
+| `seeds.doli.network` | A | <ai3-ip> | Mainnet P2P seed round-robin + RPC |
 | `archive.doli.network` | A | <ai2-ip> | Mainnet archive RPC (legacy alias) |
 | `bootstrap1.testnet.doli.network` | A | <ai1-ip> | Testnet P2P seed + RPC |
 | `bootstrap2.testnet.doli.network` | A | <ai2-ip> | Testnet P2P seed + RPC |
-| `bootstrap3.testnet.doli.network` | A | <ai3-ip> | Testnet P2P seed + RPC |
+| `seeds.testnet.doli.network` | A | <ai3-ip> | Testnet P2P seed round-robin + RPC |
 | `archive.testnet.doli.network` | A | <ai1-ip> | Testnet archive RPC (legacy alias) |
 
 ---

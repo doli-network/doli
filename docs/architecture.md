@@ -64,6 +64,8 @@ crypto (foundation - no internal deps)
             │       │
             │       └──► bins/node (full node binary)
             │
+            ├──► updater (auto-update with community veto)
+            │
             ├──► bridge (cross-chain atomic swaps)
             │
             └──► channels (payment channels)
@@ -135,8 +137,17 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 | `tpop/` | Time proof: heartbeat VDF, presence, calibration |
 | `attestation.rs` | Attestation types and bitfield encoding |
 | `conditions/` | Programmable output conditions (covenants) |
-| `amm.rs` | Automated market maker logic |
+| `pool.rs` | AMM pool logic |
 | `lending.rs` | Lending protocol logic |
+| `chainspec.rs` | Chainspec parsing and genesis hash |
+| `config_validation.rs` | Configuration validation rules |
+| `finality.rs` | Finality gadget types |
+| `heartbeat.rs` | Heartbeat message types |
+| `maintainer.rs` | Maintainer governance types |
+| `nft.rs` | NFT types and validation |
+| `presence.rs` | Presence tracking types |
+| `rewards.rs` | Reward calculation tests |
+| `scheduler.rs` | Deterministic producer scheduler |
 
 **Transaction types** (see `crates/core/src/transaction/types.rs` for canonical list):
 1. Transfer (0) - Value transfer. Also used as coinbase (Transfer with no inputs, single output to reward pool)
@@ -206,7 +217,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 | Module | Function |
 |--------|----------|
-| `block_store.rs` | Blocks indexed by hash/height (RocksDB) |
+| `block_store/` | Blocks indexed by hash/height (RocksDB, 8 CFs) |
 | `state_db/` | Unified state: UTXOs, producers, chain state (RocksDB) |
 | `utxo/` | In-memory UTXO working set for fast reads |
 | `utxo_rocks.rs` | RocksDB-backed UTXO store (`RocksDbUtxoStore`) |
@@ -214,6 +225,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 | `producer/` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
 | `maintainer.rs` | MaintainerState — governance maintainer set tracking |
 | `update.rs` | UpdateState — auto-update state persistence |
+| `archiver.rs` | Block archiver — streams blocks to flat files with BLAKE3 checksums, catch-up gap filler, restore/backfill from archive |
 
 **ChainState fields:**
 - `best_hash` - Current chain tip hash
@@ -226,7 +238,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 - `total_minted` - Total coins issued
 
 **Storage technologies:**
-- **BlockStore** (RocksDB): Column families `headers`, `bodies`, `height_index`, `slot_index`
+- **BlockStore** (RocksDB): 8 column families: `headers`, `bodies`, `height_index`, `slot_index`, `presence` (deprecated, cleaned on startup), `hash_to_height`, `tx_index`, `addr_tx_index`
 - **StateDb** (RocksDB): Unified state store with atomic WriteBatch per block. Column families (6): `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`, `cf_undo`. All state changes (UTXOs, chain state, producers) committed atomically — no crash-inconsistency possible.
 - **In-memory UtxoSet**: Loaded from StateDb on startup, mutated in parallel with batch writes for fast mempool/RPC reads
 
@@ -260,7 +272,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 **Connection model (two-tier):**
 - **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
 - **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.
-- **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-009 Yamux RAM fix), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
+- **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-012 Yamux RAM reduction), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
 - **Peer discovery flow**: Bootstrap node → Identify → DHT → peer cache. Bootnodes are introduction points, not permanent hubs.
 
 ### 3.7. mempool
@@ -299,19 +311,51 @@ DOLI uses a strict 3-level configuration hierarchy:
 | Module | Function |
 |--------|----------|
 | `server.rs` | Axum HTTP server |
-| `methods.rs` | RPC method handlers |
-| `types.rs` | Request/response types |
+| `ws.rs` | WebSocket support |
+| `methods/` | RPC method handlers (39 methods across 16 files) |
+| `methods/dispatch.rs` | Request routing to handlers |
+| `methods/block.rs` | Block query methods |
+| `methods/balance.rs` | Balance and UTXO methods |
+| `methods/producer.rs` | Producer info methods |
+| `methods/transaction.rs` | Transaction submission and query |
+| `methods/governance.rs` | Governance (votes, maintainers) |
+| `methods/backfill.rs` | Block backfill operations |
+| `methods/snapshot.rs` | State snapshot methods |
+| `methods/schedule.rs` | Slot/producer schedule |
+| `methods/history.rs` | Transaction history |
+| `methods/network.rs` | Network info methods |
+| `methods/stats.rs` | Chain statistics |
+| `methods/pool.rs` | AMM pool methods |
+| `methods/lending.rs` | Lending protocol methods |
+| `types/` | Request/response types |
 | `error.rs` | Error codes |
 
 ### 3.9. updater
 
 **Purpose:** Auto-update with community veto.
 
+| Module | Function |
+|--------|----------|
+| `constants.rs` | Bootstrap maintainer keys (per network), GitHub repo URL, fallback mirror |
+| `params.rs` | `UpdateParams` — network-aware timing (veto/grace/check intervals from NetworkParams) |
+| `types.rs` | Release, UpdateConfig, MaintainerSignature, VoteResult |
+| `download.rs` | Fetch releases from GitHub, download binaries, verify SHA-256 hashes |
+| `verification.rs` | Ed25519 release signature verification (3/5 maintainer threshold), veto calculation |
+| `vote.rs` | VoteTracker — seniority-weighted vote counting (bonds x seniority multiplier) |
+| `apply.rs` | Binary swap (backup, install, restart), auto-apply from GitHub |
+| `enforcement.rs` | Version enforcement — pauses production if outdated after grace period |
+| `watchdog.rs` | Crash detection — 3 crashes within crash_window triggers automatic rollback |
+| `hardfork.rs` | Upgrade-at-height mechanism for breaking protocol changes |
+| `test_keys.rs` | Test maintainer keys for devnet (DOLI_TEST_KEYS=1) |
+
 **Features:**
-- Download from release server
+- Download from GitHub releases (with fallback mirror at `releases.doli.network`)
+- 3/5 maintainer Ed25519 signatures required per release
 - Veto period (5 min early network; target 7 days)
-- 40% weighted veto threshold
-- Hash verification
+- 40% seniority-weighted veto threshold
+- SHA-256 hash verification
+- Automatic rollback on 3 crashes within crash window
+- Version enforcement: outdated producers paused after grace period
 
 ---
 
@@ -495,7 +539,7 @@ miss rewards - no slashing or weight reduction occurs.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  BlockStore (RocksDB)                    │
+│                  BlockStore (RocksDB, 8 CFs)             │
 ├─────────────────────────────────────────────────────────┤
 │ CF: headers                                              │
 │   Key: Hash (32 bytes)                                   │
@@ -512,6 +556,21 @@ miss rewards - no slashing or weight reduction occurs.
 │ CF: slot_index                                           │
 │   Key: Slot (u32, little-endian)                         │
 │   Value: Hash (32 bytes)                                 │
+├─────────────────────────────────────────────────────────┤
+│ CF: hash_to_height                                       │
+│   Key: Hash (32 bytes)                                   │
+│   Value: Height (u64, little-endian)                     │
+├─────────────────────────────────────────────────────────┤
+│ CF: tx_index                                             │
+│   Key: TxHash (32 bytes)                                 │
+│   Value: Height (u64, little-endian)                     │
+├─────────────────────────────────────────────────────────┤
+│ CF: addr_tx_index                                        │
+│   Key: PubkeyHash(32) ++ Height(8) (40 bytes)           │
+│   Value: empty                                           │
+├─────────────────────────────────────────────────────────┤
+│ CF: presence (deprecated — cleaned on startup)           │
+│   Legacy attestation data, no longer written             │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -739,4 +798,4 @@ Full architecture specification: `specs/gui-architecture.md`
 
 ---
 
-*Architecture version: 2.2 — March 2026 (synced against code 2026-03-29)*
+*Architecture version: 2.3 — March 2026 (synced against code 2026-03-29, pass 2)*

@@ -63,14 +63,14 @@ During each epoch, every block's `presence_root` field encodes an attestation bi
 
 At height `(epoch + 1) * 360`, the node runs `calculate_epoch_rewards()`:
 
-1. **Collect active producers** at epoch end height, sorted by public key
+1. **Collect active producers** at epoch start height, sorted by public key
 2. **Scan all blocks** in the epoch, decode attestation bitfields, count attested minutes per producer
 3. **Qualify producers** with never-burn fallback tiers:
    - **Tier 1**: must have attested in >= 90% of attestation minutes (`attestation_qualification_threshold()` — 54/60 for mainnet, 5/6 for testnet)
    - **Tier 2 fallback**: if no Tier 1 qualifiers, threshold drops to 80% of median attendance (floor of 1 minute)
    - **Tier 3 fallback**: if all producers have 0 attendance, pool accumulates to next epoch (no distribution)
    - **Epoch 0 exception**: all active producers qualify (no attestation data exists yet)
-4. **Sum qualifying bonds** via `selection_weight()` (own bonds + delegated bonds)
+4. **Sum qualifying bonds** via the epoch bond snapshot (frozen from UTXO set at epoch boundary, deterministic across all nodes -- NOT `selection_weight()` which reads live state)
 5. **Calculate pool total**: accumulated coinbase UTXOs in pool + current block's coinbase
 6. **Distribute bond-weighted**: `pool * bonds[i] / qualifying_bonds` using u128 intermediates
 7. **Delegation split** (if producer has delegations):
@@ -171,7 +171,7 @@ Each epoch accumulates up to 360 DOLI in the reward pool (360 blocks at 1 DOLI p
 
 ```
 pool = sum(coinbase UTXOs at reward_pool_address) + current_block_coinbase
-qualifying_bonds = sum(selection_weight for each qualified producer)
+qualifying_bonds = sum(epoch_bond_snapshot[producer] for each qualified producer)
 producer_reward = pool * producer_bonds / qualifying_bonds   (u128 intermediate)
 remainder = pool - sum(all_producer_rewards)  -> first qualifier
 ```
@@ -193,12 +193,12 @@ Last delegator: staker_pool - already_distributed  (absorbs rounding dust)
 | Parameter | Value |
 |-----------|-------|
 | **DELEGATE_REWARD_PCT** | 10% |
-| **BOND_UNIT** | 10 DOLI (1,000,000,000 base units) on mainnet/testnet |
+| **BOND_UNIT** | 10 DOLI (1,000,000,000 base units) on mainnet; 1 DOLI (100,000,000) on testnet |
 | **MAX_BONDS_PER_PRODUCER** | 3,000 |
 
 ### Edge Cases
 
-- **No qualified producers**: all rewards remain in pool (burned effectively)
+- **No qualified producers**: pool accumulates to next epoch (not burned -- will be distributed when producers qualify)
 - **Zero qualifying bonds**: no distribution
 - **Disqualified producers**: their share is redistributed to qualifiers (included in the pool, not subtracted)
 
@@ -292,17 +292,17 @@ Actual rewards depend on total qualifying bonds across the network and attestati
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `SLOTS_PER_EPOCH` | 360 | `crates/core/src/consensus.rs` |
-| `BLOCKS_PER_REWARD_EPOCH` | 360 | `crates/core/src/consensus.rs` |
-| `ATTESTATION_QUALIFICATION_THRESHOLD` | 54 | `crates/core/src/attestation.rs` |
-| `ATTESTATION_MINUTES_PER_EPOCH` | 60 | `crates/core/src/attestation.rs` |
-| `DELEGATE_REWARD_PCT` | 10 | `crates/core/src/consensus.rs` |
-| `BOND_UNIT` | 1,000,000,000 (10 DOLI) | `crates/core/src/consensus.rs` |
-| `MAX_BONDS_PER_PRODUCER` | 3,000 | `crates/core/src/consensus.rs` |
-| `COINBASE_MATURITY` | 6 | `crates/core/src/consensus.rs` |
-| `INITIAL_REWARD` | 100,000,000 (1 DOLI) | `crates/core/src/consensus.rs` |
-| `BLOCKS_PER_ERA` | 12,614,400 | `crates/core/src/consensus.rs` |
-| `TOTAL_SUPPLY` | 2,522,880,000,000,000 | `crates/core/src/consensus.rs` |
+| `SLOTS_PER_EPOCH` | 360 | `crates/core/src/consensus/constants.rs` |
+| `BLOCKS_PER_REWARD_EPOCH` | 360 | `crates/core/src/consensus/constants.rs` |
+| `attestation_qualification_threshold()` | 54 (mainnet), 5 (testnet) | `crates/core/src/attestation.rs` — computed: `minutes * 90 / 100` |
+| `attestation_minutes_per_epoch()` | 60 (mainnet), 6 (testnet) | `crates/core/src/attestation.rs` — computed: `blocks_per_epoch / 6` |
+| `DELEGATE_REWARD_PCT` | 10 | `crates/core/src/consensus/constants.rs` |
+| `BOND_UNIT` | 1,000,000,000 (10 DOLI) | `crates/core/src/consensus/constants.rs` |
+| `MAX_BONDS_PER_PRODUCER` | 3,000 | `crates/core/src/consensus/constants.rs` |
+| `COINBASE_MATURITY` | 6 | `crates/core/src/consensus/constants.rs` |
+| `INITIAL_REWARD` | 100,000,000 (1 DOLI) | `crates/core/src/consensus/constants.rs` |
+| `BLOCKS_PER_ERA` | 12,614,400 | `crates/core/src/consensus/constants.rs` |
+| `TOTAL_SUPPLY` | 2,522,880,000,000,000 | `crates/core/src/consensus/constants.rs` |
 
 ---
 

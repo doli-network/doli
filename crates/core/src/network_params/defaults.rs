@@ -99,7 +99,7 @@ impl NetworkParams {
 
                 // Timing
                 slot_duration: consensus::SLOT_DURATION,
-                genesis_time: 1774721476, // Testnet v94 genesis - eviction grace period fix 2026-03-28
+                genesis_time: 1774749145, // Testnet v96 genesis - clean restart 2026-03-29
                 veto_period_secs: 5 * 60, // 5 minutes (early network)
                 grace_period_secs: 2 * 60, // 2 minutes
                 bootstrap_grace_period_secs: consensus::BOOTSTRAP_GRACE_PERIOD_SECS,

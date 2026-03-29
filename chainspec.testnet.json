@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1774721476,
-    "message": "DOLI Testnet v94 Genesis - eviction grace period fix 2026-03-28",
+    "timestamp": 1774749145,
+    "message": "DOLI Testnet v96 Genesis - clean restart 2026-03-29",
     "initial_reward": 100000000
   },
   "consensus": {

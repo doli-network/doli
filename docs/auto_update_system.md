@@ -69,7 +69,7 @@ Unlike other blockchains that hardcode maintainer keys in configuration files, D
 - **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
 - **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.
 
-Bootstrap keys are hardcoded per-network in `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` (`crates/updater/src/lib.rs`).
+Bootstrap keys are hardcoded per-network in `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` (`crates/updater/src/constants.rs`).
 
 ### 2.1 Automatic Bootstrap
 
@@ -250,32 +250,35 @@ Unlike simple count-based voting (1 producer = 1 vote), DOLI uses seniority weig
 #### 3.1.1 Weight Calculation
 
 ```
-vote_weight = 1.0 + min(years_as_producer, 4) * 0.75
+vote_weight = bond_count * seniority_multiplier
+seniority_multiplier = 1.0 + min(years_as_producer, 4) * 0.75
 
-Examples:
-┌─────────────────────────┬────────────────────────────────┬─────────┐
-│ Producer Age            │ Calculation                    │ Weight  │
-├─────────────────────────┼────────────────────────────────┼─────────┤
-│ New producer (0 years)  │ 1.0 + 0 * 0.75                 │ 1.00x   │
-│ 1 year producer         │ 1.0 + 1 * 0.75                 │ 1.75x   │
-│ 2 year producer         │ 1.0 + 2 * 0.75                 │ 2.50x   │
-│ 3 year producer         │ 1.0 + 3 * 0.75                 │ 3.25x   │
-│ 4+ year producer        │ 1.0 + 4 * 0.75                 │ 4.00x   │
-└─────────────────────────┴────────────────────────────────┴─────────┘
+Examples (1 bond):
+┌─────────────────────────┬────────────────────────────────┬───────────────────┐
+│ Producer Age            │ Seniority Multiplier           │ Weight (1 bond)   │
+├─────────────────────────┼────────────────────────────────┼───────────────────┤
+│ New producer (0 years)  │ 1.0 + 0 * 0.75 = 1.00x        │ 1.00              │
+│ 1 year producer         │ 1.0 + 1 * 0.75 = 1.75x        │ 1.75              │
+│ 2 year producer         │ 1.0 + 2 * 0.75 = 2.50x        │ 2.50              │
+│ 3 year producer         │ 1.0 + 3 * 0.75 = 3.25x        │ 3.25              │
+│ 4+ year producer        │ 1.0 + 4 * 0.75 = 4.00x        │ 4.00              │
+└─────────────────────────┴────────────────────────────────┴───────────────────┘
+
+Example: 10-bond producer at 2 years = 10 * 2.50 = 25.0 weight
 ```
 
-**Key insight**: After 4 years, all producers reach the same maximum weight. The seniority advantage is temporary, not permanent. This prevents oligarchy while still providing meaningful Sybil resistance during the network's growth phase.
+**Key insight**: After 4 years, all producers reach the same maximum seniority multiplier. The seniority advantage is temporary, not permanent. This prevents oligarchy while still providing meaningful Sybil resistance during the network's growth phase.
 
 #### 3.1.2 Relationship with Bond Units
 
-The voting weight is based on **time** (seniority), not **stake** (bond units). This is intentional:
+The voting weight combines **stake** (bond count) with **time** (seniority multiplier). Both factors matter:
 
-| System | Weight Based On | Implication |
-|--------|-----------------|-------------|
-| Block production | Bond units | More stake = more blocks = more rewards |
-| Governance voting | Seniority | Time commitment = more influence |
+| Factor | Role | Implication |
+|--------|------|-------------|
+| Bond count | Economic stake | More bonds = more weight (linear) |
+| Seniority multiplier | Time commitment | 1.0x to 4.0x over 4 years |
 
-This separation ensures that wealthy newcomers cannot immediately dominate governance, while still allowing them to earn proportional block rewards.
+This means a whale with 100 bonds registered yesterday gets 100 * 1.0 = 100 weight, while 25 veterans at 4 years each with 1 bond get 25 * 4.0 = 100 weight -- equal power. Both economic and time commitment contribute to governance influence.
 
 #### 3.1.3 Minimum Voting Age
 
@@ -1135,18 +1138,18 @@ doli-node run \
 │ Maintainer transactions         │ crates/core/src/transaction.rs              │
 │ Maintainer validation           │ crates/core/src/validation.rs               │
 │ Core updater library            │ crates/updater/src/lib.rs                   │
-│ Seniority voting                │ crates/updater/src/seniority.rs             │
+│ Seniority voting                │ crates/updater/src/params.rs                │
 │ Vote tracking                   │ crates/updater/src/vote.rs                  │
 │ Watchdog (rollback)             │ crates/updater/src/watchdog.rs              │
 │ Hard fork logic                 │ crates/updater/src/hardfork.rs              │
 │ Binary download                 │ crates/updater/src/download.rs              │
-│ Binary verification             │ crates/updater/src/verify.rs                │
+│ Binary verification             │ crates/updater/src/verification.rs          │
 │ Update application              │ crates/updater/src/apply.rs                 │
-│ Node integration                │ bins/node/src/updater.rs                    │
-│ CLI commands                    │ bins/cli/src/update.rs                      │
-│ Maintainer CLI                  │ bins/cli/src/maintainer.rs                  │
-│ RPC methods                     │ crates/rpc/src/update.rs                    │
-│ Gossip topics                   │ crates/network/src/gossip.rs                │
+│ Node integration                │ bins/node/src/updater/ (mod, service, cli)  │
+│ CLI commands                    │ bins/cli/src/cmd_upgrade.rs                 │
+│ Maintainer CLI                  │ bins/cli/src/cmd_governance.rs               │
+│ RPC methods                     │ crates/rpc/src/methods/governance.rs        │
+│ Gossip topics                   │ crates/network/src/gossip/mod.rs            │
 └─────────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
@@ -1162,8 +1165,8 @@ pub struct MaintainerSet {
 
 /// Transaction to modify maintainer set
 pub enum MaintainerTxType {
-    RemoveMaintainer = 13,
-    AddMaintainer = 14,
+    RemoveMaintainer = 11,
+    AddMaintainer = 12,
 }
 
 pub struct MaintainerChangeData {
@@ -1222,8 +1225,8 @@ pub const MAX_MAINTAINERS: usize = 5;
 // Devnet: veto=1min, grace=30s, check=10s
 // Target (mature network): veto=7 days, grace=48 hours, check=6 hours
 pub const VETO_PERIOD: Duration = Duration::from_secs(5 * 60);            // 5 minutes
-pub const GRACE_PERIOD: Duration = Duration::from_secs(2 * 60);           // 2 minutes
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);        // 10 minutes
+pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);             // 1 hour (fallback; network_params overrides to 2 min)
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);       // 6 hours (fallback; network_params overrides to 10 min)
 
 // Thresholds
 pub const VETO_THRESHOLD_PERCENT: u8 = 40;
@@ -1238,7 +1241,7 @@ pub const CRASH_THRESHOLD: u32 = 3;
 pub const CRASH_WINDOW: Duration = Duration::from_secs(3600);             // 1 hour
 
 // Distribution
-pub const GITHUB_API_URL: &str = "https://api.github.com/repos/doli-network/doli/releases/latest";
+pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
 pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 ```
 

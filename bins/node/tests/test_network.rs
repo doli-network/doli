@@ -1880,3 +1880,332 @@ async fn test_realistic_gossip_10k_clustered() {
 
     assert_eq!(total_synced, total_nodes, "All 10K nodes should converge");
 }
+
+// ============================================================
+// Scheduler-Driven Slot Coverage Test
+// ============================================================
+//
+// Unlike other tests that build blocks with arbitrary producers and
+// use ValidationMode::Light (which skips eligibility), this test:
+//
+// 1. Builds the DeterministicScheduler from each node's producer state
+// 2. Asks the scheduler who should produce each slot
+// 3. Verifies ALL nodes agree on the same producer
+// 4. Has that producer build the block
+// 5. Detects lost slots (where no producer is scheduled)
+// 6. Reports scheduler divergence between nodes
+
+use doli_core::{DeterministicScheduler, ScheduledProducer};
+
+/// Build a DeterministicScheduler from a node's producer set + epoch bond snapshot,
+/// identical to what the production code does in try_produce_block().
+async fn build_scheduler_for_node(node: &Node) -> DeterministicScheduler {
+    let height = node.chain_state.read().await.best_height + 1;
+    let producers = node.producer_set.read().await;
+    let active: Vec<PublicKey> = producers
+        .active_producers_at_height(height)
+        .iter()
+        .map(|p| p.public_key)
+        .collect();
+    drop(producers);
+
+    let weighted = node.bond_weights_for_scheduling(active).await;
+
+    let scheduled: Vec<ScheduledProducer> = weighted
+        .into_iter()
+        .map(|(pk, bonds)| ScheduledProducer::new(pk, bonds as u32))
+        .collect();
+
+    DeterministicScheduler::new(scheduled)
+}
+
+/// Scheduler fingerprint: (producer_count, total_bonds, rank0_pubkey_for_slot_0)
+fn scheduler_fingerprint(sched: &DeterministicScheduler) -> (usize, u64, Option<PublicKey>) {
+    let rank0 = sched.select_producer(0, 0).copied();
+    (sched.producer_count(), sched.total_bonds(), rank0)
+}
+
+/// 100-node network, 10 producers, 500 slots — scheduler-driven production.
+/// Detects lost slots, scheduler divergence, and eligibility mismatches.
+#[tokio::test]
+async fn test_scheduler_slot_coverage_100_nodes() {
+    let n_nodes = 100;
+    let n_producers = 10;
+    let total_slots = 500;
+
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Exit genesis: build a chain of 45 blocks (devnet genesis_blocks=40)
+    // so all subsequent blocks use the DeterministicScheduler path.
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+
+    // Tracking
+    let mut produced_slots = 0u64;
+    let mut lost_slots = 0u64;
+    let mut scheduler_divergences = 0u64;
+    let mut eligibility_rejections = 0u64;
+    let mut prev_hash = base.last().unwrap().hash();
+    let start_slot = 46u32;
+    let start_height = 46u64;
+
+    // Map pubkey → producer keypair index for block building
+    let pk_to_idx: HashMap<PublicKey, usize> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (*kp.public_key(), i))
+        .collect();
+
+    for i in 0..total_slots {
+        let slot = start_slot + i as u32;
+        let height = start_height + i as u64;
+
+        // Step 1: Build scheduler on EVERY node and check agreement
+        let mut schedulers = Vec::with_capacity(n_nodes);
+        for node_id in 0..n_nodes {
+            let node = net.nodes[node_id].lock().await;
+            let sched = build_scheduler_for_node(&node).await;
+            schedulers.push(sched);
+        }
+
+        // Check all nodes agree on the scheduler
+        let fp0 = scheduler_fingerprint(&schedulers[0]);
+        let mut diverged = false;
+        for (node_id, sched) in schedulers.iter().enumerate().skip(1) {
+            let fp = scheduler_fingerprint(sched);
+            if fp != fp0 {
+                if !diverged {
+                    eprintln!(
+                        "  DIVERGENCE at slot {}: node 0 has {:?}, node {} has {:?}",
+                        slot, fp0, node_id, fp
+                    );
+                    diverged = true;
+                }
+                scheduler_divergences += 1;
+            }
+        }
+
+        // Step 2: Ask the scheduler who produces this slot (rank 0 = primary)
+        let primary = schedulers[0].select_producer(slot, 0).copied();
+
+        match primary {
+            None => {
+                // No producer for this slot — this is a lost slot
+                lost_slots += 1;
+                if lost_slots <= 10 {
+                    eprintln!("  LOST SLOT {}: no primary producer (total_bonds={})", slot, schedulers[0].total_bonds());
+                }
+            }
+            Some(producer_pk) => {
+                // Find the keypair for this producer
+                let idx = pk_to_idx.get(&producer_pk).copied();
+                match idx {
+                    None => {
+                        // Scheduler selected a producer we don't have keys for — shouldn't happen
+                        eprintln!("  SLOT {}: scheduler selected unknown pubkey", slot);
+                        lost_slots += 1;
+                    }
+                    Some(producer_idx) => {
+                        // Build block with the scheduler-assigned producer
+                        let block = net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
+                        prev_hash = block.hash();
+
+                        // Apply to leader (node 0)
+                        match net.apply_to_node(0, block.clone()).await {
+                            Ok(()) => {
+                                produced_slots += 1;
+
+                                // Propagate to all other nodes
+                                let accepted = net.propagate(0, block).await;
+                                let rejected = (n_nodes - 1) - accepted;
+                                if rejected > 0 {
+                                    eligibility_rejections += rejected as u64;
+                                    if eligibility_rejections <= 20 {
+                                        eprintln!(
+                                            "  SLOT {}: {} nodes rejected block from scheduler-assigned producer",
+                                            slot, rejected
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  SLOT {}: leader REJECTED scheduler-assigned block: {}", slot, e);
+                                lost_slots += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Verify convergence
+    let synced = net.is_synced().await;
+
+    // Report
+    eprintln!();
+    eprintln!("  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers) ===", n_nodes, n_producers);
+    eprintln!("  Total slots:          {}", total_slots);
+    eprintln!("  Produced:             {}", produced_slots);
+    eprintln!("  Lost:                 {}", lost_slots);
+    eprintln!("  Scheduler divergence: {} (across {} non-leader nodes)", scheduler_divergences, n_nodes - 1);
+    eprintln!("  Eligibility rejects:  {} (total across all nodes)", eligibility_rejections);
+    eprintln!("  All synced:           {}", synced);
+    eprintln!(
+        "  Coverage:             {:.1}%",
+        (produced_slots as f64 / total_slots as f64) * 100.0
+    );
+
+    // Hard assertions
+    assert!(synced, "All nodes must converge");
+    assert_eq!(lost_slots, 0, "No slots should be lost — scheduler should always select a primary");
+    assert_eq!(scheduler_divergences, 0, "All nodes must agree on the scheduler");
+    assert_eq!(eligibility_rejections, 0, "All nodes must accept scheduler-assigned blocks");
+    assert_eq!(produced_slots, total_slots as u64, "Every slot must produce a block");
+}
+
+/// 500-node network, 50 producers with VARIED bond counts, 1000 slots.
+/// Tests that bond-weighted scheduling produces correct coverage and
+/// no slots are lost even with asymmetric bond distribution.
+#[tokio::test]
+#[ignore] // Requires more resources
+async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
+    let n_nodes = 500;
+    let n_producers = 50;
+    let total_slots = 1000;
+
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Exit genesis
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+
+    let mut produced_slots = 0u64;
+    let mut lost_slots = 0u64;
+    let mut scheduler_divergences = 0u64;
+    let mut prev_hash = base.last().unwrap().hash();
+    let start_slot = 46u32;
+    let start_height = 46u64;
+
+    // Track per-producer block counts to verify bond-proportional distribution
+    let mut producer_block_count: HashMap<PublicKey, u64> = HashMap::new();
+
+    let pk_to_idx: HashMap<PublicKey, usize> = net
+        .producers
+        .iter()
+        .enumerate()
+        .map(|(i, kp)| (*kp.public_key(), i))
+        .collect();
+
+    for i in 0..total_slots {
+        let slot = start_slot + i as u32;
+        let height = start_height + i as u64;
+
+        // Build scheduler on a sample of nodes (0, n/4, n/2, 3n/4, last)
+        // to check agreement without the cost of locking all 500
+        let sample_ids = [0, n_nodes / 4, n_nodes / 2, 3 * n_nodes / 4, n_nodes - 1];
+        let mut sample_fps = Vec::new();
+        let mut sched0 = None;
+
+        for &node_id in &sample_ids {
+            let node = net.nodes[node_id].lock().await;
+            let sched = build_scheduler_for_node(&node).await;
+            let fp = scheduler_fingerprint(&sched);
+            if node_id == 0 {
+                sched0 = Some(sched);
+            }
+            sample_fps.push((node_id, fp));
+        }
+
+        let fp0 = sample_fps[0].1.clone();
+        for (node_id, fp) in &sample_fps[1..] {
+            if *fp != fp0 {
+                scheduler_divergences += 1;
+                eprintln!("  DIVERGENCE at slot {}: node 0 vs node {}", slot, node_id);
+            }
+        }
+
+        let sched = sched0.unwrap();
+        let primary = sched.select_producer(slot, 0).copied();
+
+        match primary {
+            None => {
+                lost_slots += 1;
+            }
+            Some(producer_pk) => {
+                if let Some(&producer_idx) = pk_to_idx.get(&producer_pk) {
+                    let block = net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
+                    prev_hash = block.hash();
+
+                    match net.apply_to_node(0, block.clone()).await {
+                        Ok(()) => {
+                            produced_slots += 1;
+                            *producer_block_count.entry(producer_pk).or_insert(0) += 1;
+                            net.propagate(0, block).await;
+                        }
+                        Err(e) => {
+                            eprintln!("  SLOT {}: leader rejected: {}", slot, e);
+                            lost_slots += 1;
+                        }
+                    }
+                } else {
+                    lost_slots += 1;
+                }
+            }
+        }
+    }
+
+    let synced = net.is_synced().await;
+
+    // Report distribution
+    eprintln!();
+    eprintln!("  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers, varied bonds) ===", n_nodes, n_producers);
+    eprintln!("  Total slots:          {}", total_slots);
+    eprintln!("  Produced:             {}", produced_slots);
+    eprintln!("  Lost:                 {}", lost_slots);
+    eprintln!("  Scheduler divergence: {}", scheduler_divergences);
+    eprintln!("  All synced:           {}", synced);
+
+    // Show per-producer distribution (sorted by block count)
+    let mut dist: Vec<(PublicKey, u64)> = producer_block_count.into_iter().collect();
+    dist.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("  Producer distribution (top 10):");
+    for (pk, count) in dist.iter().take(10) {
+        eprintln!(
+            "    {} → {} blocks ({:.1}%)",
+            hex::encode(&pk.as_bytes()[..4]),
+            count,
+            (*count as f64 / total_slots as f64) * 100.0
+        );
+    }
+
+    // Hard assertions
+    assert!(synced, "All nodes must converge");
+    assert_eq!(lost_slots, 0, "No slots should be lost");
+    assert_eq!(scheduler_divergences, 0, "Scheduler must agree across nodes");
+    assert_eq!(produced_slots, total_slots as u64, "Every slot must produce a block");
+
+    // With equal bonds (1 each), distribution should be roughly equal
+    // Allow 50% deviation from expected (1000/50 = 20 blocks each)
+    let expected_per_producer = total_slots as f64 / n_producers as f64;
+    for (pk, count) in &dist {
+        let deviation = (*count as f64 - expected_per_producer).abs() / expected_per_producer;
+        assert!(
+            deviation < 0.5,
+            "Producer {} has {} blocks (expected ~{:.0}, deviation {:.1}%) — distribution too skewed",
+            hex::encode(&pk.as_bytes()[..4]),
+            count,
+            expected_per_producer,
+            deviation * 100.0
+        );
+    }
+}

@@ -12,8 +12,9 @@ DOLI uses libp2p as its networking foundation with multiple sub-protocols:
 |----------|------|---------|
 | Status | `/doli/status/1.0.0` | Peer handshake and chain state |
 | Sync | `/doli/sync/1.0.0` | Block synchronization |
+| TxFetch | `/doli/txfetch/1.0.0` | Announce-request transaction fetching |
 | Kademlia | `/doli/kad/1.0.0` | Peer discovery |
-| GossipSub | `/doli/blocks/1`, `/doli/txs/1` | Message propagation |
+| GossipSub | 8 topics (see Section 6) | Message propagation |
 
 ---
 
@@ -205,7 +206,12 @@ Pub-sub message propagation using GossipSub protocol.
 |-------|---------|----------|
 | `/doli/blocks/1` | New blocks | 1 MB |
 | `/doli/txs/1` | New transactions | 1 MB |
-| `/doli/producers/1` | Producer announcements | 64 KB |
+| `/doli/producers/1` | Producer announcements (G-Set CRDT) | 64 KB |
+| `/doli/votes/1` | Governance veto votes | 64 KB |
+| `/doli/heartbeats/1` | Presence heartbeats (weighted rewards) | 64 KB |
+| `/doli/headers/1` | Lightweight block headers (all tiers) | 64 KB |
+| `/doli/t1/blocks/1` | Tier 1 blocks (validators only) | 1 MB |
+| `/doli/attestations/1` | Attestation aggregates (Tier 1+2 finality) | 64 KB |
 
 ### 6.2. GossipSub Parameters
 
@@ -214,9 +220,9 @@ heartbeat_interval:    1 second
 mesh_n:                12 peers (target)        # mainnet/devnet
 mesh_n_low:            8 peers (minimum)        # mainnet/devnet
 mesh_n_high:           24 peers (maximum)       # mainnet/devnet
-mesh_outbound_min:     2 peers
+mesh_outbound_min:     4 peers (dynamic: mesh_n/3, capped at mesh_n/2)
 gossip_lazy:           12 peers                 # mainnet/devnet
-gossip_factor:         0.25
+gossip_factor:         0.50                 # INC-I-015: raised for faster non-mesh delivery
 history_length:        5 messages
 history_gossip:        3 messages
 duplicate_cache_time:  60 seconds
@@ -252,8 +258,8 @@ struct BlockHeader {
     timestamp: u64,            // Unix timestamp (seconds)
     slot: u32,                 // Slot number
     producer: [u8; 32],        // Producer public key
-    vdf_output: VdfOutput,     // VDF computation result
-    vdf_proof: VdfProof,       // Wesolowski proof
+    vdf_output: VdfOutput,     // VDF computation result (hash-chain output)
+    vdf_proof: VdfProof,       // VDF proof bytes (hash-chain, NOT Wesolowski in production)
 }
 ```
 
@@ -272,7 +278,7 @@ struct Transaction {
     tx_type: TxType,           // See below
     inputs: Vec<Input>,
     outputs: Vec<Output>,
-    data: Option<TxData>,      // Type-specific data
+    extra_data: Vec<u8>,       // Type-specific data (bincode-serialized)
 }
 
 enum TxType {
@@ -318,7 +324,7 @@ struct Input {
 struct Output {
     output_type: OutputType,   // See OutputType enum below
     amount: u64,               // In base units
-    pubkey_hash: [u8; 20],     // Recipient address
+    pubkey_hash: [u8; 32],     // Recipient address (BLAKE3-256 hash of public key)
     lock_until: u64,           // Lock height (0 = unlocked)
 }
 
@@ -343,21 +349,24 @@ enum OutputType {
 
 ## 9. VDF Format
 
+DOLI uses an iterated BLAKE3 hash-chain VDF for block production (NOT the Wesolowski class group VDF, which exists in the codebase but is only used for telemetry presence).
+
 ```rust
 struct VdfOutput {
-    y: Vec<u8>,                // Class group element (variable size)
+    value: Vec<u8>,            // Final hash-chain output (32 bytes, BLAKE3)
 }
 
 struct VdfProof {
-    pi: Vec<u8>,               // Wesolowski proof (variable size)
+    pi: Vec<u8>,               // Empty for hash-chain VDF (verification = recomputation)
 }
 ```
 
 **VDF Parameters:**
-- Block VDF: 800K iterations (~55ms) — consensus constant `T_BLOCK`
-- Registration VDF base: 1,000 iterations (essentially instant — bond is the real Sybil protection)
-- Discriminant bits: 1024 (consensus constant `VDF_DISCRIMINANT_BITS`)
-- Network default VDF iterations: 1,000 (all networks)
+- Consensus constant `T_BLOCK`: 800,000 iterations (~55ms on reference hardware)
+- **Network default** `vdf_iterations`: 1,000 (mainnet/testnet via NetworkParams); devnet uses 1 iteration for fast development. Bond is the real Sybil protection; VDF provides anti-grinding at minimal cost
+- Registration VDF: 1,000 iterations (all networks, essentially instant)
+- VDF input: `BLAKE3(prefix || prev_hash || tx_root || slot || producer_key)`
+- Verification: recompute the hash chain (linear time, same as computation)
 
 ---
 
@@ -387,12 +396,14 @@ Peers are scored based on behavior:
 |----------|--------------|
 | Valid block received | +10 |
 | Valid transaction received | +1 |
-| Invalid block received | -50 |
-| Invalid transaction received | -10 |
-| Timeout on request | -5 |
-| Protocol violation | -100 |
+| Invalid block received | -100 |
+| Invalid transaction received | -20 |
+| Timeout on request | -5 per timeout (max -50) |
+| Spam detected | -50 |
+| Duplicate message | -5 |
+| Malformed message | -30 |
 
-Peers with score below threshold are disconnected.
+Score range: -1000 to +1000. Peers below disconnect threshold are dropped; peers below ban threshold are banned.
 
 ---
 
@@ -402,10 +413,10 @@ Protection against DoS attacks:
 
 | Resource | Limit |
 |----------|-------|
-| Blocks per peer per minute | 100 |
-| Transactions per peer per minute | 1000 |
-| Sync requests per peer per minute | 60 |
-| Status requests per peer per minute | 10 |
+| Blocks per peer per minute | 10 |
+| Transactions per peer per second | 50 |
+| Requests per peer per second | 20 |
+| Bandwidth per peer per second | 1 MB |
 
 ---
 
@@ -417,7 +428,8 @@ Events emitted by the network layer:
 enum NetworkEvent {
     PeerConnected(PeerId),
     PeerDisconnected(PeerId),
-    NewBlock(Block),
+    NewBlock(Block, PeerId),
+    NewHeader(BlockHeader),
     NewTransaction(Transaction),
     StatusRequest { peer_id, request, channel },
     SyncRequest { peer_id, request, channel },
@@ -425,6 +437,15 @@ enum NetworkEvent {
     PeerStatus { peer_id, status },
     NetworkMismatch { peer_id, our_network_id, their_network_id },
     GenesisMismatch { peer_id },
+    ProducersAnnounced(Vec<PublicKey>),
+    ProducerAnnouncementsReceived(Vec<ProducerAnnouncement>),
+    ProducerDigestReceived { peer_id, digest },
+    NewVote(Vec<u8>),
+    NewHeartbeat(Vec<u8>),
+    NewAttestation(Vec<u8>),
+    TxAnnouncement { peer_id, hashes },
+    TxFetchRequest { peer_id, hashes, channel },
+    TxFetchResponse { peer_id, transactions },
 }
 ```
 

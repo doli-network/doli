@@ -180,6 +180,8 @@ Column Families:
 │                       #   Simplified: {public_key, registered_at, status, seniority_weight}
 │                       #   Bond data derived from UTXO set (no bond fields in ProducerInfo)
 ├── cf_exit_history     # pubkey_hash (32B) → exit_height (8B LE)
+├── cf_undo             # height (8B LE) → UndoData (bincode)
+│                       #   Stores rollback data per block for O(depth) reorgs
 └── cf_meta             # string key → varies
     ├── "chain_state"       → ChainState (bincode)
     ├── "pending_updates"   → Vec<PendingProducerUpdate> (bincode)
@@ -710,19 +712,20 @@ doli/
 ├── bins/
 │   ├── node/           # Full node binary (doli-node) (~6,000 lines)
 │   │   └── production/ # Producer-specific logic: mod.rs, scheduling.rs, assembly.rs, gates.rs
+│   ├── gui/            # Tauri GUI desktop app (wallet, producer, governance)
 │   └── cli/            # Wallet CLI (doli) (~2,500 lines)
 ├── crates/
-│   ├── core/           # Types, consensus, validation (~23,000 lines)
+│   ├── core/           # Types, consensus, validation (~25,000 lines)
 │   │   ├── tpop/       # Telemetry (heartbeat, presence - NOT consensus)
 │   │   └── discovery/  # Producer discovery (bloom, gossip, gset)
 │   ├── crypto/         # BLAKE3, Ed25519, signatures, merkle (~2,500 lines)
 │   ├── vdf/            # Wesolowski VDF crate (compiled, NOT used in production) (~2,200 lines)
 │   ├── mempool/        # Transaction pool with fee policies (~760 lines)
-│   ├── network/        # libp2p P2P networking (~5,900 lines)
+│   ├── network/        # libp2p P2P networking (~16,000 lines)
 │   │   ├── sync/       # Sync manager, headers, bodies, equivocation, reorg
 │   │   └── protocols/  # Status and sync request/response protocols
-│   ├── storage/        # RocksDB blocks + unified StateDb for UTXO/state (~5,500 lines)
-│   ├── rpc/            # JSON-RPC API server (Axum) (~1,700 lines)
+│   ├── storage/        # RocksDB blocks + unified StateDb for UTXO/state (~10,000 lines)
+│   ├── rpc/            # JSON-RPC API server (Axum) (~4,200 lines)
 │   ├── updater/        # Auto-update with 3/5 multisig, 2-epoch veto (~1,750 lines)
 │   ├── wallet/         # Wallet library (key management, tx construction)
 │   ├── channels/       # Payment channels (Layer 2)
@@ -765,11 +768,11 @@ Additional crates: channels (Layer 2), bridge (atomic swaps) -- depend on core +
 |-------|-------|---------|-----------|
 | `crypto` | ~2,500 | BLAKE3-256 hashing, Ed25519 signatures, merkle trees | `hash.rs` (591), `keys.rs` (764), `signature.rs` (552), `merkle.rs` (496) |
 | `vdf` | ~2,200 | Wesolowski VDF crate (compiled but NOT used in production — both block and registration VDFs use hash-chain BLAKE3 in doli-core) | `vdf.rs` (619), `class_group.rs` (880), `proof.rs` (280) |
-| `core` | ~24,000 | Types, validation, consensus, scheduler, maintainer, network params. Modularized into sub-directories: `consensus/` (constants, bonds, exit, registration, vdf, tiers, selection), `transaction/` (types, core, output, data, legacy), `validation/` (block, transaction, producer, registration, utxo, pool, lending), `network/` (mod, economics, timing, updates, vdf), `network_params/` (mod, defaults, env_loader, chainspec_loader), `conditions/` (encoding, eval, witness), `discovery/` (bloom, gossip, gset), `tpop/` (heartbeat, presence) | Key files: `scheduler.rs`, `block.rs`, `chainspec.rs`, `maintainer.rs`, `rewards.rs`, `attestation.rs`, `finality.rs`, `pool.rs`, `lending.rs`, `nft.rs` |
-| `storage` | ~4,500 | RocksDB blocks, UTXO, chain state, producer registry | `block_store.rs`, `state_db.rs`, `utxo_rocks.rs`, `chain_state.rs`, `snapshot.rs`, `archiver.rs`, `maintainer.rs`, `update.rs` |
-| `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection. Modularized: `service/` (mod, helpers, types, command_handling, behaviour_events, swarm_events, swarm_loop, tests), `sync/` (mod, manager/, headers, bodies, fork_recovery, equivocation, reorg/, adversarial_tests), `gossip/` (mod, publish, config, tests), `protocols/` (mod, status, sync, txfetch) | Key files: `messages.rs`, `behaviour.rs`, `config.rs`, `scoring.rs`, `peer.rs`, `rate_limit.rs`, `transport.rs`, `discovery.rs`, `nat.rs`, `peer_cache.rs` |
+| `core` | ~25,300 | Types, validation, consensus, scheduler, maintainer, network params. Modularized into sub-directories: `consensus/` (constants, bonds, exit, registration, vdf, tiers, selection, reward_epoch, stress, producer_state), `transaction/` (types, core, output, data, legacy), `validation/` (block, transaction, producer, registration, utxo, pool, lending, error, types, tx_types), `network/` (mod, economics, timing, updates, vdf), `network_params/` (mod, defaults, env_loader, chainspec_loader), `conditions/` (encoding, eval, witness), `discovery/` (bloom, gossip, gset, announcement, proto, snapshot), `tpop/` (heartbeat, calibration, presence/) | Key files: `scheduler.rs`, `block.rs`, `chainspec.rs`, `maintainer.rs`, `rewards.rs`, `attestation.rs`, `finality.rs`, `pool.rs`, `lending.rs`, `nft.rs`, `heartbeat.rs`, `genesis.rs` |
+| `storage` | ~10,300 | RocksDB blocks, UTXO, chain state, producer registry. Modularized into sub-directories: `block_store/` (mod, open, queries, writes, types, maintenance, trait_impls), `state_db/` (mod, open, queries, writes, batch, types, undo), `producer/` (mod, constants, info, types, seniority, set_core, set_lifecycle, set_delegation, set_governance, set_persistence, set_registration), `utxo/` (mod, in_memory, set, types) | Key files: `utxo_rocks.rs`, `chain_state.rs`, `snapshot.rs`, `archiver.rs`, `maintainer.rs`, `update.rs` |
+| `network` | ~16,100 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection. Modularized: `service/` (mod, helpers, types, command_handling, behaviour_events, swarm_events, swarm_loop, tests), `sync/` (mod, manager/, headers, bodies, fork_recovery, equivocation, reorg/, adversarial_tests), `gossip/` (mod, publish, config, tests), `protocols/` (mod, status, sync, txfetch). `sync/manager/` sub-modules: mod, block_lifecycle, cleanup, production_gate, peers, snap_sync, types, tests, `sync_engine/` (mod, decision, dispatch, response) | Key files: `messages.rs`, `behaviour.rs`, `config.rs`, `scoring.rs`, `peer.rs`, `rate_limit.rs`, `transport.rs`, `discovery.rs`, `nat.rs`, `peer_cache.rs` |
 | `mempool` | ~760 | Transaction pool with fee policies, double-spend detection | `pool.rs` (589), `policy.rs` (57) |
-| `rpc` | ~3,000+ | JSON-RPC server (Axum) for wallet/explorer | `methods/` directory (16 sub-modules: mod, backfill, balance, block, context, dispatch, governance, history, lending, network, pool, producer, schedule, snapshot, stats, transaction), `types/` directory (block, chain, producer, protocol), `server.rs`, `ws.rs` |
+| `rpc` | ~4,260 | JSON-RPC server (Axum) for wallet/explorer | `methods/` directory (16 sub-modules: mod, backfill, balance, block, context, dispatch, governance, history, lending, network, pool, producer, schedule, snapshot, stats, transaction), `types/` directory (block, chain, producer, protocol, mod), `server.rs`, `ws.rs`, `error.rs`, `lib.rs` |
 | `updater` | ~1,750 | Auto-update with 3/5 multisig, 2-epoch veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
 | `wallet` | -- | Wallet library: key management, transaction construction | -- |
 | `channels` | -- | Payment channels (Layer 2 scaling) | -- |
@@ -862,11 +865,10 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 **tpop/** - Telemetry Proof of Presence (NOT consensus):
 | File | Lines | Purpose |
 |------|-------|---------|
-| `presence.rs` | 1,136 | Presence commitment tracking |
-| `producer.rs` | 724 | Producer telemetry state |
-| `mod.rs` | 625 | Module coordination |
-| `heartbeat.rs` | 612 | VDF heartbeat telemetry |
-| `calibration.rs` | 527 | VDF iteration calibration |
+| `mod.rs` | 620 | Module coordination |
+| `heartbeat.rs` | 637 | VDF heartbeat telemetry |
+| `calibration.rs` | 541 | VDF iteration calibration |
+| `presence/` | ~1,200 | Presence commitment tracking (mod, rewards, scoring, selection, tests, types, vdf_helpers) |
 
 **discovery/** - Producer Discovery:
 | File | Lines | Purpose |
@@ -926,7 +928,7 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 | `periodic.rs` | `run_periodic_tasks()` |
 | `genesis.rs` | Genesis producer derivation |
 | `tx_announcements.rs` | Transaction announcement handling |
-| `apply_block/` | Core state transition (5 sub-modules: mod, state_update, tx_processing, governance, genesis_completion, post_commit) |
+| `apply_block/` | Core state transition (6 sub-modules: mod, state_update, tx_processing, governance, genesis_completion, post_commit) |
 | `production/` | Block production pipeline (sub-modules: mod, scheduling, assembly, gates) |
 | `tests/` | Fork recovery integration tests |
 

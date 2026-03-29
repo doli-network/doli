@@ -13,7 +13,7 @@ pub struct ArchiveBlock {
 /// Archives blocks to a filesystem directory.
 ///
 /// Each block is stored as `{height:010}.block` with a BLAKE3 checksum sidecar
-/// (`{height:010}.sha256`) for integrity verification. A manifest tracks the
+/// (`{height:010}.blake3`) for integrity verification. A manifest tracks the
 /// latest archived height and genesis_hash for chain identity.
 pub struct BlockArchiver {
     rx: mpsc::Receiver<ArchiveBlock>,

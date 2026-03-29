@@ -13,6 +13,7 @@ This document provides the technical specification for implementing a DOLI-compa
 7. [Network Protocol](#7-network-protocol)
 8. [Networks](#8-networks)
 9. [Test Vectors](#9-test-vectors)
+10. [Auto-Update System](#10-auto-update-system)
 
 ---
 
@@ -552,7 +553,9 @@ withdrawal_request_tx = {
         extra_data: []           // Empty for normal outputs
     }],
     extra_data: {
-        producer_pubkey: 32 bytes
+        producer_pubkey: 32 bytes,   // Producer's public key
+        bond_count: uint32,          // Number of bonds to withdraw
+        destination: 32 bytes        // Destination address (pubkey_hash)
     }
 }
 ```
@@ -710,8 +713,8 @@ Delegates bond weight to a Tier 1/2 validator. The delegate receives the staker'
 delegate_bond_tx = {
     version: 1,
     type: 13,                    // TxType::DelegateBond
-    inputs: [{...}],             // Must spend from delegator's address
-    outputs: [{...}],            // Change output
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty
     extra_data: {
         delegate_pubkey: 32 bytes,  // Public key of the delegate (Tier 1/2 validator)
         bond_count: uint32          // Number of bonds to delegate
@@ -723,6 +726,7 @@ delegate_bond_tx = {
 - Delegator must be a registered producer with sufficient bonds
 - Delegate must be a registered, active Tier 1/2 validator
 - Bond count must be > 0 and <= delegator's available (undelegated) bonds
+- State-only: no UTXO inputs required (spam-protected by bond requirement)
 
 ### 3.19 RevokeDelegation Transaction
 
@@ -732,13 +736,15 @@ Revokes a previous delegation. Subject to `DELEGATION_UNBONDING_SLOTS` delay (~7
 revoke_delegation_tx = {
     version: 1,
     type: 14,                    // TxType::RevokeDelegation
-    inputs: [{...}],             // Must spend from delegator's address
-    outputs: [{...}],            // Change output
+    inputs: [],                  // Must be empty (state-only operation)
+    outputs: [],                 // Must be empty
     extra_data: {
         delegate_pubkey: 32 bytes   // Public key of the delegate to revoke from
     }
 }
 ```
+
+State-only transaction: no UTXO inputs required (spam-protected by bond requirement).
 
 ### 3.20 MintAsset Transaction
 
@@ -1226,7 +1232,7 @@ A registration is valid if:
 
 ### 6.6 Producer Activation
 
-Producer becomes active at start of epoch following confirmation.
+Producer becomes eligible for scheduling after `ACTIVATION_DELAY` (10 blocks, ~100 seconds) from registration height. Genesis producers (registered_at == 0) are exempt from the delay. This block-count-based delay ensures all nodes have received and confirmed the registration block before the producer enters the scheduling pool.
 
 ### 6.7 Inactivity Rule
 
@@ -1304,7 +1310,7 @@ Topics do NOT include `network_id`. Network isolation is achieved via genesis ha
 
 | Protocol | Request | Response |
 |----------|---------|----------|
-| `/doli/status/1.0.0` | Status request (version, network_id, genesis_hash, producer_pubkey) | Chain tip, height, best_hash, best_slot, genesis hash |
+| `/doli/status/1.0.0` | Status request (version, network_id, genesis_hash, producer_pubkey?) | Status response (version, network_id, genesis_hash, best_height, best_hash, best_slot, producer_pubkey?) |
 | `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight | Headers, bodies, blocks, state snapshots, state root hashes |
 | `/doli/txfetch/1.0.0` | Transaction hashes (max 50) | Full transactions from mempool |
 
@@ -1459,9 +1465,10 @@ During connection handshake, nodes exchange status messages:
 
 ```
 status_request = {
-    version:      uint32,
-    network_id:   uint32,     // Must match local network
-    genesis_hash: 32 bytes    // Must match local genesis
+    version:         uint32,
+    network_id:      uint32,          // Must match local network
+    genesis_hash:    32 bytes,        // Must match local genesis
+    producer_pubkey: 32 bytes | null  // Optional: producer pubkey for bootstrap discovery
 }
 ```
 
@@ -1479,7 +1486,7 @@ Peers with mismatched `network_id` or `genesis_hash` are immediately disconnecte
 
 ## 9. Test Vectors
 
-### 8.1 SEED Hash (Slot 0)
+### 9.1 SEED Hash (Slot 0)
 
 ```
 Input:
@@ -1496,7 +1503,7 @@ Result:
   f3b4b63bfa289f7b4b2f11f08cfc26bd38ccdbdd9dae33ef9b77c1fc3b96ebb2
 ```
 
-### 8.2 SEED Hash (Slot 1)
+### 9.2 SEED Hash (Slot 1)
 
 ```
 Input:
@@ -1508,7 +1515,7 @@ Result:
   ac1d2a15e55cc413c69036ba29cd08066a560a5bf152ac89a35089eae1fd6bbe
 ```
 
-### 8.3 SEED Hash (Non-zero prev_hash)
+### 9.3 SEED Hash (Non-zero prev_hash)
 
 ```
 Input:
@@ -1520,7 +1527,7 @@ Result:
   1cf7ca92b30ec36c921c1f0f899bb6304b9bb9606ef986ed23afe3baa6b265d1
 ```
 
-### 8.4 REG Hash
+### 9.4 REG Hash
 
 ```
 Input:
@@ -1537,7 +1544,7 @@ Result:
   [compute with BLAKE3-256]
 ```
 
-### 8.5 BLK Hash
+### 9.5 BLK Hash
 
 ```
 Input:
@@ -1589,6 +1596,7 @@ Result:
 | VESTING_PERIOD_SLOTS | 12,614,400 (mainnet=4yr, testnet=8,640=1d) |
 | COMMITMENT_PERIOD  | 12,614,400 (= VESTING_PERIOD_SLOTS) |
 | UNBONDING_PERIOD   | 60,480 (~7 days)         |
+| ACTIVATION_DELAY   | 10 (blocks, ~100s)       |
 | MAX_FAILURES       | 50                       |
 | REWARD_MATURITY    | 6                        |
 | BASE_BLOCK_SIZE    | 2,000,000                |
@@ -1615,9 +1623,9 @@ Result:
 
 ---
 
-## 9. Auto-Update System
+## 10. Auto-Update System
 
-### 9.1 Release Structure
+### 10.1 Release Structure
 
 ```
 release = {
@@ -1646,7 +1654,7 @@ metadata = {                     // metadata.json (optional release asset)
 which networks the release targets. If present, nodes filter releases by their `--network`.
 If absent, the release targets all networks (backward compatibility).
 
-### 9.2 Verification
+### 10.2 Verification
 
 Maintainer keys for signature verification are derived from on-chain state:
 the first 5 registered producers (sorted by registration height) form the
@@ -1665,7 +1673,7 @@ valid_sigs = count(verify(message, sig, key) for sig in signatures where key in 
 release_valid = valid_sigs >= 3
 ```
 
-### 9.3 Veto Voting
+### 10.3 Veto Voting
 
 ```
 vote_message = {
@@ -1678,7 +1686,7 @@ vote_message = {
 
 Only active producers can vote. Votes propagate via gossip.
 
-### 9.4 Veto Calculation
+### 10.4 Veto Calculation
 
 Votes are weighted by bond count (from epoch bond snapshot) × seniority:
 
