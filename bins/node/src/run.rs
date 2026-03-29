@@ -452,6 +452,9 @@ pub(crate) async fn run_node(
     )
     .await?;
 
+    // Rebuild excluded_producers from block store (same logic used after rollback).
+    node.rebuild_excluded_producers().await;
+
     // Checkpoint/snap sync is now handled internally by SyncManager.
     // CLI checkpoint overrides and compiled-in constants are no longer needed here.
     if let (Some(cp_height), Some(cp_hash_str)) = (checkpoint_height, checkpoint_hash.as_deref()) {

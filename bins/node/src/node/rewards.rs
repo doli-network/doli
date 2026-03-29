@@ -373,6 +373,79 @@ impl Node {
         );
     }
 
+    /// Rebuild excluded_producers from recent blocks in block store.
+    ///
+    /// Scans the last epoch-window blocks to detect slot gaps (→ exclude) and
+    /// attestation bitfields (→ re-include). Deterministic: all nodes with the
+    /// same blocks compute the same set.
+    ///
+    /// Must be called after any rollback instead of clearing the set — clearing
+    /// loses exclusion history from blocks that weren't rolled back, causing
+    /// divergence from nodes that didn't rollback.
+    pub async fn rebuild_excluded_producers(&mut self) {
+        let current_h = self.chain_state.read().await.best_height;
+        let scan_blocks = self.config.network.blocks_per_reward_epoch().min(current_h);
+        let start_h = current_h.saturating_sub(scan_blocks);
+        let mut excluded: HashSet<PublicKey> = HashSet::new();
+
+        if current_h > 36 && scan_blocks > 1 {
+            let ps = self.producer_set.read().await;
+            let active: Vec<PublicKey> = ps
+                .active_producers_at_height(current_h)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            drop(ps);
+
+            let mut sorted = active;
+            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+            let mut prev_slot: Option<u32> = None;
+            for h in start_h..=current_h {
+                if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                    // EXCLUDE: detect skipped slots
+                    if let Some(ps) = prev_slot {
+                        let gap = blk.header.slot.saturating_sub(ps);
+                        if gap > 1 {
+                            let rr_list: Vec<&PublicKey> =
+                                sorted.iter().filter(|pk| !excluded.contains(pk)).collect();
+                            let rr_count = rr_list.len();
+                            if rr_count > 0 {
+                                for skipped in (ps + 1)..blk.header.slot {
+                                    let idx = (skipped as usize) % rr_count;
+                                    excluded.insert(*rr_list[idx]);
+                                }
+                            }
+                        }
+                    }
+                    prev_slot = Some(blk.header.slot);
+
+                    // RE-INCLUDE: check attestation bitfield
+                    if !blk.header.presence_root.is_zero() {
+                        let indices =
+                            decode_attestation_bitfield(&blk.header.presence_root, sorted.len());
+                        for idx in indices {
+                            if let Some(pk) = sorted.get(idx) {
+                                excluded.remove(pk);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let old_count = self.excluded_producers.len();
+        self.excluded_producers = excluded;
+        let new_count = self.excluded_producers.len();
+
+        if old_count > 0 || new_count > 0 {
+            info!(
+                "[LIVENESS] Rebuilt excluded set from {} blocks (h={}-{}): {} excluded (was {})",
+                scan_blocks, start_h, current_h, new_count, old_count
+            );
+        }
+    }
+
     pub fn rebuild_producer_set_from_blocks(
         &self,
         producers: &mut ProducerSet,

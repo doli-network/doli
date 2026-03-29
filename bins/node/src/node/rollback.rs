@@ -173,20 +173,13 @@ impl Node {
         // converge on the same liveness view.
         self.rebuild_producer_liveness(target_height);
 
-        // Clear excluded_producers after rollback.
-        // The excluded set is computed from slot gaps in the chain. After rollback,
-        // the chain history changed — the old exclusions are invalid and would cause
-        // the node to reject valid blocks from the canonical chain ("invalid producer
-        // for slot") because check_producer_eligibility filters them from round-robin.
-        // This was the root cause of forked nodes never recovering: their divergent
-        // excluded set made them reject every canonical block they received.
-        if !self.excluded_producers.is_empty() {
-            info!(
-                "[FORK] Clearing {} excluded producers after rollback (stale liveness data)",
-                self.excluded_producers.len()
-            );
-            self.excluded_producers.clear();
-        }
+        // Rebuild excluded_producers from the canonical chain after rollback.
+        // Previously this did .clear(), which nuked ALL exclusion history — including
+        // exclusions from blocks that weren't rolled back. This caused divergence:
+        // the rolled-back node had an empty excluded set while others still had
+        // exclusions, leading to different round-robin assignments and forks.
+        // Rebuilding from block store produces the correct set for the new chain tip.
+        self.rebuild_excluded_producers().await;
 
         // Update chain state to parent
         {
@@ -384,6 +377,7 @@ impl Node {
 
         self.shallow_rollback_count = 0;
         self.cumulative_rollback_depth = 0;
+        self.excluded_producers.clear(); // At height 0, no exclusions
 
         info!("State reset complete. Header-first sync will rebuild from genesis.");
         Ok(true)

@@ -628,78 +628,10 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
-        // Rebuild excluded_producers from recent blocks in block store.
-        // Scans last N blocks to detect slot gaps (→ exclude) and
-        // attestation bitfields (→ re-include). Deterministic: all nodes
-        // with the same blocks compute the same set, including post-snap nodes.
-        let excluded_producers = {
-            let cs = chain_state.read().await;
-            let current_h = cs.best_height;
-            drop(cs);
-
-            let scan_blocks = config.network.blocks_per_reward_epoch().min(current_h);
-            let start_h = current_h.saturating_sub(scan_blocks);
-            let mut excluded: HashSet<PublicKey> = HashSet::new();
-
-            if current_h > 36 && scan_blocks > 1 {
-                // Get active producers for round-robin computation
-                let ps = producer_set.read().await;
-                let active: Vec<PublicKey> = ps
-                    .active_producers_at_height(current_h)
-                    .iter()
-                    .map(|p| p.public_key)
-                    .collect();
-                drop(ps);
-
-                let mut sorted = active.clone();
-                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-                // Scan blocks: detect slot gaps and attestations
-                let mut prev_slot: Option<u32> = None;
-                for h in start_h..=current_h {
-                    if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
-                        // EXCLUDE: detect skipped slots
-                        if let Some(ps) = prev_slot {
-                            let gap = blk.header.slot.saturating_sub(ps);
-                            if gap > 1 {
-                                let rr_list: Vec<&PublicKey> =
-                                    sorted.iter().filter(|pk| !excluded.contains(pk)).collect();
-                                let rr_count = rr_list.len();
-                                if rr_count > 0 {
-                                    for skipped in (ps + 1)..blk.header.slot {
-                                        let idx = (skipped as usize) % rr_count;
-                                        excluded.insert(*rr_list[idx]);
-                                    }
-                                }
-                            }
-                        }
-                        prev_slot = Some(blk.header.slot);
-
-                        // RE-INCLUDE: check attestation bitfield
-                        if !blk.header.presence_root.is_zero() {
-                            let indices = decode_attestation_bitfield(
-                                &blk.header.presence_root,
-                                sorted.len(),
-                            );
-                            for idx in indices {
-                                if let Some(pk) = sorted.get(idx) {
-                                    excluded.remove(pk);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !excluded.is_empty() {
-                    info!(
-                        "[LIVENESS] Rebuilt excluded set from {} blocks: {} excluded",
-                        scan_blocks,
-                        excluded.len()
-                    );
-                }
-            }
-            excluded
-        };
+        // excluded_producers is initialized empty here and rebuilt from block store
+        // after construction via rebuild_excluded_producers(). This ensures the same
+        // rebuild logic is used at startup, after rollback, and after any state reset.
+        let excluded_producers = HashSet::new();
 
         // Recover announcement sequence from persisted GSet to avoid creating
         // stale announcements after restart. +1 so the next announcement is fresh.

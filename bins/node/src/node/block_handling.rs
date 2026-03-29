@@ -399,6 +399,11 @@ impl Node {
             // converge on the same liveness view.
             self.rebuild_producer_liveness(target_height);
 
+            // Rebuild excluded_producers from the canonical chain.
+            // Same reason as liveness: the old excluded set reflects the abandoned
+            // fork, not the new canonical chain. Without this, round-robin diverges.
+            self.rebuild_excluded_producers().await;
+
             // Atomically persist common ancestor state to StateDb
             {
                 let state = self.chain_state.read().await;
