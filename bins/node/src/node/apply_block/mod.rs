@@ -226,17 +226,18 @@ impl Node {
                 );
             }
         }
-        batch
-            .commit()
-            .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
 
-        // Persist undo data for this block (enables O(depth) rollbacks)
+        // Include undo data in the same atomic batch (avoids separate WAL entry)
         let undo = storage::UndoData {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
             producer_snapshot: undo_producer_snapshot,
         };
-        self.state_db.put_undo(height, &undo);
+        batch.put_undo(height, &undo);
+
+        batch
+            .commit()
+            .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
 
         // Prune old undo data (keep last MAX_REORG_DEPTH blocks)
         const UNDO_KEEP_DEPTH: u64 = 2000; // 2x MAX_REORG_DEPTH for safety margin

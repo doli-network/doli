@@ -12,8 +12,8 @@ use crate::utxo::{Outpoint, UtxoEntry};
 use crate::StorageError;
 
 use super::types::{
-    BlockBatch, LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO,
-    CF_UTXO_BY_PUBKEY, META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
+    BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
+    CF_UTXO, CF_UTXO_BY_PUBKEY, META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 // ==================== Batch Creation ====================
@@ -181,6 +181,15 @@ impl<'a> BlockBatch<'a> {
         let cf = self.db.db.cf_handle(CF_META).unwrap();
         let la = LastApplied { height, hash, slot };
         self.batch.put_cf(cf, META_LAST_APPLIED, la.to_bytes());
+    }
+
+    /// Add undo data for a block height into this batch.
+    /// Writing undo in the same WriteBatch as state avoids a separate WAL entry.
+    pub fn put_undo(&mut self, height: u64, undo: &UndoData) {
+        let cf = self.db.db.cf_handle(CF_UNDO).unwrap();
+        let key = height.to_le_bytes();
+        let value = bincode::serialize(undo).expect("UndoData serialization");
+        self.batch.put_cf(cf, key, &value);
     }
 
     /// Commit the batch atomically. All-or-nothing.

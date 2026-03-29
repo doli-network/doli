@@ -19,6 +19,11 @@ impl StateDb {
         opts.set_max_open_files(256);
         // WAL for crash recovery
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
+        // Cap total WAL size to prevent unbounded growth.
+        // With 7 CFs, sparse ones (cf_producers, cf_exit_history) rarely flush,
+        // pinning ALL WAL files. This forces RocksDB to flush the oldest CF
+        // when total WAL exceeds the limit, allowing old WAL files to be deleted.
+        opts.set_max_total_wal_size(64 * 1024 * 1024); // 64 MB
 
         let cfs = vec![
             CF_UTXO,
