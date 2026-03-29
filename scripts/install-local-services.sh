@@ -17,7 +17,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 TESTNET_DIR="$HOME/testnet"
-NODE_BIN="$PROJECT_ROOT/target/release/doli-node"
+NODE_BIN_SRC="$PROJECT_ROOT/target/release/doli-node"
+NODE_BIN="$TESTNET_DIR/bin/doli-node"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$TESTNET_DIR/logs"
 
@@ -31,12 +32,19 @@ NC='\033[0m'
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
 
-# Check binary exists
-if [[ ! -f "$NODE_BIN" ]]; then
-  echo -e "${RED}doli-node binary not found at ${NODE_BIN}${NC}"
+# Check source binary exists
+if [[ ! -f "$NODE_BIN_SRC" ]]; then
+  echo -e "${RED}doli-node binary not found at ${NODE_BIN_SRC}${NC}"
   echo "Run: cargo build --release -p doli-node"
   exit 1
 fi
+
+# Copy binary to testnet dir and re-sign (macOS Sequoia kills copied
+# binaries whose ad-hoc linker signature becomes invalid after cp)
+mkdir -p "$TESTNET_DIR/bin"
+cp "$NODE_BIN_SRC" "$NODE_BIN"
+codesign --force --sign - "$NODE_BIN" 2>/dev/null || true
+echo -e "  ${GREEN}Binary${NC} copied + signed → $NODE_BIN"
 
 install_seed() {
   local plist="$LAUNCH_AGENTS_DIR/network.doli.testnet-seed.plist"
