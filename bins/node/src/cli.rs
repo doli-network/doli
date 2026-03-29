@@ -107,6 +107,10 @@ pub(crate) enum Commands {
         #[arg(long)]
         force_start: bool,
 
+        /// Disable snap sync (use header-first only). For testing/debugging.
+        #[arg(long)]
+        no_snap_sync: bool,
+
         /// Skip all interactive confirmations (for automation/scripts).
         /// Implies acceptance of --force-start warning when used together.
         #[arg(long)]

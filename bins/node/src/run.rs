@@ -28,6 +28,7 @@ pub(crate) async fn run_node(
     bootstrap: Vec<String>,
     no_dht: bool,
     relay_server: bool,
+    no_snap_sync: bool,
     force_start: bool,
     yes: bool,
     chainspec_path: Option<PathBuf>,
@@ -156,6 +157,10 @@ pub(crate) async fn run_node(
     if relay_server {
         config.relay_server = true;
         info!("Relay server enabled — NAT'd peers can relay through this node");
+    }
+    if no_snap_sync {
+        config.no_snap_sync = true;
+        info!("Snap sync disabled — using header-first sync only");
     }
     if let Some(ref addr) = external_address {
         config.external_address = Some(addr.clone());

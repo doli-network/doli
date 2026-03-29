@@ -161,6 +161,7 @@ async fn main() -> Result<()> {
             bootstrap,
             no_dht,
             relay_server,
+            no_snap_sync,
             force_start,
             yes,
             chainspec,
@@ -191,6 +192,7 @@ async fn main() -> Result<()> {
                 bootstrap,
                 no_dht,
                 relay_server,
+                no_snap_sync,
                 force_start,
                 yes,
                 chainspec,
@@ -302,6 +304,7 @@ async fn main() -> Result<()> {
                 vec![],
                 false,
                 false, // relay_server
+                false, // no_snap_sync
                 false,
                 false, // yes
                 None,  // chainspec

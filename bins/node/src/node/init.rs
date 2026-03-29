@@ -502,6 +502,12 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
 
+            // Disable snap sync if --no-snap-sync was passed
+            if config.no_snap_sync {
+                sm.disable_snap_sync();
+                info!("Snap sync disabled via --no-snap-sync");
+            }
+
             // Configure min peers for production based on network and genesis phase.
             // During genesis, allow single-peer production since the network is
             // still bootstrapping with very few nodes. After the first epoch boundary,

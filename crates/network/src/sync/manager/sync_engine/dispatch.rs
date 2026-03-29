@@ -64,15 +64,35 @@ impl SyncManager {
                     }
                 }
 
+                // INC-I-012 F1 + INC-I-017: Height-based request MUST be checked
+                // BEFORE the consecutive_empty_headers escalation. When response.rs
+                // sets use_height_based_headers=true, the next request must use it.
+                // If the escalation block (lines below) runs first, it returns None
+                // or triggers genesis resync — the height-based request never fires.
+                if self.fork.use_height_based_headers {
+                    let request = SyncRequest::get_headers_by_height(
+                        self.local_height,
+                        self.config.max_headers_per_request,
+                    );
+                    info!(
+                        "[SYNC] Using GetHeadersByHeight(height={}) — post-snap hash fallback",
+                        self.local_height
+                    );
+                    // Clear the flag and reset empty counter — height-based request
+                    // bypasses the hash lookup, so previous empties are irrelevant.
+                    self.fork.use_height_based_headers = false;
+                    self.fork.consecutive_empty_headers = 0;
+                    let id = self.register_request(peer, request.clone());
+                    if let Some(status) = self.peers.get_mut(&peer) {
+                        status.pending_request = Some(id);
+                    }
+                    return Some((peer, request));
+                }
+
                 // After 10+ consecutive empty responses, peer doesn't recognize our tip.
                 // Try snap sync first (seconds) before falling back to genesis resync (hours).
-                // BUT: only reset snap attempts for nodes that were PREVIOUSLY SYNCED
-                // (confirmed_height_floor > 0). A fresh node that never fully synced
-                // gets empty headers from thundering herd, NOT a deep fork. Resetting
-                // snap.attempts here creates an infinite snap→header→snap cycle where
-                // the node never makes progress. confirmed_height_floor is only set
-                // after successful sync, so it reliably distinguishes "was synced, now
-                // forked" from "never synced, still bootstrapping". (INC-I-017)
+                // Only for nodes that were PREVIOUSLY SYNCED (confirmed_height_floor > 0).
+                // Fresh nodes get empty headers from thundering herd, not deep forks. (INC-I-017)
                 if self.fork.consecutive_empty_headers >= 10 {
                     let best_height = self
                         .peers
@@ -94,23 +114,16 @@ impl SyncManager {
                         self.start_sync();
                         return None;
                     }
-                    // Small gaps (<=50): redirect to rollback instead of
-                    // genesis resync. Snap sync for small gaps loses block history
-                    // and creates a cascade (snap -> no block 1 -> future rollback
-                    // fails -> re-snap). Rollback is O(1) per block and preserves
-                    // full chain history. Expanded from 12→50 to match main's
-                    // shallow fork window.
                     if gap <= 50 && self.local_height > 0 {
                         warn!(
                             "Small fork (gap={}, empties={}): redirecting to rollback \
                              instead of genesis resync — rollback can handle this",
                             gap, self.fork.consecutive_empty_headers
                         );
-                        self.fork.consecutive_empty_headers = 3; // Re-trigger resolve_shallow_fork
+                        self.fork.consecutive_empty_headers = 3;
                         self.set_state(SyncState::Idle, "small_fork_redirect_to_rollback");
                         return None;
                     }
-                    // Large gap with not enough peers — fall back to genesis resync
                     info!(
                         "Genesis fallback: {} consecutive empty headers — requesting full resync",
                         self.fork.consecutive_empty_headers
@@ -121,27 +134,7 @@ impl SyncManager {
                     self.set_state(SyncState::Idle, "genesis_resync_fallback");
                     return None;
                 }
-                // INC-I-012 F1: After snap sync to a forked hash, use height-based
-                // request to bypass the unrecognizable hash. The server looks up its
-                // canonical chain at local_height and serves headers from there.
-                if self.fork.use_height_based_headers {
-                    let request = SyncRequest::get_headers_by_height(
-                        self.local_height,
-                        self.config.max_headers_per_request,
-                    );
-                    info!(
-                        "[SYNC] Using GetHeadersByHeight(height={}) — post-snap hash fallback",
-                        self.local_height
-                    );
-                    // Clear the flag — one height-based request is enough to get
-                    // canonical headers. Subsequent requests use normal hash-based.
-                    self.fork.use_height_based_headers = false;
-                    let id = self.register_request(peer, request.clone());
-                    if let Some(status) = self.peers.get_mut(&peer) {
-                        status.pending_request = Some(id);
-                    }
-                    return Some((peer, request));
-                }
+
                 let start_hash = self.local_hash;
                 let request = self.pipeline.header_downloader.create_request(start_hash);
 
