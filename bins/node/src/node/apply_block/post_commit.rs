@@ -74,6 +74,20 @@ impl Node {
             let slot_gap = block.header.slot.saturating_sub(prev_slot);
 
             // EXCLUDE: producers who missed skipped slots
+            //
+            // Safety caps (INC-I-017):
+            // 1. MAX_EXCLUSIONS_PER_BLOCK: A single large slot gap (e.g., 24 slots
+            //    during a gossip partition) must not mass-exclude the entire producer
+            //    set. Capped at 3 per block — genuine offline producers accumulate
+            //    exclusions over multiple blocks; a gossip hiccup can't nuke the set.
+            // 2. MAX_EXCLUDED_FRACTION (1/3): Even accumulated exclusions can't push
+            //    the round-robin denominator below 2/3 of normal. This bounds how far
+            //    the schedule can diverge between nodes with slightly different views.
+            //
+            // Without these caps, a single 24-slot gap excluded 23/32 producers,
+            // changed slot%30 → slot%8, permanently diverging the scheduler.
+            const MAX_EXCLUSIONS_PER_BLOCK: usize = 3;
+
             if slot_gap > 1 && height > 36 {
                 let producers = self.producer_set.read().await;
                 let active: Vec<PublicKey> = producers
@@ -82,6 +96,9 @@ impl Node {
                     .map(|p| p.public_key)
                     .collect();
                 drop(producers);
+
+                let active_count = active.len();
+                let max_excluded_total = active_count / 3; // never exclude >1/3
 
                 let mut sorted = active;
                 sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -92,11 +109,32 @@ impl Node {
                 let rr_count = rr_list.len();
 
                 if rr_count > 0 {
+                    let mut exclusions_this_block = 0usize;
                     for skipped_slot in (prev_slot + 1)..block.header.slot {
+                        if exclusions_this_block >= MAX_EXCLUSIONS_PER_BLOCK {
+                            if exclusions_this_block == MAX_EXCLUSIONS_PER_BLOCK {
+                                warn!(
+                                    "[LIVENESS] Exclusion cap hit ({}/block) — {} more skipped slots ignored (gap={})",
+                                    MAX_EXCLUSIONS_PER_BLOCK,
+                                    block.header.slot.saturating_sub(skipped_slot),
+                                    slot_gap
+                                );
+                            }
+                            break;
+                        }
+                        if self.excluded_producers.len() >= max_excluded_total {
+                            warn!(
+                                "[LIVENESS] Total exclusion cap hit ({}/{} active) — skipping remaining",
+                                self.excluded_producers.len(),
+                                active_count
+                            );
+                            break;
+                        }
                         let idx = (skipped_slot as usize) % rr_count;
                         let missed = *rr_list[idx];
                         if !self.excluded_producers.contains(&missed) {
                             self.excluded_producers.insert(missed);
+                            exclusions_this_block += 1;
                             info!(
                                 "[LIVENESS] EXCLUDED {} — missed slot {}",
                                 hex::encode(&missed.as_bytes()[..4]),

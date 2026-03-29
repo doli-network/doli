@@ -397,23 +397,35 @@ impl Node {
                 .collect();
             drop(ps);
 
+            let active_count = active.len();
+            let max_excluded_total = active_count / 3; // INC-I-017: never exclude >1/3
+            const MAX_EXCLUSIONS_PER_GAP: usize = 3; // INC-I-017: cap per slot gap
+
             let mut sorted = active;
             sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
             let mut prev_slot: Option<u32> = None;
             for h in start_h..=current_h {
                 if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                    // EXCLUDE: detect skipped slots
+                    // EXCLUDE: detect skipped slots (capped per gap and total)
                     if let Some(ps) = prev_slot {
                         let gap = blk.header.slot.saturating_sub(ps);
-                        if gap > 1 {
+                        if gap > 1 && excluded.len() < max_excluded_total {
                             let rr_list: Vec<&PublicKey> =
                                 sorted.iter().filter(|pk| !excluded.contains(pk)).collect();
                             let rr_count = rr_list.len();
                             if rr_count > 0 {
+                                let mut gap_exclusions = 0usize;
                                 for skipped in (ps + 1)..blk.header.slot {
+                                    if gap_exclusions >= MAX_EXCLUSIONS_PER_GAP
+                                        || excluded.len() >= max_excluded_total
+                                    {
+                                        break;
+                                    }
                                     let idx = (skipped as usize) % rr_count;
-                                    excluded.insert(*rr_list[idx]);
+                                    if excluded.insert(*rr_list[idx]) {
+                                        gap_exclusions += 1;
+                                    }
                                 }
                             }
                         }
