@@ -139,17 +139,31 @@ impl SyncManager {
             };
         }
 
-        // Check 3 (hash agreement) REMOVED — INC-I-008
+        // Check 3: Gossip activity watchdog — mesh isolation detection
         //
-        // The old check compared our tip hash against all peers at the same height
-        // and blocked production when we were in the "minority". In a network with
-        // many non-producing relay/stress nodes, a single producer on a 1-block
-        // tip fork could outvote the other producers (70 stress nodes vs 4 producers),
-        // deadlocking the chain.
+        // Detects the case where a node has transport-layer peers but is NOT
+        // receiving blocks via the gossipsub mesh (mesh partition). Without this,
+        // the node produces blocks during the silence, each production marks
+        // missed-slot producers as excluded, and the scheduler diverges from the
+        // network — a cascade that is unrecoverable on main branch.
         //
-        // Tip-level forks are NORMAL during propagation and resolve naturally via
-        // heaviest-chain fork choice + reorg. Deep forks are detected separately
-        // by is_deep_fork_detected(). No production gate check is needed.
+        // Only checks when we have sufficient peers (0-peer case handled above).
+        // Self-produced blocks do NOT reset the gossip timer (production/mod.rs).
+        if self.peers.len() >= self.min_peers_for_production {
+            if let Some(last_gossip) = self.last_block_received_via_gossip {
+                let secs = last_gossip.elapsed().as_secs();
+                if secs >= self.gossip_activity_timeout_secs {
+                    warn!(
+                        "[CAN_PRODUCE] BLOCKED: no gossip blocks for {}s (timeout={}s) with {} peers — possible mesh isolation",
+                        secs, self.gossip_activity_timeout_secs, self.peers.len()
+                    );
+                    return ProductionAuthorization::BlockedNoGossipActivity {
+                        seconds_since_gossip: secs,
+                        peer_count: self.peers.len(),
+                    };
+                }
+            }
+        }
 
         // Check 4: Finality
         if let Some(finalized_height) = self.last_finalized_height() {

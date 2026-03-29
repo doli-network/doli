@@ -348,6 +348,20 @@ impl Node {
         // Check if we need to request sync
         {
             let mut sm = self.sync_manager.write().await;
+
+            // Snap sync uses batch requests (all eligible peers at once) to
+            // collect state root votes within the quorum window. Without this,
+            // next_request() returns None for SnapCollecting and no GetStateRoot
+            // requests are ever sent — snap sync silently times out. (INC-I-017)
+            let snap_batch = sm.next_snap_requests();
+            if !snap_batch.is_empty() {
+                if let Some(ref network) = self.network {
+                    for (peer_id, request) in snap_batch {
+                        let _ = network.request_sync(peer_id, request).await;
+                    }
+                }
+            }
+
             if let Some((peer_id, request)) = sm.next_request() {
                 if let Some(ref network) = self.network {
                     let _ = network.request_sync(peer_id, request).await;

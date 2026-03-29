@@ -182,32 +182,40 @@ impl SyncManager {
                 let peer_height = self.peers.get(&peer).map(|p| p.best_height).unwrap_or(0);
                 let gap = peer_height.saturating_sub(self.local_height);
 
-                // INC-I-012 F1: Post-snap empty headers — use height-based request.
-                // After snap sync, local_hash may be from a forked peer that no
-                // canonical peer recognizes. Instead of retrying snap sync (which
-                // may snap to the same fork), switch to GetHeadersByHeight which
-                // bypasses the hash lookup entirely. The peer serves canonical
-                // headers from local_height+1, giving us a valid chain anchor.
+                // INC-I-012 F1 + INC-I-017: Height-based fallback for unrecognized hashes.
                 //
-                // Guard: only attempt height-based fallback ONCE. If the height-
-                // based request also returned empty (peer at same height or below),
-                // fall through to normal fork detection to avoid a 60s retry loop.
-                if matches!(
+                // Original (INC-I-012): After successful snap sync, local_hash may be
+                // from a forked peer. GetHeadersByHeight bypasses the hash lookup.
+                //
+                // Extended (INC-I-017): Fresh nodes that fail snap sync 3x and fall to
+                // header-first also get stranded: they apply block 1 via gossip, then
+                // GetHeaders(block_1_hash) returns empty from unsynced peers (who have
+                // best_height <= 1). The AwaitingCanonicalBlock gate locked out this
+                // path entirely. Now also triggers when consecutive_empty_headers >= 2
+                // and snap is exhausted — covers both post-snap and post-snap-failure.
+                //
+                // Guard: only attempt height-based fallback ONCE per sync cycle.
+                let snap_exhausted = self.snap.attempts >= 3;
+                let post_snap_recovery = matches!(
                     self.recovery_phase,
                     super::super::RecoveryPhase::AwaitingCanonicalBlock { .. }
-                ) && self.snap.threshold < u64::MAX
+                );
+                let empty_headers_stuck =
+                    self.fork.consecutive_empty_headers >= 2 && snap_exhausted;
+
+                if (post_snap_recovery || empty_headers_stuck)
                     && !self.fork.height_fallback_attempted
                 {
                     warn!(
-                        "Post-snap empty headers from {} (gap={}) — snap hash not recognized. \
-                         Switching to height-based headers (INC-I-012 F1).",
-                        peer, gap
+                        "Empty headers from {} (gap={}, consecutive={}, snap_attempts={}) — \
+                         hash not recognized. Switching to height-based headers (INC-I-012/I-017).",
+                        peer, gap, self.fork.consecutive_empty_headers, self.snap.attempts
                     );
                     // Don't blacklist — the peer is correct, our hash is wrong
                     // Don't increment consecutive_empty_headers — not fork evidence
                     self.fork.use_height_based_headers = true;
                     self.fork.height_fallback_attempted = true;
-                    self.set_state(SyncState::Idle, "post_snap_height_fallback");
+                    self.set_state(SyncState::Idle, "height_fallback_empty_headers");
                     if self.should_sync() {
                         self.start_sync();
                     }

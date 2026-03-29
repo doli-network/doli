@@ -1447,6 +1447,185 @@ fn test_fresh_node_can_reset_to_zero() {
 // Regression tests: lock existing behavior (MUST pass before AND after M1)
 // -------------------------------------------------------------------------
 
+// =========================================================================
+// Gossip activity watchdog tests (mesh isolation detection)
+//
+// Reproduces the mainnet death cascade (2026-03-29): node had 26 peers but
+// received no gossip blocks for 2 minutes. Without the watchdog, the node
+// produced during the silence, excluded_producers exploded (1→24→32), and
+// the scheduler permanently diverged from the network.
+// =========================================================================
+
+#[test]
+fn test_gossip_watchdog_blocks_production_when_no_gossip() {
+    // Scenario: Node has peers, gossip timer expired → should block production.
+    // This reproduces the mainnet mesh partition where the node had 26 peers
+    // but no gossip blocks arrived for 2+ minutes.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 24340;
+    manager.local_slot = 24493;
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 24340, Hash::ZERO, 24493);
+    manager.add_peer(peer2, 24340, Hash::ZERO, 24493);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Simulate: last gossip block was 200 seconds ago (exceeds 180s default timeout)
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
+
+    let result = manager.can_produce(24500);
+    match result {
+        ProductionAuthorization::BlockedNoGossipActivity {
+            seconds_since_gossip,
+            peer_count,
+        } => {
+            assert!(seconds_since_gossip >= 180);
+            assert_eq!(peer_count, 2);
+        }
+        other => panic!("Expected BlockedNoGossipActivity, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_gossip_watchdog_allows_production_with_recent_gossip() {
+    // Scenario: Node has peers and recent gossip activity → should produce.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 24340;
+    manager.local_slot = 24493;
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 24340, Hash::ZERO, 24493);
+    manager.add_peer(peer2, 24340, Hash::ZERO, 24493);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Recent gossip — 5 seconds ago
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(5));
+
+    let result = manager.can_produce(24500);
+    assert_eq!(result, ProductionAuthorization::Authorized);
+}
+
+#[test]
+fn test_gossip_watchdog_skipped_when_insufficient_peers() {
+    // Scenario: Only 1 peer, gossip expired → should be blocked by min_peers,
+    // NOT by gossip watchdog (min_peers fires first and is the correct reason).
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+
+    let peer = PeerId::random();
+    manager.add_peer(peer, 100, Hash::ZERO, 100);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Gossip expired
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(300));
+
+    let result = manager.can_produce(101);
+    // Should be InsufficientPeers (1 < 2), not NoGossipActivity
+    assert!(
+        matches!(
+            result,
+            ProductionAuthorization::BlockedInsufficientPeers { .. }
+        ),
+        "Expected BlockedInsufficientPeers (fires before gossip check), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_gossip_watchdog_respects_custom_timeout() {
+    // Scenario: Custom short timeout (30s) — blocks after 30s of silence.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+    manager.gossip_activity_timeout_secs = 30; // Short timeout
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 100, Hash::ZERO, 100);
+    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // 35 seconds without gossip — exceeds custom 30s timeout
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(35));
+
+    let result = manager.can_produce(101);
+    assert!(
+        matches!(
+            result,
+            ProductionAuthorization::BlockedNoGossipActivity { .. }
+        ),
+        "Expected BlockedNoGossipActivity with 30s custom timeout, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_gossip_watchdog_not_triggered_just_under_timeout() {
+    // Scenario: Gossip silence of 170s with 180s timeout → should still produce.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 100, Hash::ZERO, 100);
+    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // 170s of silence — just under the 180s default timeout
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(170));
+
+    let result = manager.can_produce(101);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "170s < 180s timeout — should still produce"
+    );
+}
+
+#[test]
+fn test_note_gossip_resets_watchdog() {
+    // Scenario: Watchdog would fire, but note_block_received_via_gossip() resets it.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 100;
+    manager.local_slot = 100;
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 100, Hash::ZERO, 100);
+    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Gossip expired (200s ago)
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
+
+    // Verify it WOULD block
+    assert!(matches!(
+        manager.can_produce(101),
+        ProductionAuthorization::BlockedNoGossipActivity { .. }
+    ));
+
+    // Now receive a gossip block — resets the timer
+    manager.note_block_received_via_gossip();
+
+    // Should be authorized again
+    let result = manager.can_produce(101);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "After receiving gossip block, production should be authorized"
+    );
+}
+
 mod regression_tests {
     use super::*;
 

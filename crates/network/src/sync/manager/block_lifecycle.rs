@@ -322,10 +322,10 @@ impl SyncManager {
         self.fork.consecutive_apply_failures = 0;
 
         // Reset snap sync attempt counter so recovery gets fresh tries —
-        // BUT only if we had meaningful state before. A node already at h=0
-        // that exhausted snap attempts should stay on header-first; resetting
-        // attempts here restarts the same failing snap cycle. (INC-I-017)
-        if self.local_height > 0 {
+        // BUT only if the node was previously synced. confirmed_height_floor > 0
+        // means the node reached a healthy state before. A fresh node that never
+        // synced should stay on header-first after exhausting snap. (INC-I-017)
+        if self.confirmed_height_floor > 0 {
             self.snap.attempts = 0;
         }
 

@@ -96,13 +96,14 @@ impl SyncManager {
             return None;
         }
 
-        // Distribute load: pick a random eligible peer instead of always the best.
-        // Uses a simple hash-based selection seeded by local_height to vary across
-        // calls without requiring rand. Different nodes at different heights pick
-        // different peers, spreading the sync load across all synced nodes.
+        // Distribute load: pick a pseudo-random eligible peer seeded by local_height
+        // AND sync_epoch. Without sync_epoch, all nodes at the same height compute
+        // the identical index — 7 nodes at h=1 all hammer the same peer, saturating
+        // its rate limit (INC-I-017). sync_epoch varies per node (incremented each
+        // sync cycle), breaking the thundering herd.
         let idx = (self.local_height as usize)
             .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407)
+            .wrapping_add(self.pipeline.sync_epoch as usize)
             % eligible.len();
         Some(eligible[idx])
     }

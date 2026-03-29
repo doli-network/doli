@@ -454,10 +454,10 @@ async fn test_network_5000_nodes() {
 
 #[tokio::test]
 #[ignore] // BLOCKED on macOS: RocksDB uses fopen() which caps at FD 32767 (FILE._file is short).
-// Each node needs ~26 structural FDs (LOCK, MANIFEST, WAL, CF dirs for 2 DBs).
-// Max ~1259 nodes on macOS. Use test_realistic_gossip_10k_clustered instead
-// (drops nodes between clusters to stay under the ceiling).
-// On Linux this test works — fopen() uses int, no 32K cap.
+          // Each node needs ~26 structural FDs (LOCK, MANIFEST, WAL, CF dirs for 2 DBs).
+          // Max ~1259 nodes on macOS. Use test_realistic_gossip_10k_clustered instead
+          // (drops nodes between clusters to stay under the ceiling).
+          // On Linux this test works — fopen() uses int, no 32K cap.
 async fn test_network_10000_nodes() {
     let start = std::time::Instant::now();
     let net = TestNetwork::new(10000, 5).await;
@@ -2002,7 +2002,11 @@ async fn test_scheduler_slot_coverage_100_nodes() {
                 // No producer for this slot — this is a lost slot
                 lost_slots += 1;
                 if lost_slots <= 10 {
-                    eprintln!("  LOST SLOT {}: no primary producer (total_bonds={})", slot, schedulers[0].total_bonds());
+                    eprintln!(
+                        "  LOST SLOT {}: no primary producer (total_bonds={})",
+                        slot,
+                        schedulers[0].total_bonds()
+                    );
                 }
             }
             Some(producer_pk) => {
@@ -2016,7 +2020,8 @@ async fn test_scheduler_slot_coverage_100_nodes() {
                     }
                     Some(producer_idx) => {
                         // Build block with the scheduler-assigned producer
-                        let block = net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
+                        let block =
+                            net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
                         prev_hash = block.hash();
 
                         // Apply to leader (node 0)
@@ -2038,7 +2043,10 @@ async fn test_scheduler_slot_coverage_100_nodes() {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("  SLOT {}: leader REJECTED scheduler-assigned block: {}", slot, e);
+                                eprintln!(
+                                    "  SLOT {}: leader REJECTED scheduler-assigned block: {}",
+                                    slot, e
+                                );
                                 lost_slots += 1;
                             }
                         }
@@ -2053,12 +2061,22 @@ async fn test_scheduler_slot_coverage_100_nodes() {
 
     // Report
     eprintln!();
-    eprintln!("  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers) ===", n_nodes, n_producers);
+    eprintln!(
+        "  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers) ===",
+        n_nodes, n_producers
+    );
     eprintln!("  Total slots:          {}", total_slots);
     eprintln!("  Produced:             {}", produced_slots);
     eprintln!("  Lost:                 {}", lost_slots);
-    eprintln!("  Scheduler divergence: {} (across {} non-leader nodes)", scheduler_divergences, n_nodes - 1);
-    eprintln!("  Eligibility rejects:  {} (total across all nodes)", eligibility_rejections);
+    eprintln!(
+        "  Scheduler divergence: {} (across {} non-leader nodes)",
+        scheduler_divergences,
+        n_nodes - 1
+    );
+    eprintln!(
+        "  Eligibility rejects:  {} (total across all nodes)",
+        eligibility_rejections
+    );
     eprintln!("  All synced:           {}", synced);
     eprintln!(
         "  Coverage:             {:.1}%",
@@ -2067,10 +2085,22 @@ async fn test_scheduler_slot_coverage_100_nodes() {
 
     // Hard assertions
     assert!(synced, "All nodes must converge");
-    assert_eq!(lost_slots, 0, "No slots should be lost — scheduler should always select a primary");
-    assert_eq!(scheduler_divergences, 0, "All nodes must agree on the scheduler");
-    assert_eq!(eligibility_rejections, 0, "All nodes must accept scheduler-assigned blocks");
-    assert_eq!(produced_slots, total_slots as u64, "Every slot must produce a block");
+    assert_eq!(
+        lost_slots, 0,
+        "No slots should be lost — scheduler should always select a primary"
+    );
+    assert_eq!(
+        scheduler_divergences, 0,
+        "All nodes must agree on the scheduler"
+    );
+    assert_eq!(
+        eligibility_rejections, 0,
+        "All nodes must accept scheduler-assigned blocks"
+    );
+    assert_eq!(
+        produced_slots, total_slots as u64,
+        "Every slot must produce a block"
+    );
 }
 
 /// 500-node network, 50 producers with VARIED bond counts, 1000 slots.
@@ -2147,7 +2177,8 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
             }
             Some(producer_pk) => {
                 if let Some(&producer_idx) = pk_to_idx.get(&producer_pk) {
-                    let block = net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
+                    let block =
+                        net.build_block(height, slot, prev_hash, &net.producers[producer_idx]);
                     prev_hash = block.hash();
 
                     match net.apply_to_node(0, block.clone()).await {
@@ -2172,7 +2203,10 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
 
     // Report distribution
     eprintln!();
-    eprintln!("  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers, varied bonds) ===", n_nodes, n_producers);
+    eprintln!(
+        "  === SCHEDULER SLOT COVERAGE ({} nodes, {} producers, varied bonds) ===",
+        n_nodes, n_producers
+    );
     eprintln!("  Total slots:          {}", total_slots);
     eprintln!("  Produced:             {}", produced_slots);
     eprintln!("  Lost:                 {}", lost_slots);
@@ -2195,8 +2229,14 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
     // Hard assertions
     assert!(synced, "All nodes must converge");
     assert_eq!(lost_slots, 0, "No slots should be lost");
-    assert_eq!(scheduler_divergences, 0, "Scheduler must agree across nodes");
-    assert_eq!(produced_slots, total_slots as u64, "Every slot must produce a block");
+    assert_eq!(
+        scheduler_divergences, 0,
+        "Scheduler must agree across nodes"
+    );
+    assert_eq!(
+        produced_slots, total_slots as u64,
+        "Every slot must produce a block"
+    );
 
     // With equal bonds (1 each), distribution should be roughly equal
     // Allow 50% deviation from expected (1000/50 = 20 blocks each)
