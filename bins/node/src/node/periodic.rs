@@ -126,26 +126,13 @@ impl Node {
                     "[SNAP_SYNC] Consuming snapshot state at height={}",
                     snap.block_height
                 );
-                match self
-                    .apply_checkpoint_state(
-                        snap.block_hash,
-                        snap.block_height,
-                        snap.chain_state,
-                        snap.utxo_set,
-                        snap.producer_set,
-                        snap.state_root,
-                    )
-                    .await
-                {
+                match self.apply_snap_snapshot(snap).await {
                     Ok(()) => {
-                        info!(
-                            "[SNAP_SYNC] Successfully applied snapshot state at height={}",
-                            snap.block_height
-                        );
+                        info!("[SNAP_SYNC] Snapshot applied successfully");
                     }
                     Err(e) => {
                         error!(
-                            "[SNAP_SYNC] Failed to apply snapshot state: {} — falling back to header-first sync",
+                            "[SNAP_SYNC] Failed to apply snapshot: {} — falling back to header-first sync",
                             e
                         );
                     }

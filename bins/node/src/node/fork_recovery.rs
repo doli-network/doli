@@ -365,6 +365,7 @@ impl Node {
     /// CHECKPOINT_STATE_ROOT constant compiled into the binary.
     ///
     /// Only called for new nodes (height=0) during initial sync.
+    #[allow(dead_code)]
     pub async fn apply_checkpoint_state(
         &mut self,
         block_hash: Hash,
@@ -531,6 +532,117 @@ impl Node {
         info!(
             "Complete state reset to genesis (height 0, block store wiped). \
              Production blocked until sync completes + grace period."
+        );
+
+        Ok(())
+    }
+
+    /// Apply a verified snap sync snapshot, replacing local state.
+    ///
+    /// Called when the sync manager's snap sync quorum voting + download completes.
+    /// The snapshot has already been verified (state root matches quorum) by the
+    /// network layer. This method:
+    /// 1. Re-verifies state root (defense-in-depth)
+    /// 2. Deserializes the 3 state components
+    /// 3. Replaces local state atomically
+    /// 4. Persists to StateDb
+    /// 5. Seeds canonical index for post-snap header sync
+    pub async fn apply_snap_snapshot(&mut self, snapshot: network::VerifiedSnapshot) -> Result<()> {
+        info!(
+            "[SNAP_SYNC] Applying snapshot: height={}, hash={:.16}, root={:.16}",
+            snapshot.block_height, snapshot.block_hash, snapshot.state_root
+        );
+
+        // Step 1: Verify state root (node-side, since network crate has no storage dep)
+        let computed_root = storage::compute_state_root_from_bytes(
+            &snapshot.chain_state,
+            &snapshot.utxo_set,
+            &snapshot.producer_set,
+        );
+        if computed_root != snapshot.state_root {
+            error!(
+                "[SNAP_SYNC] State root mismatch! computed={}, expected={} — rejecting",
+                computed_root, snapshot.state_root
+            );
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
+        // Step 2: Deserialize snapshot components
+        let new_chain_state: ChainState = bincode::deserialize(&snapshot.chain_state)
+            .map_err(|e| anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize chain_state: {}", e))?;
+        let new_utxo_set: storage::UtxoSet =
+            storage::UtxoSet::deserialize_canonical(&snapshot.utxo_set).map_err(|e| {
+                anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize utxo_set: {}", e)
+            })?;
+        let new_producer_set: storage::ProducerSet = bincode::deserialize(&snapshot.producer_set)
+            .map_err(|e| {
+            anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize producer_set: {}", e)
+        })?;
+
+        // C3 defense: envelope must match deserialized state
+        if new_chain_state.best_hash != snapshot.block_hash
+            || new_chain_state.best_height != snapshot.block_height
+        {
+            error!("[SNAP_SYNC] Envelope/state mismatch — rejecting",);
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
+        // Step 3: Replace local state
+        let genesis_hash = self.chain_state.read().await.genesis_hash;
+        {
+            let mut cs = self.chain_state.write().await;
+            *cs = new_chain_state;
+            cs.genesis_hash = genesis_hash;
+            cs.mark_snap_synced(snapshot.block_height);
+
+            let mut utxo = self.utxo_set.write().await;
+            *utxo = new_utxo_set;
+
+            let mut ps = self.producer_set.write().await;
+            *ps = new_producer_set;
+
+            // Cache state root atomically
+            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
+                let mut cache = self.cached_state_root.write().await;
+                *cache = Some((root, cs.best_hash, cs.best_height));
+            }
+
+            // Persist to StateDb
+            let utxo_pairs: Vec<_> = match &*utxo {
+                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
+                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
+            };
+            if let Err(e) = self
+                .state_db
+                .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
+            {
+                error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
+            }
+
+            // Update sync manager local tip
+            let mut sync = self.sync_manager.write().await;
+            sync.update_local_tip(cs.best_height, cs.best_hash, cs.best_slot);
+        }
+
+        // Step 4: Seed canonical index for post-snap header sync
+        self.block_store
+            .seed_canonical_index(snapshot.block_hash, snapshot.block_height)?;
+
+        // Step 5: Track snap sync height for validation mode selection
+        self.snap_sync_height = Some(snapshot.block_height);
+
+        // Step 6: Inform sync manager of block store floor
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.set_store_floor(snapshot.block_height);
+            sync.record_block_applied_after_snap(snapshot.block_hash, snapshot.block_height);
+        }
+
+        info!(
+            "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
+            snapshot.block_height, snapshot.block_hash
         );
 
         Ok(())

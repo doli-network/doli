@@ -9,11 +9,13 @@ mod event_loop;
 mod fork_recovery;
 mod genesis;
 mod init;
+mod network_events;
 mod periodic;
 mod production;
 mod rewards;
 mod rollback;
 mod startup;
+mod tx_announcements;
 mod validation_checks;
 
 use std::collections::{HashMap, HashSet};
@@ -197,6 +199,23 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub minute_tracker: MinuteAttestationTracker,
+    /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).
+    /// Bounded to prevent memory growth: entries removed after 1000 blocks.
+    /// Used by network_events.rs handlers (wired in event_loop in future Layer 2 PR).
+    #[allow(dead_code)]
+    pub rejected_fork_tips: HashSet<Hash>,
+    /// Height at which snap sync was applied (for validation mode selection).
+    /// Blocks at or below this height use Light validation (no full tx verification)
+    /// since the state was verified by state root quorum, not replayed.
+    pub snap_sync_height: Option<u64>,
+    /// INC-I-012: Rate limiter for sync requests processed per interval.
+    /// Reset each production timer tick. Prevents sync I/O from starving production.
+    #[allow(dead_code)]
+    pub sync_requests_this_interval: u32,
+    /// TX announce-request: pending transaction hash announcements from peers.
+    /// Batched and fetched periodically to amortize round-trips.
+    #[allow(dead_code)]
+    pub pending_tx_announcements: HashMap<PeerId, Vec<Hash>>,
 }
 
 impl Node {

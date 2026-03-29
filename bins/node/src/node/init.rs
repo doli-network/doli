@@ -768,6 +768,10 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            rejected_fork_tips: HashSet::new(),
+            snap_sync_height: None,
+            sync_requests_this_interval: 0,
+            pending_tx_announcements: HashMap::new(),
         })
     }
 
@@ -929,6 +933,10 @@ impl Node {
             archive_caught_up: true,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            rejected_fork_tips: HashSet::new(),
+            snap_sync_height: None,
+            sync_requests_this_interval: 0,
+            pending_tx_announcements: HashMap::new(),
         })
     }
 }
